@@ -57,27 +57,36 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_update_instance network_profi
     expect(instance.config["network_profile_source"]).to be_nil
   end
 
-  it "a config replace without the stamp cannot erase an operator declaration" do
-    # config REPLACES the stored hash — but the provenance stamp is not
-    # config. Wiping it would re-arm auto-classification over an explicit
-    # operator choice.
+  # IMP-1b65222b8d5f REPLACED THE MECHANISM UNDER THESE TWO EXAMPLES, and they
+  # are kept (rewritten) rather than deleted because the PROPERTY they defend
+  # is the same one: an operator's explicit profile declaration must not be
+  # erasable through the `config` parameter.
+  #
+  # It used to be defended by hand — `config` replaced the stored hash, so
+  # #update_instance re-merged the stamp back in afterwards, and a caller that
+  # supplied its own value could still overwrite it. Now `config` merges per
+  # key and `network_profile_source` is not a writable key at all, so the stamp
+  # is unreachable from a caller by construction. The second example therefore
+  # INVERTS: what used to win is now refused.
+  it "a config write cannot erase an operator declaration" do
     call(network_profile: "heavyweight")
 
-    result = call(config: { "foo" => "bar" })
+    result = call(config: { "hardware_model" => "raspberry_pi_5" })
 
     expect(result[:success]).to be(true)
     instance.reload
-    expect(instance.config["foo"]).to eq("bar")
+    expect(instance.config["hardware_model"]).to eq("raspberry_pi_5")
     expect(instance.config["network_profile_source"]).to eq("operator")
   end
 
-  it "a config replace that explicitly sets the stamp wins" do
+  it "a config write that names the stamp is refused outright" do
     call(network_profile: "heavyweight")
 
     result = call(config: { "network_profile_source" => "suggested_first_heartbeat" })
 
-    expect(result[:success]).to be(true)
-    expect(instance.reload.config["network_profile_source"]).to eq("suggested_first_heartbeat")
+    expect(result[:success]).to be(false)
+    expect(result[:error]).to include("network_profile_source")
+    expect(instance.reload.config["network_profile_source"]).to eq("operator")
   end
 
   it "documents the parameter in the action definition" do

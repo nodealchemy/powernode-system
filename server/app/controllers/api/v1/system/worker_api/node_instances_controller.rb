@@ -37,8 +37,17 @@ module Api
           def create
             authorize_worker_permission!("system.node_instances.create")
 
+            # The tenancy-scoped lookup stays FIRST: a node this worker does not
+            # manage must still answer 404, not a 422 about its request body.
             node = ::System::Node.where(worker: current_worker).find(params[:node_id])
-            instance = node.node_instances.build(instance_params)
+
+            document, refusal = config_document_or_refusal
+            return render_error(refusal, status: :unprocessable_content) if refusal
+
+            attrs = instance_params
+            # Creation: no row behind the object yet, nothing to clobber.
+            attrs = attrs.merge(config: document) if document
+            instance = node.node_instances.build(attrs)
 
             if instance.save
               render_success(instance: serialize_instance(instance), status: :created)
@@ -53,8 +62,14 @@ module Api
           # Update instance (IP addresses, cloud IDs, status)
           def update
             authorize_worker_permission!("system.node_instances.update")
+            document, refusal = config_document_or_refusal
+            return render_error(refusal, status: :unprocessable_content) if refusal
 
             if @instance.update(instance_update_params)
+              # Per-key, in Postgres, against the CURRENT row. The worker holds
+              # an instance across a provider round trip, which is exactly the
+              # interval the node's telemetry lanes write in.
+              @instance.merge_config!(document) if document.present?
               render_success(instance: serialize_instance(@instance))
             else
               render_validation_error(@instance)
@@ -160,8 +175,7 @@ module Api
               :provider_region_id, :provider_instance_type_id,
               :provider_availability_zone_id,
               :private_ip_address, :public_ip_address,
-              :cloud_instance_id,
-              config: {}
+              :cloud_instance_id
             )
           end
 
@@ -169,9 +183,36 @@ module Api
             params.require(:instance).permit(
               :status,
               :private_ip_address, :public_ip_address,
-              :cloud_instance_id,
-              config: {}
+              :cloud_instance_id
             )
+          end
+
+          # `config` is deliberately absent from BOTH permit lists above
+          # (IMP-1b65222b8d5f): `permit(config: {})` admits an arbitrary
+          # document and `update` then replaces the column, erasing whatever
+          # the node reported in the interval. The document is read whole here
+          # and checked against System::NodeInstance::WRITABLE_CONFIG_KEYS
+          # instead; accepted keys go through the per-key seam.
+          #
+          # Returns [document_or_nil, refusal_message_or_nil]. No `config` in
+          # the body yields [nil, nil] — and so does a malformed `instance`
+          # root, leaving the `params.require` in the permit helpers as the one
+          # place that reports that (digging into a String root would raise).
+          def config_document_or_refusal
+            root = params[:instance]
+            return [ nil, nil ] unless root.is_a?(ActionController::Parameters) || root.is_a?(Hash)
+
+            raw = root[:config]
+            return [ nil, nil ] if raw.nil?
+
+            document = raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw
+            return [ nil, "config must be an object of top-level keys" ] unless document.is_a?(Hash)
+
+            document = document.deep_stringify_keys
+            refused  = ::System::NodeInstance.unwritable_config_keys(document)
+            return [ nil, ::System::NodeInstance.config_refusal_message(refused) ] if refused.any?
+
+            [ document, nil ]
           end
 
           def apply_filters(scope)

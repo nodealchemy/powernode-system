@@ -123,7 +123,14 @@ module Api
 
         def create
           require_permission("system.instances.create")
-          instance = @node.node_instances.build(instance_params)
+          document, refusal = config_document_or_refusal
+          return render_error(refusal, status: :unprocessable_content) if refusal
+
+          attrs = instance_params
+          # Creation: there is no row behind this object yet, so assigning the
+          # whole (already allow-listed) document clobbers nothing.
+          attrs = attrs.merge(config: document) if document
+          instance = @node.node_instances.build(attrs)
 
           if instance.save
             render_success(node_instance: serialize_instance(instance), status: :created)
@@ -134,8 +141,15 @@ module Api
 
         def update
           require_permission("system.instances.update")
+          document, refusal = config_document_or_refusal
+          return render_error(refusal, status: :unprocessable_content) if refusal
 
           if @instance.update(instance_params)
+            # The named keys only, merged in Postgres against the CURRENT row —
+            # System::ConfigDocument. A whole-document assignment here would
+            # erase whatever the node's telemetry lanes wrote since this request
+            # was composed.
+            @instance.merge_config!(document) if document.present?
             render_success(node_instance: serialize_instance(@instance))
           else
             render_validation_error(@instance)
@@ -294,9 +308,40 @@ module Api
         def instance_params
           params.require(:node_instance).permit(
             :name, :description, :variety, :status, :key,
-            :private_ip_address, :public_ip_address, :vpn_ip_address,
-            config: {}
+            :private_ip_address, :public_ip_address, :vpn_ip_address
           )
+        end
+
+        # `config` is handled OUTSIDE the permit list on purpose
+        # (IMP-1b65222b8d5f). `permit(config: {})` admits an arbitrary
+        # document, and strong parameters has no spelling for "these keys, with
+        # any value" — a nested permit list would force every accepted key to a
+        # scalar, and `gpu` (a {count,type,memory_mb} hash) is not. So the
+        # document is read whole and checked against
+        # System::NodeInstance::WRITABLE_CONFIG_KEYS.
+        #
+        # Returns [document_or_nil, refusal_message_or_nil]. A body with no
+        # `config` at all yields [nil, nil] — silence is not a refusal.
+        #
+        # A malformed root (`node_instance` absent, or not an object) yields
+        # [nil, nil] too, so the existing `params.require` in #instance_params
+        # stays the one place that reports it. Digging into a String root here
+        # would raise NoMethodError and turn today's 400 into a 500.
+        def config_document_or_refusal
+          root = params[:node_instance]
+          return [ nil, nil ] unless root.is_a?(ActionController::Parameters) || root.is_a?(Hash)
+
+          raw = root[:config]
+          return [ nil, nil ] if raw.nil?
+
+          document = raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw
+          return [ nil, "config must be an object of top-level keys" ] unless document.is_a?(Hash)
+
+          document = document.deep_stringify_keys
+          refused  = ::System::NodeInstance.unwritable_config_keys(document)
+          return [ nil, ::System::NodeInstance.config_refusal_message(refused) ] if refused.any?
+
+          [ document, nil ]
         end
 
         def apply_filters(scope)

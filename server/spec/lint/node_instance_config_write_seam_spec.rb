@@ -45,16 +45,19 @@ require "tmpdir"
 # since the operator loaded the page is erased — the same clobber, reached from
 # outside. So the permit LIST is scanned too, and its census is split in two:
 # PERMIT_NON_NODE_INSTANCE (a different model — nothing to clobber here) and
-# PERMIT_NODE_INSTANCE_OPEN (a NodeInstance, an OPEN hazard, listed so it is
-# visible and so a FURTHER permit list cannot appear unnoticed — including one
-# added to an ALREADY-LISTED controller, which is why a permit key carries the
-# enclosing method name and not just the params root).
+# PERMIT_NODE_INSTANCE_OPEN (a NodeInstance, listed so a FURTHER permit list
+# cannot appear unnoticed — including one added to an ALREADY-LISTED
+# controller, which is why a permit key carries the enclosing method name and
+# not just the params root). That second list is now EMPTY.
 #
-# THAT CLAIM IS ABOUT PERMIT LISTS ONLY. It is not a claim that every wholesale
-# NodeInstance write is now visible: the KNOWN LIMIT below names one that is
-# not. Listing is not sanctioning either — whether those two controllers should
-# permit `config` wholesale at all is a separate change, deliberately not made
-# here.
+# WHAT REPLACED IT (IMP-1b65222b8d5f, operator ruling D18). The three writers
+# that accepted a config document from outside — both node_instances
+# controllers and the MCP twin `system_update_instance` — now check it against
+# System::NodeInstance::WRITABLE_CONFIG_KEYS, refuse a document naming anything
+# else, and merge the rest one key at a time. The permit lists no longer carry
+# `config` at all, so this scan sees a clean tree; the ALLOW-LIST section at
+# the bottom of this file is what keeps that true, because a writer that simply
+# stopped consulting the list would leave no permit-list trace to find.
 RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   # Repo-relative-path#receiver-token, never a line number — the key has to
   # survive a line shift. `self` is path-scoped for exactly this reason: it is
@@ -84,6 +87,14 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       "System::NodeModuleVersion — restart-arm stamp.",
     "app/services/system/node_maintenance_service.rb#node" =>
       "System::Node — the node, not the instance.",
+    # Landed in 67d5d669 (IMP-ca485128072e), which left this example red on
+    # HEAD — a different model, so it belongs in the census rather than being
+    # converted. The write is a deliberate read-modify-write under an explicit
+    # `lock.find_by` row lock, which is this model's answer to the same lost-update
+    # hazard the seam solves for NodeInstance.
+    "app/models/system/fleet/sensor_config.rb#row" =>
+      "System::Fleet::SensorConfig — operator sensor-threshold overrides, merged " \
+      "under a row lock in ::upsert_for.",
     "app/models/system/module_puppet_assignment.rb#self" =>
       "System::ModulePuppetAssignment — its own store helpers.",
     "app/models/system/puppet_resource.rb#self" =>
@@ -136,24 +147,19 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       "System::ModulePuppetAssignment."
   }.freeze
 
-  # NOT an allow-list. These three lists — across two controllers — DO replace
-  # a live NodeInstance document from the request body, and they are the reason
-  # this rule exists. They are named here so the guard stays green on a hazard
-  # it did not create while still going red on a further one, and so nobody
-  # re-derives the finding. Per-METHOD, so narrowing one of the worker API's
-  # two lists and leaving the other is not mistaken for a clean tree.
-  PERMIT_NODE_INSTANCE_OPEN = {
-    "app/controllers/api/v1/system/node_instances_controller.rb#permit:node_instance@instance_params" =>
-      "System::NodeInstance — #update does `@instance.update(instance_params)`, " \
-      "so a PUT carrying `config` replaces the whole document and erases " \
-      "whatever the agent's telemetry lanes wrote in the interval.",
-    "app/controllers/api/v1/system/worker_api/node_instances_controller.rb#permit:instance@instance_params" =>
-      "System::NodeInstance — the worker API's CREATE params. Nothing to " \
-      "clobber at insert, but the same list shape as the update below.",
-    "app/controllers/api/v1/system/worker_api/node_instances_controller.rb#permit:instance@instance_update_params" =>
-      "System::NodeInstance — the worker API's UPDATE params; this is the " \
-      "clobbering half, and the cheaper of the two to narrow."
-  }.freeze
+  # EMPTY, AND THAT IS THE POINT (IMP-1b65222b8d5f). This used to name the
+  # three permit lists — two controllers — that DID replace a live NodeInstance
+  # document from the request body. All three dropped `config` from their
+  # permit lists; the endpoints still accept a config document, but it is now
+  # checked against System::NodeInstance::WRITABLE_CONFIG_KEYS and merged one
+  # key at a time through the seam.
+  #
+  # The constant stays, empty, rather than being deleted: it is what a future
+  # NodeInstance permit list would be added to, and the "carries no stale
+  # census entries" example below means re-adding a name here without a matching
+  # live hit fails just as loudly as the hit failing unlisted. Per-METHOD keys,
+  # so one of the worker API's two lists cannot hide behind the other.
+  PERMIT_NODE_INSTANCE_OPEN = {}.freeze
 
   ACCOUNTED_FOR = NON_NODE_INSTANCE
                     .merge(PERMIT_NON_NODE_INSTANCE)
@@ -181,17 +187,17 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   # attribute hash assembled across several lines and then passed to `update!`
   # is not detected. The `attrs` rule catches the single-line literal only.
   #
-  # THAT LIMIT IS LIVE, NOT HYPOTHETICAL, and it hides the MCP twin of the REST
-  # endpoints censused below. `system_update_instance` reaches
-  # `app/services/ai/tools/system_fleet_tool.rb#update_instance`, which builds
-  # `attrs = {}`, assigns `attrs[:config] = incoming` (~:2860, and again ~:2880)
-  # and calls `instance.update!(attrs)` (~:2884) — a whole-document replace on a
-  # live NodeInstance, invisible to all five rules here (`attrs[:config] =` is
-  # neither a single-line `attrs = { config:` literal nor a `<recv>.config =`).
-  # The code half-knows: it hand-preserves the `network_profile_source` stamp
-  # across the replace, which is a per-key workaround for a whole-document
-  # write. Closing it needs a sixth shape (`<hash>[:config] =` feeding a write
-  # verb); that is its own change and is deliberately not made here.
+  # THAT LIMIT IS STILL LIVE — the scan cannot see `<hash>[:config] =` feeding a
+  # write verb, and closing it needs a sixth shape that is not written here.
+  # What it used to HIDE is gone: `system_update_instance` reached
+  # `app/services/ai/tools/system_fleet_tool.rb#update_instance`, which assigned
+  # `attrs[:config] = incoming` and called `instance.update!(attrs)` — a
+  # whole-document replace on a live NodeInstance that none of the five rules
+  # could see. IMP-1b65222b8d5f converted it to an allow-list check plus
+  # `instance.merge_config!`, so the shape is no longer in the tree; the
+  # ALLOW-LIST section below is what notices if it comes back, because it
+  # asserts the writer still consults the list rather than looking for the
+  # write shape.
   VERB_RE = /
     (?<recv>(?:@?[A-Za-z_]\w*\.)*@?[A-Za-z_]\w*)?\.?
     \b(?<verb>update!|update|update_columns|update_column|assign_attributes)\(
@@ -584,6 +590,90 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
     it "reads the real tree, not an empty one" do
       expect(hits).not_to be_empty
       expect(keys).to include("app/models/concerns/system/config_document.rb#self")
+    end
+  end
+
+  # ── the allow-list (IMP-1b65222b8d5f) ───────────────────────────────────
+  #
+  # Dropping `config: {}` from the three permit lists closes the MASS
+  # ASSIGNMENT half only if something takes its place: the endpoints still
+  # accept a config document, they just accept a NAMED SET of keys now.
+  # System::NodeInstance::WRITABLE_CONFIG_KEYS is that set, and these examples
+  # check its SHAPE — that it exists, that it cannot quietly re-open the
+  # document, and that all three writers actually consult it.
+  #
+  # The forbidden half is derived from the writers themselves rather than
+  # retyped here: a hand-copied list of lane names is the same census that
+  # rots, one indirection further away.
+  describe "the writable-key allow-list" do
+    let(:allow_list) { ::System::NodeInstance::WRITABLE_CONFIG_KEYS }
+
+    # The lanes the platform writes into this same column. Read off each
+    # writer's own CONFIG_KEY so renaming a lane cannot leave this check
+    # asserting a name nothing uses any more.
+    let(:platform_lane_keys) do
+      [
+        ::System::BootLkgStateWriter::CONFIG_KEY,
+        ::System::ModuleVerifyStateWriter::CONFIG_KEY,
+        ::System::RuntimeMetricsWriter::CONFIG_KEY,
+        ::Sdwan::AgentApplyStateWriter::CONFIG_KEY,
+        ::System::NodeInstance::AGENT_HARDWARE_HINT_SOURCE_KEY
+      ]
+    end
+
+    it "is a frozen, non-empty set of unique string keys" do
+      expect(allow_list).to be_frozen
+      expect(allow_list).to be_an(Array)
+      expect(allow_list).not_to be_empty
+      expect(allow_list).to all(be_a(String))
+      expect(allow_list.uniq).to eq(allow_list)
+    end
+
+    it "admits none of the lanes the platform writes into the same document" do
+      expect(allow_list & platform_lane_keys).to be_empty
+    end
+
+    it "admits neither the provenance stamp nor the provisioning idempotency key" do
+      # `network_profile_source` records WHO declared the profile — a body that
+      # could set it would re-arm auto-classification over an operator choice.
+      # `operation_id` is ProvisioningService's find-and-reuse key; a body that
+      # could set it could make one instance impersonate another retry.
+      expect(allow_list).not_to include("network_profile_source", "operation_id")
+    end
+
+    it "refuses every key it does not name" do
+      expect(::System::NodeInstance.unwritable_config_keys("hardware_model" => "x")).to be_empty
+      expect(::System::NodeInstance.unwritable_config_keys("zz_unknown" => 1)).to eq([ "zz_unknown" ])
+      # Symbol keys arrive from internal callers and must be judged the same.
+      expect(::System::NodeInstance.unwritable_config_keys(zz_unknown: 1)).to eq([ "zz_unknown" ])
+      expect(::System::NodeInstance.unwritable_config_keys(nil)).to be_empty
+    end
+
+    # A writer that stops consulting the allow-list is exactly the regression
+    # this rule exists to catch, and it leaves no permit-list trace to scan
+    # for — the permit lists are clean either way now.
+    #
+    # The BEHAVIOURAL oracles are the primary ones (the two allow-list request
+    # specs and the MCP allow-list spec); this is the structural backstop that
+    # notices a writer losing the call without also losing a behavioural
+    # example. It matches a CALL, not the bare token, and only on lines that
+    # are not comments — a `# refused = ...unwritable_config_keys(document)`
+    # left behind after deleting the call is exactly the annotation-hiding
+    # shape this file's KNOWN LIMIT section warns about.
+    it "is consulted by all three writers" do
+      root = Pathname.new(File.expand_path("../..", __dir__))
+      call = /NodeInstance\.unwritable_config_keys\(/
+
+      %w[
+        app/controllers/api/v1/system/node_instances_controller.rb
+        app/controllers/api/v1/system/worker_api/node_instances_controller.rb
+        app/services/ai/tools/system_fleet_tool.rb
+      ].each do |rel|
+        code_lines = root.join(rel).read.lines.reject { |line| line.lstrip.start_with?("#") }
+        expect(code_lines.grep(call)).not_to be_empty,
+                                             "#{rel} no longer consults the NodeInstance config allow-list " \
+                                             "in code (a commented-out call does not count)"
+      end
     end
   end
 end

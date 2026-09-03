@@ -980,7 +980,7 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to update (account-scoped)" },
               name: { type: "string", required: false, description: "New display name for the instance" },
               description: { type: "string", required: false, description: "New free-text description for the instance" },
-              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config, except the network_profile_source provenance stamp, which survives unless the new hash explicitly sets it)" },
+              config: { type: "object", required: false, description: "Instance config keys to MERGE (per key, leaving every other key alone). Only these keys may be written: #{::System::NodeInstance::WRITABLE_CONFIG_KEYS.join(', ')}. Any other key — agent telemetry lanes, the network_profile_source provenance stamp, provisioning provenance — is refused, because the platform writes it through its own owner." },
               private_ip_address: { type: "string", required: false, description: "Private/internal IP address of the instance" },
               public_ip_address: { type: "string", required: false, description: "Public IP address of the instance" },
               vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" },
@@ -3221,22 +3221,29 @@ module Ai
         attrs = {}
         attrs[:name]               = params[:name]               if params[:name].present?
         attrs[:description]        = params[:description]        if params[:description].present?
-        if params[:config].is_a?(Hash)
-          incoming = params[:config].deep_stringify_keys
-          # `config` replaces the stored hash, but the network_profile_source
-          # stamp is PROVENANCE, not config: erasing it re-arms first-contact
-          # auto-classification, which could then overwrite an explicit
-          # operator declaration. It survives any replace that does not
-          # explicitly supply its own value.
-          existing_stamp = instance.config&.dig("network_profile_source")
-          if existing_stamp.present? && !incoming.key?("network_profile_source")
-            incoming = incoming.merge("network_profile_source" => existing_stamp)
-          end
-          attrs[:config] = incoming
+        # IMP-1b65222b8d5f — `config` is MERGED PER KEY through the seam, and
+        # only for keys System::NodeInstance::WRITABLE_CONFIG_KEYS names.
+        #
+        # This used to build the whole document into `attrs` and let
+        # `instance.update!` replace the column, which erased whatever the
+        # node's telemetry lanes had written since this call was composed. It
+        # half-knew: it hand-preserved the `network_profile_source` provenance
+        # stamp across the replace — a per-key workaround for a whole-document
+        # write. That workaround is gone because it is no longer needed twice
+        # over: the stamp is not a writable key, so no caller can carry it, and
+        # a per-key merge leaves every unnamed key alone anyway.
+        config_document = nil
+        if params[:config].is_a?(Hash) || params[:config].is_a?(ActionController::Parameters)
+          raw = params[:config]
+          raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
+          config_document = raw.deep_stringify_keys
+          refused = ::System::NodeInstance.unwritable_config_keys(config_document)
+          return error_result(::System::NodeInstance.config_refusal_message(refused)) if refused.any?
         end
         attrs[:private_ip_address] = params[:private_ip_address] if params[:private_ip_address].present?
         attrs[:public_ip_address]  = params[:public_ip_address]  if params[:public_ip_address].present?
         attrs[:vpn_ip_address]     = params[:vpn_ip_address]     if params[:vpn_ip_address].present?
+        stamp_operator_profile     = false
 
         # IMP-57e9a90598ee — the operator-declared network-profile writer.
         # Until this, the column had no production writer at all, so both OVN
@@ -3252,11 +3259,15 @@ module Ai
             )
           end
           attrs[:network_profile] = profile
-          attrs[:config] = (attrs[:config] || instance.config || {})
-                             .merge("network_profile_source" => "operator")
+          # Provenance, not config — stamped by the platform, never carried by
+          # a caller (it is not in WRITABLE_CONFIG_KEYS). Merged separately so
+          # it cannot be confused with the caller's document.
+          stamp_operator_profile = true
         end
 
         instance.update!(attrs)
+        instance.merge_config!(config_document) if config_document.present?
+        instance.merge_config!("network_profile_source" => "operator") if stamp_operator_profile
         success_result(instance: serialize_instance(instance))
       rescue ActiveRecord::RecordNotFound => e
         error_result(e.message)

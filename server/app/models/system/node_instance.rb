@@ -157,6 +157,99 @@ module System
     # check treats conservatively.
     store_accessor :config, :cloud_instance_id, :admin_user, :provider_guest_name
 
+    # Top-level `config` keys a REQUEST BODY may write (IMP-1b65222b8d5f).
+    #
+    # `config` is a SHARED jsonb document — see System::ConfigDocument. The
+    # three writers that accept one from outside (the operator REST API, the
+    # worker API, and the MCP `system_update_instance` action) used to take an
+    # ARBITRARY document and hand it to `update`, which replaced the whole
+    # column. Two things went wrong with that, and they are different defects:
+    #
+    #   * CLOBBER. The agent's telemetry lanes write into this same column
+    #     several times a minute per node. A body assembled from a page load
+    #     erased whatever landed in the interval.
+    #   * UNVALIDATED KEYS. Nothing checked what a key MEANT, so a body could
+    #     set provenance (`network_profile_source`), a provisioning idempotency
+    #     key (`operation_id`), or invent keys no reader knows about.
+    #
+    # So the outside writers name what they may write. This list is DELIBERATELY
+    # not "everything a reader looks at": a key with a platform writer belongs
+    # to that writer, and an operator who wants to change one goes through the
+    # endpoint that owns it. Every entry below is a DECLARATION — a fact the
+    # platform cannot measure for itself and has to be told.
+    #
+    #   admin_user / cloud_instance_id / provider_guest_name
+    #     the store_accessor trio. The worker API already permits
+    #     cloud_instance_id as a scalar attribute, which writes the same key;
+    #     the operator API reached all three only through the wholesale permit.
+    #   boot_mode
+    #     the instance's own boot-mode declaration. ProvisioningService stamps
+    #     the value it RESOLVED, but the instance's own key is authoritative
+    #     over the template's (#effective_boot_mode).
+    #   gpu / hardware_model / memory_mb
+    #     hardware hints. Agent detection writes these too, and defers to an
+    #     operator-set value permanently (#apply_agent_hardware_hints! only
+    #     writes a key it has not been overruled on).
+    #   provider_* (six)
+    #     the provisioning selectors the create form carries in `config`
+    #     (frontend CreateInstanceModal) before the provider adapter runs.
+    #
+    # NOT here, and each for its own reason: the four telemetry lanes
+    # (boot_lkg, module_verify_state, runtime_metrics, sdwan_state) and
+    # agent_hardware_hints, which the node reports; network_profile_source,
+    # which records WHO declared the profile (a body that could set it would
+    # re-arm auto-classification over an operator choice — the MCP action takes
+    # `network_profile` instead and stamps provenance itself); operation_id,
+    # ProvisioningService's find-and-reuse key; and every service-owned key
+    # (storage_volume, netboot, fulfillment_lease, ...) whose owner writes it
+    # through the seam.
+    #
+    # DELIBERATE LOSS: none of the three writers can DELETE a config key any
+    # more. Whole-document replacement was the only removal path they had, and
+    # it removed platform lanes as readily as caller keys — that is the defect
+    # itself, not a feature. A key that genuinely needs clearing gets an
+    # explicit seam operation (System::ConfigDocument), not a document that
+    # deletes by omission.
+    WRITABLE_CONFIG_KEYS = %w[
+      admin_user
+      boot_mode
+      cloud_instance_id
+      gpu
+      hardware_model
+      memory_mb
+      provider_availability_zone_id
+      provider_connection_id
+      provider_guest_name
+      provider_instance_type_id
+      provider_network_id
+      provider_network_subnet_id
+      provider_region_id
+    ].freeze
+
+    # The top-level keys of `document` that no request body may write. An empty
+    # result means the document is entirely allow-listed. Keys are compared as
+    # STRINGS because the column round-trips as strings and a symbol-keyed
+    # document would otherwise merge as a second, shadowing key.
+    #
+    # A nil/blank document is vacuously acceptable — "no config supplied" is
+    # not a refusal.
+    def self.unwritable_config_keys(document)
+      return [] if document.blank?
+      return [] unless document.respond_to?(:keys)
+
+      document.keys.map(&:to_s) - WRITABLE_CONFIG_KEYS
+    end
+
+    # One wording for every writer that refuses a document, so an operator who
+    # hits it on the REST API, the worker API or the MCP action reads the same
+    # list and does not have to work out which surface phrased it.
+    def self.config_refusal_message(keys)
+      "config keys are not writable through the API: #{keys.sort.join(', ')}. " \
+        "Writable keys: #{WRITABLE_CONFIG_KEYS.join(', ')}. " \
+        "Every other key in this document is written by the platform " \
+        "(agent telemetry, provisioning provenance) through its own owner."
+    end
+
     # SSH target address for the platform→node control channel
     # (SshExecutionService + internal serializer). Preference: SDWAN overlay
     # (reachable across sites) > private LAN > public.
@@ -946,12 +1039,16 @@ module System
     # that never went through ProvisioningService at all (the bare-metal claim
     # seed builds one with no config; NodeInstancesController#create builds from
     # a caller-supplied document, which MAY carry the key but is under no
-    # obligation to). All of those keep exactly the answer they had. The stamp is also not durable against a
-    # caller-supplied whole `config` document — NodeInstancesController#update
-    # permits `config: {}` and assigns it wholesale, so a PUT omitting the key
-    # drops the stamp back to the fallback. That is the pre-existing
-    # shared-document hazard System::ConfigDocument describes, not something
-    # this predicate can fix.
+    # obligation to). All of those keep exactly the answer they had — the
+    # fallback is what answers for them, and that is the whole reason it stays.
+    #
+    # A caller-supplied document can no longer drop the stamp. Until
+    # IMP-1b65222b8d5f the operator PUT permitted `config: {}` and assigned it
+    # wholesale, so a body omitting the key reverted this row to the template's
+    # answer; `boot_mode` is now in WRITABLE_CONFIG_KEYS and merged PER KEY
+    # (System::ConfigDocument), so a body that does not name it leaves the
+    # stamp exactly where it was. A body that DOES name it is an operator
+    # declaring the boot mode, which is what this key means.
     #
     # Unset still answers false through #pivot_boot?. That is NOT the "safe" default this comment
     # used to call it — it is UNRESOLVED, and its error direction is the unsafe
@@ -1200,20 +1297,22 @@ module System
     # e.g. {"memory_mb" => 257000, "hardware_model" => "PowerEdge R740"}.
     #
     # Values, not a list of key names, and that distinction is the whole
-    # guard. A key-name list says "the agent owns this key" forever, and
-    # the stamp round-trips through the ordinary operator edit path —
-    # NodeInstancesController#update permits `config: {}` wholesale and
-    # the serializer hands the operator the entire config, stamp included
-    # — so an operator correcting a hint would hand the ownership claim
-    # right back and get silently overwritten on the next heartbeat.
+    # guard. A key-name list says "the agent owns this key" forever, so
+    # an operator correcting a hint would still be overwritten on the
+    # next heartbeat unless something first retracted the claim — and
+    # nothing does. Since IMP-1b65222b8d5f no request body can even reach
+    # this key: it is deliberately OUTSIDE WRITABLE_CONFIG_KEYS, so the
+    # three outside writers refuse a document that names it, and a
+    # key-name list would have had no retraction path at all.
     #
     # Comparing values instead makes the guard self-invalidating under
     # ANY writer, including ones that have never heard of this stamp: the
     # agent may refresh a hint only while the stored value is still
     # exactly what it last wrote. The moment anything else changes it,
-    # the agent leaves it alone. (An operator who edits the hint AND
-    # forges the matching stamp entry re-arms it; that is a deliberate
-    # act, not an accident.)
+    # the agent leaves it alone. That is precisely what an operator edit
+    # now does — `hardware_model` IS writable and merges per key, leaving
+    # this stamp holding the agent's stale value, which is the mismatch
+    # #apply_agent_hardware_hints! reads as "overruled, do not rewrite".
     AGENT_HARDWARE_HINT_SOURCE_KEY = "agent_hardware_hints"
 
     # Model strings the network-profile suggester recognises, keyed by the

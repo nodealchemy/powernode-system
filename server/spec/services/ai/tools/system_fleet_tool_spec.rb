@@ -1751,10 +1751,15 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r.dig(:data, :instance)).to have_key(:running_module_digests)
     end
 
+    # `config` carries an ALLOW-LISTED key now (IMP-1b65222b8d5f). This example
+    # used to pass an invented `"label"`, which is exactly what the allow-list
+    # refuses — see the refusal arm below and
+    # spec/services/ai/tools/system_fleet_instance_config_allow_list_spec.rb.
     it "system_update_instance updates mutable metadata + IP fields" do
       r = call("system_update_instance", instance_id: running_instance.id,
                                          name: "renamed-instance", private_ip_address: "10.0.5.5",
-                                         vpn_ip_address: "100.64.0.5", config: { "label" => "edge" })
+                                         vpn_ip_address: "100.64.0.5",
+                                         config: { "hardware_model" => "raspberry_pi_5" })
       expect(r[:success]).to be true
       expect(r.dig(:data, :instance, :name)).to eq("renamed-instance")
       expect(r.dig(:data, :instance, :private_ip)).to eq("10.0.5.5")
@@ -1762,8 +1767,19 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       running_instance.reload
       expect(running_instance.name).to eq("renamed-instance")
       expect(running_instance.vpn_ip_address).to eq("100.64.0.5")
-      expect(running_instance.config["label"]).to eq("edge")
+      expect(running_instance.config["hardware_model"]).to eq("raspberry_pi_5")
       expect(running_instance.status).to eq("running") # status not touched by update_instance
+    end
+
+    it "system_update_instance refuses a config key outside the allow-list, metadata included" do
+      r = call("system_update_instance", instance_id: running_instance.id,
+                                         name: "renamed-instance", config: { "label" => "edge" })
+      expect(r[:success]).to be false
+
+      running_instance.reload
+      expect(running_instance.config).not_to have_key("label")
+      # The refusal precedes the metadata write — a rejected call changes nothing.
+      expect(running_instance.name).not_to eq("renamed-instance")
     end
 
     it "system_update_instance returns an error for an unknown instance id" do
