@@ -114,12 +114,15 @@
 // handler's fsverity_root reaches ModuleArtifact via ingest_native!. The other
 // path — ingest!, taken whenever the processor is called without native_build,
 // which includes the Gitea CI publish — reads the root hash from an OCI
-// annotation io.powernode.fsverity_root_hash that only the module-repo TEMPLATE
-// workflow emits. Neither scripts/module-build/push.sh nor the platform-modules
-// CI workflow sets it, and the latter computes the root and sends it in its
-// notify payload where the processor then discards it. Those modules therefore
-// carry a nil root hash, and enabling Fsverity would hit the fail-closed branch
-// below and refuse exactly those mounts.
+// annotation io.powernode.fsverity_root_hash. Since IMP-e2c2da99b4b5,
+// scripts/module-build/push.sh stamps that annotation on the ingest! path, and
+// the platform-CI notify (which does not go through the processor at all — it
+// POSTs to api/v1/system/module_publications) writes the root to
+// NodeModuleVersion.fsverity_root_hash and keeps it in
+// artifacts.erofs.fsverity_root, which is what the node-API serializer feeds
+// the agent. The remaining gap is any publisher that ships neither: such a
+// module carries a nil root hash, and enabling Fsverity would hit the
+// fail-closed branch below and refuse exactly those mounts.
 //
 // Note also what fs-verity is worth here even when populated: VerifyDigest
 // compares a hash that arrives over the SAME control-plane channel as
