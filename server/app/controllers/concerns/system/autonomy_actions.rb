@@ -122,7 +122,9 @@ module System
       # the same action, which pivoting it into this domain hides rather than
       # fixes.
       "architecture"      => %w[system.architecture.],
-      "storage"           => %w[system.storage_ system.restore_volume],
+      # system.volume_snapshot_ — the gated snapshot delete (IMP-e025722ef14e),
+      # and the schedule family the snapshot sensor will route to.
+      "storage"           => %w[system.storage_ system.restore_volume system.volume_snapshot_],
       # Service exposure + certificate issuance (APO-1c gated executors).
       "ingress"           => %w[system.expose_service_ system.acme_certificate_],
       # Platform-deployment scaling (APO-3b): the hub-excluded replica reconciler.

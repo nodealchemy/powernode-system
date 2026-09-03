@@ -408,6 +408,15 @@ module Ai
       POOL_CREATE_CATEGORY        = "system.instance_pool_create"
       POOL_CEILING_RAISE_CATEGORY = "system.instance_pool_ceiling_raise"
       POOL_ARCHIVE_CATEGORY       = "system.instance_pool_archive"
+      # IMP-e025722ef14e — the category system_delete_volume_snapshot gates
+      # on. Declared in System::Governance::PolicyDeclarations
+      # ::VOLUME_SNAPSHOT_OPERATOR_POLICIES in the SAME change (never a
+      # guessed category: an unmatched one resolves to require_approval with
+      # no operator-visible row). Restated here rather than read off the
+      # declarations for the class-body-evaluation reason POOL_CREATE_CATEGORY
+      # gives; that the two agree is pinned by
+      # spec/services/ai/tools/system_fleet_volume_snapshot_gating_spec.rb.
+      VOLUME_SNAPSHOT_DELETE_CATEGORY = "system.volume_snapshot_delete"
       # The columns a "raise" is measured on — the two the replenish tick
       # spends up to. min_size is not one of them: it cannot raise the ceiling.
       POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
@@ -570,28 +579,40 @@ module Ai
       declare_action "system_deploy_platform", mutating: true
       declare_action "system_destroy_instance", mutating: true
       declare_action "system_detach_volume", mutating: true
-      # APO-5 / DR-2 (IMP-4b4bed6967ed). APO-1a declaration shape: `mutating:`
-      # only, so BaseTool#gated_action? stays false, #execute still routes to
-      # #call, and the per-action permission check above still runs. The only
-      # control on these verbs today is that permission.
-      #
-      # NOT YET GATED, stated plainly rather than implied: the operator
-      # direction settles that snapshot creation may auto_approve and snapshot
-      # DELETE must be approval-gated. Arming that needs BOTH an
-      # Ai::InterventionPolicy row (System::Governance::PolicyDeclarations) and
-      # the action_category/executor_class/gate_context/on_proceed quartet
-      # BaseTool#gated_action? reads, and neither exists yet — no change in
-      # this batch adds a volume-snapshot policy row. `system_delete_volume_snapshot`
-      # therefore destroys a restore point behind `system.volumes.delete` alone.
-      # Deferred deliberately: a guessed action_category is not inert (an
-      # unmatched category resolves to the default "require_approval" policy),
-      # and the gate replays an EXECUTOR, which delete does not yet have.
-      # The restore half IS gated where it matters — the skill surface,
+      # APO-5 / DR-2 (IMP-4b4bed6967ed). Snapshot create / list / restore keep
+      # the APO-1a declaration shape (`mutating:` only, so BaseTool
+      # #gated_action? stays false and #execute routes to #call, where the
+      # per-action permission check above runs). The restore half is gated
+      # where it matters — the skill surface,
       # System::Ai::Skills::RestoreVolumeExecutor, declares requires_approval.
-      # Filed as improvement 01a06378-12ff-74c6-a8ba-430cc1b50f45.
+      #
+      # DELETE is approval-gated (IMP-e025722ef14e, closing the deferral
+      # APO-5 recorded here as improvement 01a06378-12ff-74c6-a8ba-430cc1b50f45):
+      # it destroys a restore point, and the operator direction settled that
+      # a snapshot delete must park for an operator. Same shape as the
+      # instance-pool verbs — Ai::Executors::DeferredToolCall replays THIS
+      # action as the ORIGINAL principal on approval, so #delete_volume_snapshot
+      # stays the single author of the delete. The category is declared in
+      # System::Governance::PolicyDeclarations::VOLUME_SNAPSHOT_OPERATOR_POLICIES
+      # in the same change, so the verdict is visible and tunable in the
+      # Autonomy modal rather than falling to the unmatched default. DECLARING
+      # is not the same as HAVING: that modal's pivot is ROW-driven, so the
+      # row is written by db/seeds/system_volume_snapshot_policies.rb on a
+      # first boot and by System::Governance::PolicyReconciler
+      # (`rake system:governance:reconcile`) on an install that had already
+      # booted — without a writer the delete still parks, but on the unmatched
+      # default, with nothing for an operator to see or tune. The gate
+      # context resolves the row under the account BEFORE parking, so an
+      # unknown or foreign id keeps its inline error instead of becoming an
+      # approval that could only ever fail.
       declare_action "system_snapshot_volume", mutating: true
       declare_action "system_list_volume_snapshots", mutating: false
-      declare_action "system_delete_volume_snapshot", mutating: true
+      declare_action "system_delete_volume_snapshot",
+                     mutating: true,
+                     action_category: VOLUME_SNAPSHOT_DELETE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :delete_volume_snapshot_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_restore_volume_snapshot", mutating: true
       declare_action "system_discover_modules", mutating: false
       declare_action "system_discover_peers", mutating: false
@@ -1517,12 +1538,15 @@ module Ai
             }
           },
           "system_delete_volume_snapshot" => {
-            description: "Delete a volume snapshot at the provider and drop its row. DESTROYS a restore point. Refuses when the provider cannot confirm the delete, so the row is never dropped while the provider-side snapshot may survive.",
+            description: "Delete a volume snapshot at the provider and drop its row. DESTROYS a restore point. APPROVAL-GATED (system.volume_snapshot_delete): when policy requires approval this returns {pending: true} with an approval_request_id and NOTHING is deleted until an operator approves — do not report the snapshot as deleted on that response. Refuses when the provider cannot confirm the delete, so the row is never dropped while the provider-side snapshot may survive.",
             parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to delete (account-scoped)" } }
           },
           "system_restore_volume_snapshot" => {
-            description: "Restore a volume from one of its snapshots. Read restored_in_place in the result: true means the source volume was rolled back and every write since the snapshot is DISCARDED; false means the provider copied the snapshot into a NEW volume (returned as restored_volume) and the source volume is UNCHANGED — attach the copy to finish the restore. Only a 'completed' snapshot can be restored; a provider with no restore primitive refuses.",
-            parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to restore from (account-scoped)" } }
+            description: "Restore a volume from one of its snapshots. Read restored_in_place in the result: true means the source volume was rolled back and every write since the snapshot is DISCARDED; false means the provider copied the snapshot into a NEW volume (returned as restored_volume) and the source volume is UNCHANGED. On a copy restore pass swap_into_place:true to have the platform detach the source from its instance and attach the copy at the same device (swapped:true in the result); by default both volumes are left where they are and you attach the copy yourself. Only a 'completed' snapshot can be restored; a provider with no restore primitive refuses.",
+            parameters: {
+              id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to restore from (account-scoped)" },
+              swap_into_place: { type: "boolean", required: false, description: "Copy-restore only: detach the source volume from its instance and attach the restored copy at the same device. Off by default. Ignored on an in-place restore and when the source is not attached (see swap_skipped)" }
+            }
           },
           "system_test_nfs_export" => {
             description: "Probe an NFS server + export to verify reachability before recording a ProviderVolume. Runs DNS lookup + TCP probe on 111/2049 + showmount -e. Does NOT actually mount — that's safer when called from chat.",
@@ -5521,12 +5545,36 @@ module Ai
                        provider_deleted: result.data[:provider_deleted])
       end
 
+      # The gated delete's context (IMP-e025722ef14e). The generic
+      # BaseTool#deferred_tool_call_context packs the replay and refuses an
+      # unattributed caller; this resolves the snapshot under the account
+      # FIRST, so an unknown or foreign id answers with the same inline error
+      # #delete_volume_snapshot gives rather than parking an approval an
+      # operator then has to dispose of (RecordNotFound is the raise
+      # BaseTool#run_through_autonomy_gate converts to the error envelope).
+      # source_type/source_id anchor the operation to the row — that is what
+      # arms Ai::DeferredOperation#assert_source_within_account! — and the
+      # description names the restore point the operator is being asked to
+      # destroy: row values, never caller-supplied ones.
+      def delete_volume_snapshot_gate_context(params)
+        snapshot = find_volume_snapshot(params[:id])
+        raise ActiveRecord::RecordNotFound, "Snapshot not found" unless snapshot
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::ProviderVolumeSnapshot",
+          source_id: snapshot.id,
+          description: "Delete volume snapshot '#{snapshot.name}' of volume " \
+                       "'#{snapshot.volume&.name || '(volume gone)'}' — destroys a restore point"
+        )
+      end
+
       def restore_volume_snapshot(params)
         snapshot = find_volume_snapshot(params[:id])
         return error_result("Snapshot not found") unless snapshot
 
-        result = ::System::VolumeManagementService.restore_snapshot(snapshot: snapshot)
-        return error_result(result.error) unless result.success?
+        swap = ActiveModel::Type::Boolean.new.cast(params[:swap_into_place]) == true
+        result = ::System::VolumeManagementService.restore_snapshot(snapshot: snapshot, swap_into_place: swap)
+        return restore_error_result(result) unless result.success?
 
         # restored_in_place is the load-bearing field: false means the SOURCE
         # volume was not touched and the restored data lives in restored_volume.
@@ -5535,7 +5583,31 @@ module Ai
                        restored_in_place: result.data[:restored_in_place],
                        volume: serialize_volume(result.data[:volume], full: true),
                        restored_volume: restored ? serialize_volume(restored, full: true) : nil,
-                       restored_volume_id: result.data[:restored_volume_id])
+                       restored_volume_id: result.data[:restored_volume_id],
+                       swapped: result.data[:swapped],
+                       swap_skipped: result.data[:swap_skipped],
+                       swapped_instance_id: result.data[:swapped_instance_id],
+                       swapped_device: result.data[:swapped_device])
+      end
+
+      # A restore that failed AFTER the provider made a copy (a swap that
+      # stopped at detach or attach) must not lose the copy: without its id
+      # the caller holds a billable, unattached disk it cannot find. The
+      # envelope stays an error — the caller's request was not completed —
+      # and carries what exists.
+      def restore_error_result(result)
+        copy = result.data.is_a?(Hash) ? result.data[:restored_volume] : nil
+        return error_result(result.error) unless copy
+
+        error_result(result.error).merge(
+          data: {
+            restored_in_place: result.data[:restored_in_place],
+            restored_volume: serialize_volume(copy, full: true),
+            restored_volume_id: result.data[:restored_volume_id],
+            swapped: result.data[:swapped],
+            swap_stage: result.data[:swap_stage]
+          }
+        )
       end
 
       def find_volume_snapshot(id)

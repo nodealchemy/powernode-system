@@ -19,9 +19,12 @@ require "rails_helper"
 #
 # These specs pin the four pieces that close it: a provider capability seam
 # that declines instead of faking, a service that keeps the snapshot row honest
-# against what the provider actually did, the MCP verbs (APO-1a declaration
-# shape — `mutating:` only, so the gate stays unarmed and the per-action
-# permission check in #call still runs), and the restore executor.
+# against what the provider actually did, the MCP verbs (create / list /
+# restore in the APO-1a declaration shape — `mutating:` only, so the gate
+# stays unarmed and the per-action permission check in #call still runs;
+# DELETE is approval-gated since IMP-e025722ef14e, pinned in
+# system_fleet_volume_snapshot_gating_spec.rb, so its dispatch examples below
+# stand the gate down explicitly), and the restore executor.
 RSpec.describe "Volume snapshot data protection (APO-5 / DR-2)" do
   # --------------------------------------------------------------------
   # 1. Provider seam — unavailable, NEVER fake success
@@ -381,30 +384,49 @@ RSpec.describe "Volume snapshot data protection (APO-5 / DR-2)" do
         expect(adapter).not_to have_received(:restore_volume_snapshot)
       end
 
-      it "deletes a snapshot at the provider before dropping the row" do
-        allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
-        allow(adapter).to receive(:delete_volume_snapshot).and_return({ success: true })
-        snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
-                                                        status: "completed", external_id: "s1")
+      # The delete verb is approval-gated (IMP-e025722ef14e): with no policy
+      # row it PARKS, which is pinned in system_fleet_volume_snapshot_gating
+      # _spec.rb. These two are about what the verb does at the provider once
+      # it is allowed to run, so the gate is resolved to auto_approve — the
+      # executor then replays the same action body, and the envelope below is
+      # what that replay returned.
+      describe "delete, with the gate auto-approved" do
+        let(:operator) do
+          create(:user, account: account,
+                        permissions: %w[system.nodes.read system.volumes.read system.volumes.delete])
+        end
 
-        result = call("system_delete_volume_snapshot", id: snap.id)
+        before do
+          allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+            { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+          )
+        end
 
-        expect(result[:success]).to be(true)
-        expect(adapter).to have_received(:delete_volume_snapshot).with("s1")
-        expect(System::ProviderVolumeSnapshot.find_by(id: snap.id)).to be_nil
-      end
+        it "deletes a snapshot at the provider before dropping the row" do
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:delete_volume_snapshot).and_return({ success: true })
+          snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
+                                                          status: "completed", external_id: "s1")
 
-      it "keeps the row when the provider will not confirm the delete" do
-        allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
-        allow(adapter).to receive(:delete_volume_snapshot)
-          .and_return({ success: false, error: "provider busy" })
-        snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
-                                                        status: "completed", external_id: "s1")
+          result = call("system_delete_volume_snapshot", id: snap.id)
 
-        result = call("system_delete_volume_snapshot", id: snap.id)
+          expect(result[:success]).to be(true)
+          expect(adapter).to have_received(:delete_volume_snapshot).with("s1")
+          expect(System::ProviderVolumeSnapshot.find_by(id: snap.id)).to be_nil
+        end
 
-        expect(result[:success]).to be(false)
-        expect(snap.reload.status).to eq("error")
+        it "keeps the row when the provider will not confirm the delete" do
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:delete_volume_snapshot)
+            .and_return({ success: false, error: "provider busy" })
+          snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
+                                                          status: "completed", external_id: "s1")
+
+          result = call("system_delete_volume_snapshot", id: snap.id)
+
+          expect(result[:success]).to be(false)
+          expect(snap.reload.status).to eq("error")
+        end
       end
     end
 

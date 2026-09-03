@@ -43,8 +43,45 @@ module System
       new.delete_snapshot(snapshot: snapshot)
     end
 
-    def self.restore_snapshot(snapshot:)
-      new.restore_snapshot(snapshot: snapshot)
+    def self.restore_snapshot(snapshot:, swap_into_place: false)
+      new.restore_snapshot(snapshot: snapshot, swap_into_place: swap_into_place)
+    end
+
+    # === Snapshot schedule evaluation (IMP-e025722ef14e, APO-5 remainder) ===
+    #
+    # The READ-SIDE half of scheduled project snapshots. A project
+    # (Ai::Mission) declares `snapshot_interval_hours` / `snapshot_retention
+    # _count` in its watch_policies (Ai::Mission#snapshot_policy resolves the
+    # ladder); this answers, for that project's volumes, which are DUE a
+    # snapshot and which completed snapshots exceed retention and are
+    # PRUNABLE. It mutates nothing — the BaseSensor contract — so the sensor
+    # that emits from it and the appliers that act on its answer can each be
+    # reasoned about alone. Taking the snapshot is #snapshot; pruning MUST ask
+    # the SAME approval-gated delete the MCP verb goes through
+    # (system.volume_snapshot_delete → #delete_snapshot on approval), so one
+    # operator row governs a delete whichever door it arrives through.
+    #
+    # NOTHING CALLS THIS YET, and that is a KNOWN GAP, not a finished lane: a
+    # declared schedule is evaluated only by whoever calls the service until a
+    # sensor emits from it. The sensor, its FleetAutonomyService::SENSORS
+    # registration, its DecisionEngine::SIGNAL_BINDINGS entries, its
+    # FLEET_SENSORS.md rows and the snapshot-taking applier must land in ONE
+    # change (spec/docs/fleet_sensors_signal_kinds_spec.rb equates the doc's
+    # declared kinds with the emitted set), and the sensors directory belonged
+    # to another lane in this batch — so it is tracked as improvement
+    # 01a065df-4ab7-7a04-8293-8069d805b0b1 rather than left as a comment.
+    #
+    # `due` entries:      { volume:, mission:, interval_hours:, last_snapshot_at: }
+    # `prunable` entries: { snapshot:, volume:, mission:, retention_count: }
+    #
+    # A project's volumes are the ones attached to the instances its plan
+    # provisioned — resolved through System::ProjectMetricsCollector's own
+    # walk of the plan's recorded step outputs, never a re-implementation of
+    # it (a copy shares none of the shapes that resolver has learned to read).
+    SnapshotSchedule = Struct.new(:mission, :policy, :due, :prunable, keyword_init: true)
+
+    def self.snapshot_schedule_for(mission:, now: Time.current)
+      new.snapshot_schedule_for(mission: mission, now: now)
     end
 
     def attach(volume:, instance:, device: nil)
@@ -431,7 +468,23 @@ module System
     # `restored_in_place` and `restored_volume` in the payload are what callers
     # must report on; "restored" said of the source volume is false on a :copy
     # provider.
-    def restore_snapshot(snapshot:)
+    #
+    # `swap_into_place` (IMP-e025722ef14e) is OPT-IN and applies to the :copy
+    # outcome only: after the copy is recorded, detach the source from its
+    # instance and attach the copy at the same device, so the instance runs on
+    # the restored disk. Off by default because it detaches a live disk. The
+    # result reports `swapped` (true/false) and, when nothing was swapped
+    # because there was nothing to swap out of, `swap_skipped` says why. A
+    # swap that fails MIDWAY is a FAILURE that names the stage (`swap_stage`)
+    # and the state it left — never a success with a footnote.
+    def restore_snapshot(snapshot:, swap_into_place: false)
+      # CAST AT THE SHARED BOUNDARY, not at each door. Every caller above this
+      # one carries untyped JSON — an MCP argument, a skill input, a
+      # controller param — and the string "false" is truthy in Ruby, so an
+      # uncast door would detach a live disk for a caller that said NO in the
+      # only vocabulary it has. This is the one boundary all of them pass
+      # through.
+      swap = ::ActiveModel::Type::Boolean.new.cast(swap_into_place) == true
       validate_snapshot!(snapshot)
 
       unless snapshot.can_restore?
@@ -465,15 +518,63 @@ module System
       result = adapter.restore_volume_snapshot(snapshot.external_id, volume_id: volume.external_id)
       return Runtime::Result.err(error: result[:error] || "Restore failed") unless result[:success]
 
-      return restored_in_place(volume: volume, snapshot: snapshot) if mode == :in_place
+      if mode == :in_place
+        return with_swap_skipped(restored_in_place(volume: volume, snapshot: snapshot),
+                                 swap, "restored in place — the source volume itself holds the restored data")
+      end
 
-      record_restored_copy(volume: volume, snapshot: snapshot, result: result)
+      recorded = record_restored_copy(volume: volume, snapshot: snapshot, result: result)
+      return recorded unless recorded.success?
+      return with_swap_skipped(recorded, false, nil) unless swap
+
+      swap_restored_copy_into_place(source: volume, recorded: recorded)
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
       Runtime::Result.err(error: e.message)
     rescue StandardError => e
       Rails.logger.error("[VolumeManagementService] Restore failed: #{e.class}: #{e.message}")
       Runtime::Result.err(error: e.message)
+    end
+
+    def snapshot_schedule_for(mission:, now: Time.current)
+      raise ArgumentError, "Mission required" unless mission
+      raise ArgumentError, "Mission must be an Ai::Mission" unless mission.is_a?(::Ai::Mission)
+
+      policy = mission.snapshot_policy
+      schedule = SnapshotSchedule.new(mission: mission, policy: policy, due: [], prunable: [])
+      return schedule unless policy.scheduled? || policy.prunes?
+
+      mission_volumes(mission).each do |volume|
+        # Newest first, off the eager-loaded association (one query for every
+        # volume's snapshots, not one per volume). Two kinds of row count: a
+        # COMPLETED one that reached the provider (the only restore point),
+        # and a CREATING one (in flight — the provider id lands on
+        # completion). The legacy "pending" rows APO-5 found, and a completed
+        # row with no provider id, are restore points of nothing and are not
+        # read at all; an "error" row is a failed attempt and satisfies
+        # nothing either.
+        rows = volume.snapshots.to_a
+                     .select { |r| r.creating? || (r.completed? && r.external_id.present?) }
+                     .sort_by(&:created_at).reverse
+        completed = rows.select(&:completed?)
+
+        if policy.scheduled? && snapshot_due?(rows, policy, now)
+          schedule.due << { volume: volume, mission: mission,
+                            interval_hours: policy.interval_hours,
+                            last_snapshot_at: completed.first&.created_at }
+        end
+
+        next unless policy.prunes? && completed.size > policy.retention_count
+
+        # Beyond retention, OLDEST first: the operator approving a prune sees
+        # the least valuable restore point at the top.
+        completed.drop(policy.retention_count).reverse_each do |snap|
+          schedule.prunable << { snapshot: snap, volume: volume, mission: mission,
+                                 retention_count: policy.retention_count }
+        end
+      end
+
+      schedule
     end
 
     private
@@ -551,6 +652,112 @@ module System
         error: "Restore created provider volume #{provider_volume_id} but the platform could not record it " \
                "(#{e.record.errors.full_messages.join(', ')}) — reconcile it manually"
       )
+    end
+
+    # The swap. Reuses THIS service's #detach / #attach — the same provider
+    # calls and the same row transitions every other surface makes — so the
+    # swap cannot drift from an ordinary detach-then-attach. Both halves are
+    # reported on failure with the state they left, because the two failure
+    # modes leave the instance in DIFFERENT places: a detach failure leaves it
+    # running on the source; an attach failure leaves it with NO disk at that
+    # device and two unattached volumes.
+    def swap_restored_copy_into_place(source:, recorded:)
+      copy = recorded.data[:restored_volume]
+      unless source.attached?
+        return with_swap_skipped(recorded, true,
+                                 "source volume #{source.name} is not attached — nothing to swap out of; attach #{copy.name} where it is needed")
+      end
+
+      instance = source.node_instance
+      device   = source.device_name
+      if instance.nil?
+        return with_swap_skipped(recorded, true,
+                                 "source volume #{source.name} names an instance that no longer exists — nothing to swap onto; attach #{copy.name} where it is needed")
+      end
+
+      detached = detach(volume: source)
+      unless detached.success?
+        return Runtime::Result.err(
+          error: "Restored copy #{copy.name} is recorded but the swap failed at detach " \
+                 "(#{detached.error}); #{source.name} is still attached to #{instance.name}",
+          data: recorded.data.merge(swapped: false, swap_stage: "detach")
+        )
+      end
+
+      # A PROVIDER-SIDE DETACH IS NOT A ROW RELEASE. ProviderVolume#detach! is
+      # a no-op returning false unless the row is `in-use` AND attached, and
+      # #detach drops that return value — so a source whose status drifted off
+      # "in-use" (a health check writes the provider's status verbatim without
+      # touching node_instance_id) keeps its instance and device here. This
+      # swap's own precondition is `attached?`, strictly weaker than
+      # `can_detach?`, so the release is VERIFIED rather than assumed:
+      # attaching the copy at that same device would otherwise record two
+      # volumes on one instance/device.
+      if source.reload.node_instance_id.present?
+        return Runtime::Result.err(
+          error: "Restored copy #{copy.name} is recorded but the swap failed at detach — " \
+                 "#{source.name} still holds #{instance.name}:#{device} " \
+                 "(status #{source.status}); attach #{copy.name} by hand once #{source.name} is released",
+          data: recorded.data.merge(volume: source, swapped: false, swap_stage: "detach")
+        )
+      end
+
+      attached = attach(volume: copy, instance: instance, device: device)
+      unless attached.success?
+        return Runtime::Result.err(
+          error: "Restored copy #{copy.name} is recorded but the swap failed at attach " \
+                 "(#{attached.error}); #{source.name} is now DETACHED from #{instance.name} and " \
+                 "#{copy.name} is unattached — attach one of them by hand",
+          data: recorded.data.merge(volume: source.reload, swapped: false, swap_stage: "attach")
+        )
+      end
+
+      Rails.logger.info("[VolumeManagementService] Swapped restored copy #{copy.name} into #{source.name}'s place on #{instance.name}")
+      Runtime::Result.ok(data: recorded.data.merge(volume: source.reload, restored_volume: copy.reload,
+                                                   swapped: true, swapped_instance_id: instance.id,
+                                                   swapped_device: attached.data[:device]))
+    end
+
+    # `swapped: false` on every path that did not swap, so a caller reading
+    # the key never has to distinguish "false" from "absent"; `swap_skipped`
+    # names the reason only when a swap was ASKED for.
+    def with_swap_skipped(result, requested, reason)
+      # Never launder a failure into a success with a footnote: this rebuilds
+      # its input as `ok`, so a failing result must pass straight through.
+      return result unless result.success?
+
+      data = { swapped: false }
+      data[:swap_skipped] = reason if requested
+      Runtime::Result.ok(data: result.data.merge(data))
+    end
+
+    # The volumes a project protects: those attached to the instances its
+    # provisioning plan recorded, that reached a provider and can be
+    # snapshotted. `resolvable_instance_ids` is the collector's own private
+    # walk; it is reused deliberately rather than copied (see the class-level
+    # comment) — promoting it to public API is the collector's to do.
+    def mission_volumes(mission)
+      instance_ids = ::System::ProjectMetricsCollector.new(mission: mission).send(:resolvable_instance_ids)
+      return [] if instance_ids.blank?
+
+      ::System::ProviderVolume
+        .includes(:snapshots)
+        .where(account_id: mission.account_id, node_instance_id: instance_ids)
+        .where.not(external_id: [ nil, "" ])
+        .order(:created_at)
+        .select(&:can_snapshot?)
+    end
+
+    # Due when no snapshot has ever reached the provider, or the newest one
+    # that is either COMPLETED or still IN FLIGHT is older than the interval.
+    # An in-flight row younger than the interval is not "missing" — issuing
+    # another would double the provider's work for the same restore point —
+    # while an errored attempt satisfies nothing: it is not a restore point.
+    def snapshot_due?(rows, policy, now)
+      latest = rows.first
+      return true if latest.nil?
+
+      latest.created_at <= now - policy.interval_hours.hours
     end
 
     def unique_restored_name(volume, snapshot)

@@ -1020,6 +1020,44 @@ module System
         "system.platform.scale_in" => "require_approval"
       }.freeze
 
+      # IMP-e025722ef14e (APO-5 remainder) — snapshot DELETE is approval-gated.
+      #
+      # `system_delete_volume_snapshot` destroys a restore point. APO-5
+      # (IMP-4b4bed6967ed) shipped it behind the system.volumes.delete
+      # permission ALONE and stated the deferral at its declaration, because
+      # this file belonged to another lane that batch and a guessed category
+      # is not inert: an unmatched one resolves to the default
+      # require_approval with no operator-visible row to tune. The category
+      # and the gate (SystemFleetTool's declare_action quartet on
+      # Ai::Executors::DeferredToolCall) land in ONE change, as the operator
+      # direction asked.
+      #
+      # OPERATOR (global) shape, like the instance-pool operator set: the MCP
+      # verb is called by a user or an agent, and Ai::InterventionPolicyService
+      # resolves both against scope-"global" rows ("Agent-BINDING by design").
+      # It is deliberately NOT in FLEET_AUTONOMY_POLICIES yet — that agent
+      # audience is read only by FleetAutonomyService#permitted_actions, i.e.
+      # by a sensor-routed lane, and no such lane exists until the snapshot
+      # schedule sensor lands (its retention pruning must then ask THIS
+      # category, so one operator row governs a delete whichever door it
+      # arrives through — see System::VolumeManagementService
+      # .snapshot_schedule_for, and improvement
+      # 01a065df-4ab7-7a04-8293-8069d805b0b1, which tracks that sensor).
+      # Adding the agent row before that lane exists would be a control
+      # nothing reads.
+      #
+      # BOTH WRITERS, as for the instance-pool operator set: declaring here
+      # makes the gate resolve, but the row an operator actually tunes is
+      # written by db/seeds/system_volume_snapshot_policies.rb on a first boot
+      # and by PolicyReconciler on an install that had already booted. The
+      # declared verb EQUALS the unmatched default, so the discriminating
+      # oracle for "is the control there" is the resolved RECORD, not the
+      # resolved verb — see
+      # spec/db/seeds/system_volume_snapshot_operator_policies_spec.rb.
+      VOLUME_SNAPSHOT_OPERATOR_POLICIES = {
+        "system.volume_snapshot_delete" => "require_approval" # destroys a restore point
+      }.freeze
+
       # DELIBERATELY THE GATED SUBSET, NOT ALL SEVEN. The other four runtime
       # categories have no gate site, so an operator row for them would render
       # as a working control that nothing reads —
@@ -1093,7 +1131,9 @@ module System
         { key: "instance-pool-operator", agent_key: nil,              scope: "global",
           priority: 5,  conditions: {}, policies: INSTANCE_POOL_OPERATOR_POLICIES },
         { key: "platform-scaling",   agent_key: nil,                  scope: "global",
-          priority: 5,  conditions: {}, policies: PLATFORM_SCALING_POLICIES }
+          priority: 5,  conditions: {}, policies: PLATFORM_SCALING_POLICIES },
+        { key: "volume-snapshot-operator", agent_key: nil,            scope: "global",
+          priority: 5,  conditions: {}, policies: VOLUME_SNAPSHOT_OPERATOR_POLICIES }
       ].freeze
     end
   end
