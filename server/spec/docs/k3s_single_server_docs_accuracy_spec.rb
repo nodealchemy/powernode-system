@@ -91,13 +91,6 @@ require "spec_helper"
 #           candidates;
 #         * docs/CONTAINER_RUNTIMES.md, README.md:165,257, CLAUDE.md:144,
 #           docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md:516;
-#         * agent/internal/k3sd/applier.go:41,148 — "embedded etcd" in Go
-#           comments that docs/runbooks/multi-cluster-k3s.md cites BY LINE as
-#           wrong, so fixing them means editing that runbook in the same change;
-#         * server/spec/db/seeds/seed_manifest_coverage_spec.rb:152 — a spec
-#           string describing k3s_modules.rb as "kube-apiserver,
-#           controller-manager, scheduler, etcd"; it still passes, because it
-#           describes the seed loosely rather than asserting its bytes;
 #         * agent/internal/mount/runner.go:5 and bind.go:10-14 — the package
 #           and function prose for the /var → /persist/var bind, written as if
 #           it were how a node works. softreboot.go:143-148 is the copy that
@@ -111,6 +104,13 @@ require "spec_helper"
 #       agent/internal/k3sd/doc.go WAS on this list ("kubectl + worker K3S_URL
 #       survive control-plane node failures via VIP holder promotion") and is
 #       corrected in this commit instead, pinned below.
+#       agent/internal/k3sd/applier.go:41,148 WAS on this list too — "embedded
+#       etcd" in the two Go comments that were the ORIGIN of the datastore
+#       family — and is corrected by IMP-c4fac10a72b6, pinned below, together
+#       with the two copies that went stale the moment those comments changed:
+#       the runbook sentence that cited them BY LINE as wrong, and the
+#       seed_manifest_coverage_spec.rb description string that copied
+#       "scheduler, etcd".
 #     - whether the "what is actually true" cells are true. This pins wording,
 #       not semantics; the code half pins the premises those cells rest on.
 #     - a deferral phrased outside the listed vocabulary.
@@ -273,6 +273,37 @@ RSpec.describe "K3s single-server control plane docs vs. what the code does" do
       expect(body).not_to match(/--cluster-init|--datastore-endpoint|--server|--token/)
     end
 
+    # IMP-c4fac10a72b6 — the ORIGIN of family (2). The BootstrapConfig type
+    # doc and the ServerApplier.InstallK3sServer interface doc both described
+    # the zero-value config as "embedded etcd", and every document above
+    # inherited its confidence from those two sentences. The exec-string
+    # oracle lives beside the code (agent/internal/k3sd/datastore_default_test.go
+    # runs InstallK3sServer through the recording exec and pins the bare
+    # upstream line); this half keeps the prose in step with it. Absence of
+    # "embedded etcd" is paired with presence of the datastore facts at both
+    # sites so a deleted comment cannot pass.
+    it "documents the zero-value BootstrapConfig datastore as SQLite via kine, never embedded etcd" do
+      files = Dir[File.join(ext_root, "agent/internal/k3sd/*.go")].reject { |f| f.end_with?("_test.go") }
+      expect(files).not_to be_empty, "k3sd sources not found — this check is vacuous"
+      hits = files.flat_map do |path|
+        self.class.present_sites(File.read(path), [ /embedded etcd/ ]).map { |site| "#{path.sub(ext_root, '')}:#{site}" }
+      end
+      expect(hits).to be_empty
+
+      src = self.class.read(ext_root, K3sSingleServerDocs::APPLIER)
+      type_doc = src[%r{((?:^//.*\n)+)type BootstrapConfig struct}, 1]
+      expect(type_doc).not_to be_nil, "BootstrapConfig doc comment not found"
+      expect(self.class.absent(self.class.go_prose(type_doc), [
+        /SQLite/, /kine/, /--cluster-init/, /--datastore-endpoint/, /PARKED/
+      ])).to be_empty
+      expect(self.class.present_sites(type_doc, K3sSingleServerDocs::DEFERRAL_VOCABULARY)).to be_empty
+
+      iface_doc = src[%r{((?:^\t//.*\n)+)\tInstallK3sServer\(ctx context\.Context, cfg BootstrapConfig\) error}, 1]
+      expect(iface_doc).not_to be_nil, "ServerApplier.InstallK3sServer doc comment not found"
+      expect(self.class.absent(self.class.go_prose(iface_doc), [ /SQLite/, /kine/, /--cluster-init/ ])).to be_empty
+      expect(self.class.present_sites(iface_doc, K3sSingleServerDocs::DEFERRAL_VOCABULARY)).to be_empty
+    end
+
     it "supplies --cluster-init / --datastore-endpoint nowhere in the k3sd reconcilers or the provisioner" do
       files = Dir[File.join(ext_root, "agent/internal/k3sd/*.go")].reject { |f| f.end_with?("_test.go") }
       files << File.join(ext_root, K3sSingleServerDocs::PROVISIONER)
@@ -397,6 +428,42 @@ RSpec.describe "K3s single-server control plane docs vs. what the code does" do
       body = src[/def decommission_cluster\(params\)(.*?)\n      end\n/m, 1]
       expect(body).not_to be_nil, "decommission_cluster not found"
       expect(body).to include("cluster.destroy!")
+    end
+  end
+
+  # IMP-c4fac10a72b6 — two copies that became stale the moment the Go
+  # comments were corrected: the runbook cited them BY LINE as wrong, and a
+  # sibling spec's description string copied "scheduler, etcd" for the seed.
+  # The runbook keeps its (true) datastore paragraph; only the citation of
+  # the wrong comments is replaced with a citation of the corrected one.
+  describe "the copies that cited or restated the Go comments" do
+    it "docs/runbooks/multi-cluster-k3s.md cites the corrected BootstrapConfig comment, not two wrong ones" do
+      doc = self.class.read(ext_root, "docs/runbooks/multi-cluster-k3s.md")
+      expect(self.class.present_sites(doc, [
+        /applier\.go:41\b/, /applier\.go:148\b/, /They are wrong about upstream k3s/
+      ])).to be_empty
+      expect(self.class.absent(doc, [
+        /BootstrapConfig.{0,200}SQLite via kine/,
+        /--cluster-init/
+      ])).to be_empty
+    end
+
+    it "no k3s document, seed or spec restates the control plane as 'scheduler, etcd'" do
+      globs = %w[docs/**/*.md server/db/seeds/**/*.rb server/spec/**/*.rb agent/**/*.go]
+      files = globs.flat_map { |g| Dir[File.join(ext_root, g)] }
+      expect(files.length).to be > 50, "sweep scope collapsed — this check is vacuous"
+      hits = files.flat_map do |path|
+        rel = path.sub(ext_root, "")
+        # The schema doc's k3s-server EXAMPLE manifest starts k3s with
+        # `--cluster-init` (:541), so "etcd" is true of that example. It is
+        # not the shipped module; a reader who conflates the two is misled,
+        # but the sentence itself is not the fabrication this guard pins.
+        next [] if rel.end_with?("docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md")
+        next [] if File.expand_path(path) == File.expand_path(__FILE__) # the pattern's own literal
+
+        self.class.present_sites(File.read(path), [ /scheduler, etcd/ ]).map { |site| "#{rel}:#{site}" }
+      end
+      expect(hits).to be_empty
     end
   end
 

@@ -149,7 +149,8 @@ module SeedManifestCoverage
       "missing artifact, same open question, same seed.",
 
     "k3s-server" =>
-      "k3s_modules.rb — K3s control plane (kube-apiserver, controller-manager, scheduler, etcd). Its " \
+      "k3s_modules.rb — K3s control plane (kube-apiserver, controller-manager, scheduler, SQLite " \
+      "datastore via kine). Its " \
       "header (:6-8) says it mirrors docker_runtime_module.rb / sdwan_overlay_module.rb and ships the " \
       "package install layer only. No modules/k3s-server/ tree. Same open question as docker-engine.",
 
