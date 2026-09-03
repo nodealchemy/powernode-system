@@ -137,11 +137,14 @@ RSpec.describe "fleet sensor ownership (DecisionEngine owner gating)" do
     end
   end
 
-  # HIER-P2DECL — this lane moves declarations before wave 2 seeds the agents,
-  # so the tick must keep working with the new owners ABSENT. An established
-  # install still has the moved rows on Fleet Autonomy (the reconciler skips a
-  # set whose agent is absent and never moves a row off its former owner
-  # until the new one exists), so the fallback gate finds them there.
+  # HIER-P2DECL moved declarations before wave 2 seeded the agents, so the
+  # tick had to keep working with the new owners ABSENT — and still must: an
+  # ESTABLISHED install whose first boot predates the wave-2 seeds
+  # (HIER-P2B/P2C/P2D/P2E) still has the moved rows on Fleet Autonomy until
+  # the seeds are re-run there (the reconciler skips a set whose agent is
+  # absent and never moves a row off its former owner until the new one
+  # exists), so the fallback gate finds them there. That install, not a fresh
+  # one, is what this block models.
   describe "a wave-1 owner that is not seeded yet" do
     def decide_storage_drift(suffix = "1")
       engine.decide(kind: "system.storage_assignment_drift", severity: :medium,

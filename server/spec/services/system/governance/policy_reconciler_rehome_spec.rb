@@ -402,12 +402,47 @@ RSpec.describe System::Governance::PolicyReconciler, "the Topology Designer set 
     expect(seed).to include(%(agent_type: "#{identity[:agent_type]}"))
   end
 
-  it "does not skip the topology set, while the four wave-2 manager sets do skip" do
+  # Only Fleet Autonomy and the Topology Designer exist in this context — the
+  # state of an ESTABLISHED install whose first boot predates the wave-2 seeds
+  # and has not re-run them. There, and only there, the four manager sets
+  # still skip; the example after this one is the seeded install.
+  it "does not skip the topology set; the four manager sets skip only while their agents are absent" do
     result = reconciler.reconcile!
 
     expect(result.skipped_sets).not_to include(a_string_matching(/topology-designer/))
-    expect(result.skipped_sets).to include("capacity-manager(agent absent)", "storage-manager(agent absent)",
-                                           "ingress-manager(agent absent)", "supply-chain-manager(agent absent)")
+    expect(result.skipped_sets).to include(
+      "capacity-manager(agent absent)", "storage-manager(agent absent)",
+      "ingress-manager(agent absent)", "supply-chain-manager(agent absent)"
+    )
+  end
+
+  # HIER-P2SWEEP: wave 2 (HIER-P2B/P2C/P2D/P2E) seeded the four managers, so a
+  # fully seeded install skips NO set. Every identity the declarations know is
+  # created here from AGENT_IDENTITIES (each seed's literals are pinned against
+  # that constant by its own seed spec), and each manager set reconciles onto
+  # its agent — the reconciler is the writer of those rows by convention (the
+  # Supply Chain Manager seed writes none itself).
+  it "skips nothing on a fully seeded install — the four manager sets reconcile onto their agents" do
+    d = System::Governance::PolicyDeclarations
+    managers = d::AGENT_IDENTITIES.reject { |key, _| %w[fleet-autonomy topology-designer].include?(key) }
+    agents = managers.to_h do |key, identity|
+      [ key, create(:ai_agent, account: account, name: identity[:name], agent_type: identity[:agent_type],
+                                source_key: key) ]
+    end
+
+    result = reconciler.reconcile!
+
+    expect(result.skipped_sets).to be_empty
+    {
+      "capacity-manager"     => "system.instance_replace",
+      "storage-manager"      => "system.storage_assignment_reconcile",
+      "ingress-manager"      => "system.expose_service_local",
+      "supply-chain-manager" => "system.package_repository.sync"
+    }.each do |key, category|
+      expect(result.created_categories).to include("#{key}/#{category}")
+      expect(row(agents.fetch(key), category)).to be_present
+      expect(row(fleet, category)).to be_nil
+    end
   end
 
   it "re-homes the two composer rows off Fleet Autonomy and creates the third — on this wave alone, without a warn" do

@@ -32,6 +32,23 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
     end
   end
 
+  # HIER-P2SWEEP (driver ruling): attach_storage runs DURING PROVISIONING —
+  # it is the provisioning mission's adaptive-evolution step
+  # (Ai::Provisioning::AdaptationProposerService, the `provisioning`
+  # subdomain of system_provisioning_skills_seed.rb), so it binds to the agent
+  # that owns the provisioning step, the Capacity Manager — not to the Storage
+  # Manager, which owns the volume DATA plane (restore, snapshot delete,
+  # assignment reconcile), and no longer to Fleet Autonomy, which since
+  # HIER-P2DECL declares no provisioning category at all.
+  describe "SkillBindings registration" do
+    it "binds to the Capacity Manager (the provisioning-step owner), not Fleet Autonomy or the Storage Manager" do
+      reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == described_class }
+
+      expect(reg).not_to be_nil
+      expect(reg[:agents]).to eq([ "Capacity Manager" ])
+    end
+  end
+
   describe "#execute" do
     context "with size_gb out of bounds" do
       it "rejects 0" do

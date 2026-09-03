@@ -34,10 +34,10 @@ module SystemAgentHierarchySeeds
   ].freeze
 
   # HIER-P2DECL declared the four wave-1 managers on the attach list ahead of
-  # their seeds (wave 2). Until those land, every seed run reports them as
-  # skipped — DRIFT by the P1 ruling, never an error — and attaches nothing
-  # for them. When wave 2 seeds them, move each into AGENT_SEEDS/DOMAIN_AGENTS
-  # and delete it here.
+  # their seeds; while a key sat here every seed run reported it as skipped —
+  # DRIFT by the P1 ruling, never an error — and attached nothing for it, and
+  # each wave-2 lane moved its agent into AGENT_SEEDS/DOMAIN_AGENTS above and
+  # deleted it here as its seed landed.
   #
   # EMPTY since HIER-P2E: the Supply Chain Manager was the last of the four,
   # so every declared attach-list key now has a seed. The constant stays (it

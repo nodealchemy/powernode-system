@@ -28,13 +28,16 @@ require "rails_helper"
 # WHAT IT DERIVES FROM (HIER-P2DECL): the DECLARATIONS —
 # PolicyDeclarations::POLICY_SETS × AGENT_IDENTITIES, every agent that keys an
 # agent-scoped set. That is the population PolicyReconciler writes agent-scoped
-# rows for on every boot, which since HIER-P2A is the writer of record; the
-# seed files are the first-boot copy of the same declarations, and since wave 1
-# they LAG them by design (the four managers' sets are declared before their
-# seeds exist, so the pivot has a bucket waiting the first boot after wave 2).
-# The seed scan is KEPT as the second direction: every agent a seed writes
-# agent-scoped rows for must be a declared owner, or the seed is writing rows
-# the reconciler and the tick do not know about.
+# rows for on every boot, which since HIER-P2A is the writer of record. The
+# POLICY-WRITE CONVENTION (HIER-P2SWEEP, driver ruling 2026-09-03): the
+# reconciler is the SINGLE WRITER of declared rows; an agent seed writes
+# identity, prompt, chain, trust, tool_access and skills only, and an agent set
+# counts as SEEDED when its agent's seed exists AND the reconciler declares its
+# rows. The legacy seeds that still upsert their own rows are grandfathered
+# (the reconciler short-circuits on a row the owner already has), so the seed
+# scan is KEPT as the second direction: every agent a seed writes agent-scoped
+# rows for must be a declared owner, or the seed is writing rows the reconciler
+# and the tick do not know about.
 #
 # Deriving the ORACLE, not the CONSTANT. The constant stays a literal on
 # purpose: the two sound runtime sources are both wrong here. Reading db/seeds
@@ -75,21 +78,34 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   def policy_agent_names_in(source)
     return [] unless source.include?("upsert_policies!") || source.include?("Ai::InterventionPolicy")
 
-    declared = source.scan(
-      /find_or_initialize_global_agent\(\s*name:\s*(?:"([^"]+)"|([a-z_][a-zA-Z0-9_]*))/m
-    ).map { |literal, identifier| literal || source[/^\s*#{Regexp.escape(identifier.to_s)}\s*=\s*"([^"]+)"/, 1] }
-
     resolved = source.scan(/Ai::Agent\.resolve_for\([^)]*?name:\s*"([^"]+)"/m).flatten
 
-    (declared + resolved).compact
+    (global_agent_names_in(source) + resolved).compact
   end
 
-  let(:seeded_policy_agents) do
+  # The agent IDENTITIES a seed produces — every `find_or_initialize_global_agent`
+  # call, whether or not the file writes a policy row. This is the "seeded" half
+  # of the convention: the Supply Chain Manager seed writes no row at all and
+  # still counts, because its rows are the reconciler's to write.
+  def global_agent_names_in(source)
+    source.scan(
+      /find_or_initialize_global_agent\(\s*name:\s*(?:"([^"]+)"|([a-z_][a-zA-Z0-9_]*))/m
+    ).map { |literal, identifier| literal || source[/^\s*#{Regexp.escape(identifier.to_s)}\s*=\s*"([^"]+)"/, 1] }
+  end
+
+  def seed_names(&scan)
     Dir[File.join(seed_dir, "*.rb")].sort
-      .flat_map { |file| policy_agent_names_in(File.read(file)) }
+      .flat_map { |file| scan.call(File.read(file)) }
+      .compact
       .uniq
       .sort
   end
+
+  # Agents some seed writes agent-scoped POLICY ROWS for (the legacy shape).
+  let(:seeded_policy_agents) { seed_names { |source| policy_agent_names_in(source) } }
+
+  # Agents some seed produces the IDENTITY of (the convention's "seeded").
+  let(:seeded_agents) { seed_names { |source| global_agent_names_in(source) } }
 
   # The population the reconciler writes agent-scoped rows for: the name of
   # every agent that keys an agent-scoped POLICY_SETS entry.
@@ -129,10 +145,11 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
                      "`by_agent` ships a permanently empty bucket for them: #{empty.join(', ')}"
   end
 
-  # The seeds are the first-boot copy of the same declarations and may LAG
-  # them (wave-1 managers declared, seeded in wave 2) but must never LEAD
-  # them: a seed writing agent-scoped rows for an agent no set declares is
-  # writing rows the reconciler cannot reconcile and the tick never gates by.
+  # A legacy seed that writes its own rows must never LEAD the declarations:
+  # a seed writing agent-scoped rows for an agent no set declares is writing
+  # rows the reconciler cannot reconcile and the tick never gates by. (The
+  # other direction — every declared owner has a seed — is the ratchet in the
+  # "real inputs" example below.)
   it "seeds agent-scoped policies only for declared agents" do
     undeclared = seeded_policy_agents - declared_policy_agents
 
@@ -217,27 +234,33 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
     expect(seeded_policy_agents).to include("Fleet Autonomy", "GitOps Reconciler", "SDWAN Manager")
     expect(declared_policy_agents.size).to be >= 11
     expect(declared_policy_agents).to include("Capacity Manager", "System Topology Designer")
-    # The declarations LEAD the seeds by AT MOST the wave-2 agents: the four
-    # managers and the Topology Designer, none of which had a seed writing a
-    # policy row when HIER-P2DECL declared them.
-    #
-    # HIER-P2B restated this as a MONOTONE ratchet rather than an equality.
-    # `match_array` against the full five made the example red for every lane
-    # BUT THE LAST: wave 2 is four concurrent lanes, each landing one seed, and
-    # an equality can only be true when all of them have. The invariant worth
-    # holding is that the gap never GROWS — a newly declared agent whose seed
-    # writes no row, or a seed that stops writing one, still fails here — while
-    # a landing lane shrinks it without needing to edit a literal another lane
-    # is editing at the same time. Do not add a name to this list: it is an
-    # upper bound on work known to be outstanding, not a permission slip.
-    wave_2_unseeded = [ "Capacity Manager", "Storage Manager", "Ingress Manager",
-                        "Supply Chain Manager", "System Topology Designer" ]
-    expect((declared_policy_agents - seeded_policy_agents) - wave_2_unseeded).to be_empty
 
-    # ...and the lanes that HAVE landed are asserted POSITIVELY, so shrinking
-    # the gap is pinned rather than merely permitted. Each wave-2 lane adds its
-    # own agent here when its seed lands.
-    expect(seeded_policy_agents).to include("Capacity Manager")
+    # THE RATCHET, restated for the POLICY-WRITE CONVENTION (HIER-P2SWEEP).
+    # Wave 1 declared the four managers ahead of their seeds and HIER-P2B
+    # turned this into a monotone gap that each wave-2 lane shrank; wave 2
+    # has landed all four, so the gap is EMPTY and stays empty: every agent
+    # that keys an agent-scoped set has a seed producing its identity. "Seeded"
+    # is the identity scan, NOT the policy-row scan — the reconciler writes
+    # the rows, and a seed that writes none (the Supply Chain Manager) is the
+    # convention's reference shape, not a gap. A declaration added ahead of
+    # its seed fails here until the seed lands; do not widen this by hand.
+    expect(declared_policy_agents - seeded_agents).to be_empty,
+      "declared owner(s) with no seed producing the agent: " \
+      "#{(declared_policy_agents - seeded_agents).join(', ')}"
+
+    # ...and the positive list names all twelve, so the emptiness above is a
+    # real agreement and not two scans that both returned nothing.
+    expect(seeded_agents).to include(
+      "Fleet Autonomy", "System Concierge", "Runtime Manager", "CVE Responder",
+      "Disk Image Manager", "SDWAN Manager", "System Topology Designer", "GitOps Reconciler",
+      "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
+    )
+
+    # The legacy row-writing seeds are a SUBSET of the identity scan and never
+    # grow past it (the rewrite of those seeds onto the reconciler is a filed
+    # improvement, not this spec's job); the reference shape is pinned by name.
+    expect(seeded_policy_agents - seeded_agents).to be_empty
+    expect(seeded_policy_agents).not_to include("Supply Chain Manager")
 
     # The identifier-resolution branch specifically: the GitOps Reconciler seed
     # passes a local variable to `find_or_initialize_global_agent`, so a scan
@@ -247,9 +270,12 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
     expect(gitops).to eq([ "GitOps Reconciler" ])
 
     # And the exclusion is a real derivation, not an artifact of those two
-    # seeds being unreadable: both files ARE scanned and simply contribute no
-    # agent, because neither writes a policy row.
-    expect(seeded_policy_agents).not_to include("System Concierge", "System Topology Designer")
-    expect(Dir[File.join(seed_dir, "system_{concierge,topology_designer}_agent.rb")].size).to eq(2)
+    # seeds being unreadable: both files ARE scanned, produce their identity,
+    # and contribute no POLICY agent because neither writes a policy row —
+    # the Concierge carries none, the Supply Chain Manager leaves its seven to
+    # the reconciler.
+    expect(seeded_policy_agents).not_to include("System Concierge", "Supply Chain Manager")
+    expect(seeded_agents).to include("System Concierge", "Supply Chain Manager")
+    expect(Dir[File.join(seed_dir, "system_{concierge,supply_chain_manager}_agent.rb")].size).to eq(2)
   end
 end

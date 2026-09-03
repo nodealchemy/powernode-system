@@ -81,6 +81,7 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # visible here.
   SEEDS = %w[
     fleet_autonomy_agent
+    system_runtime_manager_agent
     system_cve_responder_agent
     system_sdwan_manager_agent
     system_gitops_reconciler_agent
@@ -88,6 +89,7 @@ RSpec.describe "routed lane / intervention policy coherence" do
     system_topology_designer_agent
     system_capacity_manager_agent
     system_storage_manager_agent
+    system_ingress_manager_agent
     system_supply_chain_manager_agent
     system_instance_pool_policies
     system_provisioning_intervention_policies
@@ -95,29 +97,13 @@ RSpec.describe "routed lane / intervention policy coherence" do
 
   # HIER-P2DECL: the boot that this spec models is seeds + PolicyReconciler —
   # the reconciler is what writes a declared set onto its agent on every boot
-  # (and re-homes the rows wave 1 moved off Fleet Autonomy), and the four
-  # wave-1 managers had NO seed when it was written. So a declared identity no
-  # seed produces is stubbed as the bare agent its lane will seed, and the
-  # reconciler runs once, exactly as it does at boot. Only `ingress-manager`
-  # is still stubbed; the other three now load their real seed above. Without the stubs the
-  # moved sensor-routed lanes (instance_replace, storage_assignment_reconcile,
-  # package_repository.sync, project.adapt / cost_control) have a row NOWHERE
-  # on a fresh install seeded between the waves — the tick's fallback gate
-  # finds nothing on Fleet Autonomy either, because its seed no longer
-  # declares them. An ESTABLISHED install still holds them on Fleet Autonomy;
-  # the fresh-install gap is wave 2's to close, and this spec must not hide
-  # it, so it is asserted below by name rather than papered over.
-  # HIER-P2C landed the Storage Manager seed, so it is loaded above like every
-  # other owner agent and is NOT stubbed here: the stub creates an
-  # ACCOUNT-scoped row, and that is exactly the row
-  # `AgentSetupHelpers.find_or_initialize_global_agent` raises
-  # CanonicalAgentConflict on. Each remaining identity is its own lane's to
-  # remove when that seed lands.
-  # HIER-P2E removed supply-chain-manager for the same reason: its seed is in
-  # SEEDS above, so the GLOBAL canonical exists and stubbing an account row
-  # would both mask the seed and collide with the canonical guard.
-  # HIER-P2B removed capacity-manager on the same rule.
-  WAVE_2_STUBS = %w[ingress-manager].freeze
+  # (and re-homes the rows wave 1 moved off Fleet Autonomy). While the four
+  # wave-1 managers had no seed, each was stubbed here as a bare account row;
+  # wave 2 (HIER-P2B/P2C/P2D/P2E) seeded all four as GLOBAL canonicals, so
+  # every owner identity now comes from its real seed in SEEDS above and
+  # NOTHING is stubbed — a stub would both mask the seed and collide with the
+  # `AgentSetupHelpers.find_or_initialize_global_agent` CanonicalAgentConflict
+  # guard (HIER-P2SWEEP removed the last one, ingress-manager).
 
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
   # (falling back to Account.first), then requires an admin user and an
@@ -130,17 +116,7 @@ RSpec.describe "routed lane / intervention policy coherence" do
     end
   end
 
-  def stub_wave_2_agents!
-    WAVE_2_STUBS.each do |key|
-      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(key)
-      next if ::Ai::Agent.resolve_for(account.id, name: identity[:name], agent_type: identity[:agent_type])
-
-      create(:ai_agent, account: account, name: identity[:name], agent_type: identity[:agent_type], source_key: key)
-    end
-  end
-
   def boot!
-    stub_wave_2_agents!
     System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
   end
 
@@ -228,47 +204,27 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Fleet Autonomy")).not_to include("project.adapt", "system.instance_replace")
   end
 
-  # The sensor-routed lanes HIER-P2DECL moved off Fleet Autonomy onto a wave-1
-  # owner, and the identity that must exist for each to have a row at all.
-  GAP_LANES = {
-    "system.instance_replace" => "capacity-manager",
-    "system.storage_assignment_reconcile" => "storage-manager",
-    "system.package_repository.sync" => "supply-chain-manager"
-  }.freeze
+  # HIER-P2SWEEP: the fresh-install gap wave 1 opened (a moved sensor-routed
+  # lane with a row NOWHERE while its owner had no seed) is CLOSED for every
+  # owner — the four "closes the fresh-install gap" examples below pin each
+  # lane by name from the same boot model, and this one pins the whole: a
+  # fresh install seeded from SEEDS skips NO declared set.
+  it "skips no declared set on a fresh install — every owner the declarations name is seeded" do
+    result = System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
 
-  def owner_agent_seeded?(key)
-    identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(key)
-    ::Ai::Agent.resolve_for(account.id, name: identity[:name], agent_type: identity[:agent_type]).present?
+    expect(result.skipped_sets).to be_empty,
+      "PolicyReconciler skipped #{result.skipped_sets.inspect} on a fresh install seeded from SEEDS"
   end
 
-  # THE FRESH-INSTALL GAP, stated by name so it cannot be forgotten: while a
-  # wave-1 owner's agent is absent (seeds only, no stubs), its moved
-  # sensor-routed lane has no row on any agent — the Fleet Autonomy seed no
-  # longer declares it and its owner does not exist to reconcile onto. An
-  # established install is unaffected (its rows stay on Fleet Autonomy, where
-  # the tick's fallback gate reads them — sensor_owner_gating_spec). Each
-  # wave-2 seed closes its OWN lane, and the set asserted here is DERIVED from
-  # which owners the seeds actually produced, so a landing lane leaves it
-  # automatically (HIER-P2C closed storage — the positive assertion is the
-  # example after this one). When every GAP_LANES owner is seeded this example
-  # asserts nothing and should be deleted.
-  it "leaves the still-unseeded sensor-routed lanes rowless on a fresh install seeded between the waves" do
-    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  # project.* used to be the exception to that gap (their seed wrote them onto
+  # Fleet Autonomy, so the fallback gate found them). HIER-P2B re-pointed that
+  # seed at the owner, so they are on the Capacity Manager now — and the
+  # "no Fleet Autonomy duplicate" example below pins that the owner's rows are
+  # not shadowed by a leftover copy on the former owner.
+  it "writes the project.* provisioning rows onto the Capacity Manager, none onto Fleet Autonomy" do
+    boot!
 
-    # Derived, never a hand-kept list: a lane is in the gap exactly while its
-    # OWNER AGENT does not exist after the seeds ran. So a lane leaves this
-    # assertion the moment its seed is added to SEEDS above, and no lane can
-    # be silenced by editing a literal.
-    rowless = GAP_LANES.reject { |_category, key| owner_agent_seeded?(key) }
-    rowless.each do |category, _key|
-      expect(::Ai::InterventionPolicy.where(account: account, action_category: category)).to be_empty,
-        "#{category} has a row on a fresh install although #{owner_name_for(category)} was never seeded"
-    end
-    # project.* used to be the exception (their seed wrote them onto Fleet
-    # Autonomy, so the fallback gate found them). HIER-P2B re-pointed that
-    # seed at the owner, so they are on the Capacity Manager now — and the
-    # example below pins that the owner's rows are not shadowed by a leftover
-    # copy on the former owner.
+    expect(policies_for("Capacity Manager")).to include("project.adapt", "project.cost_control")
     expect(policies_for("Fleet Autonomy")).not_to include("project.adapt")
   end
 
@@ -352,6 +308,22 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Supply Chain Manager")).to include("system.package_repository.sync")
     expect(::Ai::InterventionPolicy.where(account: account,
                                           action_category: "system.package_repository.sync")).not_to be_empty
+  end
+
+  # HIER-P2D / HIER-P2SWEEP: the ingress owner, from the same boot model —
+  # seeds plus the reconciler, no stub. Nothing sensor-routed lands here; the
+  # five rows gate the expose / ACME executors and the backend-set door, so
+  # the assertion is that the GLOBAL canonical exists and carries them.
+  it "seeds the Ingress Manager as the global canonical and reconciles its five gates (seed, no stub)" do
+    ingress = ::Ai::Agent.resolve_for(account.id, name: "Ingress Manager", agent_type: "monitor")
+    expect(ingress).to be_present, "the Ingress Manager seed did not run"
+    expect(ingress.account_id).to be_nil, "the Ingress Manager must be the GLOBAL canonical, not a stub"
+
+    boot!
+
+    expect(owner_name_for("system.expose_service_local")).to eq("Ingress Manager")
+    expect(policies_for("Ingress Manager"))
+      .to include(*System::Governance::PolicyDeclarations::INGRESS_MANAGER_POLICIES.keys)
   end
 
   # The gate's own view, not ours — proves the routed set is reachable through

@@ -182,8 +182,8 @@ end
 # is split into Capacity / Storage / Ingress / Supply Chain managers, the
 # System Topology Designer takes the topology set, and every operator-only set
 # is paired with the agent set that carries the same keys. Declarations only —
-# the agents themselves are seeded in wave 2, so every example here is about
-# the constants, never about a row.
+# the agents themselves were seeded in wave 2 (HIER-P2B/P2C/P2D/P2E), and
+# every example here is about the constants, never about a row.
 RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2DECL)" do
   let(:d) { described_class }
 

@@ -157,9 +157,10 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     }
   end
 
-  # nil = no seed file yet (wave 2); the FLEET_SENSORS.md bullet is then keyed
-  # on the agent name and "wave 2" rather than on a seed path, so the doc
-  # cannot name a file that is not on disk.
+  # Every agent has a seed file since wave 2 (HIER-P2B/P2C/P2D/P2E), so every
+  # FLEET_SENSORS.md bullet is keyed on its seed path — a path the example
+  # below also requires to exist on disk, so the doc cannot name a file that
+  # is not there.
   let(:agent_seed_files) do
     {
       "Fleet Autonomy"           => "fleet_autonomy_agent.rb",
@@ -336,14 +337,12 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   it "FLEET_SENSORS.md's per-agent seed bullets match the PolicyDeclarations sets" do
     agent_policy_counts.each do |agent, actual|
       file = agent_seed_files.fetch(agent)
-      pattern = if file
-        /`db\/seeds\/#{Regexp.escape(file)}` — \*\*(\d+) policies\*\*/
-      else
-        /- \*\*#{Regexp.escape(agent)}\*\* \(wave 2[^\n]*?\*\*(\d+) policies\*\*/
-      end
+      expect(File).to exist(File.join(ext_root, "server", "db", "seeds", file)),
+        "#{agent}'s seed #{file} is not on disk"
+      pattern = /`db\/seeds\/#{Regexp.escape(file)}` — \*\*(\d+) policies\*\*/
       stated = doc_number(sensors_doc_text, pattern, "#{agent} seed bullet count", sensors_doc_path)
       expect(stated).to eq(actual),
-        "FLEET_SENSORS.md's bullet for #{file || agent} claims #{stated} policies; the declared set has #{actual}"
+        "FLEET_SENSORS.md's bullet for #{file} claims #{stated} policies; the declared set has #{actual}"
     end
   end
 

@@ -7,6 +7,22 @@ require "rails_helper"
 #   - the reasoning-heavy agents request a reasoning-tier model via
 #     model_requirements (NOT a hardcoded model id), while the high-frequency
 #     monitors stay on the default tier (no reasoning pin, no hardcoded id).
+#
+# All TWELVE system agents since wave 2 (HIER-P2B/P2C/P2D/P2E seeded the four
+# operations managers HIER-P2DECL declared). The lists below are the roster in
+# SYSTEM_SEED_FILES order; the Disk Image Manager stays STANDARD (P2F ruling: a
+# 5-minute monitor), the four managers are REASONING (cost-bearing / restore /
+# exposure / provenance decisions).
+#
+# POLICY-WRITE CONVENTION (HIER-P2SWEEP, driver ruling 2026-09-03): an agent
+# seed writes identity, prompt, approval chain, trust, tool_access and skills
+# ONLY — exactly what this file pins. Declared intervention-policy rows are
+# System::Governance::PolicyReconciler's to write (POLICY_SETS on every boot);
+# the Supply Chain Manager seed is the reference shape and the legacy seeds
+# that still upsert their own rows are grandfathered pending a filed rewrite,
+# never a pattern to copy. This spec therefore asserts nothing about policy
+# rows — routed_lane_policy_coherence_spec and policy_reconciler_rehome_spec
+# do, against the reconciler.
 RSpec.describe "system agents persona + model tier" do
   AGENT_SEED_FILES = %w[
     fleet_autonomy_agent.rb
@@ -17,19 +33,26 @@ RSpec.describe "system agents persona + model tier" do
     system_sdwan_manager_agent.rb
     system_topology_designer_agent.rb
     system_gitops_reconciler_agent.rb
+    system_capacity_manager_agent.rb
+    system_storage_manager_agent.rb
+    system_ingress_manager_agent.rb
+    system_supply_chain_manager_agent.rb
   ].freeze
 
   ALL_AGENTS = [
     "Fleet Autonomy", "System Concierge", "Runtime Manager", "CVE Responder",
     "Disk Image Manager", "SDWAN Manager", "System Topology Designer",
-    "GitOps Reconciler"
+    "GitOps Reconciler", "Capacity Manager", "Storage Manager", "Ingress Manager",
+    "Supply Chain Manager"
   ].freeze
 
   # Agents that should request a reasoning-tier model (security / operator /
-  # topology / declarative-diff reasoning).
+  # topology / declarative-diff / capacity / restore / exposure / provenance
+  # reasoning).
   REASONING_AGENTS = [
     "CVE Responder", "SDWAN Manager", "System Concierge",
-    "System Topology Designer", "GitOps Reconciler"
+    "System Topology Designer", "GitOps Reconciler",
+    "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
   ].freeze
 
   # High-frequency monitors that stay on the default tier (cost-sensitive ticks).
@@ -52,7 +75,9 @@ RSpec.describe "system agents persona + model tier" do
     Ai::Agent.global.find_by!(name: name)
   end
 
-  it "seeds all 8 system agents as global (account_id nil)" do
+  it "seeds all 12 system agents as global (account_id nil)" do
+    expect(ALL_AGENTS.size).to eq(12)
+    expect(REASONING_AGENTS + STANDARD_AGENTS).to match_array(ALL_AGENTS)
     expect(Ai::Agent.global.where(name: ALL_AGENTS).count).to eq(ALL_AGENTS.size)
     expect(Ai::Agent.where(account: account, name: ALL_AGENTS)).to be_empty
   end
