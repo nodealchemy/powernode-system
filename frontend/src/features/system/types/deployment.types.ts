@@ -17,8 +17,18 @@ export interface DeploymentSummary {
   name: string;
   service_role: ServiceRole;
   target_replicas: number;
+  /**
+   * Active replicas MINUS cordoned ones — the same number
+   * System::Platform::ReplicaReconciler#live_scope converges toward
+   * (IMP-3d4058389afa). A cordoned replica is running but unschedulable;
+   * it is listed under cordoned_count instead, so actual + cordoned can
+   * legitimately exceed target_replicas once the reconciler has provisioned
+   * the replacement.
+   */
   actual_replicas: number;
   actual_by_status: Record<string, number>;
+  /** Active replicas an operator cordoned (system_cordon_instance). */
+  cordoned_count: number;
   public_dns_hostname: string | null;
   satellite_extension_slug: string | null;
   node_template: {

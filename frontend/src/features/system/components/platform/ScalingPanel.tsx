@@ -34,6 +34,12 @@ import type {
  * status: a refusal, a clamped pass, or a scale-in the intervention policy
  * declined to auto-execute all land as a warning naming what happened.
  *
+ * IMP-3d4058389afa: `actual_replicas` is the reconciler's live count — active
+ * replicas MINUS cordoned ones — and the cordoned replicas are rendered as a
+ * labelled badge beside it (`cordoned_count`). Before this the panel counted
+ * cordoned rows too, so a cordon plus its reconciled replacement read as
+ * target+1 with nothing saying why.
+ *
  * Plan reference: Decentralized Federation §G + §I + P7.3.
  */
 
@@ -319,9 +325,10 @@ const DeploymentRow: React.FC<DeploymentRowProps> = ({
             </div>
           )}
           <span className="text-theme-tertiary">target</span>
-          <span className={`font-mono tabular-nums ${driftClass}`} title="actual replicas">
+          <span className={`font-mono tabular-nums ${driftClass}`} title="Live replicas: active, cordoned excluded — the number the reconciler converges toward">
             ({deployment.actual_replicas} live)
           </span>
+          {deployment.cordoned_count > 0 && <CordonedBadge count={deployment.cordoned_count} />}
         </div>
       </td>
       <td className="px-4 py-3 text-right">
@@ -369,6 +376,23 @@ const ROLE_LABELS: Record<ServiceRole, string> = {
   'reverse-proxy': 'reverse-proxy',
   'satellite-runtime': 'satellite',
 };
+
+/**
+ * Cordoned replicas: running but unschedulable (system_cordon_instance).
+ * They are OUTSIDE the live count — the reconciler provisions their
+ * replacements — and are the first scale-in victims, so live + cordoned can
+ * legitimately sit above target. Rendered only when there is something to
+ * say; the badge is what tells an operator the excess is a cordon, not drift.
+ */
+const CordonedBadge: React.FC<{ count: number }> = ({ count }) => (
+  <span
+    data-testid="cordoned-badge"
+    className="px-1.5 py-0.5 rounded text-xs font-mono tabular-nums bg-theme-warning-bg text-theme-warning-fg border border-theme-warning-border"
+    title="Cordoned replicas: still running but unschedulable. Not counted as live — the reconciler provisions their replacements — and first out on scale-in. Uncordon or terminate them to clear this."
+  >
+    +{count} cordoned
+  </span>
+);
 
 const RoleBadge: React.FC<{ role: ServiceRole }> = ({ role }) => (
   <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">

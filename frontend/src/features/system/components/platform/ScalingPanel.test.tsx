@@ -44,6 +44,7 @@ const DEPLOY_API: DeploymentSummary = {
   target_replicas: 2,
   actual_replicas: 2,
   actual_by_status: { running: 2 },
+  cordoned_count: 0,
   public_dns_hostname: null,
   satellite_extension_slug: null,
   node_template: { id: 'tpl-1', name: 'Hub API Template', slug: 'hub-api' },
@@ -60,6 +61,7 @@ const DEPLOY_WORKER: DeploymentSummary = {
   target_replicas: 1,
   actual_replicas: 3, // intentional drift (over-provisioned)
   actual_by_status: { running: 3 },
+  cordoned_count: 0,
   public_dns_hostname: null,
   satellite_extension_slug: null,
   node_template: null,
@@ -76,9 +78,30 @@ const DEPLOY_ZERO_REPLICAS: DeploymentSummary = {
   target_replicas: 0,
   actual_replicas: 0,
   actual_by_status: {},
+  cordoned_count: 0,
   public_dns_hostname: null,
   satellite_extension_slug: null,
   node_template: null,
+  virtual_ip: null,
+  metadata: {},
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+// IMP-3d4058389afa: target 2, two live, one cordoned. The cordoned replica is
+// OUTSIDE actual_replicas (the reconciler's live count) and reported beside
+// it, so the row must read converged (2 live) with a labelled +1.
+const DEPLOY_CORDONED: DeploymentSummary = {
+  id: 'dep-cordoned-1',
+  name: 'powernode-hub-api-cordoned',
+  service_role: 'api',
+  target_replicas: 2,
+  actual_replicas: 2,
+  actual_by_status: { running: 3 },
+  cordoned_count: 1,
+  public_dns_hostname: null,
+  satellite_extension_slug: null,
+  node_template: { id: 'tpl-1', name: 'Hub API Template', slug: 'hub-api' },
   virtual_ip: null,
   metadata: {},
   created_at: '2026-01-01T00:00:00Z',
@@ -262,6 +285,29 @@ describe('ScalingPanel', () => {
     await waitFor(() => expect(screen.getByText('powernode-worker')).toBeInTheDocument());
     // DEPLOY_WORKER: actual_replicas = 3
     expect(screen.getByText('(3 live)')).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cordoned badge (IMP-3d4058389afa)
+  // ---------------------------------------------------------------------------
+
+  it('renders a labelled cordoned badge beside the live count when replicas are cordoned', async () => {
+    mockGet.mockResolvedValue(listEnvelope([DEPLOY_CORDONED]));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('powernode-hub-api-cordoned')).toBeInTheDocument());
+    // The live count is the reconciler's number — the cordoned replica is not in it.
+    expect(screen.getByText('(2 live)')).toBeInTheDocument();
+    const badge = screen.getByTestId('cordoned-badge');
+    expect(badge).toHaveTextContent('+1 cordoned');
+    expect(badge).toHaveAttribute('title', expect.stringMatching(/cordoned/i));
+  });
+
+  it('renders no cordoned badge when cordoned_count is 0', async () => {
+    mockGet.mockResolvedValue(listEnvelope([DEPLOY_API, DEPLOY_WORKER]));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('powernode-hub-api')).toBeInTheDocument());
+    expect(screen.queryByTestId('cordoned-badge')).not.toBeInTheDocument();
+    expect(screen.queryByText(/cordoned/)).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
