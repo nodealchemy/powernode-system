@@ -188,9 +188,10 @@ platform.system_set_default_disk_image_publication({
 })
 ```
 
-For the agent-driven path (sensor `system.disk_image_regression_reported`
-→ approval-gated rollback), see [`DISK_IMAGE_MANAGER_AGENT.md` →
-Rollback / Revert Workflow](../DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow).
+For the agent-driven path (the Disk Image Manager's `system-disk-image-rollback`
+skill, gated on `system.disk_image_publication_rollback` — the sensor that would
+emit `system.disk_image_regression_reported` is still unwired), see
+[`DISK_IMAGE_MANAGER_AGENT.md` → Rollback / Revert Workflow](../DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow).
 
 ## Phase 6 — Retention tuning ✅
 

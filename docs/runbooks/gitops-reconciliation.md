@@ -17,7 +17,14 @@ diff is wanted; the `system.gitops_apply_proposal` gate says an agent may write
 it — `system_gitops_apply_proposal` is approval-gated under that category
 (`require_approval` by default, IMP-0b4f18ae4384), so an agent's call answers
 `pending: true` with a SECOND approval request, and `ApplyService` runs only
-when that is approved (or the row is tuned to `auto_approve`).
+when that is approved (or the row is tuned to `auto_approve`). The GitOps
+Reconciler's own skills — `system-gitops-sync-repository`,
+`system-gitops-apply-proposal`, `system-gitops-register-repository` (HIER-P2F)
+— resolve the same three `system.gitops_*` rows. For APPLY and REGISTER that is
+also the MCP verb's control (both `declare_action`s carry the category). SYNC is
+the exception: `system_gitops_sync_repository` is declared `mutating:`-only on
+purpose, so tightening `system.gitops_sync_repository` off `auto_approve`
+constrains the SKILL only — the MCP verb consults no policy row.
 **Reconciler-driven auto-apply is wired** — on an `auto_apply` repo the
 every-5-min reconciler auto-approves + applies non-destructive diffs without an
 operator step (see "Step 4 — Apply"). Two carve-outs remain v1-conservative:
@@ -79,8 +86,9 @@ sequenceDiagram
 
 You can mix — most teams declare the steady-state in `fleet.yaml` and
 let operators make one-off tactical changes via UI. The `GitopsDriftSensor`
-(registered in the Fleet Autonomy sensor set) flags the mismatch so
-operators can either commit it back to git or revert.
+(registered in the Fleet Autonomy sensor set, gated under the GitOps
+Reconciler's `system.gitops_drift_remediate` row since HIER-P2A) flags the
+mismatch so operators can either commit it back to git or revert.
 
 ## Authoring `fleet.yaml`
 
@@ -263,9 +271,9 @@ curl http://localhost:3000/api/v1/system/gitops_sync_runs/<run-id> \
 ```
 
 Subsequent reconcile ticks verify no drift. The `GitopsDriftSensor`
-(registered in the Fleet Autonomy sensor set) emits a
-`system.gitops.drift_detected` signal per repo with unresolved drift, so
-observability tooling can surface divergence.
+(registered in the Fleet Autonomy sensor set, gated under the GitOps
+Reconciler since HIER-P2A) emits a `system.gitops.drift_detected` signal per
+repo with unresolved drift, so observability tooling can surface divergence.
 
 ## DR scenarios
 
