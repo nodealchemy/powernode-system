@@ -15,8 +15,9 @@
 > fleet change, and that a module upgrade is fleet-atomic once applied).
 >
 > **Sets you up for:** [Tutorial 11 — Multi-region federation](./11-federation.md) —
-> federation peers can be declared in `fleet.yaml` alongside everything
-> else.
+> federation peers are enrolled with the `system_sdwan_*` actions on nodes
+> the pools declared here materialise; `fleet.yaml` itself has no `sdwan`
+> kind.
 
 ## What you're building
 
@@ -27,7 +28,7 @@ flowchart TD
     Repo -- "5min cron OR<br/>manual sync trigger" --> RS[RepoSyncService]
     RS --> DSP[DesiredStateParser]
     DSP --> DE[DiffEngine]
-    DE -- "vs current platform state" --> Diff[Diff payload:<br/>add / update / delete<br/>across templates / nodes / sdwan]
+    DE -- "vs current platform state" --> Diff[Diff payload:<br/>add / update / delete<br/>across templates / modules /<br/>assignments / pools / platforms]
     Diff --> AR[ApprovalRequest<br/>per Fleet Autonomy policy]
     AR --> Op2{Operator<br/>approves?}
     Op2 -->|yes| App[ApplyService<br/>walks diff in dependency order]
@@ -45,9 +46,18 @@ PR review as the gating mechanism for fleet changes.
 
 **`fleet.yaml`** declares the desired state for an Account:
 
-- **Templates** — which modules compose each template
-- **Nodes** — what should exist, in which region, with which template
-- **SDWAN networks + peers + VIPs** — the overlay topology
+- **Templates** — the node templates, each bound to a node platform
+- **Modules** — the modules, with their variety and priority
+- **Assignments** — which modules compose each template
+- **Pools** — what should exist: warm instance pools bound to a template,
+  with sizes, lifecycle class and status (this is the *only* way
+  `fleet.yaml` says "N nodes of template X" — there is no `node` kind)
+- **Platforms** — `PlatformDeployment` replica targets per service role
+- **Provider configs** — informational only; credentials are never rotated
+  via GitOps
+
+Nodes and the SDWAN overlay (networks, peers, VIPs) are **not** in this
+file — see the schema notes under Step 1.
 
 The reconciler walks this and computes the delta against current
 platform state. Each delta becomes an `Ai::AgentProposal` (with
@@ -66,13 +76,13 @@ standard proposal review queue, not a per-action autonomy policy.
 | Compute diff against current state | Shipped (`DiffEngine`) |
 | Reconciler opens proposals per change | Shipped (`Reconciler`) |
 | MCP actions: list_repositories / get_repository / register / sync / get_sync_run / get_drift_report / apply_proposal | Shipped (gap remediation slices closed; the two reads under IMP-f07be27ba0b0) |
-| Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` kinds via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
+| Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` / `pool` / `platform` create+update via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
 | Reconciler-driven auto-apply (`repository.auto_apply`) | Shipped — auto-approves + applies non-destructive (create / update) diffs, gated by the kill-switch + per-tick cap; destroys always stay manual |
 | Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `system.gitops.drift_detected`) |
 | Operator UI for diff review + approval | Partial — generic `ApprovalRequest` UI works; GitOps-specific drill-in panel forthcoming |
 
-GitOps applies the **create/update** path for the core kinds (`template`,
-`module`, `assignment`) — either once an operator approves the proposal, or
+GitOps applies the **create/update** path for `template`, `module`,
+`assignment`, `pool` and `platform` — either once an operator approves the proposal, or
 automatically on an `auto_apply` repo (see "Auto-apply"). The
 **conservative v1 gap** is deliberate: resource **destroy** and
 `provider_config` changes are never auto-applied — review the drift and
@@ -107,90 +117,137 @@ imperative commands and hopes the snapshot reflects intent."
 
 ## Step 1 — Author `fleet.yaml`
 
+`fleet.yaml` is a mapping of the resource sections GitOps knows —
+`templates`, `modules`, `assignments`, `pools`, `platforms` and the
+informational `provider_configs` — plus an optional `fleet:` defaults block.
+Every resource section is itself a mapping of **name → attributes**: a
+list-shaped `templates`, `modules`, `assignments`, `pools` or `platforms`
+section is refused by the validator (`provider_configs` is the one section
+with no shape rule — `DesiredStateParser#parse_section` re-keys a list there
+by each item's `name`). The file below is the one the rest of this tutorial
+syncs: two templates, three modules, the composition of each template, and
+one warm instance pool.
+
 ```yaml
 # fleet.yaml
-version: 1
-account: "<account-id>"
-
 templates:
-  - name: edge-base
-    node_platform: ubuntu-24.04-amd64
-    architecture: amd64
-    modules:
-      - system-base
-      - security-hardening
-      - chrony
+  edge-base:
+    name: edge-base
+    description: Hardened Ubuntu edge baseline
+    node_platform: ubuntu-24.04-amd64-uefi
+  edge-cdn:
+    name: edge-cdn
+    description: Edge CDN node — the edge-base baseline plus nginx
+    node_platform: ubuntu-24.04-amd64-uefi
 
-  - name: edge-cdn
-    extends: edge-base
-    modules:
-      - nginx
-    metadata:
-      purpose: "edge-cdn"
+modules:
+  system-base:
+    name: system-base
+    variety: subscription
+    priority: 10
+    config: {}
+  security-hardening:
+    name: security-hardening
+    variety: config
+    priority: 20
+    config: {}
+  nginx:
+    name: nginx
+    variety: config
+    priority: 50
+    config:
+      worker_processes: 4
 
-nodes:
-  - hostname: edge-tokyo-01
+assignments:
+  edge-base:system-base:
+    template: edge-base
+    module: system-base
+  edge-base:security-hardening:
+    template: edge-base
+    module: security-hardening
+  edge-cdn:system-base:
     template: edge-cdn
-    region: ap-tokyo-1
-    instance_type: t3-medium
-    lifecycle_class: persistent
-  - hostname: edge-tokyo-02
+    module: system-base
+  edge-cdn:security-hardening:
     template: edge-cdn
-    region: ap-tokyo-1
-    instance_type: t3-medium
-    lifecycle_class: persistent
-  - hostname: edge-london-01
+    module: security-hardening
+  edge-cdn:nginx:
     template: edge-cdn
-    region: eu-west-2
-    instance_type: t3-medium
-    lifecycle_class: persistent
+    module: nginx
 
-sdwan:
-  networks:
-    - name: edge-fabric
-      routing_mode: ibgp
-      peers:
-        - host: edge-tokyo-01
-          publicly_reachable: true
-        - host: edge-tokyo-02
-        - host: edge-london-01
-          publicly_reachable: true
-      virtual_ips:
-        - name: cdn-frontend
-          primary_holder: edge-tokyo-01
-          failover_holders: [edge-tokyo-02, edge-london-01]
+pools:
+  edge-cdn-tokyo:
+    name: edge-cdn-tokyo
+    node_template: edge-cdn
+    lifecycle_class: ephemeral
+    status: active
+    target_size: 2
+    min_size: 1
+    max_size: 3
 ```
 
-> **Schema note — this example is illustrative and does NOT validate as
-> written.** `System::Gitops::DesiredStateValidator` allows exactly seven
-> top-level keys (templates, assignments, modules, provider_configs, pools,
-> platforms, fleet) and reports every other one as an "unknown top-level key".
-> Four of the five keys above are rejected: `version:`, `account:`, `nodes:`
-> and `sdwan:`. The `templates` section is also rejected, because the validator
-> requires a mapping of name → attributes rather than the list form shown here.
-> The validator collects every error, and `DesiredStateParser#parse!` then
-> returns `ok?: false`, so a sync of this file computes no diff and applies
-> NOTHING. The errors are loud, not silent — but they abort the whole sync
-> rather than skipping the unsupported sections.
->
-> The `nodes` block in particular is not a thing GitOps can express: there is
-> no `node` kind. `ApplyService#apply_diff` dispatches template, module,
-> assignment, pool, platform and provider_config, and raises
-> `UnsupportedDiffError` for any other kind carrying a real change (a diff whose
-> `change` is `informational` is passed through regardless of kind, but
-> `DiffEngine` never emits one for `node`). `DiffEngine` computes diffs for only
-> templates, assignments, modules, pools, platforms and provider_configs.
-> A Node's `lifecycle_class` is not GitOps-declarable at all — nor settable
-> through any other API surface, and the column is now retired (nullable, no
-> default, no writer). The class lives on the `System::InstancePool`, which
-> GitOps DOES express as its `pools` kind. See
-> [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) §"How `lifecycle_class` is
-> actually set".
+What each section resolves to, and what the apply path needs from it:
 
-**Expected outcome:** the file parses as YAML, but see the schema note above
-before syncing it — the platform's own schema is narrower than this example
-(full schema docs in
-[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)).
+| Section | Platform model | Keyed by | Apply-time requirements |
+|---|---|---|---|
+| `templates` | `System::NodeTemplate` | template name | `node_platform` — the **name** of a `System::NodePlatform` already in the account; `ApplyService` refuses a template create without it, and raises a stale conflict if the name resolves to nothing. `AccountBootstrapService` seeds four (`ubuntu-24.04-lts`, `ubuntu-24.04-rpi4`, `ubuntu-24.04-arm64-uefi`, `ubuntu-24.04-amd64-uefi`) — list yours before you commit the file |
+| `modules` | `System::NodeModule` | module name | `variety` ∈ `System::NodeModule::VARIETIES` — `subscription` / `config` / `instance`. **The validator is looser than the model here:** `DesiredStateValidator::MODULE_VARIETIES` also accepts `role`, which `NodeModule` and the `system_node_modules_variety_check` constraint both reject, so a `variety: role` line passes the schema gate and then fails at apply with `Variety is not included in the list`. `priority` must be an integer if present, but see the convergence gaps below — it is not applied |
+| `assignments` | written as `System::TemplateModule`, diffed against `System::NodeModuleAssignment` | the validator requires a `<name>:<module>` string; `DiffEngine` reads that key as `<node-name>:<module-name>` | `template` and `module` — names declared in the two sections above; `ApplyService#apply_assignment` resolves both by name and reports a stale conflict if either is missing. The two sides do not share an identity — see the convergence gaps below |
+| `pools` | `System::InstancePool` | pool name | `node_template` — a template name from this file; `lifecycle_class` ∈ `ephemeral` / `spot`; `status` ∈ `active` / `paused` / `draining` / `archived`; the three sizes as integers |
+| `platforms` | `System::PlatformDeployment` | deployment name | `node_template` plus a `service_role`; `target_replicas` an integer (not used above) |
+
+Two things the file deliberately does NOT contain, because GitOps cannot
+express them:
+
+- **There is no `node` kind.** `ApplyService#apply_diff` dispatches template,
+  module, assignment, pool, platform and provider_config, and raises
+  `UnsupportedDiffError` for anything else; `DiffEngine` computes diffs for
+  only those kinds. What *should exist* is declared as a `pools` entry — the
+  instance-pool replenisher materialises the pool's members as real nodes —
+  never as a list of hostnames. A Node's `lifecycle_class` is not
+  GitOps-declarable at all (nor settable through any other API surface; the
+  column is retired). The class lives on the `System::InstancePool`, which is
+  exactly where the example above sets it. See
+  [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) §"How `lifecycle_class` is
+  actually set".
+- **There is no `sdwan` kind.** Networks, peers and virtual IPs are still
+  built with the `system_sdwan_*` actions; a `sdwan:` block in `fleet.yaml` is
+  reported as an unknown top-level key and fails the whole sync.
+
+The validator also refuses `version:` and `account:` headers — a repository
+is bound to its account when it is registered (Step 2), not by a key inside
+the file. Unknown top-level keys are collected, not skipped: one stray key
+aborts the entire sync, so keep the file to the sections above.
+
+**Three v1 convergence gaps.** The file above validates, parses and applies,
+but `DiffEngine` and `ApplyService` do not yet agree on three fields, so those
+lines re-open as a proposal on every sync. Apply is idempotent — re-approving
+costs nothing and loses nothing — but do not expect a clean `diff_count: 0`
+for them:
+
+- **Assignments are diffed node-keyed and applied template-keyed.**
+  `DiffEngine#diff_assignments` builds live state from
+  `System::NodeModuleAssignment`, keyed `<node-name>:<module-name>`, while
+  `ApplyService#apply_assignment` creates a `System::TemplateModule` from the
+  entry's `template` + `module` names. A `<template>:<module>` key therefore
+  never matches a live row: applying it composes the template correctly, and
+  the next sync proposes the identical `create` again.
+- **`modules.*.priority` and `modules.*.config` are validated and diffed but
+  never written.** `apply_module` sets name / variety / category on create and
+  description / variety on update — nothing else — so a non-default `priority`
+  comes back as an `update` diff each pass.
+- **`templates.*.node_platform` is a name going in and `node_platform_id`
+  coming back.** `apply_template` resolves the name at create time;
+  `diff_templates` compares the stored `node_platform_id`, which the file does
+  not carry.
+
+**Expected outcome:** the file passes `System::Gitops::DesiredStateValidator`
+with no errors and `DesiredStateParser` returns `ok?: true` — this exact block
+is run through both (and through `DiffEngine`) by
+`server/spec/docs/gitops_fleet_yaml_tutorial_fidelity_spec.rb`, so it cannot
+drift from the schema unnoticed. The authoritative schema is the validator
+itself, `server/app/services/system/gitops/desired_state_validator.rb` — read
+`ALLOWED_TOP_LEVEL` and the `validate_*` methods.
 
 ## Step 2 — Register the GitOps repo
 
@@ -248,7 +305,7 @@ The reconciler:
 
 1. Pulls latest from `main`
 2. Parses `fleet.yaml` via `DesiredStateParser`
-3. Loads current platform state (templates + nodes + sdwan)
+3. Loads current platform state (templates, modules, assignments, pools, platforms)
 4. Runs `DiffEngine` to compute the delta
 5. Opens `Ai::AgentProposal` per change
 
@@ -296,14 +353,14 @@ awaiting approval. The run carries a summary, not the diff itself — read the
 Operator opens `/app/approvals` UI:
 
 1. Reviews each proposal (PR-style summary)
-2. Optionally edits parts of the plan (e.g., comments out one node before apply)
+2. Optionally edits parts of the plan (e.g., comments out one pool before apply)
 3. Click Approve on each (or bulk-approve if `Ai::ApprovalRequest` UI supports it)
 
 ## Step 6 — Apply an approved proposal
 
-For the core kinds (`template`, `module`, `assignment`), apply each
-approved proposal directly with `system_gitops_apply_proposal` — it
-executes the diff against the DB:
+For every applicable kind — `template`, `module`, `assignment`, `pool`,
+`platform` — apply each approved proposal directly with
+`system_gitops_apply_proposal`; it executes the diff against the DB:
 
 ```javascript
 platform.system_gitops_apply_proposal({
@@ -314,15 +371,18 @@ platform.system_gitops_apply_proposal({
 //   (re-sync to regenerate a fresh proposal, then re-approve).
 ```
 
-Apply in dependency order: templates → module assignments. Node
-provisioning and SDWAN topology proposals are surfaced for review the
-same way; provision the corresponding resources with the standard
-actions (`system_create_node`, `system_sdwan_create_network`, …) once
-their proposals are approved.
+Apply in dependency order: templates → modules → assignments → pools /
+platforms (each `pool`/`platform` create resolves its `node_template` by
+name, and each assignment resolves its `template` and `module`, so a
+dependency applied out of order comes back as a stale conflict — re-apply
+once the referenced resource exists). Individual nodes and the SDWAN
+topology are never in the diff: provision those with the standard actions
+(`system_create_node`, `system_sdwan_create_network`, …) outside the GitOps
+loop.
 
 **v1-conservative gap — destroy + provider_config are NOT auto-applied.**
 `system_gitops_apply_proposal` supports `template` / `module` /
-`assignment` create+update only. Resource **deletion** and
+`assignment` / `pool` / `platform` create+update only. Resource **deletion** and
 `provider_config` changes still require a deliberate manual action so a
 stray `fleet.yaml` edit can never tear down fleet infrastructure
 unattended:
@@ -353,7 +413,7 @@ the drift report below: it recomputes desired-vs-live from scratch.
 To make any fleet change:
 
 1. Operator clones the fleet-config repo
-2. Edits `fleet.yaml` (add a node, change a template, adjust SDWAN routes)
+2. Edits `fleet.yaml` (add a pool, change a template, assign a module)
 3. Opens a PR
 4. Team reviews; PR is approved + merged
 5. Reconciler picks up the change on next tick (or manual sync)
@@ -367,6 +427,12 @@ platform.system_gitops_get_drift_report({ id: "gitops-repo-1" })
 // → { repository_id, synced_revision, drift: false, diff_count: 0, diffs: [] }
 //   (when reality matches git; read-only — opens no proposals)
 ```
+
+`diff_count: 0` is reachable for templates (once their `node_platform_id` is
+set), modules with a default `priority`, pools and platforms. The three
+convergence gaps in Step 1 keep the assignment lines — and any module carrying
+a `priority` or `config` — reporting drift after a successful apply; that is
+an engine-side identity mismatch, not an unapplied change.
 
 When drift exists (reality diverges from git — e.g., an operator made an
 imperative change), `GitopsDriftSensor` (registered in the Fleet Autonomy
@@ -393,9 +459,9 @@ curl -X DELETE http://localhost:3000/api/v1/system/gitops_repositories/<id> \
 ## Troubleshooting
 
 **`DesiredStateParser` fails with "schema validation error"** — `fleet.yaml`
-doesn't match the expected schema. Check the schema doc at
-[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)
-or look at the parser source:
+doesn't match the expected schema. The error names the offending key. Read
+the rules in `app/services/system/gitops/desired_state_validator.rb`
+(`ALLOWED_TOP_LEVEL` + the `validate_*` methods) and the section shapes in
 `app/services/system/gitops/desired_state_parser.rb`.
 
 **Diff shows changes you didn't make** — drift between platform state and
@@ -579,10 +645,13 @@ read the error:
   vault kv get secret/data/powernode/gitops/fleet-deploy-key
   ```
 
-**Module versions in fleet.yaml not pinned, surprise upgrades happen** —
-pin specific versions in `fleet.yaml` (e.g., `- nginx@1.26.0`) instead
-of just `- nginx`. The latter lets the reconciler use the latest
-`live`-state version, which may change.
+**Module versions cannot be pinned in `fleet.yaml` yet** — the `modules`
+section carries `variety`, `priority` and `config` and nothing else; there is
+no version field in `DesiredStateValidator`, `DiffEngine` or `ApplyService`
+(`apply_service.rb:33` books versions and `file_spec` as a later slice). A
+node therefore runs whatever version is `live` for the module, which can shift
+under you. Pin with `system_promote_module_version` / the module's own
+promotion controls until GitOps grows the field.
 
 **Conflicting concurrent PRs** — git's merge mechanics handle these;
 resolve in PRs before they reach the reconciler. Don't let two operators
@@ -591,12 +660,14 @@ the right one.
 
 ## What's next
 
-- **[Tutorial 11 — Multi-region federation](./11-federation.md)** — codify
-  federation peer declarations in `fleet.yaml` alongside the rest of the
-  fleet topology.
+- **[Tutorial 11 — Multi-region federation](./11-federation.md)** — the SDWAN
+  and federation topology, built with the `system_sdwan_*` actions. It is
+  **not** expressible in `fleet.yaml`: there is no `sdwan` kind, so the two
+  surfaces stay separate.
 - **[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)** —
-  full operator runbook with schema details, advanced patterns, DR
-  scenarios.
+  operator runbook: advanced patterns and DR scenarios. Its schema section is
+  older than this page (it still shows a `version:` / `account:` header and
+  lists four kinds) — trust `desired_state_validator.rb` over it.
 - **[`../gitops.md`](../gitops.md)** — current GitOps reconciler design reference.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md)** — once `smoke_test_gitops_reconciler.rb`
   lands, it'll exercise this flow at the platform layer.
