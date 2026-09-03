@@ -437,6 +437,38 @@ RSpec.describe System::KubernetesClusterProvisionerService do
           expect(message.scan(/\((?:pending|bootstrapping|active|degraded|disconnected)\)/).size).to eq(limit)
           expect(message).to include("and #{6 - limit} more")
         end
+
+        # The body's cap exists because the 409 rides an agent RETRY path.
+        # The operator log has no wire-size constraint and is the only
+        # surface carrying ids at all (the FleetEvent payload carries the
+        # count), so capping it too would leave the 6th and later candidate
+        # with no id anywhere: an operator told "6 non-error clusters" could
+        # not look the elided ones up.
+        it "logs every candidate id, past the cap the 409 body applies" do
+          extra = Array.new(4) do |i|
+            ::Devops::KubernetesCluster.create!(
+              account: account,
+              name: "extra-cluster-#{i}",
+              slug: "extra-cluster-#{i}-#{SecureRandom.hex(4)}",
+              api_endpoint: "https://10.91.0.#{i + 1}:6443",
+              flavor: "k3s", environment: "development",
+              status: "pending", cni_plugin: "flannel"
+            )
+          end
+
+          logged = []
+          allow(Rails.logger).to receive(:warn) { |msg| logged << msg.to_s }
+          message
+
+          refusal = logged.find { |m| m.include?("refused ambiguous join") }
+          expect(refusal).to be_present, "no refusal warning was logged: #{logged.inspect}"
+          ([ @cluster_a, @cluster_b ] + extra).each do |c|
+            expect(refusal).to include(c.id),
+                               "the operator log elides candidate #{c.name}'s id, which then reaches no surface at all: #{refusal.inspect}"
+          end
+          expect(refusal).not_to match(/and \d+ more/),
+                                 "the operator log truncates the candidate list: #{refusal.inspect}"
+        end
       end
 
       it "joins the specified cluster when target_cluster_id matches" do
@@ -1149,6 +1181,79 @@ RSpec.describe System::KubernetesClusterProvisionerService do
       expect(cluster.metadata["pod_cidr"]).to eq("10.42.0.0/16")
       expect(cluster.metadata["api_vip_id"]).to be_present
       expect(cluster.metadata["bootstrap_events"]).to be_an(Array)
+    end
+  end
+
+  # ── Line-citation integrity (IMP-c61a98e923c7 review follow-up) ─────────
+  #
+  # Nine absolute line numbers in this service are cited by five Markdown
+  # surfaces and the k3sd Go comments. Nothing in the service makes that
+  # visible at edit time, and the only guard was a hand-maintained
+  # parenthetical inside the service's own comment — which named four of the
+  # nine and put the safe-insertion boundary at :628 when :744 is cited, so a
+  # 43-line insertion at :666 landed inside the real window and came out
+  # correct only by accident. Pinned mechanically here instead.
+  # (target_cluster_id_docs_accuracy_spec pins the Go citations of :351 only.)
+  describe "the line citations other files make against this service" do
+    ext_root = File.expand_path("../../../..", __dir__)
+    service_path = File.join(
+      ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb"
+    )
+
+    # cited line => the source line it must still land on. A citation missing
+    # from this map is an UNGUARDED citation, so the map must stay exhaustive.
+    anchors = {
+      135 => "existing_node = ::Devops::KubernetesNode.find_by(node_instance_id: @node_instance.id)",
+      137 => "update_credentials!(existing_node.kubernetes_cluster)",
+      329 => 'kind: "system.k3s_ambiguous_cluster_join_refused",',
+      351 => "def resolve_membership_cluster!(account)",
+      473 => 'add_to_vip_failover_candidates!(cluster) if @role == "server"',
+      613 => "def update_credentials!(cluster)",
+      628 => "def add_to_vip_failover_candidates!(cluster)",
+      647 => "def refresh_vip_holder!(cluster)",
+      744 => "def allocate_api_vip!(network:, bootstrap_peer:, cluster_name:)"
+    }
+
+    citing_files = (
+      Dir.glob(File.join(ext_root, "docs/**/*.md")) +
+      Dir.glob(File.join(ext_root, "agent/internal/k3sd/*.go"))
+    ).sort
+
+    cited = citing_files.flat_map do |f|
+      File.read(f).scan(/kubernetes_cluster_provisioner_service\.rb:(\d+)/).flatten.map(&:to_i)
+    end.uniq.sort
+
+    it "finds citations to check, so the guard is not vacuous" do
+      expect(citing_files).not_to be_empty
+      expect(cited).not_to be_empty
+    end
+
+    it "anchors every cited line, leaving no citation unguarded" do
+      expect(cited - anchors.keys).to be_empty,
+                                      "unguarded citation(s) #{(cited - anchors.keys).inspect} — " \
+                                      "add them to `anchors` with the construct they name"
+    end
+
+    it "still lands every cited line on the construct it was cited for" do
+      lines = File.readlines(service_path)
+      expect(cited.to_h { |n| [ n, lines[n - 1].to_s.strip ] })
+        .to eq(cited.to_h { |n| [ n, anchors[n] ] })
+    end
+
+    # The service comment above the ambiguous-join helpers states the boundary
+    # an insertion has to stay below. It named :628; :744 is cited.
+    it "names the highest cited line as the insertion boundary in the source comment" do
+      block = File.read(service_path)[/# ── Ambiguous-join message helpers.*?\n\n/m].to_s
+      expect(block).not_to be_empty,
+                          "the ambiguous-join helper comment block moved or was removed"
+      expect(block).to include(":#{cited.max}"),
+                       "the comment does not name the highest cited line (:#{cited.max}) " \
+                       "as the boundary: #{block.inspect}"
+      stale = block.scan(/inserted (?:above|below) :(\d+)/).flatten.map(&:to_i)
+                   .reject { |n| n == cited.max }
+      expect(stale).to be_empty,
+                       "the comment states a boundary other than the highest cited line " \
+                       ":#{cited.max}: #{stale.inspect}"
     end
   end
 end

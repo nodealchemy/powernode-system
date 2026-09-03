@@ -322,7 +322,7 @@ module System
       Rails.logger.warn(
         "[KubernetesClusterProvisionerService] refused ambiguous join for node_instance " \
         "#{@node_instance&.id}: account #{@node_instance&.account_id} has #{candidates.size} non-error " \
-        "clusters, no target_cluster_id; candidates: #{candidate_digest(candidates, ids: true)}"
+        "clusters, no target_cluster_id; candidates: #{candidate_digest(candidates, ids: true, limit: nil)}"
       )
       ::System::Fleet::EventBroadcaster.emit!(
         account: @node_instance.account,
@@ -667,11 +667,11 @@ module System
     end
 
     # ── Ambiguous-join message helpers ────────────────────────────────
-    # Deliberately below the resolvers that call them. Five documents and
-    # the k3sd Go comments cite this file by LINE (:135, :329, :351, :628;
-    # the Go citations are pinned by target_cluster_id_docs_accuracy_spec),
-    # so a method inserted above :628 silently repoints every one of those
-    # citations at whatever moved into the slot.
+    # Deliberately below the resolvers that call them. Docs and the k3sd Go
+    # comments cite this file by ABSOLUTE line (:135 :137 :329 :351 :473
+    # :613 :628 :647 :744 — the highest is allocate_api_vip! at :744), so
+    # anything inserted above :744 repoints them; the whole set is pinned
+    # mechanically by kubernetes_cluster_provisioner_service_spec.
 
     # How many candidates the ambiguity messages enumerate before collapsing
     # the remainder into "and N more". The count clause already carries the
@@ -691,11 +691,11 @@ module System
     # printing sibling UUIDs to the refused agent would give it the join
     # credentials for every other cluster in the account, which is the
     # isolation breach the refusal exists to prevent. Names and statuses are
-    # inert as a lookup key (the resolver finds by id only). The ids reach the
-    # OPERATOR through the Rails.logger.warn line above, which the agent never
-    # sees; the FleetEvent payload carries the count, not the ids.
-    def candidate_digest(candidates, ids: false)
-      shown = candidates.first(AMBIGUOUS_CANDIDATE_LIST_LIMIT)
+    # inert as a lookup key (the resolver finds by id only). Every id reaches
+    # the OPERATOR through the Rails.logger.warn line above, which passes
+    # `limit: nil` so none is elided and which the agent never sees.
+    def candidate_digest(candidates, ids: false, limit: AMBIGUOUS_CANDIDATE_LIST_LIMIT)
+      shown = limit ? candidates.first(limit) : candidates
       digest = shown.map { |c| ids ? "#{c.name} (#{c.status}, #{c.id})" : "#{c.name} (#{c.status})" }
       remaining = candidates.size - shown.size
       digest << "and #{remaining} more" if remaining.positive?
