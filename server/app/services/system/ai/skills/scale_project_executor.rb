@@ -160,7 +160,7 @@ module System
           blast_radius: :medium
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "capacity_manager"
 
         # Instance-method rollback. Reverses the side effects recorded in the
         # outputs envelope. vertical_resize returns a plan — it has no side

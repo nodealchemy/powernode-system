@@ -64,7 +64,7 @@ module System
           }
         )
 
-        binds_to "System Concierge"
+        binds_to "System Concierge", "capacity_manager"
 
         protected
 

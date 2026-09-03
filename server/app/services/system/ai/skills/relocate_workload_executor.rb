@@ -91,7 +91,7 @@ module System
           blast_radius: :high
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "capacity_manager"
 
         # Rollback contract: detach-and-delete the volumes provisioned for the
         # *new* (target-region) instances, then terminate those instances (see

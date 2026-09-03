@@ -64,7 +64,7 @@ module System
           blast_radius: :high
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "capacity_manager"
 
         protected
 

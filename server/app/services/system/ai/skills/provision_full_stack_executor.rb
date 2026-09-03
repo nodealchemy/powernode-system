@@ -66,7 +66,7 @@ module System
           blast_radius: :medium
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "capacity_manager"
 
         # Instance-method rollback contract — invoked by `SkillCompositionRunner`
         # via `executor.public_send(:rollback_provision_full_stack, **outputs)`.
