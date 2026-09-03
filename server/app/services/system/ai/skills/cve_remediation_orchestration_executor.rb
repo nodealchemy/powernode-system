@@ -10,15 +10,23 @@ module System
       #      PackageModuleRefreshExecutor so the upstream-patched version
       #      gets materialized into a new NodeModuleVersion.
       #   3. For each affected module that ALREADY has a blessed version
-      #      newer than current_version: dispatch RollingModuleUpgradeExecutor
-      #      (one plan per template) so the patch reaches running instances.
+      #      newer than current_version: run RollingModuleUpgradeExecutor
+      #      (one plan per template). That executor is PLAN-ONLY — it sizes
+      #      the fleet-atomic pointer move and returns `executed: false`;
+      #      nothing in the platform moves the pointer from its plan
+      #      (IMP-e8dc40813adb), so this step does NOT reach running
+      #      instances. The plan is reported for the operator, not acted on.
       #   4. Mark the CveExposure rows of the modules that ACTUALLY got a
-      #      dispatch (2 or 3) as `remediating`, so the dashboard reflects
-      #      in-flight response and CvePublishedSensor doesn't re-fire —
-      #      that sensor selects `state: "open"` exclusively
+      #      dispatch as `remediating`, so the dashboard reflects in-flight
+      #      response and CvePublishedSensor doesn't re-fire — that sensor
+      #      selects `state: "open"` exclusively
       #      (cve_ops/sensors/cve_published_sensor.rb), so `remediating` is
       #      precisely what silences it. CriticalUpgradeAvailableSensor uses
-      #      the wider `unresolved` scope and is NOT silenced by it.
+      #      the wider `unresolved` scope and is NOT silenced by it. "Actually
+      #      got a dispatch" is evidence from the executor itself: a refresh
+      #      that reports `enqueued: true`, or a rolling upgrade that reports
+      #      `executed: true` — and no shipped executor reports the latter
+      #      (see #dispatched_module_ids).
       #
       #      IMP-9b8d774298d5 — step 4 used to run unconditionally over every
       #      named exposure, including when steps 2 and 3 produced nothing.
@@ -26,13 +34,19 @@ module System
       #      flight; doing it on an empty run turned a false success into a
       #      false success that also suppressed the next alarm.
       #
+      #      IMP-79a808789805 — the rolling half then counted every plan
+      #      that came back ok:true, which is every plan on the happy path.
+      #      Same defect, one conditional deeper: a plan nothing executes
+      #      flipped the row, and the transition is one-way, so the alarm
+      #      was not delayed but dead.
+      #
       # Idempotency:
       #   - Keyed on (cve_id, node_module_id). Re-invocation for the same
       #     pair within the DecisionEngine's dedup TTL is a no-op (skipped
       #     by the engine before this executor is called).
       #   - Beyond the dedup window, the dispatched refresh job is itself
-      #     idempotent (last_synced_at gate) and the rolling upgrade is
-      #     guarded by the autonomy approval flow.
+      #     idempotent (last_synced_at gate) and the rolling upgrade is a
+      #     plan with no side effects, so re-planning it is free.
       #   - IMP-9b8d774298d5 changed the STEADY STATE of a run that dispatches
       #     nothing. It used to flip the exposure to `remediating` on the first
       #     tick, after which CvePublishedSensor was quiet forever. Now the
@@ -199,13 +213,26 @@ module System
           # Partial progress stays `success`: something IS in flight, and the
           # blocked module is still named in skipped_modules.
           #
+          # IMP-79a808789805 — this gate deliberately does NOT read
+          # `remediation_dispatched` alone any more. A successful rolling plan
+          # stopped counting as a dispatch (see #dispatched_module_ids), but it
+          # is still an OUTPUT the operator acts on by hand
+          # (docs/tutorials/07-cve-response.md), and this branch is a BARE
+          # failure that would drop it while saying no plan can be made. So the
+          # branch keeps firing on exactly the runs it fired on before: nothing
+          # queued AND no plan produced. The row transition is unaffected —
+          # remediation_dispatched stays false and the exposure stays `open`
+          # either way; only the envelope is preserved.
+          #
           # Deliberately a BARE failure. BaseSkillExecutor#failure's `**extra`
           # is the composition runner's rollback seam and its contract is
           # "only keys that actually hold ids" — a diagnostic payload passed
           # there survives strip_control_keys and would displace a retried
           # step's genuine last_outputs. Everything an operator needs is in
           # the message.
-          if !payload[:remediation_dispatched] && skipped_reason == "candidate_version_not_promoted"
+          nothing_to_show = !payload[:remediation_dispatched] &&
+                            rolling_upgrade_plans.none? { |p| p[:ok] }
+          if nothing_to_show && skipped_reason == "candidate_version_not_promoted"
             return failure(promotion_blocked_message(skipped_modules))
           end
 
@@ -292,6 +319,12 @@ module System
                   # only — nothing branches on it.
                   fleet_atomic: true,
                   total_instances: plan.dig(:data, :total_instances),
+                  # The executor's own evidence that it moved the fleet. It
+                  # is plan-only and returns false unconditionally today; a
+                  # success with a populated affected set is still a plan.
+                  # This — not `ok` — is what #dispatched_module_ids may
+                  # treat as remediation in flight (IMP-79a808789805).
+                  executed: plan.dig(:data, :executed) == true,
                   error: plan[:error]
                 }
               end
@@ -367,20 +400,32 @@ module System
              .first
         end
 
-        # Modules a refresh or a rolling upgrade actually landed on. A plan or
-        # dispatch that reported ok:false is NOT remediation in flight.
+        # Modules for which an executor reports it actually did something —
+        # a refresh it queued, or a rolling upgrade it executed. A plan or
+        # dispatch that reported ok:false is NOT remediation in flight, and
+        # neither is one that reported ok:true.
         #
-        # `ok` alone is not enough for the refresh half: PackageModuleRefresh
+        # `ok` alone is not enough for either half. PackageModuleRefresh
         # Executor returns success whether or not it queued anything, so this
         # reads its `enqueued` output instead (see #dispatch_refreshes). Using
         # the success envelope here would have moved the false "response in
         # flight" claim from an unconditional transition into a conditional
         # one that is still always true — the same defect, better hidden.
+        #
+        # IMP-79a808789805 — the rolling half did exactly that. RollingModule
+        # UpgradeExecutor is PLAN-ONLY: it succeeds with `executed: false`
+        # (and with `total_instances: 0` when nothing is eligible), so
+        # selecting on `ok` counted every plan on the happy path. This reads
+        # its `executed` output instead (see #plan_rolling_upgrades). Today
+        # that is always false, so the rolling lane never silences the
+        # sensor — which is the honest state while no actuator exists
+        # (IMP-e8dc40813adb). An actuator that does move the pointer counts
+        # by reporting `executed: true`; nothing else here needs to change.
         def dispatched_module_ids(refresh_dispatches, rolling_upgrade_plans)
           refreshed = refresh_dispatches.select { |d| d[:ok] && d[:enqueued] }
-          planned   = rolling_upgrade_plans.select { |p| p[:ok] }
+          executed  = rolling_upgrade_plans.select { |p| p[:ok] && p[:executed] }
 
-          (refreshed + planned).filter_map { |entry| entry[:node_module_id] }.uniq
+          (refreshed + executed).filter_map { |entry| entry[:node_module_id] }.uniq
         end
 
         # Operator-facing and deliberately precise about what promotion does.

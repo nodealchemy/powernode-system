@@ -85,18 +85,65 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       expect(exposure.reload.state).to eq("open")
     end
 
-    it "transitions named exposures to remediating once a rolling upgrade is planned" do
-      create(:system_node_module_version, node_module: openssl_mod,
-             version_number: 2, promotion_state: "blessed")
-      openssl_mod.update!(current_version: openssl_v1)
-      node = create(:system_node, account: account, node_template: template, name: "n1")
-      System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
-                                          enabled: true, priority: 0)
+    # IMP-79a808789805 — the rolling half of #dispatched_module_ids used to
+    # count every plan that came back ok:true. RollingModuleUpgradeExecutor is
+    # PLAN-ONLY (it returns `executed: false`; nothing in the platform moves
+    # the module pointer from its plan — IMP-e8dc40813adb), so that flipped
+    # every exposure of the module to `remediating` on the strength of work
+    # nothing would do. `remediating` is a ONE-WAY exit from
+    # CvePublishedSensor's `state: "open"` scope, so the alarm was not
+    # delayed, it was dead. The oracle here is the ROW and the sensor, never
+    # the returned hash: a non-empty rolling_upgrade_plans proves nothing
+    # about suppression.
+    context "when a rolling upgrade is planned but nothing executes it" do
+      let(:sensor) { ::System::CveOps::Sensors::CvePublishedSensor.new(account: account) }
+      let!(:blessed) do
+        create(:system_node_module_version, node_module: openssl_mod,
+               version_number: 2, promotion_state: "blessed")
+      end
+      let!(:node) { create(:system_node, account: account, node_template: template, name: "n1") }
 
-      r = executor.execute(cve_id: "CVE-2026-50001", exposure_ids: [ exposure.id ])
+      before do
+        openssl_mod.update!(current_version: openssl_v1)
+        System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
+                                            enabled: true, priority: 0)
+      end
 
-      expect(r.dig(:data, :remediation_dispatched)).to be true
-      expect(exposure.reload.state).to eq("remediating")
+      it "leaves the exposure open and visible to CvePublishedSensor when the plan covers running instances" do
+        create(:system_node_instance, :running, node: node)
+
+        r = executor.execute(cve_id: "CVE-2026-50001", exposure_ids: [ exposure.id ])
+
+        # The ROW and the sensor first: these are the oracle.
+        expect(exposure.reload.state).to eq("open")
+        expect(sensor.sense.flat_map { |sig| sig.payload["exposure_ids"] }).to include(exposure.id)
+
+        expect(r[:success]).to be true
+        expect(r.dig(:data, :remediation_dispatched)).to be false
+        expect(r.dig(:data, :exposures_remediating)).to eq(0)
+        plan = r.dig(:data, :rolling_upgrade_plans).first
+        expect(plan[:ok]).to be true
+        # A POPULATED plan — this is the happy path (blessed fix, enabled
+        # template assignment, a running instance), not the empty-fleet
+        # case below. It still moves nothing.
+        expect(plan[:total_instances]).to eq(1)
+        expect(plan[:executed]).to be false
+      end
+
+      it "does not transition anything on a plan with total_instances: 0" do
+        # No instance on the node: the executor still returns success, with
+        # an empty affected set. An empty plan is even less evidence of work.
+        r = executor.execute(cve_id: "CVE-2026-50001", exposure_ids: [ exposure.id ])
+
+        expect(exposure.reload.state).to eq("open")
+        expect(sensor.sense.flat_map { |sig| sig.payload["exposure_ids"] }).to include(exposure.id)
+
+        expect(r.dig(:data, :remediation_dispatched)).to be false
+        expect(r.dig(:data, :exposures_remediating)).to eq(0)
+        plan = r.dig(:data, :rolling_upgrade_plans).first
+        expect(plan[:ok]).to be true
+        expect(plan[:total_instances]).to eq(0)
+      end
     end
 
     it "produces a rolling upgrade plan when a newer blessed version exists" do
@@ -116,7 +163,9 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       # plan must not be reported as skipped, and the run carries no reason.
       expect(r[:data][:skipped_reason]).to be_nil
       expect(r[:data][:skipped_modules]).to eq([])
-      expect(r[:data][:remediation_dispatched]).to be true
+      # A plan is not a dispatch (IMP-79a808789805): nothing executes it, so
+      # the run must not claim remediation is in flight.
+      expect(r[:data][:remediation_dispatched]).to be false
     end
 
     # IMP-9b8d774298d5 — "a fix exists but its version is not promoted" used to
@@ -152,6 +201,71 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
                              exposure_ids: [ nginx_exposure.id ])
 
         expect(r.dig(:data, :exposures_remediating)).to eq(0)
+        expect(nginx_exposure.reload.state).to eq("open")
+      end
+
+      # IMP-79a808789805 — excluding a plan from remediated_module_ids must not
+      # change the ENVELOPE of a mixed run. The promotion-blocked `failure`
+      # branch is gated on the run having produced nothing an operator can
+      # look at; a successful plan IS such an output (the tutorial tells the
+      # operator to execute it by hand), even though it is not evidence of
+      # work in flight. Without the `none? { ok }` clause on that gate, this
+      # run would return a bare `failure` whose message says no plan can be
+      # made, dropping the plan for openssl-base entirely.
+      it "keeps a mixed run a success and carries the plan when another module is promotion-blocked" do
+        create(:system_node_module_version, node_module: nginx_mod,
+               version_number: 2, promotion_state: "built")
+        blessed = create(:system_node_module_version, node_module: openssl_mod,
+                         version_number: 2, promotion_state: "blessed")
+        openssl_mod.update!(current_version: openssl_v1)
+        node = create(:system_node, account: account, node_template: template, name: "n-openssl")
+        System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
+                                            enabled: true, priority: 0)
+
+        r = executor.execute(cve_id: "CVE-2026-50001",
+                             affected_module_ids: [ openssl_mod.id, nginx_mod.id ],
+                             exposure_ids: [ exposure.id, nginx_exposure.id ])
+
+        expect(r[:success]).to be true
+        plan = r.dig(:data, :rolling_upgrade_plans).find { |p| p[:node_module_id] == openssl_mod.id }
+        expect(plan).to be_present
+        expect(plan[:ok]).to be true
+        expect(plan[:target_version_id]).to eq(blessed.id)
+        # The plan is still not a dispatch: neither exposure leaves `open`.
+        expect(plan[:executed]).to be false
+        expect(r.dig(:data, :remediation_dispatched)).to be false
+        expect(r.dig(:data, :exposures_remediating)).to eq(0)
+        expect(exposure.reload.state).to eq("open")
+        expect(nginx_exposure.reload.state).to eq("open")
+        # The blocked module is still named, with the actionable reason.
+        expect(r.dig(:data, :skipped_reason)).to eq("candidate_version_not_promoted")
+        expect(r.dig(:data, :skipped_modules).map { |m| m[:node_module_id] })
+          .to include(nginx_mod.id)
+      end
+
+      # The other side of that gate, and the mutant-killer for it: the clause
+      # is `none? { ok }`, NOT `plans.empty?`. A run whose only plan FAILED has
+      # nothing to show either, so the promotion block must still fail loudly
+      # exactly as it did before IMP-79a808789805.
+      it "still fails loudly when the only rolling plan failed and another module is promotion-blocked" do
+        create(:system_node_module_version, node_module: nginx_mod,
+               version_number: 2, promotion_state: "built")
+        create(:system_node_module_version, node_module: openssl_mod,
+               version_number: 2, promotion_state: "blessed")
+        openssl_mod.update!(current_version: openssl_v1)
+        node = create(:system_node, account: account, node_template: template, name: "n-openssl")
+        System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
+                                            enabled: true, priority: 0)
+        allow_any_instance_of(System::Ai::Skills::RollingModuleUpgradeExecutor)
+          .to receive(:execute).and_return({ success: false, error: "boom" })
+
+        r = executor.execute(cve_id: "CVE-2026-50001",
+                             affected_module_ids: [ openssl_mod.id, nginx_mod.id ],
+                             exposure_ids: [ exposure.id, nginx_exposure.id ])
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("nginx-base")
+        expect(exposure.reload.state).to eq("open")
         expect(nginx_exposure.reload.state).to eq("open")
       end
 
@@ -320,6 +434,15 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       # a dispatch. Restoring the old `if explicit_ids … elsif module_ids`
       # shape makes the explicit list bypass the module join and nginx-base's
       # exposure flips too — this example is what kills that mutant.
+      #
+      # IMP-79a808789805 — the dispatch is an executor reporting
+      # `executed: true`. No shipped executor does (RollingModuleUpgrade
+      # Executor is plan-only), so the stub below is the contract a future
+      # actuator (IMP-e8dc40813adb) must honour: `executed` — not `ok`, not a
+      # non-empty affected set — is the ONLY thing #dispatched_module_ids
+      # may count for the rolling lane. It is also the positive control for
+      # the plan-only context above: same fixtures, and the row DOES flip
+      # once something evidences execution.
       it "lets an explicit exposure list NARROW the transition but never widen it" do
         create(:system_node_module_version, node_module: openssl_mod,
                version_number: 2, promotion_state: "blessed")
@@ -327,6 +450,9 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         node = create(:system_node, account: account, node_template: template, name: "n1")
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
                                             enabled: true, priority: 0)
+        allow_any_instance_of(System::Ai::Skills::RollingModuleUpgradeExecutor)
+          .to receive(:execute)
+          .and_return({ success: true, data: { total_instances: 1, executed: true } })
 
         r = executor.execute(cve_id: "CVE-2026-50001",
                              affected_module_ids: [ openssl_mod.id, nginx_mod.id ],
