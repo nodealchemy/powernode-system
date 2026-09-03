@@ -176,17 +176,28 @@ platform.system_set_default_disk_image_publication({
 })
 ```
 
+The verb is approval-gated on `system.disk_image_publication_promote` (HIER-P2H).
+When policy requires approval it answers `{pending: true}` with a
+`deferred_operation_id` and nothing is promoted until the operation is approved
+at `/ai/autonomy/approvals` — do not retry on that response. An operator with no
+matching policy row meets the unmatched default (`require_approval`) and parks.
+
 ### Rollback to a previous publication
 
 If a newly-promoted publication regresses, swap the default back to a
 prior known-good publication using the same action — pass the previous
-`publication_id`:
+`publication_id` (it parks under the same promote category above):
 
 ```javascript
 platform.system_set_default_disk_image_publication({
   publication_id: "<previous-pub-id>"
 })
 ```
+
+`system_revert_disk_image` is the dedicated door (auto-selects the previous
+publication when `publication_id` is omitted, and restores a retired one);
+it is approval-gated on `system.disk_image_publication_rollback`, the same
+category `DiskImagePublicationsController#rollback` gates on.
 
 For the agent-driven path (the Disk Image Manager's `system-disk-image-rollback`
 skill, gated on `system.disk_image_publication_rollback` — the sensor that would
@@ -203,6 +214,11 @@ platform.system_set_disk_image_retention({
   retention_count: 5      // keep the 5 most recent publications
 })
 ```
+
+The verb is approval-gated on `system.disk_image_retention_update` (HIER-P2H).
+The seeded Disk Image Manager row is `auto_approve`, so the agent's own calls
+run inline; an operator calling it with no row of their own meets the unmatched
+default and receives `{pending: true}` until the operation is approved.
 
 The action accepts only `retention_count` — there is no `routine_days` / `critical_days` / publication-criticality framing today. Pruning is conservative: never deletes the publication currently set as default for a NodePlatform.
 

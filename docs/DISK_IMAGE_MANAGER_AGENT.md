@@ -69,7 +69,7 @@ Re-seed (`cd server && rails db:seed`) to make the change durable across deploys
 
 ## Skills
 
-Since HIER-P2F the agent binds three skill executors (`app/services/system/ai/skills/disk_image_*_executor.rb`, `binds_to "disk_image_manager"`; `Ai::Skill` rows in `system_skills_seed.rb`, bindings materialised by `system_skill_bindings_seed.rb`). Each is a thin wrapper over the deferred-operation executor already listed in the table, and each declares the table's category as its `action_category`. **The skill door is the only door that reads these rows today.** `system_set_default_disk_image_publication`, `system_revert_disk_image` and `system_set_disk_image_retention` are declared `mutating:`-only — they gate on permissions, not on an intervention policy — and the retention REST path is a plain permitted-attribute update; of the REST doors only `DiskImagePublicationsController#rollback` runs `Ai::AutonomyGate`, on `system.disk_image_publication_rollback`. So tuning `system.disk_image_publication_promote` or `system.disk_image_retention_update` constrains the agent, not an operator calling the MCP verb:
+Since HIER-P2F the agent binds three skill executors (`app/services/system/ai/skills/disk_image_*_executor.rb`, `binds_to "disk_image_manager"`; `Ai::Skill` rows in `system_skills_seed.rb`, bindings materialised by `system_skill_bindings_seed.rb`). Each is a thin wrapper over the deferred-operation executor already listed in the table, and each declares the table's category as its `action_category`. Since HIER-P2H the three MCP verbs read the same rows: `system_set_default_disk_image_publication`, `system_revert_disk_image` and `system_set_disk_image_retention` are approval-gated on `system.disk_image_publication_promote`, `system.disk_image_publication_rollback` and `system.disk_image_retention_update` respectively (`SystemFleetTool::DISK_IMAGE_*_CATEGORY`, replayed through `Ai::Executors::DeferredToolCall` as the original principal, so the verb body stays the single writer). When policy requires approval the verb answers `{pending: true}` with a `deferred_operation_id` and nothing is written until an operator approves; an unknown, foreign or inadmissible target (not published / purged / no artifact / count outside 1..50) keeps its inline error and parks nothing. The seeded rows are **agent-scoped** to this agent, so they bind the agent's own calls (skill or MCP); an operator calling the MCP verb with no row of their own meets the unmatched default (`require_approval`) and parks — seed a global-scope operator row to tune that door. There is no REST promote door at all (`DiskImagePublicationsController` serves `index`/`show`/`rollback` only, and no controller calls `Executors::DiskImage::PromotePublication`), so promote has exactly the two agent doors above; of the REST doors that do exist, `#rollback` runs `Ai::AutonomyGate` on the same rollback category as the MCP verb, while retention is a plain permitted attribute on `PATCH /node_platforms/:id` (`disk_image_retention_count`) and meets no gate:
 
 | Skill | Wraps | Gate | Inputs |
 |---|---|---|---|
@@ -81,7 +81,7 @@ A skill whose row says `require_approval` answers `pending: true` with a deferre
 
 ### Tool access and the Claude Code counterpart
 
-The seed scopes `mcp_metadata.tool_access.tool_families` to the five disk-image MCP verbs (`system_list_disk_image_publications`, `system_set_default_disk_image_publication`, `system_revert_disk_image`, `system_set_disk_image_retention`, `system_list_disk_image_webhooks`). That is what `AgentToolBridgeService` serves the agent at runtime and what `rake claude:sync_agents` renders as the `tools:` allowlist of `.claude/agents/powernode/disk-image-manager.md`; the agent's routing description (first sentence = the Claude Code trigger, then "Use when … / Do not use for … use Fleet Autonomy") is the seed's `description`, kept under the exporter's 400-character budget.
+The seed scopes `mcp_metadata.tool_access.tool_families` to the five disk-image MCP verbs (`system_list_disk_image_publications`, `system_set_default_disk_image_publication`, `system_revert_disk_image`, `system_set_disk_image_retention`, `system_list_disk_image_webhooks`) plus the investigate lane's reads. That, unioned with the platform's bootstrap set (`Ai::Tools::BootstrapVerbs` — `get_agent`, `discover_skills`, `get_skill_context`, `search_knowledge`, `query_learnings`, `code_semantic_search`, `describe_tool`, `route_task`; the read-only verbs `BASE_GUARDRAILS` orders every agent to call, served by `AgentToolBridgeService` to every family-scoped agent since HIER-P2H), is what the agent is served at runtime and what `rake claude:sync_agents` renders as the `tools:` allowlist of `.claude/agents/powernode/disk-image-manager.md`; the agent's routing description (first sentence = the Claude Code trigger, then "Use when … / Do not use for … use Fleet Autonomy") is the seed's `description`, kept under the exporter's 400-character budget.
 
 ---
 
@@ -204,9 +204,13 @@ explicit set-default swap.
      publication_id: "<previous-pub-id>"
    })
    ```
+   The verb is approval-gated on `system.disk_image_publication_promote`
+   (HIER-P2H): when policy requires approval it answers `{pending: true}`
+   with a `deferred_operation_id`, and nothing is swapped until the
+   operation is approved in the approval queue.
 
 New instances booting from this NodePlatform will use the previous image
-on next netboot.
+on next netboot once the promote has run.
 
 ### Agent-driven (autonomy loop)
 
@@ -231,7 +235,12 @@ with no `publication_id` it auto-selects the previous publication (newest
 retired, else newest published that isn't current), restores a soft-deleted
 artifact if the target was retired, and refuses purged rows or rows with no
 stored artifact. Both are supported — use revert for "go back one" ergonomics,
-set-default to pin a specific publication.
+set-default to pin a specific publication. Both are approval-gated (HIER-P2H):
+set-default on `system.disk_image_publication_promote`, revert on
+`system.disk_image_publication_rollback` — the same category the REST
+rollback door gates on. A revert without `publication_id` selects the target
+at park time and pins it into the parked operation, so the operator approves
+the publication the approval card names.
 
 ---
 
