@@ -449,6 +449,25 @@ module System
         # an explicit exposure_ids list bypassed it entirely. A caller-supplied
         # exposure list can now narrow the set but can no longer widen it past
         # the modules that actually got a dispatch.
+        #
+        # IMP-2f1c8c089113 — the transition is ONE-WAY, which the step-4 note
+        # in the class header ("so the dashboard reflects in-flight response")
+        # understates. Nothing in the platform ever moves a row back out:
+        # `System::CveExposure#resolve!` and `#remediating!` have zero callers
+        # outside their own definitions
+        # (`command grep -rn "resolve!" --include=*.rb server extensions/*/server worker
+        # | grep -v /spec/` — 23 hits, the only CveExposure one being
+        # cve_exposure.rb:23 itself), and no controller writes `state`
+        # (Api::V1::System::CveExposuresController is read-only). Since
+        # CvePublishedSensor selects `state: "open"` exclusively, every
+        # transition here is a PERMANENT exit from that sensor's view. That is
+        # tolerable only because the gate above is exact: silence is bought
+        # solely for modules something was actually dispatched for.
+        #
+        # Audited 2026-09-02 against the live control plane: 565 exposures, all
+        # `open` — zero `remediating`, `resolved` or `wont_fix` rows, so nothing
+        # is parked today. A resolver (the missing #resolve! caller) is a CVE-lane
+        # design change and is deliberately NOT introduced here.
         def transition_exposures(cve, explicit_ids, remediated_module_ids)
           scope = ::System::CveExposure.unresolved.where(cve: cve)
           scope = scope.where(id: explicit_ids) if explicit_ids.present?
