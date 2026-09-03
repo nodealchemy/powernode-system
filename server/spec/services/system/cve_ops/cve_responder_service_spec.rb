@@ -277,4 +277,36 @@ RSpec.describe System::CveOps::CveResponderService do
                    { "cve_id" => "CVE-2026-1111" }, "critical remediation")
     end
   end
+
+  # SWEEP-2026-09-03 (carried out of IMP-675ed7763230) — #bounded_error_text
+  # is a copy of BaseSkillExecutor#audit_text's body and carried the same
+  # regression that method was fixed for: dropping the token the 4x slice cut
+  # in half is `sub(/\S+\z/, "")`, which removes the trailing RUN — and a
+  # machine-generated body can be ONE unbroken run for the whole slice, so an
+  # aged-CVE dispatch failure with a long space-free provider body persisted
+  # an EMPTY reason. The strip must only apply while enough text survives to
+  # fill the bound.
+  describe "#dispatch_single bounded error text" do
+    let(:service) { described_class.new(account: account, agent: agent) }
+    let(:orchestrator) { instance_double(System::Ai::Skills::CveRemediationOrchestrationExecutor) }
+
+    it "still persists a diagnosable reason when the slice holds no whitespace at all" do
+      slice = ::System::Ai::Skills::BaseSkillExecutor::AUDIT_TEXT_LIMIT * 4
+      message = 'Faraday::TooManyRequestsError:{"errors":[{"status":"429",' \
+                '"code":"rate_limit_exceeded","resource":"provider-alpha","detail":"' +
+                ("abcdefghijklmnopqrstuvwxyz" * 100) + '"}]}'
+      expect(message.length).to be > slice
+      expect(message[0, slice]).not_to include(" ")
+      allow(orchestrator).to receive(:execute).and_return({ success: false, error: message, data: {} })
+
+      service.send(:dispatch_single, orchestrator, "CVE-2026-2222", "system.cve_remediate",
+                   { "cve_id" => "CVE-2026-2222" })
+
+      event = ::System::FleetEvent.where(account: account, kind: "cve_responder.inline_dispatch").last
+      expect(event).to be_present
+      expect(event.payload["ok"]).to be(false)
+      expect(event.payload["error"]).to be_present, "a whitespace-free provider body must still leave a reason"
+      expect(event.payload["error"]).to include("rate_limit_exceeded")
+    end
+  end
 end

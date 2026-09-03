@@ -360,7 +360,16 @@ module System
         text = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub("")
         limit = ::System::Ai::Skills::BaseSkillExecutor::AUDIT_TEXT_LIMIT
         sliced = text[0, limit * 4]
-        sliced = sliced.sub(/\S+\z/, "") if text.length > limit * 4
+        if text.length > limit * 4
+          # Drop the token the slice cut in half — but only while enough text
+          # survives to fill the bound. A machine-generated body (minified
+          # JSON, a base64 blob) can be ONE unbroken run for the whole slice,
+          # and stripping that left an EMPTY reason on exactly the failures
+          # most likely to be long (the IMP-675ed7763230 regression, fixed in
+          # #audit_text and carried here by SWEEP-2026-09-03).
+          stripped = sliced.sub(/\S+\z/, "")
+          sliced = stripped if stripped.length >= limit
+        end
         ::System::ShellOutputSanitizer.redact_text(sliced).truncate(limit)
       end
 

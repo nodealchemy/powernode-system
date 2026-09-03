@@ -52,6 +52,25 @@ RSpec.describe System::NodeModuleAssignment, "skill registration failure events"
       expect(event.payload["error_message"]).to match(/boom: kaboom/)
     end
 
+    # SWEEP-2026-09-03 (carried out of IMP-675ed7763230) — the payload is a
+    # PERSISTED, BROADCAST fleet event, and the registrar's exception text can
+    # relay a provider SDK's or an HTTP client's message. error_message was
+    # written raw (`error.message.to_s.truncate(500)`), the exact defect
+    # BaseSkillExecutor#audit_text was fixed for one file over. Redact first,
+    # then bound. Synthetic fixture — resembles no real credential.
+    it "redacts credential material from error_message before persisting the event" do
+      planted = "AKIAFAKEFAKEFAKEFAKE"
+      allow(::System::ModuleSkillRegistrar).to receive(:register_for_module!)
+        .and_raise(StandardError, "registrar refused: access key #{planted} rejected")
+
+      create(:system_node_module_assignment, node: node, node_module: node_module, enabled: true)
+      event = ::System::FleetEvent.where(account: account,
+                                         kind: "system.module_skill_registration_failed").last
+
+      expect(event.payload["error_message"]).not_to include(planted)
+      expect(event.payload["error_message"]).to include("registrar refused")
+    end
+
     it "does not raise — the assignment is still created when registrar fails" do
       expect {
         create(:system_node_module_assignment, node: node, node_module: node_module, enabled: true)

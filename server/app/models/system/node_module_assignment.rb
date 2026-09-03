@@ -101,7 +101,14 @@ module System
           node_id: node_id,
           assignment_id: id,
           error_class: error.class.name,
-          error_message: error.message.to_s.truncate(500)
+          # Redact FIRST, then bound: this is a persisted, broadcast payload and
+          # the registrar's message can relay a provider SDK's or an HTTP
+          # client's text — the same rule BaseSkillExecutor#audit_text applies
+          # (SWEEP-2026-09-03, carried out of IMP-675ed7763230). .scrub because
+          # the sanitizer's patterns raise on invalid UTF-8.
+          error_message: ::System::ShellOutputSanitizer
+                           .redact_text(error.message.to_s.dup.force_encoding(Encoding::UTF_8).scrub(""))
+                           .truncate(500)
         },
         source: "node_module_assignment",
         node_id: node_id,
