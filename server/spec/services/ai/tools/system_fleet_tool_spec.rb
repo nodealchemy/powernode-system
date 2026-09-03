@@ -5514,8 +5514,12 @@ end
       r = call("system_acquire_pooled_instance", pool_id: pool.id)
 
       expect(r[:success]).to be true
-      # Equality, not existence: `data` carries the payload itself.
-      expect(r[:data].keys).to contain_exactly(:instance)
+      # Equality, not existence: `data` carries the payload itself. `claim`
+      # joined `instance` at the top level in IMP-68403ec0358d — it is the
+      # acquisition's own record (id + attribution), deliberately NOT nested
+      # under `instance`, because the member row loses its claim columns on
+      # release and the claim record is what outlives that.
+      expect(r[:data].keys).to contain_exactly(:instance, :claim)
       expect(r[:data][:instance][:id]).to eq(ready_member.id)
       # ...and it names a real NodeInstance row, not just a matching id.
       expect(::System::NodeInstance.find(r[:data][:instance][:id])).to eq(ready_member)

@@ -80,11 +80,26 @@ module System
     DEFAULT_ERRORED_TERMINATE_BACKOFF_SECONDS = 300 # 5 min
     DEFAULT_ERRORED_TERMINATE_BACKOFF_CAP_SECONDS = 3600 # 1 hour
 
-    def self.acquire!(account:, pool_name: nil, pool_id: nil, lifecycle_class: nil)
+    # IMP-68403ec0358d — the claim ledger's event kinds. `claimed` is written
+    # inside acquire!'s transaction; `released` is written by release! on every
+    # disposition it has. The pair is correlated by a minted claim id.
+    CLAIM_EVENT_KIND = "system.pool.claimed"
+    RELEASE_EVENT_KIND = "system.pool.released"
+
+    # The claim id minted by the most recent #acquire! on THIS service instance
+    # (nil before the first one). #acquire! has to keep returning the member —
+    # four internal callers and the MCP verb read it directly — so the id is
+    # exposed here rather than by changing that return type.
+    attr_reader :last_claim_id
+
+    def self.acquire!(account:, pool_name: nil, pool_id: nil, lifecycle_class: nil,
+                      acquired_by: nil, acquired_for: nil)
       new(account: account).acquire!(
         pool_name: pool_name,
         pool_id: pool_id,
-        lifecycle_class: lifecycle_class
+        lifecycle_class: lifecycle_class,
+        acquired_by: acquired_by,
+        acquired_for: acquired_for
       )
     end
 
@@ -115,7 +130,12 @@ module System
     #   1. Specific pool_id if provided
     #   2. Specific pool_name if provided
     #   3. Any active pool with matching lifecycle_class + ready members
-    def acquire!(pool_name: nil, pool_id: nil, lifecycle_class: nil)
+    #
+    # CALLER ATTRIBUTION (IMP-68403ec0358d). `acquired_by` (the claiming actor)
+    # and `acquired_for` (the workload) are free text, both optional, and are
+    # recorded on a durable claim record — see #record_claim!.
+    def acquire!(pool_name: nil, pool_id: nil, lifecycle_class: nil,
+                 acquired_by: nil, acquired_for: nil)
       pool = resolve_pool!(pool_name: pool_name, pool_id: pool_id, lifecycle_class: lifecycle_class)
       # F2-02 — draining pools never hand out members. drain! terminates
       # all ready inventory immediately, so anything still acquirable in a
@@ -134,14 +154,21 @@ module System
                                    "(target=#{pool.target_size}, ready=#{pool.ready_count}, " \
                                    "warming=#{pool.warming_count}). Reaper will replenish." unless member
 
+        acquired_at = Time.current
         member.update!(
           pool_state: "claimed",
-          pool_acquired_at: Time.current
+          pool_acquired_at: acquired_at
         )
+
+        # INSIDE the transaction, and deliberately not through
+        # EventBroadcaster.emit! — see #record_claim!.
+        record_claim!(pool: pool, member: member, acquired_at: acquired_at,
+                      acquired_by: acquired_by, acquired_for: acquired_for)
 
         Rails.logger.info(
           "[InstancePoolService] acquired pool member " \
-          "pool_id=#{pool.id} member_id=#{member.id} " \
+          "pool_id=#{pool.id} member_id=#{member.id} claim_id=#{@last_claim_id} " \
+          "acquired_by=#{acquired_by.inspect} acquired_for=#{acquired_for.inspect} " \
           "ready_remaining=#{pool.ready_count} warming=#{pool.warming_count}"
         )
 
@@ -159,8 +186,40 @@ module System
     # of the pool is in the same trust domain.
     #
     # Returns "reused" (opt-in path: member back to ready, TTL anchor reset)
-    # or "recycled" (default path). Callers own the claimed-state guard.
+    # or "recycled" (default path), or "errored" when the recycle's terminate
+    # failed. Callers own the claimed-state guard.
+    #
+    # IMP-68403ec0358d — this is also where the claim ledger is CLOSED. The
+    # attribution has to be read back AFTER the release, which is exactly what
+    # a member-row column cannot survive: both branches below null
+    # pool_acquired_at, so anything stamped on the row at acquire time is gone
+    # the moment the member is returned. #record_release! copies the
+    # attribution onto the closing record so the release row answers "who used
+    # this" on its own, and it fires on ALL THREE dispositions — including
+    # "errored", where the member rests with a VM that may still exist and
+    # still bill, which is the single case attribution matters most for.
     def release!(instance:, pool:)
+      claim = open_claim_event_for(instance)
+      acquired_at = instance.pool_acquired_at
+
+      disposition = perform_release!(instance: instance, pool: pool)
+
+      # DELIBERATELY NOT one transaction with #perform_release!, unlike the
+      # acquire side. The recycle branch of #perform_release! calls the
+      # PROVIDER (terminate_member -> ProvisioningService.terminate_instance),
+      # so a wrapping transaction would both hold a DB transaction open across
+      # a network call and — on a ledger failure — roll back the DB half of a
+      # termination that already happened at the provider, leaving the member
+      # recorded as claimed while its VM is gone. Fail-closed is right at
+      # acquire (nobody should hold an unattributed member); at release the
+      # disposition is the irreversible half, so it commits and a ledger
+      # failure raises LOUDLY afterwards rather than un-doing it.
+      record_release!(pool: pool, instance: instance, claim: claim,
+                      acquired_at: acquired_at, disposition: disposition)
+      disposition
+    end
+
+    private def perform_release!(instance:, pool:)
       if pool&.metadata.is_a?(Hash) && pool.metadata["reuse_without_reset"]
         # A1' security (F5): reuse-without-reset returns the member to service
         # WITHOUT terminating, so finalize_termination!'s revoke never runs.
@@ -796,6 +855,137 @@ module System
     end
 
     private
+
+    # === Claim ledger (IMP-68403ec0358d) ===
+    #
+    # WHY A LEDGER AND NOT COLUMNS. The offer that asked for this recommended
+    # generalising System::CiRunnerLease, and its reason is the deciding one:
+    # the motive is COST AND AUDIT attribution, and #release! CLEARS the
+    # member's claim columns on every disposition (`pool_acquired_at: nil` on
+    # both branches). Attribution that vanishes when the thing is returned
+    # cannot answer "who used this last month", which is the only question
+    # worth asking. So the record has to outlive the claim.
+    #
+    # WHY FleetEvent AND NOT A NEW TABLE. CiRunnerLease is a table because a
+    # LEASE carries mutable lifecycle state — an AASM column, expires_at,
+    # runner correlation — that has to be queried as CURRENT state and
+    # transitioned. An attribution record has no state: it is an append-only
+    # fact about a moment. system_fleet_events is already the platform's
+    # account-scoped, instance-referencing, correlation-keyed record of exactly
+    # such facts, and it already has a read path on both doors — MCP
+    # (`system_recent_signals`) and REST
+    # (Api::V1::System::FleetController#signals), both filtering by `kind` and
+    # by `correlation_id`. NOT the ActionCable feed, for these two kinds: see
+    # the last paragraph. Building a second ledger beside it would have bought
+    # an index and cost a schema migration, a model, a controller, a
+    # serializer and a read verb.
+    #
+    # THE HORIZON THIS BUYS, STATED PLAINLY. FleetEvents ARE pruned: the
+    # nightly sweep at Api::V1::System::WorkerApi::FleetController#retention_sweep
+    # deletes low/medium rows past POWERNODE_FLEET_EVENT_RETENTION_DAYS
+    # (default 90) and high/critical rows past the critical window (default
+    # 365). These two are `low`, so the ledger answers "who used this last
+    # month" — the question the offer was filed to answer — and roughly the
+    # last quarter, but it is NOT a permanent cost archive. Raising the
+    # severity to buy the longer window is the wrong lever: on both terminate
+    # kinds (`terminate_failed`, `terminate_abandoned`) `high` already means "a
+    # VM may still be billing", and every `high` row feeds
+    # FleetEvent.high_or_critical, so borrowing it would page on a routine
+    # claim. A retention horizon longer than the sweep's is the case for a
+    # dedicated table, and it is the only thing that case rests on.
+    #
+    # WHY NOT EventBroadcaster.emit!. That seam is explicitly best-effort — it
+    # rescues StandardError and returns nil — so a failed insert would leave
+    # the caller believing the attribution was recorded when it was discarded,
+    # which is the exact failure mode this capability exists to end (the MCP
+    # door used to accept `acquired_by` and drop it silently). These two writes
+    # go straight to the model so a failure is loud. The claim write sits
+    # INSIDE acquire!'s transaction: if the ledger cannot record who is taking
+    # the member, the claim rolls back and nobody gets an unattributed member.
+    # The price, paid knowingly: these two kinds do NOT reach SystemFleetChannel,
+    # because the ActionCable push lives inside that seam. They are a queryable
+    # record, not a live feed — and a record that can be silently lost is not a
+    # record at all.
+    def record_claim!(pool:, member:, acquired_at:, acquired_by:, acquired_for:)
+      @last_claim_id = ::UUID7.generate
+
+      ::System::FleetEvent.create!(
+        account: @account,
+        kind: CLAIM_EVENT_KIND,
+        severity: "low",
+        source: "instance_pool_service",
+        correlation_id: @last_claim_id,
+        node_id: member.node_id,
+        node_instance_id: member.id,
+        payload: {
+          "claim_id" => @last_claim_id,
+          "pool_id" => pool.id,
+          "pool_name" => pool.name,
+          "node_instance_id" => member.id,
+          "instance_name" => member.name,
+          "acquired_by" => acquired_by.presence,
+          "acquired_for" => acquired_for.presence,
+          "acquired_at" => acquired_at&.utc&.iso8601
+        }
+      )
+    end
+
+    # The open claim for a member is its MOST RECENT claim event: a member is
+    # claimed by at most one consumer at a time, and every release closes the
+    # last claim, so a reused member's second claim is the one a second release
+    # is closing. Nil for a member claimed before this ledger shipped — the
+    # release is still recorded (see #record_release!), because the disposition
+    # is the half of the record that cannot be reconstructed afterwards.
+    # Scoped by @account, the SAME source #record_claim! and #record_release!
+    # write with. Reading by instance.account_id instead would silently miss
+    # every claim whenever a member's own account differs from the pool's —
+    # a lookup that cannot find rows it wrote is worse than no lookup.
+    def open_claim_event_for(instance)
+      ::System::FleetEvent
+        .where(account: @account, kind: CLAIM_EVENT_KIND, node_instance_id: instance.id)
+        # emitted_at defaults to now(), which inside a transaction is the
+        # TRANSACTION's start time — two rows written in one transaction can
+        # tie. id is uuidv7 and therefore time-ordered, so it breaks the tie
+        # deterministically rather than leaving the pick to the planner.
+        .order(emitted_at: :desc, id: :desc)
+        .first
+    end
+
+    # Copies the attribution FORWARD onto the closing record rather than only
+    # correlating to the claim event. That is what makes the release row answer
+    # "who used this" on its own: an auditor summing held_seconds by
+    # acquired_by over last month reads one kind, with no self-join.
+    def record_release!(pool:, instance:, claim:, acquired_at:, disposition:)
+      released_at = Time.current
+      claim_payload = claim&.payload.is_a?(Hash) ? claim.payload : {}
+      started_at = acquired_at || claim_payload["acquired_at"]&.then { |t| Time.zone.parse(t.to_s) }
+
+      ::System::FleetEvent.create!(
+        # @account, not pool&.account || instance.account: the release row has
+        # to land where #record_claim! wrote the claim and where
+        # #open_claim_event_for reads it, or the pair stops correlating.
+        account: @account,
+        kind: RELEASE_EVENT_KIND,
+        severity: "low",
+        source: "instance_pool_service",
+        correlation_id: claim&.correlation_id,
+        node_id: instance.node_id,
+        node_instance_id: instance.id,
+        payload: {
+          "claim_id" => claim&.correlation_id,
+          "pool_id" => pool&.id,
+          "pool_name" => pool&.name,
+          "node_instance_id" => instance.id,
+          "instance_name" => instance.name,
+          "disposition" => disposition,
+          "acquired_by" => claim_payload["acquired_by"],
+          "acquired_for" => claim_payload["acquired_for"],
+          "acquired_at" => started_at&.utc&.iso8601,
+          "released_at" => released_at.utc.iso8601,
+          "held_seconds" => started_at ? (released_at - started_at).round : nil
+        }
+      )
+    end
 
     # Terminate one pool member, returning whether it actually happened.
     #

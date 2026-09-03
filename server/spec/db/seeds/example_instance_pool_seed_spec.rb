@@ -34,9 +34,15 @@ require "rails_helper"
 #      for `return!(claim_id:)` (no such method), for `release!(claim_id:)`
 #      (real method, phantom keyword), and it survives a rename of either.
 #
-# `claim_id` is the same phantom identifier IMP-ebc1d180dc10 withdrew from
-# docs/runbooks/instance-pool-tuning.md. There is no claim record: the claimed
-# instance row IS the handle.
+# `claim_id` WAS a phantom identifier when this spec was written —
+# IMP-ebc1d180dc10 withdrew it from docs/runbooks/instance-pool-tuning.md
+# because nothing minted one. IMP-68403ec0358d then built the record it named:
+# acquire! writes a `system.pool.claimed` FleetEvent carrying claim_id /
+# acquired_by / acquired_for, and release! closes it with
+# `system.pool.released`. What is STILL phantom is the return-handle reading of
+# that id — there is no `return!`, no `release!(claim_id:)`, and no claims
+# table; the claimed instance row remains the handle. The guard below is scoped
+# to that residue, not to the vocabulary itself.
 RSpec.describe "example_instance_pool seed — demo claim" do
   let!(:account) { create(:account, name: "Powernode Admin") }
   let!(:user)    { create(:user, account: account, email: "admin@powernode.org") }
@@ -212,13 +218,21 @@ RSpec.describe "example_instance_pool seed — demo claim" do
       end
     end
 
-    it "does not resurrect the phantom claim-record vocabulary" do
-      # There is no claim row and therefore no claim id — the same wording
-      # IMP-ebc1d180dc10 withdrew from docs/runbooks/instance-pool-tuning.md.
-      # Guarded here because this seed is its plausible ancestor.
+    it "names the claim record with the vocabulary that actually ships" do
+      # This example used to forbid claim_id / acquired_by / acquired_for
+      # outright, on the (then true) grounds that no claim record existed.
+      # IMP-68403ec0358d shipped it, so forbidding the words would now forbid
+      # the truth — the trap this loop keeps hitting from the other side. The
+      # guard is re-scoped to what remains phantom: a claim id used as a RETURN
+      # HANDLE (`return!`, `release!(claim_id:)`) and a claims TABLE. The
+      # positive half pins that the seed actually names the shipped record, so
+      # the operator copying it can read the attribution back.
       output, = run_seed
 
-      expect(output).not_to match(/claim_id|acquired_by|acquired_for/)
+      expect(output).not_to match(/return!/)
+      expect(output).not_to match(/release!\([^)]*claim_id/)
+      expect(output).not_to match(/system_pool_claims/)
+      expect(output).to include("system.pool.claimed")
     end
   end
 

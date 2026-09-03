@@ -1774,13 +1774,22 @@ module Ai
             parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to drain (account-scoped)" } }
           },
           "system_acquire_pooled_instance" => {
-            description: "Atomically claim the oldest ready member from a pool. Returns the NodeInstance immediately (no provision wait).",
+            description: "Atomically claim the oldest ready member from a pool. Returns the NodeInstance immediately (no provision wait), plus the claim record that carries the caller attribution. Read claims back with system_recent_signals filtered on kind system.pool.claimed / system.pool.released, or on the returned claim id as correlation_id.",
             parameters: {
               pool_name: { type: "string", required: false, description: "Specific pool to acquire from" },
               pool_id: { type: "string", required: false, description: "Specific pool by ID" },
               lifecycle_class: { type: "string", required: false,
                                  enum: ::System::InstancePool::LIFECYCLE_CLASSES,
-                                 description: "Acquire from any matching pool when name/id absent: ephemeral | spot" }
+                                 description: "Acquire from any matching pool when name/id absent: ephemeral | spot" },
+              # IMP-68403ec0358d — DECLARED, not passed through undeclared.
+              # BaseTool#validate_params! only checks that required parameters
+              # are present and never rejects an unknown key, so an undeclared
+              # attribution argument is accepted and discarded in silence. That
+              # is what these two used to do.
+              acquired_by: { type: "string", required: false,
+                             description: "Free text identifying the claiming actor, recorded on the durable claim record (e.g. a CI job id)" },
+              acquired_for: { type: "string", required: false,
+                              description: "Free text identifying the workload the member is claimed for, recorded on the durable claim record (e.g. a pipeline name)" }
             }
           },
           "system_replenish_instance_pool" => {
@@ -6455,14 +6464,29 @@ module Ai
         success_result(pool: pool.reload.to_summary, drain_result: result)
       end
 
+      # IMP-68403ec0358d — the instance form of the service is used here (not
+      # the class method) so the minted claim id can be read back off the
+      # service and returned. `claim` is a top-level payload key beside
+      # `instance` because it is a record about the ACQUISITION, not a column
+      # on the member: the member row loses its claim columns on release, the
+      # claim record does not.
       def acquire_pooled_instance(params)
-        instance = ::System::InstancePoolService.acquire!(
-          account: @account,
+        service = ::System::InstancePoolService.new(account: @account)
+        instance = service.acquire!(
           pool_name: params[:pool_name],
           pool_id: params[:pool_id],
-          lifecycle_class: params[:lifecycle_class]
+          lifecycle_class: params[:lifecycle_class],
+          acquired_by: params[:acquired_by],
+          acquired_for: params[:acquired_for]
         )
         success_result(
+          claim: {
+            id: service.last_claim_id,
+            acquired_by: params[:acquired_by].presence,
+            acquired_for: params[:acquired_for].presence,
+            acquired_at: instance.pool_acquired_at&.utc&.iso8601,
+            event_kind: ::System::InstancePoolService::CLAIM_EVENT_KIND
+          },
           instance: {
             id: instance.id,
             name: instance.name,

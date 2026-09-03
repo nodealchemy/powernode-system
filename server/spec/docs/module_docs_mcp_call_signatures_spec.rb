@@ -197,6 +197,14 @@ module ModuleDocsMcpCallSignatures
     # instance_id. Those were the file's ONLY two failing sites — its other
     # six call sites already passed — so it graduates straight to COVERED_DOCS
     # and gets whole-file coverage rather than a per-verb COVERED_CALLS entry.
+    #
+    # DATED, read as history: IMP-68403ec0358d then BUILT the capability the
+    # withdrawn text promised — `acquired_by` and `acquired_for` are now
+    # DECLARED on system_acquire_pooled_instance, and acquire! writes a durable
+    # `system.pool.claimed` FleetEvent (closed by `system.pool.released`)
+    # carrying a minted claim id. The paragraph above describes why this file
+    # entered COVERED_DOCS, not what the verb accepts today; the multiset check
+    # below resolves against the live catalog either way.
     # The withdrawal note added a 9th site: the system_lease_ci_runner call in
     # the Phase 2 blockquote, which the parser matches inside prose and which
     # this file therefore now checks too.
@@ -348,10 +356,14 @@ module ModuleDocsMcpCallSignatures
       system_gitops_get_sync_run system_gitops_list_repositories system_gitops_register_repository
       system_gitops_sync_repository
     ],
+    # IMP-68403ec0358d added a tenth site: the system_recent_signals call that
+    # reads the claim ledger back. It is the only documented READ path for the
+    # attribution this runbook now promises, so it is pinned like the rest.
     "docs/runbooks/instance-pool-tuning.md" => %w[
       system_acquire_pooled_instance system_create_instance_pool system_delete_instance_pool
       system_drain_instance_pool system_get_instance system_get_instance_pool
-      system_lease_ci_runner system_return_pooled_instance system_terminate_instance
+      system_lease_ci_runner system_recent_signals system_return_pooled_instance
+      system_terminate_instance
     ],
     "docs/tutorials/05-multi-cluster-k3s.md" => %w[
       kubernetes_decommission_cluster kubernetes_get_kubeconfig kubernetes_get_kubeconfig

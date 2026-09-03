@@ -84,22 +84,34 @@ end
 
 # ── Demo claim ────────────────────────────────────────────────────────────
 
-# `acquire!` takes (pool_name:, pool_id:, lifecycle_class:) — no caller-
-# attribution kwargs in the current API. Resolve by pool_id; rescue the
-# expected NoReadyMembersError that fires before the reaper has had a
-# chance to provision warm members.
+# `acquire!` takes (pool_name:, pool_id:, lifecycle_class:) plus the two
+# optional caller-attribution kwargs added by IMP-68403ec0358d — `acquired_by`
+# (who is claiming) and `acquired_for` (what for), both free text. Resolve by
+# pool_id; rescue the expected NoReadyMembersError that fires before the reaper
+# has had a chance to provision warm members.
 begin
   # `acquire!` returns the claimed ::System::NodeInstance itself — the last
-  # expression of its transaction block — not a result Hash. There is no claim
-  # record and therefore no claim id: the instance row IS the handle, which is
-  # why the return verbs below take `instance:` and `instance_id:`.
-  claimed = replenisher.acquire!(pool_id: pool.id)
+  # expression of its transaction block — not a result Hash. The instance row
+  # is still the handle the return verbs take (`instance:` / `instance_id:`);
+  # the claim id is a correlation key for the ledger, not a return handle.
+  claimed = replenisher.acquire!(
+    pool_id: pool.id,
+    acquired_by: "example_instance_pool seed",
+    acquired_for: "pool demo claim"
+  )
   puts "  ✅ Claimed instance: #{claimed.name} (#{claimed.id})"
   puts "       pool_state=#{claimed.pool_state} " \
        "acquired_at=#{claimed.pool_acquired_at&.iso8601} " \
        "(claim atomic via SELECT FOR UPDATE SKIP LOCKED)"
   puts "       To return: ::System::InstancePoolService.release!(instance: claimed, pool: pool)"
   puts "       From MCP:  system_return_pooled_instance({ instance_id: '#{claimed.id}' })"
+  # IMP-68403ec0358d — the claim is now also recorded durably, as a
+  # system.pool.claimed FleetEvent closed by a system.pool.released row on
+  # release. That record outlives the claim columns (release nulls
+  # pool_acquired_at), which is what makes "who used this last month"
+  # answerable at all. Read it back without a new verb:
+  puts "       Attribution recorded on the claim record (kind system.pool.claimed)."
+  puts "       Read it back: system_recent_signals({ kind: 'system.pool.claimed', limit: 20 })"
 rescue ::System::InstancePoolService::NoReadyMembersError => e
   puts "  ℹ️  #{e.message}"
   puts "       The system_pool_replenish Sidekiq job promotes warming → ready"
