@@ -410,8 +410,11 @@ only** — `system.instance_pool_create`, `_delete`, `_ceiling_raise`,
 `_acquire`) get no operator row, because editing one changed nothing: the
 control rendered, saved, and was read by no code path — `_drain` most
 misleadingly of all, since it declares `require_approval` and nothing enforces
-it. They are still declared, still carried on the **Fleet Autonomy agent's**
-policy set (which is what the agent-dispatch path resolves), and an
+it. They are still declared, still carried on the **Capacity Manager agent's**
+policy set (`PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, seeded by
+`db/seeds/system_capacity_manager_agent.rb` since HIER-P2B; before that the
+`instance-pool-agent` set on Fleet Autonomy — which is what the agent-dispatch
+path resolves when the verb is called AS that agent), and an
 operator-authored row for one still validates and saves. Gaining a gate site is
 what puts a verb back on the operator set.
 
