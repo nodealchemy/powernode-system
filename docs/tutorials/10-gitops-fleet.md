@@ -273,7 +273,19 @@ platform.system_gitops_register_repository({
   vault_credential_path: "secret/data/powernode/gitops/fleet-deploy-key"
 })
 // → { repository: { id: "gitops-repo-1", last_status: "pending", ... } }
+//   ...OR, when policy requires approval (the seeded default):
+// → { pending: true, approval_request_id: "...", deferred_operation_id: "..." }
 ```
+
+**This verb is approval-gated** (`system.gitops_register_repository`, seeded
+`require_approval` in `GITOPS_RECONCILER_POLICIES`): a registered repository is
+the input to every later sync and apply, so on the default policy the call
+returns `pending: true` and **no repository exists** until an operator approves
+the request. Approve it in the Autonomy modal (or set the category to
+`auto_approve` for this agent) and the registration runs on replay, returning
+the `repository` shape above. The parameters are validated *before* the
+approval is queued, so a bad `repo_url` still fails inline rather than parking
+a request that could only fail later.
 
 `vault_credential_path` is a Vault KV path, not a credential id. Store
 **one** of the two shapes at that path, matching your remote:
@@ -282,7 +294,8 @@ platform.system_gitops_register_repository({
 `RepoSyncService#build_git_env` picks by URL scheme. Inline credentials in
 `repo_url` (`https://user:pass@...`) are rejected at validation.
 
-**Expected outcome:** repo registered; reconciler will pull on the platform's
+**Expected outcome:** the registration is approved and the repo registered (or
+`pending: true` until it is); once registered, the reconciler will pull on the platform's
 fixed 5-minute tick and any time `system_gitops_sync_repository` is invoked.
 The interval is **not** per-repository — `GitopsRepository.due_for_sync` is
 called with a hardcoded 5-minute staleness
@@ -327,14 +340,18 @@ to `system_gitops_get_sync_run` below. REST offers the same trigger, and is
 still the only way to LIST past runs: no MCP verb enumerates them.
 
 ```bash
-# Trigger + get the run id in one call (the REST twin of Step 3). Unlike the
-# MCP verb, this endpoint answers 2xx for a reconcile that FAILED — branch on
-# the returned run's `status`/`error_message`, not on the HTTP status — and on
-# a standby control plane it creates a run and finalizes it `success` with a
-# `skipped` note in `diff_summary` instead of refusing.
+# Trigger + get the run id in one call (the REST twin of Step 3). Since
+# SWEEP-2026-09-03 this endpoint matches the MCP verb: a reconcile that FAILED
+# answers 422 with the reason in `error` and the same payload under `details`
+# (the run included, so it is still reachable), and a standby control plane
+# answers 409 `standby_control_plane` and creates NO run. Branch on the HTTP
+# status; it used to answer 2xx for both, which is why the older advice here
+# said to read the run's `status` instead.
 curl -X POST -H "Authorization: Bearer $JWT" \
   http://localhost:3000/api/v1/system/gitops_repositories/gitops-repo-1/sync_now
-# → { sync_run: { id, status, error_message, ... }, ok, diff_count, proposal_ids, diff_summary }
+# 200 → { sync_run: { id, status, error_message, ... }, ok, diff_count, proposal_ids, diff_summary }
+# 422 → { success: false, error: "...", details: { sync_run: {...}, ok: false, ... } }
+# 409 → { success: false, error: "standby control plane — ...", code: "standby_control_plane" }
 
 # Or list the timeline of past runs
 curl -H "Authorization: Bearer $JWT" \

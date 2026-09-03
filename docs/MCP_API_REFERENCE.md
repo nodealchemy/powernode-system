@@ -174,7 +174,7 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 |---|---|---|
 | `system_gitops_list_repositories` | List the account's registered repositories — over MCP, the only way to discover their ids | operator, agent |
 | `system_gitops_get_repository` | Read one repository's configuration + credential contract (`vault_credential_path`, `required_credential_keys` — path and key NAMES, never values) | operator, agent |
-| `system_gitops_register_repository` | Register a Git repository as a fleet-state source (URL + branch + auth ref) | operator, agent |
+| `system_gitops_register_repository` | Register a Git repository as a fleet-state source (URL + branch + auth ref). **Approval-gated** under `system.gitops_register_repository` (`Ai::AutonomyGate`, replayed by `Ai::Executors::DeferredToolCall`): when policy requires approval it answers `pending: true` and **no repository exists** until an operator approves. Parameters are validated before the request is queued, so a rejected `repo_url` still fails inline | operator, agent |
 | `system_gitops_sync_repository` | Trigger a sync (fetch + parse fleet.yaml + compute diff against effective state). A FAILED reconcile answers `success: false` with the reason in `error` (`sync_run_id` still under `data`); on a standby control plane it refuses with `refusal_code: "standby_control_plane"` and creates no run | operator, agent |
 | `system_gitops_get_sync_run` | Fetch one sync run with the diff payload + proposed change set | operator, agent |
 | `system_gitops_get_drift_report` | Per-repository drift summary (rows that diverge from declared state) | operator, agent |
@@ -283,6 +283,7 @@ Backed by `Ai::Tools::SystemIngressTool` (wraps the `ExposeServicePublicly` / `A
 | Action | What it does | Audience |
 |---|---|---|
 | `system_expose_service_publicly` | Expose a service end-to-end: create/reuse an SDWAN VIP, port-map it on the hub, provision a TLS cert for the hostname, regenerate the reverse proxy | operator, agent |
+| `system_set_service_backends` | Declare a published service's backend set — the list IS the set (upsert by address, remove what is absent, `[]` clears back to the legacy single backend) with an explicit `backend_port` per member, plus per-service load-balancer overrides. **Approval-gated** under `system.service_backends_update` (`require_approval` by default) — `pending: true` means the set is NOT yet written. `system_get_service` reports `out_of_rotation: true` when every declared member is draining (no router is rendered for it) | operator, agent |
 | `system_acme_provision_certificate` | Issue an ACME TLS certificate for a hostname (dns-01 / http-01 / tls-alpn-01); stored as a `System::AcmeCertificate` | operator, agent |
 | `system_acme_create_dns_credential` | Create + verify a DNS-01 provider credential (cloudflare, route53, gcloud, digitalocean, hetzner, porkbun, ovh) | operator, agent |
 | `system_acme_get_certificate` | Fetch a single `System::AcmeCertificate` (status / expiry / SANs) | operator, agent |

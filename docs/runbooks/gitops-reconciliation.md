@@ -12,8 +12,12 @@ and recovering from common failure modes.
 needing PR-based change control.
 
 **Apply maturity (v1):** parser, diff engine, reconciler, the drift sensor,
-and `ApplyService` all ship today. Approving a proposal calls
-`system_gitops_apply_proposal`, which runs `ApplyService` to make the change.
+and `ApplyService` all ship today. Approving the `Ai::AgentProposal` says the
+diff is wanted; the `system.gitops_apply_proposal` gate says an agent may write
+it — `system_gitops_apply_proposal` is approval-gated under that category
+(`require_approval` by default, IMP-0b4f18ae4384), so an agent's call answers
+`pending: true` with a SECOND approval request, and `ApplyService` runs only
+when that is approved (or the row is tuned to `auto_approve`).
 **Reconciler-driven auto-apply is wired** — on an `auto_apply` repo the
 every-5-min reconciler auto-approves + applies non-destructive diffs without an
 operator step (see "Step 4 — Apply"). Two carve-outs remain v1-conservative:
@@ -52,8 +56,8 @@ sequenceDiagram
     Parse->>Diff: compare vs live DB
     Diff->>Prop: open one proposal per change<br/>(capped at POWERNODE_GITOPS_<br/>MAX_PROPOSALS_PER_TICK)
     Prop-->>Op2: appear in /app/approvals
-    Op2->>Apply: approve →<br/>system_gitops_apply_proposal
-    Apply->>DB: apply this proposal's diff<br/>(template/module/assignment)
+    Op2->>Apply: approve →<br/>system_gitops_apply_proposal<br/>(parks under the system.gitops_apply_proposal<br/>gate until that approval is granted too)
+    Apply->>DB: apply this proposal's diff<br/>(template/module/assignment/pool/platform)
     DB-->>Apply: success / stale conflict / unsupported
     Apply->>Prop: mark proposal implemented
 ```
@@ -183,8 +187,11 @@ curl -X POST http://localhost:3000/api/v1/system/gitops_repositories/<id>/sync_n
   -H "Authorization: Bearer $JWT"
 ```
 
-Permission: `system.gitops.sync`. Returns the `GitopsSyncRun` + any
-proposals opened.
+Permission: `system.gitops.sync`. On success returns the `GitopsSyncRun` + any
+proposals opened. A FAILED reconcile answers **422** (reason in `error`, the
+same payload under `details`) and a standby control plane answers **409**
+`standby_control_plane` with no run minted — branch on the HTTP status, not on
+the run's own fields (SWEEP-2026-09-03).
 
 Or wait — the cron runs every 5 min by default.
 
@@ -204,7 +211,12 @@ approve or change the source.
 ## Step 4 — Apply (auto vs gated)
 
 **`auto_apply: false`** (default) — every diff requires operator approval.
-Approving a proposal calls `system_gitops_apply_proposal` → `ApplyService`.
+Approving the `Ai::AgentProposal` says the diff is wanted; the
+`system.gitops_apply_proposal` gate says an agent may write it.
+`system_gitops_apply_proposal` parks with `pending: true` under that category
+(`require_approval` by default) and `ApplyService` runs on that second
+approval — an operator who approves the proposal and then sees `pending: true`
+has one more approval to grant, not a failed apply.
 Recommended until your team's PR review process is mature enough that git
 itself is trusted as the source of truth.
 
@@ -234,7 +246,7 @@ reconcile continues. Restrict `auto_apply: true` to repos where:
 
 ```mermaid
 flowchart TD
-    Approve[Operator approves proposal<br/>→ system_gitops_apply_proposal<br/>OR reconciler auto-apply<br/>on an auto_apply repo] --> Apply[ApplyService.apply!<br/>for that proposal]
+    Approve[Operator approves proposal<br/>→ system_gitops_apply_proposal<br/>parks under the system.gitops_apply_proposal<br/>gate until approved<br/>OR reconciler auto-apply<br/>on an auto_apply repo] --> Apply[ApplyService.apply!<br/>for that proposal]
     Apply --> TXN{atomic transaction<br/>per resource}
     TXN -->|success| Mark[proposal.status = implemented<br/>+ FleetEvent]
     TXN -->|stale conflict| Stale[Reject as stale<br/>operator re-syncs for a fresh proposal]

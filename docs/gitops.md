@@ -147,8 +147,11 @@ curl -X POST http://localhost:3000/api/v1/system/gitops_repositories/<id>/sync_n
   -H "Authorization: Bearer $JWT"
 ```
 
-Permission: `system.gitops.sync`. Returns the sync run + any proposals
-opened.
+Permission: `system.gitops.sync`. On success returns the sync run + any
+proposals opened. A reconcile that FAILED answers **422** with the reason in
+`error` and the same payload (run included) under `details`; a standby control
+plane answers **409** `standby_control_plane` and creates no run
+(SWEEP-2026-09-03 — this route used to answer 200 for both).
 
 ### 3. Review the proposal queue
 

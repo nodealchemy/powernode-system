@@ -3,8 +3,9 @@
 module System
   module Gitops
     # Applies an approved GitOps Proposal — converts the diff payload into
-    # actual DB changes (creates Templates, Modules, Assignments per the
-    # proposal's desired state).
+    # actual DB changes (creates/updates templates, modules, assignments,
+    # instance pools and platform deployments per the proposal's desired
+    # state — the five kinds the v1 scope below enumerates).
     #
     # The Reconciler creates proposals; this service consumes them after
     # operator approval. Together they form the GitOps reconciliation cycle:
