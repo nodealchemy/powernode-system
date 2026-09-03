@@ -126,7 +126,14 @@ module System
       # and the schedule family the snapshot sensor will route to.
       "storage"           => %w[system.storage_ system.restore_volume system.volume_snapshot_],
       # Service exposure + certificate issuance (APO-1c gated executors).
-      "ingress"           => %w[system.expose_service_ system.acme_certificate_],
+      # system.service_backends_ — the SystemIngressTool backend-set gate
+      # (IMP-0c10b9fd5596). This is a UI BUCKET, not an ownership claim: the
+      # category is declared in FLEET_AUTONOMY_POLICIES and gated by Fleet
+      # Autonomy, and HIER-P2A deliberately left that alone. Filed here only
+      # so it does not strand in the "other" catch-all the panel drops
+      # (autonomy_domain_pivot_spec); HIER-P2D still decides whether the
+      # category itself travels with the ingress group.
+      "ingress"           => %w[system.expose_service_ system.acme_certificate_ system.service_backends_],
       # Platform-deployment scaling (APO-3b): the hub-excluded replica reconciler.
       "platform"          => %w[system.platform.],
       # DELIBERATE: project.* is core-owned (Ai::InterventionPolicy::STATIC_CATEGORIES). Claiming it here is a
