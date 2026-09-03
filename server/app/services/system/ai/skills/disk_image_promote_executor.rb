@@ -7,19 +7,23 @@ module System
       # promote a verified disk-image publication to its NodePlatform's active
       # default. Thin over System::Executors::DiskImage::PromotePublication —
       # the same transaction the system_set_default_disk_image_publication MCP
-      # verb and DiskImagePublicationsController run — and it takes that verb's
-      # admission rule (status "published" only; a retired publication is the
-      # ROLLBACK skill's business), so the three doors agree on what a promote
-      # accepts.
+      # verb runs — and it takes that verb's admission rule (status "published"
+      # only; a retired publication is the ROLLBACK skill's business), so both
+      # promote doors agree on what a promote accepts. There is no REST promote
+      # door: DiskImagePublicationsController serves index/show/rollback only
+      # (routes.rb — `resources :disk_image_publications, only: %i[index show]`
+      # plus the member `rollback_disk_image` POST), and no controller calls
+      # PromotePublication.
       #
       # Gated on the agent's own declared row, `system.disk_image_publication_
       # promote` (PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES,
       # require_approval): declaring THAT spelling rather than the derived
       # "system.disk_image_promote" keeps the category from being spelled twice
-      # (autonomy_category_spelling_uniqueness_spec). NOTE the row governs THIS
-      # door only — system_set_default_disk_image_publication is declared
-      # `mutating:`-only and the REST promote path gates on permissions, so an
-      # operator tuning this row constrains the agent, not the MCP verb.
+      # (autonomy_category_spelling_uniqueness_spec). Since HIER-P2H the MCP
+      # verb system_set_default_disk_image_publication gates on the SAME
+      # category (SystemFleetTool::DISK_IMAGE_PROMOTE_CATEGORY), so the row an
+      # operator tunes governs both promote doors — which, per above, are the
+      # only two there are.
       class DiskImagePromoteExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "disk_image_promote",

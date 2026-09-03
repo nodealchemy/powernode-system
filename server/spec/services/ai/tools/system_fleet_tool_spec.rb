@@ -3323,7 +3323,13 @@ end
       end
     end
 
+    # HIER-P2H — the three disk-image verbs are approval-gated; these
+    # examples assert the WRITTEN state, so they opt into the :proceed
+    # branch. The gates themselves are pinned in
+    # system_fleet_disk_image_gating_spec.rb.
     describe "system_set_default_disk_image_publication" do
+      before { auto_approve_policy! }
+
       # NOTE: uses the :published TRAIT (not a bare status: "published"
       # override) so this row carries a real file_object — a "published"
       # row can never legitimately exist without one (mark_published /
@@ -3377,6 +3383,8 @@ end
     end
 
     describe "system_set_disk_image_retention" do
+      before { auto_approve_policy! }
+
       it "updates the retention count" do
         r = call("system_set_disk_image_retention", node_platform_id: platform_record_for_pubs.id, retention_count: 10)
         expect(r[:success]).to be true
@@ -3397,6 +3405,8 @@ end
     end
 
     describe "system_revert_disk_image" do
+      before { auto_approve_policy! }
+
       # A target publication to roll back TO (published → has a file_object
       # via the :published trait).
       let!(:target) do

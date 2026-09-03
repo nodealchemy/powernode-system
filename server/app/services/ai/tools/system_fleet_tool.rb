@@ -468,6 +468,23 @@ module Ai
       # no approver bound. Gate it in the same change that seeds that row, not
       # before. Recorded so the gap is a decision rather than an omission.
       GITOPS_REGISTER_REPOSITORY_CATEGORY = "system.gitops_register_repository"
+      # HIER-P2H — the categories the three disk-image verbs gate on. All three
+      # have been seeded in System::Governance::PolicyDeclarations::
+      # DISK_IMAGE_MANAGER_POLICIES since the disk-image-CI slice shipped
+      # (promote/rollback require_approval, retention auto_approve), and P2F
+      # bound the Disk Image Manager's three skill executors to them — which
+      # left each category with exactly ONE gate site, the skill door, while
+      # system_set_default_disk_image_publication, system_revert_disk_image and
+      # system_set_disk_image_retention were `mutating: true` alone and bypassed
+      # the rows an operator tunes in the Autonomy modal. The rollback literal
+      # is also the REST twin's (DiskImagePublicationsController#rollback), so
+      # one operator-tuned row governs a rollback whichever door it arrives
+      # through. Restated here for the class-body-evaluation reason
+      # POOL_CREATE_CATEGORY gives; agreement with the seed is pinned by
+      # spec/services/ai/tools/system_fleet_disk_image_gating_spec.rb.
+      DISK_IMAGE_PROMOTE_CATEGORY   = "system.disk_image_publication_promote"
+      DISK_IMAGE_ROLLBACK_CATEGORY  = "system.disk_image_publication_rollback"
+      DISK_IMAGE_RETENTION_CATEGORY = "system.disk_image_retention_update"
       # The columns a "raise" is measured on — the two the replenish tick
       # spends up to. min_size is not one of them: it cannot raise the ceiling.
       POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
@@ -509,16 +526,22 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. SEVEN verbs on
+      # SCOPE, stated so this is not read as more than it is. THIRTEEN verbs on
       # this tool are gate-routed: system_terminate_instance (this one),
       # system_create_instance_pool and system_update_instance_pool
       # (IMP-067f39468350, declared below), system_replace_instance /
       # system_reap_instance (IMP-4e49eb79c5e0, the DR lane's two doors, also
-      # below), system_delete_volume_snapshot (IMP-e025722ef14e) and
-      # system_gitops_apply_proposal (IMP-0b4f18ae4384). The authoritative census is
+      # below), system_delete_volume_snapshot (IMP-e025722ef14e),
+      # system_gitops_apply_proposal (IMP-0b4f18ae4384), system_cordon_instance /
+      # system_uncordon_instance (IMP-0467eee9fc57),
+      # system_gitops_register_repository (SWEEP-2026-09-03) and the three
+      # disk-image verbs system_set_default_disk_image_publication /
+      # system_revert_disk_image / system_set_disk_image_retention (HIER-P2H).
+      # The authoritative census is
       # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
-      # (GATE_ROUTED_ACTIONS) in core, which reds if this sentence and the
-      # declarations drift apart. Nothing else on this tool meets a gate.
+      # (GATE_ROUTED_ACTIONS) in core, which reds when the DECLARATIONS drift
+      # from that list — this sentence is a pointer to it, not a second oracle.
+      # Nothing else on this tool meets a gate.
       # The same ProvisioningService.terminate_instance call is still reachable
       # UNGATED from sibling verbs on this tool — system_recycle_pool,
       # system_drain_instance_pool and system_return_pooled_instance (all via
@@ -851,13 +874,41 @@ module Ai
       declare_action "system_replenish_instance_pool", mutating: true
       declare_action "system_report_storage_migration_progress", mutating: true
       declare_action "system_return_pooled_instance", mutating: true
-      declare_action "system_revert_disk_image", mutating: true
+      # HIER-P2H — the three disk-image verbs, approval-gated on the categories
+      # the Disk Image Manager seed already carries (see DISK_IMAGE_*_CATEGORY
+      # above). Same shape as system_delete_volume_snapshot: the generic replay
+      # executor re-invokes THIS action as the ORIGINAL principal on approval,
+      # so the action body stays the single author of the write, and each gate
+      # context resolves the target under the account and applies the verb's
+      # own admission rule (published only / not purged, has an artifact /
+      # 1..50) BEFORE parking — an unknown, foreign or inadmissible target keeps
+      # the inline error the verb always gave instead of becoming an approval
+      # that could only ever fail on replay. The rollback gate context also
+      # PINS the auto-selected target into the replayed params, so the operator
+      # approves the publication the card names, not whichever one the
+      # selection would pick later.
+      declare_action "system_revert_disk_image",
+                     mutating: true,
+                     action_category: DISK_IMAGE_ROLLBACK_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :revert_disk_image_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_revert_storage_migration_binding", mutating: true
       declare_action "system_rollback_module_version", mutating: true
       declare_action "system_rotate_vault_transit_pepper", mutating: true
       declare_action "system_runbook_generate", mutating: true
-      declare_action "system_set_default_disk_image_publication", mutating: true
-      declare_action "system_set_disk_image_retention", mutating: true
+      declare_action "system_set_default_disk_image_publication",
+                     mutating: true,
+                     action_category: DISK_IMAGE_PROMOTE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :set_default_disk_image_publication_gate_context,
+                     on_proceed: :deferred_tool_call_result
+      declare_action "system_set_disk_image_retention",
+                     mutating: true,
+                     action_category: DISK_IMAGE_RETENTION_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :set_disk_image_retention_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_start_instance", mutating: true
       declare_action "system_stop_instance", mutating: true
       declare_action "system_terminate_ci_worker", mutating: true
@@ -2066,20 +2117,20 @@ module Ai
             }
           },
           "system_set_default_disk_image_publication" => {
-            description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state.",
+            description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state. APPROVAL-GATED (system.disk_image_publication_promote): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is promoted until an operator approves — do not retry and do not report the promotion as done on that response. The seeded Disk Image Manager row is require_approval; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               publication_id: { type: "string", required: true, description: "UUID of the published DiskImagePublication to set as the platform default" }
             }
           },
           "system_revert_disk_image" => {
-            description: "Roll a NodePlatform's disk image back to a prior publication — restores the target publication's file_object onto the platform (and un-soft-deletes it if the target was retired), then retires the previously-active publication. With publication_id, rolls back to that specific publication; without it, auto-selects the most recent prior publication (the newest retired one, else the newest published one that isn't currently active). Refuses purged publications (FileObject hard-deleted) and publications with no file_object. Wraps System::Executors::DiskImage::RollbackPublication — the same transaction the DiskImagePublicationsController#rollback :proceed path uses.",
+            description: "Roll a NodePlatform's disk image back to a prior publication — restores the target publication's file_object onto the platform (and un-soft-deletes it if the target was retired), then retires the previously-active publication. With publication_id, rolls back to that specific publication; without it, auto-selects the most recent prior publication (the newest retired one, else the newest published one that isn't currently active) and pins that choice to the approval. Refuses purged publications (FileObject hard-deleted) and publications with no file_object. Wraps System::Executors::DiskImage::RollbackPublication — the same transaction the DiskImagePublicationsController#rollback :proceed path uses. APPROVAL-GATED (system.disk_image_publication_rollback, the same category the REST rollback door gates on): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is rolled back until an operator approves — do not retry and do not report the rollback as done on that response.",
             parameters: {
               platform_id:    { type: "string", required: true, description: "System::NodePlatform id to roll back" },
               publication_id: { type: "string", required: false, description: "Target DiskImagePublication to restore. Omit to auto-select the previous publication." }
             }
           },
           "system_set_disk_image_retention" => {
-            description: "Update the per-NodePlatform retention count (number of historical publications kept before the reaper purges).",
+            description: "Update the per-NodePlatform retention count (number of historical publications kept before the reaper purges; 1..50). APPROVAL-GATED (system.disk_image_retention_update): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is written until an operator approves — do not retry and do not report the update as done on that response. The seeded Disk Image Manager row is auto_approve, so the agent's own calls run inline; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform whose disk-image retention count to set" },
               retention_count: { type: "integer", required: true, description: "Number of historical publications to retain (must be ≥1)" }
@@ -7329,11 +7380,8 @@ module Ai
       def set_default_disk_image_publication(params)
         publication = ::System::DiskImagePublication.where(account_id: @account.id).find(params[:publication_id])
 
-        unless publication.status == "published"
-          return error_result(
-            "publication #{publication.id} is in status=#{publication.status.inspect}, only 'published' publications can be set as default"
-          )
-        end
+        refusal = set_default_disk_image_publication_refusal(publication)
+        return error_result(refusal) if refusal
 
         platform = publication.node_platform
         # Route through the executor so ALL image pointers update atomically +
@@ -7361,6 +7409,42 @@ module Ai
         )
       end
 
+      # The promote's admission rule, spelled ONCE for the action body and the
+      # gate context: only a published publication can be set as default (a
+      # retired one is the rollback verb's business). Returns the refusal
+      # message, nil when admissible.
+      def set_default_disk_image_publication_refusal(publication)
+        return nil if publication.status == "published"
+
+        "publication #{publication.id} is in status=#{publication.status.inspect}, only 'published' publications can be set as default"
+      end
+
+      # The gated promote's context (HIER-P2H). Resolves the publication under
+      # the account with the SAME scoped `find` the body opens with, so an
+      # unknown or foreign id answers the identical RecordNotFound message
+      # rather than parking an approval an operator then has to dispose of
+      # (BaseTool#run_through_autonomy_gate converts that raise to the error
+      # envelope), and applies the verb's own admission rule for the same
+      # reason — the executor's #promotable? re-check still runs at the moment
+      # of mutation, on replay. source_type/source_id anchor the operation to
+      # the row (what arms Ai::DeferredOperation#assert_source_within_account!)
+      # and the description names the image the operator is being asked to
+      # roll out: row values, never caller-supplied ones.
+      def set_default_disk_image_publication_gate_context(params)
+        publication = ::System::DiskImagePublication.where(account_id: @account.id).find(params[:publication_id])
+
+        refusal = set_default_disk_image_publication_refusal(publication)
+        raise ArgumentError, refusal if refusal
+
+        platform = publication.node_platform
+        deferred_tool_call_context(params).merge(
+          source_type: "System::DiskImagePublication",
+          source_id: publication.id,
+          description: "Promote disk-image publication #{publication.git_sha} as the default for " \
+                       "platform '#{platform.name}' — every instance provisioned on it afterwards boots from it"
+        )
+      end
+
       # Roll a platform's disk image back to a prior publication. Account
       # scoping happens HERE (platform + target resolved within the account)
       # before delegating to the executor, which looks up by raw id. This is
@@ -7369,30 +7453,8 @@ module Ai
       def revert_disk_image(params)
         platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:platform_id])
 
-        target =
-          if params[:publication_id].present?
-            platform.disk_image_publications.find_by(id: params[:publication_id])
-          else
-            previous_disk_image_publication(platform)
-          end
-
-        unless target
-          return error_result(
-            params[:publication_id].present? ?
-              "DiskImagePublication #{params[:publication_id]} not found for this platform" :
-              "No prior publication available to revert to for platform #{platform.id}"
-          )
-        end
-
-        if target.purged?
-          return error_result(
-            "Cannot revert to a purged publication — its FileObject was hard-deleted past the grace window. Re-trigger CI to rebuild."
-          )
-        end
-
-        unless target.file_object_id.present?
-          return error_result("Target publication #{target.id} has no file_object — was it ever published?")
-        end
+        target, refusal = revert_disk_image_target(platform, params)
+        return error_result(refusal) if refusal
 
         result = ::System::Executors::DiskImage::RollbackPublication.execute(
           { target_publication_id: target.id, platform_id: platform.id },
@@ -7404,6 +7466,62 @@ module Ai
           node_platform_id: platform.id,
           activated_publication_id: target.id,
           rolled_back_to: result.dig(:data, :rolled_back_to)
+        )
+      end
+
+      # The rollback's target selection and admission rules, spelled ONCE for
+      # the action body and the gate context: an explicit publication_id must
+      # belong to the platform; otherwise the previous publication is
+      # auto-selected; a purged target or one with no stored artifact is
+      # refused. Returns [target, nil] when admissible, [nil, refusal] when not.
+      def revert_disk_image_target(platform, params)
+        target =
+          if params[:publication_id].present?
+            platform.disk_image_publications.find_by(id: params[:publication_id])
+          else
+            previous_disk_image_publication(platform)
+          end
+
+        unless target
+          return [ nil,
+                   params[:publication_id].present? ?
+                     "DiskImagePublication #{params[:publication_id]} not found for this platform" :
+                     "No prior publication available to revert to for platform #{platform.id}" ]
+        end
+
+        if target.purged?
+          return [ nil,
+                   "Cannot revert to a purged publication — its FileObject was hard-deleted past the grace window. Re-trigger CI to rebuild." ]
+        end
+
+        unless target.file_object_id.present?
+          return [ nil, "Target publication #{target.id} has no file_object — was it ever published?" ]
+        end
+
+        [ target, nil ]
+      end
+
+      # The gated rollback's context (HIER-P2H). Same scoped `find` as the body
+      # for the platform, the same target selection and admission rules
+      # (#revert_disk_image_target), so every refusal the verb gave inline is
+      # still inline and never a parked approval. The auto-selected target is
+      # PINNED into the replayed params: selection happens at park time, and
+      # the operator approves the publication the card names — RollbackPublication
+      # still re-checks promotability at the moment of mutation, on replay.
+      # Anchored to the target publication, exactly as the REST rollback door
+      # anchors its own deferred operation.
+      def revert_disk_image_gate_context(params)
+        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:platform_id])
+
+        target, refusal = revert_disk_image_target(platform, params)
+        raise ArgumentError, refusal if refusal
+
+        deferred_tool_call_context(params.merge(publication_id: target.id)).merge(
+          source_type: "System::DiskImagePublication",
+          source_id: target.id,
+          description: "Roll platform '#{platform.name}' disk image back to publication " \
+                       "#{target.git_sha} (#{target.status}) — every instance provisioned on it " \
+                       "afterwards boots from it; the active publication is retired"
         )
       end
 
@@ -7428,9 +7546,8 @@ module Ai
         platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:node_platform_id])
         retention_count = params[:retention_count].to_i
 
-        if retention_count < 1
-          return error_result("retention_count must be ≥1 (got #{retention_count})")
-        end
+        refusal = set_disk_image_retention_refusal(retention_count)
+        return error_result(refusal) if refusal
 
         platform.update!(disk_image_retention_count: retention_count)
 
@@ -7438,6 +7555,45 @@ module Ai
           updated: true,
           node_platform_id: platform.id,
           disk_image_retention_count: platform.disk_image_retention_count
+        )
+      end
+
+      # The retention update's admission rule, spelled ONCE for the action body
+      # and the gate context. The lower bound keeps the message the verb always
+      # gave; the upper bound is not restated as a literal — an unsaved probe
+      # runs NodePlatform's own numericality validator (the same probe the
+      # Disk Image Manager's retention skill runs), so this door and the write
+      # agree by construction. Returns the refusal message, nil when admissible.
+      def set_disk_image_retention_refusal(retention_count)
+        return "retention_count must be ≥1 (got #{retention_count})" if retention_count < 1
+
+        probe = ::System::NodePlatform.new(disk_image_retention_count: retention_count)
+        probe.valid?
+        messages = probe.errors.full_messages_for(:disk_image_retention_count)
+        return nil if messages.empty?
+
+        "retention update refused: #{messages.to_sentence}"
+      end
+
+      # The gated retention update's context (HIER-P2H). Same scoped `find` as
+      # the body and the same admission rule, so an unknown or foreign platform
+      # and an out-of-range count keep their inline errors and park nothing.
+      # Anchored to the platform row. The description carries the CURRENT
+      # count (a row value) and not the requested one: a caller-supplied value
+      # belongs on the operation's params, which the approval card renders
+      # under Ai::SensitiveParams' cover (BaseTool#deferred_tool_call_description).
+      def set_disk_image_retention_gate_context(params)
+        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:node_platform_id])
+
+        refusal = set_disk_image_retention_refusal(params[:retention_count].to_i)
+        raise ArgumentError, refusal if refusal
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodePlatform",
+          source_id: platform.id,
+          description: "Set the disk-image retention count for platform '#{platform.name}' " \
+                       "(currently #{platform.disk_image_retention_count.inspect}) — how many " \
+                       "publications the purge sweep keeps"
         )
       end
 

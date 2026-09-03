@@ -115,12 +115,25 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal surface", type: :re
     expect(tool_payload(second)).to eq(tool_payload(first))
   end
 
+  # HIER-P2H — both disk-image verbs below are approval-gated now. The guard
+  # they exercise fires INSIDE the replayed action body, so the examples opt
+  # into Ai::AutonomyGate's :proceed branch (the executor runs inline) and
+  # assert the refusal the replay hands back verbatim; a policy row that
+  # parks the call is a different, tested-elsewhere envelope.
+  def auto_approve_disk_image_policy!
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+    )
+  end
+
   describe "system_set_default_disk_image_publication on a published row with no live artifact " \
            "(PromotePublication::UnpromotablePublicationError)" do
     let(:operator) { user_with_permissions("system.nodes.read", "system.modules.update") }
     let(:account)  { operator.account }
     let(:headers)  { headers_for(operator) }
     let(:platform) { create(:system_node_platform, account: account) }
+
+    before { auto_approve_disk_image_policy! }
     let(:publication) do
       pub = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
       # status stays "published" (the tool's own pre-check passes) but the
@@ -154,6 +167,9 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal surface", type: :re
     let(:account)  { operator.account }
     let(:headers)  { headers_for(operator) }
     let(:platform) { create(:system_node_platform, account: account) }
+
+    before { auto_approve_disk_image_policy! }
+
     let(:target) do
       # Queued (never published) but carrying a file_object: passes the tool's
       # purged?/file_object_id pre-checks and is refused by the executor guard.
@@ -268,21 +284,54 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal surface", type: :re
   # The inverse guard, on one of the newly covered verbs. If the fix had
   # widened the rescue to StandardError, or to Executors::Base's whole raise
   # surface, this would go green in the wrong direction.
+  #
+  # On system_update_module, deliberately, since HIER-P2H: the promote verb
+  # this used to drive is approval-gated now, and Ai::AutonomyGate#evaluate
+  # rescues StandardError around the inline replay and answers "Gate
+  # evaluation failed: …" as an application-level result — so on a GATED verb
+  # a genuine fault never reaches -32603 whatever this tool's rescue chain
+  # does. That is the gate's contract for every gated verb on the platform,
+  # not this fix's; the ungated module verb is where this tool's own rescue
+  # chain is the only thing between the fault and the wire.
   describe "a genuine internal fault on a newly covered verb" do
     let(:operator)    { user_with_permissions("system.nodes.read", "system.modules.update") }
     let(:account)     { operator.account }
     let(:headers)     { headers_for(operator) }
-    let(:platform)    { create(:system_node_platform, account: account) }
-    let(:publication) { create(:system_disk_image_publication, :published, account: account, node_platform: platform) }
+    let(:node_module) do
+      create(:system_node_module, account: account, name: "fault-mod",
+                                  manifest_yaml: "schema_version: 1\nname: fault-mod\n")
+    end
+    let(:manifest_yaml) do
+      <<~YAML
+        schema_version: 1
+        name: fault-mod
+        display_name: "Fault Module"
+        description: "Declares one group."
+        license: "MIT"
+        file_spec:
+          - "/etc/fault-mod/**"
+        package_spec:
+          - "fault-mod"
+        dependencies:
+          requires: []
+          provides: []
+        groups:
+          - name: fault-grp
+      YAML
+    end
 
     before do
-      allow(::System::Executors::DiskImage::PromotePublication).to receive(:execute)
+      ::System::ModuleUserDeclaration.delete_all
+      ::System::ServiceUserGroupMembership.delete_all
+      ::System::ServiceUser.delete_all
+      ::System::ServiceGroup.delete_all
+      allow_any_instance_of(::System::Identity::GroupAllocator).to receive(:pick_gid)
         .and_raise(NoMethodError, "undefined method `imp_d2f87ffa8733_fault_sentinel' for nil")
     end
 
     it "still surfaces as JSON-RPC -32603, because it is not a refusal" do
-      call_tool("system_set_default_disk_image_publication",
-                { "publication_id" => publication.id }, headers: headers)
+      call_tool("system_update_module",
+                { "module_id" => node_module.id, "manifest_yaml" => manifest_yaml }, headers: headers)
 
       body = json_response
       expect(body.dig("error", "code")).to eq(-32603),

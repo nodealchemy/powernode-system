@@ -4,11 +4,14 @@ require "rails_helper"
 
 # HIER-P2F — the Disk Image Manager's promote skill. A thin executor over
 # System::Executors::DiskImage::PromotePublication (the same transaction the
-# system_set_default_disk_image_publication MCP verb and the REST controller
-# run), gated on the agent's own `system.disk_image_publication_promote` row.
-# That row is the SKILL door's control only: the MCP verb is declared
-# `mutating:`-only (no action_category) and the REST promote path gates on
-# permissions, so this executor is the single site that consults it.
+# system_set_default_disk_image_publication MCP verb runs), gated on the agent's
+# own `system.disk_image_publication_promote` row.
+# Since HIER-P2H that row governs TWO doors, not one: the MCP verb declares the
+# same category (SystemFleetTool::DISK_IMAGE_PROMOTE_CATEGORY) and replays
+# through Ai::Executors::DeferredToolCall, so this executor is one of the two
+# sites that consult it — and the only two. There is no REST promote door:
+# DiskImagePublicationsController serves index/show/rollback only, and no
+# controller calls PromotePublication.
 RSpec.describe System::Ai::Skills::DiskImagePromoteExecutor do
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
