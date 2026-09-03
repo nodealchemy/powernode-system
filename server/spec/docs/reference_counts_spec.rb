@@ -167,10 +167,10 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
       "Disk Image Manager"       => "system_disk_image_manager_agent.rb",
       "GitOps Reconciler"        => "system_gitops_reconciler_agent.rb",
       "System Topology Designer" => "system_topology_designer_agent.rb",
-      "Capacity Manager"         => nil,
-      "Storage Manager"          => nil,
-      "Ingress Manager"          => nil,
-      "Supply Chain Manager"     => nil
+      "Capacity Manager"         => "system_capacity_manager_agent.rb",
+      "Storage Manager"          => "system_storage_manager_agent.rb",
+      "Ingress Manager"          => "system_ingress_manager_agent.rb",
+      "Supply Chain Manager"     => "system_supply_chain_manager_agent.rb"
     }
   end
 

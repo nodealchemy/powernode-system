@@ -18,11 +18,19 @@ module SystemAgentHierarchySeeds
     system_sdwan_manager_agent.rb
     system_topology_designer_agent.rb
     system_gitops_reconciler_agent.rb
+    system_capacity_manager_agent.rb
+    system_storage_manager_agent.rb
+    system_ingress_manager_agent.rb
+    system_supply_chain_manager_agent.rb
   ].freeze
 
   DOMAIN_AGENTS = [
     "Fleet Autonomy", "SDWAN Manager", "CVE Responder", "Disk Image Manager",
-    "Runtime Manager", "GitOps Reconciler", "System Topology Designer"
+    "Runtime Manager", "GitOps Reconciler", "System Topology Designer",
+    "Capacity Manager",
+    "Storage Manager",
+    "Ingress Manager",
+    "Supply Chain Manager"
   ].freeze
 
   # HIER-P2DECL declared the four wave-1 managers on the attach list ahead of
@@ -30,7 +38,13 @@ module SystemAgentHierarchySeeds
   # skipped — DRIFT by the P1 ruling, never an error — and attaches nothing
   # for them. When wave 2 seeds them, move each into AGENT_SEEDS/DOMAIN_AGENTS
   # and delete it here.
-  WAVE_2_KEYS = %w[capacity-manager storage-manager ingress-manager supply-chain-manager].freeze
+  #
+  # EMPTY since HIER-P2E: the Supply Chain Manager was the last of the four,
+  # so every declared attach-list key now has a seed. The constant stays (it
+  # is not a list of agents but of the DECLARED-BUT-UNSEEDED state) so the next
+  # declaration ahead of its seed has a named home and the examples below keep
+  # asserting the reconciler's skip contract instead of silently losing it.
+  WAVE_2_KEYS = [].freeze
 
   CORE_ROOT_SLUG = "powernode-assistant"
 end
@@ -98,7 +112,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(rootless).to eq([ "System Concierge" ])
     end
 
-    it "reports the four wave-1 managers as skipped (drift), not as an error, until wave 2 seeds them" do
+    it "reports the declared-but-unseeded managers as skipped (drift), not as an error" do
       result = System::Governance::HierarchyReconciler.new(account: account).reconcile!
       expect(result.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
       expect(result.attached).to eq(domain_agents.size + 1)
@@ -172,38 +186,50 @@ RSpec.describe "system_agent_hierarchy seed" do
   end
 
   describe "drift report" do
-    # Not CLEAN after the seed any more: the four wave-1 managers are declared
-    # and unseeded, so the report is drifted by exactly their skipped lines
-    # and nothing else — no missing edge, no missing policy.
-    it "is clean but for the unseeded wave-1 managers after the seed" do
+    # CLEAN again since HIER-P2E: between the waves the report was drifted by
+    # exactly the declared-but-unseeded managers' skipped lines; with the last
+    # of them seeded there is nothing left to skip — and still no missing edge
+    # and no missing policy. Expressed through WAVE_2_KEYS rather than as a
+    # bare `[]`, so re-declaring an agent ahead of its seed flips this example
+    # back to the drifted arm instead of quietly disagreeing with the seeds.
+    it "is clean but for any declared-but-unseeded manager after the seed" do
       seed_all!
 
       report = reconciler.drift
-      expect(report).to be_drifted
+      expect(report.drifted?).to eq(SystemAgentHierarchySeeds::WAVE_2_KEYS.any?)
       expect(report.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
       expect(report.missing_edges).to be_empty
       expect(report.missing_policies).to be_empty
       expect(report.present.size).to eq(domain_agents.size + 1)
     end
 
+    # Generic over WHICHEVER wave-1 manager is still unseeded (HIER-P2B: the
+    # Capacity Manager it used to stub by hand is now a real seed in
+    # AGENT_SEEDS, and a second global row of that name fails uniqueness).
+    # Once every manager is seeded this path is covered by each agent's own
+    # seed spec and the example is skipped rather than deleted, so the
+    # reconciler's attach-on-first-run contract keeps a named home.
     it "attaches a wave-1 manager on the first run after its agent exists, with the P1 leaf delegation" do
+      pending_key = SystemAgentHierarchySeeds::WAVE_2_KEYS.first
+      skip "every wave-1 manager is seeded — covered by each agent's seed spec" unless pending_key
+
       seed_all!
-      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
-      capacity = Ai::Agent.create!(
-        name: identity[:name], agent_type: identity[:agent_type], source_key: "capacity-manager",
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(pending_key)
+      manager = Ai::Agent.create!(
+        name: identity[:name], agent_type: identity[:agent_type], source_key: pending_key,
         status: "active", account: nil, creator: user, provider: provider,
         system_prompt: "stub for the wave-2 seed"
       )
 
       load_seed!("system_agent_hierarchy.rb")
 
-      expect(Ai::AgentLineage.for_child(capacity.id).active.pluck(:parent_agent_id)).to eq([ root.id ])
-      policy = policy_for(capacity)
+      expect(Ai::AgentLineage.for_child(manager.id).active.pluck(:parent_agent_id)).to eq([ root.id ])
+      policy = policy_for(manager)
       expect(policy.inheritance_policy).to eq("conservative")
       expect(policy.max_depth).to eq(2)
       expect(policy.allowed_delegate_types).to eq([])
       expect(reconciler.drift.skipped).to match_array(
-        (SystemAgentHierarchySeeds::WAVE_2_KEYS - %w[capacity-manager]).map { |k| "#{k}(agent absent)" }
+        (SystemAgentHierarchySeeds::WAVE_2_KEYS - [ pending_key ]).map { |k| "#{k}(agent absent)" }
       )
     end
 

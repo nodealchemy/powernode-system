@@ -78,6 +78,8 @@ RSpec.describe "routed lane / intervention policy coherence" do
     system_gitops_reconciler_agent
     system_disk_image_manager_agent
     system_topology_designer_agent
+    system_storage_manager_agent
+    system_supply_chain_manager_agent
   ].freeze
 
   # HIER-P2DECL: the boot that this spec models is seeds + PolicyReconciler —
@@ -93,7 +95,16 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # declares them. An ESTABLISHED install still holds them on Fleet Autonomy;
   # the fresh-install gap is wave 2's to close, and this spec must not hide
   # it, so it is asserted below by name rather than papered over.
-  WAVE_2_STUBS = %w[capacity-manager storage-manager ingress-manager supply-chain-manager].freeze
+  # HIER-P2C landed the Storage Manager seed, so it is loaded above like every
+  # other owner agent and is NOT stubbed here: the stub creates an
+  # ACCOUNT-scoped row, and that is exactly the row
+  # `AgentSetupHelpers.find_or_initialize_global_agent` raises
+  # CanonicalAgentConflict on. Each remaining identity is its own lane's to
+  # remove when that seed lands.
+  # HIER-P2E removed supply-chain-manager for the same reason: its seed is in
+  # SEEDS above, so the GLOBAL canonical exists and stubbing an account row
+  # would both mask the seed and collide with the canonical guard.
+  WAVE_2_STUBS = %w[capacity-manager ingress-manager].freeze
 
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
   # (falling back to Account.first), then requires an admin user and an
@@ -203,24 +214,83 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Fleet Autonomy")).not_to include("project.adapt", "system.instance_replace")
   end
 
-  # THE FRESH-INSTALL GAP, stated by name so it cannot be forgotten: with the
-  # wave-1 agents absent (seeds only, no stubs), the moved sensor-routed lanes
-  # have no row on any agent — the Fleet Autonomy seed no longer declares them
-  # and their owners do not exist to reconcile onto. An established install is
-  # unaffected (its rows stay on Fleet Autonomy, where the tick's fallback
-  # gate reads them — sensor_owner_gating_spec). Wave 2's seeds close this;
-  # when they land, this example should start FAILING and be deleted.
-  it "leaves the moved sensor-routed lanes rowless on a fresh install seeded between the waves (wave 2 closes it)" do
+  # The sensor-routed lanes HIER-P2DECL moved off Fleet Autonomy onto a wave-1
+  # owner, and the identity that must exist for each to have a row at all.
+  GAP_LANES = {
+    "system.instance_replace" => "capacity-manager",
+    "system.storage_assignment_reconcile" => "storage-manager",
+    "system.package_repository.sync" => "supply-chain-manager"
+  }.freeze
+
+  def owner_agent_seeded?(key)
+    identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(key)
+    ::Ai::Agent.resolve_for(account.id, name: identity[:name], agent_type: identity[:agent_type]).present?
+  end
+
+  # THE FRESH-INSTALL GAP, stated by name so it cannot be forgotten: while a
+  # wave-1 owner's agent is absent (seeds only, no stubs), its moved
+  # sensor-routed lane has no row on any agent — the Fleet Autonomy seed no
+  # longer declares it and its owner does not exist to reconcile onto. An
+  # established install is unaffected (its rows stay on Fleet Autonomy, where
+  # the tick's fallback gate reads them — sensor_owner_gating_spec). Each
+  # wave-2 seed closes its OWN lane, and the set asserted here is DERIVED from
+  # which owners the seeds actually produced, so a landing lane leaves it
+  # automatically (HIER-P2C closed storage — the positive assertion is the
+  # example after this one). When every GAP_LANES owner is seeded this example
+  # asserts nothing and should be deleted.
+  it "leaves the still-unseeded sensor-routed lanes rowless on a fresh install seeded between the waves" do
     System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
 
-    rowless = %w[system.instance_replace system.storage_assignment_reconcile system.package_repository.sync]
-    rowless.each do |category|
+    # Derived, never a hand-kept list: a lane is in the gap exactly while its
+    # OWNER AGENT does not exist after the seeds ran. So a lane leaves this
+    # assertion the moment its seed is added to SEEDS above, and no lane can
+    # be silenced by editing a literal.
+    rowless = GAP_LANES.reject { |_category, key| owner_agent_seeded?(key) }
+    rowless.each do |category, _key|
       expect(::Ai::InterventionPolicy.where(account: account, action_category: category)).to be_empty,
-        "#{category} has a row on a fresh install — wave 2 landed; delete this example"
+        "#{category} has a row on a fresh install although #{owner_name_for(category)} was never seeded"
     end
     # project.* are the exception: their seed still writes them onto Fleet
     # Autonomy, so the fallback gate does find them.
     expect(policies_for("Fleet Autonomy")).to include("project.adapt")
+  end
+
+  # HIER-P2C: the storage half of that gap is CLOSED, asserted from the same
+  # boot model the gap was defined against — the SYSTEM seeds plus the
+  # reconciler, with NO stub agent. `system.storage_assignment_reconcile` is
+  # the lane `storage_assignment_drift_sensor` routes to; before this seed a
+  # fresh install dropped every one of those signals into the not_permitted
+  # arm, silently.
+  it "closes the fresh-install gap for the storage lane (seed, no stub)" do
+    storage = ::Ai::Agent.resolve_for(account.id, name: "Storage Manager", agent_type: "monitor")
+    expect(storage).to be_present, "the Storage Manager seed did not run"
+    expect(storage.account_id).to be_nil, "the Storage Manager must be the GLOBAL canonical, not a stub"
+
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+
+    expect(owner_name_for("system.storage_assignment_reconcile")).to eq("Storage Manager")
+    expect(policies_for("Storage Manager")).to include("system.storage_assignment_reconcile")
+    expect(::Ai::InterventionPolicy.where(account: account,
+                                          action_category: "system.storage_assignment_reconcile")).not_to be_empty
+  end
+
+  # HIER-P2E: the supply-chain half of the same gap, asserted the same way —
+  # seeds plus the reconciler, no stub. `system.package_repository.sync` is the
+  # lane `package_drift_sensor` routes to; before this seed a fresh install
+  # dropped every package-drift signal into the not_permitted arm, and
+  # BaseSkillExecutor resolved the unmatched require_approval default for the
+  # re-bound sync executor (DRIVER NOTE, HIER-P2DECL).
+  it "closes the fresh-install gap for the supply-chain lane (seed, no stub)" do
+    supply_chain = ::Ai::Agent.resolve_for(account.id, name: "Supply Chain Manager", agent_type: "monitor")
+    expect(supply_chain).to be_present, "the Supply Chain Manager seed did not run"
+    expect(supply_chain.account_id).to be_nil, "the Supply Chain Manager must be the GLOBAL canonical, not a stub"
+
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+
+    expect(owner_name_for("system.package_repository.sync")).to eq("Supply Chain Manager")
+    expect(policies_for("Supply Chain Manager")).to include("system.package_repository.sync")
+    expect(::Ai::InterventionPolicy.where(account: account,
+                                          action_category: "system.package_repository.sync")).not_to be_empty
   end
 
   # The gate's own view, not ours — proves the routed set is reachable through

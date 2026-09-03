@@ -54,6 +54,10 @@ SYSTEM_SEED_FILES = %w[
   system_sdwan_manager_agent.rb
   system_topology_designer_agent.rb
   system_gitops_reconciler_agent.rb
+  system_capacity_manager_agent.rb
+  system_storage_manager_agent.rb
+  system_ingress_manager_agent.rb
+  system_supply_chain_manager_agent.rb
   system_fleet_kg_schema.rb
   system_kg_entities_seed.rb
   system_instance_pool_policies.rb

@@ -79,7 +79,12 @@ module System
           blast_radius: :high
         )
 
-        binds_to "Fleet Autonomy"
+        # HIER-P2C: bound to the Storage Manager, the agent whose set declares
+        # `system.restore_volume` (PolicyDeclarations::STORAGE_MANAGER_POLICIES),
+        # so the gate above resolves the owner's row when run as that agent.
+        # Fleet Autonomy no longer binds it — no sensor of its remaining set
+        # routes here (DecisionEngine::SIGNAL_BINDINGS names no restore skill).
+        binds_to "storage_manager"
 
         protected
 
