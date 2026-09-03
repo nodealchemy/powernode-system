@@ -151,22 +151,59 @@ module Api
                                 .find_by(id: params[:snapshot_id], volume_id: @volume.id)
           return render_error("Snapshot not found for this volume", status: :not_found) unless snap
 
-          result = ::System::VolumeManagementService.restore_snapshot(snapshot: snap)
+          # `swap_into_place` (IMP-e025722ef14e) — REST parity with the MCP
+          # verb and the restore_volume executor. Copy-restore only: detach
+          # the source from its instance and attach the copy at the same
+          # device. The service casts it at its own boundary, so an untyped
+          # param cannot opt in by accident; `swapped` is rendered on every
+          # SUCCESS path (false when nothing was swapped) and `swap_skipped`
+          # names the reason only when a swap was asked for. The FAILURE path
+          # is #render_restore_error below — permitting the swap here is what
+          # made it reachable.
+          swap = ::ActiveModel::Type::Boolean.new.cast(params[:swap_into_place]) == true
+          result = ::System::VolumeManagementService.restore_snapshot(snapshot: snap, swap_into_place: swap)
 
-          unless result.success?
-            return render_error(result.error, status: :unprocessable_content)
-          end
+          return render_restore_error(result) unless result.success?
 
           restored = result.data[:restored_volume]
           render_success(
             volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json,
             restored_in_place: result.data[:restored_in_place],
             restored_volume: restored ? ::System::ProviderVolumeSerializer.new(restored).as_json : nil,
-            restored_from: ::System::ProviderVolumeSnapshotSerializer.new(snap).as_json
+            restored_from: ::System::ProviderVolumeSnapshotSerializer.new(snap).as_json,
+            swapped: result.data[:swapped] == true,
+            swap_skipped: result.data[:swap_skipped],
+            swapped_instance_id: result.data[:swapped_instance_id],
+            swapped_device: result.data[:swapped_device]
           )
         end
 
         private
+
+        # A restore that failed AFTER the provider made a copy — a swap that
+        # stopped at detach or attach — must not lose the copy: without its id
+        # the operator holds a billable, unattached disk they cannot find.
+        # Mirrors SystemFleetTool#restore_error_result on the MCP door. The
+        # envelope stays an error (the request was not completed) and carries
+        # what exists; a failure that created nothing renders plain, so
+        # `details` never names a volume that does not exist.
+        def render_restore_error(result)
+          data = result.data.is_a?(Hash) ? result.data : {}
+          copy = data[:restored_volume]
+          return render_error(result.error, status: :unprocessable_content) unless copy
+
+          render_error(
+            result.error,
+            status: :unprocessable_content,
+            details: {
+              restored_in_place: data[:restored_in_place],
+              restored_volume: ::System::ProviderVolumeSerializer.new(copy).as_json,
+              restored_volume_id: data[:restored_volume_id] || copy.id,
+              swapped: data[:swapped] == true,
+              swap_stage: data[:swap_stage]
+            }
+          )
+        end
 
         def set_volume
           @volume = current_account.system_provider_volumes.find(params[:id])
