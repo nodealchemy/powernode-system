@@ -41,6 +41,25 @@ export write, Samba user creation, chown, rsync — is enqueued as a
 its mTLS `node_api` channel and POSTs results back. The control-plane models
 hold the desired state; the agent reconciles the node toward it.
 
+**Owning AI agent.** The autonomy surface of this plane belongs to the
+**Storage Manager** (`db/seeds/system_storage_manager_agent.rb`, HIER-P2C —
+operator guide [STORAGE_MANAGER_AGENT.md](./STORAGE_MANAGER_AGENT.md)), not
+Fleet Autonomy: the `storage_assignment_drift_sensor` lane gates under it
+(`system.storage_assignment_reconcile`), `RestoreVolumeExecutor` binds to it
+(`system.restore_volume`), and it carries the agent-shape twin of the snapshot
+delete gate (`system.volume_snapshot_delete`). Its `tool_access.tool_families`
+is the MCP surface tabulated below (minus the node agent's own
+`system_report_storage_migration_progress`) plus the two instance reads, and its
+approval chain (`Storage Manager Actions`, 8h, reject on timeout) is where those
+two gated verbs wait. The migration verbs are NOT gated: `declare_action` for
+`system_approve_storage_migration`, `system_cleanup_storage_migration`,
+`system_revert_storage_migration_binding`, `system_cancel_storage_migration` and
+`system_migrate_storage_component` carries `mutating: true` and no
+`action_category`, so `BaseTool#gated_action?` is false and they execute
+immediately — nothing about a migration ever parks on that chain. Placement and
+capacity questions hand off to the Capacity Manager, node lifecycle to Fleet
+Autonomy.
+
 ---
 
 ## Data model
