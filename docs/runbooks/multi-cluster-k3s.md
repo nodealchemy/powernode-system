@@ -221,12 +221,12 @@ producer (IMP-a5f236e8cc56); Phase 4 is not, and no work is scheduled to make
 it. Even with a join path wired up a second server could not join: the first
 server bootstraps **without `--cluster-init`**, so its datastore is SQLite, not
 embedded etcd, and there is no etcd cluster to accept a second control-plane
-member. (Two code comments — `applier.go:41` and `applier.go:148` — call the
-default install "embedded etcd". They are wrong about upstream k3s; the exec
-string in fact 2 is what runs.) Supporting HA would therefore change how
-**every already-provisioned cluster** bootstraps, which is why it is parked
-rather than queued. Design for single-server clusters; do not plan around a
-future migration to HA.
+member. (The `BootstrapConfig` doc comment in `agent/internal/k3sd/applier.go`
+says the same — a zero-value config is the upstream default with a SQLite via
+kine datastore — and the exec string in fact 2 is what runs.) Supporting HA
+would therefore change how **every already-provisioned cluster** bootstraps,
+which is why it is parked rather than queued. Design for single-server
+clusters; do not plan around a future migration to HA.
 
 The steps below are **withdrawn**, kept visible so you can recognise them if
 you have already run them:

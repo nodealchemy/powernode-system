@@ -37,8 +37,16 @@ const (
 // BootstrapConfig captures the per-instance K3s server bootstrap
 // knobs the platform stamps in the runtime config payload. Fields
 // are zero-value safe — an empty BootstrapConfig produces the
-// upstream K3s default install (single-node, embedded Flannel,
-// embedded etcd).
+// upstream K3s default install: single-node, embedded Flannel, and
+// a SQLite datastore via kine. It is NOT an etcd member. K3s runs
+// etcd only when the first server starts with --cluster-init (or
+// points at an external --datastore-endpoint), and no install path
+// here passes either flag: InstallArgs emits CNI args only and
+// shell_applier.go runs a bare INSTALL_K3S_EXEC=server. K3s HA is
+// PARKED by operator decision (2026-09-01): no work is scheduled to
+// add it, because it would change how every already-provisioned
+// cluster bootstraps. See doc.go and docs/USE_CASE_MATRIX.md, Use
+// Case 2.
 //
 // CniPlugin selects the cluster's CNI driver. See the CniPlugin*
 // constants for accepted values. The agent does NOT install the
@@ -145,7 +153,9 @@ type ServerApplier interface {
 	// the resulting systemd unit's ExecStart. cfg.InstallArgs()
 	// translates the typed config into the positional install-script
 	// args; passing a zero-value BootstrapConfig is equivalent to
-	// the upstream K3s default (embedded Flannel, embedded etcd).
+	// the upstream K3s default (embedded Flannel, SQLite datastore
+	// via kine — not etcd, which K3s runs only behind --cluster-init;
+	// see BootstrapConfig).
 	InstallK3sServer(ctx context.Context, cfg BootstrapConfig) error
 
 	IsRunning(ctx context.Context) (bool, error)
