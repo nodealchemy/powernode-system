@@ -4019,7 +4019,6 @@ module Ai
       def dr_lane_reap_by_instance_principal!(reap)
         return unless reap
         return unless instance_authorized?
-        return if true # zz_mutation_fixture_dr_lane
 
         raise ArgumentError,
               "reap: true is refused for an instance principal: it raises a " \
