@@ -299,7 +299,9 @@ platform.system_drain_instance_pool({ id: "<pool-id>" })
 ```
 
 Drain sets the pool `status` to `draining`, terminates every **ready**
-member at the cloud provider, and halts replenishment. **Claimed** members
+member at the cloud provider, and halts replenishment — `replenish!` refuses
+any pool that is not `active` (IMP-cb2da06a384b), and the reaper skips phase 2
+for one. **Claimed** members
 keep running — they finish their workload and are torn down by the normal
 terminate flow. There is no `terminate_members` flag and no "release them
 as standalone" mode; drain always terminates the ready members.
@@ -308,11 +310,17 @@ as standalone" mode; drain always terminates the ready members.
 
 - Drain runs in a single transaction (synchronous) — by the time the call
   returns, ready members have had `terminate_instance` issued
-- A `draining` pool stops being replenished (the reaper skips replenish for
-  draining pools, though it still recycles) — **this is disputed by the code**;
-  see "Do not rely on drain to stop it" under
-  [Governance](#governance--which-pool-verbs-are-gated-and-which-are-not)
-  before you rely on it
+- A `draining` pool stops being replenished, and **keeps being recycled**.
+  That split is deliberate: `InstancePoolReplenisherJob` still lists
+  `status=active,draining` because recycling is what empties a draining pool
+  (stale-warming, the ready TTL and the errored terminate ladder all run in
+  phase 1); it skips phase 2 for anything not `active`, and
+  `InstancePoolService#replenish!` refuses a non-active pool outright, so the
+  REST route and the MCP verb answer `pool '<name>' is draining` too
+- `drain!` deliberately does **not** zero `target_size`. Draining is
+  reversible: `PATCH status: "active"` (ungated) puts the pool back to the
+  size it already had. So `status` alone decides whether a pool warms — do not
+  read a standing `target_size` on a draining pool as pending spend
 - **`terminate_failed` is not cosmetic.** A member whose provider terminate did
   not land is parked at `pool_state: "errored"` (not `draining`), and a
   high-severity `system.pool.terminate_failed` FleetEvent is emitted carrying
@@ -467,26 +475,43 @@ two reasons:
    the approval now stands in front of, on both the REST route and the MCP
    verb.
 2. **It runs unattended.** `System::InstancePoolReplenisherJob` POSTs the
-   replenish route every 60 s for every pool it lists, which it fetches with
-   `status=active,draining`. A `require_approval` gate there would park one
+   replenish route every 60 s for every **active** pool it lists (it fetches
+   `status=active,draining` and skips the replenish phase for the draining
+   ones — they still get recycled). A `require_approval` gate there would park one
    approval per pool per minute and stall replenishment fleet-wide — an
    availability decision, not a control.
 
 **To actually stop replenishment**, do not look for an approval to withhold —
-there isn't one. Use `target_size = 0`, or `status: "paused"` — `paused` is the
-only status `replenish!` refuses (`PoolNotActiveError`).
+there isn't one. Move the pool off `active`: `PATCH status: "paused"`
+(reversible, keeps the members), `POST /drain` (the only actuator that also
+terminates the ready members), or `target_size = 0`. `replenish!` refuses every
+status except `active`, with `PoolNotActiveError`.
 
-> **Do not rely on drain to stop it, whatever the rest of this document says.**
-> The Phase 4 note above ("a `draining` pool stops being replenished") is one
-> of eight places that claim drain halts replenishment; the code disagrees on
-> all eight. `InstancePoolReplenisherJob#list_active_pools` fetches
-> `status=active,draining` and replenishes every pool it gets back,
-> `replenish!` refuses only `paused?`, and `drain!` never zeroes
-> `target_size` — so a drained pool still shows a deficit for the next tick to
-> fill. Which side is wrong (the code, or eight descriptions of it including
-> the approval-card impact strings) is a behavioural decision, filed as offer
-> `01a0615e-40ed-70c9-a61e-7732f219b180` rather than settled here. Until it
-> is: pause the pool or zero `target_size`; do not assume drain is sufficient.
+Note the split between the *status* and the *actuator*: a bare
+`PATCH status: "draining"` is routed to `ungated_update!`, whose whole body is
+`@pool.update!(attrs)` — it stops the top-up and makes the pool unacquirable
+(`acquire!` refuses a non-active pool too), but it terminates **nothing**, so
+the ready members keep billing. Termination lives only in
+`InstancePoolService#drain!`, reached from the `POST .../instance_pools/:id/drain`
+route or the `system_drain_instance_pool` MCP verb — which set the status *and*
+terminate.
+
+> **Which brake to reach for.** All four stop the top-up; they differ in what
+> happens to the members you already have.
+>
+> | Brake | Members | Reversal |
+> |---|---|---|
+> | `PATCH status: "paused"` | untouched, stay ready | `status: "active"` |
+> | `PATCH status: "draining"` | untouched and still billing — a bare PATCH terminates nothing | `status: "active"` |
+> | `POST /drain` (or `system_drain_instance_pool`) | ready members terminated; claimed run out their work | `status: "active"` — the pool warms back to the standing `target_size` |
+> | `target_size = 0` | kept — existing ready members stay until the ready TTL recycles them; nothing reads `InstancePool#surplus` | raise it again, which is a **gated** ceiling raise |
+>
+> Until IMP-cb2da06a384b, only `paused` actually held: `replenish!` read
+> `pool.paused?` and nothing else, so the 60 s reaper re-provisioned a drained
+> pool from the deficit `drain!` had just created — while eight operator-facing
+> descriptions of drain, this runbook included, said it did not. The guard now
+> matches the descriptions; `drain!` still leaves `target_size` standing, on
+> purpose, so re-activating is one ungated `PATCH`.
 
 `System::Executors::InstancePool::ReplenishPool` exists and is the executor
 that *would* gate replenish, but nothing constructs a deferred operation

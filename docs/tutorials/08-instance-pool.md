@@ -221,6 +221,10 @@ Drain the pool when no longer needed:
 ```javascript
 // Drain sets pool status="draining", halts replenishment, and terminates
 // ready members. Claimed members keep running until their workload ends.
+// "Halts replenishment" is enforced: replenish! refuses any pool that is not
+// active, and the 60s reaper skips its replenish phase for a draining pool
+// (it keeps RECYCLING one — that is what empties it). target_size is left
+// standing, so status: "active" warms the pool back to the size it had.
 platform.system_drain_instance_pool({ id: "pool-ml-1" })
 // → { pool: { ..., status: "draining" },
 //     drain_result: { drained: 5, terminate_failed: 0, claimed_remaining: 0 } }

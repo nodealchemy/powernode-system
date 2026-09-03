@@ -41,7 +41,8 @@ machine lives on the `System::InstancePool` that produced it.
 **No path sets it any more.** Until the retirement,
 `System::InstancePoolService#provision_warming_member!` created each pool
 member's Node with `lifecycle_class: pool.lifecycle_class` — unattended, on a
-60s cron (`System::InstancePoolReplenisherJob`) over every active/draining pool
+60s cron (`System::InstancePoolReplenisherJob`) over every active *or draining*
+pool (draining pools are no longer topped up — IMP-cb2da06a384b)
 — and `PlatformDeploymentOrchestrator` wrote the literal `"persistent"`, which
 was the DB default and so moved nothing. Both writes are gone. Stopping them
 required removing the default in the same change: a pool member is `ephemeral`
