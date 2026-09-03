@@ -415,7 +415,10 @@ module ModuleDocsMcpCallSignatures
     # member and stops the instance. Line numbers are deliberately gone from
     # this note — a citation that rots silently is how the stale claim above
     # survived a rewrite of the code it described.
-    "docs/runbooks/node-provisioning.md" => %w[system_create_node system_drain_instance]
+    # IMP-0467eee9fc57 — the cordon-only pair the runbook's phantom
+    # `cordon_only` parameter was standing in for.
+    "docs/runbooks/node-provisioning.md" => %w[system_create_node system_drain_instance
+                                              system_cordon_instance system_uncordon_instance]
   }.freeze
 
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because

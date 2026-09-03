@@ -14,6 +14,7 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 | 2. Provision instance | Provider boots a VM with the netboot image | 30 s – 10 min | `system_provision_instance` |
 | 3. Bootstrap | Agent installs, mTLS handshake, module reconcile | ~90 s cold (5-10 min on slow providers) | none — agent-driven |
 | 4. Run | Heartbeats, reconcile loop, task lease | indefinite | `system_get_instance` |
+| 4b. Cordon | **Unschedulable, still running** — reversible; new pool acquires, CI runner leases and fleet missions stop landing on it, nothing running is touched | <1 s (approval-gated) | `system_cordon_instance` / `system_uncordon_instance` |
 | 5. Drain | **Cordon + STOP** — pool member fenced out of the allocator, then the VM is stopped; workload relocation is still manual and must happen FIRST | seconds (the call itself) | `system_drain_instance` |
 | 6. Decommission | Provider VM destroyed, FK cascades fire | <1 min | `system_terminate_instance` |
 
@@ -24,7 +25,8 @@ The `NodeInstance` AASM has **9 states**: `pending`, `provisioning`, `starting`,
 **no `draining` state**, and `system_drain_instance` does not drive the instance
 toward one: it walks `running → stopping → stopped`, the same walk
 `system_stop_instance` drives (Phase 5 below). `draining` is a `pool_state` on
-pooled instances — a different column, and what the drain's CORDON half writes —
+pooled instances — a different column, and what the drain's CORDON half and a
+cordon-only `system_cordon_instance` both write —
 not an instance AASM state. There is also
 **no `failed` state** — the terminal
 failure state is `error`. The "bootstrapping" box below is the agent-driven boot
@@ -330,7 +332,7 @@ mid-flight.
 |---|---|---|
 | `instance_id` | required | The NodeInstance to cordon and stop. |
 | `timeout_seconds` | **removed** | Accepted until IMP-f4fe1ed1ec1e, stored in `config` and the event payload, and enforcing nothing: no timer ran, nothing auto-terminated, nothing read it back. The skill dropped it with the markers in APO-3b; the MCP verb kept advertising and forwarding it into an executor that ignored it. It is gone from both — the stop path has no knob to map it onto. |
-| `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb:443-453`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. |
+| `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter on this verb. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. The capability it implied is now its own pair of verbs, `system_cordon_instance` / `system_uncordon_instance` (IMP-0467eee9fc57, below) — deliberately NOT a flag on the drain: a boolean that turns a stop into a not-stop is exactly the kind of parameter that gets dropped silently. |
 
 **The `drain_*` config markers are gone.** `drain_initiated_at`,
 `drain_timeout_seconds` and `drain_initiated_by_user_id` were written by the MCP
@@ -338,10 +340,103 @@ verb and read by nothing, across `server/`, `extensions/`, `worker/`,
 `frontend/` and the Go agent. No writer remains. If you have instances carrying
 them from before this change, they are inert history on the `config` blob.
 
-**There is still no cordon-only MCP verb.** No verb marks a NodeInstance
-unschedulable while leaving it up — `system_drain_instance` cordons the pool
-member and stops the instance in the same call. Depending on what you wanted:
+### Cordon-only (unschedulable) mode — `system_cordon_instance` / `system_uncordon_instance`
 
+A **cordon** marks a NodeInstance unschedulable and leaves it up: "stop
+scheduling new work here, leave what is running alone" — the Kubernetes
+`kubectl cordon` / `kubectl uncordon` shape at the platform layer, and the
+reversible half of the drain above. It is the step to take BEFORE relocating
+workloads, so the pool does not hand the node a new consumer while you work.
+
+```javascript
+platform.system_cordon_instance({
+  instance_id: "<instance-id>",
+  reason: "kernel patch window"    // required — recorded on the instance and the event
+})
+// → { instance_id, instance_name, cordoned: true, cordon_state: "fenced",
+//     cordon: { cordoned_at, by_user_id, reason, pool_state_before },
+//     pool_state: "draining", status: "running", message }
+
+platform.system_uncordon_instance({
+  instance_id: "<instance-id>"
+})
+// → { instance_id, instance_name, cordoned: false, cordon_state: "restored",
+//     cordon: null, pool_state: "ready", status: "running", message }
+```
+
+**What a cordon does**
+(`server/app/services/ai/tools/system_fleet_tool.rb#cordon_instance` →
+`server/app/services/system/instance_cordon_service.rb`):
+
+1. Writes the **marker**: `config["cordon"]` = who, why, when, and the
+   `pool_state_before` an uncordon restores. `system_get_instance` returns it
+   as `cordon` (`null` when not cordoned). A marker alone binds nobody — the
+   `drain_*` markers this verb replaces had exactly that defect — which is why
+   step 2 exists.
+2. **Fences** a *ready* pool member: `pool_state = "draining"`, the one state
+   `InstancePoolService#acquire!` never picks and `recycle_stale_members!`
+   never touches. Every scheduler that hands a NodeInstance new work goes
+   through that one `acquire!` query — `AgentFleetMissionService`, the CI
+   runner lease (`CiRunnerLeaseService`), and `system_acquire_pooled_instance`
+   — so fencing the `pool_state` fences all of them. The write is conditional
+   (`WHERE pool_state = 'ready'`), so a member the allocator claimed a
+   millisecond earlier is recorded as `claimed`, not clobbered.
+3. Emits `system.instance.cordoned` (severity `low`), readable through
+   `system_recent_signals`.
+
+`cordon_state` in the result tells you what actually happened:
+
+| `cordon_state` | Meaning |
+|---|---|
+| `fenced` | Ready pool member flipped to `draining`. The allocator will not hand it out. **The replenisher counts it as gone** and will provision a replacement up to `target_size`/`max_size`; on uncordon the pool is over target, and nothing trims it back on purpose — `recycle_stale_members!` reaps a ready member once its `pool_warming_started_at` passes `ready_ttl_seconds`, irrespective of `target_size`, so the surplus drains by TTL expiry rather than by a target-aware trim (and the uncordoned member, whose anchor was just reset, is the LAST one it reaches). |
+| `claimed` | Pool member a consumer currently holds. Marker only — it is already un-acquirable, and both release paths guard on `pool_state == "claimed"`, so flipping it would strand it. When the consumer returns it, the default `recycled` disposition terminates it; only a pool opted into `reuse_without_reset` would re-admit it as `ready` (release does not read the marker — that is `InstancePoolService`'s file). |
+| `already_fenced` | `pool_state` was already `draining` — a drain or recycle is in flight. Marker only; an uncordon will **not** restore it to `ready`. |
+| `not_pooled` | Not a pool member. Marker only — there is no allocator to fence. **INCOMPLETE, not final behaviour:** `System::Platform::ReplicaReconciler` does not read the marker (`#live_scope` / `#scale_in` pick victims by `created_at` alone), and neither does the node_api task lease, so on a physical node, a dev cell, ops-hub, or a deployment replica a cordon today records who/why/when and **fences nothing**. Honouring it in the reconciler is the outstanding half of IMP-0467eee9fc57 — it needs a hunk in `replica_reconciler.rb`, which this change could not touch. Until then, treat `not_pooled` as documentation of intent, not as an enforced state. |
+
+**Refused outright** (an inline error, nothing written, and — because the gate
+asks `InstanceCordonService.cordon_refusal` first — no approval parked): a
+*warming* member —
+`NodeInstance#promote_pool_ready!` would flip it to `ready` on its next
+heartbeat, straight past the marker; an *errored* member (already on its way
+out); a terminated instance; an instance that is already cordoned; a blank
+`reason`.
+
+**What an uncordon does.** Clears the marker and, for a member THIS cordon
+fenced (`pool_state_before: "ready"`) that is still `draining` **and**
+`running`, hands it back as `ready` with a fresh ready-TTL anchor (mirroring
+the reuse path in `InstancePoolService#release!`, so a member cordoned longer
+than `ready_ttl_seconds` is not stale-recycled on the next tick). It **fails
+closed** on a fenced member that is not running — a `ready` member that is
+stopped would be handed to its next consumer as a dead VM; start it, then
+uncordon. It never writes `ready` over a member that left `draining` while
+cordoned (recycled, errored): it clears the marker and reports
+`cordon_state: "cleared"`. Emits `system.instance.uncordoned`.
+
+**Both directions are approval-gated** under ONE category,
+`system.instance_cordon` (`require_approval` by default — declared in
+`System::Governance::PolicyDeclarations::INSTANCE_CORDON_OPERATOR_POLICIES`,
+seeded by `db/seeds/system_instance_cordon_policies.rb` on first boot and by
+`PolicyReconciler` on an already-booted install; tunable in the Autonomy
+modal's node-lifecycle section). Where policy requires approval the call
+returns `{ pending: true, deferred_operation_id }` and **nothing is written
+until an operator approves**. The uncordon is gated on purpose: an agent
+re-admitting a node an operator cordoned for maintenance is the ops-hold
+lesson — a hold that lifts itself part-way through is worse than no hold. Both
+require `system.instances.control`, the grant `system_stop_instance` and the
+drain require.
+
+**What a cordon is not.** It is not an ops hold (`system_instance_hold`
+refuses `start`/`reboot`/`terminate` at `System::InstanceControlService` —
+though deliberately NOT `stop`, see below; a cordon refuses nothing there at
+all, it blocks *scheduling* and leaves the whole lifecycle alone — the two
+compose). It does not reach kubectl: a
+Kubernetes node on the instance still needs `kubectl cordon`. It does not stop
+anything — that is the drain.
+
+**Which verb, then.** Depending on what you wanted:
+
+- **Stop new work landing on it, keep it running**: `system_cordon_instance`;
+  reverse with `system_uncordon_instance`.
 - **Cordon *and* stop a pool member**: `system_drain_instance`, or the
   `platform_resilience` skill's `drain_instance` action — the same code.
   **After deploying IMP-8c0f0fe9a8cf you must re-run `db:seed`**: the
@@ -367,6 +462,10 @@ member and stops the instance in the same call. Depending on what you wanted:
 
 **The sequence that actually retires a running instance:**
 
+0. `system_cordon_instance` — so the pool stops handing the node new consumers
+   while you do step 1. Reversible if you change your mind; the drain below
+   finds the member already `draining`, reports `cordon_state: "cordoned"`,
+   and leaves the marker on the instance.
 1. **Relocate the workloads yourself, first.** This step is manual and
    unverified: drain the Kubernetes node with `kubectl`, stop or migrate
    containers, move the VIP. Nothing on the platform side reports progress,
