@@ -739,8 +739,17 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
     let(:instance_id_a) { SecureRandom.uuid }
     let(:volume_id)     { SecureRandom.uuid }
 
+    # APO-3d: the shared teardown now drops a victim out of every published
+    # service's backend set before terminating it, which reads the instance's
+    # addresses — so the double has to answer them (none here: no service
+    # routes to a rollback fixture).
+    def rollback_instance_double(id)
+      instance_double("System::NodeInstance", id: id,
+                      vpn_ip_address: nil, private_ip_address: nil, public_ip_address: nil)
+    end
+
     it "reverses recorded outputs uniformly with the M0 envelope" do
-      instance_a = instance_double("System::NodeInstance", id: instance_id_a)
+      instance_a = rollback_instance_double(instance_id_a)
       # attached? gates the detach the shared teardown does before deleting —
       # a rollback's volumes were provisioned unattached.
       volume     = instance_double("System::ProviderVolume", id: volume_id, attached?: false)
@@ -759,7 +768,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
     end
 
     it "collects errors when termination fails but does not raise" do
-      instance_a = instance_double("System::NodeInstance", id: instance_id_a)
+      instance_a = rollback_instance_double(instance_id_a)
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_a).and_return(instance_a)
 
       bad = ::System::Runtime::Result.err(error: "provider rejected terminate")

@@ -112,14 +112,21 @@ module Sdwan
     end
 
     # The effective backend set Sdwan::ServiceExposureWriter load-balances
-    # across (APO-3c). Always at least one member.
+    # across (APO-3c).
     #
-    # A service with no ACTIVE Sdwan::ServiceBackend row — which is every
+    # A service with NO Sdwan::ServiceBackend row at all — which is every
     # service that predates the backend set, and every service nobody has
     # scaled — resolves to its legacy backend_vip/backend_host + backend_port
     # columns wrapped in LegacyBackend, so the writer has exactly one code path
     # and the degenerate output stays byte-identical to what it emitted before
     # any of this existed.
+    #
+    # A service whose rows are ALL draining resolves to NO members (operator
+    # ruling 2026-09-02, APO-3d): draining every member is how a service is
+    # taken out of rotation, and the writer skips it (#fully_drained?). It used
+    # to fall back to the legacy columns here, which after a replace-instance
+    # cycle name precisely the host that died — "drain them all" read as "send
+    # everything to the dead host".
     #
     # Emission order is (created_at, id): Traefik file-watches the dynamic dir
     # and reloads on every write, so a set whose order churns between writes
@@ -133,11 +140,18 @@ module Sdwan
     # a fresh query per service and defeat that (N+1 across every exposed
     # service in the account).
     def load_balanced_backends
-      explicit = backends.select { |backend| backend.status == "active" }
-                         .sort_by { |backend| [ backend.created_at || Time.at(0), backend.id.to_s ] }
-      return explicit if explicit.any?
+      return [ LegacyBackend.new(self) ] if backends.empty?
 
-      [ LegacyBackend.new(self) ]
+      backends.select { |backend| backend.status == "active" }
+              .sort_by { |backend| [ backend.created_at || Time.at(0), backend.id.to_s ] }
+    end
+
+    # True when the service HAS a backend set and every member of it is
+    # draining — out of rotation, distinct from the empty set (which still
+    # renders the legacy backend). Ruby-side for the same eager-load reason as
+    # #load_balanced_backends.
+    def fully_drained?
+      backends.any? && backends.none? { |backend| backend.status == "active" }
     end
 
     # Gives the pre-backend-set columns the same interface as an

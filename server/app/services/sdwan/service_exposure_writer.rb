@@ -37,7 +37,17 @@ module Sdwan
   # `servers` entry per member, plus `weight` when the members' weights differ
   # and a `healthCheck` block (Sdwan::ServiceLoadBalancing). A service with no
   # backend set — the norm — renders exactly the single-server shape above,
-  # byte for byte.
+  # byte for byte. A service whose set is ENTIRELY draining is skipped
+  # (Sdwan::Service#fully_drained?, APO-3d) and reported under its OWN key,
+  # drained_service_ids — never rendered with an empty `servers` list, and
+  # never silently redirected to its legacy columns.
+  #
+  # The two skip reasons are reported SEPARATELY on purpose.
+  # skipped_service_ids keeps its original, single meaning — "no host/cert
+  # resolvable" — because its consumer (System::Ai::Skills::ExposeServiceLocalExecutor)
+  # turns membership into a cert-shaped remediation message. Folding a drained
+  # set into the same list would have that executor fail a legitimate expose
+  # with a fabricated cause and a remedy that cannot work.
   class ServiceExposureWriter
     class WriteError < StandardError; end
 
@@ -88,14 +98,16 @@ module Sdwan
       output_path = File.join(@dynamic_dir, "local-services-#{@account.id}.yaml")
       File.write(output_path, yaml)
 
-      # route_count/skipped_service_ids reflect what render_yaml actually put
-      # in the YAML (@rendered_service_ids/@skipped_service_ids), NOT
-      # services.size — a caller exposing one service when its host/cert
-      # can't be resolved must be able to tell "0 routers written" from
-      # "1 router written" rather than reading a route_count that always
-      # equals the exposed-service count regardless of what was skipped.
+      # route_count/skipped_service_ids/drained_service_ids reflect what
+      # render_yaml actually put in the YAML, NOT services.size — a caller
+      # exposing one service when its host/cert can't be resolved must be able
+      # to tell "0 routers written" from "1 router written" rather than reading
+      # a route_count that always equals the exposed-service count regardless
+      # of what was skipped. Each skip reason keeps its own list so a caller
+      # diagnoses the one it actually hit.
       { output_path: output_path, route_count: @rendered_service_ids.size,
-        skipped_service_ids: @skipped_service_ids }
+        skipped_service_ids: @skipped_service_ids,
+        drained_service_ids: @drained_service_ids }
     rescue StandardError => e
       raise WriteError, "ServiceExposureWriter failed: #{e.class}: #{e.message}"
     end
@@ -103,13 +115,17 @@ module Sdwan
     # Renders the Traefik dynamic hash. Public for testability (no filesystem
     # side effects). A service whose host can't be resolved is skipped — a
     # hostless PathPrefix/HostSNI router would hijack traffic on every served
-    # host. Each service independently opts into the local (HTTP, `http.*`)
+    # host. So is a service whose backend set is fully drained — a router with
+    # no servers is a 503 machine, and the legacy columns are not a fallback
+    # once a set exists (APO-3d). Each service independently opts into the local (HTTP, `http.*`)
     # and/or public (TLS-carrying TCP, `tcp.*`) facet — the two are mutually
     # exclusive in practice (local requires an http/https protocol, public
     # requires tls), but this method makes no assumption of that and just
     # dispatches on each flag. Records which services were rendered vs skipped
     # (@rendered_service_ids / @skipped_service_ids) so #write! can report an
-    # accurate route_count.
+    # accurate route_count, and under which reason
+    # (@skipped_service_ids = no host/cert, @drained_service_ids = set fully
+    # draining).
     def render_yaml(services)
       routers = {}
       backends = {}
@@ -118,11 +134,18 @@ module Sdwan
       tcp_backends = {}
       @rendered_service_ids = []
       @skipped_service_ids  = []
+      @drained_service_ids  = []
 
       services.each do |svc|
+        if svc.fully_drained?
+          log_skip(svc, reason: "every backend is draining")
+          @drained_service_ids << svc.id
+          next
+        end
+
         host = host_for(svc)
         if host.blank?
-          log_skip(svc)
+          log_skip(svc, reason: "no host/cert resolvable")
           @skipped_service_ids << svc.id
           next
         end
@@ -341,9 +364,9 @@ module Sdwan
                                  .order(created_at: :desc).limit(1).pick(:common_name)
     end
 
-    def log_skip(svc)
+    def log_skip(svc, reason:)
       Rails.logger.warn(
-        "[ServiceExposureWriter] skipping local exposure #{svc.slug} (#{svc.id}): no host/cert resolvable"
+        "[ServiceExposureWriter] skipping exposure #{svc.slug} (#{svc.id}): #{reason}"
       )
       true
     end

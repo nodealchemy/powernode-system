@@ -120,12 +120,15 @@ RSpec.describe Sdwan::ServiceBackend, type: :model do
       expect(service.reload.load_balanced_backends.map(&:address)).to eq([ "10.20.0.11" ])
     end
 
-    it "falls back to the legacy backend when every explicit backend is draining" do
+    # Operator ruling 2026-09-02 (APO-3d): an all-draining set is a service
+    # OUT OF ROTATION, not a fallback to the legacy columns — after a replace
+    # cycle those name exactly the host that died.
+    it "resolves to NO backends when every explicit backend is draining" do
       service = create_service(backend_host: "10.20.0.5")
       described_class.create!(service: service, backend_host: "10.20.0.11", backend_port: 8080,
                               status: "draining")
 
-      expect(service.reload.load_balanced_backends.map(&:address)).to eq([ "10.20.0.5" ])
+      expect(service.reload.load_balanced_backends).to eq([])
     end
 
     it "is destroyed with its service" do

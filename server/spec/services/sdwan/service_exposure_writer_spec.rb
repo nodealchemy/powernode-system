@@ -190,6 +190,29 @@ RSpec.describe Sdwan::ServiceExposureWriter, type: :service do
 
       expect(result[:route_count]).to eq(0)
       expect(result[:skipped_service_ids]).to eq([ svc.id ])
+      expect(result[:drained_service_ids]).to eq([])
+    end
+
+    # Operator ruling 2026-09-02 (APO-3d). Rendering a router with an empty
+    # `servers` list is a 503 machine, and falling back to the legacy columns
+    # sends every request to the host a replace cycle just declared dead.
+    it "skips a service whose backend set is ENTIRELY draining, renders no router for it, and " \
+       "reports it under drained_service_ids rather than the host/cert skip list" do
+      svc = create_service(slug: "all-draining", backend_host: "10.20.0.5", backend_port: 3000)
+      Sdwan::ServiceBackend.create!(service: svc, backend_host: "10.20.0.11",
+                                    backend_port: 3000, status: "draining")
+
+      allow(Rails.logger).to receive(:warn)
+      result = writer.write!
+
+      expect(result[:route_count]).to eq(0)
+      expect(result[:drained_service_ids]).to eq([ svc.id ])
+      # The two reasons stay SEPARATE: ExposeServiceLocalExecutor turns
+      # skipped_service_ids membership into a certificate-shaped remediation
+      # message, which is a fabricated cause for a drained set.
+      expect(result[:skipped_service_ids]).to eq([])
+      expect(YAML.safe_load(File.read(result[:output_path])).to_h).to eq({})
+      expect(Rails.logger).to have_received(:warn).with(/draining/)
     end
   end
 

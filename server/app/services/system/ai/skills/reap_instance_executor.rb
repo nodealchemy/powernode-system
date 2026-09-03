@@ -51,6 +51,7 @@ module System
           outputs: {
             reaped: :boolean,
             failed_instance_id: :string,
+            removed_sdwan_service_backend_ids: [ :string ],
             replayed: :boolean
           },
           requires_approval: true,
@@ -73,14 +74,44 @@ module System
           prior = replayed_step("reap", operation_id)
           return success(prior.payload.symbolize_keys.merge(replayed: true)) if prior
 
+          # APO-3d — BEFORE the terminate. The dead instance's
+          # Sdwan::ServiceBackend rows (drained by the replace) are resolved
+          # from its addresses, and the terminate detaches its overlay peer —
+          # after it, the rows could no longer be found by the instance and
+          # would keep the dead host in every set forever.
+          removed_backends = remove_service_backends!(failed)
+
           result = ::System::ProvisioningService.terminate_instance(instance: failed)
           return failure("Reap of #{failed.name} failed: #{result.error}") unless result.success?
 
-          payload = { "reaped" => true, "failed_instance_id" => failed.id }
+          payload = { "reaped" => true, "failed_instance_id" => failed.id,
+                      "removed_sdwan_service_backend_ids" => removed_backends }
           record_step!(step: "reap", operation_id: operation_id, payload: payload,
                        failed: failed, reason: reason, severity: "medium")
 
           success(payload.symbolize_keys.merge(replayed: false))
+        end
+
+        private
+
+        # Drops the failed instance out of every published service's backend
+        # set and regenerates the proxy once. Returns the removed row ids.
+        # A regen failure is logged, not raised: the rows are gone and the
+        # terminate must still happen; the stale on-disk file is what a
+        # system_reverse_proxy_compose repairs.
+        def remove_service_backends!(failed)
+          removed = ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: failed)
+                                           .flat_map { |svc| ::Sdwan::ServiceBackend.remove_instance!(service: svc, instance: failed) }
+                                           .map(&:id)
+          return removed if removed.empty?
+
+          begin
+            ::Sdwan::ServiceExposureWriter.write!(account: @account)
+          rescue ::Sdwan::ServiceExposureWriter::WriteError => e
+            Rails.logger.warn("[ReapInstanceExecutor] backend rows removed for #{failed.id} but " \
+                              "reverse-proxy regen failed: #{e.message}")
+          end
+          removed
         end
       end
     end

@@ -87,7 +87,7 @@ module System
 
         skill_descriptor(
           name: "replace_instance",
-          description: "Replace an unrecoverable NodeInstance with a warm pool member: acquire the replacement, reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting the failed peer's routing ROLE rather than the schema defaults, with the endpoint re-derived from the replacement's own address so a replacement hub is not left advertising the dead instance's), and move its VIPs. The terminate of the failed instance is a SEPARATE approval, performed by ReapInstanceExecutor.",
+          description: "Replace an unrecoverable NodeInstance with a warm pool member: acquire the replacement, reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting the failed peer's routing ROLE rather than the schema defaults, with the endpoint re-derived from the replacement's own address so a replacement hub is not left advertising the dead instance's), move its VIPs, and re-home every published Sdwan::Service that dialled the failed instance by address onto the replacement (the dead member is drained, not removed, until the reap). The terminate of the failed instance is a SEPARATE approval, performed by ReapInstanceExecutor.",
           category: "fleet",
           inputs: {
             instance_id: { type: "string", required: true,
@@ -110,6 +110,7 @@ module System
             reattached_volume_ids: [ :string ],
             enrolled_peer_ids: [ :string ],
             moved_virtual_ip_ids: [ :string ],
+            rehomed_sdwan_service_ids: [ :string ],
             replayed_steps: [ :string ],
             pool_ready_count: :integer,
             blocked: :boolean,
@@ -206,6 +207,19 @@ module System
             { "moved_virtual_ip_ids" => moved, "errors" => errs }
           end
 
+          # APO-3d — the published services. Its input is a QUERY (which
+          # services dial the failed instance by address), not the enrol
+          # step's output, so it is self-healing on a re-drive like the volume
+          # leg: a replacement whose peer was minted late is picked up by
+          # Sdwan::ServiceBackend.address_for the next time round. It runs
+          # AFTER the enrol so that peer exists to be dialled over the overlay.
+          service_ids = run_step("rehome_service_backends", operation_id, replayed,
+                                 failed: failed, reason: reason) do
+            rehomed, errs = rehome_service_backends!(failed: failed, replacement: replacement)
+            failures.concat(errs)
+            { "rehomed_sdwan_service_ids" => rehomed, "errors" => errs }
+          end
+
           reap_outcome = reap ? request_reap(failed: failed, operation_id: operation_id, reason: reason) : no_reap
 
           success(
@@ -214,6 +228,7 @@ module System
             reattached_volume_ids: Array(volume_ids["reattached_volume_ids"]),
             enrolled_peer_ids: Array((peer_map["peer_map"] || {}).values),
             moved_virtual_ip_ids: Array(vip_ids["moved_virtual_ip_ids"]),
+            rehomed_sdwan_service_ids: Array(service_ids["rehomed_sdwan_service_ids"]),
             replayed_steps: replayed,
             failures: failures,
             partial: failures.any?,
@@ -520,6 +535,50 @@ module System
           [ moved, errors ]
         end
 
+        # APO-3d — every published Sdwan::Service that reached the failed
+        # instance BY ADDRESS gets the replacement as an active member and the
+        # dead member DRAINED. Drained, not removed: the row and its weight
+        # survive until the reap (ReapInstanceExecutor removes it), which is
+        # the rolling-replacement window the drain switch exists for. A
+        # service that reaches the failed instance only through a VIP is left
+        # alone — #move_vips! re-homed the VIP, and a host-form row for the
+        # replacement beside it would count one machine twice.
+        #
+        # The proxy is regenerated once for the account when any set changed;
+        # a regen failure is an error entry, so the step stays unrecorded and
+        # the next drive retries the write.
+        def rehome_service_backends!(failed:, replacement:)
+          rehomed = []
+          errors  = []
+
+          # .host_routed_services IS the "by address" filter — the shared rule
+          # every producer applies, so the scale and replace arms cannot
+          # disagree about what a VIP-fronted service is.
+          ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: failed).each do |svc|
+            ::Sdwan::ServiceBackend.add_instance!(service: svc, instance: replacement)
+            ::Sdwan::ServiceBackend.drain_instance!(service: svc, instance: failed)
+            rehomed << svc.id
+          rescue StandardError => e
+            errors << { "step" => "rehome_service_backends", "service_id" => svc.id, "error" => e.message }
+          end
+
+          if rehomed.any?
+            begin
+              ::Sdwan::ServiceExposureWriter.write!(account: @account)
+            rescue ::Sdwan::ServiceExposureWriter::WriteError => e
+              errors << { "step" => "regenerate_service_exposure", "error" => e.message }
+            end
+          end
+
+          [ rehomed, errors ]
+        end
+
+        # The dry-run twin of #rehome_service_backends!: which services the
+        # replace would re-home.
+        def planned_rehome_service_ids(failed)
+          ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: failed).map(&:id)
+        end
+
         # ── the reap, gated on its own category ────────────────────────────
 
         def no_reap
@@ -622,6 +681,7 @@ module System
             would_reattach_volume_ids: volumes.map(&:id),
             would_reenrol_network_ids: peers.filter_map { |p| p.network&.id }.uniq,
             would_move_virtual_ip_ids: planned_vip_ids(peers),
+            would_rehome_service_ids: planned_rehome_service_ids(failed),
             reap_requested: reap == true,
             reap_action_category: REAP_ACTION_CATEGORY,
             note: blocked_note.presence ||

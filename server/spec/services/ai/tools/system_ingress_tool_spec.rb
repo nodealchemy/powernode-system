@@ -51,7 +51,8 @@ RSpec.describe Ai::Tools::SystemIngressTool do
         "system_delete_service",
         "system_unexpose_service_local",
         "system_expose_service_public_tcp",
-        "system_unexpose_service_public_tcp"
+        "system_unexpose_service_public_tcp",
+        "system_set_service_backends"
       )
     end
 

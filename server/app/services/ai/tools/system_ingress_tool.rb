@@ -19,6 +19,7 @@
 #   - system_unexpose_service_public_tcp → ExposeServicePublicTcpExecutor (executor, approval-gated) — Path B OFF
 #   - system_create_service / list / get / update / delete                (inline CRUD)
 #   - system_unexpose_service_local                                       (inline)
+#   - system_set_service_backends        (inline, approval-gated via DeferredToolCall) — APO-3d
 #
 # Ownership rule: every change to *exposure semantics* (enabling local
 # exposure, auth mode, scoped permission/group) goes through the approval-gated
@@ -29,10 +30,36 @@
 # — expose and unexpose — are owned end to end by ExposeServicePublicTcpExecutor,
 # never inline CRUD, because disabling a live public route carries real risk
 # too (unlike turning off a ForwardAuth-gated local exposure).
+#
+# The BACKEND SET (APO-3d, IMP-0c10b9fd5596) is the third owner class:
+# `system_set_service_backends` writes a service's Sdwan::ServiceBackend rows
+# declaratively (the list given becomes the set) and its per-service
+# load-balancer overrides (metadata["load_balancer"]). It is the only MCP door
+# onto either; the autonomous producers (scale-out, scale-in, DR replace/reap)
+# maintain the set through the executors under their own categories. It is
+# approval-gated through the DeferredToolCall replay seam because a backend
+# set decides where EVERY request to a published service goes — the same
+# class of decision as enabling the exposure, which is gated too.
 module Ai
   module Tools
     class SystemIngressTool < BaseTool
       REQUIRED_PERMISSION = "system.ingress.read"
+
+      # The Ai::InterventionPolicy category the backend-set verb gates on. A
+      # category of its own, so an operator tunes "who may redirect a
+      # published service's traffic" independently of the expose verbs.
+      # Ai::InterventionPolicyService resolves an unseeded category to
+      # require_approval, which is the intended verdict; the seeded row that
+      # makes it VISIBLE in the Autonomy modal belongs in
+      # System::Governance::PolicyDeclarations beside the ingress rows.
+      SERVICE_BACKENDS_CATEGORY = "system.service_backends_update"
+      SERVICE_BACKENDS_ACTION   = "system_set_service_backends"
+
+      # The per-service load-balancer overrides the verb may write into
+      # Sdwan::Service#metadata["load_balancer"] — exactly the keys
+      # Sdwan::ServiceLoadBalancing resolves, so nothing unread can be stored.
+      LOAD_BALANCER_KEYS = %w[health_check_enabled health_check_path
+                              health_check_interval health_check_timeout].freeze
 
       ACTION_PERMISSIONS = {
         "system_reverse_proxy_compose"      => "system.ingress.manage",
@@ -46,7 +73,8 @@ module Ai
         "system_list_services"              => "system.ingress.read",
         "system_get_service"                => "system.ingress.read",
         "system_expose_service_public_tcp"   => "system.ingress.manage",
-        "system_unexpose_service_public_tcp" => "system.ingress.manage"
+        "system_unexpose_service_public_tcp" => "system.ingress.manage",
+        "system_set_service_backends"        => "system.ingress.manage"
       }.freeze
 
       # Maps each executor-backed action to the executor class that implements it.
@@ -78,7 +106,8 @@ module Ai
         "system_get_service"            => :get_service,
         "system_update_service"         => :update_service,
         "system_delete_service"         => :delete_service,
-        "system_unexpose_service_local" => :unexpose_service_local
+        "system_unexpose_service_local" => :unexpose_service_local,
+        "system_set_service_backends"   => :set_service_backends
       }.freeze
 
       # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
@@ -97,6 +126,20 @@ module Ai
       declare_action "system_unexpose_service_local", mutating: true
       declare_action "system_unexpose_service_public_tcp", mutating: true
       declare_action "system_update_service", mutating: true
+
+      # APO-3d — GATED, through the generic DeferredToolCall replay seam:
+      # BaseTool#execute parks the call under SERVICE_BACKENDS_CATEGORY and the
+      # approved replay re-enters #execute as the ORIGINAL caller, reaching
+      # #set_service_backends through #call. The gate context validates the
+      # payload first (a malformed set keeps its own error rather than becoming
+      # an approval that can only fail), and #authorization_error keeps the
+      # per-action permission check in front of the gate.
+      declare_action SERVICE_BACKENDS_ACTION,
+                     mutating: true,
+                     action_category: SERVICE_BACKENDS_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :set_service_backends_gate_context,
+                     on_proceed: :deferred_tool_call_result
 
       def self.definition
         {
@@ -145,7 +188,10 @@ module Ai
             edge_mode:           { type: "string",  required: false, enum: ::Sdwan::Service::EDGE_MODES },
             client_auth:         { type: "string",  required: false, enum: ::Sdwan::Service::CLIENT_AUTH_MODES },
             public_enabled:      { type: "boolean", required: false },
-            enabled:             { type: "boolean", required: false }
+            enabled:             { type: "boolean", required: false },
+            # APO-3d backend set (system_set_service_backends)
+            backends:            { type: "array",   required: false, items: { type: "object" } },
+            load_balancer:       { type: "object",  required: false }
           }
         }
       end
@@ -286,6 +332,16 @@ module Ai
             parameters: {
               service_id: { type: "string", required: true, description: "Sdwan::Service id" }
             }
+          },
+          "system_set_service_backends" => {
+            description: "Set a service's load-balanced backend set DECLARATIVELY: the `backends` list becomes the set (members are matched by address + port and updated in place, members absent from the list are removed, an empty list returns the service to its single legacy backend). Optionally sets the per-service load-balancer overrides (metadata.load_balancer: health_check_enabled/path/interval/timeout; a null value clears that override). Regenerates the reverse proxy when the service is exposed. Approval-gated under #{SERVICE_BACKENDS_CATEGORY}: unless policy auto-approves, the call returns a pending envelope (deferred_operation_id) and the set is written when the approval is released. Draining EVERY member takes the service out of rotation (the writer skips it); to keep serving from the original backend while you rebuild the set, keep it listed as an active member.",
+            parameters: {
+              service_id:    { type: "string", required: true, description: "Sdwan::Service id" },
+              backends:      { type: "array",  required: true, items: { type: "object" },
+                               description: "Desired members, each { backend_host | backend_vip_id, backend_port (1-65535, required), weight (1-1000, default 1), status (active | draining, default active) }. Empty array clears the set." },
+              load_balancer: { type: "object", required: false,
+                               description: "Per-service overrides: { health_check_enabled: boolean, health_check_path: string, health_check_interval: e.g. \"10s\", health_check_timeout: e.g. \"3s\" }. Keys given are merged; null removes a key. Health checking is opt-in — a check on the wrong path takes the whole service dark." }
+            }
           }
         }
       end
@@ -314,6 +370,35 @@ module Ai
         # on-disk YAML may still be routing the old state until a regen
         # succeeds (system_reverse_proxy_compose, or retry this action).
         error_result("service change saved but reverse-proxy regen failed (stale route may still be live): #{e.message}")
+      end
+
+      # Hoists the per-action permission check so a GATED action — which
+      # never reaches #call — is authorized exactly as an ungated one is
+      # (BaseTool#execute consults this before the gate). Same seam as
+      # SystemFleetTool#authorization_error.
+      def authorization_error(params)
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result("permission denied: #{required_perm_for(action)} required")
+      end
+
+      # The backend-set verb's gate context: VALIDATE FIRST (service in
+      # account scope, well-formed members, known override keys), then pack
+      # the replay through the generic seam. Both raises are the ones
+      # BaseTool#run_through_autonomy_gate converts to an error envelope, so a
+      # payload that could only ever fail never parks an approval an operator
+      # has to dispose of.
+      def set_service_backends_gate_context(params)
+        svc = account_services.find(params[:service_id])
+        members = normalize_backend_specs(params[:backends])
+        normalize_load_balancer_overrides(params[:load_balancer])
+
+        deferred_tool_call_context(params).merge(
+          description: "Set the backend set of service '#{svc.slug}' " \
+                       "(#{members.size} member#{members.size == 1 ? '' : 's'}" \
+                       "#{params[:load_balancer].nil? ? '' : ', with load-balancer overrides'})"
+        )
       end
 
       private
@@ -358,7 +443,8 @@ module Ai
 
       def get_service(params)
         svc = account_services.find(params[:service_id])
-        success_result(service: serialize_service(svc))
+        success_result(service: serialize_service(svc), backends: serialize_backends(svc),
+                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil)
       end
 
       def update_service(params)
@@ -385,6 +471,136 @@ module Ai
         svc.update!(local_enabled: false)
         regen_reverse_proxy!
         success_result(service: serialize_service(svc.reload), local_exposure: "disabled")
+      end
+
+      # APO-3d — the declarative backend-set write. Reached ONLY through the
+      # gate: BaseTool#execute never calls #call for this action until the
+      # operation is approved (or policy proceeds), so this body is the single
+      # writer on both branches.
+      #
+      # Members are matched by (address form, port): a listed member that
+      # already exists is updated in place (weight/status), one that does not
+      # is created, and every existing row absent from the list is destroyed.
+      # An empty list therefore clears the set and the service falls back to
+      # its legacy columns. One transaction, so a half-applied set cannot be
+      # what Traefik dials.
+      def set_service_backends(params)
+        svc = account_services.find(params[:service_id])
+        members = normalize_backend_specs(params[:backends])
+        overrides = normalize_load_balancer_overrides(params[:load_balancer])
+
+        ::ActiveRecord::Base.transaction do
+          existing = svc.backends.to_a
+          kept = []
+          members.each do |spec|
+            row = existing.find { |candidate| same_backend?(candidate, spec) }
+            if row
+              row.update!(weight: spec[:weight], status: spec[:status])
+            else
+              row = svc.backends.create!(spec.merge(account_id: svc.account_id))
+            end
+            kept << row.id
+          end
+          existing.reject { |row| kept.include?(row.id) }.each(&:destroy!)
+
+          apply_load_balancer_overrides!(svc, overrides) unless overrides.nil?
+        end
+
+        regen_reverse_proxy! if svc.local_enabled? || svc.public_enabled?
+        svc.reload
+        success_result(service: serialize_service(svc), backends: serialize_backends(svc),
+                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil)
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      # The member list, checked shape by shape. Raises ArgumentError — the
+      # gate context and the write both call this, so a malformed list is
+      # refused identically before the gate and on replay.
+      def normalize_backend_specs(raw)
+        raise ArgumentError, "backends is required (an array of members; [] clears the set)" unless raw.is_a?(Array)
+
+        raw.each_with_index.map do |entry, index|
+          member = entry.respond_to?(:to_h) ? entry.to_h.transform_keys(&:to_sym) : nil
+          raise ArgumentError, "backends[#{index}] must be an object" unless member.is_a?(Hash)
+
+          vip  = member[:backend_vip_id].presence
+          host = member[:backend_host].presence
+          if vip.present? == host.present?
+            raise ArgumentError, "backends[#{index}]: exactly one of backend_host or backend_vip_id is required"
+          end
+
+          # Account-scoped, not merely well-formed. A service id alone is no
+          # proof the caller may act on it (that is what #account_services
+          # settles) and a VIP id is no different: an unscoped id would let a
+          # caller holding system.ingress.manage in ITS account point its own
+          # published service at another tenant's VIP address. Resolved here so
+          # the refusal happens before the gate, in the same place as every
+          # other shape error.
+          if vip && !::Sdwan::VirtualIp.where(account_id: @account.id, id: vip).exists?
+            raise ArgumentError, "backends[#{index}]: backend_vip_id #{vip} not found in this account"
+          end
+
+          port = Integer(member[:backend_port].to_s, exception: false)
+          unless port&.between?(1, 65_535)
+            raise ArgumentError, "backends[#{index}]: backend_port is required (1-65535)"
+          end
+
+          weight = member.key?(:weight) && !member[:weight].nil? ? Integer(member[:weight].to_s, exception: false) : ::Sdwan::ServiceBackend::DEFAULT_WEIGHT
+          unless weight&.between?(::Sdwan::ServiceBackend::MIN_WEIGHT, ::Sdwan::ServiceBackend::MAX_WEIGHT)
+            raise ArgumentError, "backends[#{index}]: weight must be #{::Sdwan::ServiceBackend::MIN_WEIGHT}-#{::Sdwan::ServiceBackend::MAX_WEIGHT}"
+          end
+
+          status = member[:status].presence&.to_s || "active"
+          unless ::Sdwan::ServiceBackend::STATUSES.include?(status)
+            raise ArgumentError, "backends[#{index}]: status must be one of #{::Sdwan::ServiceBackend::STATUSES.join(', ')}"
+          end
+
+          { backend_vip_id: vip, backend_host: host, backend_port: port, weight: weight, status: status }
+        end
+      end
+
+      # nil when no overrides were supplied (leave metadata alone); else a
+      # string-keyed hash restricted to LOAD_BALANCER_KEYS, nil values kept as
+      # the "clear this key" signal.
+      def normalize_load_balancer_overrides(raw)
+        return nil if raw.nil?
+        raise ArgumentError, "load_balancer must be an object" unless raw.respond_to?(:to_h)
+
+        overrides = raw.to_h.transform_keys(&:to_s)
+        unknown = overrides.keys - LOAD_BALANCER_KEYS
+        if unknown.any?
+          raise ArgumentError, "load_balancer: unknown key(s) #{unknown.join(', ')} " \
+                               "(allowed: #{LOAD_BALANCER_KEYS.join(', ')})"
+        end
+        overrides
+      end
+
+      def apply_load_balancer_overrides!(svc, overrides)
+        metadata = svc.metadata.is_a?(Hash) ? svc.metadata.deep_dup : {}
+        current = metadata["load_balancer"].is_a?(Hash) ? metadata["load_balancer"] : {}
+        merged = current.merge(overrides).reject { |_, value| value.nil? }
+        if merged.empty?
+          metadata.delete("load_balancer")
+        else
+          metadata["load_balancer"] = merged
+        end
+        svc.update!(metadata: metadata)
+      end
+
+      def same_backend?(row, spec)
+        return false unless row.backend_port == spec[:backend_port]
+        return row.backend_vip_id == spec[:backend_vip_id] if spec[:backend_vip_id].present?
+
+        row.backend_host == spec[:backend_host]
+      end
+
+      def serialize_backends(svc)
+        svc.backends.includes(:backend_vip).order(:created_at, :id).map do |row|
+          { id: row.id, backend_vip_id: row.backend_vip_id, backend_host: row.backend_host,
+            backend_port: row.backend_port, address: row.address, weight: row.weight,
+            status: row.status }
+        end
       end
 
       def account_services

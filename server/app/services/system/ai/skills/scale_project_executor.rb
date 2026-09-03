@@ -57,6 +57,19 @@ module System
       #      everything attached to a victim is still deleted, mission-owned
       #      or not. `outputs.prefix_enforced` records which case ran.
       #
+      # THE BACKEND SET TRAVELS WITH THE REPLICAS (APO-3d, IMP-0c10b9fd5596).
+      # A published Sdwan::Service dials ONE backend unless it has an explicit
+      # Sdwan::ServiceBackend set, and APO-3c shipped that set with no
+      # producer — so add_replicas minted instances no service ever dialled,
+      # and remove_replicas terminated instances whose member rows would have
+      # kept Traefik dialling a dead host. Both arms now maintain the set for
+      # every service that routes to the mission's replicas
+      # (Sdwan::ServiceBackend.services_routed_to) and regenerate the proxy:
+      # add_replicas joins each new replica, remove_replicas (and the rollback,
+      # through the same teardown) removes each victim's rows BEFORE the
+      # terminate takes its addresses away. A join that fails is a recorded
+      # step failure (`partial`), never a silent one.
+      #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive
       # evolution); scale-in from the platform-evolution-loop charter (INC-4).
       class ScaleProjectExecutor < BaseSkillExecutor
@@ -116,12 +129,17 @@ module System
               sdwan_peer_ids: [ :string ],
               storage_volume_ids: [ :string ],
               rolling_upgrade_plan: :object,
+              # APO-3d — the published services the new replicas joined and
+              # the Sdwan::ServiceBackend rows this step minted for them.
+              sdwan_service_ids: [ :string ],
+              sdwan_service_backend_ids: [ :string ],
               # remove_replicas only — what this step DESTROYED, kept out of
               # the creation keys above so no reader mistakes a teardown for a
               # provision. `orphans` is the post-teardown ground-truth sweep.
               removed_node_instance_ids: [ :string ],
               detached_sdwan_peer_ids: [ :string ],
               deleted_storage_volume_ids: [ :string ],
+              removed_sdwan_service_backend_ids: [ :string ],
               orphans: [ :object ],
               floor_reached: :boolean,
               # Which containment rail actually applied — nil when the mission
@@ -144,6 +162,9 @@ module System
         def rollback_scale_project(node_instance_ids: [], storage_volume_ids: [], **_extras)
           result = teardown_resources(node_instance_ids: node_instance_ids,
                                       storage_volume_ids: storage_volume_ids)
+          # One regen for the whole rollback — #teardown_resources leaves it to
+          # its caller so an N-instance teardown reloads Traefik once.
+          regen_service_exposure!(result[:errors]) if result[:removed_backends].any?
 
           { success: result[:errors].empty?, errors: result[:errors] }
         end
@@ -239,22 +260,111 @@ module System
 
           inner_data = inner_result[:data] || {}
           inner_outputs = inner_data[:outputs] || {}
+          new_instance_ids = Array(inner_outputs[:node_instance_ids])
+
+          joined = join_service_backends(mission: mission, new_instance_ids: new_instance_ids,
+                                         dry_run: dry_run)
+          failures = Array(inner_data[:failures]) + joined[:failures]
 
           success(
             dry_run: dry_run ? true : false,
             count: count,
             scaling_strategy: strategy,
-            planned_actions: prepend_strategy_marker(strategy, inner_data[:planned_actions]),
+            planned_actions: prepend_strategy_marker(strategy,
+                                                     Array(inner_data[:planned_actions]) + joined[:actions]),
             outputs: {
               node_ids: Array(inner_outputs[:node_ids]),
-              node_instance_ids: Array(inner_outputs[:node_instance_ids]),
+              node_instance_ids: new_instance_ids,
               sdwan_peer_ids: Array(inner_outputs[:sdwan_peer_ids]),
               storage_volume_ids: Array(inner_outputs[:storage_volume_ids]),
-              rolling_upgrade_plan: nil
+              rolling_upgrade_plan: nil,
+              sdwan_service_ids: joined[:service_ids],
+              sdwan_service_backend_ids: joined[:backend_ids]
             },
-            failures: Array(inner_data[:failures]),
-            partial: inner_data[:partial] == true
+            failures: failures,
+            partial: inner_data[:partial] == true || joined[:failures].any?
           )
+        end
+
+        # APO-3d — put the new replicas INTO the published services the
+        # mission's existing replicas already back.
+        #
+        # The services are discovered from the replicas that were there
+        # BEFORE this scale-out (the new ones cannot yet be routed to), so the
+        # operator's approval of "add N replicas to this project" is exactly
+        # what widens the set: nothing is joined that the project was not
+        # already serving. A dry run names the services and writes nothing.
+        #
+        # One proxy regen at the end, and only when a row was actually written
+        # — Traefik reloads on every write to the dynamic dir.
+        def join_service_backends(mission:, new_instance_ids:, dry_run:)
+          services = mission_services(mission, excluding: new_instance_ids)
+          result = { service_ids: [], backend_ids: [], actions: [], failures: [] }
+          return result if services.empty?
+
+          if dry_run
+            result[:actions] = services.map do |svc|
+              { step: "join_service_backends", service_id: svc.id, slug: svc.slug,
+                node_instance_ids: [] }
+            end
+            return result
+          end
+
+          instances = ::System::NodeInstance.where(id: new_instance_ids).index_by(&:id)
+          services.each do |svc|
+            joined_ids = []
+            before = svc.backends.pluck(:id)
+            new_instance_ids.each do |instance_id|
+              instance = instances[instance_id]
+              next unless instance
+
+              ::Sdwan::ServiceBackend.add_instance!(service: svc, instance: instance)
+              joined_ids << instance_id
+            rescue StandardError => e
+              result[:failures] << { step: "join_service_backends", service_id: svc.id,
+                                     node_instance_id: instance_id, error: e.message }
+            end
+            # Rows this step MINTED — the materialised legacy member included
+            # — never the whole set, so a re-read of the outputs cannot claim
+            # rows an earlier scale-out created.
+            result[:backend_ids].concat(svc.backends.reload.pluck(:id) - before)
+            next if joined_ids.empty?
+
+            result[:service_ids] << svc.id
+            result[:actions] << { step: "join_service_backends", service_id: svc.id, slug: svc.slug,
+                                  node_instance_ids: joined_ids }
+          end
+
+          regen_service_exposure!(result[:failures]) if result[:backend_ids].any?
+          result
+        end
+
+        # Every published service that routes to one of the mission's replicas
+        # BY ADDRESS — the set the arms maintain. `excluding:` drops instances
+        # this very step created, which by construction no service routes to
+        # yet.
+        #
+        # .host_routed_services, not .services_routed_to: a service that
+        # reaches the mission only through a backend VIP is left alone, the
+        # same rule ReplaceInstanceExecutor#rehome_service_backends! applies.
+        # A host-form row for a new replica beside a VIP row would count one
+        # machine twice — and hand it the whole round robin the moment the VIP
+        # failed over onto it.
+        def mission_services(mission, excluding: [])
+          mission_replicas(mission).reject { |instance| excluding.include?(instance.id) }
+                                   .flat_map { |instance| ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: instance) }
+                                   .uniq(&:id)
+        end
+
+        # Re-emit the account's Traefik YAML so a changed set is what Traefik
+        # dials. A regen failure is a recorded failure, never a raise: the DB
+        # already reflects the fleet, and the stale on-disk file is what the
+        # failure entry tells the operator to regenerate
+        # (system_reverse_proxy_compose).
+        def regen_service_exposure!(failures)
+          ::Sdwan::ServiceExposureWriter.write!(account: @account)
+        rescue ::Sdwan::ServiceExposureWriter::WriteError => e
+          failures << { step: "regenerate_service_exposure", error: e.message }
         end
 
         # remove_replicas — the scale-IN arm (INC-4).
@@ -328,7 +438,8 @@ module System
           if dry_run
             return success(removal_envelope(
               dry_run: true, count: victims.size,
-              actions: victims.map { |i| { step: "remove_replica", node_instance_id: i.id, name: i.name } },
+              actions: victims.map { |i| { step: "remove_replica", node_instance_id: i.id, name: i.name } } +
+                       planned_service_backend_removals(victims),
               outputs: removal_outputs(prefix: prefix)
             ))
           end
@@ -343,6 +454,7 @@ module System
           removed = []
           detached_peers = []
           deleted_volumes = []
+          removed_backends = []
           failures = []
           orphans = []
 
@@ -366,6 +478,7 @@ module System
             failures.concat(result[:errors].map { |e| e.merge(step: "remove_replica") })
             removed.concat(result[:terminated])
             deleted_volumes.concat(result[:deleted_volumes])
+            removed_backends.concat(result[:removed_backends])
             # Ground truth, not "the detacher returned": a peer counts as
             # detached only once its row is actually gone.
             detached_peers.concat(peer_ids - ::Sdwan::Peer.where(id: peer_ids).pluck(:id))
@@ -393,6 +506,10 @@ module System
             break
           end
 
+          # ONE proxy regen for the whole removal, after the last victim — the
+          # teardown deliberately does not regen per call.
+          regen_service_exposure!(failures) if removed_backends.any?
+
           # Nothing removed: report a FAILED step. Returning the
           # partial-success envelope here would have the runner mark the step
           # completed, skip its `on_failure: rollback`, and dispatch
@@ -407,7 +524,8 @@ module System
           # and the step records no outputs when it fails.
           if removed.empty?
             destroyed = "destroyed before the failure: " \
-                        "volumes=#{deleted_volumes.inspect} peers=#{detached_peers.inspect}"
+                        "volumes=#{deleted_volumes.inspect} peers=#{detached_peers.inspect} " \
+                        "service_backends=#{removed_backends.inspect}"
             return failure("remove_replicas removed nothing (#{destroyed}): " \
                            "#{failures.inspect[0, 300]}")
           end
@@ -416,9 +534,22 @@ module System
             dry_run: false, count: removed.size, actions: actions,
             outputs: removal_outputs(prefix: prefix, removed: removed,
                                      detached_peers: detached_peers,
-                                     deleted_volumes: deleted_volumes, orphans: orphans),
+                                     deleted_volumes: deleted_volumes,
+                                     removed_backends: removed_backends, orphans: orphans),
             failures: failures
           ))
+        end
+
+        # The dry-run twin of the teardown's backend-set leg: which member
+        # rows each victim would leave, so the approval card names the
+        # services a scale-in narrows.
+        def planned_service_backend_removals(victims)
+          victims.flat_map do |instance|
+            ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: instance).map do |svc|
+              { step: "leave_service_backends", service_id: svc.id, slug: svc.slug,
+                node_instance_id: instance.id }
+            end
+          end
         end
 
         # The mission's OWN replicas, newest first.
@@ -506,11 +637,12 @@ module System
         end
 
         def removal_outputs(prefix: nil, removed: [], detached_peers: [], deleted_volumes: [],
-                            orphans: [], floor_reached: false)
+                            removed_backends: [], orphans: [], floor_reached: false)
           empty_outputs.merge(
             removed_node_instance_ids: removed,
             detached_sdwan_peer_ids: detached_peers,
             deleted_storage_volume_ids: deleted_volumes,
+            removed_sdwan_service_backend_ids: removed_backends,
             orphans: orphans,
             floor_reached: floor_reached,
             prefix_enforced: prefix
@@ -597,7 +729,8 @@ module System
 
         def empty_outputs
           { node_ids: [], node_instance_ids: [], sdwan_peer_ids: [],
-            storage_volume_ids: [], rolling_upgrade_plan: nil }
+            storage_volume_ids: [], rolling_upgrade_plan: nil,
+            sdwan_service_ids: [], sdwan_service_backend_ids: [] }
         end
 
         # THE teardown path — the only one in this executor. Both the rollback
@@ -615,14 +748,25 @@ module System
         # correct order the moment storage attach is threaded through a
         # scale-out.
         #
+        # BACKEND ROWS BEFORE THE INSTANCE, too (APO-3d). A victim's
+        # Sdwan::ServiceBackend rows are resolved from its addresses, and the
+        # terminate detaches its overlay peer — so the rows have to go while
+        # the instance can still be found by them. Left behind, they keep
+        # Traefik dialling a host that no longer exists. The proxy regen is the
+        # CALLER's, once per run: this method is called once per victim, and
+        # regenerating here would write and reload the dynamic dir N times for
+        # an N-victim scale-in.
+        #
         # Never raises: both callers collect errors into the outputs envelope.
-        # Returns { errors:, terminated:, deleted_volumes: } — the terminated /
-        # deleted lists are what actually succeeded, so the caller reports
-        # ground truth rather than what it intended.
+        # Returns { errors:, terminated:, deleted_volumes:, removed_backends: }
+        # — the terminated / deleted / removed lists are what actually
+        # succeeded, so the caller reports ground truth rather than what it
+        # intended.
         def teardown_resources(node_instance_ids: [], storage_volume_ids: [])
           errors = []
           terminated = []
           deleted_volumes = []
+          removed_backends = []
 
           Array(storage_volume_ids).reverse_each do |volume_id|
             volume = ::System::ProviderVolume.find_by(id: volume_id)
@@ -650,6 +794,8 @@ module System
             instance = ::System::NodeInstance.find_by(id: instance_id)
             next unless instance
 
+            removed_backends.concat(leave_service_backends!(instance, errors))
+
             result = ::System::ProvisioningService.terminate_instance(instance: instance)
             if result.success?
               terminated << instance_id
@@ -660,7 +806,21 @@ module System
             errors << { resource: "node_instance", id: instance_id, error: e.message }
           end
 
-          { errors: errors, terminated: terminated, deleted_volumes: deleted_volumes }
+          { errors: errors, terminated: terminated, deleted_volumes: deleted_volumes,
+            removed_backends: removed_backends }
+        end
+
+        # Drops `instance` out of every published service's backend set.
+        # Returns the removed row ids; a failure is recorded against the
+        # instance and the teardown carries on to the terminate — a stale row
+        # is a routing defect, not a reason to leave the VM billing.
+        def leave_service_backends!(instance, errors)
+          ::Sdwan::ServiceBackend.host_routed_services(account: @account, instance: instance)
+                                 .flat_map { |svc| ::Sdwan::ServiceBackend.remove_instance!(service: svc, instance: instance) }
+                                 .map(&:id)
+        rescue StandardError => e
+          errors << { resource: "sdwan_service_backend", id: instance.id, error: e.message }
+          []
         end
 
         def prepend_strategy_marker(strategy, planned_actions)
