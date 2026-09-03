@@ -53,6 +53,28 @@ module System
       MIN_DWELL_MINUTES  = 0
       MAX_DWELL_MINUTES  = 60 * 24 * 30 # 30 days
 
+      # The promotion targets these criteria have anything to say about.
+      # `blessed` is the rung that claims "the fleet has run this and lived",
+      # which is exactly what #evaluate measures; `staging`/`built` are
+      # pre-evidence rungs and `retired`/`live` are operator decisions about a
+      # version that already cleared (or is being decommissioned regardless).
+      # System::Fleet::ModulePromotionService — the automated lane — refuses on
+      # this same set; System::Fleet::ManualPromotionAdvisory (the operator REST
+      # promote and its MCP twin) WARNS on it.
+      #
+      # This is NOT yet the single definition: module_promotion_service.rb still
+      # carries its own `target_state == "blessed"` literal (that file is out of
+      # IMP-d6826c872d88's scope, so it was left alone rather than edited
+      # blind). What this constant is, today, is the shared NAME the two manual
+      # paths use instead of each restating the automated lane's rule — pinned
+      # equal to that literal by the equality oracle in
+      # spec/services/system/fleet/manual_promotion_advisory_spec.rb, which
+      # drives the real service over every target state and asserts the states
+      # it refuses on are exactly the states this constant names. Collapsing
+      # the service onto PromotionCriteria.gates? is a one-line follow-up that
+      # oracle will keep honest.
+      GATED_TARGET_STATES = %w[blessed].freeze
+
       module_function
 
       def evaluate(version:)
@@ -114,6 +136,20 @@ module System
           required_count: required,
           dwell_time_minutes: (observed / 60.0).round(1)
         }
+      end
+
+      # Does a promotion to this target state turn on these criteria at all?
+      def self.gates?(target_state)
+        GATED_TARGET_STATES.include?(target_state.to_s)
+      end
+
+      # #evaluate for a criteria-relevant target state, nil otherwise — so a
+      # caller that promotes to any state can ask one question and get either a
+      # verdict or "not applicable", without restating the gated set.
+      def self.advisory(version:, target_state:)
+        return nil unless gates?(target_state)
+
+        evaluate(version: version)
       end
 
       # Effective minimum healthy-instance count for this version's module,

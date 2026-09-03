@@ -23,10 +23,31 @@ module Api
             return render_error("target_state is required", 400)
           end
 
+          # IMP-d6826c872d88 — consult PromotionCriteria and WARN; never refuse.
+          # This endpoint is the operator's escape hatch (small fleets,
+          # incidents, rollbacks), so it keeps its authority; what it no longer
+          # does is promote past the evidence bar in silence. The verdict is
+          # computed BEFORE the transition and recorded only after it lands.
+          # See System::Fleet::ManualPromotionAdvisory (operator ruling D17).
+          advisory = ::System::Fleet::ManualPromotionAdvisory.evaluate(
+            version: @version, target_state: target_state
+          )
+
           @version.promote_to!(target_state)
 
           render_success(
-            node_module_version: serialize_version(@version.reload)
+            {
+              node_module_version: serialize_version(@version.reload)
+            }.merge(
+              advisory.record!(
+                source: ::System::Fleet::ManualPromotionAdvisory::REST_SOURCE,
+                actor_id: current_user&.id,
+                # This endpoint runs behind authenticate_user!, so a nil here
+                # is a contract violation rather than a second principal kind;
+                # it still records as "unknown" rather than vanishing.
+                actor_type: current_user ? "user" : nil
+              )
+            )
           )
         rescue ArgumentError => e
           # Raised by promote_to! for unknown states.

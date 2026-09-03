@@ -1332,7 +1332,13 @@ module Ai
             description: "Promote a NodeModuleVersion through its lifecycle " \
                          "(built | staging | blessed | live | retired). " \
                          "Advances promotion_state ONLY — it does not change which version the fleet serves " \
-                         "(NodeModule#current_version_id); check promoted_to_current in the response.",
+                         "(NodeModule#current_version_id); check promoted_to_current in the response. " \
+                         "Promoting to 'blessed' consults the same PromotionCriteria the automated lane " \
+                         "gates on (healthy instances actually running this version's digest, for the dwell) " \
+                         "and returns the verdict as `promotion_criteria`; an unmet verdict adds " \
+                         "`promotion_criteria_warning` and writes an auditable override event naming you. " \
+                         "This call is NEVER refused on those grounds — promoting anyway is permitted and " \
+                         "recorded — but read the warning before you treat a blessing as evidence-backed.",
             parameters: {
               module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
               target_state: { type: "string", required: true, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
@@ -4512,16 +4518,55 @@ module Ai
         node_module = version.node_module
         current_before = node_module.current_version_id
 
+        # IMP-d6826c872d88 — the twin of the operator REST promote, and it had
+        # the same hole: promote_to! straight through, PromotionCriteria never
+        # consulted, so an agent could bless a version no instance had run and
+        # read back an unqualified `promoted: true`. Consult and WARN (operator
+        # ruling D17) — the verdict rides in the result and an override lands in
+        # the audit log; the call is never refused on these grounds. Evaluated
+        # BEFORE the transition, recorded only once it has landed.
+        advisory = ::System::Fleet::ManualPromotionAdvisory.evaluate(
+          version: version, target_state: params[:target_state]
+        )
+
         version.promote_to!(params[:target_state])
 
         current_after = node_module.reload.current_version_id
         success_result(
-          promoted: true,
-          promoted_to_current: current_after == version.id,
-          current_version_changed: current_after != current_before,
-          current_version_id: current_after,
-          version: serialize_version(version.reload)
+          {
+            promoted: true,
+            promoted_to_current: current_after == version.id,
+            current_version_changed: current_after != current_before,
+            current_version_id: current_after,
+            version: serialize_version(version.reload)
+          }.merge(
+            advisory.record!(
+              source: ::System::Fleet::ManualPromotionAdvisory::MCP_SOURCE,
+              actor_id: promotion_actor_id,
+              actor_type: promotion_actor_type
+            )
+          )
         )
+      end
+
+      # Which principal is overriding the promotion criteria. SystemFleetTool
+      # admits four kinds (see action_permitted?): a user, an agent, an instance
+      # principal that cleared the per-tool grant, and an in-process
+      # `internal: true` caller — the last two carry NEITHER a user nor an
+      # agent, so an actor_id alone would be nil and a User id is indis-
+      # tinguishable from an Ai::Agent id anyway. The producer declares the kind
+      # so the audit event does not leave the auditor guessing.
+      def promotion_actor_id
+        @user&.id || @agent&.id || node_instance&.id
+      end
+
+      def promotion_actor_type
+        return "user"     if @user
+        return "agent"    if @agent
+        return "instance" if instance_authorized? || node_instance
+        return "internal" if internal?
+
+        ::System::Fleet::ManualPromotionAdvisory::UNKNOWN_ACTOR
       end
 
       # === Drift ===
