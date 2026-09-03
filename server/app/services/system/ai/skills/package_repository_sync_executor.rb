@@ -4,8 +4,12 @@ module System
   module Ai
     module Skills
       # Skill executor for triggering a single package-repository sync.
-      # Bound to Fleet Autonomy; auto-approved per intervention policy
-      # (system.package_repository.sync, 1h cooldown).
+      # Bound to the Supply Chain Manager (HIER-P2E; Fleet Autonomy until
+      # then); auto-approved per intervention policy
+      # (system.package_repository.sync, 1h cooldown). The sensor path
+      # (package_drift_sensor → system.package_drift_pressure) gates the same
+      # category under that agent — the binding carries `skill: nil`, so no
+      # tick reaches this executor; it is the skill/MCP door.
       class PackageRepositorySyncExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "package_repository_sync",
@@ -23,7 +27,7 @@ module System
           }
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "supply_chain_manager"
 
         protected
 

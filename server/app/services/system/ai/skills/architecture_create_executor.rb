@@ -37,7 +37,7 @@ module System
           action_category: "system.architecture.create"
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "supply_chain_manager"
 
         protected
 

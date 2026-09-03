@@ -46,7 +46,7 @@ module System
           }
         )
 
-        binds_to "Fleet Autonomy", "System Concierge"
+        binds_to "supply_chain_manager", "System Concierge"
 
         protected
 

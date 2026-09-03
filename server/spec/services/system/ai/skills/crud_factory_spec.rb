@@ -101,7 +101,7 @@ RSpec.describe System::Ai::Skills::CrudFactory do
       expect(System::Ai::Skills::ArchitectureCreateExecutor.ancestors).to include(described_class)
     end
 
-    it "binds to Fleet Autonomy" do
+    it "binds to the Supply Chain Manager (HIER-P2E), no longer to Fleet Autonomy" do
       # ArchitectureCreateExecutor's binds_to declaration fires when the
       # class is loaded (eager_load in CI, autoload locally). The
       # SkillBindings.unregister fix in skill_bindings.rb ensures that
@@ -111,7 +111,8 @@ RSpec.describe System::Ai::Skills::CrudFactory do
       reg = System::Ai::Skills::SkillBindings.all
         .find { |r| r[:executor] == expected }
       expect(reg).not_to be_nil
-      expect(reg[:agents]).to include("Fleet Autonomy")
+      expect(reg[:agents]).to include("Supply Chain Manager")
+      expect(reg[:agents]).not_to include("Fleet Autonomy")
     end
 
     it "delegates name + family to system_create_architecture action" do

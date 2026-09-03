@@ -25,7 +25,7 @@ module System
           action_category: "system.architecture.update"
         )
 
-        binds_to "Fleet Autonomy"
+        binds_to "supply_chain_manager"
 
         protected
 
