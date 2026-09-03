@@ -77,7 +77,7 @@ module System
           blast_radius: :high
         )
 
-        binds_to "System Topology Designer"
+        binds_to "topology_designer"
 
         # Rollback: detach peers in reverse enrollment order, then delete the
         # network. Network destroy cascades to any surviving peers via

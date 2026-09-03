@@ -120,7 +120,7 @@ module System
           blast_radius: :medium
         )
 
-        binds_to "System Topology Designer"
+        binds_to "topology_designer"
 
         # Rollback: reverse dependency order. DNS record → offering → VIP.
         # Each branch is independently guarded so a partial run rolls back

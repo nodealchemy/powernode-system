@@ -121,7 +121,7 @@ module System
           blast_radius: :high
         )
 
-        binds_to "System Topology Designer"
+        binds_to "topology_designer"
 
         # Rollback in reverse dependency order: OVN ACLs → OVN switch →
         # firewall rules → network. The OVN steps delegate to the sibling
