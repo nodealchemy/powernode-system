@@ -97,10 +97,17 @@ The set is maintained **automatically** by the fleet executors and
 its legacy `backend_host`, a member row, or a backend VIP one of the instance's
 SDWAN peers holds names that instance (`Sdwan::ServiceBackend.services_routed_to`).
 
+Every executor acts on the narrower **by address** subset
+(`Sdwan::ServiceBackend.host_routed_services`): a service that reaches an
+instance *only* through a backend VIP is left alone by all of them. A VIP is
+its own HA mechanism — the VIP move / failover re-homes it — and a host-form
+row added beside a VIP row counts one machine twice in the round robin, then
+hands it the whole ring the moment the VIP fails over onto it.
+
 | Producer | What it does to the set |
 |---|---|
-| `scale_project` **add_replicas** | Every new replica joins each service the mission's existing replicas already back (materialising the legacy backend as the first row). Reported under `outputs.sdwan_service_ids` / `sdwan_service_backend_ids`; a dry run lists `join_service_backends` actions. A join that fails is a `partial` step failure, never silent. |
-| `scale_project` **remove_replicas** (and its rollback) | Each victim's host-form rows are removed **before** the terminate takes its addresses away (`outputs.removed_sdwan_service_backend_ids`; dry run lists `leave_service_backends`). |
+| `scale_project` **add_replicas** | Every new replica joins each service the mission's existing replicas already back **by address** (materialising the legacy backend as the first row; a VIP-fronted service is left alone). Reported under `outputs.sdwan_service_ids` / `sdwan_service_backend_ids`; a dry run lists `join_service_backends` actions. A join that fails is a `partial` step failure, never silent. |
+| `scale_project` **remove_replicas** (and its rollback) | Each victim's host-form rows are removed **before** the terminate takes its addresses away (`outputs.removed_sdwan_service_backend_ids`; dry run lists `leave_service_backends`). One proxy regen for the whole scale-in, not one per victim. |
 | `replace_instance` (DR) | The replacement joins every service that dialled the failed instance **by address**, over the same overlay network; the dead member is **drained**, not removed. A VIP-backed service is left to the VIP move. Idempotent on `operation_id` (`rehome_service_backends` step); previewed as `would_rehome_service_ids`. |
 | `reap_instance` (DR) | The dead instance's rows are removed before the terminate (`removed_sdwan_service_backend_ids`). |
 | `system_set_service_backends` (MCP) | Declarative: the `backends` list becomes the set — matched by address + port, updated in place, absent members removed, `[]` clears the set. Also writes the per-service overrides (`load_balancer`). **Approval-gated** under `system.service_backends_update` (DeferredToolCall replay); the call returns a pending envelope until released. |
