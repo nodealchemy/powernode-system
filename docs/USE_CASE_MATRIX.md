@@ -11,7 +11,7 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 | # | Use case | `lifecycle_class` | Modules | Status | Caveats |
 |---|---|---|---|---|---|
 | 1 | Long-lived edge gateway / SaaS tenant | `persistent` | `docker-engine` | ✅ Works | Don't terminate without backing up `/persist/var` |
-| 2 | Single-cluster K3s for app workloads | `persistent` | `k3s-server` + `k3s-agent` | ✅ Works | Slice 3 (shipped): api_endpoint uses an SDWAN VIP — bootstrap node loss triggers VIP failover to next k3s-server holder |
+| 2 | Single-cluster K3s for app workloads | `persistent` | `k3s-server` + `k3s-agent` | ✅ Works | api_endpoint is an SDWAN VIP whose only holder is the bootstrap server. Losing that server is an outage, not a failover: K3s HA is **parked** — a 2nd `k3s-server` bootstraps a separate cluster (which then refuses worker joins), and the datastore is SQLite via kine, not etcd. See [Use Case 2](#use-case-2--single-k3s-cluster-) |
 | 3 | Multi-cluster K3s in one account | `persistent` | per cluster | ❌ Not implemented | Bootstrapping a second cluster works; placing a worker in a chosen one does not — the join is refused (`AmbiguousClusterError`, 409) and no node is produced. See [Use Case 3](#use-case-3--multi-cluster-k3s--not-implemented) |
 | 4 | Bursty batch jobs (ML, data pipelines) | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Bootstrap latency = ~90s per instance; consider pre-baked image |
 | 5 | CI runner pool | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Image cache vaporizes on terminate; use a registry mirror |
@@ -128,13 +128,27 @@ platform.system_provision_instance({
 **What works**:
 - Cluster bootstrap auto-registers via `phase=bootstrap` runtime/handshake
 - Workers fetch join token via `phase=join_request`
-- etcd state survives reboot in `/persist/var/lib/rancher/k3s/`
+- The datastore is **SQLite via kine, not etcd**: the server is installed with a bare `INSTALL_K3S_EXEC=server` — no `--cluster-init`, no `--datastore-endpoint` — which is K3s' single-server default. K3s writes it to `/var/lib/rancher/k3s/` — a SQLite database, the join `token` and `server/tls/`, not an etcd member. (The layout under that directory — `server/db/state.db` and friends — is upstream K3s', not this platform's; nothing in this repo pins it, so check it against your k3s version)
+- **Do not assume that path is durable across a reboot.** This document used to say it resolved into `/persist/var/lib/rancher/k3s/` via the agent's `/var` bind mount; nothing in this tree establishes that. `mount.EnsurePersistentVar` is the only code that binds `/var` onto `/persist/var` and it has **no production caller** — `agent/internal/runtime/softreboot.go:143-148` says so verbatim — and every path the agent itself relies on to survive a reboot is written as an absolute `/persist/var/...`. Whether `/var` is durable is a boot-image property of your node; check it before treating k3s state as persistent, and take the backup in the [Anti-pattern Cheat Sheet](#anti-pattern-cheat-sheet) either way
 - kubectl works from anywhere on the SDWAN (api_endpoint = `https://[<bootstrap-node-/128>]:6443`)
 
 **What to watch**:
-- **Bootstrap node terminates cleanly** (slice 3 hardening). `KubernetesCluster.api_endpoint` points at an `Sdwan::VirtualIp` allocated at cluster bootstrap time. The bootstrap peer is the VIP's primary holder; subsequent `k3s-server` joiners (HA control plane) get added as `failover_holder_peer_ids` candidates. When the primary peer goes silent, the `sdwan_vip_failover` skill (or operator manual `system_sdwan_failover_virtual_ip`) promotes the next holder. kubectl + workers' K3S_URL keep working through the transition because the VIP address doesn't change. **Caveat**: the VIP fallback only works if you have 2+ `k3s-server` NodeInstances. A single-server cluster still loses connectivity when its only server dies (standard K8s assumption — control plane HA requires multiple servers).
+- **Losing the bootstrap server is an outage, not a failover** — K3s HA is **parked**. `KubernetesCluster.api_endpoint` points at an `Sdwan::VirtualIp` allocated at cluster bootstrap time with the bootstrap peer as its *only* holder: `allocate_api_vip!` (`kubernetes_cluster_provisioner_service.rb:744`) sets `failover_holder_peer_ids = []`. Two writers can touch that column — `add_to_vip_failover_candidates!` (`:473`, body `:628`) and `refresh_vip_holder!` (`:647`, reached only from `update_credentials!` (`:613`), whose only caller is `bootstrap!`'s same-`node_instance_id` idempotency arm at `:137`) — but neither is reachable from a *second server joining this cluster*, because no such join exists: the install is a bare `INSTALL_K3S_EXEC=server` with no `--server`/`--token` (`shell_applier.go:121`), `BootstrapConfig.InstallArgs()` emits CNI args only, the one K3S_URL/K3S_TOKEN writer (`WriteJoinConfig`) exists on the *agent* applier alone, and `server_manager.go` never calls `JoinRequest`. A second `k3s-server` NodeInstance therefore runs `bootstrap!`, whose idempotency check keys on `node_instance_id` (`:135`), and creates a **second cluster** — which is exactly what makes every later `k3s-agent` join refuse with `AmbiguousClusterError` (see Use Case 3). So `sdwan_vip_failover` / `system_sdwan_failover_virtual_ip` have nothing to promote, and when the only server dies kubectl and the workers' `K3S_URL` stay down until *that* server is restored. Parked, not queued: HA would need `--cluster-init` on the first server, which changes how every already-provisioned cluster bootstraps.
 - Pod-to-pod traffic uses flannel over the host primary NIC, NOT the SDWAN overlay. NetworkPolicy is your friend; physical isolation is not.
 - Local-path PVCs don't migrate when pods reschedule. Plan your stateful workloads accordingly.
+
+This section used to describe an HA control plane and an etcd datastore. Neither exists; the claims are kept visible so an operator who planned around them can recognise them:
+
+| Withdrawn claim | What is actually true |
+|---|---|
+| "bootstrap node loss triggers VIP failover to next k3s-server holder" | There is no next holder. The VIP is allocated with the bootstrap peer as sole holder and an empty `failover_holder_peer_ids`. The two writers of that column (`add_to_vip_failover_candidates!`, `refresh_vip_holder!`) are only ever reached for a cluster the calling node already belongs to, and no second server ever joins an existing one. Bootstrap node loss is an outage until that node is restored. |
+| "subsequent `k3s-server` joiners (HA control plane) get added as `failover_holder_peer_ids` candidates" | No `k3s-server` ever joins an existing cluster — a second one bootstraps a separate cluster. `add_to_vip_failover_candidates!` (`:628`) runs from `register_node_join!`, which resolves membership from the agent's own `bootstrappedFor` id — the *new* cluster, where that server is already the primary holder — so it returns without touching the first cluster's VIP. |
+| "the VIP fallback only works if you have 2+ `k3s-server` NodeInstances" | You cannot have 2+ `k3s-server` NodeInstances in one cluster. The second is a second cluster, and its existence refuses every later worker join (`AmbiguousClusterError`, 409). |
+| "Add a 2nd k3s-server first; VIP failover handles transition" | The former Anti-pattern remedy, and the operation that manufactures the outage it claims to prevent: it creates a second cluster and refuses subsequent worker joins. Restore the bootstrap node instead — see the [Anti-pattern Cheat Sheet](#anti-pattern-cheat-sheet). |
+| "etcd state survives reboot in `/persist/var/lib/rancher/k3s/`" | Wrong twice. The datastore is SQLite via kine, not an etcd member — no Go or Ruby source passes `--cluster-init` or `--datastore-endpoint`. And k3s writes to `/var/lib/rancher/k3s/`, not `/persist/...`: the `/var` → `/persist/var` bind that sentence assumed (`mount.EnsurePersistentVar`) has no production caller, so this document no longer asserts that k3s state survives a reboot. |
+| "resolves into `/persist/var/lib/rancher/k3s/` via the agent's EnsurePersistentVar bind mount" | The `k3s-server` module description made the same claim (`server/db/seeds/k3s_modules.rb`) and it is corrected there too. `mount.EnsurePersistentVar` exists but is called only by its own test; `agent/internal/runtime/softreboot.go:143-148` records that `/var` is not a bind mount on a current node and that "the durable /var bind" as written elsewhere in this tree describes an unused code path. |
+| "Control plane survives forever; etcd state in `/persist/var/lib/rancher/k3s`" | Same correction, in Use Case 7: SQLite, not etcd — and one server, so its loss is an outage. |
+| "Run a `docker save` / etcd snapshot before `system_terminate_instance`" | There is no etcd to snapshot. Stop k3s and copy `/var/lib/rancher/k3s/server/` (`db/` and `token`) — upstream K3s' documented single-server (SQLite) backup. |
 
 ### Use Case 3 — Multi-cluster K3s ❌ NOT IMPLEMENTED
 
@@ -265,7 +279,7 @@ Worker NodeInstances (N varies):
 ```
 
 **What works**:
-- Control plane survives forever; etcd state in `/persist/var/lib/rancher/k3s`
+- Control plane state — the SQLite datastore (kine, not etcd), certs and tokens — lives in `/var/lib/rancher/k3s`. It is one server: its loss is an outage, not a failover, and this document no longer claims that path is reboot-durable (see Use Case 2)
 - Workers can be cycled freely; cluster reschedules pods automatically
 - Cascade FK on `Devops::KubernetesNode` cleans up bookkeeping when instance terminates
 
@@ -299,12 +313,12 @@ Worker NodeInstances (N varies):
 
 | If you... | You'll see... | Do this instead |
 |---|---|---|
-| Terminate the *only* K3s server (single-server cluster) | Cluster has no remaining api server; kubectl breaks | Add a 2nd k3s-server first; VIP failover handles transition |
+| Terminate the *only* K3s server (single-server cluster) | Cluster has no remaining api server; kubectl breaks and stays broken until that server is back | **Do not add a 2nd `k3s-server`** — it bootstraps a separate cluster (K3s HA is parked), and that second cluster refuses every later worker join. Restore the bootstrap node: start it again if it is stopped. If the VM is gone, the cluster is gone with it, but its row is not — `mark_node_stopped!` leaves the cluster counting as a join candidate — so hard-delete the dead row with `kubernetes_decommission_cluster` *before* bootstrapping a replacement server (restore `/var/lib/rancher/k3s/server/` from backup onto it if you need the old state), or worker joins are refused again |
 | Run thousands of short-lived ephemeral instances | High bootstrap latency tax | Pre-bake disk image OR pre-warmed pool via `system_create_instance_pool` (slice 7 shipped) |
 | Expect pod traffic encrypted via SDWAN | Plain VXLAN over host NIC | Use NetworkPolicy + service mesh until pod_subnet_prefix lands |
 | Bootstrap a second cluster in an account that still needs k3s-agent workers | Every subsequent worker join is refused — 409 `AmbiguousClusterError`, `system.k3s_ambiguous_cluster_join_refused` at severity `high`, and no node produced | No workaround today; add the workers before the second cluster exists. See [Use Case 3](#use-case-3--multi-cluster-k3s--not-implemented) |
 | SSH directly to managed Docker host and run containers | Platform sync imports them with `owner=operator` (advisory tag) | OK but track ownership via container labels |
-| Backup `/persist` before terminating an instance | (no automated path yet) | Run a `docker save` / etcd snapshot before `system_terminate_instance` |
+| Backup `/persist` before terminating an instance | (no automated path yet) | Docker hosts: `docker save`. K3s servers: there is no etcd to snapshot — the datastore is SQLite — so stop k3s and copy `/var/lib/rancher/k3s/server/` (`db/` and `token`) before `system_terminate_instance` |
 
 ## Lifecycle Class Decision Tree
 
@@ -367,4 +381,4 @@ This matrix is designed to be ingested into the System Concierge's RAG context �
 - [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — what triggers fleet autonomy actions
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — 8 subsystems including container runtimes
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-09-03_

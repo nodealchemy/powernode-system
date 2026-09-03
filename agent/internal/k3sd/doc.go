@@ -41,9 +41,16 @@
 // mis-routed. An account with exactly one non-error cluster resolves
 // without it; an account with none fails 422 instead.
 //
-// Slice 3 VIP failover: the api_endpoint returned to k3s-agent is an
-// Sdwan::VirtualIp /128, so kubectl + worker K3S_URL survive control-plane
-// node failures via VIP holder promotion.
+// The api_endpoint returned to k3s-agent is an Sdwan::VirtualIp /128, which
+// keeps kubectl + worker K3S_URL pointed at a stable address across a server
+// RESTART. It is not HA: there is no promotion target. allocate_api_vip!
+// seeds failover_holder_peer_ids empty and no second k3s-server ever joins an
+// existing cluster (InstallK3sServer runs a bare INSTALL_K3S_EXEC=server with
+// no --server/--token/--cluster-init; WriteJoinConfig exists on the agent
+// applier only; ServerManager never calls JoinRequest). A second k3s-server
+// NodeInstance bootstraps a SEPARATE cluster, which then refuses every later
+// worker join. Losing the bootstrap server is an outage until it is restored.
+// K3s HA is PARKED, not queued. See docs/USE_CASE_MATRIX.md, Use Case 2.
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // kubernetes_cluster_provisioner_service.rb.

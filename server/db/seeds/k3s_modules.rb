@@ -11,9 +11,10 @@
 #
 # Two modules:
 #   k3s-server  — control plane: kube-apiserver, controller-manager,
-#                 scheduler, embedded etcd (single-node) or external
-#                 etcd (multi-node HA, Phase 3+). systemd unit:
-#                 k3s.service.
+#                 scheduler, SQLite datastore via kine (the install
+#                 passes no --cluster-init / --datastore-endpoint, so
+#                 it is not an etcd member). One server per cluster;
+#                 K3s HA is parked. systemd unit: k3s.service.
 #   k3s-agent   — worker: kubelet + containerd + flannel/cilium CNI.
 #                 systemd unit: k3s-agent.service. Joins via
 #                 K3S_URL + K3S_TOKEN env vars sourced from the cluster
@@ -75,16 +76,23 @@ k3s_server = System::NodeModule.find_or_initialize_by(
 
 server_description = <<~DESC.strip
   K3s server (control plane) — kube-apiserver, controller-manager,
-  scheduler, embedded etcd. Provided by the upstream Rancher k3s
-  package. Single-node clusters work standalone; multi-server HA
-  joins additional k3s-server NodeInstances against the bootstrap
-  server's K3S_TOKEN.
+  scheduler, and a SQLite datastore via kine: the install passes no
+  --cluster-init or --datastore-endpoint, so there is no etcd.
+  Provided by the upstream Rancher k3s package. One server per
+  cluster — K3s HA is parked: a second k3s-server NodeInstance
+  bootstraps a separate cluster instead of joining this one, and
+  once a second cluster exists every later k3s-agent join is refused
+  (AmbiguousClusterError).
 
-  Persistence: k3s state lives under `/var/lib/rancher/k3s/`, which
-  resolves into `/persist/var/lib/rancher/k3s/` via the agent's
-  EnsurePersistentVar bind mount. etcd database, server certs,
-  kubeconfig + tokens all survive reboots when the Node has
-  `tmpfs_store: false` (the default).
+  Persistence: k3s state — the SQLite datastore, server certs,
+  kubeconfig and tokens — lives under `/var/lib/rancher/k3s/`.
+  Whether that survives a reboot is a property of the node's boot
+  image, NOT of this module: mount.EnsurePersistentVar, the only code
+  that binds /var onto /persist/var, has no production caller (see
+  agent/internal/runtime/softreboot.go:143-148), so the "durable /var
+  bind" this description used to claim describes an unused code path.
+  Verify persistence on the node before relying on it, and back up
+  `/var/lib/rancher/k3s/server/` (`db/` + `token`) before terminating.
 
   Auto-registration: when this module is assigned to a NodeInstance,
   the agent's k3s reconciler installs k3s, captures the kubeconfig +
@@ -114,7 +122,7 @@ k3s_server.assign_attributes(
     # k3s binary.
     "k3s"
   ),
-  # Claim the k3s state directories — they hold etcd data, server
+  # Claim the k3s state directories — they hold the SQLite datastore, server
   # certs, and the cluster join token. No other module's blob should
   # be writing into these paths.
   protected_spec: encode_spec_lines.call(
