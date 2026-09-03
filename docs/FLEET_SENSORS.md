@@ -142,7 +142,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 **Signals:** `system.instance_unrecoverable` with a classified `reason` — `provider_terminal` (the provider reports the VM terminated/error), `host_unreachable` (a connection to the instance's provider is in `error` and none is still connected+enabled, so the control path is positively observed down), or `reboot_exhausted` (the validate arc scored that many `instance_silent:<id>` remediations ineffective in a row).
 **Absence is not a verdict:** no adapter, a blank `cloud_instance_id`, a failed `sync_status`, a provider with no connection rows, and connections that are merely `pending` (never tested) all leave the instance on the ordinary `instance_silent` lane. Unknown provider state is never escalated to a replace, and a provider read that SUCCEEDS with a non-terminal state rules `host_unreachable` out outright.
 **Emit-once-per-window:** suppressed while a `system.instance_unrecoverable` FleetEvent for that instance is newer than `EMIT_WINDOW_SECONDS`, per instance — the condition clears when a person replaces the instance, not inside a tick interval. The suppression is applied in SQL *before* `MAX_PER_TICK`, so already-proposed instances cannot consume the window and starve the rest of a mass failure.
-**Recommended remediation:** `system.instance_replace` (`require_approval`), applied by `System::Ai::Skills::ReplaceInstanceExecutor` (APO-4). The executor composes the verbs that already existed separately: acquire a warm member from the failed instance's `InstancePool`, detach-then-attach its volumes onto the replacement, re-enrol the replacement on every SDWAN network the failed one held — carrying the failed peer's routing attributes across (`publicly_reachable`, `listen_port`, `lan_subnets`, `bgp_route_reflector_client`, `capabilities`) while the endpoint is RE-DERIVED from the replacement's own address (a hostname the dead peer advertised is kept — `Sdwan::Peer.endpoint_attributes_for`), so a hub is not silently replaced by a spoke and a replacement hub does not advertise the dead instance's address — and move the VIPs onto the new peer. Every step is idempotent on an `operation_id` recorded as a `FleetEvent`, so a re-emitted signal replays a replace in progress rather than claiming a second pool member. The fingerprint the lane passes as that id is NOT stable across a reclassification (the sensor re-derives the reason every tick), so the executor also matches an acquire on the FAILED INSTANCE — a dead instance that reclassifies adopts the replacement it already has instead of claiming a second.
+**Recommended remediation:** `system.instance_replace` (`require_approval` — declared on the **Capacity Manager** since HIER-P2DECL, `PolicyDeclarations::CAPACITY_MANAGER_POLICIES`; the binding declares `owner: "capacity-manager"`, and until wave 2 seeds that agent the decision gates under Fleet Autonomy with a `fleet.owner_agent_missing` event), applied by `System::Ai::Skills::ReplaceInstanceExecutor` (APO-4). The executor composes the verbs that already existed separately: acquire a warm member from the failed instance's `InstancePool`, detach-then-attach its volumes onto the replacement, re-enrol the replacement on every SDWAN network the failed one held — carrying the failed peer's routing attributes across (`publicly_reachable`, `listen_port`, `lan_subnets`, `bgp_route_reflector_client`, `capabilities`) while the endpoint is RE-DERIVED from the replacement's own address (a hostname the dead peer advertised is kept — `Sdwan::Peer.endpoint_attributes_for`), so a hub is not silently replaced by a spoke and a replacement hub does not advertise the dead instance's address — and move the VIPs onto the new peer. Every step is idempotent on an `operation_id` recorded as a `FleetEvent`, so a re-emitted signal replays a replace in progress rather than claiming a second pool member. The fingerprint the lane passes as that id is NOT stable across a reclassification (the sensor re-derives the reason every tick), so the executor also matches an acquire on the FAILED INSTANCE — a dead instance that reclassifies adopts the replacement it already has instead of claiming a second.
 **The terminate is a SECOND approval, performed by a DIFFERENT executor.** The additive half above never destroys anything — `ReplaceInstanceExecutor` has no terminate call site at all. It asks `Ai::AutonomyGate` for the reap under `system.instance_reap`, which parks a second approval naming `System::Ai::Skills::ReapInstanceExecutor`; only that executor terminates, and only once a person releases it. The class split is what makes the split gate real: `BaseSkillExecutor` resolves ONE `action_category` per class, so a `reap_only:` flag on the replace executor would have run the terminate under the ADDITIVE category. The lane asks for the reap on every replace (the binding maps `reap: true`), so an approved replace leaves the dead instance visible and stripped of its attachments with a reap card waiting. The replace category is no longer in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES` — a lane that actuates must be scored.
 
 ### `module_drift_sensor` — Module config drift
@@ -302,7 +302,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 **Watches:** PackageRepository freshness windows + drift between manifests and registered NodeModules.
 **Threshold:** Stale repository sync OR manifest divergence → `system.package_drift_pressure` signal
 **Signals:** `system.package_drift_pressure`
-**Recommended remediation:** `package_repository_sync` or `package_module_refresh` (Fleet Autonomy `auto_approve` for sync, `notify_and_proceed` for refresh).
+**Recommended remediation:** `package_repository_sync` — the binding routes to `system.package_repository.sync` (`auto_approve`), declared on the **Supply Chain Manager** since HIER-P2DECL (`PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES`; the binding declares `owner: "supply-chain-manager"`). `system.package_module.refresh` is `require_approval` on the same agent but is routed by no binding (see the declaration's note).
 
 ### `project_slo_sensor` — Project-scoped SLO monitoring
 
@@ -310,7 +310,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 **Watches:** Project-scoped rolling-window metrics (latency, availability, cpu/memory utilization, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
 **Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`).
 **Signals:** `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`
-**Recommended remediation:** None automated — feeds the project dashboard for operator review.
+**Recommended remediation:** None automated — feeds the project dashboard for operator review. The three bindings route to `project.adapt` / `project.cost_control`, declared on the **Capacity Manager** since HIER-P2DECL (`PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, `owner: "capacity-manager"` on each binding; `System::AdaptationGate` gates the `project.*` change types under the same owner).
 
 **Operator-declared targets** live on the mission's `configuration["slo_targets"]`:
 
@@ -379,7 +379,7 @@ The utilization samplers' staleness window — how recent a `runtime_metrics` ob
 **Watches:** Volume / NFS export assignment freshness; 5-minute stale window.
 **Threshold:** Stale assignment data → `system.storage_assignment_drift` signal
 **Signals:** `system.storage_assignment_drift`
-**Recommended remediation:** `attach_storage` / `detach_storage` (operator-approved).
+**Recommended remediation:** `attach_storage` / `detach_storage` (operator-approved). Owner since HIER-P2DECL: the **Storage Manager** (`PolicyDeclarations::STORAGE_MANAGER_POLICIES`; the binding declares `owner: "storage-manager"`).
 
 ### `capability_gap_sensor` — Unprovided capability requirements
 
@@ -686,24 +686,33 @@ System::Fleet::SensorConfig.upsert_for(
 
 ## Intervention Policy Reference
 
-Eight AI agents seed intervention policies (action_category → policy mapping) since the 2026-05-10 domain split. Sourced from `System::Governance::PolicyDeclarations` (each seed consumes its constant):
+Twelve official AI agents carry intervention policies (action_category → policy mapping) since the 2026-05-10 domain split and the HIER-P2DECL wave-1 split of Fleet Autonomy. Sourced from `System::Governance::PolicyDeclarations`: each seed consumes its constant on first boot, and `PolicyReconciler` writes every declared set onto its agent on every boot after that — which is how the four wave-1 managers get their rows the first boot after wave 2 seeds them.
 
-- `db/seeds/fleet_autonomy_agent.rb` — **40 policies** (`FLEET_AUTONOMY_POLICIES`: non-CVE / non-SDWAN / non-disk-image / non-gitops fleet ops, grouped into `CAPACITY_POLICY_KEYS`, `STORAGE_POLICY_KEYS`, `INGRESS_POLICY_KEYS`, `SUPPLY_CHAIN_POLICY_KEYS` plus the core literal, so HIER-P2B..E can lift a domain with a one-line change)
+- `db/seeds/fleet_autonomy_agent.rb` — **19 policies** (`FLEET_AUTONOMY_POLICIES`: the node-lifecycle / remediation core — cert rotation, drift remediation, module composition, rolling upgrades, the investigate lanes, `system.observation`. HIER-P2DECL lifted the `CAPACITY_POLICY_KEYS`, `STORAGE_POLICY_KEYS`, `INGRESS_POLICY_KEYS` and `SUPPLY_CHAIN_POLICY_KEYS` groups P2A had carved out, plus `system.service_backends_update` and the two topology composer keys, onto the agents below)
+- **Capacity Manager** (wave 2 seed pending; `PolicyReconciler` writes the set once the agent exists) — **22 policies** (`CAPACITY_MANAGER_POLICIES` = `CAPACITY_POLICY_KEYS` + the eight `INSTANCE_POOL_POLICIES` + the six `PROVISIONING_POLICIES` + `PLATFORM_SCALING_POLICIES` + `INSTANCE_CORDON_OPERATOR_POLICIES`; replaces the former `instance-pool-agent` and `provisioning` sets that keyed Fleet Autonomy)
+- **Storage Manager** (wave 2 seed pending) — **3 policies** (`STORAGE_MANAGER_POLICIES` = `STORAGE_POLICY_KEYS` + `system.volume_snapshot_delete`)
+- **Ingress Manager** (wave 2 seed pending) — **5 policies** (`INGRESS_MANAGER_POLICIES` = `INGRESS_POLICY_KEYS` + `system.service_backends_update`, which travels with the ingress writer)
+- **Supply Chain Manager** (wave 2 seed pending) — **7 policies** (`SUPPLY_CHAIN_MANAGER_POLICIES` = `SUPPLY_CHAIN_POLICY_KEYS`: packages + architecture catalog)
 - `db/seeds/system_runtime_manager_agent.rb` — **7 policies** (Phase 1 Docker + Phase 2 K3s runtime; the prior `system.runtime_docker_tls_rotate` was removed 2026-05-19 — no executor existed)
 - `db/seeds/system_cve_responder_agent.rb` — **5 policies** (CVE feed → exposure → remediation; CVE policies historically lived on Fleet Autonomy)
 - `db/seeds/system_sdwan_manager_agent.rb` — **57 policies** (`SDWAN_MANAGER_POLICIES` = the 43 operator-initiated `sdwan.*` CRUD keys, `SDWAN_OPERATOR_POLICIES`, plus the 14 sensor-routed `system.sdwan_*` / `system.federation_*` remediations, `SDWAN_REMEDIATION_POLICIES`, which HIER-P2A moved back here from Fleet Autonomy; the operator-path set stays at the 43 CRUD keys)
 - `db/seeds/system_disk_image_manager_agent.rb` — **7 policies** (disk image CI publication lifecycle + the sensor-routed `system.disk_image_publication_investigate`, moved here by HIER-P2A)
 - `db/seeds/system_gitops_reconciler_agent.rb` — **4 policies** (the operator-initiated `system.gitops_*` MCP surface + the sensor-routed `system.gitops_drift_remediate`, moved here by HIER-P2A)
 - `db/seeds/system_concierge_agent.rb` — **0 action-category policies** — Concierge is a chat agent; intervention is via the `request_confirmation` skill, not policy gating
-- `db/seeds/system_topology_designer_agent.rb` — **0 action-category policies** — Topology Designer is a skill-gated specialist invoked by Concierge via `execute_agent`; intervention rides on the parent agent's queue
+- `db/seeds/system_topology_designer_agent.rb` — **3 policies** (`TOPOLOGY_DESIGNER_POLICIES`, since HIER-P2DECL: the three composer executor gates `system.multi_tenant_isolation`, `system.service_discovery_compose` and `system.sdwan_federation_compose` — the last was registered but declared nowhere until then. The seed writes no policy row; `PolicyReconciler` writes the set. Topology Designer is a skill-gated specialist invoked by Concierge via `execute_agent`)
 
-**= 120 action-category policies across the eight system-extension agents** — the
-sum of the eight bullets above, and nothing else. Every bullet, every per-agent
-section header below and this total are machine-pinned by
-`spec/docs/reference_counts_spec.rb` against the `PolicyDeclarations` constants
-(HIER-P2A; until then only the Fleet Autonomy header was pinned, and the
-bullets and the total drifted from it twice — the 2026-09-01 re-verify and
-SWEEP-2026-09-03 each corrected a different subset).
+**= 139 action-category policies across the twelve system-extension agents** — the
+sum of the twelve bullets above, and nothing else. (120 before HIER-P2DECL; the
+14 instance-pool and provisioning rows the `instance-pool-agent` / `provisioning`
+sets put on Fleet Autonomy were never in that figure, and five rows are new — the
+four operator-twin rows `system.platform.scale_out` / `system.platform.scale_in` /
+`system.instance_cordon` / `system.volume_snapshot_delete`, plus
+`system.sdwan_federation_compose`, which is newly DECLARED and has no operator set
+behind it at all.) Every bullet, every per-agent section header below and this total
+are machine-pinned by `spec/docs/reference_counts_spec.rb` against the
+`PolicyDeclarations` constants (HIER-P2A; until then only the Fleet Autonomy
+header was pinned, and the bullets and the total drifted from it twice — the
+2026-09-01 re-verify and SWEEP-2026-09-03 each corrected a different subset).
 
 > **Ownership (HIER-P2A):** every sensor still runs on the Fleet Autonomy tick,
 > but a decision is gated under the agent whose policy set DECLARES its action
@@ -718,7 +727,30 @@ SWEEP-2026-09-03 each corrected a different subset).
 > by the **GitOps Reconciler** and `system.disk_image_publication_investigate` by the
 > **Disk Image Manager**. `PolicyReconciler` RE-HOMES an existing row whose declared
 > owner changed (verb, `is_active`, conditions and priority preserved; a
-> `system.intervention_policy.rehomed` audit row written) rather than duplicating it.
+> `system.intervention_policy.rehomed` audit row written) rather than duplicating it —
+> from the explicit `PolicyReconciler::FORMER_OWNERS` map first (HIER-P2DECL), with the
+> structural rule (a declared agent that no longer declares the key) as a warned fallback.
+>
+> **Wave 1 (HIER-P2DECL):** the **Capacity Manager** owns `system.instance_replace`
+> (`instance_unrecoverable_sensor`) and `project.adapt` / `project.cost_control`
+> (`project_slo_sensor`, and `System::AdaptationGate`); the **Storage Manager** owns
+> `system.storage_assignment_reconcile` (`storage_assignment_drift_sensor`); the
+> **Supply Chain Manager** owns `system.package_repository.sync` (`package_drift_sensor`).
+> The **Ingress Manager** and the **System Topology Designer** own rows but no
+> sensor-routed category — every one of theirs gates an executor / MCP door. Until wave 2
+> seeds the four managers, each of those bindings gates under Fleet Autonomy with the
+> `fleet.owner_agent_missing` event, where an established install still holds the rows.
+>
+> **The Topology Designer is the exception: its rows land on wave 1.** That agent is
+> already seeded (`db/seeds/system_topology_designer_agent.rb`), so `PolicyReconciler`
+> does not skip its set — the first `rake system:governance:reconcile` after the wave-1
+> declarations deploy re-homes `system.multi_tenant_isolation` and
+> `system.service_discovery_compose` off Fleet Autonomy onto it and creates
+> `system.sdwan_federation_compose`. All three are declared `require_approval`, which is
+> the unmatched default the composer executors already resolved, so an untuned install
+> sees no verdict change; a Fleet Autonomy row an operator had TUNED, however, starts
+> applying to those executors (they bind to the Topology Designer, and the policy resolves
+> against the executing agent). 2 of the 35 wave-1 re-homes happen now, 33 at wave 2.
 
 **Policy semantics:**
 
@@ -731,9 +763,9 @@ SWEEP-2026-09-03 each corrected a different subset).
 
 All policies decay to the agent's `trust_tier_minimum: monitored` condition — agents below trust threshold are auto-blocked regardless of policy.
 
-### Fleet Autonomy agent (40 policies)
+### Fleet Autonomy agent (19 policies)
 
-Source: `db/seeds/fleet_autonomy_agent.rb` (consumes `PolicyDeclarations::FLEET_AUTONOMY_POLICIES`). Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, the operator-initiated `sdwan.*` CRUD policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb`. As of HIER-P2A the 14 sensor-routed `system.sdwan_*` / `system.federation_*` remediations moved to the SDWAN Manager too, `system.gitops_drift_remediate` to the GitOps Reconciler and `system.disk_image_publication_investigate` to the Disk Image Manager — the tick gates each binding under its declared owner, so a row no longer has to sit on the agent running the tick. What stays here beyond the categories tabulated below are the later additions whose owner IS Fleet Autonomy (`system.acme_cert_rotate`, `system.node_boot_image_drift`, `system.template_closure_apply`, `system.storage_assignment_reconcile`, `system.module_verify_investigate`, `system.task_backlog_investigate`, `system.node_lkg_investigate`, `system.module_promotion_investigate`, the four ingress executor gates, `system.fulfill_capability_request`, `system.multi_tenant_isolation`, `system.service_discovery_compose`, `system.restore_volume`, `system.relocate_workload`).**
+Source: `db/seeds/fleet_autonomy_agent.rb` (consumes `PolicyDeclarations::FLEET_AUTONOMY_POLICIES`). Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, the operator-initiated `sdwan.*` CRUD policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb`. As of HIER-P2A the 14 sensor-routed `system.sdwan_*` / `system.federation_*` remediations moved to the SDWAN Manager too, `system.gitops_drift_remediate` to the GitOps Reconciler and `system.disk_image_publication_investigate` to the Disk Image Manager — the tick gates each binding under its declared owner, so a row no longer has to sit on the agent running the tick. As of HIER-P2DECL (wave 1) the capacity, storage, ingress and supply-chain groups left for the four managers below and the two topology composer keys for the System Topology Designer. What stays here beyond the categories tabulated below are the later additions whose owner IS Fleet Autonomy (`system.acme_cert_rotate`, `system.node_boot_image_drift`, `system.template_closure_apply`, `system.module_verify_investigate`, `system.task_backlog_investigate`, `system.node_lkg_investigate`, `system.module_promotion_investigate`, `system.fulfill_capability_request`, `system.replica_promote`).**
 
 | Action category | Default policy | Why |
 |---|---|---|
@@ -742,23 +774,67 @@ Source: `db/seeds/fleet_autonomy_agent.rb` (consumes `PolicyDeclarations::FLEET_
 | `system.instance_reboot` | `notify_and_proceed` | Reversible — instance returns within ~60 s |
 | `system.instance_reprovision` | `require_approval` | Destructive — wipes ephemeral state |
 | `system.instance_terminate` | `require_approval` | Destructive — releases provider VM, cascade-FK deletes managed rows |
-| `system.instance_replace` | `require_approval` | Disaster recovery for an instance a reboot cannot recover (`instance_unrecoverable_sensor`). Separate from `system.instance_reprovision` so "reboot it" and "throw it away and build another" are separately tunable. Applied by `ReplaceInstanceExecutor`: acquire a pooled replacement, reattach volumes, re-enrol SDWAN, move VIPs |
-| `system.instance_reap` | `require_approval` | The DESTRUCTIVE half of a replace, split out so it can be refused while the additive half proceeds. The action_category of `ReapInstanceExecutor`, a class of its own — `ReplaceInstanceExecutor` has no terminate call site and only ASKS, through `Ai::AutonomyGate`. Routed by no signal binding; the row exists so the terminate is a separately tunable operator control |
 | `system.cert_revoke` | `require_approval` | Cuts active mTLS session |
 | `system.module_promote_to_live` | `require_approval` | Advances `promotion_state` (to `blessed`); does **not** change which version the fleet serves |
 | `system.fleet_rolling_upgrade` | `require_approval` | Touches every instance carrying the module — the upgrade is FLEET-ATOMIC, and the `rolling_module_upgrade` skill only sizes it (it executes nothing) |
-| `system.region_expansion` | `require_approval` | Cost-bearing |
-| `system.capacity_resize` | `require_approval` | Cost-bearing; `capacity_recommend` skill emits the proposal |
 | `system.observation` | `auto_approve` | Pure observation — no remediation; collects events for dashboards |
 | `system.capability_gap_review` | `require_approval` | Advisory — an unprovided `capability:<tag>`; remediation is authoring a module behind the R1/R2/R3 gate |
+
+### Capacity Manager agent (22 policies)
+
+Source: `PolicyDeclarations::CAPACITY_MANAGER_POLICIES` — written by `PolicyReconciler` once the agent exists (wave 2 seeds it; until then every row below that an established install already holds stays on Fleet Autonomy and gates there with a `fleet.owner_agent_missing` event). Twin of the `instance-pool-operator`, `platform-scaling` and `instance-cordon-operator` operator sets, which keep their rows. Operator guide: [`CAPACITY_MANAGER_AGENT.md`](./CAPACITY_MANAGER_AGENT.md) — the full table lives there. Sensor-routed here: `system.instance_replace` (`instance_unrecoverable_sensor`) and `project.adapt` / `project.cost_control` (`project_slo_sensor`); everything else gates an executor or operator door.
+
+| Action category | Default policy | Why |
+|---|---|---|
+| `system.instance_replace` | `require_approval` | Disaster recovery for an instance a reboot cannot recover (`instance_unrecoverable_sensor`). Separate from `system.instance_reprovision` (still Fleet Autonomy's) so "reboot it" and "throw it away and build another" are separately tunable. Applied by `ReplaceInstanceExecutor`: acquire a pooled replacement, reattach volumes, re-enrol SDWAN, move VIPs |
+| `system.instance_reap` | `require_approval` | The DESTRUCTIVE half of a replace, split out so it can be refused while the additive half proceeds. The action_category of `ReapInstanceExecutor`, a class of its own — `ReplaceInstanceExecutor` has no terminate call site and only ASKS, through `Ai::AutonomyGate`. Routed by no signal binding; the row exists so the terminate is a separately tunable operator control |
+| `system.region_expansion` | `require_approval` | Cost-bearing |
+| `system.capacity_resize` | `require_approval` | Cost-bearing; `capacity_recommend` skill emits the proposal |
+| `system.relocate_workload` | `require_approval` | Workload relocation |
+| `system.instance_pool_*` (8) | see guide | The instance-pool agent vocabulary, formerly the `instance-pool-agent` set on Fleet Autonomy; the operator shape stays the gated four |
+| `project.*` (6) | see guide | The provisioning / adaptation set (`project.scale_horizontal` keeps its `auto_apply_window` condition override), formerly the `provisioning` set on Fleet Autonomy |
+| `system.platform.scale_out` / `scale_in` | `auto_approve` / `require_approval` | Twin of the `platform-scaling` operator rows |
+| `system.instance_cordon` | `require_approval` | Twin of the `instance-cordon-operator` row |
+
+### Storage Manager agent (3 policies)
+
+Source: `PolicyDeclarations::STORAGE_MANAGER_POLICIES`, written by `PolicyReconciler` once the agent exists (wave 2). Twin of the `volume-snapshot-operator` set. Operator guide: [`STORAGE_MANAGER_AGENT.md`](./STORAGE_MANAGER_AGENT.md).
+
+| Action category | Default policy | Why |
+|---|---|---|
+| `system.storage_assignment_reconcile` | `notify_and_proceed` | `storage_assignment_drift_sensor` → re-run the assignment reconciliation; reversible, low blast radius, operator should see the safety net firing |
+| `system.restore_volume` | `require_approval` | Overwrites a volume from a snapshot (`RestoreVolumeExecutor`) |
+| `system.volume_snapshot_delete` | `require_approval` | Destroys a restore point (`system_delete_volume_snapshot`); the operator row stays in `VOLUME_SNAPSHOT_OPERATOR_POLICIES` |
+
+### Ingress Manager agent (5 policies)
+
+Source: `PolicyDeclarations::INGRESS_MANAGER_POLICIES`, written by `PolicyReconciler` once the agent exists (wave 2). No sensor routes to any of these — all five gate the executor / MCP doors. Operator guide: [`INGRESS_MANAGER_AGENT.md`](./INGRESS_MANAGER_AGENT.md).
+
+| Action category | Default policy | Why |
+|---|---|---|
+| `system.expose_service_local` | `require_approval` | Publishes a service at `/svc/<slug>` behind ForwardAuth |
+| `system.expose_service_public_tcp` | `require_approval` | Public TCP exposure (VIP + port map) |
+| `system.expose_service_publicly` | `require_approval` | Public HTTPS exposure (VIP → port map → ACME → Traefik) |
+| `system.acme_certificate_provision` | `require_approval` | DNS-01 certificate issuance |
+| `system.service_backends_update` | `require_approval` | `system_set_service_backends` declares a published service's backend set (the list IS the set; `[]` clears). Gated because a wrong set blackholes the service; owned by the ingress writer since HIER-P2DECL (IMP-0c10b9fd5596 declared it beside the ingress rows on Fleet Autonomy) |
+
+### Supply Chain Manager agent (7 policies)
+
+Source: `PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES`, written by `PolicyReconciler` once the agent exists (wave 2). Sensor-routed here: `system.package_repository.sync` (`package_drift_sensor`). Operator guide: [`SUPPLY_CHAIN_MANAGER_AGENT.md`](./SUPPLY_CHAIN_MANAGER_AGENT.md).
+
+| Action category | Default policy | Why |
+|---|---|---|
 | `system.package_repository.sync` | `auto_approve` | Routine PackageRepository refresh |
 | `system.package_module.create` | `require_approval` | Materialises a NodeModule from PackageRepository — since IMP-2effedffc990 this row is the real gate on the executor, not a derived twin |
-| `system.package_module.refresh` | `require_approval` | Re-resolves dependencies / re-validates manifest; same gate as `.create` |
-| `system.service_backends_update` | `require_approval` | `system_set_service_backends` declares a published service's backend set (the list IS the set; `[]` clears). Gated because a wrong set blackholes the service; declared beside the ingress rows (IMP-0c10b9fd5596) |
+| `system.package_module.refresh` | `require_approval` | Re-resolves dependencies / re-validates manifest; same gate as `.create`. Declared but routed by no binding |
 | `system.architecture.propose` | `auto_approve` | `suggest_architectures_for_fleet` skill emits proposals |
 | `system.architecture.create` | `require_approval` | Catalog change — affects future provisioning |
 | `system.architecture.update` | `require_approval` | Catalog change |
 | `system.architecture.delete` | `require_approval` | Catalog change |
+
+### System Topology Designer agent (3 policies)
+
+Source: `PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES`, written by `PolicyReconciler` (the agent's seed, `db/seeds/system_topology_designer_agent.rb`, writes no policy row). The three composer executor gates, none sensor-routed: `system.multi_tenant_isolation` (`require_approval`), `system.service_discovery_compose` (`require_approval`) and `system.sdwan_federation_compose` (`require_approval` — registered but declared in no set until HIER-P2DECL, so it had a tunable control and no row anywhere).
 
 ### CVE Responder agent (5 policies)
 
