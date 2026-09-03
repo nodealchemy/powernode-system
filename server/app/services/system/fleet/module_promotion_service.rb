@@ -21,10 +21,15 @@ module System
       def promote!(version:, target_state:)
         criteria = PromotionCriteria.evaluate(version: version)
 
-        # Promotions to retired don't need PromotionCriteria — those are
-        # operator-driven decommissions. Same for explicit blessed → live
-        # since blessed already implies criteria once passed.
-        if target_state == "blessed" && !criteria[:eligible]
+        # Which target states the criteria gate is decided ONCE, in
+        # PromotionCriteria::GATED_TARGET_STATES (today: `blessed`, the rung
+        # that claims the fleet has run this and lived). Promotions to retired
+        # need no criteria — those are operator-driven decommissions — and
+        # neither does explicit blessed → live, since blessed already implies
+        # the criteria once passed. The manual promote paths consult the same
+        # set through ManualPromotionAdvisory and WARN where this lane refuses
+        # (IMP-bdb650b82c65 replaced a private `== "blessed"` literal here).
+        if PromotionCriteria.gates?(target_state) && !criteria[:eligible]
           return Result.new(ok?: false, error: "not eligible: #{criteria[:reason]}", data: criteria)
         end
 
