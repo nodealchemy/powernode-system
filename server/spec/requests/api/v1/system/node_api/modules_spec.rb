@@ -353,8 +353,38 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
         "ref"                => "git.example.com/powernode/nginx-base:abc1234",
         "digest"             => "sha256:deadbeefcafe",
         "fsverity_root_hash" => "sha256:rootcafef00d",
-        "size_bytes"         => 4096
+        "size_bytes"         => 4096,
+        # Both halves of the trust decision ride the envelope, as on the boot
+        # path's task payload: the blob signature (nil until the platform
+        # signs this version) and the platform's trusted public keys.
+        "cosign_bundle_b64"  => nil,
+        "cosign_public_keys" => []
       )
+    end
+
+    it "carries the platform's sign-blob bundle and trusted keys once present" do
+      version.update_columns(artifacts: version.artifacts.deep_merge("erofs" => { "cosign_blob_bundle_b64" => "YnVuZGxl" }))
+      ::SiteSetting.set(System::ModuleSigningTrust::TRUSTED_KEYS_SETTING, [ "-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----" ], setting_type: "json")
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}/download", headers: headers
+      oci = JSON.parse(response.body).dig("data", "oci")
+      expect(oci["cosign_bundle_b64"]).to eq("YnVuZGxl")
+      expect(oci["cosign_public_keys"]).to eq([ "-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----" ])
+    end
+
+    # The reconciler reads the manifest (modules#show), not the download
+    # envelope, so the bundle must ride there too — beside fsverity_root_hash.
+    it "carries the bundle on the module manifest the reconciler consumes" do
+      version.update_columns(artifacts: version.artifacts.deep_merge("erofs" => { "cosign_blob_bundle_b64" => "YnVuZGxl" }))
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      data = JSON.parse(response.body)["data"]
+      expect(data["cosign_bundle_b64"]).to eq("YnVuZGxl")
+      expect(data["fsverity_root_hash"]).to eq("sha256:rootcafef00d")
+    end
+
+    it "omits the bundle from the manifest when the platform never signed the version" do
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      expect(JSON.parse(response.body)["data"]["cosign_bundle_b64"]).to be_nil
     end
 
     it "returns an error when the module has no published artifact" do
@@ -362,6 +392,30 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       get "/api/v1/system/node_api/modules/#{base_module.id}/download", headers: headers
       body = JSON.parse(response.body)
       expect(body["error"]).to include("no published artifact")
+    end
+  end
+
+  # The trust anchor the runtime fetches at construction when the operator
+  # pins no keys: the SAME list ingest verifies against.
+  describe "signing_keys" do
+    it "serves the platform's trusted module-signing public keys" do
+      ::SiteSetting.set(System::ModuleSigningTrust::TRUSTED_KEYS_SETTING, [ "-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----" ], setting_type: "json")
+      get "/api/v1/system/node_api/modules/signing_keys", headers: headers
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      expect(data["keys"]).to eq([ "-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----" ])
+      expect(data["count"]).to eq(1)
+    end
+
+    it "serves an empty list — not an error — when nothing is trusted, so the agent fails closed by itself" do
+      get "/api/v1/system/node_api/modules/signing_keys", headers: headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body)["data"]["keys"]).to eq([])
+    end
+
+    it "requires the instance mTLS identity" do
+      get "/api/v1/system/node_api/modules/signing_keys"
+      expect(response).to have_http_status(:unauthorized)
     end
   end
 end

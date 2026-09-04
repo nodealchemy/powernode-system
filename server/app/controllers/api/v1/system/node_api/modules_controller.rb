@@ -121,18 +121,17 @@ module Api
           # streaming + sha256 verify, and reads oci.digest from the
           # `oci` block.
           #
-          # This envelope carries NO cosign material, and the agent has
-          # no other channel for it: no signature, bundle, bundle_url or
-          # public key is served here, oci.ModuleArtifactRef has no
-          # field that could receive one, and the agent has no OCI
-          # registry client to fetch the signature that does exist in
-          # the registry for natively-built modules. Consequently every
-          # module mount is wired with the no-op verify.AlwaysOK — see
-          # agent/internal/verify/doc.go for the enumerated
-          # prerequisites. Adding a signature field here is step 2 of
-          # those, and is a prerequisite for enforcement, not a
-          # cosmetic addition. (This comment previously claimed the
-          # `oci` block supplied "cosign material"; it never has.)
+          # The `oci` block also carries BOTH halves of the trust decision,
+          # as the boot path's upgrade task does: cosign_bundle_b64 — the
+          # platform's `cosign sign-blob` bundle over the erofs bytes
+          # (ModuleBlobSigner; nil until this version is signed) — and
+          # cosign_public_keys, the platform's trusted module-signing keys
+          # (ModuleSigningTrust; the same list ingest verifies against).
+          # The agent's oci.FetchManifest decodes both; the reconciler's
+          # mount path reads the bundle from the module manifest instead
+          # (modules#show) and its trust anchor from #signing_keys.
+          # Enforcement on the node is an operator opt-in, DEFAULT OFF —
+          # see agent/internal/verify/doc.go.
           def download
             artifact = @module.current_version&.artifact
             return render_error("Module has no published artifact") unless artifact
@@ -143,9 +142,24 @@ module Api
                 ref:                artifact["oci_ref"],
                 digest:             artifact["oci_digest"],
                 fsverity_root_hash: artifact["fsverity_root"],
-                size_bytes:         artifact["size"]
+                size_bytes:         artifact["size"],
+                cosign_bundle_b64:  artifact[::System::ModuleBlobSigner::BUNDLE_KEY],
+                cosign_public_keys: ::System::ModuleSigningTrust.public_keys
               }
             )
+          end
+
+          # GET /api/v1/system/node_api/modules/signing_keys
+          # The trust anchor for module blob signatures: the platform's
+          # trusted module-signing PUBLIC keys (PEM), the same list ingest
+          # verifies image signatures against. The agent fetches this once
+          # at reconciler construction when the operator pins no keys, and
+          # caches it under /persist. An EMPTY list is a 200, not an error —
+          # the agent fails closed on its own when enforcing with no anchor.
+          # Public, not secret.
+          def signing_keys
+            keys = ::System::ModuleSigningTrust.public_keys
+            render_success(keys: keys, count: keys.size)
           end
 
           # GET /api/v1/system/node_api/modules/:id/rsync_spec

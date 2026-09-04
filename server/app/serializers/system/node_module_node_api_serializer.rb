@@ -125,6 +125,13 @@ module System
         # mountpoint pathing.
         digest: artifact&.dig("oci_digest"),
         fsverity_root_hash: artifact&.dig("fsverity_root"),
+        # The platform's `cosign sign-blob` bundle over the erofs blob
+        # (base64), produced at publish by ModuleBlobSigner. Rides the
+        # manifest beside the fs-verity root because that is the payload the
+        # reconciler mounts from (and the boot-LKG snapshot freezes). nil
+        # when the platform never signed this version; a node enforcing
+        # module signing then refuses the mount by name.
+        cosign_bundle_b64: artifact&.dig(::System::ModuleBlobSigner::BUNDLE_KEY),
         # artifacts: full hash so the agent (or operator
         # inspecting the API) can see what's published. Useful
         # for diagnostics; the agent reads `digest` directly.

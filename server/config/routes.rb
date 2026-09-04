@@ -983,6 +983,11 @@ Rails.application.routes.draw do
 
           # Modules (read-only from instance perspective)
           resources :modules, only: %i[index show] do
+            collection do
+              # Module blob-signature trust anchor: the platform's trusted
+              # module-signing public keys (System::ModuleSigningTrust).
+              get :signing_keys
+            end
             member do
               # Phase 1 — OCI manifest + download URL.
               get :download
