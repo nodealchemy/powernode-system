@@ -906,6 +906,8 @@ func verifyCmd() *cobra.Command {
 	var (
 		bundlePath     string
 		digest         string
+		keyPaths       []string
+		keyDir         string
 		identityRegexp string
 		issuerRegexp   string
 		jsonOut        bool
@@ -913,12 +915,26 @@ func verifyCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "verify <module-path>",
 		Short: "Verify cosign signature + fs-verity hash on a local module artifact",
-		Args:  cobra.ExactArgs(1),
+		Long: `Verifies a pulled module blob the way an ENFORCING node would.
+
+Static-key (the platform's signing shape): pass --key <pub> for each trusted
+cosign public key, or --key-dir pointing at the runtime's platform-key cache
+(/persist/var/lib/powernode/module-signing/platform-keys). The verifier is
+built through the same constructor the reconciler's mount sites use, so a
+green verdict here is exactly what a node in module-signing mode runtime/all
+accepts. The bundle defaults to <module-path>.cosign-bundle, which is where
+the puller materialises the platform's sign-blob bundle.
+
+Keyless (--identity-regexp/--issuer-regexp) pins a Fulcio identity; no
+platform pipeline produces such signatures today.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, runErr := agentcli.RunVerify(cmd.Context(), agentcli.VerifyOptions{
 				ModulePath:     args[0],
 				BundlePath:     bundlePath,
 				Digest:         digest,
+				KeyPaths:       keyPaths,
+				KeyDir:         keyDir,
 				IdentityRegexp: identityRegexp,
 				IssuerRegexp:   issuerRegexp,
 				JSON:           jsonOut,
@@ -928,6 +944,8 @@ func verifyCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&bundlePath, "bundle", "", "cosign bundle path (default: <module>.cosign-bundle)")
 	c.Flags().StringVar(&digest, "digest", "", "expected fs-verity digest (sha256 hex)")
+	c.Flags().StringSliceVar(&keyPaths, "key", nil, "trusted cosign PUBLIC key (PEM) for static-key verification (repeatable)")
+	c.Flags().StringVar(&keyDir, "key-dir", "", "trust every *.pub in this directory, e.g. the runtime's cache /persist/var/lib/powernode/module-signing/platform-keys")
 	c.Flags().StringVar(&identityRegexp, "identity-regexp", "", "cosign cert identity regex (Sigstore Fulcio identity pinning)")
 	c.Flags().StringVar(&issuerRegexp, "issuer-regexp", "", "cosign cert OIDC issuer regex")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -16,10 +17,22 @@ import (
 // on a path the operator passes in, with the cosign bundle either
 // supplied via flag or auto-discovered as <module>.cosign-bundle next
 // to the artifact.
+//
+// Trust anchor, one of:
+//   - KeyPaths / KeyDir — static-key verification against the platform's
+//     module-signing PUBLIC keys. THIS is the platform's signing shape.
+//     Constructed through verify.NewModuleVerifier (enforcing, SiteCLI),
+//     the same constructor the runtime's mount sites resolve through, so a
+//     green verdict here is exactly what an enforcing node would accept.
+//   - IdentityRegexp + IssuerRegexp — keyless Fulcio pins, for artifacts
+//     signed on a genuinely Fulcio-trusted CI. No platform pipeline
+//     produces these today.
 type VerifyOptions struct {
 	ModulePath     string
 	BundlePath     string
 	Digest         string
+	KeyPaths       []string
+	KeyDir         string // every *.pub in this dir is trusted (the runtime's platform-key cache shape)
 	IdentityRegexp string
 	IssuerRegexp   string
 	JSON           bool
@@ -66,10 +79,33 @@ func RunVerify(ctx context.Context, opts VerifyOptions) (Result, error) {
 			Errorf(ExitGeneric, "verify", "module %s not found", opts.ModulePath)
 	}
 
-	cosignVer := &verify.CosignVerifier{
-		Runner:         opts.Runner,
-		IdentityRegexp: opts.IdentityRegexp,
-		IssuerRegexp:   opts.IssuerRegexp,
+	keys := append([]string(nil), opts.KeyPaths...)
+	if opts.KeyDir != "" {
+		dirKeys, err := pubKeysIn(opts.KeyDir)
+		if err != nil {
+			return errResult("verify", ExitGeneric, "key_dir", err), Errorf(ExitGeneric, "verify", "%v", err)
+		}
+		keys = append(keys, dirKeys...)
+	}
+	var (
+		cosignVer verify.Verifier
+		trust     string
+	)
+	if len(keys) > 0 {
+		// Same constructor as the runtime's mount sites; enforcing so a
+		// failure is a failure, not an audit report.
+		v, err := verify.NewModuleVerifier(verify.ModuleSigningConfig{Mode: verify.ModeAll, KeyPaths: keys}, verify.SiteCLI, opts.Runner, nil)
+		if err != nil {
+			return errResult("verify", ExitGeneric, "trust_anchor", err), Errorf(ExitGeneric, "verify", "%v", err)
+		}
+		cosignVer, trust = v, "static-key"
+	} else {
+		cosignVer = &verify.CosignVerifier{
+			Runner:         opts.Runner,
+			IdentityRegexp: opts.IdentityRegexp,
+			IssuerRegexp:   opts.IssuerRegexp,
+		}
+		trust = "keyless"
 	}
 	cosignErr := cosignVer.VerifyBlob(ctx, opts.ModulePath, opts.BundlePath)
 
@@ -100,6 +136,8 @@ func RunVerify(ctx context.Context, opts VerifyOptions) (Result, error) {
 	details := map[string]any{
 		"module":         opts.ModulePath,
 		"bundle":         opts.BundlePath,
+		"trust":          trust,
+		"trusted_keys":   len(keys),
 		"cosign_status":  describeError(cosignErr),
 		"fsverity":       fsDigest,
 		"fsverity_check": describeError(fsErr),
@@ -126,6 +164,26 @@ func RunVerify(ctx context.Context, opts VerifyOptions) (Result, error) {
 		return r, Errorf(exitCode, "verify:"+stage, "%s", combinedErr)
 	}
 	return r, nil
+}
+
+// pubKeysIn lists every *.pub in dir, sorted — the runtime caches the
+// platform's trusted keys under /persist/var/lib/powernode/module-signing/
+// platform-keys/ in exactly this shape.
+func pubKeysIn(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("--key-dir %s: %w", dir, err)
+	}
+	var keys []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".pub") {
+			keys = append(keys, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("--key-dir %s: no *.pub files", dir)
+	}
+	return keys, nil
 }
 
 func fileExists(p string) bool {
