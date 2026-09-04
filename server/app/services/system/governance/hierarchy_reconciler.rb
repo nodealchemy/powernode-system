@@ -74,7 +74,16 @@ module System
       # after that seed lands, with no edit here.
       # Delegation defaults are the P1 ruling for every child: conservative,
       # max_depth 2, no delegate types (a leaf).
+      #
+      # MINUS the core canonicals (HIER-P3, PolicyDeclarations::CORE_CANONICAL_KEYS):
+      # the Platform Architect is declared as an owner so the governance-gap
+      # lane gates under it, but core seeds it, core writes its delegation
+      # policy (moderate, depth 3 — db/seeds/ai_agent_hierarchy_seed.rb) and
+      # the extension seed attaches only its EDGE under System Concierge.
+      # Writing the leaf delegation here would flap that policy on every boot.
       CHILD_IDENTITIES = PolicyDeclarations::AGENT_IDENTITIES
+                           .except(*PolicyDeclarations::CORE_CANONICAL_KEYS)
+                           .freeze
 
       # The core forest's root, attached under System Concierge. It keeps the
       # delegation policy the CORE seed gives it (none today) — this reconciler

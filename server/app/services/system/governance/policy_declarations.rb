@@ -1311,6 +1311,48 @@ module System
         "volume-snapshot-operator" => "storage-manager"
       }.freeze
 
+      # HIER-P3 — the Platform Architect's set: the governance-gap lane
+      # (GovernanceGapSensor → DecisionEngine "system.governance_gap" →
+      # GovernanceGapProposeExecutor) and its materialisation gate.
+      #
+      #   dev.campaign_propose        auto_approve — a CORE category
+      #     (Ai::InterventionPolicy::ENGINEERING_CATEGORIES). Core's
+      #     db/seeds/ai_engineering_agents_seed.rb writes this row on the
+      #     Platform Architect for the admin account at the SAME verb, and this
+      #     declaration exists for two reasons that seed cannot serve: the
+      #     ROUTED LANE needs an owner (`owner_of` must answer the binding's
+      #     owner — sensor_owner_gating_spec's equality oracle), and every
+      #     OTHER account needs the row too (the fleet tick runs per account;
+      #     the core seed writes the admin account only). PolicyReconciler is
+      #     absence-only, so on the admin account it finds core's row present
+      #     and writes nothing; the two writers can never disagree because
+      #     governance_gap_lane_spec pins this verb against the core seed's.
+      #     No trust condition, like core's row: the proposal IS the human
+      #     gate, so proposing is free at every tier.
+      #   dev.governance_materialize  require_approval — extension-declared
+      #     (registered by derivation in lib/powernode_system/engine.rb).
+      #     The STRUCTURAL materialisation gate (a lineage edge, a delegation
+      #     policy) — operator ruling 2026-09-03 #3: structural changes stay
+      #     require_approval whatever the trust tier. The refinement kinds
+      #     (skill binding, prompt) gate on core's trust-conditioned
+      #     dev.skill_refine / dev.prompt_refine PAIR instead, which the core
+      #     seed writes and this extension deliberately does not re-declare.
+      # 2 keys, one sensor-routed (dev.campaign_propose).
+      PLATFORM_ARCHITECT_POLICIES = {
+        "dev.campaign_propose"       => "auto_approve",
+        "dev.governance_materialize" => "require_approval"
+      }.freeze
+
+      # Identities below whose AGENT is a CORE canonical (seeded by core, its
+      # delegation policy and lineage under its own forest written by core's
+      # db/seeds/ai_agent_hierarchy_seed.rb). Declared here so the owner
+      # pipeline — AgentResolver, PolicyReconciler, the tick's #for_owner —
+      # treats it like any other owner, but EXCLUDED from
+      # HierarchyReconciler::CHILD_IDENTITIES: the extension attaches its edge
+      # under System Concierge (db/seeds/system_agent_hierarchy.rb) and never
+      # writes its delegation policy, which core owns.
+      CORE_CANONICAL_KEYS = %w[platform-architect].freeze
+
       # Agent identity is keyed on SOURCE_KEY, not name. The seeds look agents
       # up by name, but every seeded agent also carries a source_key and the
       # model documents these as "platform-provided, seed-managed by
@@ -1326,6 +1368,9 @@ module System
       # HIER-P2F aligned that seed's source_key to the key below
       # ("topology-designer"; it was "system-topology-designer" until then, so
       # only the name+type primary path resolved it) — now both paths do.
+      # HIER-P3 added the Platform Architect — a CORE canonical (see
+      # CORE_CANONICAL_KEYS), the first owner of an extension-routed lane that
+      # this extension does not seed.
       AGENT_IDENTITIES = {
         "fleet-autonomy"       => { name: "Fleet Autonomy",           agent_type: "monitor" },
         "sdwan-manager"        => { name: "SDWAN Manager",            agent_type: "monitor" },
@@ -1337,7 +1382,8 @@ module System
         "storage-manager"      => { name: "Storage Manager",          agent_type: "monitor" },
         "ingress-manager"      => { name: "Ingress Manager",          agent_type: "monitor" },
         "supply-chain-manager" => { name: "Supply Chain Manager",     agent_type: "monitor" },
-        "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" }
+        "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" },
+        "platform-architect"   => { name: "Platform Architect",       agent_type: "assistant" }
       }.freeze
 
       # Every declared row group, with the SHAPE it resolves at. `agent_key`
@@ -1382,6 +1428,11 @@ module System
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: SUPPLY_CHAIN_MANAGER_POLICIES },
         { key: "topology-designer",    agent_key: "topology-designer",    scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: TOPOLOGY_DESIGNER_POLICIES },
+        # HIER-P3. No trust condition: proposing is free at every tier (the
+        # offer is the gate) and the structural verb is require_approval
+        # regardless — a condition here could only park the propose lane.
+        { key: "platform-architect",   agent_key: "platform-architect",   scope: "agent",
+          priority: 10, conditions: {}, policies: PLATFORM_ARCHITECT_POLICIES },
         { key: "sdwan-operator",     agent_key: nil,                  scope: "action_type",
           priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: SDWAN_OPERATOR_POLICIES },
         { key: "runtime-operator",   agent_key: nil,                  scope: "action_type",

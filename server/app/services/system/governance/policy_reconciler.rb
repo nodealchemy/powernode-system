@@ -200,7 +200,7 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips — the eleven agent-keyed sets, which hold roughly
+        # agent set skips — the twelve agent-keyed sets, which hold roughly
         # two-thirds of every row PolicyDeclarations declares. Counting only
         # `missing` reported that install as CLEAN: the skipped set contributes
         # no missing rows precisely because it was never examined. (No literal
@@ -365,9 +365,11 @@ module System
       private
 
       # HIER-P2I. Resolving a declared agent may MINT the account's clone of a
-      # global canonical, and AGENT_IDENTITIES has eleven keys — so a drift run
+      # global canonical, and AGENT_IDENTITIES has twelve keys since HIER-P3
+      # (the twelfth being a CORE canonical, the Platform Architect, whose
+      # clone this path mints on every account just the same) — so a drift run
       # on a fresh account, made from a health check or a CI assertion, would
-      # create up to eleven agents plus their lineage, trust, delegation and
+      # create up to twelve agents plus their lineage, trust, delegation and
       # policy re-homes. The report is documented as mutating nothing, and the
       # platform's bulk-operation rule forbids a read doing that many writes
       # unasked, so it asks for the CANONICAL and reports against the principal

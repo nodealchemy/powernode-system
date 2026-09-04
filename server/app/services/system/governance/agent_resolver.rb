@@ -43,10 +43,12 @@ module System
     #
     # `mint:` is what keeps a REPORT a report. Minting is a write — an agent, a
     # lineage edge, a trust score, a delegation policy and a policy re-home per
-    # key — and PolicyDeclarations::AGENT_IDENTITIES has eleven keys, so a
-    # `drift` run (read-only by contract, callable from a health check or a CI
-    # assertion) that resolved through the minting path would materialise up to
-    # eleven principals on a fresh account. `drift` therefore asks with
+    # key — and PolicyDeclarations::AGENT_IDENTITIES has twelve keys since
+    # HIER-P3 (the twelfth is a CORE canonical, the Platform Architect, whose
+    # per-account clone this resolve mints exactly like the extension's own),
+    # so a `drift` run (read-only by contract, callable from a health check or
+    # a CI assertion) that resolved through the minting path would materialise
+    # up to twelve principals on a fresh account. `drift` therefore asks with
     # `mint: false` and answers for the canonical, naming what WOULD act; the
     # writers — the reconcile pass, the fleet tick, the CVE tick, the per-owner
     # gates — ask with the default and get the principal that actually executes.
