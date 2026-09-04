@@ -485,6 +485,22 @@ module Ai
       DISK_IMAGE_PROMOTE_CATEGORY   = "system.disk_image_publication_promote"
       DISK_IMAGE_ROLLBACK_CATEGORY  = "system.disk_image_publication_rollback"
       DISK_IMAGE_RETENTION_CATEGORY = "system.disk_image_retention_update"
+      # HIER-P2B-ENG — the four RELEASE verbs gate on the CORE `engineering`
+      # policy set the Release Manager owns (Ai::InterventionPolicy::
+      # ENGINEERING_CATEGORIES, rows seeded by core's
+      # db/seeds/ai_engineering_agents_seed.rb): build dispatch auto-approves
+      # (plus an account-wide floor — Ai::Engineering::ReleaseDispatchFloor
+      # Seeder — because the principals that dispatch a build over MCP carry no
+      # agent-scoped row: an operator's `mcp_client` session and a dev-cell
+      # instance principal), promote / rollback / deploy require approval with
+      # NO trust unlock. The
+      # literals are core's; restated here for the class-body-evaluation reason
+      # POOL_CREATE_CATEGORY gives, and pinned against core by
+      # spec/services/ai/tools/system_fleet_release_gating_spec.rb.
+      RELEASE_BUILD_DISPATCH_CATEGORY = "release.build_dispatch"
+      RELEASE_PROMOTE_CATEGORY        = "release.promote"
+      RELEASE_ROLLBACK_CATEGORY       = "release.rollback"
+      RELEASE_DEPLOY_PLATFORM_CATEGORY = "release.deploy_platform"
       # The columns a "raise" is measured on — the two the replenish tick
       # spends up to. min_size is not one of them: it cannot raise the ceiling.
       POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
@@ -526,7 +542,7 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. THIRTEEN verbs on
+      # SCOPE, stated so this is not read as more than it is. SEVENTEEN verbs on
       # this tool are gate-routed: system_terminate_instance (this one),
       # system_create_instance_pool and system_update_instance_pool
       # (IMP-067f39468350, declared below), system_replace_instance /
@@ -536,7 +552,10 @@ module Ai
       # system_uncordon_instance (IMP-0467eee9fc57),
       # system_gitops_register_repository (SWEEP-2026-09-03) and the three
       # disk-image verbs system_set_default_disk_image_publication /
-      # system_revert_disk_image / system_set_disk_image_retention (HIER-P2H).
+      # system_revert_disk_image / system_set_disk_image_retention (HIER-P2H),
+      # and the four release verbs system_dispatch_module_build_batch /
+      # system_promote_module_version / system_rollback_module_version /
+      # system_deploy_platform (HIER-P2B-ENG, on core's engineering categories).
       # The authoritative census is
       # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
       # (GATE_ROUTED_ACTIONS) in core, which reds when the DECLARATIONS drift
@@ -669,7 +688,21 @@ module Ai
       declare_action "system_delete_template", mutating: true
       declare_action "system_delete_volume", mutating: true
       declare_action "system_deploy_inference_server", mutating: true
-      declare_action "system_deploy_platform", mutating: true
+      # HIER-P2B-ENG — approval-gated on core's release.deploy_platform (the
+      # Release Manager's require_approval row; never unlocked by trust — a
+      # self-hosted control plane cannot recover itself from a bad rollout).
+      # The mode-less call is the wizard READ arm (`ungated_when`): it returns
+      # the form card and provisions nothing, so it dispatches to #call as an
+      # ungated action would instead of parking a form read as an approval.
+      # The gate context re-applies the verb's own admission rules (federated
+      # refused with the operator path, name required) BEFORE parking.
+      declare_action "system_deploy_platform",
+                     mutating: true,
+                     action_category: RELEASE_DEPLOY_PLATFORM_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deploy_platform_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     ungated_when: :deploy_platform_wizard_read?
       declare_action "system_destroy_instance", mutating: true
       declare_action "system_detach_volume", mutating: true
       # APO-5 / DR-2 (IMP-4b4bed6967ed). Snapshot create / list / restore keep
@@ -710,7 +743,20 @@ module Ai
       declare_action "system_discover_modules", mutating: false
       declare_action "system_discover_peers", mutating: false
       declare_action "system_discover_templates", mutating: false
-      declare_action "system_dispatch_module_build_batch", mutating: true
+      # HIER-P2B-ENG — approval-gated on core's release.build_dispatch (the
+      # Release Manager's auto_approve row plus the account-wide floor an
+      # agent-less MCP caller resolves — an operator's `mcp_client` session, a
+      # dev-cell instance principal); the generic replay executor re-invokes the
+      # verb inline on auto_approve, so those callers keep dispatching with the
+      # same envelope. NOT the push-triggered build, which runs through
+      # System::ModuleBuildTriggerService and never reaches this verb. The
+      # context re-applies the sha admission rule BEFORE parking.
+      declare_action "system_dispatch_module_build_batch",
+                     mutating: true,
+                     action_category: RELEASE_BUILD_DISPATCH_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :dispatch_module_build_batch_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_drain_instance", mutating: true
       declare_action "system_drain_instance_pool", mutating: true
       declare_action "system_drift_report", mutating: false
@@ -800,7 +846,17 @@ module Ai
       declare_action "system_module_publish_target", mutating: false
       declare_action "system_platform_maintenance", mutating: true
       declare_action "system_platform_resilience", mutating: true
-      declare_action "system_promote_module_version", mutating: true
+      # HIER-P2B-ENG — approval-gated on core's release.promote (the Release
+      # Manager's require_approval row, no trust unlock). The context resolves
+      # the version under the account and probes the transition BEFORE
+      # parking, so a foreign, unknown or illegal promotion keeps its inline
+      # error instead of becoming an approval that could only ever fail.
+      declare_action "system_promote_module_version",
+                     mutating: true,
+                     action_category: RELEASE_PROMOTE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :promote_module_version_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_provision_ci_worker", mutating: true
       declare_action "system_provision_instance", mutating: true
       declare_action "system_reap_agent_fleet", mutating: true
@@ -894,7 +950,18 @@ module Ai
                      gate_context: :revert_disk_image_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_revert_storage_migration_binding", mutating: true
-      declare_action "system_rollback_module_version", mutating: true
+      # HIER-P2B-ENG — approval-gated on core's release.rollback (the Release
+      # Manager's require_approval row, no trust unlock). The context resolves
+      # the module under the account, applies the rollback_usable? floor and
+      # PINS the auto-selected target into the replayed params, so the
+      # operator approves the version the card names, not whichever one the
+      # selection would pick later.
+      declare_action "system_rollback_module_version",
+                     mutating: true,
+                     action_category: RELEASE_ROLLBACK_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :rollback_module_version_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_rotate_vault_transit_pepper", mutating: true
       declare_action "system_runbook_generate", mutating: true
       declare_action "system_set_default_disk_image_publication",
@@ -1524,7 +1591,12 @@ module Ai
                          "and returns the verdict as `promotion_criteria`; an unmet verdict adds " \
                          "`promotion_criteria_warning` and writes an auditable override event naming you. " \
                          "This call is NEVER refused on those grounds — promoting anyway is permitted and " \
-                         "recorded — but read the warning before you treat a blessing as evidence-backed.",
+                         "recorded — but read the warning before you treat a blessing as evidence-backed. " \
+                         "APPROVAL-GATED (release.promote): when policy requires approval this returns " \
+                         "{pending: true} with a deferred_operation_id and NOTHING is promoted until an " \
+                         "operator approves — do not retry and do not report the promotion as done on that " \
+                         "response. The seeded Release Manager row is require_approval whatever its trust " \
+                         "tier; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
               target_state: { type: "string", required: true, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
@@ -1603,7 +1675,7 @@ module Ai
           # the chat UI renders as an inline form. With full args, calls
           # the orchestrator and provisions the new platform.
           "system_deploy_platform" => {
-            description: "Deploy a new Powernode platform. Two execution shapes: (1) call with no `mode` to receive a wizard-card payload describing the form fields the operator should fill in — the chat UI renders this inline; (2) call with mode 'standalone' plus full args (name, template_slug) to actually provision a sovereign platform. Federated deployment is NOT available on this surface — it mints a single-use acceptance token, and a tool result reaches the model provider and is persisted with the conversation, so the plaintext cannot be delivered here. Federated spawns go through the operator API (POST /api/v1/system/platform/deployments), which runs the same orchestrator and reveals the acceptance_token once in its HTTP response.",
+            description: "Deploy a new Powernode platform. Two execution shapes: (1) call with no `mode` to receive a wizard-card payload describing the form fields the operator should fill in — the chat UI renders this inline (a read: never gated); (2) call with mode 'standalone' plus full args (name, template_slug) to actually provision a sovereign platform. Federated deployment is NOT available on this surface — it mints a single-use acceptance token, and a tool result reaches the model provider and is persisted with the conversation, so the plaintext cannot be delivered here. Federated spawns go through the operator API (POST /api/v1/system/platform/deployments), which runs the same orchestrator and reveals the acceptance_token once in its HTTP response. APPROVAL-GATED (release.deploy_platform): when policy requires approval a provisioning call returns {pending: true} with a deferred_operation_id and NOTHING is deployed until an operator approves — do not retry and do not report the deployment as done on that response. The seeded Release Manager row is require_approval whatever its trust tier (the control plane's own deployment is never deployed unattended); a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               mode: { type: "string", required: false,
                       description: "standalone. Omit to receive the wizard payload. 'federated' is refused on this surface with the operator path to use instead." },
@@ -2185,7 +2257,7 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully.",
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks.",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
@@ -2197,7 +2269,7 @@ module Ai
           },
 
           "system_rollback_module_version" => {
-            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion, and the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile.",
+            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion, and the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile. APPROVAL-GATED (release.rollback): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is repointed until an operator approves — do not retry and do not report the rollback as done on that response; without version_id the auto-selected target is pinned to the approval so the operator approves the version the card names. The seeded Release Manager row is require_approval whatever its trust tier; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               module_id:  { type: "string", required: true,  description: "System::NodeModule id to roll back" },
               version_id: { type: "string", required: false, description: "Explicit System::NodeModuleVersion to roll back to. Omit to auto-select the most recent usable version." },
@@ -4880,6 +4952,37 @@ module Ai
         ::System::Fleet::ManualPromotionAdvisory::UNKNOWN_ACTOR
       end
 
+      # The gated promotion's context (HIER-P2B-ENG). Same account-scoped
+      # `find` as the body, and the transition probed against
+      # PROMOTION_TRANSITIONS with the message promote_to! would raise, so a
+      # foreign, unknown or illegal promotion keeps its inline error and parks
+      # nothing. The PromotionCriteria advisory is deliberately NOT evaluated
+      # here: it is advisory (never a refusal) and is recorded once the
+      # transition lands, by the body, on the replay. Anchored to the version
+      # row; the description carries the module, the version number and the
+      # states (row values plus the requested target state).
+      def promote_module_version_gate_context(params)
+        version = ::System::NodeModuleVersion
+                  .joins(:node_module)
+                  .where(system_node_modules: { account_id: @account.id })
+                  .find(params[:module_version_id])
+        target = params[:target_state].to_s
+        raise ArgumentError, "unknown state: #{target}" unless ::System::NodeModuleVersion::PROMOTION_STATES.include?(target)
+
+        allowed = ::System::NodeModuleVersion::PROMOTION_TRANSITIONS.fetch(version.promotion_state, [])
+        unless allowed.include?(target)
+          raise ArgumentError,
+                "cannot transition from #{version.promotion_state} to #{target} (allowed: #{allowed.join(', ').presence || 'none'})"
+        end
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodeModuleVersion",
+          source_id: version.id,
+          description: "Promote module '#{version.node_module.name}' v#{version.version_number} from " \
+                       "#{version.promotion_state} to #{target} on the promotion ladder"
+        )
+      end
+
       # === Drift ===
 
       def drift_report(params)
@@ -5159,19 +5262,52 @@ module Ai
       # presence). Normalizing is strictly broader than the executor's own
       # `MODES.include?(mode.to_s)`, so no spelling that would reach the mint
       # can walk past a refusal whose whole contract is that it is loud.
-      def deploy_platform(params)
-        if federated_mode?(params[:mode])
-          return error_result(
-            "federated deployment is not available over the MCP tool surface: it mints a " \
-            "single-use federation acceptance token, and a tool result is forwarded to the " \
-            "model provider and persisted with the conversation, so the plaintext cannot be " \
-            "delivered here without disclosing signing material. Deploy federated platforms " \
-            "over the operator API instead — POST /api/v1/system/platform/deployments " \
-            "(permission system.platform.deploy) runs the same orchestrator and reveals the " \
-            "acceptance_token exactly once in its HTTP response. Standalone deployment and " \
-            "the wizard payload are supported here."
-          )
+      # The one refusal text for a federated deploy over this surface, read by
+      # the action body AND the gate context so the refusal is byte-identical
+      # whichever hop answers it.
+      FEDERATED_DEPLOY_REFUSAL =
+        "federated deployment is not available over the MCP tool surface: it mints a " \
+        "single-use federation acceptance token, and a tool result is forwarded to the " \
+        "model provider and persisted with the conversation, so the plaintext cannot be " \
+        "delivered here without disclosing signing material. Deploy federated platforms " \
+        "over the operator API instead — POST /api/v1/system/platform/deployments " \
+        "(permission system.platform.deploy) runs the same orchestrator and reveals the " \
+        "acceptance_token exactly once in its HTTP response. Standalone deployment and " \
+        "the wizard payload are supported here."
+
+      # The READ arm of system_deploy_platform (`ungated_when`, HIER-P2B-ENG):
+      # with no mode the verb returns the wizard card and provisions nothing,
+      # so it never meets the gate. Decided on the SAME predicate the executor
+      # branches on (mode blank), so the arm and the read cannot disagree.
+      def deploy_platform_wizard_read?(params)
+        params[:mode].blank?
+      end
+
+      # The gated deploy's context. The two admission rules the body applies
+      # BEFORE it provisions — federated is refused with the operator path,
+      # a name is required — are re-applied here so a call that could only
+      # ever be refused keeps its inline error and parks nothing. Not anchored
+      # to a row: the deployment does not exist until the replay creates it.
+      # The description names the mode and the template (caller values that
+      # identify the request, not secrets) and never the hostname.
+      def deploy_platform_gate_context(params)
+        raise ArgumentError, FEDERATED_DEPLOY_REFUSAL if federated_mode?(params[:mode])
+
+        mode = params[:mode].to_s.strip
+        unless ::System::Ai::Skills::PlatformDeployExecutor::MODES.include?(mode)
+          raise ArgumentError, "Unknown mode: #{params[:mode].inspect}; allowed: #{::System::Ai::Skills::PlatformDeployExecutor::MODES.inspect}"
         end
+        raise ArgumentError, "name is required for deployment" if params[:name].blank?
+
+        deferred_tool_call_context(params).merge(
+          description: "Deploy a new #{mode} Powernode platform '#{params[:name]}' from template " \
+                       "'#{params[:template_slug].presence || 'powernode-hub'}' — provisions an instance " \
+                       "and records the platform deployment"
+        )
+      end
+
+      def deploy_platform(params)
+        return error_result(FEDERATED_DEPLOY_REFUSAL) if federated_mode?(params[:mode])
 
         executor = build_skill_executor(::System::Ai::Skills::PlatformDeployExecutor)
         # Pass through every relevant param; nil/blank get filtered by the executor.
@@ -7773,6 +7909,24 @@ module Ai
         error_result(e.message)
       end
 
+      # The gated dispatch's context (HIER-P2B-ENG). The sha admission rule the
+      # body applies is re-applied BEFORE parking; planning itself (a git
+      # compare) stays in the body, so a planning failure surfaces on the
+      # replay exactly as it did inline. Not anchored to a row: the batch does
+      # not exist until the replay creates it. The description names the range
+      # and the trigger (caller values that identify the request, not secrets).
+      def dispatch_module_build_batch_gate_context(params)
+        base_sha = params[:base_sha].to_s
+        head_sha = params[:head_sha].to_s
+        raise ArgumentError, "base_sha and head_sha are required" if base_sha.blank? || head_sha.blank?
+
+        deferred_tool_call_context(params).merge(
+          description: "Plan and dispatch a native module-build batch for #{base_sha[0, 12]}..#{head_sha[0, 12]}" \
+                       "#{params[:force_all] == true ? ' (force_all: every manifest-backed module)' : ''}" \
+                       " — trigger #{params[:trigger].presence || 'manual'}, leases module-forge builders"
+        )
+      end
+
       # The undo for auto-promotion, and the forward-repoint when a good build
       # was withheld. Publishing auto-promotes by default, but ModulePublication
       # Processor withholds it on three conditions (auto_promote disabled, the
@@ -7845,6 +7999,43 @@ module Ai
         end
 
         version
+      end
+
+      # The gated rollback's context (HIER-P2B-ENG). Same scoped lookup and
+      # the same target selection as the body, so an unknown module, a foreign
+      # or unusable version and an empty rollback set keep their inline errors
+      # and park nothing. The auto-selected target is PINNED into the replayed
+      # params (`version_id`), so the operator approves the version the card
+      # names and the replay repoints to that one even if the selection would
+      # differ later. Anchored to the module row; the description carries the
+      # current and target version NUMBERS (row values).
+      def rollback_module_version_gate_context(params)
+        module_id = params[:module_id].to_s
+        raise ArgumentError, "module_id is required" if module_id.blank?
+
+        node_module = ::System::NodeModule.where(account: @account).find_by(id: module_id)
+        raise ArgumentError, "Module '#{module_id}' not found" unless node_module
+
+        target =
+          if params[:version_id].present?
+            explicit_rollback_target(node_module, params[:version_id].to_s)
+          else
+            node_module.latest_rollback_target
+          end
+        raise ArgumentError, target[:error] if target.is_a?(Hash)
+        unless target
+          raise ArgumentError,
+                "No usable rollback target for '#{node_module.name}': no other version has a mountable artifact. " \
+                "Republish a good build instead."
+        end
+
+        pinned = params.merge(version_id: target.id)
+        deferred_tool_call_context(pinned).merge(
+          source_type: "System::NodeModule",
+          source_id: node_module.id,
+          description: "Roll module '#{node_module.name}' back from v#{node_module.current_version_number} " \
+                       "to v#{target.version_number} — repoints current_version; nodes converge on their next reconcile"
+        )
       end
 
       # The kill switch the 2026-08-07 incident had no equivalent of: aborting

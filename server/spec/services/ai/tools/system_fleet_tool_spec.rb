@@ -1619,6 +1619,11 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   end
 
   describe "Modules + Versions" do
+    # HIER-P2B-ENG — this verb is approval-gated (release.*); these examples
+    # assert the WRITTEN state, so they opt into the :proceed branch. The gate
+    # itself is pinned in system_fleet_release_gating_spec.rb.
+    before { auto_approve_policy! }
+
     let!(:mod) do
       create(:system_node_module,
              account: account, node_platform: platform_record, category: category,
@@ -4510,6 +4515,11 @@ end
   end
 
   describe "system_dispatch_module_build_batch (campaign 019f5885 inc9)" do
+    # HIER-P2B-ENG — this verb is approval-gated (release.*); these examples
+    # assert the WRITTEN state, so they opt into the :proceed branch. The gate
+    # itself is pinned in system_fleet_release_gating_spec.rb.
+    before { auto_approve_policy! }
+
     def plan_result(entries, excluded: [])
       ::System::ModuleBuildPlannerService::PlanResult.new(entries: entries, excluded: excluded)
     end
@@ -4761,6 +4771,11 @@ end
   end
 
   describe "system_rollback_module_version" do
+    # HIER-P2B-ENG — this verb is approval-gated (release.*); these examples
+    # assert the WRITTEN state, so they opt into the :proceed branch. The gate
+    # itself is pinned in system_fleet_release_gating_spec.rb.
+    before { auto_approve_policy! }
+
     let!(:mod) { create(:system_node_module, account: account, name: "runtime-go") }
 
     def version_with_digest(number, digest: "sha256:#{'a' * 64}", size: 12_345_000)
@@ -5339,7 +5354,14 @@ end
   # caller can read would strand a FederationPeer whose digest is the only thing
   # that can accept it, with a child VM already provisioned against it.
   describe "system_deploy_platform federated token minting (IMP-c0687cfb3a05)" do
-    let(:deploy_user)     { create(:user, account: account) }
+    # HIER-P2B-ENG — this verb is approval-gated (release.*); these examples
+    # assert the WRITTEN state, so they opt into the :proceed branch. The gate
+    # itself is pinned in system_fleet_release_gating_spec.rb.
+    before { auto_approve_policy! }
+
+    # system.nodes.read is the tool floor the gated replay re-checks a USER
+    # principal against (HIER-P2B-ENG — the standalone deploy is gate-routed).
+    let(:deploy_user)     { create(:user, account: account, permissions: %w[system.nodes.read]) }
     let(:deploy_template) { create(:system_node_template, account: account, name: "powernode-hub-spec") }
     # Shadows the outer tool so the deploy carries an initiating user, as the
     # concierge path does.
