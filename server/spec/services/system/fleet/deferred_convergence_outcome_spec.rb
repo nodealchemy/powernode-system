@@ -278,6 +278,75 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
     end
   end
 
+  # IMP-d327c66ce0c4 — the recompose_escalate lane is a SECOND applier declaring
+  # convergence_deferred, so it inherits the brake described above: settling
+  # `inconclusive` pins the ineffective streak at 0, which removes F3-11 as this
+  # lane's route to an operator. That is the failure this platform has hit
+  # before — a signal emitted, nothing scored, and the whole thing reading as
+  # handled. The replacement route is generic (escalate_stuck_remediation! keyed
+  # on the SETTLED ROW, not on which applier declared it), but "generic" is a
+  # claim about code I did not write, so it is asserted here for this lane
+  # rather than assumed from the reboot lane's example.
+  describe "the recompose_escalate escalation (a deferral must not become silence)" do
+    let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+
+    let(:signal) do
+      System::Fleet::Signal.new(
+        kind: "system.module_drift", severity: :medium,
+        payload: { "instance_id" => instance.id, "_sensor" => "ModuleDriftSensor" },
+        fingerprint: "module_drift:#{instance.id}"
+      )
+    end
+
+    before do
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.module_assign",
+                                     policy: "notify_and_proceed", is_active: true)
+      allow_any_instance_of(::System::Ai::Skills::DriftRemediateExecutor).to receive(:execute).and_return(
+        { success: true, data: { resolved: true, requires_approval: false, disruption_pct: 5,
+                                 planned_actions: { attach: [ "mod-1" ], detach: [], update: [] } } }
+      )
+      # The agent priced this module against the live root's scratch and
+      # declined to materialize ANY of it (ecfdd0a3). recompose_escalation fires.
+      System::Task.create!(
+        account: account, operable: instance, command: "sync_modules", status: "failed",
+        error_message: "reconcile did not converge 1 module(s): " \
+                       "reconciler:recompose_escalate [mod-a]: module mod-a: at least 400000 bytes " \
+                       "of new content against 34000 usable — declining the live materialization " \
+                       "ENTIRELY. This module needs the next rung: " \
+                       "`powernode-agent soft-recompose --execute`",
+        completed_at: 1.minute.ago
+      )
+    end
+
+    it "scores INCONCLUSIVE and then escalates to the operator on the next decide" do
+      first = engine.decide(signal)
+      expect(first[:decision]).to eq(:proceed)
+      expect(first[:remediation]).to include(applied: false, convergence_deferred: true)
+
+      validator.record_proceeded!(decisions: [ first ], signals: [ signal ])
+
+      # The drift is still live — nobody has run soft-recompose, and the agent
+      # keeps returning retryNeeded so the module stays unmaterialized.
+      outcome = score!(signal.fingerprint, current_signals: [ signal ])
+      expect(outcome.status).to eq("inconclusive")
+      expect(outcome.metadata["convergence_deferred"]).to be true
+      expect(
+        System::Fleet::RemediationOutcome.ineffective_streak(account: account, fingerprint: signal.fingerprint)
+      ).to eq(0)
+
+      # Stands in for DEDUP_TTL_SECONDS elapsing, as in the reboot lane above.
+      Rails.cache.clear
+
+      second = nil
+      expect { second = engine.decide(signal) }
+        .to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+
+      expect(second[:convergence_deferred]).to be true
+      expect(second[:decision]).not_to eq(:proceed)
+    end
+  end
+
   # IMP-31f1e5f9b365 ANSWERED THE "separate, larger question" THIS BLOCK USED
   # TO PARK. It read: "NOT a claim that the cloud_init arm MEASURES anything.
   # apply! runs on both arms before the pivot split, so this arm's fingerprint

@@ -2619,6 +2619,17 @@ module System
           return escalation
         end
 
+        # IMP-d327c66ce0c4 — the same loop, one rung down. Checked AFTER the
+        # reboot arm on purpose: a single failed task's error_message is the
+        # JOIN of every module's convergence failure from that pass, so both
+        # stages can appear at once, and a reboot re-materializes the whole
+        # composition from scratch — it subsumes what soft-recompose would do
+        # for the escalated module. Either arm suppresses the dispatch; the
+        # more disruptive remedy is the one worth naming when both are due.
+        if (escalation = recompose_escalation(instance, command))
+          return escalation
+        end
+
         task = ::System::Task.create!(
           account: account, operable: instance, command: command, status: "pending",
           options: {
@@ -2642,20 +2653,12 @@ module System
       # that declined correctly. Presence is no more evidence than absence when
       # convergence was deferred, so this settles `inconclusive` too.
       #
-      # Ordered by completed_at and status-checked SEPARATELY on purpose:
-      # System::Task stamps completed_at on fail!/abort!/cancel! as well as
-      # complete!, so a timestamp alone cannot tell a failure from a success —
-      # the same trap the parent task's guard clauses were built around. Taking
-      # the most recent finished task and then asking whether it FAILED is what
-      # makes a later successful apply clear the block, rather than the block
-      # persisting for the life of the node.
+      # Staleness semantics live in #last_failed_reconcile, which this lane and
+      # its recompose sibling share so that the ONLY difference between them is
+      # the stage they match.
       def reboot_pending_escalation(instance, command)
-        last = ::System::Task.where(account: account, operable: instance, command: command)
-                             .where.not(completed_at: nil)
-                             .order(completed_at: :desc)
-                             .first
-        return nil unless last&.status == "failed"
-        return nil unless last.error_message.to_s.include?("reboot_pending")
+        last = last_failed_reconcile(instance, command)
+        return nil unless last&.error_message.to_s.include?("reboot_pending")
 
         {
           applied: false, instance_id: instance.id, convergence_deferred: true,
@@ -2663,6 +2666,68 @@ module System
                   "materialized live; a reboot (or rolling reprovision) is required, so another " \
                   "reconcile would fail identically"
         }
+      end
+
+      # IMP-d327c66ce0c4 — the sibling of #reboot_pending_escalation for the
+      # agent's other terminal rung, and the consumer this signal never had.
+      #
+      # ecfdd0a3 made the agent PRICE a hot materialization before writing a
+      # byte and decline the whole module when it cannot fit, emitting
+      # `reconciler:recompose_escalate` and naming
+      # `powernode-agent soft-recompose --execute` as the rung that can take it.
+      # Nothing read that signal, so the engine re-dispatched the same reconcile
+      # every tick — and the pre-flight is deterministic on an unchanged
+      # scratch, so every one of those declined identically.
+      #
+      # Matched on the STAGE TOKEN, never on prose the message shares with
+      # another rung. Two near-misses matter:
+      #   * "reboot_pending" is deliberately ABSENT from the escalate stage
+      #     string (ecfdd0a3) so an escalation cannot route to a reboot.
+      #     Soft-recompose composes at /run/nextroot against its own scratch
+      #     WITHOUT taking userspace down; a reboot is a different rung. Making
+      #     either matcher fire on the other's signal would look like it worked.
+      #   * "recompose_budget" is the mid-walk abort, which clears on its own
+      #     once the scratch has room and MUST still be retried. A matcher keyed
+      #     on a bare "recompose" would strand it.
+      #
+      # This lane DEFERS ONLY — it does not dispatch a soft-recompose, and no
+      # such task command exists to dispatch. Whether the platform may take a
+      # rung that stops userspace on its own authority is an operator decision
+      # that has not been made, and on a self-hosted hub the machine issuing it
+      # is the machine affected. Deferring is what breaks the loop and puts the
+      # real remedy in front of a human; the agent meanwhile keeps returning
+      # retryNeeded, so the module stays unmaterialized and the node keeps
+      # reading DRIFTED rather than falsely converged.
+      def recompose_escalation(instance, command)
+        last = last_failed_reconcile(instance, command)
+        return nil unless last&.error_message.to_s.include?("recompose_escalate")
+
+        {
+          applied: false, instance_id: instance.id, convergence_deferred: true,
+          reason: "last #{command} failed with recompose_escalate — the agent priced this module's " \
+                  "content against the live root's scratch and declined to materialize it at all, so " \
+                  "another reconcile would decline identically. The next rung applies it: " \
+                  "`powernode-agent soft-recompose --execute` composes at /run/nextroot against its " \
+                  "own scratch, where the same diff costs zero bytes of the live upper"
+        }
+      end
+
+      # The most recent FINISHED task for this instance+command, and only if it
+      # failed.
+      #
+      # Ordered by completed_at and status-checked SEPARATELY on purpose:
+      # System::Task stamps completed_at on fail!/abort!/cancel! as well as
+      # complete!, so a timestamp alone cannot tell a failure from a success —
+      # the same trap the parent task's guard clauses were built around. Taking
+      # the most recent finished task and then asking whether it FAILED is what
+      # makes a later successful apply clear the block, rather than the block
+      # persisting for the life of the node.
+      def last_failed_reconcile(instance, command)
+        last = ::System::Task.where(account: account, operable: instance, command: command)
+                             .where.not(completed_at: nil)
+                             .order(completed_at: :desc)
+                             .first
+        last if last&.status == "failed"
       end
 
       def skill_metadata_payload(signal, skill_result)

@@ -640,6 +640,106 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(d[:remediation]).to include(applied: true, command: "apply_config")
       end
 
+      # IMP-d327c66ce0c4 — the consumer half of the agent-side escalation that
+      # landed in ecfdd0a3.
+      #
+      # The agent now PRICES a hot materialization before writing anything and
+      # declines the whole module when it cannot fit, emitting
+      # `reconciler:recompose_escalate` and naming `soft-recompose --execute` as
+      # the rung that can take it. That pre-flight is deterministic on an
+      # unchanged scratch, so a re-dispatched reconcile declines identically —
+      # forever. Assert on the ABSENCE of the re-dispatched task, not merely on
+      # the shape of the decision: a decision that fails to suppress the
+      # dispatch is the same defect one layer up.
+      it "defers instead of re-dispatching after a recompose_escalate failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "failed",
+          error_message: "reconcile did not converge 1 module(s): " \
+                         "reconciler:recompose_escalate [mod-a]: module mod-a: at least 400000 bytes " \
+                         "of new content against 34000 usable (67108864 free, 67108864-byte floor) — " \
+                         "declining the live materialization ENTIRELY rather than copying part of it. " \
+                         "This module needs the next rung: `powernode-agent soft-recompose --execute`",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation]).to include(applied: false, convergence_deferred: true)
+        expect(System::Task.where(account: account, command: "sync_modules",
+                                  operable: instance, status: "pending").count).to eq(0),
+                                                                                  "re-dispatched a reconcile whose pre-flight already declined this module"
+      end
+
+      # The operator-visible reason must name the rung that actually clears it.
+      # A deferral whose reason says only "it failed" leaves the node stuck with
+      # no next step — the whole point of consuming the signal is that the
+      # remedy is stated.
+      it "names soft-recompose as the remedy in the deferral reason" do
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "failed",
+          error_message: "reconciler:recompose_escalate [mod-a]: does not fit the live upper",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation][:reason]).to include("soft-recompose")
+      end
+
+      # CONTROL: the two rungs must stay DISTINGUISHABLE. ecfdd0a3 deliberately
+      # kept "reboot_pending" out of the escalate stage string so an escalation
+      # would never route to a reboot; widening either matcher so the other
+      # fires would be a silent, wrong behaviour change that looks like it
+      # works. A reboot_pending failure must still land in the reboot lane.
+      it "still routes a reboot_pending failure to the reboot lane, not the recompose lane" do
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "failed",
+          error_message: "reconciler:reboot_pending [mod-base-os]: reboot_required=true",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation]).to include(applied: false, convergence_deferred: true)
+        expect(d[:remediation][:reason]).to include("reboot")
+        expect(d[:remediation][:reason]).not_to include("soft-recompose")
+      end
+
+      # CONTROL: recompose_BUDGET is the mid-walk abort, a different signal that
+      # clears on its own once the scratch has room. A matcher keyed on a bare
+      # "recompose" would strand it. (Also covered by the non-reboot_pending
+      # control above; stated here against the sibling lane explicitly.)
+      it "still re-dispatches after a recompose_budget failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "failed",
+          error_message: "reconciler:recompose_budget [mod-a]: scratch exhausted",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "sync_modules")
+      end
+
+      # CONTROL: a recompose_escalate failure SUPERSEDED by a completed sync
+      # must not keep blocking dispatch — the space appeared, the node
+      # converged, the block is stale.
+      it "resumes dispatching once a later sync completed after a recompose_escalate failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "failed",
+          error_message: "reconciler:recompose_escalate [mod-a]: does not fit",
+          completed_at: 10.minutes.ago
+        )
+        System::Task.create!(
+          account: account, operable: instance, command: "sync_modules", status: "complete",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "sync_modules")
+      end
+
       # CONTROL: a reboot_pending failure that has since been SUPERSEDED by a
       # completed apply must not keep blocking dispatch — the condition cleared.
       it "resumes dispatching once a later apply completed" do
