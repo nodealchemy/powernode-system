@@ -13,9 +13,11 @@ require File.expand_path("../../../../db/seeds/concerns/agent_setup_helpers.rb",
 #   system_manual_operation_policies.rb, inline
 #                                    (scope "global", nils, LIKE 'system.task.%')
 #
-# (The first two sweeps were retired with the seeds' policy upserts under
-# IMP-10e4f6c3bcd2 — PolicyReconciler is the single writer and deletes
-# nothing — so only the manual-operations sweep is exercised below.)
+# (ALL THREE are now retired: the first two with the agent seeds' policy
+# upserts under IMP-10e4f6c3bcd2, the third with the manual-operations upsert
+# under IMP-28cccf7cee28 — PolicyReconciler is the single writer and deletes
+# nothing. The registration-keyed rule below is the only collector left, which
+# is the point: it is the one that cannot open a fourth orphan class.)
 #
 # `System::AutonomyActions#update` mints a FOURTH shape — scope "global" with a
 # nil ai_agent_id outside `system.task.` — whenever the panel saves a control
@@ -81,17 +83,23 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
       expect(ghost.reload.policy).to eq("auto_approve")
     end
 
-    it "SURVIVES the manual-operations sweep, which is pinned to system.task." do
+    it "SURVIVES system_manual_operation_policies.rb, which no longer sweeps at all" do
       # The REAL seed, loaded and run, rather than a copy of its relation — a
-      # copy stays green if that sweep ever widens, which is exactly the
-      # question this example asks.
+      # copy stays green if that file ever grows a sweep again, which is
+      # exactly the question this example asks. IMP-28cccf7cee28 retired the
+      # `system.task.%` destroy_all with the upsert beside it (ruling 7: a
+      # second writer that DELETES silently reverts a reconciled row), so the
+      # assertion is now that the seed touches NO policy row, not merely that
+      # its sweep is pinned to a namespace this ghost sits outside.
       allow(Account).to receive(:first).and_return(account)
+      tuned = operator_authored_row!("system.task.terminate")
 
       expect {
         load File.expand_path("../../../../db/seeds/system_manual_operation_policies.rb", __dir__)
-      }.to output(/Manual operation policies/).to_stdout
+      }.not_to change { Ai::InterventionPolicy.order(:id).pluck(:id, :action_category, :policy) }
 
       expect(Ai::InterventionPolicy.exists?(ghost.id)).to be true
+      expect(Ai::InterventionPolicy.exists?(tuned.id)).to be true
     end
   end
 
@@ -109,9 +117,9 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
 
     # THE NAMED WRONG FIX. Deleting scope-"global" agent-less rows wholesale
     # would destroy the operator's own tuning of registered categories AND the
-    # rows `system_manual_operation_policies.rb` and PolicyReconciler (the
-    # instance-pool / platform-scaling / snapshot / cordon operator sets)
-    # write at exactly that shape.
+    # rows PolicyReconciler writes at exactly that shape — the
+    # manual-operations set and the instance-pool / platform-scaling /
+    # snapshot / cordon operator sets.
     it "NEVER collects a row for a REGISTERED category, whatever its shape" do
       agent = create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy")
 

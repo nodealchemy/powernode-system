@@ -235,6 +235,124 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
           reconciler.reconcile!
         }.not_to change { Ai::InterventionPolicy.order(:id).pluck(:id, :ai_agent_id, :policy) }
       end
+
+      # WHAT THE RETIRED SEED USED TO WRITE, asked of the ROWS the reconciler
+      # leaves behind (IMP-28cccf7cee28). system_manual_operation_policies.rb
+      # upserted MANUAL_OPERATION_POLICIES at (scope "global", no agent, no
+      # user) with priority 5 / conditions {} / notification channels; before
+      # deleting that writer the surviving one has to be shown covering the
+      # same categories at the same shape, or a row the seed alone wrote would
+      # simply vanish. It reads the SAME frozen constant the seed read
+      # (PolicyReconciler#manual_set), so the two sets cannot diverge — this
+      # pins the SHAPE, which was restated by hand in the seed and is the half
+      # that could have.
+      it "lands the manual-operations set at the shape the retired seed wrote it" do
+        reconciler.reconcile!
+
+        rows = Ai::InterventionPolicy.where(
+          account: account, **declarations::MANUAL_OPERATION_SCOPE
+        ).where("action_category LIKE 'system.task.%'")
+
+        expect(rows.pluck(:action_category, :policy).to_h).to eq(declarations::MANUAL_OPERATION_POLICIES)
+        attributes = declarations::MANUAL_OPERATION_ATTRIBUTES
+        expect(rows.pluck(:priority).uniq).to eq([ attributes[:priority] ])
+        expect(rows.pluck(:conditions).uniq).to eq([ attributes[:conditions] ])
+        expect(rows.pluck(:is_active).uniq).to eq([ attributes[:is_active] ])
+        expect(rows.pluck(:preferred_channels).uniq).to eq([ attributes[:preferred_channels] ])
+      end
+    end
+
+    # THE ROW IS THE ORACLE — which writer produced it, not which file exists.
+    #
+    # A "the second writer's file is gone" assertion is defeated by the same
+    # body under another name, and the runtime example above only executes
+    # `*_agent.rb`, so a policy-writing seed of ANY other name met neither half
+    # of this spec — which is exactly how system_manual_operation_policies.rb
+    # stayed a second writer through IMP-10e4f6c3bcd2 (IMP-28cccf7cee28). So
+    # the load set here is DERIVED from the same containment pattern the lint
+    # uses, and the question asked of every seed in it is what it does to an
+    # already-reconciled database.
+    describe "every other policy-touching seed, against an ALREADY-RECONCILED database" do
+      # An operator's deliberate tuning of a declared verb, and a
+      # `system.task.` row whose command no longer exists — the two rows the
+      # retired upsert reset and the retired destroy_all collected on every
+      # re-run.
+      let(:tuned_category)   { "system.task.terminate" }
+      let(:retired_category) { "system.task.decommissioned_command" }
+
+      before do
+        reconciler.reconcile!
+        Ai::InterventionPolicy.find_by!(
+          account: account, action_category: tuned_category, **declarations::MANUAL_OPERATION_SCOPE
+        ).update!(policy: "block")
+        Ai::InterventionPolicy.create!(
+          account: account, action_category: retired_category,
+          **declarations::MANUAL_OPERATION_SCOPE,
+          policy: "auto_approve", priority: 5, is_active: true
+        )
+      end
+
+      # Every listed seed whose (comment-stripped) body could touch a policy
+      # row at all, minus the single writer's own call site. Delete-only seeds
+      # run LAST so the deregistered row is still there for a would-be
+      # destroy_all to find.
+      let(:second_writer_candidates) do
+        candidates = policy_touching_seeds - [ single_writer_seed ]
+        candidates.partition { |file| !delete_only_seeds.include?(file) }.flatten
+      end
+
+      def row_state
+        Ai::InterventionPolicy.where(account: account).order(:id)
+          .pluck(:id, :action_category, :scope, :ai_agent_id, :policy, :is_active, :priority)
+          .to_h { |id, *rest| [ id, rest ] }
+      end
+
+      it "has a non-empty load set — an empty one would pass vacuously" do
+        expect(second_writer_candidates).not_to be_empty
+      end
+
+      it "leaves every reconciled row exactly as the reconciler wrote it" do
+        second_writer_candidates.each do |file|
+          before_state = row_state
+          load_seed!(file)
+          after_state = row_state
+
+          # AGGREGATED on purpose: a seed that both resets a verb and sweeps
+          # rows is two defects, and the first expectation to fail would
+          # otherwise hide the second — which is the more dangerous half, since
+          # a deleting second writer silently reverts a reconciled row.
+          aggregate_failures(file) do
+            expect(after_state.keys - before_state.keys).to be_empty,
+              "#{file} CREATED policy row(s) — the reconciler is the single writer"
+
+            changed = after_state.select { |id, values| before_state.key?(id) && before_state[id] != values }
+            expect(changed).to be_empty,
+              "#{file} MODIFIED reconciled policy row(s): " \
+              "#{changed.values.map { |values| values.first(1) + values.last(3) }.first(5).inspect}"
+
+            deleted = before_state.keys - after_state.keys
+            deleted_categories = before_state.values_at(*deleted).map(&:first)
+            if delete_only_seeds.include?(file)
+              # Pinned as delete-only: it may collect a row for a DEREGISTERED
+              # category and nothing else.
+              registered = deleted_categories.select { |category| Ai::InterventionPolicy.category_registered?(category) }
+              expect(registered).to be_empty,
+                "#{file} deleted row(s) for REGISTERED category(ies): #{registered.inspect}"
+            else
+              expect(deleted_categories).to be_empty,
+                "#{file} DELETED policy row(s) — only the pinned delete-only collector may: " \
+                "#{deleted_categories.inspect}"
+            end
+          end
+        end
+
+        # The two rows the retired writer acted on, asked directly: the tuned
+        # verb survived every seed, and the deregistered row was collected by
+        # the delete-only pass rather than by a second writer's sweep.
+        expect(Ai::InterventionPolicy.find_by(
+          account: account, action_category: tuned_category, **declarations::MANUAL_OPERATION_SCOPE
+        ).policy).to eq("block")
+      end
     end
   end
 
@@ -317,11 +435,6 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
   # file => why it is allowed to touch the model.
   let(:lint_exceptions) do
     {
-      # Still upserts the manual-operations set and destroy_all's unlisted
-      # system.task.* rows. Outside IMP-10e4f6c3bcd2's file list; ruling 7 read
-      # literally retires it the same way (the reconciler's manual_set already
-      # writes that set) — see the open question on that task.
-      "system_manual_operation_policies.rb" => :writes_the_manual_set,
       # Delete-only: collects rows whose action_category is no longer
       # registered (IMP-0a3ff97f6fbb). Ruling 7 forbids a second WRITER.
       "system_autonomy_orphan_cleanup.rb" => :deletes_deregistered_rows,
@@ -333,6 +446,27 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       # rather than leaving it silently uncovered.
       "system_governance_policy_reconcile.rb" => :calls_the_two_absence_only_seams
     }
+  end
+
+  # The seeds the orchestrator runs that could touch a policy row at all,
+  # derived from the containment pattern above rather than from a filename —
+  # the load set the row-oracle examples execute (IMP-28cccf7cee28).
+  let(:policy_touching_seeds) do
+    listed_seeds.select do |file|
+      code = policy_touching_code(file)
+      code && code.match?(policy_touch)
+    end
+  end
+
+  # The single writer's own call site: the ONE listed seed that may land a
+  # declared row.
+  let(:single_writer_seed) { "system_governance_policy_reconcile.rb" }
+
+  # The exceptions pinned as delete-only. They may collect a row whose category
+  # is no longer registered; they may still never write one. Read off the same
+  # labels, so a new exception has to declare which of the two it is.
+  let(:delete_only_seeds) do
+    lint_exceptions.select { |_file, why| why == :deletes_deregistered_rows }.keys
   end
 
   def policy_touching_code(file)

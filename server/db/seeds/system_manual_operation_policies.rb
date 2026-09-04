@@ -1,59 +1,46 @@
 # frozen_string_literal: true
 
-# Seeds global-scope intervention policies for operator-initiated mutations
-# (i.e., System::Task creations + direct controller calls where there's no
-# AI agent attribution). Used when AutonomyGate evaluates an action with
-# `requested_by: <user>` and `agent: nil`.
+# Seeds the APPROVAL CHAIN that manual operations route to — the chain the
+# require_approval verbs in the manual-operations policy set name.
 #
-# Manual ops follow the same gate logic as agent-initiated ones; this seed
-# defines the per-account default safety floor for hand-clicked actions
-# operators take in the UI. Operators can override per-action in the System
-# Settings → Manual Operations tab.
+# Manual operations are operator-initiated mutations (System::Task creations +
+# direct controller calls where there is no AI agent attribution): AutonomyGate
+# evaluates them with `requested_by: <user>` and `agent: nil`.
+#
+# THIS SEED NO LONGER WRITES A POLICY ROW (IMP-28cccf7cee28, proposal §5
+# ruling 7). System::Governance::PolicyReconciler is the SINGLE WRITER of the
+# declared manual-operations set — its `manual_set` reads the very same
+# constant this file used to upsert (PolicyDeclarations::MANUAL_OPERATION_
+# POLICIES, at MANUAL_OPERATION_SCOPE with MANUAL_OPERATION_ATTRIBUTES), so
+# nothing that was written here is lost; `system_governance_policy_reconcile.rb`
+# lands it at the end of `db:seed`, and rails-start.sh / `rails
+# system:governance:reconcile` land it on every later boot.
+#
+# WHAT WAS REMOVED, AND WHY BOTH HALVES HAD TO GO:
+#
+#   * the upsert `assign_attributes(policy: <declared verb>, ...)` + save,
+#     which RESET an operator's deliberately tuned verb back to the seeded
+#     default on any re-run;
+#   * the `destroy_all` of every global `system.task.*` row whose category was
+#     not in the declared list. That is the more dangerous half — a second
+#     writer that DELETES silently reverts a reconciled row — and it collected
+#     nothing the sanctioned pass does not: registration is DERIVED from the
+#     same constant (lib/powernode_system/engine.rb), so an unlisted
+#     `system.task.*` category is by construction a DEREGISTERED one, which
+#     `system_autonomy_orphan_cleanup.rb` collects at every shape under the
+#     owned `system.` namespace — and, unlike the sweep here, refuses to run
+#     when the registry looks unpopulated.
+#
+# The reconciler writes policies and nothing else, so the chain below stays
+# with the seeds. Operators still override any manual verb per-action in
+# System Settings → Manual Operations; nothing here overwrites that.
 
-puts "\n  Seeding system manual operation policies..."
+puts "\n  Seeding system manual operations approval chain..."
 
 admin_account = Account.first
 unless admin_account
-  puts "  ⚠️  No account found — skipping manual operation policies"
+  puts "  ⚠️  No account found — skipping manual operations approval chain"
   return
-end
-
-def upsert_manual_policies!(account, policies)
-  changed = 0
-  policies.each do |action_category, policy_type|
-    policy = Ai::InterventionPolicy.find_or_initialize_by(
-      account: account, action_category: action_category,
-      scope: "global", ai_agent_id: nil, user_id: nil
-    )
-    policy.assign_attributes(
-      policy: policy_type, priority: 5, is_active: true,
-      conditions: {}, preferred_channels: %w[notification]
-    )
-    if policy.new_record? || policy.changed?
-      policy.save!
-      changed += 1
-    end
-  end
-  changed
-end
-
-# Declared set now lives in System::Governance::PolicyDeclarations so the
-# reconciler can read it WITHOUT executing this seed. That matters: this file
-# overwrites tuned verbs and destroy_all's unlisted rows below, which is safe
-# only on first boot. See System::Governance::PolicyReconciler.
-manual_policies = System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES
-
-count = upsert_manual_policies!(admin_account, manual_policies)
-puts "  ✅ Manual operation policies: #{count} created/updated (#{manual_policies.size} total)"
-
-stale = Ai::InterventionPolicy
-  .where(account: admin_account, scope: "global", ai_agent_id: nil, user_id: nil)
-  .where("action_category LIKE 'system.task.%'")
-  .where.not(action_category: manual_policies.keys)
-if stale.any?
-  stale_count = stale.count
-  stale.destroy_all
-  puts "  🧹 Cleaned #{stale_count} stale manual operation policies"
 end
 
 # Default chain for manual operations — single-step, anyone with the control
