@@ -148,6 +148,12 @@ type Module struct {
 	// manifest is not in scope there. Empty when the platform published no
 	// fs-verity root for this version.
 	FsverityRoot string
+	// CosignBundleB64 is the platform's `cosign sign-blob` bundle over the
+	// erofs blob, base64, carried from the manifest for the same reason
+	// FsverityRoot is: the verifier needs it at mount time. The puller
+	// materialises it beside the blob. Empty when the platform published no
+	// blob signature for this version.
+	CosignBundleB64 string
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

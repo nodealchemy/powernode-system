@@ -307,7 +307,7 @@ func (lkg *BootLKG) ToComposeInputs() (mount.ModuleStack, map[string]*manifest.M
 		if err := json.Unmarshal(m.Manifest, &mf); err != nil {
 			return nil, nil, fmt.Errorf("boot-lkg: decode manifest for %s: %w", m.ID, err)
 		}
-		desired = append(desired, mount.Module{ID: m.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: lkgFsverityRoot(m)})
+		desired = append(desired, mount.Module{ID: m.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: lkgFsverityRoot(m), CosignBundleB64: lkgCosignBundle(m)})
 		manifests[m.ID] = &mf
 	}
 	if len(desired) == 0 {

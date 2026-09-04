@@ -57,7 +57,14 @@ type Config struct {
 	// capturer probes before promoting the frozen last-known-good (#39). Empty
 	// defaults to defaultAppHealthURL (loopback Traefik → hub-backend /up).
 	AppHealthURL string
-	OnError      func(string, error)
+	// ModuleSigning is the operator's module-signature policy (see
+	// LoadModuleSigningConfig). The zero value is OFF: the reconciler is
+	// wired with verify.AlwaysOK exactly as before this capability existed.
+	ModuleSigning verify.ModuleSigningConfig
+	// ModuleSigningKeyCacheDir caches the platform's trusted-key list when
+	// ModuleSigning pins no KEYS. Empty = DefaultModuleSigningKeyCacheDir.
+	ModuleSigningKeyCacheDir string
+	OnError                  func(string, error)
 }
 
 // defaultAppHealthURL probes the composed control plane end-to-end over
@@ -347,10 +354,15 @@ func (s *Service) Run(ctx context.Context) error {
 	// Phase 1 module reconciler — runs in its own goroutine on its own
 	// cadence (60s ±10% jitter, separate from the heartbeat loop). Pulls
 	// modules, diffs vs state.json, attaches/detaches with cosign + fs-
-	// verity verification. Wired with verify.AlwaysOK as a Phase 1
-	// development default so the agent boots without a real cosign
-	// signing key; production deployments will swap in a real
-	// CosignVerifier once the M1 publish pipeline ships signatures.
+	// verity verification. The signature verifier is whatever the operator's
+	// module-signing policy resolves to for the SERVICE site — verify.AlwaysOK
+	// by DEFAULT (nothing configured), a static-key CosignVerifier against the
+	// platform's trusted keys once opted in. Fails the service start, rather
+	// than every mount, when an enforcing mode has no trust anchor.
+	moduleVerifier, err := ResolveModuleVerifier(s.cfg.ModuleSigning, verify.SiteService, client, mount.ExecRunner{}, s.cfg.ModuleSigningKeyCacheDir, s.cfg.OnError)
+	if err != nil {
+		return fmt.Errorf("module signing: %w", err)
+	}
 	reconciler, err := NewReconciler(ReconcilerConfig{
 		ModulesClient:  client,
 		ManifestClient: client,
@@ -364,7 +376,7 @@ func (s *Service) Run(ctx context.Context) error {
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
 		},
-		Verifier:    verify.AlwaysOK{},
+		Verifier:    moduleVerifier,
 		MountRunner: mount.ExecRunner{},
 		Layout:      mount.DefaultLayout(),
 		StatePath:   s.cfg.StatePath,

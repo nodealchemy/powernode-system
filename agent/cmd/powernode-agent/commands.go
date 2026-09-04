@@ -125,6 +125,8 @@ func serviceCmd() *cobra.Command {
 		a2aListen         string
 		a2aInference      string
 		isolationRuntimes []string
+		moduleSigningMode string
+		moduleSigningKeys []string
 	)
 	c := &cobra.Command{
 		Use:   "service",
@@ -138,6 +140,22 @@ func serviceCmd() *cobra.Command {
 			if len(isolationRuntimes) == 0 {
 				isolationRuntimes = splitCSV(os.Getenv("POWERNODE_ISOLATION_RUNTIMES"))
 			}
+			// Module signature policy: persisted conf on /persist, then env,
+			// then these flags. DEFAULT OFF. A bad mode fails the start here
+			// rather than being coerced either way.
+			signing, err := runtime.LoadModuleSigningConfig(nil, "")
+			if err != nil {
+				return err
+			}
+			if moduleSigningMode != "" {
+				signing.Mode = moduleSigningMode
+			}
+			if len(moduleSigningKeys) > 0 {
+				signing.KeyPaths = moduleSigningKeys
+			}
+			if err := signing.Validate(); err != nil {
+				return err
+			}
 			svc := runtime.New(runtime.Config{
 				PlatformURL:          platformURL,
 				AgentVersion:         Version,
@@ -146,6 +164,7 @@ func serviceCmd() *cobra.Command {
 				A2AListenAddr:        a2aListen,
 				A2AInferenceEndpoint: a2aInference,
 				IsolationRuntimes:    isolationRuntimes,
+				ModuleSigning:        signing,
 				OnError: func(stage string, err error) {
 					fmt.Fprintf(os.Stderr, "[powernode-agent service] %s: %v\n", stage, err)
 				},
@@ -164,6 +183,13 @@ func serviceCmd() *cobra.Command {
 	c.Flags().StringVar(&a2aListen, "a2a-listen", "", "agent-to-agent MCP server listen address, e.g. :7777 (env POWERNODE_A2A_LISTEN; empty = disabled)")
 	c.Flags().StringVar(&a2aInference, "a2a-inference", "", "local inference runtime endpoint for A2A inference.* skills, e.g. http://127.0.0.1:11434 (env POWERNODE_A2A_INFERENCE)")
 	c.Flags().StringSliceVar(&isolationRuntimes, "isolation-runtime", nil, "isolation runtimes to provision on the docker daemon, e.g. gvisor (repeatable; env POWERNODE_ISOLATION_RUNTIMES=comma,sep)")
+	// Module supply-chain verification. DEFAULT OFF. The ladder is
+	// off -> audit (verify, report, never refuse) -> runtime (enforce here and
+	// on the CLIs; audit on the boot composer) -> all (enforce everywhere).
+	// Persisted form: /persist/etc/powernode/module-signing.conf (MODE=, KEYS=).
+	// See docs/runbooks/module-signature-verification.md before turning it on.
+	c.Flags().StringVar(&moduleSigningMode, "module-signing-mode", "", "module signature verification mode: off|audit|runtime|all (env POWERNODE_MODULE_SIGNING_MODE; conf MODE=; default off)")
+	c.Flags().StringSliceVar(&moduleSigningKeys, "module-signing-key", nil, "pinned cosign PUBLIC key (PEM) to trust for module blobs (repeatable; env POWERNODE_MODULE_SIGNING_KEYS=a:b; conf KEYS=). Unset = trust the platform's served key list, cached under /persist")
 	// --platform-url is intentionally NOT required: the agent self-bootstraps
 	// from identity (kernel cmdline / virtio-fw-cfg / cloud metadata). Pass
 	// the flag only when the operator wants to override the discovered URL.

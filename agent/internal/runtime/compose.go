@@ -291,7 +291,7 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 					r.cfg.OnError("compose:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
 					continue
 				}
-				desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: m.FsverityRootHash})
+				desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: m.FsverityRootHash, CosignBundleB64: m.CosignBundleB64})
 				manifests[mod.ID] = m
 				lm.EffectivePriority = m.EffectivePriority
 				lm.Digest = m.Digest
@@ -569,8 +569,8 @@ func applyTraefikIngressPersistence(sysroot, persistRoot string, manifests map[s
 // UnionComposer on the direct_kernel/pivot_root path. It loads the mTLS
 // transport client from the post-enroll PKI dir and assembles a one-shot
 // reconciler via NewReconcilerForCLI — the same dependency set service.Run
-// wires for the cloud_init reconcile loop (Puller, AlwaysOK verifier,
-// ExecRunner, DefaultLayout), minus the long-lived loop. The returned
+// wires for the cloud_init reconcile loop (Puller, the policy-resolved
+// module verifier, ExecRunner, DefaultLayout), minus the long-lived loop. The returned
 // *Reconciler satisfies boot.UnionComposer through ComposeForPivot, which
 // mounts the assigned modules, composes the overlay union at sysroot, renders
 // identity + native units, and leaves /sysroot ready for switch_root.
@@ -595,6 +595,20 @@ func NewPivotComposerAt(platformURL, pkiDir string, layout mount.Layout, breadcr
 	if err != nil {
 		return nil, fmt.Errorf("load mTLS client from %s: %w", pkiDir, err)
 	}
+	// The boot composer has no flags: its module-signing policy comes from
+	// the persisted conf on /persist plus the environment. It is the BOOT
+	// site — the last rung of the ladder, because a refused mount here is an
+	// unbootable node — so only ModeAll enforces; runtime/audit measure.
+	// DEFAULT OFF: with nothing configured this is verify.AlwaysOK and no
+	// key fetch happens.
+	signing, err := LoadModuleSigningConfig(nil, "")
+	if err != nil {
+		return nil, fmt.Errorf("module signing: %w", err)
+	}
+	moduleVerifier, err := ResolveModuleVerifier(signing, verify.SiteBoot, client, mount.ExecRunner{}, "", onError)
+	if err != nil {
+		return nil, fmt.Errorf("module signing: %w", err)
+	}
 	return NewReconcilerForCLI(FactoryConfig{
 		ModulesClient:  client,
 		ManifestClient: client,
@@ -608,7 +622,7 @@ func NewPivotComposerAt(platformURL, pkiDir string, layout mount.Layout, breadcr
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
 		},
-		Verifier:       verify.AlwaysOK{},
+		Verifier:       moduleVerifier,
 		MountRunner:    mount.ExecRunner{},
 		Layout:         layout,
 		StatePath:      mount.StatePath,

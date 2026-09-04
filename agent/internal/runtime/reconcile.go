@@ -365,10 +365,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		desired = append(desired, mount.Module{
-			ID:           mod.ID,
-			Digest:       m.Digest,
-			Priority:     m.EffectivePriority,
-			FsverityRoot: m.FsverityRootHash,
+			ID:              mod.ID,
+			Digest:          m.Digest,
+			Priority:        m.EffectivePriority,
+			FsverityRoot:    m.FsverityRootHash,
+			CosignBundleB64: m.CosignBundleB64,
 		})
 		manifests[mod.ID] = m
 	}
@@ -971,11 +972,20 @@ func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) 
 		Digest:      mod.Digest,
 		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s", mod.ID),
 		Size:        0,
+		// The platform's blob-signature bundle rides the manifest (like
+		// FsverityRoot); Pull materialises it at bundlePath. Empty when the
+		// platform published none — the verifier, when enforcing, then
+		// refuses by name. See internal/verify/doc.go.
+		CosignBundleB64: mod.CosignBundleB64,
 	}
 	cfsPath, bundlePath, err := r.cfg.Puller.Pull(ref)
 	if err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
+	// Signature gate. cfg.Verifier is whatever ResolveModuleVerifier chose for
+	// this site from the operator's module-signing policy — verify.AlwaysOK
+	// by DEFAULT, a static-key CosignVerifier (or its audit wrapper) once the
+	// operator opts in. Fails closed on any error.
 	if err := r.cfg.Verifier.VerifyBlob(ctx, cfsPath, bundlePath); err != nil {
 		return fmt.Errorf("verify cosign: %w", err)
 	}
@@ -1692,7 +1702,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 		}
 	}
 
-	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash}
+	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash, CosignBundleB64: mf.CosignBundleB64}
 	if err := r.attachModule(ctx, mod, mf); err != nil {
 		return "", err
 	}
