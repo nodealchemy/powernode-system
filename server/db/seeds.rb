@@ -64,7 +64,11 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # `rails system:governance:reconcile`, so every other documented install path
 # would have come up with NO declared row and gated everything through the
 # require_approval default. That file performs no write of its own — it calls
-# the single writer, absence-only and idempotent. The ONE remaining writer
+# the single writer, absence-only and idempotent, and (IMP-99988ef54942) core's
+# own absence-only `release.build_dispatch` floor seam as a BACKSTOP: not a
+# ruling-7 second writer, because that row is a CORE row with one CORE seam,
+# and core's engineering seed lands it first on a baseline `db:seed` — so that
+# step normally writes zero. The ONE remaining writer
 # besides the reconciler is
 # system_manual_operation_policies.rb (outside that task's file list — it still
 # upserts the manual-operations set and destroys unlisted system.task.* rows;
