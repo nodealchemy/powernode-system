@@ -13,12 +13,16 @@ require File.expand_path("../../../../db/seeds/concerns/agent_setup_helpers.rb",
 #   system_manual_operation_policies.rb, inline
 #                                    (scope "global", nils, LIKE 'system.task.%')
 #
+# (The first two sweeps were retired with the seeds' policy upserts under
+# IMP-10e4f6c3bcd2 — PolicyReconciler is the single writer and deletes
+# nothing — so only the manual-operations sweep is exercised below.)
+#
 # `System::AutonomyActions#update` mints a FOURTH shape — scope "global" with a
 # nil ai_agent_id outside `system.task.` — whenever the panel saves a control
 # whose row identity it could not recover (useAutonomyConfig.ts `save()` falls
 # back to category + verb, which the controller resolves as scope "global").
-# `system_instance_pool_policies.rb` seeds that same shape for
-# `system.instance_pool_*` with no sweep at all. Neither is reachable by any of
+# the since-deleted `system_instance_pool_policies.rb` seeded that same shape
+# for `system.instance_pool_*` with no sweep at all. Neither was reachable by any of
 # the three, so a row for a category that is later DEREGISTERED becomes a
 # ghost: rendered by the by_domain pivot, refused by every save, collected by
 # nothing.
@@ -42,8 +46,8 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
   # bucket the panel skips.
   let(:ghost_category) { "system.runtime_docker_tls_rotate" }
 
-  # The exact shape `#update` mints, and the shape `system_instance_pool_policies.rb`
-  # seeds: scope "global", no agent, no user.
+  # The exact shape `#update` mints, and the shape PolicyReconciler writes the
+  # instance-pool operator set at: scope "global", no agent, no user.
   def operator_authored_row!(category)
     Ai::InterventionPolicy.create!(
       account: account, action_category: category,
@@ -77,24 +81,6 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
       expect(ghost.reload.policy).to eq("auto_approve")
     end
 
-    it "SURVIVES the agent-scoped sweep" do
-      agent = create(:ai_agent, account: account, agent_type: "monitor", name: "Runtime Manager")
-
-      System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-        account: account, agent: agent, keep_keys: [], owned_prefixes: [ "system.runtime_" ]
-      )
-
-      expect(Ai::InterventionPolicy.exists?(ghost.id)).to be true
-    end
-
-    it "SURVIVES the operator-path sweep" do
-      System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
-        account: account, keep_keys: [], owned_prefixes: [ "system.runtime_" ]
-      )
-
-      expect(Ai::InterventionPolicy.exists?(ghost.id)).to be true
-    end
-
     it "SURVIVES the manual-operations sweep, which is pinned to system.task." do
       # The REAL seed, loaded and run, rather than a copy of its relation — a
       # copy stays green if that sweep ever widens, which is exactly the
@@ -123,8 +109,9 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
 
     # THE NAMED WRONG FIX. Deleting scope-"global" agent-less rows wholesale
     # would destroy the operator's own tuning of registered categories AND the
-    # 26 rows `system_manual_operation_policies.rb` / `system_instance_pool_policies.rb`
-    # seed at exactly that shape.
+    # rows `system_manual_operation_policies.rb` and PolicyReconciler (the
+    # instance-pool / platform-scaling / snapshot / cordon operator sets)
+    # write at exactly that shape.
     it "NEVER collects a row for a REGISTERED category, whatever its shape" do
       agent = create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy")
 

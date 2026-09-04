@@ -19,6 +19,14 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
     end
   end
 
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
+
+  # The account's ACTING principal for the canonical (HIER-P2I): where the
+  # reconciler writes and the gate reads.
+  let(:principal) { System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "gitops-reconciler") }
+
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
   let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
@@ -57,9 +65,14 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
       expect(score.overall_score.to_f.round(2)).to eq(0.72)
     end
 
-    it "owns the operator-initiated system.gitops_* policies" do
+    it "writes NO policy row itself — PolicyReconciler is the single writer (ruling 7)" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
+    end
+
+    it "owns the operator-initiated system.gitops_* policies once reconciled, on the account's principal" do
+      reconcile!
       categories = Ai::InterventionPolicy
-        .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
+        .where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
         .pluck(:action_category, :policy).to_h
 
       expect(categories).to eq(
@@ -71,9 +84,10 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
     end
 
     it "OWNS the autonomous drift-remediation policy (HIER-P2A) and Fleet Autonomy no longer declares it" do
+      reconcile!
       expect(
         Ai::InterventionPolicy.exists?(
-          account: account, ai_agent_id: agent.id,
+          account: account, ai_agent_id: principal.id,
           action_category: "system.gitops_drift_remediate"
         )
       ).to be true
@@ -146,23 +160,25 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
     end
   end
 
-  # HIER-P2A: the autonomous row moved with its owner. The Fleet Autonomy seed
-  # no longer writes it, and the GitOps Reconciler seed does — asserted from
-  # the ROWS each seed leaves, not from the declarations.
+  # HIER-P2A: the autonomous row moved with its owner. With both agents seeded
+  # the reconciler writes it onto the GitOps Reconciler's principal and NOT
+  # onto Fleet Autonomy's — asserted from the ROWS the boot leaves, not from
+  # the declarations.
   describe "the autonomous policy's home" do
-    it "is written by the GitOps Reconciler seed and NOT by the Fleet Autonomy seed" do
+    it "is written onto the GitOps Reconciler and NOT onto Fleet Autonomy" do
       load_seed!("fleet_autonomy_agent.rb")
-      fleet = Ai::Agent.global.find_by(name: "Fleet Autonomy")
-      expect(fleet).to be_present
+      load_seed!("system_gitops_reconciler_agent.rb")
+      reconcile!
 
+      fleet = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "fleet-autonomy")
+      expect(fleet).to be_present
       expect(Ai::InterventionPolicy.find_by(
         account: account, ai_agent_id: fleet.id, scope: "agent",
         action_category: "system.gitops_drift_remediate"
       )).to be_nil
 
-      load_seed!("system_gitops_reconciler_agent.rb")
       policy = Ai::InterventionPolicy.find_by(
-        account: account, ai_agent_id: agent.id, scope: "agent",
+        account: account, ai_agent_id: principal.id, scope: "agent",
         action_category: "system.gitops_drift_remediate"
       )
       expect(policy).to be_present

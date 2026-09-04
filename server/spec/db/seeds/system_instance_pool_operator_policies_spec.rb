@@ -20,47 +20,43 @@ require "rails_helper"
 # prevent (IMP-9b9653e6514e; its mirror is
 # spec/db/seeds/system_runtime_operator_policies_spec.rb) and the same ruling
 # is applied here: the OPERATOR set is the gated subset,
-# INSTANCE_POOL_OPERATOR_POLICIES. The AGENT set keeps all eight — Fleet
-# Autonomy's own vocabulary is a separate audience and is not what this task
-# found.
+# INSTANCE_POOL_OPERATOR_POLICIES. The AGENT set keeps all eight on the
+# Capacity Manager (CAPACITY_MANAGER_POLICIES) — a separate audience.
 #
 # WHAT THIS SPEC DOES NOT CLAIM. It does not assert the four ungated verbs
 # should stay ungated — that is an operator decision, recorded in
 # spec/lint/instance_pool_replenish_gating_spec.rb and in
 # System::Executors::InstancePool::ReplenishPool, not derived here. It asserts
-# only that a seeded operator row exists exactly where a gate site reads one.
+# only that a written operator row exists exactly where a gate site reads one.
 #
-# BOTH WRITERS ARE PINNED. The seed is one producer of these rows;
-# System::Governance::PolicyReconciler is the other (it creates declared rows
-# that an already-booted install is missing, and db:seed runs on first boot
-# only). A fix applied to the seed alone would be re-minted by the reconciler
-# on the next boot, so both are asserted below.
+# ONE WRITER (proposal §5 ruling 7, IMP-10e4f6c3bcd2). The first-boot seed
+# that used to write both audiences (system_instance_pool_policies.rb) is
+# gone; System::Governance::PolicyReconciler writes the operator set from the
+# `instance-pool-operator` POLICY_SETS entry and the agent set from the
+# `capacity-manager` entry — on every boot, the first one included, and via
+# `rails system:governance:reconcile`. There is no second writer left to
+# re-mint a trimmed row, and no seed that could leave a duplicate on the
+# former owner after the owner's own rows exist.
 #
-# WHAT NEITHER WRITER DOES IS DELETE. Both examples below assert that the four
-# ungated categories are never CREATED at the operator shape; neither asserts
-# they are absent from an install that already has them, because neither
-# writer can make that true. db:seed is first-boot only and PolicyReconciler is
-# create-only by explicit design, so an already-booted install kept the four
-# rows its first boot wrote until the one-shot collection landed:
-# db/migrate/20260903033000_collect_inert_instance_pool_operator_policies.rb
-# (IMP-57a4b1ef94b3, closing improvement 01a063db-c869-7117-b7f6-f88b7061ab4a)
-# deletes them once on the next deploy migrate — see the note on
-# PolicyDeclarations::INSTANCE_POOL_OPERATOR_GATED_KEYS for why no RECURRING
-# sweep collects this row shape.
+# WHAT THE WRITER DOES NOT DO IS DELETE. The examples below assert that the
+# four ungated categories are never CREATED at the operator shape; none
+# asserts they are absent from an install that already has them, because
+# PolicyReconciler is create-only by explicit design, so an already-booted
+# install kept the four rows its first boot wrote until the one-shot
+# collection landed: db/migrate/20260903033000_collect_inert_instance_pool_
+# operator_policies.rb (IMP-57a4b1ef94b3) deletes them once on the next deploy
+# migrate — see the note on PolicyDeclarations::INSTANCE_POOL_OPERATOR_GATED_KEYS
+# for why no RECURRING sweep collects this row shape.
 RSpec.describe "instance-pool operator-path intervention policies" do
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "pool-admin@powernode.org") }
   let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
 
-  # The seed resolves this agent by NAME through Ai::Agent.resolve_for, exactly
-  # as the runtime does; without it the agent-scoped half of the seed skips and
-  # the audience-separation examples below would be vacuous.
-  #
-  # HIER-P2B moved that half from Fleet Autonomy to the CAPACITY MANAGER, the
-  # declared owner of INSTANCE_POOL_POLICIES. The name is read from
-  # AGENT_IDENTITIES rather than written out, so this file follows a rename of
-  # the owner instead of silently going vacuous when the seed stops resolving
-  # the literal it used to.
+  # The reconciler resolves this agent through System::Governance::AgentResolver
+  # — the account's own row wins over a canonical — so an ACCOUNT-scoped agent
+  # of the declared identity is where the agent set lands. The name is read
+  # from AGENT_IDENTITIES rather than written out, so this file follows a
+  # rename of the owner instead of silently going vacuous.
   let(:owner_identity) do
     System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
   end
@@ -71,10 +67,9 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   end
 
   # Fleet Autonomy is the FORMER owner. Kept present, and asserted EMPTY below:
-  # a seed that writes the agent set onto it leaves rows PolicyReconciler can
-  # never re-home once the owner's own seed has run (it short-circuits on a
-  # category the owner already has), so "no row here" is the assertion, not an
-  # absence of setup.
+  # a writer that puts the agent set onto it leaves rows the reconciler can
+  # never re-home once the owner has its own, so "no row here" is the
+  # assertion, not an absence of setup.
   let!(:fleet_agent) do
     create(:ai_agent, account: account, provider: provider,
            name: "Fleet Autonomy", agent_type: "monitor")
@@ -87,14 +82,11 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   # fall-through.
   let!(:owner_trust) { create(:ai_agent_trust_score, :monitored, account: account, agent: owner_agent) }
 
-  def load_pool_policy_seed!
-    silence_warnings do
-      load Rails.root.join("..", "extensions", "system", "server", "db", "seeds",
-                           "system_instance_pool_policies.rb")
-    end
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
   end
 
-  before { load_pool_policy_seed! }
+  before { reconcile! }
 
   let(:service) { Ai::InterventionPolicyService.new(account: account) }
 
@@ -124,7 +116,7 @@ RSpec.describe "instance-pool operator-path intervention policies" do
     ]
   end
 
-  it "seeds an active operator-path row for every gated pool verb" do
+  it "writes an active operator-path row for every gated pool verb" do
     missing = gated_verbs.keys.reject do |category|
       Ai::InterventionPolicy.exists?(
         account: account, ai_agent_id: nil, scope: "global",
@@ -133,12 +125,12 @@ RSpec.describe "instance-pool operator-path intervention policies" do
     end
 
     expect(missing).to be_empty,
-                       "no operator-path (agent-less) policy seeded for: #{missing.inspect}"
+                       "no operator-path (agent-less) policy written for: #{missing.inspect}"
   end
 
   # The behavioural oracle for the gated half. Every gated pool verb is
   # declared `require_approval`, which is ALSO the absent-row default — so
-  # comparing the resolved verb alone cannot tell a seeded row from no row at
+  # comparing the resolved verb alone cannot tell a written row from no row at
   # all. The discriminating assertion is that a RECORD backs the answer.
   it "resolves every gated verb to its recorded row for an agent-less caller" do
     gated_verbs.each do |category, verb|
@@ -152,7 +144,7 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   # The inverse enumeration, and the guard against the tempting over-fix: an
   # ungated category must NOT gain an operator row, because the row renders as
   # a working control and is read by nothing.
-  it "seeds no operator row for a pool category that has no gate site" do
+  it "writes no operator row for a pool category that has no gate site" do
     leaked = ungated_categories.select do |category|
       Ai::InterventionPolicy.exists?(
         account: account, ai_agent_id: nil, scope: "global", action_category: category
@@ -160,7 +152,7 @@ RSpec.describe "instance-pool operator-path intervention policies" do
     end
 
     expect(leaked).to be_empty,
-                      "operator rows seeded for ungated categories: #{leaked.inspect}"
+                      "operator rows written for ungated categories: #{leaked.inspect}"
   end
 
   # ...and those categories resolve to the default on the operator path, which
@@ -180,15 +172,15 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   # The two audiences stay separate. The OWNING agent's set keeps ALL EIGHT
   # categories: trimming the operator set must not shrink the agent's own
   # vocabulary, which is a different decision on a different path.
-  it "still seeds the owning agent every declared pool category" do
+  it "still writes the owning agent every declared pool category" do
     declared = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.keys
 
-    seeded = Ai::InterventionPolicy
-             .where(account: account, ai_agent_id: owner_agent.id, scope: "agent")
-             .where(action_category: declared)
-             .pluck(:action_category)
+    written = Ai::InterventionPolicy
+              .where(account: account, ai_agent_id: owner_agent.id, scope: "agent")
+              .where(action_category: declared)
+              .pluck(:action_category)
 
-    expect(seeded).to match_array(declared)
+    expect(written).to match_array(declared)
   end
 
   it "still resolves the agent-dispatch path against the owning agent's own rows" do
@@ -202,12 +194,10 @@ RSpec.describe "instance-pool operator-path intervention policies" do
                          "agent-path resolution lost #{owner_identity[:name]}'s row for: #{displaced.inspect}"
   end
 
-  # HIER-P2B — the seed must write onto the DECLARED OWNER and nowhere else.
-  # PolicyReconciler cannot repair a miss here: `reconcile!` answers `present`
-  # and never consults `rehomable_row` for a category the owner already has,
-  # and `db/seeds/system_capacity_manager_agent.rb` runs BEFORE this seed in
-  # SYSTEM_SEED_FILES — so a row written onto the former owner on a FRESH
-  # install is an active control the gate never reads, permanently.
+  # HIER-P2B — the agent set lands on the DECLARED OWNER and nowhere else. A
+  # row on the former owner would be an active control the gate never reads,
+  # permanently: `reconcile!` answers `present` and never consults
+  # `rehomable_row` for a category the owner already has.
   it "writes no agent-scoped pool row onto the former owner" do
     declared = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.keys
 
@@ -217,11 +207,11 @@ RSpec.describe "instance-pool operator-path intervention policies" do
                .pluck(:action_category)
 
     expect(orphaned).to be_empty,
-                        "pool rows seeded onto Fleet Autonomy, which no longer declares them: #{orphaned.inspect}"
+                        "pool rows written onto Fleet Autonomy, which no longer declares them: #{orphaned.inspect}"
   end
 
-  # And the declaration really does name the Capacity Manager, so the rename
-  # above cannot be satisfied by pointing the seed at any agent at all.
+  # And the declaration really does name the Capacity Manager, so the assertion
+  # above cannot be satisfied by pointing the writer at any agent at all.
   it "derives the Capacity Manager as the declared owner of every pool category" do
     System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.each_key do |category|
       expect(System::Governance::PolicyDeclarations.owner_of(category)).to eq("capacity-manager"),
@@ -229,40 +219,22 @@ RSpec.describe "instance-pool operator-path intervention policies" do
     end
   end
 
-  # The OTHER producer. PolicyReconciler creates declared rows an install is
-  # missing, so a seed-only fix is undone on the next boot of any install whose
-  # first boot predates it.
-  describe "System::Governance::PolicyReconciler" do
-    it "creates no operator row for an ungated pool category" do
-      System::Governance::PolicyReconciler.new(account: account).reconcile!
+  it "still reconciles the gated pool verbs onto the operator path after they are removed" do
+    Ai::InterventionPolicy.where(account: account, ai_agent_id: nil, scope: "global").destroy_all
 
-      leaked = ungated_categories.select do |category|
-        Ai::InterventionPolicy.exists?(
-          account: account, ai_agent_id: nil, scope: "global", action_category: category
-        )
-      end
+    reconcile!
 
-      expect(leaked).to be_empty,
-                        "the reconciler re-minted operator rows for: #{leaked.inspect}"
+    missing = gated_verbs.keys.reject do |category|
+      Ai::InterventionPolicy.exists?(
+        account: account, ai_agent_id: nil, scope: "global", action_category: category
+      )
     end
 
-    it "still reconciles the gated pool verbs onto the operator path" do
-      Ai::InterventionPolicy.where(account: account, ai_agent_id: nil, scope: "global").destroy_all
-
-      System::Governance::PolicyReconciler.new(account: account).reconcile!
-
-      missing = gated_verbs.keys.reject do |category|
-        Ai::InterventionPolicy.exists?(
-          account: account, ai_agent_id: nil, scope: "global", action_category: category
-        )
-      end
-
-      expect(missing).to be_empty, "the reconciler left gated verbs unseeded: #{missing.inspect}"
-    end
+    expect(missing).to be_empty, "the reconciler left gated verbs unwritten: #{missing.inspect}"
   end
 
-  it "is idempotent across a re-run" do
-    expect { load_pool_policy_seed! }
+  it "is idempotent across a second pass" do
+    expect { reconcile! }
       .not_to change {
         Ai::InterventionPolicy.where(account: account)
                               .order(:action_category, :ai_agent_id)

@@ -145,19 +145,25 @@ RSpec.describe System::Fleet::Sensors::CapabilityGapSensor do
   # ("not_permitted"), which is how a bound-but-unseeded category gets
   # silently stranded. Mirrors the same assertion the GitOps Reconciler seed
   # spec makes for system.gitops_drift_remediate.
-  describe "the review gate policy (seeded on Fleet Autonomy)" do
+  # Declared on Fleet Autonomy and written by PolicyReconciler — the single
+  # writer (proposal §5 ruling 7) — against the account's acting principal for
+  # the canonical (HIER-P2I), so the boot here is seed + reconcile.
+  describe "the review gate policy (declared on Fleet Autonomy)" do
     let!(:seed_account)  { create(:account, name: "Powernode Admin") }
     let!(:seed_user)     { create(:user, account: seed_account, email: "admin@powernode.org") }
     let!(:seed_provider) { create(:ai_provider, account: seed_account, provider_type: "anthropic", is_active: true) }
-    let(:fleet_agent)    { Ai::Agent.global.find_by(name: "Fleet Autonomy") }
+    let(:fleet_agent) do
+      System::Governance::AgentResolver.resolve(account_id: seed_account.id, agent_key: "fleet-autonomy")
+    end
 
     before do
       silence_warnings do
         load Rails.root.join("..", "extensions", "system", "server", "db", "seeds", "fleet_autonomy_agent.rb")
       end
+      System::Governance::PolicyReconciler.new(account: seed_account, logger: Logger.new(IO::NULL)).reconcile!
     end
 
-    it "seeds system.capability_gap_review as require_approval on Fleet Autonomy" do
+    it "declares system.capability_gap_review as require_approval on Fleet Autonomy" do
       policy = Ai::InterventionPolicy.find_by(
         account: seed_account, ai_agent_id: fleet_agent.id, scope: "agent",
         action_category: "system.capability_gap_review"
@@ -169,11 +175,11 @@ RSpec.describe System::Fleet::Sensors::CapabilityGapSensor do
       expect(policy.policy).to eq("require_approval")
     end
 
-    # Ties the SEEDED disposition to real engine behavior. Every other example
+    # Ties the DECLARED disposition to real engine behavior. Every other example
     # builds its own InterventionPolicy row, so all of them would still pass if
-    # the seed shipped block/auto_approve — this one runs the engine against
-    # what the platform actually seeds.
-    it "resolves a real capability_gap decision to :pending through the seeded policy" do
+    # the declaration shipped block/auto_approve — this one runs the engine
+    # against what the platform actually writes.
+    it "resolves a real capability_gap decision to :pending through the declared policy" do
       service = System::Fleet::FleetAutonomyService.new(account: seed_account, agent: fleet_agent)
       engine  = System::Fleet::DecisionEngine.new(autonomy_service: service)
       mod     = create(:system_node_module, account: seed_account, name: "seeded-gap-#{SecureRandom.hex(3)}")

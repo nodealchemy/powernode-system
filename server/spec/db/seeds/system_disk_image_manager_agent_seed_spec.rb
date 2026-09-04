@@ -91,9 +91,15 @@ RSpec.describe "system_disk_image_manager_agent seed" do
       expect(score.overall_score.to_f.round(2)).to eq(0.70)
     end
 
-    it "owns exactly the declared DISK_IMAGE_MANAGER_POLICIES rows" do
+    it "writes NO policy row itself — PolicyReconciler is the single writer (ruling 7)" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
+    end
+
+    it "owns exactly the declared DISK_IMAGE_MANAGER_POLICIES rows once reconciled, on the account's principal" do
+      System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+      principal = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "disk-image-manager")
       rows = Ai::InterventionPolicy
-        .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
+        .where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
         .pluck(:action_category, :policy).to_h
       expect(rows).to eq(System::Governance::PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES)
     end

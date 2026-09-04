@@ -137,9 +137,15 @@ RSpec.describe "system_storage_manager_agent seed" do
       expect(score.overall_score.to_f.round(2)).to eq(0.72)
     end
 
-    it "writes exactly the declared STORAGE_MANAGER_POLICIES at the agent shape" do
+    it "writes NO policy row itself — PolicyReconciler is the single writer (ruling 7)" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
+    end
+
+    it "carries exactly the declared STORAGE_MANAGER_POLICIES at the agent shape once reconciled" do
+      System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+      principal = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "storage-manager")
       rows = Ai::InterventionPolicy
-        .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
+        .where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
         .pluck(:action_category, :policy).to_h
       expect(rows).to eq(declared)
       expect(rows).to eq(
@@ -226,7 +232,12 @@ RSpec.describe "system_storage_manager_agent seed" do
 
       gate = service.for_owner("storage-manager")
       expect(gate).not_to equal(service)
-      expect(gate.agent.id).to eq(agent.id)
+      # HIER-P2I: the gate acts as the account's CLONE of the canonical, never
+      # the canonical itself.
+      expect(gate.agent.id).to eq(
+        System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "storage-manager").id
+      )
+      expect(gate.agent.cloned_from_id).to eq(agent.id)
       expect(gate.owner_key).to eq("storage-manager")
     end
   end

@@ -79,9 +79,9 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
     ].freeze
   end
 
-  # Mirrors the two shapes System::Seeds::AgentSetupHelpers writes:
-  # `upsert_policies!` → scope "agent" + ai_agent_id, priority 10;
-  # `upsert_operator_policies!` → scope "action_type" + nil agent, priority 5.
+  # Mirrors the two shapes System::Governance::PolicyReconciler writes:
+  # an agent set → scope "agent" + ai_agent_id, priority 10;
+  # an operator set → scope "action_type" + nil agent, priority 5.
   def seed_agent_policy!(category, agent, policy: "notify_and_proceed")
     Ai::InterventionPolicy.create!(
       account: account, action_category: category, scope: "agent",

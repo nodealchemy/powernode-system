@@ -4,7 +4,7 @@ require "rails_helper"
 
 # IMP-9b9653e6514e — the seeded Runtime Manager policies had no gate site.
 #
-# `db/seeds/system_runtime_manager_agent.rb` seeds a policy row for
+# `PolicyDeclarations::RUNTIME_MANAGER_POLICIES` declares a policy row for
 # `system.runtime_docker_provision` and `system.runtime_docker_decommission`,
 # and those rows RENDER in the Autonomy modal — so an operator who sets
 # `require_approval` (or `block`) on Docker daemon provisioning has been shown a
@@ -58,7 +58,7 @@ RSpec.describe Ai::Tools::DockerProvisioningTool do
   end
 
   # Operator-path row: scope "action_type", agent-less. This is the shape
-  # AgentSetupHelpers.upsert_operator_policies! seeds and the only shape an
+  # PolicyReconciler writes the "runtime-operator" set at and the only shape an
   # agent-less caller can match — Ai::InterventionPolicy#agent_matches? rejects
   # an agent-SCOPED row against a nil agent.
   def operator_policy!(category, verb)

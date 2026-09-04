@@ -1730,7 +1730,7 @@ RSpec.describe Ai::Tools::SdwanTool do
   #
   # Revoking a Sdwan::UserDevice cuts one user's VPN access.
   # UserDevicesController#revoke gates it on `system.sdwan_user_device_revoke`
-  # (seeded require_approval in db/seeds/fleet_autonomy_agent.rb, and the
+  # (declared require_approval in PolicyDeclarations, and the
   # InterventionPolicyService default), so the operator waits for approval —
   # while this tool called `device.revoke!` inline, giving an agent holding the
   # MCP tool a strictly wider capability than the same operator over HTTP, with
@@ -1910,8 +1910,8 @@ RSpec.describe Ai::Tools::SdwanTool do
   #
   # AccessGrant#revoke! cascades: it soft-revokes every non-revoked device on
   # the grant (access_grant.rb:49-51). AccessGrantsController#revoke gates that
-  # on `sdwan.access_grant_revoke` (seeded require_approval on the SDWAN Manager
-  # in db/seeds/system_sdwan_manager_agent.rb:138, and the
+  # on `sdwan.access_grant_revoke` (declared require_approval on the SDWAN Manager
+  # in PolicyDeclarations::SDWAN_OPERATOR_POLICIES, and the
   # InterventionPolicyService default), while this tool called `grant.revoke!`
   # inline. Since both device- and grant-revoke map to the SAME permission
   # (system.sdwan.user_devices.manage), an agent refused the narrow device

@@ -81,16 +81,25 @@ RSpec.describe "system_topology_designer_agent seed" do
       expect(score.overall_score.to_f.round(2)).to eq(0.72)
     end
 
-    it "writes exactly the declared TOPOLOGY_DESIGNER_POLICIES rows on the seeding account" do
-      rows = Ai::InterventionPolicy
-        .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
-        .pluck(:action_category, :policy).to_h
-      expect(rows).to eq(System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES)
+    it "writes NO policy row itself — PolicyReconciler is the single writer (ruling 7)" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
     end
 
-    it "agrees with PolicyReconciler: a reconcile after the seed creates nothing" do
-      expect { System::Governance::PolicyReconciler.new(account: account).reconcile! }
-        .not_to change { Ai::InterventionPolicy.where(ai_agent_id: agent.id).count }
+    it "carries exactly the declared TOPOLOGY_DESIGNER_POLICIES rows once reconciled, on the account's principal" do
+      reconciler = System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL))
+      principal = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "topology-designer")
+
+      expect { reconciler.reconcile! }
+        .to change { Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id, scope: "agent").count }
+        .from(0).to(System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES.size)
+
+      rows = Ai::InterventionPolicy
+        .where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
+        .pluck(:action_category, :policy).to_h
+      expect(rows).to eq(System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES)
+
+      # And then nothing: absence-only.
+      expect { reconciler.reconcile! }.not_to change { Ai::InterventionPolicy.where(account: account).count }
     end
 
     it "creates the Topology Designer Actions approval chain" do

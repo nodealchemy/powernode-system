@@ -23,6 +23,14 @@ RSpec.describe "system_ingress_manager_agent seed" do
     end
   end
 
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
+
+  # The account's ACTING principal for the canonical (HIER-P2I): where the
+  # reconciler writes and the gate reads.
+  let(:principal) { System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "ingress-manager") }
+
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
   let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
@@ -170,9 +178,14 @@ end
       expect(score.overall_score.to_f.round(2)).to eq(0.70)
     end
 
-    it "owns exactly INGRESS_MANAGER_POLICIES on the seeding account, at the agent shape" do
+    it "writes NO policy row itself — PolicyReconciler is the single writer (ruling 7)" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
+    end
+
+    it "owns exactly INGRESS_MANAGER_POLICIES on the seeding account once reconciled, at the agent shape" do
+      reconcile!
       rows = Ai::InterventionPolicy
-        .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
+        .where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
         .pluck(:action_category, :policy).to_h
       expect(rows).to eq(declared)
       expect(rows.keys).to contain_exactly(
@@ -181,14 +194,16 @@ end
       )
     end
 
-    it "leaves PolicyReconciler nothing to write for the ingress set (no longer skipped as agent absent)" do
-      reconciler = System::Governance::PolicyReconciler.new(account: account)
+    it "gives PolicyReconciler the ingress set to CREATE (no longer skipped as agent absent), then nothing" do
+      reconciler = System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL))
       report = reconciler.drift
       expect(report.skipped_sets.grep(/\Aingress-manager/)).to be_empty
-      expect(report.missing.select { |row| row.set_key == "ingress-manager" }).to be_empty
+      expect(report.missing.select { |row| row.set_key == "ingress-manager" }.map(&:action_category))
+        .to match_array(declared.keys)
 
       result = reconciler.reconcile!
-      expect(result.created_categories.to_a & declared.keys).to eq([])
+      expect(result.created_categories.grep(%r{\Aingress-manager/}).size).to eq(declared.size)
+      expect(reconciler.reconcile!.created_categories.grep(%r{\Aingress-manager/})).to be_empty
     end
 
     it "creates its own approval chain: 4h, reject on timeout, infra-control approver" do
@@ -202,9 +217,10 @@ end
     end
 
     it "is idempotent across re-runs (no duplicate global row, no policy churn)" do
-      expect { load_seed!("system_ingress_manager_agent.rb") }
+      reconcile!
+      expect { load_seed!("system_ingress_manager_agent.rb"); reconcile! }
         .not_to change { Ai::Agent.global.where(name: "Ingress Manager").count }.from(1)
-      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: agent.id).count).to eq(declared.size)
+      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id).count).to eq(declared.size)
       expect(Ai::ApprovalChain.where(account: account, name: "Ingress Manager Actions").count).to eq(1)
     end
   end
@@ -288,17 +304,19 @@ end
     end
   end
 
-  # The moved rows are written by THIS seed and not by the Fleet Autonomy seed
-  # — asserted from the rows each seed leaves, not from the declarations.
+  # The moved rows land on THIS agent's principal and not on Fleet Autonomy's
+  # — asserted from the rows the boot (both seeds + the reconciler) leaves,
+  # not from the declarations.
   describe "the ingress rows' home" do
-    it "are written here and NOT by the Fleet Autonomy seed" do
+    it "are written onto the Ingress Manager and NOT onto Fleet Autonomy" do
       load_seed!("fleet_autonomy_agent.rb")
-      fleet = Ai::Agent.global.find_by(name: "Fleet Autonomy")
+      load_seed!("system_ingress_manager_agent.rb")
+      reconcile!
+
+      fleet = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "fleet-autonomy")
       expect(fleet).to be_present
       expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: fleet.id, action_category: declared.keys)).to be_empty
-
-      load_seed!("system_ingress_manager_agent.rb")
-      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: agent.id, action_category: declared.keys).count)
+      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id, action_category: declared.keys).count)
         .to eq(declared.size)
     end
   end

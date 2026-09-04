@@ -27,7 +27,7 @@ require "rails_helper"
 # Nothing was missing but the call: Sdwan::Executors::RevokeFederationPeer and
 # Sdwan::Executors::ProposeFederationPeer, both ACTION_CATEGORY constants, both
 # engine registrations (lib/powernode_system/engine.rb) and both seeded
-# require_approval rows (db/seeds/system_sdwan_manager_agent.rb) already
+# require_approval rows (PolicyDeclarations::SDWAN_OPERATOR_POLICIES) already
 # existed and were already driven through the controller.
 #
 # Shaped as the CLASS guard sdwan_mcp_destroy_gate_parity_spec.rb established,

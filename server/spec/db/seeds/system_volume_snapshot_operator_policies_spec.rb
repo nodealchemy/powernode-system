@@ -13,27 +13,25 @@ require "rails_helper"
 # System::AutonomyActions#autonomy_actions_by_domain), so with no writer the
 # category never appears there at all.
 #
-# BOTH WRITERS ARE PINNED, as for the instance-pool operator set: this seed
-# writes it on a FIRST boot, and System::Governance::PolicyReconciler creates
-# it on an install that had already booted (db:seed is first-boot only). A fix
-# to one alone leaves half the fleet without the row.
+# ONE WRITER (proposal §5 ruling 7, IMP-10e4f6c3bcd2): the first-boot seed
+# that used to write this row (system_volume_snapshot_policies.rb) is gone;
+# System::Governance::PolicyReconciler writes it from the
+# `volume-snapshot-operator` POLICY_SETS entry on every boot, the first one
+# included, and via `rails system:governance:reconcile`.
 #
 # THE DISCRIMINATING ORACLE is `result[:record]`, not `result[:policy]`: the
 # declared verb equals the absent-row default, so comparing verbs alone cannot
-# tell a seeded row from no row at all.
+# tell a written row from no row at all.
 RSpec.describe "volume-snapshot operator-path intervention policy" do
   let!(:account) { create(:account, name: "Powernode Admin") }
-
-  def load_snapshot_policy_seed!
-    silence_warnings do
-      load Rails.root.join("..", "extensions", "system", "server", "db", "seeds",
-                           "system_volume_snapshot_policies.rb")
-    end
-  end
 
   let(:service) { Ai::InterventionPolicyService.new(account: account) }
 
   let(:declared) { System::Governance::PolicyDeclarations::VOLUME_SNAPSHOT_OPERATOR_POLICIES }
+
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
 
   # Restated independently of the declaration so a silent edit to either side
   # fails here rather than changing what an operator gets.
@@ -41,30 +39,24 @@ RSpec.describe "volume-snapshot operator-path intervention policy" do
     expect(declared).to eq({ "system.volume_snapshot_delete" => "require_approval" })
   end
 
-  # An unlisted seed never runs — the orchestrator's %w[] list is the whole
-  # reachability story for a seed file (a glob fallback stopped existing when
-  # SYSTEM_SEED_FILES was introduced).
-  it "is listed in the extension seed orchestrator" do
-    orchestrator = File.read(
-      Rails.root.join("..", "extensions", "system", "server", "db", "seeds.rb")
-    )
-
-    expect(orchestrator).to include("system_volume_snapshot_policies.rb")
+  it "declares it as an operator-shape (global, agent-less) set the reconciler writes" do
+    set = System::Governance::PolicyDeclarations::POLICY_SETS.find { |s| s[:key] == "volume-snapshot-operator" }
+    expect(set).to be_present
+    expect(set[:agent_key]).to be_nil
+    expect(set[:scope]).to eq("global")
+    expect(set[:policies]).to eq(declared)
   end
 
-  context "on a first boot (the seed)" do
-    before { load_snapshot_policy_seed! }
-
-    it "writes an active operator-path row for the gated delete verb" do
-      expect(
-        Ai::InterventionPolicy.exists?(
-          account: account, ai_agent_id: nil, user_id: nil, scope: "global",
-          action_category: "system.volume_snapshot_delete", is_active: true
-        )
-      ).to be(true)
+  describe "the reconciler (the only writer)" do
+    it "creates the row the install is missing" do
+      expect { reconcile! }.to change {
+        Ai::InterventionPolicy.where(account: account, scope: "global", ai_agent_id: nil, user_id: nil,
+                                     action_category: "system.volume_snapshot_delete", is_active: true).count
+      }.from(0).to(1)
     end
 
     it "resolves the delete to a RECORD, not to the unmatched default" do
+      reconcile!
       result = service.resolve(action_category: "system.volume_snapshot_delete", agent: nil)
 
       expect(result[:policy]).to eq("require_approval")
@@ -73,22 +65,10 @@ RSpec.describe "volume-snapshot operator-path intervention policy" do
     end
 
     it "is idempotent" do
-      expect { load_snapshot_policy_seed! }
-        .not_to change {
-          Ai::InterventionPolicy.where(account: account,
-                                       action_category: "system.volume_snapshot_delete").count
-        }
-    end
-  end
-
-  context "on an install that had already booted (the reconciler)" do
-    it "creates the row the install is missing" do
-      expect {
-        System::Governance::PolicyReconciler.new(account: account).reconcile!
-      }.to change {
-        Ai::InterventionPolicy.where(account: account, scope: "global", ai_agent_id: nil,
-                                     action_category: "system.volume_snapshot_delete").count
-      }.from(0).to(1)
+      reconcile!
+      expect { reconcile! }.not_to change {
+        Ai::InterventionPolicy.where(account: account, action_category: "system.volume_snapshot_delete").count
+      }
     end
   end
 end

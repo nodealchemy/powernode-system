@@ -9,10 +9,12 @@ require "rails_helper"
 # declared rows had no agent to land on for a fresh install. These pin:
 #   1. the canonical row (global, is_system, source_key, monitor, routing
 #      description, reasoning tier, scoped tool families),
-#   2. the operational rows the seed writes per account (the declared policy
-#      set at the agent shape — with project.scale_horizontal's condition
-#      override — the trust score, the approval chain),
-#   3. that PolicyReconciler now finds the set present rather than skipped,
+#   2. the operational rows the seed writes per account (the trust score, the
+#      approval chain) — and NOT the policy set: PolicyReconciler is its single
+#      writer (proposal §5 ruling 7, IMP-10e4f6c3bcd2), asserted here against
+#      the account's acting principal, project.scale_horizontal's condition
+#      override included,
+#   3. that PolicyReconciler writes the set rather than skipping it,
 #   4. the hierarchy seat + leaf delegation written by system_agent_hierarchy.rb,
 #   5. the executor re-binding materialised by system_skill_bindings_seed.rb.
 RSpec.describe "system_capacity_manager_agent seed" do
@@ -28,6 +30,11 @@ RSpec.describe "system_capacity_manager_agent seed" do
 
   let(:declarations) { System::Governance::PolicyDeclarations }
   let(:agent) { Ai::Agent.global.find_by(name: "Capacity Manager") }
+  let(:principal) { System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "capacity-manager") }
+
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
 
   describe "the seeded agent" do
     before { load_seed!("system_capacity_manager_agent.rb") }
@@ -115,8 +122,13 @@ RSpec.describe "system_capacity_manager_agent seed" do
       expect(score.overall_score.to_f.round(2)).to eq(0.72)
     end
 
-    it "owns exactly CAPACITY_MANAGER_POLICIES at the agent shape, with scale_horizontal's window override" do
-      rows = Ai::InterventionPolicy.where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
+    it "writes NO policy row itself — PolicyReconciler is the single writer" do
+      expect(Ai::InterventionPolicy.where(account: account)).to be_empty
+    end
+
+    it "owns exactly CAPACITY_MANAGER_POLICIES at the agent shape once reconciled, with scale_horizontal's window override" do
+      reconcile!
+      rows = Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id, scope: "agent", is_active: true)
       expect(rows.pluck(:action_category, :policy).to_h).to eq(declarations::CAPACITY_MANAGER_POLICIES)
 
       overrides = declarations::PROVISIONING_CONDITION_OVERRIDES
@@ -129,18 +141,29 @@ RSpec.describe "system_capacity_manager_agent seed" do
         .to include("auto_apply_window" => "watch_policies.auto_scale_max_replicas")
     end
 
-    it "writes no operator-shape row: the instance-pool / platform-scaling / cordon twins keep theirs" do
+    it "keeps the agent set and the operator twins at separate shapes once reconciled" do
+      reconcile!
       twin_keys = declarations::INSTANCE_POOL_OPERATOR_POLICIES.keys +
                   declarations::PLATFORM_SCALING_POLICIES.keys +
                   declarations::INSTANCE_CORDON_OPERATOR_POLICIES.keys
-      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: nil, action_category: twin_keys)).to be_empty
+      twins = Ai::InterventionPolicy.where(account: account, ai_agent_id: nil, scope: "global", action_category: twin_keys)
+      expect(twins.pluck(:action_category)).to match_array(twin_keys)
+      expect(Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id, scope: "global")).to be_empty
     end
 
-    it "leaves PolicyReconciler nothing to skip, create or re-home for the capacity set" do
+    it "gives PolicyReconciler the whole capacity set to CREATE (not skip, not re-home) on a fresh install" do
       report = System::Governance::PolicyReconciler.new(account: account).drift
       expect(report.skipped_sets.grep(/capacity-manager/)).to be_empty
-      expect(report.missing.select { |row| row.set_key == "capacity-manager" }).to be_empty
-      expect(report.present.grep(%r{\Acapacity-manager/}).size).to eq(declarations::CAPACITY_MANAGER_POLICIES.size)
+      capacity_missing = report.missing.select { |row| row.set_key == "capacity-manager" }
+      expect(capacity_missing.map(&:action_category)).to match_array(declarations::CAPACITY_MANAGER_POLICIES.keys)
+      expect(capacity_missing.select(&:rehome_from)).to be_empty
+
+      result = reconcile!
+      expect(result.created_categories.grep(%r{\Acapacity-manager/}).size).to eq(declarations::CAPACITY_MANAGER_POLICIES.size)
+
+      after = System::Governance::PolicyReconciler.new(account: account).drift
+      expect(after.missing.select { |row| row.set_key == "capacity-manager" }).to be_empty
+      expect(after.present.grep(%r{\Acapacity-manager/}).size).to eq(declarations::CAPACITY_MANAGER_POLICIES.size)
     end
 
     it "is the declared owner of the sensor-routed capacity bindings" do
@@ -164,10 +187,11 @@ RSpec.describe "system_capacity_manager_agent seed" do
     end
 
     it "is idempotent across re-runs (no duplicate global row, no duplicate policy rows)" do
-      expect { load_seed!("system_capacity_manager_agent.rb") }
+      reconcile!
+      expect { load_seed!("system_capacity_manager_agent.rb"); reconcile! }
         .not_to change {
           [ Ai::Agent.global.where(name: "Capacity Manager").count,
-            Ai::InterventionPolicy.where(account: account, ai_agent_id: agent.id).count ]
+            Ai::InterventionPolicy.where(account: account, ai_agent_id: principal.id).count ]
         }.from([ 1, declarations::CAPACITY_MANAGER_POLICIES.size ])
     end
 

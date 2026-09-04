@@ -25,8 +25,8 @@ require "rails_helper"
 #      an Ai::GoalPlan with a single "scale_project" provisioning_skill step.
 #   3. The desired replica count obeys the heuristic + watch_policies
 #      ceiling (low-blast: within auto_scale_max_replicas → auto_apply? true).
-#   4. The fleet-side seed lands the six project.* InterventionPolicy rows
-#      with the expected balanced-autonomy defaults.
+#   4. The fleet-side declarations land the six project.* InterventionPolicy
+#      rows with the expected balanced-autonomy defaults.
 #   5. FleetAutonomyService.gate_action! returns :proceed for the low-blast
 #      project.scale_horizontal action when the Fleet Autonomy agent has
 #      that policy active.

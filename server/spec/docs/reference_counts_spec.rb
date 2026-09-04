@@ -138,9 +138,8 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   # carries no policies. HIER-P2DECL: the four wave-1 managers and the
   # Topology Designer carry sets ahead of (managers) or independently of
   # (Topology Designer) their seed files — PolicyReconciler writes those sets
-  # once the agent exists. HIER-P2F: the Topology Designer's seed now consumes
-  # TOPOLOGY_DESIGNER_POLICIES itself, like its siblings, so a first boot lands
-  # the rows without waiting for the next reconciler pass.
+  # once the agent exists — and since IMP-10e4f6c3bcd2 (ruling 7) writes EVERY
+  # set that way, first boot included; no seed writes a row.
   let(:agent_policy_counts) do
     {
       "Fleet Autonomy"           => declared_keys("FLEET_AUTONOMY_POLICIES").size,

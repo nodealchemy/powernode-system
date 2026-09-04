@@ -127,7 +127,7 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
     expect(categories_in(pivot, "instance_pool")).to match_array(pool)
     expect(categories_in(pivot, "node_lifecycle")).not_to include(*pool)
 
-    # Seeded on the CVE Responder (db/seeds/system_cve_responder_agent.rb), and
+    # Declared on the CVE Responder (PolicyDeclarations::CVE_RESPONDER_POLICIES), and
     # NOT prefixed `system.cve_` — so ordering "cve" ahead of "node_lifecycle"
     # is not sufficient on its own; the specific prefix has to be declared.
     expect(categories_in(pivot, "cve")).to include("system.module_critical_upgrade_ready")

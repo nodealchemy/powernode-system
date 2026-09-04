@@ -349,7 +349,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
     end
 
     # IMP-53a5c597ec8c absorbs offer 01a02b9a-0266 and the residual
-    # IMP-97c7b4123d8f recorded in db/seeds/system_sdwan_manager_agent.rb:
+    # IMP-97c7b4123d8f recorded in PolicyDeclarations::SDWAN_OPERATOR_POLICIES:
     # this route wrote INLINE while its MCP twin had been gated since that
     # task. That made the whole regime walk-around-able — an operator who
     # hardened sdwan.host_bridge_delete got no protection, because the same

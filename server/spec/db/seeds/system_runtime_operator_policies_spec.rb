@@ -22,10 +22,16 @@ require "rails_helper"
 # being inert. Same ruling as the SDWAN Manager's (IMP-187124ca2984); see
 # system_sdwan_operator_policies_spec.rb.
 #
-# The set is deliberately the GATED subset, not all seven. Seeding an
+# The set is deliberately the GATED subset, not all seven. Writing an
 # operator row for an ungated category would manufacture exactly the defect
 # this task exists to remove — a policy row an operator can edit that no code
 # path reads — one layer further out.
+#
+# ONE WRITER (proposal §5 ruling 7, IMP-10e4f6c3bcd2): both sets are
+# POLICY_SETS entries ("runtime-manager" at the agent shape,
+# "runtime-operator" at scope "action_type") that
+# System::Governance::PolicyReconciler writes; the seed writes identity, chain
+# and trust only. Every example below runs the seed AND the reconciler.
 RSpec.describe "Runtime Manager operator-path intervention policies" do
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
@@ -38,9 +44,18 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
     end
   end
 
-  before { load_runtime_seed! }
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
 
-  let(:runtime_agent) { Ai::Agent.global.find_by!(name: "Runtime Manager") }
+  before do
+    load_runtime_seed!
+    reconcile!
+  end
+
+  # The account's ACTING principal for the canonical (HIER-P2I) — the row the
+  # reconciler writes against and the gate reads.
+  let(:runtime_agent) { System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "runtime-manager") }
   let(:service)       { Ai::InterventionPolicyService.new(account: account) }
 
   # Restated independently of the seed so a silent edit to either table shows up
@@ -53,7 +68,7 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
     }
   end
 
-  # The other four seeded categories. Each has a policy row an operator can see,
+  # The other four declared categories. Each has a policy row an operator can see,
   # and no gate site — tracked as separate offers rather than swept into this
   # change, because wiring them needs a surface (or an executor) that does not
   # exist yet, not a call.
@@ -66,7 +81,7 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
     ]
   end
 
-  it "seeds an active agent-less policy for every gated runtime verb" do
+  it "writes an active agent-less policy for every gated runtime verb" do
     missing = gated_verbs.keys.reject do |category|
       Ai::InterventionPolicy.exists?(
         account: account, ai_agent_id: nil, action_category: category, is_active: true
@@ -90,7 +105,7 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
   # The inverse enumeration, and the guard against the tempting over-fix. An
   # ungated category must NOT gain an operator row: the row would render as a
   # working control and still be read by nothing.
-  it "seeds no operator row for a runtime category that has no gate site" do
+  it "writes no operator row for a runtime category that has no gate site" do
     leaked = ungated_categories.select do |category|
       Ai::InterventionPolicy.exists?(account: account, ai_agent_id: nil, action_category: category)
     end
@@ -167,10 +182,11 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
                                                                          "priority out-ranked the scope tier — IMP-6430e3a8c4a1 regressed"
   end
 
-  # Seeds are re-run on every deploy. The operator set and the agent set each
-  # carry their own stale cleanup, and neither may eat the other's rows.
-  it "is idempotent across a re-run" do
-    expect { load_runtime_seed! }
+  # A seed re-run (targeted, on an established install) and a second
+  # reconcile pass must change nothing: the seed writes no row, the reconciler
+  # creates absence only.
+  it "is idempotent across a re-run of the seed and the reconciler" do
+    expect { load_runtime_seed!; reconcile! }
       .not_to change {
         Ai::InterventionPolicy.where(account: account)
                               .order(:action_category, :ai_agent_id)

@@ -19,7 +19,7 @@ require "rails_helper"
 # own tick, and gates the two CVE lanes DecisionEngine routes
 # (system.cve_remediate, system.module_critical_upgrade_ready). It kept the
 # pre-fix shape: a WARN nobody greps and a null `gate` nothing can query. Any
-# install whose system_cve_responder_agent seed rows never landed had its
+# install whose CVE Responder policy rows never landed had its
 # critical-CVE remediation lane dead in exactly the way IMP-5a450411d873 was
 # raised to end — and nothing said so.
 #

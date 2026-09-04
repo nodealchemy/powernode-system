@@ -14,8 +14,12 @@ require "rails_helper"
 # require_approval default instead. Wiring the remaining create/update executors
 # on top of that would have shipped maximal friction by accident.
 #
-# The seed now mirrors the SAME per-verb table onto agent-less rows, so one
-# recorded intent governs both audiences.
+# The SAME per-verb table is declared at both shapes (POLICY_SETS
+# "sdwan-manager" at the agent shape, "sdwan-operator" at scope
+# "action_type"), so one recorded intent governs both audiences — and ONE
+# writer, System::Governance::PolicyReconciler, writes both (proposal §5
+# ruling 7, IMP-10e4f6c3bcd2); the agent seed writes identity, chain and trust
+# only. Every example below runs the seed AND the reconciler, as a boot does.
 RSpec.describe "SDWAN operator-path intervention policies" do
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
@@ -28,9 +32,18 @@ RSpec.describe "SDWAN operator-path intervention policies" do
     end
   end
 
-  before { load_sdwan_seed! }
+  def reconcile!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
 
-  let(:sdwan_agent) { Ai::Agent.global.find_by!(name: "SDWAN Manager") }
+  before do
+    load_sdwan_seed!
+    reconcile!
+  end
+
+  # The account's ACTING principal for the canonical (HIER-P2I) — the row the
+  # reconciler writes against and the gate reads.
+  let(:sdwan_agent) { System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "sdwan-manager") }
   let(:service)     { Ai::InterventionPolicyService.new(account: account) }
 
   # The recorded per-verb intent, restated independently of the seed so a
@@ -100,7 +113,7 @@ RSpec.describe "SDWAN operator-path intervention policies" do
     }
   end
 
-  it "seeds an active agent-less policy for every recorded SDWAN verb" do
+  it "writes an active agent-less policy for every recorded SDWAN verb" do
     missing = operator_verbs.keys.reject do |category|
       Ai::InterventionPolicy.exists?(
         account: account, ai_agent_id: nil, action_category: category, is_active: true
@@ -153,8 +166,8 @@ RSpec.describe "SDWAN operator-path intervention policies" do
   #
   # What makes these rows operator-only is their SCOPE, not their nil
   # ai_agent_id (IMP-cb36021d4094): resolution drops the scope-"action_type"
-  # audience for an agent caller, which is the scope upsert_operator_policies!
-  # writes. A scope-"global" row would still bind this agent.
+  # audience for an agent caller, which is the scope the "sdwan-operator" set
+  # is declared at. A scope-"global" row would still bind this agent.
   it "keeps an unrelated monitored-tier agent on the require_approval default" do
     other_agent = create(:ai_agent, account: account, provider: provider,
                          name: "Unrelated Fleet Agent")
@@ -213,10 +226,11 @@ RSpec.describe "SDWAN operator-path intervention policies" do
                                                                          "priority out-ranked the scope tier — IMP-6430e3a8c4a1 regressed"
   end
 
-  # Seeds are re-run on every deploy. The operator set and the agent set each
-  # carry their own stale cleanup, and neither may eat the other's rows.
-  it "is idempotent across a re-run" do
-    expect { load_sdwan_seed! }
+  # A seed re-run (targeted, on an established install) and a second
+  # reconcile pass must change nothing: the seed writes no row, the reconciler
+  # creates absence only.
+  it "is idempotent across a re-run of the seed and the reconciler" do
+    expect { load_sdwan_seed!; reconcile! }
       .not_to change { Ai::InterventionPolicy.where(account: account).order(:action_category, :ai_agent_id).pluck(:action_category, :ai_agent_id, :policy) }
   end
 end

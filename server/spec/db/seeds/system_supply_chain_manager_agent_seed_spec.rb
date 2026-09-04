@@ -189,12 +189,20 @@ RSpec.describe "system_supply_chain_manager_agent seed" do
   describe "PolicyReconciler" do
     let(:logger) { Logger.new(IO::NULL) }
 
+    # HIER-P2I: the reconciler writes against the account's ACTING principal
+    # for a canonical — its clone, minted on first use — not the canonical.
+    def principal_for(agent_key)
+      System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: agent_key)
+    end
+
     it "no longer skips the set, and writes every declared category on a fresh install" do
       load_seed!("system_supply_chain_manager_agent.rb")
 
       result = System::Governance::PolicyReconciler.new(account: account, logger: logger).reconcile!
       expect(result.skipped_sets).not_to include("supply-chain-manager(agent absent)")
-      expect(policy_rows(agent)).to eq(declared)
+      principal = principal_for("supply-chain-manager")
+      expect(principal.cloned_from_id).to eq(agent.id)
+      expect(policy_rows(principal)).to eq(declared)
 
       report = System::Governance::PolicyReconciler.new(account: account, logger: logger).drift
       expect(report.missing.select { |m| m.set_key == "supply-chain-manager" }).to be_empty
@@ -214,11 +222,16 @@ RSpec.describe "system_supply_chain_manager_agent seed" do
       result = System::Governance::PolicyReconciler.new(account: account, logger: logger).reconcile!
 
       expect(result.rehomed).to include("supply-chain-manager/system.package_module.create (from Fleet Autonomy)")
-      expect(tuned.reload.ai_agent_id).to eq(agent.id)
+      # The tuned row first followed Fleet Autonomy onto its clone
+      # (AccountPrincipalResolver#follow_on_moves!), then moved to the Supply
+      # Chain Manager's clone: same id, verb and priority kept.
+      principal = principal_for("supply-chain-manager")
+      expect(tuned.reload.ai_agent_id).to eq(principal.id)
       expect(tuned.policy).to eq("notify_and_proceed")
       expect(tuned.priority).to eq(42)
       expect(policy_rows(fleet)).not_to have_key("system.package_module.create")
-      expect(policy_rows(agent).keys).to match_array(declared.keys)
+      expect(policy_rows(principal_for("fleet-autonomy"))).not_to have_key("system.package_module.create")
+      expect(policy_rows(principal).keys).to match_array(declared.keys)
     end
   end
 

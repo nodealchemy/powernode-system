@@ -52,7 +52,7 @@ RSpec.describe "adaptation lane end to end", type: :integration do
   end
 
   # The production policy for this change type, as
-  # system_provisioning_intervention_policies.rb seeds it.
+  # PolicyDeclarations::PROVISIONING_POLICIES declares it.
   let!(:policy) do
     Ai::InterventionPolicy.create!(
       account: account, ai_agent_id: fleet_agent.id, scope: "agent",

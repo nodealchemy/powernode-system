@@ -787,8 +787,8 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
 
       before do
-        # Both categories seeded as db/seeds/fleet_autonomy_agent.rb ships
-        # them, so this example pins the PROPERTY (which remediation runs)
+        # Both categories declared as PolicyDeclarations ships them, so this
+        # example pins the PROPERTY (which remediation runs)
         # rather than mirroring whichever binding is currently live.
         policy!("system.sdwan_key_rotate", "auto_approve")
         policy!("system.sdwan_credential_refresh", "notify_and_proceed")

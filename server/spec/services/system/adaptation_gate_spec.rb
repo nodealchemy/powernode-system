@@ -55,8 +55,8 @@ RSpec.describe System::AdaptationGate do
     )
   end
 
-  # Production seeds a policy PER change_type
-  # (system_provisioning_intervention_policies.rb), so a scale_horizontal
+  # Production declares a policy PER change_type
+  # (PolicyDeclarations::PROVISIONING_POLICIES), so a scale_horizontal
   # adaptation resolves `project.scale_horizontal` — not the coarse
   # `project.adapt` the signal-level bindings use.
   def policy!(policy, category: "project.scale_horizontal")

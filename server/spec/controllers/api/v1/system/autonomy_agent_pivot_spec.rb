@@ -33,11 +33,10 @@ require "rails_helper"
 # reconciler is the SINGLE WRITER of declared rows; an agent seed writes
 # identity, prompt, chain, trust, tool_access and skills only, and an agent set
 # counts as SEEDED when its agent's seed exists AND the reconciler declares its
-# rows. The legacy seeds that still upsert their own rows are grandfathered
-# (the reconciler short-circuits on a row the owner already has), so the seed
-# scan is KEPT as the second direction: every agent a seed writes agent-scoped
-# rows for must be a declared owner, or the seed is writing rows the reconciler
-# and the tick do not know about.
+# rows. Since IMP-10e4f6c3bcd2 NO seed writes a row at all; the seed scan is
+# KEPT as a ratchet that must stay EMPTY — a seed that starts writing
+# agent-scoped rows again is writing rows the reconciler and the tick do not
+# know about.
 #
 # Deriving the ORACLE, not the CONSTANT. The constant stays a literal on
 # purpose: the two sound runtime sources are both wrong here. Reading db/seeds
@@ -57,11 +56,12 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   # direct `Ai::InterventionPolicy` write.
   #
   # Gating on the literal `scope: "agent"` instead is too narrow, and provably
-  # so rather than theoretically: `system_provisioning_intervention_policies.rb`
-  # writes agent-scoped rows through `scope = fleet_agent ? "agent" : "global"`
-  # and then `scope: scope`, so the literal never appears and the whole file
-  # went unscanned. It contributes Fleet Autonomy, which another seed supplies
-  # anyway — so the omission changed no result and was invisible. That is
+  # so rather than theoretically: the since-deleted
+  # `system_provisioning_intervention_policies.rb` wrote agent-scoped rows
+  # through `scope = fleet_agent ? "agent" : "global"` and then `scope: scope`,
+  # so the literal never appeared and the whole file went unscanned. It
+  # contributed Fleet Autonomy, which another seed supplied anyway — so the
+  # omission changed no result and was invisible. That is
   # exactly the shape of drift this file exists to catch, and the reason the
   # gate is deliberately loose: a file that writes only global/action_type rows
   # (`system_manual_operation_policies.rb`) resolves no agent name and still
@@ -101,7 +101,8 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
       .sort
   end
 
-  # Agents some seed writes agent-scoped POLICY ROWS for (the legacy shape).
+  # Agents some seed writes agent-scoped POLICY ROWS for (the RETIRED shape —
+  # empty since IMP-10e4f6c3bcd2, pinned below).
   let(:seeded_policy_agents) { seed_names { |source| policy_agent_names_in(source) } }
 
   # Agents some seed produces the IDENTITY of (the convention's "seeded").
@@ -230,8 +231,11 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   # return nothing — at which point the two set comparisons pass VACUOUSLY and
   # the effect example asserts nothing at all.
   it "has real inputs (guards the examples above from passing vacuously)" do
-    expect(seeded_policy_agents.size).to be >= 6
-    expect(seeded_policy_agents).to include("Fleet Autonomy", "GitOps Reconciler", "SDWAN Manager")
+    # THE RATCHET COMPLETED (IMP-10e4f6c3bcd2, proposal §5 ruling 7): no seed
+    # writes an agent-scoped policy row any more, so the legacy scan is EMPTY
+    # and stays empty.
+    expect(seeded_policy_agents).to be_empty,
+      "seed file(s) write agent-scoped policy rows again: #{seeded_policy_agents.join(', ')}"
     expect(declared_policy_agents.size).to be >= 11
     expect(declared_policy_agents).to include("Capacity Manager", "System Topology Designer")
 
@@ -256,25 +260,15 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
       "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
     )
 
-    # The legacy row-writing seeds are a SUBSET of the identity scan and never
-    # grow past it (the rewrite of those seeds onto the reconciler is a filed
-    # improvement, not this spec's job); the reference shape is pinned by name.
-    expect(seeded_policy_agents - seeded_agents).to be_empty
-    expect(seeded_policy_agents).not_to include("Supply Chain Manager")
-
     # The identifier-resolution branch specifically: the GitOps Reconciler seed
     # passes a local variable to `find_or_initialize_global_agent`, so a scan
-    # that only matched string literals would silently omit the one agent this
-    # file exists for and still satisfy the size floor above.
-    gitops = policy_agent_names_in(File.read(File.join(seed_dir, "system_gitops_reconciler_agent.rb")))
+    # that only matched string literals would silently omit that agent and
+    # still satisfy the floor above.
+    gitops = global_agent_names_in(File.read(File.join(seed_dir, "system_gitops_reconciler_agent.rb")))
     expect(gitops).to eq([ "GitOps Reconciler" ])
 
-    # And the exclusion is a real derivation, not an artifact of those two
-    # seeds being unreadable: both files ARE scanned, produce their identity,
-    # and contribute no POLICY agent because neither writes a policy row —
-    # the Concierge carries none, the Supply Chain Manager leaves its seven to
-    # the reconciler.
-    expect(seeded_policy_agents).not_to include("System Concierge", "Supply Chain Manager")
+    # And the empty policy scan is a real derivation, not an artifact of the
+    # seed files being unreadable: the identity scan reads the same files.
     expect(seeded_agents).to include("System Concierge", "Supply Chain Manager")
     expect(Dir[File.join(seed_dir, "system_{concierge,supply_chain_manager}_agent.rb")].size).to eq(2)
   end

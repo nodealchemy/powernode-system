@@ -61,24 +61,16 @@ RSpec.describe "routed lane / intervention policy coherence" do
     System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(owner_key_for(category))[:name]
   end
 
-  # The REAL seeds are loaded, not a hand-built set of policies. That is the
+  # The REAL seeds are loaded, not a hand-built set of agents. That is the
   # whole point: this must fail when a lane is declared in code and no seed
-  # produces a row for it. Building the policies here with a helper would only
-  # prove the spec agrees with itself.
+  # produces the agent whose set carries it. Building the agents here with a
+  # factory would only prove the spec agrees with itself.
   #
-  # Fleet-Autonomy-scoped policies are split across TWO files — the agent seed
-  # and the provisioning policy seed (which writes project.* onto the SAME
-  # agent). Loading only one produced four false positives on the first run.
-  # Every owner agent's seed is loaded, because every owner must carry its rows.
-  #
-  # HIER-P2B: listed in SYSTEM_SEED_FILES ORDER — every agent seed, then the
-  # first-boot POLICY seeds that write onto one of them. The order is
-  # load-bearing, not cosmetic: an agent seed writes its own declared set, and
-  # PolicyReconciler short-circuits on a category the owner already has
-  # (`existing.include?(action_category)`), so a policy seed that resolves the
-  # WRONG agent after the owner's seed ran leaves a duplicate the reconciler
-  # can never re-home. Loading these in the real order is what makes that
-  # visible here.
+  # Every owner agent's seed is loaded, in SYSTEM_SEED_FILES order. Since
+  # IMP-10e4f6c3bcd2 (proposal §5 ruling 7) NO seed writes a policy row —
+  # PolicyReconciler is the single writer, run by `boot!` below exactly as
+  # rails-start.sh runs it after db:seed — so the first-boot policy seeds that
+  # used to follow the agent seeds here are gone with their files.
   SEEDS = %w[
     fleet_autonomy_agent
     system_runtime_manager_agent
@@ -91,8 +83,6 @@ RSpec.describe "routed lane / intervention policy coherence" do
     system_storage_manager_agent
     system_ingress_manager_agent
     system_supply_chain_manager_agent
-    system_instance_pool_policies
-    system_provisioning_intervention_policies
   ].freeze
 
   # HIER-P2DECL: the boot that this spec models is seeds + PolicyReconciler —
@@ -164,7 +154,8 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # Guards the derivation itself. The CVE lanes must genuinely be carried by
   # the CVE Responder agent and derive to it, so the owner rule can never be
   # used to silence a lane — only to move which agent is responsible for it.
-  it "actually seeds every CVE lane onto the CVE Responder agent, and derives that owner" do
+  it "actually reconciles every CVE lane onto the CVE Responder agent, and derives that owner" do
+    boot!
     expect(policies_for("CVE Responder")).to include(*CVE_GATED)
     CVE_GATED.each { |category| expect(owner_name_for(category)).to eq("CVE Responder") }
   end
@@ -173,7 +164,8 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # this, an owner_of that answered fleet-autonomy for everything would keep
   # the sweep above green while the tick gated the sdwan lanes against rows
   # that are not there.
-  it "derives specialist owners for the re-homed lanes and seeds them there" do
+  it "derives specialist owners for the re-homed lanes and reconciles them there" do
+    boot!
     expect(owner_name_for("system.sdwan_peer_remediate")).to eq("SDWAN Manager")
     expect(owner_name_for("system.gitops_drift_remediate")).to eq("GitOps Reconciler")
     expect(owner_name_for("system.disk_image_publication_investigate")).to eq("Disk Image Manager")
@@ -198,9 +190,8 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Storage Manager")).to include("system.storage_assignment_reconcile")
     expect(policies_for("Supply Chain Manager")).to include("system.package_repository.sync")
     expect(policies_for("System Topology Designer")).to include("system.sdwan_federation_compose")
-    # Since HIER-P2B the provisioning seed writes project.* onto the Capacity
-    # Manager directly, so there is no Fleet Autonomy row to re-home and none
-    # left behind either.
+    # The reconciler writes project.* onto the Capacity Manager directly, so
+    # there is no Fleet Autonomy row to re-home and none left behind either.
     expect(policies_for("Fleet Autonomy")).not_to include("project.adapt", "system.instance_replace")
   end
 
@@ -216,11 +207,12 @@ RSpec.describe "routed lane / intervention policy coherence" do
       "PolicyReconciler skipped #{result.skipped_sets.inspect} on a fresh install seeded from SEEDS"
   end
 
-  # project.* used to be the exception to that gap (their seed wrote them onto
-  # Fleet Autonomy, so the fallback gate found them). HIER-P2B re-pointed that
-  # seed at the owner, so they are on the Capacity Manager now — and the
-  # "no Fleet Autonomy duplicate" example below pins that the owner's rows are
-  # not shadowed by a leftover copy on the former owner.
+  # project.* used to be the exception to that gap (a first-boot seed wrote
+  # them onto Fleet Autonomy, so the fallback gate found them). HIER-P2B
+  # re-pointed that seed at the owner and IMP-10e4f6c3bcd2 retired it: the
+  # reconciler writes them onto the Capacity Manager — and the "no Fleet
+  # Autonomy duplicate" example below pins that the owner's rows are not
+  # shadowed by a leftover copy on the former owner.
   it "writes the project.* provisioning rows onto the Capacity Manager, none onto Fleet Autonomy" do
     boot!
 
@@ -247,19 +239,16 @@ RSpec.describe "routed lane / intervention policy coherence" do
   end
 
   # HIER-P2B — the FIRST-BOOT DUPLICATE, which the reconciler provably cannot
-  # clean up. `db/seeds/system_capacity_manager_agent.rb` runs at position 9 of
-  # SYSTEM_SEED_FILES and writes every declared CAPACITY_MANAGER_POLICIES row;
-  # `system_instance_pool_policies.rb` (15) and
-  # `system_provisioning_intervention_policies.rb` (19) run after it. While
-  # those two resolved "Fleet Autonomy", a fresh install ended up with 14
-  # ACTIVE agent-scope rows on an agent that no longer declares any of them —
+  # clean up. While two policy seeds ran AFTER the Capacity Manager's seed and
+  # resolved "Fleet Autonomy", a fresh install ended up with 14 ACTIVE
+  # agent-scope rows on an agent that no longer declares any of them —
   # including an auto_approve row for `project.scale_horizontal`. Nothing
   # collects them: PolicyReconciler#reconcile! answers `present` and skips
   # `rehomable_row` for a category the owner already has, and
   # AgentSetupHelpers.clean_unregistered_policies! only collects DEREGISTERED
-  # categories. That is the "row the gate never reads" class this campaign
-  # exists to close, so it is asserted against the real seed order rather than
-  # argued about.
+  # categories. Those seeds are gone (IMP-10e4f6c3bcd2) and the reconciler is
+  # the only writer; this pins that the boot model leaves no such duplicate,
+  # asserted rather than argued about.
   it "leaves no Fleet Autonomy duplicate for a category the Capacity Manager owns" do
     boot!
 

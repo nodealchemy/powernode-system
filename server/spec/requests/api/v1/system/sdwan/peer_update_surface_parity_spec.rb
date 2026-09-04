@@ -272,7 +272,7 @@ RSpec.describe "SDWAN peer update surface parity", type: :request do
         .to be_empty, "the peer was elected a hub with no approval under require_approval"
     end
 
-    # THE STATED CONSEQUENCE. system_sdwan_manager_agent.rb seeds
+    # THE STATED CONSEQUENCE. PolicyDeclarations::SDWAN_OPERATOR_POLICIES declares
     # sdwan.peer_update notify_and_proceed for the agent-less
     # scope-"action_type" audience — the one an operator or MCP caller
     # resolves against — so on a seeded install this arm elects a hub
