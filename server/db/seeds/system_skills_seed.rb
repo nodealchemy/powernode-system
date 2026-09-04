@@ -1151,6 +1151,34 @@ SKILLS_DATA = [
       default) — a new source of truth the reconciler will act on.
     PROMPT
   },
+  # HIER-P3 — the Platform Architect's PROPOSE skill (proposal §2 Phase 3):
+  # bound to a CORE canonical (binds_to "platform_architect"), the first
+  # extension executor to do so. Gated on dev.campaign_propose (core's
+  # engineering category, auto_approve on the Platform Architect — the offer
+  # IS the human gate).
+  {
+    name: "Governance Gap Propose",
+    slug: "system-governance-gap-propose",
+    description: "File or update the one reviewable improvement offer for a governance gap the fleet tick detected, and materialise the runtime-closable kinds (a skill binding, a prompt refinement, a lineage edge, a delegation policy) under the Platform Architect's gates",
+    category: "skill_management",
+    subdomain: "governance",
+    executor: "System::Ai::Skills::GovernanceGapProposeExecutor",
+    tags: %w[governance improvement offer hierarchy skills policies],
+    system_prompt: <<~PROMPT.strip
+      Turn one system.governance_gap signal into the one Ai::ImprovementRecommendation
+      that closes it — idempotent on the signal fingerprint (a re-detection updates
+      the open offer, never files a second).
+      Inputs: gap (required — the GovernanceGapSensor payload: gap_kind, subject,
+      recommendation_type, summary, files, materialization), fingerprint (required),
+      severity, dry_run.
+      Runtime-closable gaps are ALSO materialised through
+      System::Governance::GapMaterializer: a skill binding or a prompt refinement
+      auto-applies only from the `trusted` trust tier (dev.skill_refine /
+      dev.prompt_refine); a lineage edge or delegation policy parks for an operator
+      whatever the tier (dev.governance_materialize). A parked materialisation is
+      NOT a failure — report the deferred_operation_id and stop.
+    PROMPT
+  },
 ].freeze
 
 # ─────────────────────────────────────────────────────────────────────

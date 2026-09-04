@@ -53,7 +53,12 @@ module System
           end
         end
 
-        Drift = Struct.new(:missing, :stale, :unknown_agents, :missing_skills, :registry_empty, keyword_init: true) do
+        # `missing_pairs` is the STRUCTURED form of `missing` (agent id + skill
+        # id + names, one hash per pair) — what GovernanceGapSensor hands to
+        # GapMaterializer so a missing binding can be applied under the
+        # dev.skill_refine gate rather than only reported (HIER-P3).
+        Drift = Struct.new(:missing, :missing_pairs, :stale, :unknown_agents, :missing_skills, :registry_empty,
+                           keyword_init: true) do
           def drifted?
             missing.any? || stale.any?
           end
@@ -99,6 +104,10 @@ module System
           missing = plan[:desired].reject { |pair| existing.include?(pair) }
           Drift.new(
             missing: missing.map { |pair| describe_pair(plan, pair) },
+            missing_pairs: missing.map do |agent_id, skill_id|
+              { "agent_id" => agent_id, "agent_name" => plan[:agents_by_id][agent_id]&.name,
+                "skill_id" => skill_id, "skill_slug" => plan[:skills_by_id][skill_id]&.slug }
+            end,
             stale: stale_bindings(plan).map { |row| describe_pair(plan, [ row.ai_agent_id, row.ai_skill_id ]) },
             unknown_agents: plan[:unknown_agents],
             missing_skills: plan[:missing_skills],
@@ -173,12 +182,34 @@ module System
         # Without it the boot path would destroy every binding on System
         # Concierge — ENTRY_SKILL_BINDINGS alone keeps it in scope — on every
         # boot, behind a non-fatal rescue.
+        #
+        # NEVER on a CORE canonical (HIER-P3). GovernanceGapProposeExecutor binds
+        # the Platform Architect, which made it a registry-named agent — and
+        # the first boot after that destroyed its four CORE bindings (Agent
+        # Autonomy, AI Agent Architect, Design Agent Team From Intent, Skill
+        # Management, written by the parent tree's
+        # db/seeds/platform_skill_assignments_seed.rb) because this registry
+        # does not declare them. The registry is the source of truth for the
+        # EXTENSION's agents only; on a core canonical it upserts its own pairs
+        # and leaves every other binding where core put it.
         def stale_bindings(plan)
           return [] if plan[:registry_empty] || plan[:registry_agent_ids].empty?
 
+          owned_ids = plan[:registry_agent_ids] - core_canonical_agent_ids(plan)
+          return [] if owned_ids.empty?
+
           desired = plan[:desired].to_set
-          ::Ai::AgentSkill.where(ai_agent_id: plan[:registry_agent_ids])
+          ::Ai::AgentSkill.where(ai_agent_id: owned_ids)
                           .reject { |row| desired.include?([ row.ai_agent_id, row.ai_skill_id ]) }
+        end
+
+        # The registry-named agents that are CORE canonicals — declared as such
+        # by PolicyDeclarations::CORE_CANONICAL_KEYS, resolved by the identity
+        # name the registry binds them under.
+        def core_canonical_agent_ids(plan)
+          declarations = ::System::Governance::PolicyDeclarations
+          names = declarations::CORE_CANONICAL_KEYS.map { |key| declarations::AGENT_IDENTITIES.fetch(key)[:name] }
+          plan[:agents_by_id].values.select { |agent| names.include?(agent.name) }.map(&:id)
         end
 
         def bound_by_agent(plan)

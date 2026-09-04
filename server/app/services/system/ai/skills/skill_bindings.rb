@@ -49,7 +49,14 @@ module System
           "capacity_manager"     => "Capacity Manager",
           "storage_manager"      => "Storage Manager",
           "ingress_manager"      => "Ingress Manager",
-          "supply_chain_manager" => "Supply Chain Manager"
+          "supply_chain_manager" => "Supply Chain Manager",
+          # HIER-P3: the Platform Architect is a CORE canonical (seeded by
+          # db/seeds/ai_engineering_agents_seed.rb in the parent tree), the
+          # first one an extension executor binds — GovernanceGapProposeExecutor
+          # routes through this slug. Declared in PolicyDeclarations::
+          # AGENT_IDENTITIES under CORE_CANONICAL_KEYS, so the alias target is
+          # pinned to a declared identity like the others.
+          "platform_architect"   => "Platform Architect"
         }.freeze
 
         class << self
