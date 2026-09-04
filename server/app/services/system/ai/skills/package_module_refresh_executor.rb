@@ -54,11 +54,12 @@ module System
           # queued nothing (IMP-9b8d774298d5 made the output admit that; this
           # makes the delivery real).
           #
-          # Not every door is fixed: Ai::Tools::SystemPackageRepositoryTool
+          # Every door is now fixed: Ai::Tools::SystemPackageRepositoryTool
           # #refresh_package_module (the MCP `system_refresh_package_module`
-          # operator action) still does the same `perform_async if defined?`
-          # and still answers `enqueued: true`. It is owned by another lane
-          # and tracked separately — do not read this note as "all callers".
+          # operator action) carried the same `perform_async if defined?`
+          # no-op behind an unconditional `enqueued: true`, and since
+          # IMP-915d1dbdcdba it delegates HERE instead, so MCP and direct
+          # skill invocation share one implementation and one result shape.
           #
           # WorkerJobEnqueuer writes the Sidekiq wire format straight into the
           # worker's Redis, the same way PackageRepositorySyncService.enqueue!

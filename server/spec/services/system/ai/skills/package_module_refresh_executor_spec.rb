@@ -11,9 +11,10 @@ require "rails_helper"
 # materialized a candidate version. The server's route to Sidekiq is
 # System::WorkerJobEnqueuer (the raw-Redis wire seam
 # PackageRepositorySyncService already uses); these specs pin the refresh to
-# it. The identical no-op in the MCP door
-# (Ai::Tools::SystemPackageRepositoryTool#refresh_package_module) is NOT
-# covered here — different lane, tracked separately.
+# it. The MCP door (Ai::Tools::SystemPackageRepositoryTool
+# #refresh_package_module) carried the identical no-op until
+# IMP-915d1dbdcdba routed it through this executor; its own delegation is
+# pinned in system_package_repository_tool_spec.rb.
 RSpec.describe System::Ai::Skills::PackageModuleRefreshExecutor do
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
