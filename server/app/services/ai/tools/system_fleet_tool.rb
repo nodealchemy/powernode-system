@@ -1082,13 +1082,14 @@ module Ai
           # MCP tool argument (crypto-safety); rotate keys via the REST/Vault
           # path instead.
           "system_update_node" => {
-            description: "Update a node's mutable attributes (rename, enable/disable, retarget template/worker, public-address config). Does NOT accept SSH key material — manage keys via the REST/Vault path.",
+            description: "Update a node's mutable attributes (rename, enable/disable, retarget template/worker, public-address config). Does NOT accept SSH key material — manage keys via the REST/Vault path. " \
+                         "Retargeting `node_template_id` REPLACES the node's template-derived modules (see that parameter) and reports the result in `template_applied`.",
             parameters: {
               node_id: { type: "string", required: true, description: "UUID of the node to update (account-scoped)" },
               name: { type: "string", required: false, description: "New display name for the node" },
               description: { type: "string", required: false, description: "New free-text description for the node" },
               enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the node" },
-              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to" },
+              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence` — live cloud_init instances get a sync_modules task, pivot-booted (direct_kernel/uefi_disk) instances are listed under `deferred` and need a reboot/rolling reprovision before the change takes effect." },
               worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
               public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
               allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
@@ -2912,6 +2913,29 @@ module Ai
 
       # F8-07 — REST update parity (nodes_controller node_params MINUS
       # ssh_key/ssh_host_key, which never flow through an MCP tool argument).
+      #
+      # IMP-53e7df9f2ae1 — this is also the RE-TEMPLATE door, and it used to
+      # move the pointer alone. A node's modules are NodeModuleAssignment rows;
+      # the only thing that materializes them from a template's closure is
+      # System::TemplateApplyService, and every caller of it was
+      # provisioning-time or the REST twin
+      # (nodes_controller#apply_template). System::Node has no callback on a
+      # node_template_id change, and System::Runtime::SyncModules reconciles
+      # `node.node_module_assignments` — never the template — so even the
+      # agent's own refresh re-applied the OLD module set. The operator got a
+      # success and the node kept running the previous template's modules.
+      #
+      # Fixed HERE rather than behind a new verb on purpose. The property the
+      # operator ruled on is "after any operation that changes a provisioned
+      # node's template, the attached modules match the new template"; a
+      # separate verb makes that opt-in and leaves this shipped surface still
+      # able to diverge, which is the defect. The apply is bounded to exactly
+      # what the ruling covers — apply!(purge_stale: true) removes only rows
+      # with a NON-NULL source_template_module_id outside the new closure, so
+      # out-of-band assignments (InferenceDeploymentService,
+      # Sdwan::FlowExporterDeployer, ModuleCommitService all create them with a
+      # NULL source) survive by construction — and it is not silent: the reply
+      # carries `template_applied` with the created/purged module ids.
       def update_node(params)
         node = account_nodes.find(params[:node_id])
         attrs = params.slice(
@@ -2920,10 +2944,99 @@ module Ai
         ).to_h.compact
         return error_result("no mutable fields supplied") if attrs.empty?
 
-        node.update!(attrs)
-        success_result(node: serialize_node_full(node.reload))
+        previous_template_id = node.node_template_id
+        applied = nil
+        apply_errors = nil
+
+        # One transaction so the pointer can never land without the modules.
+        # #apply! rescues RecordInvalid internally and answers ok: false rather
+        # than raising, so the rollback has to be explicit.
+        ActiveRecord::Base.transaction do
+          node.update!(attrs)
+          if node.node_template_id != previous_template_id
+            result = ::System::TemplateApplyService.new(node).apply!(purge_stale: true)
+            unless result.ok?
+              apply_errors = Array(result.errors)
+              raise ActiveRecord::Rollback
+            end
+            applied = {
+              created_module_ids: result.created.map(&:node_module_id),
+              purged_module_ids: result.purged.map(&:node_module_id),
+              warnings: Array(result.warnings)
+            }
+          end
+        end
+
+        if apply_errors
+          return error_result(
+            "node retarget rolled back — template apply failed: #{apply_errors.join('; ')}"
+          )
+        end
+
+        # Dispatch AFTER the commit: a sync_modules task the agent picks up
+        # before the assignments are visible would reconcile the old set.
+        applied[:convergence] = dispatch_retemplate_convergence!(node) if applied
+
+        payload = { node: serialize_node_full(node.reload) }
+        payload[:template_applied] = applied if applied
+        success_result(payload)
       rescue ActiveRecord::RecordInvalid => e
         error_result("node validation failed: #{e.record.errors.full_messages.join('; ')}")
+      end
+
+      # The actuation rung for a re-template. Right assignments are not a
+      # converged node — System::Runtime::SyncModules is what commits them onto
+      # the box — and the rung is not the same for every instance:
+      #
+      #   - cloud_init: the on-node reconcile loop can remount the union live,
+      #     so a sync_modules Task converges it now (the same path
+      #     system.module_drift and Fleet::DecisionEngine#
+      #     apply_template_closure_drift use).
+      #   - pivot boot (direct_kernel/uefi_disk): the composed union is fixed at
+      #     boot, so a live sync updates running_module_digests and remounts
+      #     nothing. Queuing the task would report an actuation that never
+      #     happens, so these are DECLARED deferred to a reboot / rolling
+      #     reprovision instead.
+      #
+      # Scoped to live instances via TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE
+      # — the same blast-radius definition TemplateClosureDriftSensor reuses —
+      # so a terminated instance gets no task. Read inside the method rather
+      # than into a class-body constant so extension load order cannot bite.
+      def dispatch_retemplate_convergence!(node)
+        live_statuses =
+          ::System::Ai::Skills::TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE[:system_node_instances][:status]
+
+        dispatched = []
+        deferred   = []
+        task_ids   = []
+
+        node.node_instances.where(status: live_statuses).find_each do |instance|
+          if instance.pivot_boot?
+            deferred << instance.id
+            next
+          end
+
+          task = ::System::Task.create!(
+            account: @account, operable: instance,
+            command: "sync_modules", status: "pending",
+            initiated_by: @user,
+            options: {
+              "source" => "mcp_retemplate_node",
+              "triggered_by_user_id" => @user&.id,
+              "triggered_at" => Time.current.iso8601
+            }
+          )
+          dispatched << instance.id
+          task_ids << task.id
+        end
+
+        result = { dispatched: dispatched, task_ids: task_ids, deferred: deferred }
+        if deferred.any?
+          result[:reason] =
+            "pivot-booted instances compose their module union at boot — the assignments are updated, " \
+            "but a reboot (rolling reprovision) is required for them to take effect"
+        end
+        result
       end
 
       def delete_node(params)
