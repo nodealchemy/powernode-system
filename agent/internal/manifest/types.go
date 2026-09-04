@@ -110,7 +110,7 @@ type ManifestSudoer struct {
 // Each maps 1:1 to a system_module_services row.
 //
 // Lifecycle on the on-node agent (internal/lifecycle):
-//   - attachModule writes /etc/systemd/system/powernode-<mod>-<name>.service
+//   - attachModuleServices writes /etc/systemd/system/powernode-<mod>-<name>.service
 //     from these fields, runs systemctl daemon-reload + start
 //   - detachModule stops + removes the unit + daemon-reload
 //   - Services are started in topological order over

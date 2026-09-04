@@ -588,10 +588,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	}
 
 	// Attaches in priority order (low → high). Walks toAttach (new
-	// mounts: fresh erofs pull + verify + mount + AttachServices) and
-	// toReattach (already-mounted but manifest-changed: skips the pull/
-	// mount via attachModule's idempotency, re-runs AttachServices to
-	// pick up the new units). Each successful attach refreshes the
+	// mounts: fresh erofs pull + verify + mount, then materialize, then
+	// attachModuleServices) and toReattach (already-mounted but
+	// manifest-changed: skips the pull/mount via attachModule's idempotency,
+	// re-materializes, then re-runs attachModuleServices to pick up the new
+	// units). In BOTH loops the file materialization is gated ahead of the
+	// service start, and a refused materialization skips the start entirely.
+	// Each successful attach refreshes the
 	// per-module manifest hash so the next cycle's diff sees no drift.
 	// Reaching the compose stage re-opens the verdict: a failure recorded on an
 	// earlier pass must not outlive a pass that composed cleanly.
@@ -633,14 +636,21 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// as running while the live root still serves the old files.
 			delete(current.LastAttachedManifestHashes, mod.ID)
 			unmaterialized[mod.ID] = true
+			// AND DO NOT START THE UNITS. Starting them here would run the new
+			// unit definitions against content that was never written — the
+			// deploy-4 shape. Declining leaves whatever is already running
+			// untouched, which is a state the node was already in.
+			continue
 		}
+		r.attachModuleServices(ctx, mod, mf)
 	}
 
 	// Re-attach loop for manifest-only changes. attachModule is
 	// idempotent on its mount + cosign + fs-verity + policy steps
 	// (cached results return immediately) — the meaningful work here is
-	// the AttachServices call inside, which writeIfChanged-s each unit
-	// file and runs daemon-reload only when at least one wrote.
+	// the attachModuleServices call below, which writeIfChanged-s each unit
+	// file and runs daemon-reload only when at least one wrote. It runs only
+	// after the materialization is known to have succeeded.
 	for _, mod := range mount.ModuleStack(toReattach).SortByPriority() {
 		mf, ok := manifests[mod.ID]
 		if !ok {
@@ -654,10 +664,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
 			// Same re-queue as the attach loop: a refused materialization must
 			// not leave a stamp claiming this manifest is materialized, and
-			// must not leave the heartbeat claiming it is running.
+			// must not leave the heartbeat claiming it is running — and must
+			// not restart the units against content that is not there.
 			delete(current.LastAttachedManifestHashes, mod.ID)
 			unmaterialized[mod.ID] = true
+			continue
 		}
+		r.attachModuleServices(ctx, mod, mf)
 	}
 
 	// Deferred leaver prunes — after both attach loops so every desired
@@ -1025,8 +1038,11 @@ func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.Mo
 	}
 }
 
-// attachModule pulls + verifies + mounts a single module, then applies security
-// policy and starts its units in the cloud_init (RootDirectory chroot) model.
+// attachModule pulls + verifies + mounts a single module and applies its
+// security policy. It deliberately does NOT start the module's units — that is
+// attachModuleServices, which every caller must invoke separately once the
+// module's FILES are on disk. See attachModuleServices for why the two halves
+// are split.
 func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
 	if err := r.mountModuleArtifact(ctx, mod); err != nil {
 		return err
@@ -1101,21 +1117,42 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		}
 	}
 
-	// P8.1 — Service lifecycle. lifecycle.AttachServices writes one
-	// systemd unit file per system_module_services row, runs
-	// daemon-reload, then starts services in topological order over
-	// declared dependencies.
-	//
-	// Modules with an empty services list are content-only by design
-	// (e.g. powernode-base-ruby ships the Ruby runtime that hub-backend
-	// + hub-worker layer on top of, powernode-extension-system ships
-	// Ruby code, powernode-hub-frontend ships static assets served by
-	// reverse-proxy). For these, the mount itself is the contribution —
-	// silent no-op is the right behavior. The detach path below mirrors
-	// this: it skips DetachServices when Services is empty without
-	// surfacing anything to OnError.
+	return nil
+}
+
+// attachModuleServices is the SECOND half of an attach: the systemd side.
+//
+// It is separate from attachModule because of an ordering invariant the two
+// halves must satisfy and a single function could not: the module's FILES must
+// be on disk before its units are (re)started. attachModule leaves the module
+// mounted and its security policy applied — both prerequisites of the
+// materialization — and the caller runs hotReconcileIfNeeded between the two.
+// A caller that refuses the materialization must NOT call this.
+//
+// WHY. Until 2026-09-04 the service start lived at the end of attachModule, so
+// it ran BEFORE anything materialized the new content. A materialization that
+// was then refused (scratch budget) or that aborted mid-walk left systemd
+// running the NEW unit definitions against the OLD or half-written tree — the
+// update did not merely fail to apply, it applied wrong. Live: ops-hub deploy 4
+// served hub-frontend v29's Sep-3 index.html over its new assets, and the
+// v92/v93 backend strand is the same defect on a module that has units.
+//
+// P8.1 — Service lifecycle. lifecycle.AttachServices writes one
+// systemd unit file per system_module_services row, runs
+// daemon-reload, then starts services in topological order over
+// declared dependencies.
+//
+// Modules with an empty services list are content-only by design
+// (e.g. powernode-base-ruby ships the Ruby runtime that hub-backend
+// + hub-worker layer on top of, powernode-extension-system ships
+// Ruby code, powernode-hub-frontend ships static assets served by
+// reverse-proxy). For these, the mount itself is the contribution —
+// silent no-op is the right behavior. The detach path below mirrors
+// this: it skips DetachServices when Services is empty without
+// surfacing anything to OnError.
+func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest) {
 	if len(mf.Services) == 0 {
-		return nil
+		return
 	}
 	// Boot-model-aware: the reconcile loop runs post-pivot on a hub
 	// (module union IS /, render native) AND on cloud_init hosts (guest
@@ -1128,8 +1165,6 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
 	}
-
-	return nil
 }
 
 // hotReconcileIfNeeded is called after a successful attachModule for BOTH
@@ -1661,6 +1696,12 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	if err := r.attachModule(ctx, mod, mf); err != nil {
 		return "", err
 	}
+	// Unconditional, unlike the two reconcile loops: this path never runs
+	// hotReconcileIfNeeded, so there is no materialization verdict to honour
+	// and nothing to gate on. The operator asked for a single hot-add and the
+	// CLI promises "mount + start units" — returning attach_status="attached"
+	// with no unit would be a false success.
+	r.attachModuleServices(ctx, mod, mf)
 
 	current.AttachedModules = append(current.AttachedModules, mod)
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
