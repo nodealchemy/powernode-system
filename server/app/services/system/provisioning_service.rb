@@ -33,6 +33,55 @@ module System
       # unconfigured, which is every plane today).
       assert_not_self_managed!(node, action: "provision an instance onto")
 
+      # Idempotency — a retried call carrying the same operation_id must not
+      # spin up a second instance. Reuse a prior instance tagged with this
+      # operation_id unless it ended in a terminal state (terminated/error) —
+      # a retry after a hard failure must provision fresh, not return the
+      # dead row. A unique index on config->>'operation_id' would
+      # harden this against concurrent racers; the check-then-create here
+      # covers the common sequential-retry case.
+      #
+      # This resolves BEFORE the quota guard below, deliberately
+      # (IMP-b54e49ddfc40). A replay that resolves to an existing operation
+      # provisions nothing, so it must not be counted as a new provision: the
+      # guard's active-instance count already includes the row the FIRST
+      # attempt created, and with the guard first a retry of a succeeded
+      # provision at cap was denied for a machine that exists and is billing
+      # — the exact situation operation_id exists to make safe.
+      #
+      # What the ordering establishes, precisely: nothing the reuse READS comes
+      # from the quota guard, the region/instance-type lookup, the capability
+      # gate or the RCP checks — the predicate below keys on node_id +
+      # operation_id + status alone. The consequence, stated plainly: a replay
+      # is answered from the existing row and therefore does NOT re-validate
+      # the REPLAY's own arguments. A retry carrying a different or invalid
+      # provider_region_id / provider_instance_type_id now returns the original
+      # instance rather than err("Provider region not found"), and a retry that
+      # newly sets options[:rcp_member_provisioning] — a per-CALL opt-in, not a
+      # property of the row — skips the INV-2/INV-6 checks it would otherwise
+      # have run. That is standard idempotency semantics (the key stands for
+      # the ORIGINAL request, and this code never compared parameters on reuse
+      # in either order); if a replay must re-run those checks, that needs its
+      # own decision and its own spec.
+      #
+      # SCOPE: this covers a replay of a SUCCEEDED operation. A retry after a
+      # HARD failure is deliberately not a replay (the `error` filter below,
+      # F1-07) — it is a fresh provision, still quota-gated, and the guard's
+      # active-instance count excludes only `terminated`, so the dead `error`
+      # row the first attempt left behind still counts against it. That is a
+      # property of the guard's counting, not of this ordering.
+      if operation_id.present?
+        existing = ::System::NodeInstance
+                     .where(node_id: node.id)
+                     .where("config->>'operation_id' = ?", operation_id.to_s)
+                     .where.not(status: %w[terminated error])
+                     .first
+        if existing
+          Rails.logger.info("[ProvisioningService] Reusing instance #{existing.name} for operation #{operation_id}")
+          return Runtime::Result.ok(data: { instance: existing, cloud_instance_id: existing.cloud_instance_id })
+        end
+      end
+
       # M1 Self-Serve Hardening — gate provisioning on the active subscription's
       # plan limits. Surfaces a structured deny reason that propagates up through
       # Runtime::Result.err and onto the caller's `requires_upgrade` payload.
@@ -88,25 +137,6 @@ module System
       end
 
       Rails.logger.info("[ProvisioningService] Provisioning instance for node #{node.name} in #{region.name} using #{provider_adapter.provider_type}")
-
-      # Idempotency — a retried call carrying the same operation_id must not
-      # spin up a second instance. Reuse a prior instance tagged with this
-      # operation_id unless it ended in a terminal state (terminated/error) —
-      # a retry after a hard failure must provision fresh, not return the
-      # dead row. A unique index on config->>'operation_id' would
-      # harden this against concurrent racers; the check-then-create here
-      # covers the common sequential-retry case.
-      if operation_id.present?
-        existing = ::System::NodeInstance
-                     .where(node_id: node.id)
-                     .where("config->>'operation_id' = ?", operation_id.to_s)
-                     .where.not(status: %w[terminated error])
-                     .first
-        if existing
-          Rails.logger.info("[ProvisioningService] Reusing instance #{existing.name} for operation #{operation_id}")
-          return Runtime::Result.ok(data: { instance: existing, cloud_instance_id: existing.cloud_instance_id })
-        end
-      end
 
       instance_name = generate_instance_name(node, options)
 

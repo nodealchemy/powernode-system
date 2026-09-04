@@ -19,8 +19,13 @@ RSpec.describe System::ProvisioningService do
   # M1 Self-Serve Hardening — when the business extension is loaded
   # (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1) ProvisioningService consults
   # Billing::ProvisioningQuotaGuard early in #provision_instance: after
-  # validate_node! and the INV-1 self-management fence, but before region
-  # lookup, the capability gate and the RCP INV-2/INV-6 checks. A bare
+  # validate_node!, the INV-1 self-management fence and the operation_id
+  # idempotency reuse (IMP-b54e49ddfc40: a replay of a SUCCEEDED operation
+  # provisions nothing, so it is answered from the existing row and never
+  # quota-gated — which also means it re-validates none of the replay's own
+  # arguments; see the SCOPE note on the reuse block in provisioning_service.rb),
+  # but before region lookup, the capability gate and
+  # the RCP INV-2/INV-6 checks. A bare
   # `create(:account)` carries no Billing subscription, so the guard denies
   # with "no_subscription" and every example whose subject sits BELOW that
   # point (47 of the 68 here — the INV-1 raise and the #terminate_instance
@@ -1131,6 +1136,27 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(result.error).to eq("no_subscription")
+    end
+
+    # IMP-b54e49ddfc40 — but it runs AFTER the operation_id reuse. A retry
+    # that resolves to an instance a prior attempt already created provisions
+    # nothing, so a denying guard must never see it: the caller gets the live
+    # instance back, not a quota denial for a machine that exists. The
+    # real-guard, real-capped-subscription version of this lives beside the
+    # guard in the business extension; this one pins the ORDER in the file
+    # that owns it, against a guard that denies unconditionally.
+    it "does not run for a same-operation_id replay — the idempotency reuse resolves first" do
+      existing = create(:system_node_instance, node: node, status: "running",
+                        cloud_instance_id: "i-existing", config: { "operation_id" => "op-replay" })
+
+      result = nil
+      expect { result = provision(operation_id: "op-replay") }.not_to change(System::NodeInstance, :count)
+
+      expect(result.success?).to be(true), "replay was denied: #{result.error.inspect}"
+      expect(result.data[:instance].id).to eq(existing.id)
+      expect(result.data[:cloud_instance_id]).to eq("i-existing")
+      expect(result.data).not_to have_key(:requires_upgrade)
+      expect(::Billing::ProvisioningQuotaGuard).not_to have_received(:allow?)
     end
   end
 end
