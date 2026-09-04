@@ -23,6 +23,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [instance-pool-tuning.md](./instance-pool-tuning.md) | ML engineers, batch operators, CI platform owners | Provider quota for pool members | ~30 min initial sizing |
 | [k3s-smoke-full-lifecycle.md](./k3s-smoke-full-lifecycle.md) | System operators validating the K3s + SDWAN surface before a release / post-incident | Local platform running, `local_qemu` provider, seeded k3s modules | varies by tier (db / single / site / full) |
 | [module-authoring.md](./module-authoring.md) | Module authors, platform contributors | Gitea repo + cosign + oras CLIs | ~45 min per new module |
+| [module-signature-verification.md](./module-signature-verification.md) | Security operators, SREs owning the module plane | A signing platform (`system.module_signing.*`), node shell for `/persist/etc/powernode/module-signing.conf` | ~30 min to `audit`; days of clean audit before `runtime`; a change window for `all` |
 | [multi-cluster-k3s.md](./multi-cluster-k3s.md) | Kubernetes-focused operators | Multiple NodeInstances + SDWAN | ~1 hour per cluster |
 | [node-provisioning.md](./node-provisioning.md) | New operators, on-call SREs | Provider connection configured | ~5–15 min per node |
 | [publish-service.md](./publish-service.md) | SREs publishing internal services to their own users | An overlay backend (VIP or host) + an account TLS cert; `system.ingress.manage` | ~5 min per service |
@@ -48,6 +49,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
 | Composing modules into a reusable NodeTemplate | [template-authoring.md](./template-authoring.md) (after [module-authoring.md](./module-authoring.md)) |
 | Responding to a security CVE | [cve-response.md](./cve-response.md) |
+| Making nodes refuse unsigned module blobs | [module-signature-verification.md](./module-signature-verification.md) (default off; ladder off → audit → runtime → all) |
 | Building federation | [federation-setup.md](./federation-setup.md) → [federation-troubleshooting.md](./federation-troubleshooting.md) when stuck |
 | Adopting GitOps | [gitops-reconciliation.md](./gitops-reconciliation.md) |
 | Managing TLS certs | [acme-issuance.md](./acme-issuance.md) for day-2, [acme-smoke.md](./acme-smoke.md) for release gates |

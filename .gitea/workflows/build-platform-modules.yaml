@@ -317,12 +317,14 @@ jobs:
           # pushed to Gitea secrets as COSIGN_PRIVATE_KEY (encrypted at
           # rest with COSIGN_PASSWORD), COSIGN_PUBLIC_KEY, COSIGN_PASSWORD.
           # NOTE: this signs the OCI REF (an image signature, pushed as a .sig
-          # tag) — not the erofs bytes. The agent does NOT verify it at module
-          # attach time; every reconciler construction site wires the no-op
-          # verify.AlwaysOK, and the agent's verifier expects a `cosign
-          # sign-blob` bundle over local bytes, which nothing here produces.
-          # Verification against COSIGN_PUBLIC_KEY happens SERVER-side at ingest
-          # (ModuleOciIngestService). See agent/internal/verify/doc.go.
+          # tag) — not the erofs bytes. Verification against COSIGN_PUBLIC_KEY
+          # happens SERVER-side at ingest (ModuleOciIngestService). The
+          # signature a NODE verifies is a different artefact: the platform's
+          # own `cosign sign-blob` bundle over the erofs bytes, made server-side
+          # at publish (ModuleBlobSigner, after the notify below) and served on
+          # the module manifest — enforced on the node only when the operator
+          # opts in (default off). See agent/internal/verify/doc.go and
+          # docs/runbooks/module-signature-verification.md.
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ steps.push.outputs.erofs_ref }}"
 
       # Pin the platform's CA so the notify step can verify TLS against a

@@ -52,7 +52,7 @@ domain unit with focused responsibilities; no cross-package state.
 |---------|----------------|
 | `transport` | mTLS HTTP client for `/node_api/*`. The TLS handshake presents the agent's client cert (signed by the platform's internal CA at enrollment); the reverse proxy verifies it via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven, on the single websecure entrypoint) and forwards the CN to Rails. No Bearer header — auth is purely cryptographic, bound to the connection. Certificate pinning, automatic CA chain refresh, exponential backoff on platform unreachable. |
 | `security` | Capability dropping, seccomp filter application to the agent process itself, per-module SELinux/AppArmor profile loading on attach, IMA/EVM integration. |
-| `verify` | Supplies the cosign + fs-verity primitives. **Neither is enforced on a module mount today** — all three reconciler construction sites wire the no-op `verify.AlwaysOK`, and `ReconcilerConfig.Fsverity` is nil. The real `CosignVerifier` is reached only from the boot/UKI upgrade path and the operator `powernode-agent verify` CLI. There is no per-module `cosign_identity_regexp`/`cosign_issuer_regexp` trust policy in the manifest; those columns exist on the DB row and feed the SERVER's ingest-time keyless fallback. See `agent/internal/verify/doc.go` for why enforcement is blocked and in what order. |
+| `verify` | Supplies the cosign + fs-verity primitives and `NewModuleVerifier`, the one constructor every module-mount site resolves through (`runtime.ResolveModuleVerifier`). Module signature enforcement is **operator opt-in, DEFAULT OFF**: with nothing configured all three sites get the no-op `verify.AlwaysOK`; the ladder `off → audit → runtime → all` (`/persist/etc/powernode/module-signing.conf`, env, service flags) turns on a multi-key static `CosignVerifier` over the platform's `cosign sign-blob` bundle, which rides the manifest as `cosign_bundle_b64`, against the platform's served (cached under `/persist`) or pinned public keys. `ReconcilerConfig.Fsverity` stays nil by default. The boot/UKI upgrade path enforces unconditionally. There is no per-module `cosign_identity_regexp`/`cosign_issuer_regexp` trust policy in the manifest; those columns feed the SERVER's ingest-time keyless fallback. Map: `agent/internal/verify/doc.go`; procedure: `docs/runbooks/module-signature-verification.md`. |
 
 ### Storage + mounting
 
@@ -213,7 +213,7 @@ sequenceDiagram
     Agent->>OCI: pull <registry>/<account>/<module>:<version>
     OCI->>OCI: resolve manifest<br/>fetch arch-specific blobs<br/>cache to digest-store
     OCI-->>Agent: local erofs blob
-    Agent->>Verify: VerifyBlob (no-op AlwaysOK in production)
+    Agent->>Verify: VerifyBlob (AlwaysOK by default; static-key cosign once module signing is opted in)
     Verify-->>Agent: signature OK
     Agent->>Sysfs: fs-verity enable
     Sysfs-->>Agent: root_hash
