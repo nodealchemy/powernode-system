@@ -3131,7 +3131,7 @@ end
 
     let(:pool_node) do
       create(:system_node, account: account, node_template: template,
-                            lifecycle_class: "ephemeral", name: "pool-mem")
+                            name: "pool-mem")
     end
 
     describe "system_return_pooled_instance" do
@@ -3563,7 +3563,7 @@ end
       end
 
       def seed_ready_member(pool)
-        node = create(:system_node, account: account, node_template: template, lifecycle_class: "ephemeral")
+        node = create(:system_node, account: account, node_template: template)
         create(:system_node_instance, node: node, name: "mcp-member-#{SecureRandom.hex(3)}", variety: "cloud",
                                        status: "running", provider_region: provider_region,
                                        provider_instance_type: instance_type,
@@ -5603,7 +5603,7 @@ end
 
     let(:pool_node) do
       create(:system_node, account: account, node_template: template,
-                           lifecycle_class: "ephemeral", name: "nesting-mem")
+                           name: "nesting-mem")
     end
 
     let!(:ready_member) do
