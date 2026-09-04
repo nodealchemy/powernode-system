@@ -18,6 +18,15 @@
 # extension mounted would delete every grant for that extension's permissions.
 # See the class comment for the rest.
 #
+# REVERSALS (IMP-222dd9bce564): the reconciler keeps a ledger of the declared
+# grants this deployment has been observed to hold, so a creation whose row was
+# held before and removed OUTSIDE the catalog (a console Role#remove_permission,
+# a migration's DELETE) is reported as a re-creation, not just a creation. That
+# is the signal that a human decision has just been overridden. It is printed
+# on its own line and emitted as a System::FleetEvent so it outlives the boot
+# journal. The re-creation itself is NOT suppressed — the reconciler stays
+# additive and predictable; the durable revocation route is the catalog.
+#
 # Advisory only, exactly like governance-reconcile.rb: it ALWAYS prints a
 # summary line (the positive per-boot execution artifact — its ABSENCE from the
 # journal is how you tell "wired and running" from "wired and silently
@@ -32,8 +41,15 @@ begin
   else
     result = ::Permissions::RoleGrantReconciler.new.reconcile!
 
+    # Guarded: hub-backend and the core tree are separate modules and can skew
+    # by a deploy. An older core returns a Result without these members, and a
+    # NoMethodError here would skip the failure block below.
+    recreated = result.respond_to?(:recreated_grants) ? Array(result.recreated_grants) : []
+    ledger_error = result.respond_to?(:ledger_error) ? result.ledger_error : nil
+
     # ALWAYS printed, including the created=0 steady state.
     warn "[role-grants-reconcile] created_grants=#{result.created} " \
+         "recreated_grants=#{recreated.size} " \
          "created_roles=#{result.created_roles.size} " \
          "already_present=#{result.already_present} failed=#{result.failed.size}"
 
@@ -42,7 +58,42 @@ begin
     # it is an operator-visible change in reachable capability, not a silent
     # repair.
     result.created_roles.each { |name| warn "[role-grants-reconcile]   created role: #{name}" }
-    result.created_grants.each { |grant| warn "[role-grants-reconcile]   created grant: #{grant}" }
+    (result.created_grants - recreated).each { |grant| warn "[role-grants-reconcile]   created grant: #{grant}" }
+
+    # A re-created grant is different in kind: this deployment HELD it and the
+    # row was removed outside the catalog. If that was a deliberate revocation,
+    # it has just been undone — say so, rather than logging it as the
+    # reconciler doing its job (which it also is).
+    recreated.each do |grant|
+      warn "[role-grants-reconcile]   RE-CREATED grant (reversal): #{grant} — this deployment held it " \
+           "and the row was removed outside the catalog; the boot reconcile has restored it. " \
+           "To revoke durably, remove the grant from the catalog."
+    end
+
+    # A ledger fault means the reversal signal is DEGRADED, not that there were
+    # no reversals — the summary's recreated_grants=0 must not read as clean.
+    warn "[role-grants-reconcile]   ledger unavailable (reversal detection degraded): #{ledger_error}" if ledger_error
+
+    if recreated.any?
+      begin
+        account = Account.first
+        if account && defined?(::System::FleetEvent)
+          ::System::FleetEvent.create!(
+            account_id: account.id,
+            kind: "role_grant_reversal",
+            severity: "medium",
+            source: "permissions_role_grant_reconciler",
+            payload: {
+              recreated_grants: recreated,
+              detected_at: Time.current.utc.iso8601
+            }
+          )
+          warn "[role-grants-reconcile] emitted System::FleetEvent(kind=role_grant_reversal, severity=medium)"
+        end
+      rescue StandardError => e
+        warn "[role-grants-reconcile] fleet-event emission failed (non-fatal): #{e.class}: #{e.message}"
+      end
+    end
 
     if result.failed.any?
       warn "=" * 72
