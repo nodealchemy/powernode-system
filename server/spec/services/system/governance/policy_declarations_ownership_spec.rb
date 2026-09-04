@@ -128,7 +128,9 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
       keys = groups.values.flat_map(&:keys)
       expect(keys.uniq.size).to eq(keys.size), "a key is declared in two sub-hashes"
 
-      expect(d::STORAGE_POLICY_KEYS.keys).to match_array(%w[system.storage_assignment_reconcile system.restore_volume])
+      expect(d::STORAGE_POLICY_KEYS.keys).to match_array(
+        %w[system.storage_assignment_reconcile system.restore_volume system.volume_snapshot_create]
+      )
       expect(d::INGRESS_POLICY_KEYS.keys).to match_array(%w[
         system.acme_certificate_provision system.expose_service_local
         system.expose_service_public_tcp system.expose_service_publicly
@@ -202,7 +204,7 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
       expect(set("capacity-manager")[:policies]).to equal(d::CAPACITY_MANAGER_POLICIES)
     end
 
-    it "Storage Manager = the storage keys + the snapshot delete (3)" do
+    it "Storage Manager = the storage keys + the snapshot delete (4)" do
       expect(d::STORAGE_MANAGER_POLICIES.keys).to match_array(
         d::STORAGE_POLICY_KEYS.keys + %w[system.volume_snapshot_delete]
       )

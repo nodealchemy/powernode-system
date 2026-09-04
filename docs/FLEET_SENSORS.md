@@ -2,9 +2,9 @@
 
 > Status: active
 
-The `fleet/sensors/` directory at `extensions/system/server/app/services/system/fleet/sensors/` holds **36 files**: one `BaseSensor` abstract class and **35 sensors registered** for the live tick loop via `FleetAutonomyService::SENSORS`. (A further 2 CVE sensors live under `cve_ops/sensors/` and are owned by the CVE Responder agent — see [its section](#cve-responder-agent-5-policies) — not part of this directory's count.) Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
+The `fleet/sensors/` directory at `extensions/system/server/app/services/system/fleet/sensors/` holds **37 files**: one `BaseSensor` abstract class and **36 sensors registered** for the live tick loop via `FleetAutonomyService::SENSORS`. (A further 2 CVE sensors live under `cve_ops/sensors/` and are owned by the CVE Responder agent — see [its section](#cve-responder-agent-5-policies) — not part of this directory's count.) Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
 
-The 35 registered sensors, in `SENSORS` order: `StuckTaskBacklogSensor`, `InstanceStatusSensor`, `InstanceUnrecoverableSensor`, `InstanceStateDriftSensor`, `ModuleDriftSensor`, `TemplateClosureDriftSensor`, `BootImageDriftSensor`, `CertificateExpirySensor`, `CertExpirySensor`, `ModulePromotionSensor`, `ModulePromotionBacklogSensor`, `CapabilityGapSensor`, `GovernanceGapSensor`, `ConfigDriftSensor`, `SloViolationSensor`, `HoneypotAccessSensor`, `TradingPressureSensor`, `SdwanDriftSensor`, `SdwanReachabilitySensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `GitopsDriftSensor`, `ProjectSloSensor`, `FederationPeerLivenessSensor`, `PackageDriftSensor`, `SdwanCredentialExpirySensor`, `StorageAssignmentDriftSensor`, `DiskImagePublicationFailureStreakSensor`, `SdwanServiceHealthSensor`, `SdwanOvnDeploymentHealthSensor`, `SdwanApplyHealthSensor`, `SdwanUserDeviceConfigStalenessSensor`, `ModuleVerifyFailedSensor`, `BootLkgArmSensor`, `ReplicaLagSensor`. (`PackageDriftSensor`, `SdwanCredentialExpirySensor`, and `StorageAssignmentDriftSensor` were dead code until audit F3-07 registered them — they previously appeared here as "running via separate invocation paths", which was never true. `TemplateClosureDriftSensor` (campaign 019f6084 §2.4.3), `CapabilityGapSensor` (IMP-4019664a524b), `DiskImagePublicationFailureStreakSensor` (disk-image-CI restoration DK3), `SdwanServiceHealthSensor` (IMP-c7d663f24a0b), `SdwanOvnDeploymentHealthSensor` (IMP-57e9a90598ee), `SdwanApplyHealthSensor` (IMP-da1b772c2596), `SdwanUserDeviceConfigStalenessSensor` (IMP-7034199a5a19), `BootLkgArmSensor` (IMP-a8f9fa74284d), `ReplicaLagSensor` (IMP-5b38cd356010) and `GovernanceGapSensor` (HIER-P3) were registered later still — all are now in `SENSORS`, so no sensor in this directory currently runs outside it.)
+The 36 registered sensors, in `SENSORS` order: `StuckTaskBacklogSensor`, `InstanceStatusSensor`, `InstanceUnrecoverableSensor`, `InstanceStateDriftSensor`, `ModuleDriftSensor`, `TemplateClosureDriftSensor`, `BootImageDriftSensor`, `CertificateExpirySensor`, `CertExpirySensor`, `ModulePromotionSensor`, `ModulePromotionBacklogSensor`, `CapabilityGapSensor`, `GovernanceGapSensor`, `ConfigDriftSensor`, `SloViolationSensor`, `HoneypotAccessSensor`, `TradingPressureSensor`, `SdwanDriftSensor`, `SdwanReachabilitySensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `GitopsDriftSensor`, `ProjectSloSensor`, `FederationPeerLivenessSensor`, `PackageDriftSensor`, `SdwanCredentialExpirySensor`, `StorageAssignmentDriftSensor`, `DiskImagePublicationFailureStreakSensor`, `SdwanServiceHealthSensor`, `SdwanOvnDeploymentHealthSensor`, `SdwanApplyHealthSensor`, `SdwanUserDeviceConfigStalenessSensor`, `ModuleVerifyFailedSensor`, `BootLkgArmSensor`, `ReplicaLagSensor`, `SnapshotPolicySensor`. (`PackageDriftSensor`, `SdwanCredentialExpirySensor`, and `StorageAssignmentDriftSensor` were dead code until audit F3-07 registered them — they previously appeared here as "running via separate invocation paths", which was never true. `TemplateClosureDriftSensor` (campaign 019f6084 §2.4.3), `CapabilityGapSensor` (IMP-4019664a524b), `DiskImagePublicationFailureStreakSensor` (disk-image-CI restoration DK3), `SdwanServiceHealthSensor` (IMP-c7d663f24a0b), `SdwanOvnDeploymentHealthSensor` (IMP-57e9a90598ee), `SdwanApplyHealthSensor` (IMP-da1b772c2596), `SdwanUserDeviceConfigStalenessSensor` (IMP-7034199a5a19), `BootLkgArmSensor` (IMP-a8f9fa74284d), `ReplicaLagSensor` (IMP-5b38cd356010), `GovernanceGapSensor` (HIER-P3) and `SnapshotPolicySensor` (IMP-c22215ae9546) were registered later still — all are now in `SENSORS`, so no sensor in this directory currently runs outside it.)
 
 Every sensor above except two reads **infrastructure** — is the node up, is the tunnel up, is the cert fresh. `SdwanServiceHealthSensor` was the first to read a **workload**: whether the thing at the end of a published service's overlay path is actually serving. That distinction is the platform-wide gap recorded in `docs/operations/autonomous-infrastructure-readiness-2026-08-12.md`, and that sensor closes it for `Sdwan::Service` only. `ReplicaLagSensor` is the second: it reads the platform database's own replication catalog for the postgres cluster_member lane. Deployed app code and containers remain unsensed.
 
@@ -12,7 +12,7 @@ Every sensor above except two reads **infrastructure** — is the node up, is th
 
 The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.interval_seconds` on the Fleet Autonomy agent; with the 2026-05-10 7-agent split, CVE / SDWAN / Disk Image / Runtime Manager agents each carry their own `interval_seconds` for their respective scopes). Each tick:
 
-1. The 34 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects).
+1. The 36 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects).
 2. Each sensor emits zero or more `FleetEvent` signals with `kind`, `severity`, `payload`, `correlation_id`
 3. The DecisionEngine maps signals → action categories → intervention policy lookup
 4. Policy = `auto_approve` → executor runs immediately
@@ -21,7 +21,7 @@ The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.
 
 ```mermaid
 flowchart LR
-    subgraph Sensors["34 fleet sensors (registered for the Fleet Autonomy tick)"]
+    subgraph Sensors["36 fleet sensors (registered for the Fleet Autonomy tick)"]
         S0[stuck_task_backlog]
         S1[instance_status]
         S2[module_drift]
@@ -55,6 +55,7 @@ flowchart LR
         S26[boot_lkg_arm]
         S27[module_promotion_backlog]
         S28[replica_lag]
+        S29[snapshot_policy]
     end
     subgraph Signals["Sensor signal kinds (FleetEvent also carries non-sensor kinds, e.g. sdwan.credential_issued)"]
         Sig[system.* — every sensor kind is system.-prefixed<br/>system.instance_silent / system.module_drift / system.cert_expiring<br/>system.sdwan_peer_drift / system.slo_violation / system.project_drift]
@@ -584,6 +585,28 @@ Both aggregates carry `instance_count`, a `count_is_floor` flag when the sweep h
 
 **Recommended remediation:** None automated, deliberately. The safe answers to a lagging replica are "wait" and "look at the primary's write load", both a person's, and a promote is only ever an answer to a *dead* primary — the executor refuses a live one regardless. Surfaces via the `system.observation` gate (Fleet Autonomy `auto_approve`, no operator notification); a dedicated notify-level category needs a `PolicyDeclarations` entry and is the recorded follow-up. The category is listed in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES`.
 
+### `snapshot_policy_sensor` — Overdue scheduled snapshots and over-retention restore points
+
+**Source:** `snapshot_policy_sensor.rb` (IMP-c22215ae9546, APO-5 door 2). Read seam: `System::VolumeManagementService.snapshot_schedule_for` (IMP-e025722ef14e), which resolves `Ai::Mission#snapshot_policy` — the ladder `watch_policies` → mission template → account settings → SiteSetting `ai.provisioning.snapshot_interval_hours` / `ai.provisioning.snapshot_retention_count` → constant `0` (off).
+
+**Watches:** every ACTIVE `infrastructure` mission on the account — the same scope `FleetAutonomyService#collect_project_metrics!` sweeps — and, for each, the provider volumes its completed provisioning steps produced: is the newest restore point older than the declared interval, and are there completed snapshots beyond the declared retention count?
+
+**Why it exists:** the declaration and the read seam landed a batch earlier and nothing called them. A read seam with zero production callers reads as coverage while the question is never asked — the notify-lane-without-an-applier shape one level up — so a project that declared a 6-hour interval got no snapshots, no retention pruning and no error. This sensor is the caller.
+
+**It resolves nothing of its own.** The ladder walk, the "`0` means off, never a default", the due arithmetic and the which-rows-count-as-a-restore-point rule (a `completed` row with a provider id, or one still `creating`; an `error` row satisfies nothing) all live in that single seam, so the sensor that fires and the appliers that act read the SAME declaration.
+
+**Threshold:** not tunable through `system_update_sensor_config` — the thresholds here are the project's own declared interval and retention count, which an operator sets per project, per template, per account or fleet-wide through the two SiteSettings above. A sensor-level override would be a second, conflicting home for the same number.
+
+**Signals:**
+
+- `system.volume_snapshot_due` (severity `:medium`, fingerprint `volume_snapshot_due:<provider_volume_id>`) — the volume's newest restore point is older than the declared interval, or it has none at all. Payload carries `provider_volume_id`, `volume_name`, `mission_id`, `interval_hours` and `last_snapshot_at`. Fingerprinted per VOLUME because the condition is "this volume is overdue"; it clears as soon as a snapshot lands, which is what lets `RemediationValidator` score the create as effective by the fingerprint's absence on a later tick.
+- `system.volume_snapshot_prunable` (severity `:low`, fingerprint `volume_snapshot_prunable:<provider_volume_snapshot_id>`) — one completed snapshot beyond the retention count, oldest first. Payload carries `provider_volume_snapshot_id`, `snapshot_name`, `provider_volume_id`, `mission_id`, `retention_count` and `snapshot_created_at`. Fingerprinted per SNAPSHOT, not per volume: each row over the limit is a separate destroy an operator approves or refuses on its own, and a per-volume key would collapse them into one approval that silently authorised the rest.
+
+**Recommended remediation:** both lanes actuate, under the **Storage Manager**.
+
+- `system.volume_snapshot_due` → `system.volume_snapshot_create` (`notify_and_proceed`), applier `DecisionEngine#create_scheduled_snapshot` → `VolumeManagementService#snapshot`. The declared interval is the operator's opt-in, so the lane proceeds; it is a recurring provider call that costs money, so each firing leaves the durable `autonomy.notified` `FleetEvent`.
+- `system.volume_snapshot_prunable` → `system.volume_snapshot_delete` (`require_approval`), applier `DecisionEngine#prune_retained_snapshot` → `VolumeManagementService#delete_snapshot`. Deliberately the SAME row the `system_delete_volume_snapshot` MCP verb resolves: one control governs a destroyed restore point whichever door it arrives through.
+
 ## Decision Engine Flow
 
 ```mermaid
@@ -701,7 +724,7 @@ Twelve official AI agents carry intervention policies (action_category → polic
 
 - `db/seeds/fleet_autonomy_agent.rb` — **19 policies** (`FLEET_AUTONOMY_POLICIES`: the node-lifecycle / remediation core — cert rotation, drift remediation, module composition, rolling upgrades, the investigate lanes, `system.observation`. HIER-P2DECL lifted the `CAPACITY_POLICY_KEYS`, `STORAGE_POLICY_KEYS`, `INGRESS_POLICY_KEYS` and `SUPPLY_CHAIN_POLICY_KEYS` groups P2A had carved out, plus `system.service_backends_update` and the two topology composer keys, onto the agents below)
 - `db/seeds/system_capacity_manager_agent.rb` — **22 policies** (`CAPACITY_MANAGER_POLICIES` = `CAPACITY_POLICY_KEYS` + the eight `INSTANCE_POOL_POLICIES` + the six `PROVISIONING_POLICIES` + `PLATFORM_SCALING_POLICIES` + `INSTANCE_CORDON_OPERATOR_POLICIES`; replaces the former `instance-pool-agent` and `provisioning` sets that keyed Fleet Autonomy. Seeded by HIER-P2B, wave 2; `PolicyReconciler` writes the set at the agent shape — `project.scale_horizontal` with its `auto_apply_window` condition override — and on an established install re-homes the rows still sitting on Fleet Autonomy. The two first-boot policy seeds that used to write fourteen of them are gone: IMP-10e4f6c3bcd2)
-- `db/seeds/system_storage_manager_agent.rb` — **3 policies** (`STORAGE_MANAGER_POLICIES` = `STORAGE_POLICY_KEYS` + `system.volume_snapshot_delete`; seeded by HIER-P2C, wave 2 — the sensor-routed `system.storage_assignment_reconcile`, the `RestoreVolumeExecutor` gate and the agent-shape twin of the volume-snapshot operator row)
+- `db/seeds/system_storage_manager_agent.rb` — **4 policies** (`STORAGE_MANAGER_POLICIES` = `STORAGE_POLICY_KEYS` + `system.volume_snapshot_delete`; seeded by HIER-P2C, wave 2 — the sensor-routed `system.storage_assignment_reconcile`, the `RestoreVolumeExecutor` gate and the agent-shape twin of the volume-snapshot operator row)
 - `db/seeds/system_ingress_manager_agent.rb` — **5 policies** (`INGRESS_MANAGER_POLICIES` = `INGRESS_POLICY_KEYS` + `system.service_backends_update`, which travels with the ingress writer; seeded by HIER-P2D, wave 2 — nothing sensor-routed, all five gate the executor / MCP doors)
 - `db/seeds/system_supply_chain_manager_agent.rb` — **7 policies** (HIER-P2E, wave 2; `SUPPLY_CHAIN_MANAGER_POLICIES` = `SUPPLY_CHAIN_POLICY_KEYS`: packages + architecture catalog; the seed writes the agent, trust score and chain, and `PolicyReconciler` writes the set — creating it on a fresh install, re-homing an established install's rows off Fleet Autonomy)
 - `db/seeds/system_runtime_manager_agent.rb` — **7 policies** (Phase 1 Docker + Phase 2 K3s runtime; the prior `system.runtime_docker_tls_rotate` was removed 2026-05-19 — no executor existed)
@@ -712,7 +735,7 @@ Twelve official AI agents carry intervention policies (action_category → polic
 - `db/seeds/system_concierge_agent.rb` — **0 action-category policies** — Concierge is a chat agent; intervention is via the `request_confirmation` skill, not policy gating
 - `db/seeds/system_topology_designer_agent.rb` — **3 policies** (`TOPOLOGY_DESIGNER_POLICIES`, since HIER-P2DECL: the three composer executor gates `system.multi_tenant_isolation`, `system.service_discovery_compose` and `system.sdwan_federation_compose` — the last was registered but declared nowhere until then. Since HIER-P2F the seed routes the gates to the `Topology Designer Actions` chain (8h, reject on timeout); `PolicyReconciler` writes the rows on every boot, the first one included. The three gated composers bind to it via `binds_to "topology_designer"`. Topology Designer is a skill-gated specialist invoked by Concierge via `execute_agent`)
 
-**= 139 action-category policies across the twelve system-extension agents** — the
+**= 140 action-category policies across the twelve system-extension agents** — the
 sum of the twelve bullets above, and nothing else. (120 before HIER-P2DECL; the
 14 instance-pool and provisioning rows the `instance-pool-agent` / `provisioning`
 sets put on Fleet Autonomy were never in that figure, and five rows are new — the
@@ -815,7 +838,7 @@ Source: `PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, written by `PolicyRecon
 | `system.platform.scale_out` / `scale_in` | `auto_approve` / `require_approval` | Twin of the `platform-scaling` operator rows |
 | `system.instance_cordon` | `require_approval` | Twin of the `instance-cordon-operator` row |
 
-### Storage Manager agent (3 policies)
+### Storage Manager agent (4 policies)
 
 Source: `PolicyDeclarations::STORAGE_MANAGER_POLICIES`, written by `PolicyReconciler` (agent identity, trust and chain seeded by `db/seeds/system_storage_manager_agent.rb`, which writes no policy row — IMP-10e4f6c3bcd2; the reconciler also re-homes the rows an established install still holds on Fleet Autonomy). Twin of the `volume-snapshot-operator` set. Approval chain: `Storage Manager Actions` (8-hour timeout, reject on timeout). Operator guide: [`STORAGE_MANAGER_AGENT.md`](./STORAGE_MANAGER_AGENT.md).
 
@@ -823,7 +846,8 @@ Source: `PolicyDeclarations::STORAGE_MANAGER_POLICIES`, written by `PolicyReconc
 |---|---|---|
 | `system.storage_assignment_reconcile` | `notify_and_proceed` | `storage_assignment_drift_sensor` → re-run the assignment reconciliation; reversible, low blast radius, operator should see the safety net firing |
 | `system.restore_volume` | `require_approval` | Overwrites a volume from a snapshot (`RestoreVolumeExecutor`) |
-| `system.volume_snapshot_delete` | `require_approval` | Destroys a restore point (`system_delete_volume_snapshot`); the operator row stays in `VOLUME_SNAPSHOT_OPERATOR_POLICIES` |
+| `system.volume_snapshot_create` | `notify_and_proceed` | `snapshot_policy_sensor` → `DecisionEngine#create_scheduled_snapshot`; the project's declared `snapshot_interval_hours` IS the opt-in (the constant default is 0 = off), so the operator is notified rather than re-asked every interval |
+| `system.volume_snapshot_delete` | `require_approval` | Destroys a restore point — the MCP verb `system_delete_volume_snapshot` AND, since IMP-c22215ae9546, `snapshot_policy_sensor`'s retention prune (`DecisionEngine#prune_retained_snapshot`) resolve this one row; the operator row stays in `VOLUME_SNAPSHOT_OPERATOR_POLICIES` |
 
 ### Ingress Manager agent (5 policies)
 

@@ -729,6 +729,34 @@ module System
           action_category: "system.storage_assignment_reconcile",
           owner: "storage-manager" # HIER-P2DECL: STORAGE_MANAGER_POLICIES
         },
+        # IMP-c22215ae9546 (APO-5 door 2) — the two halves of the per-project
+        # snapshot schedule (SnapshotPolicySensor, reading
+        # System::VolumeManagementService.snapshot_schedule_for).
+        #
+        # A volume whose project declared an interval and whose newest restore
+        # point is older than it. notify_and_proceed in the declared set: the
+        # interval IS the operator's opt-in (the constant default is 0, "off",
+        # precisely so a code change never starts snapshotting anyone), but a
+        # recurring provider call that costs money should be visible.
+        # #create_scheduled_snapshot is the applier.
+        "system.volume_snapshot_due" => {
+          skill: nil,
+          action_category: "system.volume_snapshot_create",
+          owner: "storage-manager" # STORAGE_POLICY_KEYS
+        },
+        # A completed snapshot beyond the project's declared retention count.
+        # Routed to the EXISTING system.volume_snapshot_delete category rather
+        # than a second control of its own — the category's declaration
+        # (VOLUME_SNAPSHOT_OPERATOR_POLICIES) reserved it for exactly this
+        # sensor so that ONE row governs a destroyed restore point whichever
+        # door it arrives through: the MCP verb or this lane.
+        # require_approval, so the prune parks for a person by default.
+        # #prune_retained_snapshot is the applier.
+        "system.volume_snapshot_prunable" => {
+          skill: nil,
+          action_category: "system.volume_snapshot_delete",
+          owner: "storage-manager" # STORAGE_MANAGER_POLICIES (twin of the operator set)
+        },
         # GitOps drift (GitopsDriftSensor) → notify_and_proceed in the fleet
         # seed. No skill: the reconciler (System::Gitops::Reconciler, driven by
         # SystemGitopsSyncJob) is what diffs desired vs live and opens the
@@ -1530,6 +1558,12 @@ module System
         "system.module_drift" => { command: "sync_modules" },
         "system.config_drift" => { command: "apply_config" },
         "system.storage_assignment_drift" => { method: :reconcile_storage_assignment },
+        # IMP-c22215ae9546 (APO-5 door 2). Both halves of the snapshot
+        # schedule actuate — a proceed on either that dispatched nothing would
+        # rebuild the very "declared but never enforced" defect the sensor was
+        # written to close, one layer down.
+        "system.volume_snapshot_due" => { method: :create_scheduled_snapshot },
+        "system.volume_snapshot_prunable" => { method: :prune_retained_snapshot },
         # F3-01: the instance_reprovision executor. A silent instance's agent
         # is unreachable, so on-node task commands cannot apply — the
         # remediation is a provider-side reboot via InstanceControlService.
@@ -2016,6 +2050,55 @@ module System
 
         ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
         { applied: true, storage_assignment_id: assignment.id }
+      end
+
+      # IMP-c22215ae9546 (APO-5 door 2) — the DUE applier.
+      #
+      # The gate has proceeded, so take the snapshot the project's declared
+      # interval asked for. VolumeManagementService#snapshot is the one door:
+      # it owns the provider-capability refusal, the "a row never claims more
+      # than the provider did" rule, and the error row a failed attempt leaves
+      # behind. Reimplementing any of that here would be a second writer of
+      # restore-point rows with a different idea of what counts as one.
+      #
+      # ACCOUNT-SCOPED lookup, like every applier here: the signal's payload is
+      # data, and a decision on this account must never actuate another
+      # tenant's volume. A volume deleted between the sense pass and the gate
+      # reports applied:false rather than raising — the fingerprint is gone on
+      # the next tick either way.
+      def create_scheduled_snapshot(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? signal.payload["provider_volume_id"] : nil
+        volume = ::System::ProviderVolume.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "provider volume not found" } unless volume
+
+        result = ::System::VolumeManagementService.snapshot(volume: volume)
+        unless result.success?
+          return { applied: false, reason: result.error, provider_volume_id: volume.id }
+        end
+
+        { applied: true, provider_volume_id: volume.id,
+          provider_volume_snapshot_id: result.data[:snapshot]&.id }
+      end
+
+      # IMP-c22215ae9546 (APO-5 door 2) — the PRUNABLE applier.
+      #
+      # Reached only after the system.volume_snapshot_delete gate proceeds,
+      # which is require_approval by declaration — the same row, and therefore
+      # the same operator decision, that governs the MCP delete verb.
+      # VolumeManagementService#delete_snapshot removes the provider-side
+      # snapshot before the row, so a refused provider call leaves the restore
+      # point intact AND recorded rather than orphaning one of the two.
+      def prune_retained_snapshot(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? signal.payload["provider_volume_snapshot_id"] : nil
+        snapshot = ::System::ProviderVolumeSnapshot.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "provider volume snapshot not found" } unless snapshot
+
+        result = ::System::VolumeManagementService.delete_snapshot(snapshot: snapshot)
+        unless result.success?
+          return { applied: false, reason: result.error, provider_volume_snapshot_id: id }
+        end
+
+        { applied: true, provider_volume_snapshot_id: id }
       end
 
       # IMP-4f7f7a0c9d33 — the project.* adaptation applier, shared by all three

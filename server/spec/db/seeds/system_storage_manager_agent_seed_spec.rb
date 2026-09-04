@@ -150,6 +150,11 @@ RSpec.describe "system_storage_manager_agent seed" do
       expect(rows).to eq(declared)
       expect(rows).to eq(
         "system.storage_assignment_reconcile" => "notify_and_proceed",
+        # IMP-c22215ae9546 — the scheduled-snapshot create lane
+        # (snapshot_policy_sensor). notify_and_proceed: the project's declared
+        # interval is the opt-in, so the lane proceeds and the operator is
+        # notified rather than re-asked on every interval.
+        "system.volume_snapshot_create"       => "notify_and_proceed",
         "system.restore_volume"               => "require_approval",
         "system.volume_snapshot_delete"       => "require_approval"
       )

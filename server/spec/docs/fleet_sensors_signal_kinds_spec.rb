@@ -97,7 +97,15 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
   # it reads the live constant, not a string that happens to appear somewhere.
   CORE_SETTING_KEYS = {
     "ai.provisioning.max_cpu_pct" => %w[Ai::Mission MAX_CPU_PCT_SETTING],
-    "ai.provisioning.max_memory_pct" => %w[Ai::Mission MAX_MEMORY_PCT_SETTING]
+    "ai.provisioning.max_memory_pct" => %w[Ai::Mission MAX_MEMORY_PCT_SETTING],
+    # IMP-c22215ae9546 — the per-project snapshot schedule's platform-wide
+    # defaults, read by snapshot_policy_sensor through
+    # Ai::Mission#snapshot_policy. Same situation and same treatment as the
+    # utilization ceilings above: declared in core, so no extension literal
+    # can vouch for them, and each therefore carries the constant it claims to
+    # name rather than being waved through.
+    "ai.provisioning.snapshot_interval_hours" => %w[Ai::Mission SNAPSHOT_INTERVAL_HOURS_SETTING],
+    "ai.provisioning.snapshot_retention_count" => %w[Ai::Mission SNAPSHOT_RETENTION_COUNT_SETTING]
   }.freeze
 
   SETTING_KEYS = (INTERPOLATED_SETTING_KEYS + CORE_SETTING_KEYS.keys).freeze

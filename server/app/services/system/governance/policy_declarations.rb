@@ -394,6 +394,22 @@ module System
         # assignment's own after_commit would — reversible and low blast radius —
         # but the operator should see that the safety net is firing.
         "system.storage_assignment_reconcile" => "notify_and_proceed",
+        # IMP-c22215ae9546 (APO-5 door 2) — the SCHEDULED snapshot lane
+        # (SnapshotPolicySensor → system.volume_snapshot_due → the
+        # DecisionEngine's #create_scheduled_snapshot applier).
+        #
+        # notify_and_proceed, and the asymmetry with its sibling
+        # system.volume_snapshot_delete (require_approval) is the point: this
+        # verb CREATES a restore point and the operator has already opted in
+        # by declaring `snapshot_interval_hours` on the project, the template,
+        # the account or the SiteSetting — the constant default is 0 ("off"),
+        # so no project the operator said nothing about is ever snapshotted.
+        # require_approval here would ask the same person the same question on
+        # every interval for a schedule they authored. It is not auto_approve
+        # either: this is a recurring provider call that costs money for as
+        # long as the project lives, so each firing leaves the durable
+        # NOTIFY_EVENT_KIND record.
+        "system.volume_snapshot_create"       => "notify_and_proceed",
         "system.restore_volume"               => "require_approval"
       }.freeze
 
@@ -1098,11 +1114,14 @@ module System
       # this set is its twin — OPERATOR_TWINS, operator ruling: every
       # operator-only set gets an agent twin). What reads the agent row today:
       # the MCP verb when the caller is an agent principal (the Storage
-      # Manager, seeded by HIER-P2C). No SIGNAL_BINDINGS entry routes to it
-      # yet — the snapshot schedule sensor (improvement
-      # 01a065df-4ab7-7a04-8293-8069d805b0b1) must ask THIS category when it
-      # lands, so one row governs a delete whichever door it arrives through
-      # (System::VolumeManagementService.snapshot_schedule_for).
+      # Manager, seeded by HIER-P2C). SINCE IMP-c22215ae9546 a SIGNAL_BINDINGS
+      # entry routes here too: SnapshotPolicySensor's
+      # system.volume_snapshot_prunable — a completed snapshot beyond the
+      # project's declared retention count, read off
+      # System::VolumeManagementService.snapshot_schedule_for — asks THIS
+      # category rather than one of its own, so ONE row governs a destroyed
+      # restore point whichever door it arrives through. The set is therefore
+      # no longer operator-door-only; its twin is sensor-routed as well.
       #
       # ONE WRITER, as for the instance-pool operator set: declaring here
       # makes the gate resolve, and the row an operator actually tunes is
@@ -1228,8 +1247,11 @@ module System
       #     ReplicaReconciler), read at the agent shape only for a call made AS
       #     the Capacity Manager.
       #   Storage: system.storage_assignment_reconcile is sensor-routed
-      #     (storage_assignment_drift); restore_volume gates an executor;
-      #     volume_snapshot_delete is an operator-door twin.
+      #     (storage_assignment_drift) and, since IMP-c22215ae9546, so are
+      #     volume_snapshot_create (volume_snapshot_due) and
+      #     volume_snapshot_delete (volume_snapshot_prunable) — the latter is
+      #     an operator-door twin AND a sensor lane, on one row by design;
+      #     restore_volume gates an executor.
       #   Ingress: nothing sensor-routed — five executor/MCP gates.
       #   Supply chain: system.package_repository.sync is sensor-routed
       #     (package_drift_pressure); the other six gate executors.
@@ -1248,8 +1270,9 @@ module System
         PLATFORM_SCALING_POLICIES, INSTANCE_CORDON_OPERATOR_POLICIES
       ).freeze
 
-      # Storage Manager = the two storage keys + the snapshot delete (twin of
-      # the volume-snapshot operator set). 3 keys.
+      # Storage Manager = the three storage keys + the snapshot delete (twin of
+      # the volume-snapshot operator set). 4 keys since IMP-c22215ae9546 added
+      # system.volume_snapshot_create to STORAGE_POLICY_KEYS.
       STORAGE_MANAGER_POLICIES = STORAGE_POLICY_KEYS.merge(VOLUME_SNAPSHOT_OPERATOR_POLICIES).freeze
 
       # Ingress Manager = the four ingress executor gates + system.service_

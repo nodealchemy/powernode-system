@@ -220,10 +220,20 @@ RSpec.describe System::Governance::PolicyReconciler, "FORMER_OWNERS (HIER-P2DECL
     let(:d) { System::Governance::PolicyDeclarations }
     let(:map) { described_class::FORMER_OWNERS }
 
+    # Keys ADDED to a wave-1 group AFTER wave 1. They were never on Fleet
+    # Autonomy — they were born on the manager that declares them — so they
+    # belong in neither the derived roster below nor the map, and subtracting
+    # them here is what keeps the 35 a pin on WHAT WAVE 1 MOVED rather than a
+    # number that drifts with every later addition.
+    #   system.volume_snapshot_create — IMP-c22215ae9546, the scheduled-
+    #     snapshot lane, new on the Storage Manager.
+    let(:added_after_wave1) { %w[system.volume_snapshot_create] }
+
     it "records every key wave 1 lifted off Fleet Autonomy — 35 — and P2A's 16 before them" do
       wave1 = d::CAPACITY_POLICY_KEYS.keys + d::INSTANCE_POOL_POLICIES.keys + d::PROVISIONING_POLICIES.keys +
               d::STORAGE_POLICY_KEYS.keys + d::INGRESS_MANAGER_POLICIES.keys + d::SUPPLY_CHAIN_MANAGER_POLICIES.keys +
               %w[system.multi_tenant_isolation system.service_discovery_compose]
+      wave1 -= added_after_wave1
       expect(wave1.size).to eq(35)
       p2a = d::SDWAN_REMEDIATION_POLICIES.keys + %w[system.gitops_drift_remediate system.disk_image_publication_investigate]
       expect(p2a.size).to eq(16)
@@ -240,6 +250,8 @@ RSpec.describe System::Governance::PolicyReconciler, "FORMER_OWNERS (HIER-P2DECL
     it "does not claim a former owner for the twin-only keys or the never-declared compose key" do
       expect(map.keys & %w[system.platform.scale_out system.platform.scale_in system.instance_cordon
                            system.volume_snapshot_delete system.sdwan_federation_compose]).to eq([])
+      # Same rule for a key that is not a twin but simply POST-DATES the move.
+      expect(map.keys & added_after_wave1).to eq([])
     end
 
     it "is consistent with the declarations: every entry names a declared former agent that no longer declares the key" do

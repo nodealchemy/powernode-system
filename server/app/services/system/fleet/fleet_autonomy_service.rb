@@ -440,7 +440,18 @@ module System
         # (SensorConfig-tunable interval). Emits system.replica_lag_unsafe →
         # system.observation when the sample is one the executor would
         # refuse on (over bound, or not streaming).
-        ::System::Fleet::Sensors::ReplicaLagSensor
+        ::System::Fleet::Sensors::ReplicaLagSensor,
+        # IMP-c22215ae9546 (APO-5 door 2) — the snapshot SCHEDULE consumer.
+        # IMP-e025722ef14e landed Ai::Mission#snapshot_policy and
+        # System::VolumeManagementService.snapshot_schedule_for and left them
+        # with no caller, so a project's declared interval / retention was
+        # decorative: nothing ever asked whether a restore point was overdue,
+        # and retention never pruned. Emits system.volume_snapshot_due →
+        # system.volume_snapshot_create (notify_and_proceed; the declared
+        # interval is the opt-in) and system.volume_snapshot_prunable → the
+        # EXISTING system.volume_snapshot_delete row (require_approval), both
+        # gated under the Storage Manager and both with an applier.
+        ::System::Fleet::Sensors::SnapshotPolicySensor
       ].freeze
 
       # Scoped to THIS account. The fleet agents are seeded global (account_id

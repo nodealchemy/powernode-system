@@ -15,7 +15,8 @@
 #                   query over the event log, NOT an emit, and counting it
 #                   inflates the set by one.
 #
-# A literal grep gives 40; the answer is 42.
+# A literal grep undercounts the ternary and the constants and overcounts the
+# read; the parser is what settles the set.
 #
 # NOTE for whoever touches fleet_sensors_signal_kinds_spec.rb next: that file
 # still carries its own inline copy of this parser. It was NOT switched over

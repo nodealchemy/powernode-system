@@ -5,7 +5,7 @@
 > this increment shipped the agent itself: seed file, prompt, approval chain, trust
 > score, tool families, skill binding and the Claude Code counterpart.
 
-The **Storage Manager** is one of the twelve official system-extension agents. It owns the **storage data plane's autonomy surface**: storage-assignment reconciliation, volume restore and snapshot deletion — and, through its bound skill and tool families, the volume lifecycle, migrations, ownership (chown) and NFS export probes around them. Split out of Fleet Autonomy on 2026-09-03 (HIER-P2DECL, Phase 2 wave 1; seeded by HIER-P2C, wave 2).
+The **Storage Manager** is one of the twelve official system-extension agents. It owns the **storage data plane's autonomy surface**: storage-assignment reconciliation, volume restore, and the scheduled-snapshot create / retention-prune lanes — and, through its bound skill and tool families, the volume lifecycle, migrations, ownership (chown) and NFS export probes around them. Split out of Fleet Autonomy on 2026-09-03 (HIER-P2DECL, Phase 2 wave 1; seeded by HIER-P2C, wave 2).
 
 Source of truth: `db/seeds/system_storage_manager_agent.rb`, which consumes
 `System::Governance::PolicyDeclarations::STORAGE_MANAGER_POLICIES` (identity
@@ -37,13 +37,14 @@ Twin of the `volume-snapshot-operator` set, which keeps its global-shape row for
 
 ## Intervention Policies
 
-The agent ships with **3 intervention policies**:
+The agent ships with **4 intervention policies**:
 
 | Action | Policy | Reached through | Why |
 |---|---|---|---|
 | `system.storage_assignment_reconcile` | `notify_and_proceed` | sensor: `storage_assignment_drift_sensor` → `DecisionEngine#reconcile_storage_assignment` | Re-runs the reconciliation the assignment's own after_commit would; reversible, low blast radius, operator sees the safety net firing |
 | `system.restore_volume` | `require_approval` | executor: `RestoreVolumeExecutor` (bound to this agent) | Overwrites a volume from a snapshot on an in-place provider; copies it into a new volume otherwise |
-| `system.volume_snapshot_delete` | `require_approval` | `SystemFleetTool#system_delete_volume_snapshot` — twin | Destroys a restore point; the snapshot schedule sensor (improvement 01a065df) must ask this category when it lands |
+| `system.volume_snapshot_create` | `notify_and_proceed` | sensor: `snapshot_policy_sensor` → `DecisionEngine#create_scheduled_snapshot` | Takes the scheduled snapshot a project's declared `snapshot_interval_hours` asked for. The declaration IS the opt-in (the constant default is 0 = off, so a project nobody configured is never snapshotted), which is why this is not `require_approval` — it would re-ask the same person the same question every interval. Not `auto_approve` either: it is a recurring provider call that costs money, so each firing leaves an `autonomy.notified` event |
+| `system.volume_snapshot_delete` | `require_approval` | `SystemFleetTool#system_delete_volume_snapshot` — twin — AND sensor: `snapshot_policy_sensor` → `DecisionEngine#prune_retained_snapshot` | Destroys a restore point. Since IMP-c22215ae9546 the retention prune resolves THIS row rather than a control of its own, so one operator decision governs a destroyed restore point whichever door it arrives through |
 
 "Reached through" is the door whose gate resolves the row: a **sensor** lane is
 gated on the Fleet Autonomy tick under this agent (HIER-P2A owner gating —

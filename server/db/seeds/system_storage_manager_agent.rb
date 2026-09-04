@@ -15,11 +15,16 @@ require_relative "concerns/agent_setup_helpers"
 #     on the Fleet Autonomy tick) gates under THIS agent — its DecisionEngine
 #     binding declares `owner: "storage-manager"` — through
 #     `system.storage_assignment_reconcile`.
+#   - AUTONOMOUS: `system.volume_snapshot_due` and
+#     `system.volume_snapshot_prunable` (SnapshotPolicySensor, IMP-c22215ae9546)
+#     gate under THIS agent too, through `system.volume_snapshot_create` and
+#     the EXISTING `system.volume_snapshot_delete` row respectively.
 #   - EXECUTOR: `system.restore_volume` gates RestoreVolumeExecutor, bound here.
 #   - OPERATOR TWIN: `system.volume_snapshot_delete` is the agent-shape twin of
 #     the `volume-snapshot-operator` set (its global-shape row is the
-#     reconciler's too, from that POLICY_SETS entry); it binds only when the
-#     MCP verb is called AS this agent.
+#     reconciler's too, from that POLICY_SETS entry). It binds when the MCP
+#     verb is called AS this agent AND, since IMP-c22215ae9546, when the
+#     retention prune arrives from the sensor — one row, both doors.
 # The declared set lives in System::Governance::PolicyDeclarations
 # (STORAGE_MANAGER_POLICIES); this seed re-declares no key and writes no row —
 # PolicyReconciler does.
@@ -54,10 +59,16 @@ storage_prompt = <<~PROMPT
     `storage_assignment_drift` sensor found a stale assignment; re-run the
     reconciliation the assignment's own after_commit would. Reversible, low
     blast radius; the operator sees the safety net fire.
+  - `system.volume_snapshot_create` (notify_and_proceed) — the
+    `snapshot_policy` sensor found a volume overdue against the interval its
+    project declared; take the scheduled snapshot. The declaration is the
+    operator's opt-in (0 means off, and is the default), so this proceeds —
+    but it costs money on every interval, so they are notified.
   - `system.restore_volume` (require_approval) — RestoreVolumeExecutor.
   - `system.volume_snapshot_delete` (require_approval) —
-    `system_delete_volume_snapshot` destroys a restore point.
-  Those three are the ONLY verbs in your grant with a policy row. Every other
+    `system_delete_volume_snapshot` destroys a restore point, and so does the
+    `snapshot_policy` sensor's retention prune. One row governs both doors.
+  Those four are the ONLY verbs in your grant with a policy row. Every other
   MCP verb you hold — including `system_delete_volume`, `system_detach_volume`,
   `system_migrate_storage_component`, `system_approve_storage_migration` and
   `system_assign_storage_owner` — is declared `mutating: true` with no
