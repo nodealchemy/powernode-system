@@ -35,12 +35,18 @@ type Manifest struct {
 	Digest            string `json:"digest,omitempty"` // OCI layer digest of the erofs blob
 	// FsverityRootHash is the fs-verity Merkle root of the erofs blob
 	// the agent will pull. Anchors the on-node read path.
-	FsverityRootHash string         `json:"fsverity_root_hash,omitempty"`
-	RebootRequired   bool           `json:"reboot_required,omitempty"`
-	DataFileName     string         `json:"data_file_name,omitempty"`
-	DataChecksum     string         `json:"data_checksum,omitempty"`
-	CopyPath         *CopyPath      `json:"copy_path,omitempty"`
-	PuppetModules    []PuppetModule `json:"puppet_modules,omitempty"`
+	FsverityRootHash string `json:"fsverity_root_hash,omitempty"`
+	// CosignBundleB64 is the platform's `cosign sign-blob` bundle over the
+	// erofs blob, base64. Rides the manifest exactly as the fs-verity root
+	// does, so the reconciler needs no extra fetch and the boot-LKG snapshot
+	// (which stores this manifest verbatim) carries it into a fallback boot.
+	// Empty when the platform published no blob signature for this version.
+	CosignBundleB64 string         `json:"cosign_bundle_b64,omitempty"`
+	RebootRequired  bool           `json:"reboot_required,omitempty"`
+	DataFileName    string         `json:"data_file_name,omitempty"`
+	DataChecksum    string         `json:"data_checksum,omitempty"`
+	CopyPath        *CopyPath      `json:"copy_path,omitempty"`
+	PuppetModules   []PuppetModule `json:"puppet_modules,omitempty"`
 	// Spec arrays are stored base64-encoded server-side but the JSON
 	// response decodes them into plain string arrays.
 	Mask           []string `json:"mask,omitempty"`

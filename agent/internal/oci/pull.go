@@ -38,6 +38,7 @@ package oci
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,22 @@ type ModuleArtifactRef struct {
 	DownloadURL string
 	Size        int64
 	Checksum    string // sha256 hex (redundant with Digest)
+	// CosignBundleB64 is the platform's `cosign sign-blob` bundle over the
+	// erofs bytes, base64 — the SIGNING SUBJECT the Verifier interface can
+	// actually check, distinct from the OCI image signature the platform also
+	// pushes to the registry as a .sig tag. Carried INLINE (the boot path's
+	// cosign_bundle_b64 shape), so there is no second fetch and an LKG boot
+	// with a frozen manifest carries its signatures too. Pull writes it to
+	// the returned bundlePath. Empty when the platform published no blob
+	// signature for this artifact; a static-key verifier then refuses the
+	// mount by name.
+	CosignBundleB64 string
+	// CosignPublicKeys are the platform's trusted module-signing PUBLIC keys
+	// (PEM), the same list served at /node_api/modules/signing_keys and used
+	// server-side at ingest. Informational on this ref: the runtime obtains
+	// its trust anchor at construction (runtime.ResolveModuleVerifier), not
+	// per artifact. Public, not secret.
+	CosignPublicKeys []string
 }
 
 // Puller downloads OCI artifacts to a local cache.
@@ -129,8 +146,10 @@ func (p *Puller) FetchManifest(moduleID string) (*ModuleArtifactRef, error) {
 				DownloadURL string `json:"download_url"`
 			} `json:"file"`
 			OCI struct {
-				Ref    string `json:"ref"`
-				Digest string `json:"digest"`
+				Ref              string   `json:"ref"`
+				Digest           string   `json:"digest"`
+				CosignBundleB64  string   `json:"cosign_bundle_b64"`
+				CosignPublicKeys []string `json:"cosign_public_keys"`
 			} `json:"oci"`
 		} `json:"data"`
 	}
@@ -146,19 +165,27 @@ func (p *Puller) FetchManifest(moduleID string) (*ModuleArtifactRef, error) {
 		return nil, fmt.Errorf("manifest %s: no digest or checksum (module not published)", moduleID)
 	}
 	return &ModuleArtifactRef{
-		ModuleID:    moduleID,
-		OCIRef:      env.Data.OCI.Ref,
-		Digest:      digest,
-		DownloadURL: env.Data.File.DownloadURL,
-		Size:        env.Data.File.Size,
-		Checksum:    env.Data.File.Checksum,
+		ModuleID:         moduleID,
+		OCIRef:           env.Data.OCI.Ref,
+		Digest:           digest,
+		DownloadURL:      env.Data.File.DownloadURL,
+		Size:             env.Data.File.Size,
+		Checksum:         env.Data.File.Checksum,
+		CosignBundleB64:  env.Data.OCI.CosignBundleB64,
+		CosignPublicKeys: env.Data.OCI.CosignPublicKeys,
 	}, nil
 }
 
 // Pull downloads the artifact at ref into the cache directory.
-// Returns the local paths to the erofs blob and the (expected)
-// signature bundle. Idempotent: cached file matching ref.Digest =
-// no-op.
+// Returns the local paths to the erofs blob and the signature bundle.
+// Idempotent: a cached blob matching ref.Digest is not re-fetched.
+//
+// The bundle is NOT fetched: when ref.CosignBundleB64 is set, Pull decodes it
+// and writes it to bundlePath (0600, atomically) — on every call, including
+// the cached-blob path, because a backfill can sign an artifact after a node
+// cached its blob. When it is empty nothing is written, so bundlePath names a
+// file that may not exist; a static-key Verifier refuses that by name. A
+// bundle that does not decode fails the pull before any network I/O.
 //
 // Verification: sha256 streamed and compared to ref.Digest. Mismatch
 // = tmp file deleted + error returned. Caller should also run cosign
@@ -180,6 +207,23 @@ func (p *Puller) Pull(ref *ModuleArtifactRef) (cfsPath, bundlePath string, err e
 	digestFs := sanitizeDigest(ref.Digest)
 	cfsPath = filepath.Join(p.Cache, digestFs+".erofs")
 	bundlePath = filepath.Join(p.Cache, digestFs+".cosign-bundle")
+
+	// Decode the bundle BEFORE any network I/O so a malformed one leaves no
+	// partial state, and write it before the blob so a crash between the two
+	// cannot leave a fresh blob beside a stale bundle. Writing on the
+	// cached-blob path too is deliberate — see the doc comment.
+	var bundle []byte
+	if ref.CosignBundleB64 != "" {
+		bundle, err = base64.StdEncoding.DecodeString(ref.CosignBundleB64)
+		if err != nil {
+			return "", "", fmt.Errorf("oci.Pull: ref %s carries an undecodable cosign bundle: %w", ref.ModuleID, err)
+		}
+	}
+	if bundle != nil {
+		if err := writeFileAtomic(bundlePath, bundle, 0o600); err != nil {
+			return "", "", fmt.Errorf("oci.Pull: write cosign bundle: %w", err)
+		}
+	}
 
 	// Idempotency: already cached at the right digest?
 	if existing, err := readDigest(cfsPath); err == nil && strings.EqualFold(existing, strings.TrimPrefix(ref.Digest, "sha256:")) {
@@ -260,6 +304,36 @@ func (p *Puller) streamToFile(url, path string, ref *ModuleArtifactRef) error {
 		return fmt.Errorf("rename %s -> %s: %w", tmpName, path, err)
 	}
 	_ = os.Chmod(path, 0o644)
+	return nil
+}
+
+// writeFileAtomic writes data to a temp sibling and renames it over path, so
+// a reader (cosign) never sees a torn bundle.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".oci-bundle-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return err
+	}
 	return nil
 }
 

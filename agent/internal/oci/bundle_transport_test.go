@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,38 +22,28 @@ func hasField(v any, name string) bool {
 	return ok
 }
 
-// TestPullFetchesNoCosignBundle pins the fact that decides whether module
-// signature enforcement is even POSSIBLE today: Pull returns a bundlePath but
-// never fetches, writes, or otherwise materialises a bundle.
+// TestPullMaterialisesInlineCosignBundle pins the module signature TRANSPORT.
 //
-// Pull's second return value is a CONSTRUCTED filename (pull.go: filepath.Join
-// of the cache dir and "<digest>.cosign-bundle"), not a downloaded file. The
-// only network fetch Pull performs is streamToFile for the erofs blob. Nothing
-// anywhere in the agent writes a module cosign bundle — the platform's
-// /modules/:id/download envelope carries no signature field for one to come
-// from, and ModuleArtifactRef has nowhere to put it.
+// History: until this transport landed, Pull's second return value was a
+// CONSTRUCTED filename that nothing ever wrote, and a test of the opposite
+// name (TestPullFetchesNoCosignBundle) pinned that fact so the verifier-wiring
+// decision could not be made by accident. The transport now exists: the
+// platform serves a `cosign sign-blob` bundle over the erofs bytes INLINE
+// (base64, on the module manifest and the download envelope — the same shape
+// the boot path uses for its UKI bundle), the ref carries it, and Pull writes
+// it beside the blob. There is deliberately NO second network fetch: the
+// bundle rides the manifest the reconciler already has, so an LKG boot with a
+// frozen manifest carries its signatures too.
 //
-// The consequence is the point. Swapping verify.AlwaysOK for a real
-// verify.CosignVerifier at the three reconciler construction sites would not
-// tighten a control, it would refuse EVERY module mount on EVERY node, because
-// `cosign verify-blob --bundle <path>` cannot succeed against a path that does
-// not exist. Module signature enforcement is therefore blocked on a missing
-// TRANSPORT, not on a configuration flag and not on the population of signed
-// artifacts — and transport is only half of it: the platform signs modules with
-// `cosign sign` over an OCI ref, not `cosign sign-blob` over these bytes, so
-// there is no bundle to transport in the first place. See internal/verify/doc.go.
-//
-// The sibling TestPullStreamsAndVerifies asserts only that bundlePath has the
-// right SUFFIX, which holds whether or not the file was ever fetched — it reads
-// like bundle coverage and is not. This test asserts the bytes.
-//
-// When a bundle transport lands, this test SHOULD fail. That is its job: it
-// forces the verifier-wiring decision to be made deliberately rather than left
-// at the Phase 1 development default. See internal/verify/doc.go for the
-// ordered prerequisites.
-func TestPullFetchesNoCosignBundle(t *testing.T) {
+// This test asserts the bytes, both ways: a ref WITH a bundle materialises
+// exactly those bytes; a ref WITHOUT one materialises nothing (so a module the
+// platform never signed presents a missing bundle to the verifier, which
+// refuses it by name — see verify.CosignVerifier). Either way the blob is the
+// only request.
+func TestPullMaterialisesInlineCosignBundle(t *testing.T) {
 	payload := []byte("erofs blob bytes")
 	digest := sha256Hex(payload)
+	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.3","pretend":"bundle"}`)
 
 	var requested []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,75 +52,115 @@ func TestPullFetchesNoCosignBundle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := t.TempDir()
-	p := &Puller{HTTPClient: srv.Client(), PlatformURL: srv.URL, Cache: cache}
-	ref := &ModuleArtifactRef{
-		ModuleID:    "mod-bundle-gap",
-		Digest:      digest,
-		DownloadURL: "/api/v1/system/node_api/files/modules/mod-bundle-gap",
-		Size:        int64(len(payload)),
-	}
+	t.Run("with a bundle", func(t *testing.T) {
+		requested = nil
+		p := &Puller{HTTPClient: srv.Client(), PlatformURL: srv.URL, Cache: t.TempDir()}
+		ref := &ModuleArtifactRef{
+			ModuleID:        "mod-signed",
+			Digest:          digest,
+			DownloadURL:     "/api/v1/system/node_api/files/modules/mod-signed",
+			Size:            int64(len(payload)),
+			CosignBundleB64: base64.StdEncoding.EncodeToString(bundle),
+		}
+		cfsPath, bundlePath, err := p.Pull(ref)
+		if err != nil {
+			t.Fatalf("Pull: %v", err)
+		}
+		if _, err := os.Stat(cfsPath); err != nil {
+			t.Fatalf("erofs blob should exist after a successful pull: %v", err)
+		}
+		got, err := os.ReadFile(bundlePath)
+		if err != nil {
+			t.Fatalf("bundle should be materialised at %s: %v", bundlePath, err)
+		}
+		if string(got) != string(bundle) {
+			t.Fatalf("bundle bytes: got %q, want %q", got, bundle)
+		}
+		if st, _ := os.Stat(bundlePath); st.Mode().Perm() != 0o600 {
+			t.Fatalf("bundle perms: got %o, want 0600", st.Mode().Perm())
+		}
+		// Inline means inline: still exactly one request, for the blob.
+		if len(requested) != 1 || requested[0] != ref.DownloadURL {
+			t.Fatalf("requests: got %v, want exactly one blob fetch of %q", requested, ref.DownloadURL)
+		}
 
-	cfsPath, bundlePath, err := p.Pull(ref)
-	if err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
+		// Idempotent re-pull (blob already cached) must still (re)write the
+		// bundle: a backfill can sign an artifact AFTER a node cached its blob.
+		if err := os.Remove(bundlePath); err != nil {
+			t.Fatal(err)
+		}
+		requested = nil
+		if _, bp2, err := p.Pull(ref); err != nil {
+			t.Fatalf("second Pull: %v", err)
+		} else if _, err := os.Stat(bp2); err != nil {
+			t.Fatalf("cached-blob path must still materialise the bundle: %v", err)
+		}
+		if len(requested) != 0 {
+			t.Fatalf("cached blob must not be re-fetched: %v", requested)
+		}
+	})
 
-	// The blob IS fetched and IS present.
-	if _, err := os.Stat(cfsPath); err != nil {
-		t.Fatalf("erofs blob should exist after a successful pull: %v", err)
-	}
+	t.Run("without a bundle", func(t *testing.T) {
+		requested = nil
+		p := &Puller{HTTPClient: srv.Client(), PlatformURL: srv.URL, Cache: t.TempDir()}
+		ref := &ModuleArtifactRef{
+			ModuleID:    "mod-unsigned",
+			Digest:      digest,
+			DownloadURL: "/api/v1/system/node_api/files/modules/mod-unsigned",
+			Size:        int64(len(payload)),
+		}
+		cfsPath, bundlePath, err := p.Pull(ref)
+		if err != nil {
+			t.Fatalf("Pull: %v", err)
+		}
+		if _, err := os.Stat(cfsPath); err != nil {
+			t.Fatalf("erofs blob should exist after a successful pull: %v", err)
+		}
+		if _, err := os.Stat(bundlePath); !os.IsNotExist(err) {
+			t.Fatalf("no bundle was served, so none may be materialised (got err=%v)", err)
+		}
+		if len(requested) != 1 {
+			t.Fatalf("requests: got %v, want exactly one blob fetch", requested)
+		}
+	})
 
-	// The bundle is NOT. If this assertion starts failing, a bundle transport
-	// has been added: update internal/verify/doc.go and decide the verifier
-	// wiring at the three reconciler construction sites in the same change.
-	if _, err := os.Stat(bundlePath); !os.IsNotExist(err) {
-		t.Fatalf("bundle at %s: expected os.IsNotExist, got err=%v — a bundle "+
-			"transport now exists; re-decide the module-mount Verifier wiring "+
-			"and refresh internal/verify/doc.go", bundlePath, err)
-	}
-
-	// Exactly one request, for the blob. No second fetch for a signature.
-	if len(requested) != 1 {
-		t.Fatalf("requests: got %v, want exactly one blob fetch", requested)
-	}
-	if requested[0] != ref.DownloadURL {
-		t.Fatalf("requested %q, want the blob path %q", requested[0], ref.DownloadURL)
-	}
+	t.Run("with a malformed bundle", func(t *testing.T) {
+		requested = nil
+		p := &Puller{HTTPClient: srv.Client(), PlatformURL: srv.URL, Cache: t.TempDir()}
+		ref := &ModuleArtifactRef{
+			ModuleID:        "mod-garbage",
+			Digest:          digest,
+			DownloadURL:     "/api/v1/system/node_api/files/modules/mod-garbage",
+			CosignBundleB64: "not base64!!",
+		}
+		if _, _, err := p.Pull(ref); err == nil {
+			t.Fatal("a bundle that cannot be decoded must fail the pull, not be silently dropped")
+		}
+		// Fail BEFORE the network: no partial state to reason about.
+		if len(requested) != 0 {
+			t.Fatalf("malformed bundle must be rejected before fetching the blob: %v", requested)
+		}
+	})
 }
 
-// TestFetchManifestCarriesNoSignatureMaterial pins the other half of the gap:
-// even if the agent wanted to fetch a bundle, the platform's download envelope
-// gives it no reference to fetch.
+// TestFetchManifestCarriesSignatureMaterial pins the decoder half: the
+// download envelope's `oci` block now carries cosign_bundle_b64 and the
+// platform's trusted public keys, and ModuleArtifactRef has fields for both.
 //
-// The node_api download action renders ref / digest / fsverity_root_hash /
-// size_bytes. There is no signature, bundle, bundle_url, or public-key field,
-// and ModuleArtifactRef has no field that could receive one. (That action's
-// comment used to claim its `oci` block supplied "cosign material"; it never
-// did, and the comment now says so.)
-//
-// Note the contrast with fs-verity, which has a wire channel that at least
-// EXISTS end to end (fsverity_root_hash, published by the build handler and
-// carried on the manifest) — though it is populated only on the native publish
-// path. Cosign has no such channel at all, and, more fundamentally, the
-// platform signs an OCI ref rather than the erofs blob this package's Verifier
-// knows how to check. See internal/verify/doc.go.
-//
-// This asserts the decoder's behaviour, not the server's: signature fields
-// present in the response are silently dropped, so a platform that started
-// serving one would ship it into a void until the ref struct is extended.
-func TestFetchManifestCarriesNoSignatureMaterial(t *testing.T) {
-	// A response that DOES carry signature material, to prove the decoder
-	// discards it rather than that the fixture merely omitted it.
+// The predecessor test (TestFetchManifestCarriesNoSignatureMaterial) asserted
+// the ABSENCE of these fields reflectively so that adding one would fail
+// loudly and force the verifier-wiring decision. That decision is now made
+// (verify.NewModuleVerifier, default off); this asserts presence instead.
+func TestFetchManifestCarriesSignatureMaterial(t *testing.T) {
 	body := `{
 		"success": true,
 		"data": {
 			"file": {"name": "module.erofs", "size": 16, "checksum": "cafe",
-			         "download_url": "/files/modules/m1",
-			         "cosign_bundle_url": "/files/modules/m1/bundle"},
+			         "download_url": "/files/modules/m1"},
 			"oci": {"ref": "registry.example/mod@sha256:cafe", "digest": "sha256:cafe",
 			        "cosign_bundle_b64": "aWdub3JlZA==",
-			        "cosign_public_key": "-----BEGIN PUBLIC KEY-----"}
+			        "cosign_public_keys": ["-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----\n",
+			                               "-----BEGIN PUBLIC KEY-----\nBBB\n-----END PUBLIC KEY-----\n"]}
 		}
 	}`
 	c := &stubClient{resp: makeJSONResp(200, body)}
@@ -139,21 +170,18 @@ func TestFetchManifestCarriesNoSignatureMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchManifest: %v", err)
 	}
-
-	// Everything the ref CAN carry, it carried — so a nil ref is not why the
-	// signature fields are absent below.
 	if ref.Digest != "cafe" || ref.DownloadURL != "/files/modules/m1" {
-		t.Fatalf("ref did not decode the fields it does support: %+v", ref)
+		t.Fatalf("ref did not decode the fields it already supported: %+v", ref)
 	}
-
-	// ModuleArtifactRef has no signature-bearing field at all. Reflectively
-	// asserting the absence keeps this honest if someone adds one: the struct
-	// growing a cosign field is exactly the seam this test is watching for.
-	for _, forbidden := range []string{"CosignBundle", "BundleURL", "Signature", "CosignPublicKey"} {
-		if hasField(ref, forbidden) {
-			t.Fatalf("ModuleArtifactRef gained field %q — the signature transport "+
-				"seam is being built; wire Puller.Pull to fetch it and re-decide "+
-				"the module-mount Verifier wiring", forbidden)
+	for _, field := range []string{"CosignBundleB64", "CosignPublicKeys"} {
+		if !hasField(ref, field) {
+			t.Fatalf("ModuleArtifactRef lost field %q — the signature transport seam", field)
 		}
+	}
+	if ref.CosignBundleB64 != "aWdub3JlZA==" {
+		t.Fatalf("cosign_bundle_b64 not carried: %q", ref.CosignBundleB64)
+	}
+	if len(ref.CosignPublicKeys) != 2 || ref.CosignPublicKeys[1] != "-----BEGIN PUBLIC KEY-----\nBBB\n-----END PUBLIC KEY-----\n" {
+		t.Fatalf("cosign_public_keys not carried: %q", ref.CosignPublicKeys)
 	}
 }
