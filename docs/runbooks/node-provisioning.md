@@ -113,22 +113,21 @@ platform.system_create_node({
 > | `lifecycle_class` | **NOT IMPLEMENTED as an argument** — see below. |
 > | `metadata` | No such column. `config` (JSONB) is the free-form field, on both surfaces. |
 
-**`lifecycle_class` — you never set it on a Node, and the column is being
-retired**
+**`lifecycle_class` — you never set it on a Node, and the column is gone**
 
-`system_nodes.lifecycle_class` is a real column (nullable, **no default**, check
-constraint `persistent|ephemeral|spot`, mirrored by
-`System::Node::LIFECYCLE_CLASSES` and an inclusion validation that now permits
-nil). IMP-19843220ac68 settled it as RETIRED: no surface ever accepted it,
-nothing ever read it, and as of that change nothing writes it. The column, its
-CHECK constraint and its index are dropped one deploy window later. Where its
-value used to come from is not what this runbook used to say either:
+`system_nodes.lifecycle_class` no longer exists. IMP-19843220ac68 settled it as
+RETIRED — no surface ever accepted it, nothing ever read it — and took step 1:
+both writers stopped, column nullable with no default. IMP-f2a7a729d39b took
+step 2 one deploy window later: the column, its check constraint
+(`persistent|ephemeral|spot`), its index, `System::Node::LIFECYCLE_CLASSES` and
+the model validation are all dropped. Where its value used to come from is not
+what this runbook used to say either:
 
 - **You cannot set it on a node you create.** `system_create_node`'s executor
   slices only `description, enabled, worker_id, public_address,
   allocate_public_ip, config` (`system_fleet_tool.rb`), and REST's `node_params`
-  does not permit it (`nodes_controller.rb`). A node created either way now
-  carries `NULL`; before the retirement it took the column default,
+  does not permit it (`nodes_controller.rb`). A node created either way
+  records no class at all; before the retirement it took the column default,
   `persistent`.
 - **You cannot change it afterwards.** REST create and update share one
   `node_params` permit list, and `system_update_node` takes the MCP create
@@ -137,8 +136,8 @@ value used to come from is not what this runbook used to say either:
   advice was right about the outcome and wrong about the reason: it is not that
   you *should not* change it, it is that through MCP or REST you *cannot*.
 - **You cannot read it back.** Neither `System::NodeSerializer` (REST) nor the
-  MCP node serializer emits `lifecycle_class`, so no API response tells you a
-  node's class. To see it you need the DB or the Rails console.
+  MCP node serializer ever emitted `lifecycle_class`, so no API response ever
+  told you a node's class — and there is nothing left in the DB to see either.
 - **The class of a machine lives on the InstancePool, not on the Node.**
   `System::InstancePoolService#provision_warming_member!` used to copy
   `pool.lifecycle_class` onto each member's Node; that copy is gone. A pool's
@@ -155,14 +154,13 @@ value used to come from is not what this runbook used to say either:
 - Both former writers are gone: `System::PlatformDeploymentOrchestrator`
   hardcoded `"persistent"` (the old default, so it moved nothing) and the pool
   service copied the pool's value; the `provision_full_stack` skill executor
-  and the fulfillment orchestrator never set it at all. One writer is left, and
-  it is not an operator path: the `db/seeds/example_multi_tenant.rb` dev seed
-  writes the model directly, and goes when the column is dropped.
+  and the fulfillment orchestrator never set it at all. The last writer, the
+  `db/seeds/example_multi_tenant.rb` dev seed, went with the column in step 2.
 - **Nothing reads it, and nothing ever did.** A tree-wide search of `server/`,
   `extensions/`, `worker/` and the Go agent finds no consumer of a *Node's*
   `lifecycle_class`; the model comment's "short-circuit expensive bootstrap for
   short-lived instances" was never built. That, not any single defect, is why
-  the column is being retired rather than wired: stopping the writes without
+  the column was retired rather than wired: stopping the writes without
   also removing the `NOT NULL DEFAULT 'persistent'` would have left every pool
   member claiming to be persistent, which is worse than unread.
 
@@ -173,7 +171,7 @@ different axis, not a narrower value set:
 
 | Column | Values | Set by |
 |---|---|---|
-| `system_nodes.lifecycle_class` (**retired**) | `persistent\|ephemeral\|spot`, and now `NULL` | nothing. Never settable through any surface, never read; both writers were removed and the column is nullable with no default pending its drop |
+| `system_nodes.lifecycle_class` (**dropped**) | was `persistent\|ephemeral\|spot` | nothing — the column no longer exists. Never settable through any surface, never read; the writers were removed in step 1 (IMP-19843220ac68) and the column, its CHECK constraint and its index dropped in step 2 (IMP-f2a7a729d39b) |
 | `system_instance_pools.lifecycle_class` | `ephemeral\|spot` only — **no `persistent`** | `platform.system_create_instance_pool`, the Instance Pools UI, and GitOps `fleet.yaml` |
 | `system_node_instances.lease_class` (**not** a lifecycle class) | nullable, no constraint; carries `task_scoped`, which is invalid on both columns above | the fulfillment orchestrator, for leased task-scoped instances |
 
@@ -595,7 +593,7 @@ cd server && \
     "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_provision.rb')"
 ```
 
-The seed creates: 1 Account → 1 Node (no lifecycle_class — the column is retired) → 1 NodeInstance via LocalQemuProvider, watches the AASM Task progression, and reports the kernel boot pipeline through to multi-user.target. Total runtime: ~15 min on cold boot (TCG without `/dev/kvm`); ~3 min with KVM.
+The seed creates: 1 Account → 1 Node (no lifecycle_class — the column was dropped) → 1 NodeInstance via LocalQemuProvider, watches the AASM Task progression, and reports the kernel boot pipeline through to multi-user.target. Total runtime: ~15 min on cold boot (TCG without `/dev/kvm`); ~3 min with KVM.
 
 LocalQemuProvider modes (the `POWERNODE_LIBVIRT_MODE` value → runner class):
 - `real` — `LibvirtRunner`: actual libvirt domain creation + QEMU/KVM boot (default for smoke)

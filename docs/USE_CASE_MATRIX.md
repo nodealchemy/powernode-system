@@ -24,19 +24,21 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 ### How `lifecycle_class` is actually set
 
 The `lifecycle_class` column above is the class a use case *wants*. It is not a
-knob an operator turns — and since IMP-19843220ac68 it is not a column the
-platform fills in either. `system_nodes.lifecycle_class` is being **retired**:
-it is now nullable with no default, and both application paths that used to
-write it have stopped, so a Node created today carries `NULL`. The class of a
-machine lives on the `System::InstancePool` that produced it.
+knob an operator turns, and it is not a column a Node has any more.
+`system_nodes.lifecycle_class` was **retired** in two steps: IMP-19843220ac68
+stopped both application paths that used to write it and made it nullable with
+no default (step 1), and IMP-f2a7a729d39b dropped the column, its CHECK
+constraint and its index one deploy window later (step 2). A Node records no
+class at all; the class of a machine lives on the `System::InstancePool` that
+produced it.
 
 | Withdrawn claim | What is actually true |
 |---|---|
 | "Set `Node.lifecycle_class` via the UI or MCP" | No API surface accepts it. `system_create_node` declares eight parameters and `system_update_node` nine (eight mutable attributes plus the `node_id` selector); `lifecycle_class` is not among either; REST `node_params` (`nodes_controller.rb:96`) permits `name, description, enabled, node_template_id, worker_id, public_address, allocate_public_ip, ssh_key, ssh_host_key, config`, and create and update share that ONE list — so "not settable at create" and "not changeable later" are the same fact. Undeclared MCP keys are dropped without an error, so the wrong call succeeds. |
-| "`Node.update!(lifecycle_class: ...)` from the Rails console" | Succeeds at the DB level and changes no observable anywhere. |
+| "`Node.update!(lifecycle_class: ...)` from the Rails console" | Raises `ActiveModel::UnknownAttributeError` — the column was dropped (IMP-f2a7a729d39b). Before the drop it succeeded at the DB level and changed no observable anywhere. |
 | "Read it back to confirm" | Nothing emits it. `serialize_node` returns `id, name, template_id, worker_id, ssh_key_fingerprint, ssh_key_type, enabled, created_at`; `serialize_node_full` adds four more, none of them this. No serializer under `server/app/serializers/` mentions the column. |
 | "Filter a node listing by `lifecycle_class`" | `system_list_nodes` declares exactly one FILTER parameter, `template_id` (plus the shared `limit`/`cursor` page controls), and `list_nodes` has exactly one where-clause. A filter key you pass is dropped silently and you get the unfiltered list back with no error. |
-| "It is unset until you set it" | It is unset on every new Node — the DB default was removed rather than made settable. Before the retirement it was `persistent` on every Node by DB default, which is the opposite mistake and was the one the docs used to make. |
+| "It is unset until you set it" | There is nothing to set or unset — the column no longer exists. Step 1 removed the DB default rather than making the column settable; step 2 dropped it. Before the retirement it was `persistent` on every Node by DB default, which is the opposite mistake and was the one the docs used to make. |
 
 **No path sets it any more.** Until the retirement,
 `System::InstancePoolService#provision_warming_member!` created each pool
@@ -49,8 +51,8 @@ required removing the default in the same change: a pool member is `ephemeral`
 or `spot` by construction (`System::InstancePool` is CHECK-constrained to those
 two), so leaving a NOT NULL `persistent` default behind would have turned an
 unread column into a confidently wrong one. The `example_multi_tenant` dev seed
-still writes the column directly, defaulted to `persistent`; it is not an
-operator path and goes when the column is dropped.
+was the last writer — it wrote the column directly, defaulted to `persistent`,
+and was not an operator path — and it went with the column in step 2.
 
 **Nothing reads it** — which is why it was retired rather than wired. No
 consumer of a *Node's* `lifecycle_class` exists in `server/`, `extensions/`,
@@ -59,8 +61,8 @@ was never implemented, and if one is ever built it must read the pool, not the
 Node: the copy was a snapshot taken at member-create time, and rotating a pool's
 class afterwards (GitOps `apply_pool` "update" carries it) never refreshed it.
 A member Node reaches its pool through `config["instance_pool_id"]`. The column,
-its CHECK constraint and its index survive one deploy window and are then
-dropped. One same-named column
+its CHECK constraint and its index survived one deploy window and were then
+dropped (IMP-f2a7a729d39b). One same-named column
 survives elsewhere: `system_instance_pools.lifecycle_class` (`ephemeral|spot`,
 default `ephemeral`) is a DIFFERENT field with a different value set — the code
 has already tripped over that. A third column on `system_node_instances` used to
@@ -90,9 +92,9 @@ platform.system_provision_instance({
 })
 // Then via UI or MCP:
 // - WITHDRAWN: "Set Node.lifecycle_class = persistent". There is no UI or MCP
-//   surface that accepts it, and the column is retired — nullable, no default,
-//   no writer — so there is nothing to do and nothing to record. See "How
-//   lifecycle_class is actually set" above.
+//   surface that accepts it, and the column is retired and dropped — so there
+//   is nothing to do and nothing to record. See "How lifecycle_class is
+//   actually set" above.
 // - Attach Sdwan::Peer
 // - Assign docker-engine module
 ```
@@ -115,7 +117,7 @@ platform.system_provision_instance({
 **Setup**:
 ```javascript
 // 1. Provision 1 NodeInstance for control plane
-//    - lifecycle_class: persistent (retired column — not settable, nothing to do)
+//    - lifecycle_class: persistent (dropped column — not settable, nothing to do)
 //    - Attach SDWAN
 //    - Assign k3s-server module
 // 2. Wait ~90s for cluster bootstrap
@@ -210,8 +212,9 @@ platform.system_assign_module_to_template({
 ```javascript
 // WITHDRAWN — "Set lifecycle_class on the Node before provisioning":
 //   Node.update!(lifecycle_class: "ephemeral")
-// succeeds at the DB level and changes nothing. No API surface accepts the
-// field, nothing reads a Node's copy of it, and no serializer returns it.
+// now raises ActiveModel::UnknownAttributeError — the column was dropped — and
+// before the drop succeeded at the DB level and changed nothing. No API
+// surface accepts the field, and no serializer ever returned it.
 // To get ephemeral Nodes: create an InstancePool with
 // lifecycle_class: "ephemeral" via system_create_instance_pool, then take
 // members with system_acquire_pooled_instance — which is the pre-warmed pool
@@ -231,7 +234,7 @@ platform.system_assign_module_to_template({
 - 90s × 50 = 75 minutes of cumulative bootstrap latency. For short batches, this dominates total runtime.
 - **Workaround**: pre-bake a NodePlatform disk image with `docker-ce` already installed (Phase 1 disk image CI). Then bootstrap drops to ~30s.
 - **Mitigation shipped (slice 7)**: pre-warmed instance pool — `System::InstancePool` keeps N warming/ready instances ready for atomic acquisition. Operators acquire via `system_acquire_pooled_instance` MCP action in <30s instead of 5-10min cold provision. Reaper auto-replenishes as members are claimed. See `system_create_instance_pool`, `system_acquire_pooled_instance`, `system_drain_instance_pool`.
-- WITHDRAWN — "`lifecycle_class=ephemeral` is the right hint to the agent". It is not a hint to anything: `lifecycle_class` appears nowhere under `agent/` and no node-facing payload carries it, so the value never leaves the database. The agent reconciler short-circuit (skip expensive bootstrap) it was added for is **not yet implemented** — column exists, behavior change pending, and no channel to deliver it if it shipped.
+- WITHDRAWN — "`lifecycle_class=ephemeral` is the right hint to the agent". It is not a hint to anything: `lifecycle_class` appears nowhere under `agent/` and no node-facing payload carries it, so the value never leaves the database. The agent reconciler short-circuit (skip expensive bootstrap) it was added for is **not yet implemented** — the column has since been dropped, the behavior change never landed, and there is no channel to deliver it if it shipped.
 
 ### Use Case 5 — CI runner pool ⚠️
 
@@ -264,7 +267,7 @@ platform.system_assign_module_to_template({
 **Setup**:
 ```
 Server NodeInstance:
-  Node.lifecycle_class = "persistent"   # retired column — nothing to set
+  Node.lifecycle_class = "persistent"   # dropped column — nothing to set
   Module: k3s-server
 
 Worker NodeInstances (N varies):
@@ -352,8 +355,8 @@ Will this instance be alive for >24 hours?
 it any more, so a machine you simply create carries no class at all.
 `ephemeral` and `spot` come from creating the machine out of a
 `System::InstancePool` with that `lifecycle_class` — on the pool, which is the
-row that carries the class. The Node column that used to mirror it is retired
-(nullable, no default, no writer).
+row that carries the class. The Node column that used to mirror it was dropped
+(IMP-f2a7a729d39b).
 `tmpfs_store` is in the SAME position and the tree should not be read as setting
 it either: no MCP verb or REST parameter accepts it, `System::Node#enable_tmpfs!`
 / `#disable_tmpfs!` (`server/app/models/system/node.rb` — named, not
