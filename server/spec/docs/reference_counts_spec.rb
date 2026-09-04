@@ -54,6 +54,7 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   policy_seed_path = File.join(ext_root, "server/db/seeds/fleet_autonomy_agent.rb")
 
   executors_doc_path = File.join(ext_root, "docs/SKILL_EXECUTORS.md")
+  executor_catalog_path = File.join(ext_root, "docs/SKILL_EXECUTOR_CATALOG.md")
   sensors_doc_path    = File.join(ext_root, "docs/FLEET_SENSORS.md")
 
   let(:executor_files) { Dir.glob(File.join(skills_dir, "*_executor.rb")).sort }
@@ -242,6 +243,35 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
       "references; #{skills_dir} actually has #{concrete_executor_files.size}"
   end
 
+  # HIER-P3 review — SKILL_EXECUTORS.md restates the descriptor CATEGORY list
+  # twice, and adding an executor in a NEW category (governance) left both
+  # copies claiming seven while the regenerated catalog said eight. The catalog
+  # is the rake-kept oracle, so both prose copies are pinned to its header and
+  # to the `### <Name> (<n>)` groups it actually emits.
+  it "SKILL_EXECUTORS.md's descriptor-category count and names match the generated catalog" do
+    catalog = File.read(executor_catalog_path)
+    catalog_count = doc_number(
+      catalog, /across \*\*(\d+) categories\*\*/, "catalog category count", executor_catalog_path
+    )
+    catalog_names = catalog.scan(/^### ([A-Z][A-Za-z]*) \(\d+\)$/).flatten.sort
+    expect(catalog_names.size).to eq(catalog_count),
+      "SKILL_EXECUTOR_CATALOG.md's header says #{catalog_count} categories but emits " \
+      "#{catalog_names.size} `### <Name> (<n>)` groups #{catalog_names.inspect} — regenerate it"
+
+    stated = executors_doc_text.scan(/the (\d+) `?descriptor\(\)`? categories|\*\*(\d+) executor categories\*\*|the (\d+) executor categories/)
+                               .flatten.compact.map(&:to_i)
+    expect(stated).not_to be_empty,
+      "SKILL_EXECUTORS.md: no descriptor-category count matched — the phrasing changed; update this regex"
+    expect(stated.uniq).to eq([ catalog_count ]),
+      "SKILL_EXECUTORS.md states #{stated.uniq.inspect} descriptor categories; " \
+      "SKILL_EXECUTOR_CATALOG.md has #{catalog_count} (#{catalog_names.join(', ')})"
+
+    catalog_names.each do |name|
+      expect(executors_doc_text).to include(name),
+        "SKILL_EXECUTORS.md's category enumerations omit #{name}, which the generated catalog emits"
+    end
+  end
+
   it "SKILL_EXECUTORS.md's concrete (binds_to-declaring) executor count matches disk" do
     stated = doc_number(
       executors_doc_text,
@@ -365,6 +395,20 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     )
     expect(stated).to eq(agent_policy_counts.values.sum),
       "FLEET_SENSORS.md's total claims #{stated}; the eleven policy-carrying sets sum to #{agent_policy_counts.values.sum}"
+  end
+
+  # HIER-P3: the one declared set on a CORE canonical — outside the
+  # twelve-agent total by design (the agent is not this extension's) and so
+  # outside every pin above; pinned here on its own paragraph so the figure
+  # cannot rot the way the per-agent ones did.
+  it "FLEET_SENSORS.md's Platform Architect paragraph matches PLATFORM_ARCHITECT_POLICIES" do
+    stated = doc_number(
+      sensors_doc_text,
+      /Platform Architect \(core canonical — (\d+) policies declared here\)/,
+      "Platform Architect declared-set count", sensors_doc_path
+    )
+    expect(stated).to eq(declared_keys("PLATFORM_ARCHITECT_POLICIES").size)
+    expect(declared_keys("PLATFORM_ARCHITECT_POLICIES")).to match_array(%w[dev.campaign_propose dev.governance_materialize])
   end
 
   # The per-agent OPERATOR GUIDES carry the same numbers as CLAUDE.md and

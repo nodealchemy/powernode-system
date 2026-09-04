@@ -95,6 +95,26 @@ RSpec.describe System::Ai::Skills::SkillBindingsReconciler do
       expect(Ai::AgentSkill.exists?(kept.id)).to be(true)
     end
 
+    # HIER-P3 — the first boot after GovernanceGapProposeExecutor bound the
+    # Platform Architect destroyed that agent's four CORE bindings, because a
+    # registry-named agent's whole binding set was treated as this registry's
+    # to prune. A core canonical keeps every binding core gave it; the
+    # registry's own pair is still upserted beside them.
+    it "never prunes a CORE canonical's bindings — only upserts its own pair beside them (HIER-P3)" do
+      seed_skill_catalog!
+      architect = canonical("Platform Architect", agent_type: "assistant")
+      core_skill = create(:ai_skill, :global, slug: "ai-agent-architect", name: "AI Agent Architect")
+      core_binding = create(:ai_agent_skill, agent: architect, skill: core_skill)
+      propose = Ai::Skill.global.find_by!(slug: "system-governance-gap-propose")
+
+      result = reconciler.reconcile!
+
+      expect(Ai::AgentSkill.exists?(core_binding.id)).to be(true)
+      expect(Ai::AgentSkill.where(ai_agent_id: architect.id, ai_skill_id: propose.id, is_active: true)).to exist
+      expect(reconciler.drift.stale).not_to include(a_string_matching(/Platform Architect/))
+      expect(result.removed).to eq(0)
+    end
+
     it "is idempotent: a second run changes nothing" do
       seed_skill_catalog!
       canonical("CVE Responder")

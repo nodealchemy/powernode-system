@@ -106,7 +106,22 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   let(:seeded_policy_agents) { seed_names { |source| policy_agent_names_in(source) } }
 
   # Agents some seed produces the IDENTITY of (the convention's "seeded").
-  let(:seeded_agents) { seed_names { |source| global_agent_names_in(source) } }
+  # HIER-P3: a declared owner may be a CORE canonical (PolicyDeclarations::
+  # CORE_CANONICAL_KEYS — the Platform Architect), seeded by the parent tree's
+  # db/seeds/ai_engineering_agents_seed.rb through `find_or_initialize_global(slug:)`
+  # rather than the extension helper. Scanned from THAT file, keyed by the
+  # declared slug AND name, so a core canonical is counted as seeded only when
+  # core really produces it — never waved through for being declared.
+  let(:core_seeded_agents) do
+    d = System::Governance::PolicyDeclarations
+    source = File.read(Rails.root.join("db/seeds/ai_engineering_agents_seed.rb"))
+    d::CORE_CANONICAL_KEYS.filter_map do |key|
+      identity = d::AGENT_IDENTITIES.fetch(key)
+      identity[:name] if source.include?(%(slug: "#{key}")) && source.include?(%(name: "#{identity[:name]}"))
+    end
+  end
+
+  let(:seeded_agents) { (seed_names { |source| global_agent_names_in(source) } + core_seeded_agents).uniq.sort }
 
   # The population the reconciler writes agent-scoped rows for: the name of
   # every agent that keys an agent-scoped POLICY_SETS entry.
@@ -259,6 +274,9 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
       "Disk Image Manager", "SDWAN Manager", "System Topology Designer", "GitOps Reconciler",
       "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
     )
+    # ...plus the one core canonical the declarations bind a set to (HIER-P3),
+    # which the core-seed scan — not the extension scan — must have produced.
+    expect(core_seeded_agents).to eq([ "Platform Architect" ])
 
     # The identifier-resolution branch specifically: the GitOps Reconciler seed
     # passes a local variable to `find_or_initialize_global_agent`, so a scan

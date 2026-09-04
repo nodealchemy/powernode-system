@@ -98,11 +98,23 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
   # (falling back to Account.first), then requires an admin user and an
   # Ai::Provider, so all three preconditions are created up front.
+  # HIER-P3: the governance-gap lane routes dev.campaign_propose to the
+  # Platform Architect, a CORE canonical seeded by the parent tree's
+  # engineering seed — loaded here for the same reason the extension seeds
+  # are: the owner must come from its REAL seed, never a stub. The core seed
+  # writes that agent's policy rows only for the "Powernode Admin" account, so
+  # on this account the row is PolicyReconciler's (PLATFORM_ARCHITECT_POLICIES),
+  # exactly the non-admin-account case the extension declaration exists for.
+  CORE_SEEDS = %w[ai_engineering_agents_seed].freeze
+
   before do
     create(:user, account: account)
     create(:ai_provider) unless ::Ai::Provider.exists?
     SEEDS.each do |seed|
       load Rails.root.join("../extensions/system/server/db/seeds/#{seed}.rb")
+    end
+    CORE_SEEDS.each do |seed|
+      silence_warnings { load Rails.root.join("db/seeds/#{seed}.rb") }
     end
   end
 

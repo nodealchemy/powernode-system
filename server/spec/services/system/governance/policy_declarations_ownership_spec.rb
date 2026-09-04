@@ -284,7 +284,13 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
         "supply-chain-manager" => { name: "Supply Chain Manager",     agent_type: "monitor" },
         "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" }
       )
-      expect(d::AGENT_IDENTITIES.size).to eq(11)
+      # Eleven extension-seeded identities plus the Platform Architect — a CORE
+      # canonical declared here as the owner of the governance-gap lane
+      # (HIER-P3; CORE_CANONICAL_KEYS) but seeded, and delegation-governed, by core.
+      expect(d::AGENT_IDENTITIES.size).to eq(12)
+      expect(d::AGENT_IDENTITIES["platform-architect"]).to eq(name: "Platform Architect", agent_type: "assistant")
+      expect(d::CORE_CANONICAL_KEYS).to eq(%w[platform-architect])
+      expect(d::CORE_CANONICAL_KEYS - d::AGENT_IDENTITIES.keys).to eq([])
     end
 
     it "answers owner_of with the new owners" do
