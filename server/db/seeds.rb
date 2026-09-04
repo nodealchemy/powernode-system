@@ -16,7 +16,7 @@
 #     "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_<x>.rb')"
 #
 # Order matters — skill catalogs first, then agents that bind skills,
-# then the manual-operations policy seed and the graph/catalog seeds.
+# then the manual-operations approval-chain seed and the graph/catalog seeds.
 #
 # NOTE: extension permissions + role grants are NO LONGER seeded imperatively.
 # They are declared in lib/powernode_system/engine.rb via the Permissions
@@ -57,8 +57,10 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # system_provisioning_intervention_policies) are DELETED: their sets are
 # POLICY_SETS entries the reconciler writes at the declared shape. Do not add
 # a seed that writes a declared row — spec/db/seeds/policy_single_writer_spec
-# runs every agent seed against an empty database and asserts zero rows, and
-# lints the list. `system_governance_policy_reconcile.rb` runs LAST and is how
+# runs every agent seed against an empty database and asserts zero rows, runs
+# every seed its containment lint says could touch the model against an
+# ALREADY-RECONCILED one and asserts no row is created, modified or (unless
+# pinned delete-only) deleted, and lints the list. `system_governance_policy_reconcile.rb` runs LAST and is how
 # the rows reach a `rails db:seed` install: retiring the fourteen upserts left
 # the reconciler running only from rails-start.sh (hub images) and the manual
 # `rails system:governance:reconcile`, so every other documented install path
@@ -68,11 +70,13 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # own absence-only engineering-floor seam as a BACKSTOP: not a ruling-7 second
 # writer, because those rows are CORE rows with one CORE seam, and core's
 # engineering seed lands them first on a baseline `db:seed` — so that
-# step normally writes zero. The ONE remaining writer
-# besides the reconciler is
-# system_manual_operation_policies.rb (outside that task's file list — it still
-# upserts the manual-operations set and destroys unlisted system.task.* rows;
-# named in that spec as the exception until it is retired the same way).
+# step normally writes zero. NO SEED BELOW IS A SECOND WRITER any more:
+# IMP-28cccf7cee28 retired the last one, `system_manual_operation_policies.rb`,
+# which upserted the manual-operations set and destroy_all'd unlisted
+# system.task.* rows — the reconciler's `manual_set` reads the same constant,
+# so that file now seeds only the approval chain the require_approval verbs
+# route to. The one seed that still touches the model is
+# `system_autonomy_orphan_cleanup.rb`, and it is DELETE-ONLY (below).
 # `system_skill_graph_sync.rb` runs LAST, after every catalog seed: the catalog
 # skills are GLOBAL rows since HIER-P2G and a global row never fires the
 # per-account knowledge-graph sync hook, so without it every system skill is

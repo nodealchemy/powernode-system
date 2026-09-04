@@ -63,8 +63,9 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   # contributed Fleet Autonomy, which another seed supplied anyway — so the
   # omission changed no result and was invisible. That is
   # exactly the shape of drift this file exists to catch, and the reason the
-  # gate is deliberately loose: a file that writes only global/action_type rows
-  # (`system_manual_operation_policies.rb`) resolves no agent name and still
+  # gate is deliberately loose: a file that writes no agent-scoped row
+  # (`system_manual_operation_policies.rb`, which since IMP-28cccf7cee28 writes
+  # no policy row at all) resolves no agent name and still
   # contributes nothing, and the "no empty bucket" example rejects anything
   # spurious that does slip through.
   #

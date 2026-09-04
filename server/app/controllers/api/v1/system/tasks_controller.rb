@@ -33,8 +33,9 @@ module Api
         # flaky-network retry double-provisioning.
         #
         # Mutating commands flow through Ai::AutonomyGate first — see
-        # `system_manual_operation_policies.rb` for the per-command policy
-        # defaults. If the gate returns `:pending` the operator gets a 202
+        # `System::Governance::PolicyDeclarations::MANUAL_OPERATION_DEFAULT_VERBS`
+        # for the per-command policy defaults (written by PolicyReconciler, the
+        # single writer, since IMP-28cccf7cee28). If the gate returns `:pending` the operator gets a 202
         # with the approval_request_id and can approve from the notification
         # center; the task is created when the chain completes.
         def create

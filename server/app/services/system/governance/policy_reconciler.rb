@@ -18,15 +18,23 @@ module System
     # The seed path is DESTRUCTIVE by design, and safe today only because it
     # never re-runs:
     #
-    #   * `upsert_manual_policies!` (and, until IMP-10e4f6c3bcd2 retired it
-    #     with every agent seed's policy upsert, AgentSetupHelpers
-    #     #upsert_policies!) `assign_attributes(policy: <declared verb>, ...)`
-    #     and save when `changed?` — so re-running RESETS an operator's
-    #     deliberately tuned verb back to the seeded default.
-    #   * system_manual_operation_policies.rb then `destroy_all`s every
-    #     `system.task.*` global row whose category is not in the seed's key
-    #     list. (Proposal §5 ruling 7 makes THIS class the single writer of
-    #     declared rows; that seed is the one remaining exception.)
+    #   * every seed-side upsert `assign_attributes(policy: <declared verb>,
+    #     ...)` and saved when `changed?` — so re-running RESET an operator's
+    #     deliberately tuned verb back to the seeded default. (AgentSetupHelpers
+    #     #upsert_policies! for the agent sets, retired by IMP-10e4f6c3bcd2;
+    #     `upsert_manual_policies!` in system_manual_operation_policies.rb for
+    #     the manual set, retired by IMP-28cccf7cee28.)
+    #   * that same seed then `destroy_all`ed every `system.task.*` global row
+    #     whose category was not in its key list — the more dangerous half,
+    #     since a second writer that DELETES silently reverts a reconciled row.
+    #     Retired with the upsert; the sanctioned collector
+    #     (system_autonomy_orphan_cleanup.rb) keys on the boot REGISTRY instead,
+    #     which is derived from the same declarations.
+    #
+    # Proposal §5 ruling 7 makes THIS class the single writer of declared rows,
+    # and since IMP-28cccf7cee28 there is no remaining exception —
+    # spec/db/seeds/policy_single_writer_spec pins it on the ROWS, by running
+    # every policy-touching seed against an already-reconciled database.
     #
     # On first boot there is no operator intent to destroy. On every boot
     # thereafter both behaviours are live regressions — an operator who set

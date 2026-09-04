@@ -201,8 +201,9 @@ module System
       # enumerated a different one: the since-retired `clean_stale_policies!`
       # took (ai_agent_id: agent.id, scope "agent"), the since-retired
       # `clean_stale_operator_policies!` took (ai_agent_id: nil, scope
-      # "action_type"), and system_manual_operation_policies.rb takes (scope
-      # "global", both ids nil) narrowed to `system.task.%`. Two producers wrote
+      # "action_type"), and the since-retired inline sweep in
+      # system_manual_operation_policies.rb took (scope "global", both ids nil)
+      # narrowed to `system.task.%` (IMP-28cccf7cee28). Two producers wrote
       # outside all three: `System::AutonomyActions#update` mints scope "global"
       # with a nil ai_agent_id for any update whose row identity the panel could
       # not recover (useAutonomyConfig.ts `save()` degrades to category + verb),
