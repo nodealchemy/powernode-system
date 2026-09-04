@@ -558,21 +558,22 @@ module System
       # acquired, erasing every heartbeat since.
       attrs = {}
       unless instance.in_pool?
-        # system_node_instances.lease_class is a DIFFERENT AXIS from the
-        # system_nodes / system_instance_pools `lifecycle_class` columns: it
-        # records why this instance was leased, not how long-lived the machine
-        # is. Its one value is in neither of those value spaces — it would
-        # violate the CHECK constraint standing on either table. That is why
-        # this column is nullable and carries no check constraint of its own.
+        # system_node_instances.lease_class is a DIFFERENT AXIS from
+        # system_instance_pools.lifecycle_class: it records why this instance
+        # was leased, not how long-lived the machine is. Its one value is not
+        # in the pool's value space — it would violate the check constraint
+        # standing on that table. That is why this column is nullable and
+        # carries no check constraint of its own.
         # See spec/models/system/lifecycle_class_value_space_spec.rb.
         #
         # THE NAME WAS THE DEFECT: this column was itself called
         # `lifecycle_class` until IMP-1e2e7b43b083 renamed it (column, partial
-        # index, one writer, two readers, serializer key). node-vs-pool is
-        # deliberate layering — the pool set is a correct strict subset of the
-        # node set — and this was the odd one out, a third axis that borrowed
-        # the name. spec/models/system/node_instance_lease_class_spec.rb keeps
-        # the old spelling from coming back.
+        # index, one writer, two readers, serializer key). system_nodes used to
+        # carry a same-named copy of the pool's class as well; that column was
+        # retired (IMP-19843220ac68) and dropped (IMP-f2a7a729d39b), so the
+        # pool is the one lifecycle_class column left.
+        # spec/models/system/node_instance_lease_class_spec.rb keeps the old
+        # spelling from coming back.
         attrs[:lease_class]      = "task_scoped"
         attrs[:lease_expires_at] = now + ttl
       end

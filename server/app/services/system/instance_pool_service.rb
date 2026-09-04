@@ -1427,16 +1427,14 @@ module System
       # pre-create it because provision_instance always creates a
       # fresh row (calling it on an existing instance would either
       # double-up or no-op, neither of which is what we want).
-      # THE MEMBER NODE NO LONGER CARRIES A COPY OF THE POOL'S CLASS.
+      # THE MEMBER NODE CARRIES NO COPY OF THE POOL'S CLASS.
       # IMP-19843220ac68 retired `system_nodes.lifecycle_class`: this method
-      # used to write `pool.lifecycle_class` onto the member, which was legal
-      # only because System::InstancePool::LIFECYCLE_CLASSES is a strict subset
-      # of System::Node::LIFECYCLE_CLASSES (still guarded in
-      # spec/models/system/lifecycle_class_value_space_spec.rb, since the node
-      # CHECK constraint outlives this write by one deploy window). It was a
+      # used to write `pool.lifecycle_class` onto the member. It was a
       # SNAPSHOT, never a view — rotating pool.lifecycle_class afterwards
       # (GitOps apply_pool "update" carries it) left the copy not refreshed on
       # members already created — and nothing anywhere read it.
+      # IMP-f2a7a729d39b then dropped the column, so passing the attribute
+      # here now raises ActiveModel::UnknownAttributeError.
       #
       # The pool row is authoritative and stays reachable from the member
       # through `config["instance_pool_id"]` below, which is the value any

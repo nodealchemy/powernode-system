@@ -28,10 +28,12 @@ end
 
 # `system_nodes` exposes `name` (not `hostname`), requires a `node_template`,
 # and uses `config` JSONB (no `metadata`).
-def ensure_node!(account:, name:, node_template:, lifecycle_class: "persistent")
+# No lifecycle attribute: `system_nodes` used to carry one, this seed was its
+# last writer, and IMP-f2a7a729d39b dropped the column (retirement step 2).
+# The class of a machine lives on the InstancePool that produced it.
+def ensure_node!(account:, name:, node_template:)
   node = ::System::Node.find_or_initialize_by(account: account, name: name)
   node.assign_attributes(
-    lifecycle_class: lifecycle_class,
     node_template: node_template,
     config: (node.config || {}).merge("source" => "example_multi_tenant")
   )

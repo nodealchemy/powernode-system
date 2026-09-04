@@ -234,8 +234,8 @@ module System
       # No lifecycle attribute. IMP-19843220ac68 retired
       # `system_nodes.lifecycle_class`; this call used to write the literal
       # "persistent", which was the DB default and therefore moved nothing, and
-      # the column is now nullable with a NULL default so an auto-created Node
-      # simply asserts nothing about its lifetime. Nothing read the column.
+      # IMP-f2a7a729d39b dropped the column outright, so an auto-created Node
+      # records nothing about its lifetime. Nothing read the column.
       ::System::Node.create!(
         account: @account,
         node_template: template,

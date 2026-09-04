@@ -12,70 +12,44 @@ module System
     SSH_KEY_TYPES = %w[ed25519 rsa].freeze
     RSA_KEY_BITS = 2048
 
-    # RETIRED COLUMN — `lifecycle_class` is on its way out; do not build on it.
+    # RETIRED COLUMN, NOW DROPPED — `system_nodes.lifecycle_class` no longer
+    # exists. Do not bring it back, and do not build on the name.
     #
-    # It was added in Phase 2.5 to disambiguate "long-lived vs ephemeral" so the
-    # platform and the agent COULD short-circuit expensive bootstrap for
-    # short-lived instances. That short-circuit was never implemented: nothing
-    # in server/, extensions/, worker/ or the Go agent ever read a Node's
-    # lifecycle_class, no node-facing payload carried it, and no REST or MCP
-    # surface permitted it on create or update — so the column recorded no
-    # intent anybody had chosen. IMP-19843220ac68 settled the wire-or-retire
-    # fork as RETIRE.
+    # It was added in Phase 2.5 so the platform and the agent COULD
+    # short-circuit expensive bootstrap for short-lived instances. That was
+    # never built: nothing in server/, extensions/, worker/ or the Go agent ever
+    # read a Node's lifecycle_class, no node-facing payload carried it, and no
+    # REST or MCP surface accepted it — the column recorded no intent anybody
+    # had chosen. IMP-19843220ac68 settled the wire-or-retire fork as RETIRE
+    # and took step 1 (db/migrate/20260902160000_retire_lifecycle_class_default_on_system_nodes.rb):
+    # both writers stopped, column nullable with a NULL default, one deploy
+    # window of forward compatibility for the previous release.
+    # IMP-f2a7a729d39b took step 2 (db/migrate/20260904100000_drop_lifecycle_class_from_system_nodes.rb):
+    # the column, its chk_system_nodes_lifecycle_class CHECK constraint, its
+    # index, the LIFECYCLE_CLASSES constant and the inclusion validation that
+    # used to sit here are all gone, and the example_multi_tenant seed no
+    # longer writes it. Supplying the attribute by name now raises
+    # ActiveModel::UnknownAttributeError, which is the point: a reintroduced
+    # writer fails loudly instead of writing to a column nothing reads.
     #
-    # STEP 1 (db/migrate/20260902160000_retire_lifecycle_class_default_on_system_nodes.rb):
-    # both writers were stopped — InstancePoolService no longer copies
-    # pool.lifecycle_class onto each member, PlatformDeploymentOrchestrator no
-    # longer writes the literal "persistent" — and the column became nullable
-    # with a NULL default IN THE SAME CHANGE. That pairing is the point: had the
-    # writes stopped alone, every pool member would have fallen back to the
-    # NOT NULL default "persistent", which is actively wrong for an ephemeral or
-    # spot pool. New Nodes now carry NULL, which asserts nothing.
-    #
-    # STEP 2, after one deploy window: drop the column, the
-    # chk_system_nodes_lifecycle_class CHECK constraint, the index, this
-    # constant and the validation below. They survive step 1 only so the
-    # previous release can keep running FORWARD against the migrated schema —
-    # its creates still supply a value, its reads are unaffected, and the
-    # three-valued CHECK tolerates NULL.
-    #
-    # THAT COMPATIBILITY IS ONE-WAY. Rows this release creates carry nil, and
-    # the previous release validates the column with `allow_nil: false`, so
-    # rolling the extension back (a module rollback does NOT revert the applied
-    # migration) makes any later `node.update!` on such a row raise
-    # RecordInvalid with the misleading "Lifecycle class is not included in the
-    # list". A rollback that keeps the migration must first run the
-    # compensating, pool-resolving backfill in that migration's `down`; step 2
-    # inherits the same obligation.
+    # ROLLING THE EXTENSION BACK past step 2 requires that migration's `down`
+    # FIRST. The step-1 model validates the column (allow_nil) and the
+    # baseline model validates it NOT NULL, so either release raises
+    # NoMethodError on the first Node validation while the attribute is
+    # missing. `down` restores step 1's shape (nullable, no default, CHECK and
+    # index back, values lost); step 1's own `down` then backfills from the
+    # pool and restores NOT NULL.
     #
     # THE AUTHORITATIVE HOLDER IS THE POOL. system_instance_pools.lifecycle_class
-    # is a DIFFERENT column with a different value space — ephemeral|spot ONLY,
-    # a deliberate strict subset of this one, because a pool of machines you
-    # intend to keep is a contradiction. It is settable, read and rotatable
-    # (GitOps apply_pool "update"), and a member Node reaches it through
-    # config["instance_pool_id"]. Anything that ever wants to branch on a
-    # machine's lifetime reads the pool. The layering that made the old copy
-    # legal is pinned by spec/models/system/lifecycle_class_value_space_spec.rb
-    # and must hold until the column is gone.
-    #
-    # A THIRD table carried the name by ACCIDENT until IMP-1e2e7b43b083.
-    # system_node_instances records lease provenance — leased for one
-    # fulfillment, value "task_scoped" — which is a different axis entirely,
-    # nullable, check-constraint-free, and a value BOTH tables above would
-    # reject. It is now `system_node_instances.lease_class`; the old spelling
-    # is kept out by spec/models/system/node_instance_lease_class_spec.rb.
-    #
-    # The column is created in db/migrate/20250101000009_system_baseline.rb
-    # (system_nodes). This comment previously cited
-    # 20260505000500_add_lifecycle_class_to_system_nodes.rb, which does not
-    # exist in db/migrate/ — the standalone migration was folded into the
-    # baseline.
-    LIFECYCLE_CLASSES = %w[persistent ephemeral spot].freeze
-    # allow_nil is REQUIRED, not a loosening: with the DB default gone, every
-    # Node created without the attribute carries nil, and `allow_nil: false`
-    # would make each of those creates raise. An explicit value is still
-    # constrained to the declared space until step 2 removes both.
-    validates :lifecycle_class, inclusion: { in: LIFECYCLE_CLASSES }, allow_nil: true
+    # (ephemeral|spot only — a pool of machines you intend to keep is a
+    # contradiction) is settable, read and rotatable (GitOps apply_pool
+    # "update"), and a member Node reaches it through config["instance_pool_id"],
+    # which InstancePoolService#provision_warming_member! stamps at create time.
+    # Anything that ever wants to branch on a machine's lifetime reads the pool.
+    # system_node_instances.lease_class (IMP-1e2e7b43b083) is a different axis
+    # — lease provenance, value "task_scoped" — not a lifecycle class.
+    # Guards: spec/models/system/node_lifecycle_class_retirement_spec.rb,
+    # spec/models/system/lifecycle_class_value_space_spec.rb.
 
     # Encryption for sensitive fields
     encrypts :ssh_key

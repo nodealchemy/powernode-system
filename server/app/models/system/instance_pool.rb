@@ -47,14 +47,14 @@ module System
     # No `persistent` — deliberately. A pool exists to be warmed, claimed and
     # replenished; a machine you intend to keep forever is not pool stock.
     #
-    # This set MUST stay a subset of System::Node::LIFECYCLE_CLASSES
-    # (persistent|ephemeral|spot on system_nodes):
-    # InstancePoolService#provision_warming_member! copies pool.lifecycle_class
-    # onto each member's Node, so a value admitted here that the Node model or
-    # the system_nodes check constraint rejects would break replenishment for
-    # every pool of that class. The invariant is enforced by
-    # spec/models/system/lifecycle_class_value_space_spec.rb, not by these two
-    # literals happening to nest.
+    # This is the ONLY lifecycle_class column left. system_nodes used to carry
+    # one (persistent|ephemeral|spot) that provision_warming_member! copied
+    # this value onto; IMP-19843220ac68 retired that copy and IMP-f2a7a729d39b
+    # dropped the column, so the pool row is the authoritative — and sole —
+    # holder of a machine's class. A member reaches it through
+    # config["instance_pool_id"]. system_node_instances.lease_class is a
+    # different axis (lease provenance), not a lifecycle class. Pinned by
+    # spec/models/system/lifecycle_class_value_space_spec.rb.
     LIFECYCLE_CLASSES = %w[ephemeral spot].freeze
     STATUSES = %w[active paused draining archived].freeze
 
