@@ -129,6 +129,61 @@ RSpec.describe "system_agent_hierarchy seed" do
     end
   end
 
+  # HIER-P2B-ENG — the Engineering hierarchy's root (Platform Architect, a
+  # CORE canonical seeded by db/seeds/ai_engineering_agents_seed.rb) is the
+  # second core root this seed hangs under System Concierge, the Powernode
+  # Assistant precedent. Its delegation policy is the core seed's; only the
+  # edge is written here.
+  describe "the Engineering root (Platform Architect)" do
+    def seed_platform_architect!
+      create(:ai_agent, account: nil, name: "Platform Architect", slug: "platform-architect",
+                        agent_type: "assistant", is_system: true, is_governance: true,
+                        source_key: "platform-architect", provider: provider, creator: user)
+    end
+
+    it "attaches it under System Concierge with one active seed edge, leaving the delegation policy to core" do
+      architect = seed_platform_architect!
+      seed_all!
+
+      edges = Ai::AgentLineage.for_child(architect.id).active
+      expect(edges.pluck(:parent_agent_id)).to eq([ root.id ])
+      expect(edges.first.spawn_reason).to eq("seed")
+      expect(architect.reload.parent_agent_id).to eq(root.id)
+      expect(Ai::DelegationPolicy.where(agent_id: architect.id)).to be_empty
+      expect(Ai::Agent.global.where(parent_agent_id: nil).pluck(:name)).to eq([ "System Concierge" ])
+    end
+
+    it "is skipped, never invented, when the Platform Architect has not been seeded" do
+      expect { seed_all! }.not_to raise_error
+      expect(Ai::Agent.global.exists?(slug: "platform-architect")).to be(false)
+    end
+
+    # A COMPETING edge has to exist before the seed runs, or this only re-tests
+    # idempotency: re-running the seed on an install it already attached would
+    # stay green with HierarchyWriter#terminate_other_edges! deleted. So attach
+    # the architect somewhere else first — the shape a core-mode install has,
+    # where core made it a root under nothing and a later extension install must
+    # move it under System Concierge.
+    it "re-parents a Platform Architect that was attached elsewhere (one active parent per child)" do
+      architect = seed_platform_architect!
+      seed_all!
+      other_parent = agent("Fleet Autonomy")
+      Ai::Agents::HierarchyWriter.new(account: account)
+                                 .attach!(child: architect, parent: other_parent, spawn_reason: "test_setup")
+      expect(Ai::AgentLineage.for_child(architect.id).active.pluck(:parent_agent_id)).to eq([ other_parent.id ])
+
+      load_seed!("system_agent_hierarchy.rb")
+
+      edges = Ai::AgentLineage.for_child(architect.id).active
+      expect(edges.count).to eq(1)
+      expect(edges.pluck(:parent_agent_id)).to eq([ root.id ])
+      expect(architect.reload.parent_agent_id).to eq(root.id)
+      # The superseded edge is TERMINATED, not deleted — the move is auditable.
+      expect(Ai::AgentLineage.for_child(architect.id).where(parent_agent_id: other_parent.id).first.terminated_at)
+        .to be_present
+    end
+  end
+
   describe "delegation policies" do
     before { seed_all! }
 

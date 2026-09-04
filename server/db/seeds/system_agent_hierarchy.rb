@@ -33,3 +33,23 @@ hierarchy_result = System::Governance::HierarchyReconciler.new(account: hierarch
 puts "  ✅ #{hierarchy_result.attached} domain agent(s) attached under System Concierge, " \
      "#{hierarchy_result.policies_written} delegation policy write(s)"
 puts "  ⚠️  Skipped (agent not seeded — drift until seeded): #{hierarchy_result.skipped.join(', ')}" if hierarchy_result.skipped.any?
+
+# HIER-P2B-ENG — the Engineering hierarchy's root joins the same forest. The
+# Platform Architect is a CORE root (db/seeds/ai_agent_hierarchy_seed.rb hangs
+# the Engineering agents under it and, core purity forbidding a reach for a
+# system agent, leaves it parentless); this is the one place its edge under
+# System Concierge can be written — the Powernode Assistant precedent. The
+# core seed owns its delegation policy, so only the edge is written here, and
+# an absent Platform Architect is skipped, never invented.
+engineering_root = Ai::Agent.global.find_by(slug: "platform-architect")
+system_concierge = Ai::Agent.global.find_by(source_key: System::Governance::HierarchyReconciler::ROOT_KEY) ||
+                   Ai::Agent.global.find_by(name: "System Concierge", agent_type: "assistant")
+if engineering_root && system_concierge
+  Ai::Agents::HierarchyWriter.new(account: hierarchy_account).attach!(
+    child: engineering_root, parent: system_concierge, spawn_reason: "seed",
+    metadata: { "agent_key" => "platform-architect" }
+  )
+  puts "  ✅ Platform Architect (Engineering root) attached under System Concierge"
+else
+  puts "  ⚠️  Platform Architect not seeded — Engineering root not attached (re-run after ai_engineering_agents_seed)"
+end
