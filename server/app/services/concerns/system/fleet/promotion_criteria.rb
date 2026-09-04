@@ -47,6 +47,15 @@ module System
 
       REQUIRED_COUNT_KEY = "module_promotion_required_count"
       DWELL_MINUTES_KEY  = "module_promotion_dwell_minutes"
+      # Opt-in, DEFAULT OFF. Truthy => a version whose erofs artifact carries
+      # no platform blob signature (artifacts.erofs.cosign_blob_bundle_b64,
+      # produced by System::ModuleBlobSigner at publish) is ineligible — in
+      # #evaluate AND at the publish-time auto-promote in
+      # ModulePublicationProcessor / ModulePublicationsController, because
+      # publish promotes straight to the fleet and a gate that lived only on
+      # the staging->blessed ladder would be inert. Same module -> account ->
+      # site cascade as the thresholds above.
+      REQUIRE_SIGNATURE_KEY = "module_promotion_require_signature"
 
       MIN_REQUIRED_COUNT = 1
       MAX_REQUIRED_COUNT = 100
@@ -78,6 +87,10 @@ module System
       def evaluate(version:)
         digest = version.oci_digest
         return { eligible: false, reason: "no oci_digest on version" } if digest.blank?
+
+        if (unsigned = signature_gate(version))
+          return { eligible: false, reason: unsigned }
+        end
 
         required = required_count(version)
         dwell    = dwell_time(version)
@@ -148,6 +161,21 @@ module System
         return nil unless gates?(target_state)
 
         evaluate(version: version)
+      end
+
+      # The opt-in signature gate: nil when it passes or is off, otherwise the
+      # refusal reason (which names the setting, so an operator reading the
+      # withheld event knows which lever they pulled).
+      def self.signature_gate(version)
+        return nil unless require_signature?(version)
+        return nil if ::System::ModuleBlobSigner.signed?(version)
+
+        "no platform blob signature (artifacts.erofs.#{::System::ModuleBlobSigner::BUNDLE_KEY}) on this version; " \
+          "#{REQUIRE_SIGNATURE_KEY} is on"
+      end
+
+      def self.require_signature?(version)
+        ::ActiveModel::Type::Boolean.new.cast(resolve_threshold(version, REQUIRE_SIGNATURE_KEY)) == true
       end
 
       # Effective minimum healthy-instance count for this version's module,

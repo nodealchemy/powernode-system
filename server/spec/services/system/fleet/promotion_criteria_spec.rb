@@ -243,4 +243,40 @@ RSpec.describe System::Fleet::PromotionCriteria do
       end
     end
   end
+
+  # Opt-in signature gate (DEFAULT OFF). When module_promotion_require_signature
+  # resolves truthy through the same module -> account -> site cascade as the
+  # other thresholds, a version whose erofs artifact carries no platform blob
+  # signature (artifacts.erofs.cosign_blob_bundle_b64) is ineligible.
+  describe ".signature_gate" do
+    it "is inert by default" do
+      expect(described_class.signature_gate(version)).to be_nil
+    end
+
+    it "refuses an unsigned version when required, naming the setting" do
+      ::SiteSetting.set(described_class::REQUIRE_SIGNATURE_KEY, true, setting_type: "boolean")
+      reason = described_class.signature_gate(version)
+      expect(reason).to match(/no platform blob signature/)
+      expect(reason).to include(described_class::REQUIRE_SIGNATURE_KEY)
+    end
+
+    it "passes a signed version when required" do
+      ::SiteSetting.set(described_class::REQUIRE_SIGNATURE_KEY, true, setting_type: "boolean")
+      version.update_columns(artifacts: { "erofs" => { "oci_digest" => digest, "cosign_blob_bundle_b64" => "YnVuZGxl" } })
+      expect(described_class.signature_gate(version)).to be_nil
+    end
+
+    it "resolves through the module config layer too" do
+      mod.update_columns(config: { described_class::REQUIRE_SIGNATURE_KEY => "true" })
+      expect(described_class.signature_gate(version)).to match(/no platform blob signature/)
+    end
+
+    it "is consulted by .evaluate before any fleet evidence" do
+      ::SiteSetting.set(described_class::REQUIRE_SIGNATURE_KEY, true, setting_type: "boolean")
+      3.times { |i| qualifying_instance(i) }
+      result = described_class.evaluate(version: version)
+      expect(result[:eligible]).to be false
+      expect(result[:reason]).to match(/no platform blob signature/)
+    end
+  end
 end
