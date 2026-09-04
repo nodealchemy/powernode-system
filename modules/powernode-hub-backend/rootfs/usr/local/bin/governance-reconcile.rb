@@ -7,7 +7,8 @@
 # the agent ↔ skill bindings from the SkillBindings registry (HIER-P2G,
 # System::Ai::Skills::SkillBindingsReconciler — upserts declared pairs,
 # removes undeclared ones on registry agents), then lands CORE's account-wide
-# `release.build_dispatch` floor through Ai::Engineering::ReleaseDispatchFloorSeeder
+# engineering floors (release.build_dispatch and the two refine categories —
+# the seam's CATEGORIES) through Ai::Engineering::ReleaseDispatchFloorSeeder
 # behind a `defined?` probe (IMP-99988ef54942 — absence-only; a core tree
 # without the seam is a named skip, never a boot failure).
 #
@@ -133,15 +134,17 @@ begin
       warn "[governance-reconcile] skill-bindings reconcile failed (non-fatal): #{e.class}: #{e.message}"
     end
 
-    # Core's account-wide `release.build_dispatch` FLOOR (HIER-P2B-ENG,
-    # IMP-99988ef54942). system_dispatch_module_build_batch is gate-routed on
-    # that category and the principals that dispatch a build over MCP (an
-    # operator's mcp_client session, a dev-cell instance principal) match no
-    # agent-scoped row, so without the floor every dispatch parks behind the
-    # require_approval default. Core writes it from its engineering seed — first
-    # boot only — and exposes the same absence-only seam for an ESTABLISHED
-    # install; until this step nothing at boot called it, and the row had to be
-    # landed by hand after a deploy. `defined?` because hub-backend and the core
+    # Core's account-wide engineering FLOORS (HIER-P2B-ENG, IMP-99988ef54942;
+    # release.build_dispatch and, since IMP-a51963f8717f, dev.prompt_refine and
+    # dev.skill_refine — the seam's CATEGORIES is the authority, and a category
+    # added there lands here on the next boot). Those verbs are gate-routed and
+    # the principals that call them over MCP (an operator's mcp_client session,
+    # a dev-cell instance principal) match no agent-scoped row, so without the
+    # floors every such call parks behind the require_approval default. Core
+    # writes them from its engineering seed — first boot only — and exposes
+    # the same absence-only seam for an ESTABLISHED install; until this step
+    # nothing at boot called it, and the row had to be landed by hand after a
+    # deploy. `defined?` because hub-backend and the core
     # tree are separate modules that can skew by one deploy: an older core has
     # no seam, and that is a named skip, not a boot failure. Absence-only and
     # never destructive, like every other write in this file. ALWAYS prints its
@@ -149,19 +152,19 @@ begin
     if defined?(::Ai::Engineering::ReleaseDispatchFloorSeeder)
       begin
         floors_written = ::Ai::Engineering::ReleaseDispatchFloorSeeder.ensure_all!
-        warn "[governance-reconcile] release-floor written=#{floors_written} accounts=#{accounts}"
+        warn "[governance-reconcile] engineering-floors written=#{floors_written} accounts=#{accounts}"
       rescue StandardError => e
-        failed << { account_id: "(release-floor)", error: "#{e.class}: #{e.message}" }
-        warn "[governance-reconcile] release-floor ensure failed (non-fatal): #{e.class}: #{e.message}"
+        failed << { account_id: "(engineering-floors)", error: "#{e.class}: #{e.message}" }
+        warn "[governance-reconcile] engineering-floors ensure failed (non-fatal): #{e.class}: #{e.message}"
       end
     else
-      warn "[governance-reconcile] release-floor: core seam not present (module skew) — skipped"
+      warn "[governance-reconcile] engineering-floors: core seam not present (module skew) — skipped"
     end
 
     # ALWAYS printed, including the created=0 steady state — the one line an
     # operator greps. It CLOSES the run rather than opening it so that
     # `failed=` covers the whole reconcile: the per-account loop above and
-    # every step below it (skill bindings, release floor). Printed before the
+    # every step below it (skill bindings, engineering floors). Printed before the
     # steps it read failed=0 while the banner below said RECONCILE FAILED and
     # the FleetEvent carried the step, which is the one place the three must
     # agree.

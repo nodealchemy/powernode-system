@@ -14,7 +14,7 @@
 #
 # It carries the same steps as the hub image's per-boot governance-reconcile.rb
 # — declared policy rows, skill bindings, canonical teams and core's
-# `release.build_dispatch` floor — so the two doors converge the same rows
+# account-wide engineering floors — so the two doors converge the same rows
 # rather than only the ones the boot script happens to have grown.
 namespace :system do
   namespace :governance do
@@ -60,7 +60,9 @@ namespace :system do
       puts(bindings.changed? ? "✅ Skill bindings reconcile upserted #{bindings.upserted}, removed #{bindings.removed}" \
                              : "✅ Skill bindings already in sync")
 
-      # Core's account-wide `release.build_dispatch` FLOOR (IMP-99988ef54942).
+      # Core's account-wide engineering FLOORS (IMP-99988ef54942; one row per
+      # category in the seam's CATEGORIES — release.build_dispatch and, since
+      # IMP-a51963f8717f, the two refine categories).
       # The boot script's third step, mirrored here so the OPERATOR-invoked
       # door converges the same rows: an install with no hub image reaches
       # governance only through this verb, and the extension docs point
@@ -70,10 +72,10 @@ namespace :system do
       # deploy. Absence-only, so a row an operator retuned survives.
       if defined?(::Ai::Engineering::ReleaseDispatchFloorSeeder)
         floors = ::Ai::Engineering::ReleaseDispatchFloorSeeder.ensure_all!
-        puts(floors.zero? ? "✅ release.build_dispatch floor already in sync" \
-                          : "✅ release.build_dispatch floor created #{floors} row(s)")
+        puts(floors.zero? ? "✅ engineering floors already in sync" \
+                          : "✅ engineering floors created #{floors} row(s)")
       else
-        puts "  ⚠️  release.build_dispatch floor: core seam not present (tree skew) — skipped"
+        puts "  ⚠️  engineering floors: core seam not present (tree skew) — skipped"
       end
 
       # Canonical teams (HIER-P4): the per-account materialisation of every

@@ -24,9 +24,10 @@
 #     (ruling 7's single writer), on the install path that used to get its rows
 #     from the seeds; and
 #   * core's Ai::Engineering::ReleaseDispatchFloorSeeder for core's own
-#     `release.build_dispatch` floor (IMP-99988ef54942) — a CORE row with one
-#     CORE seam, so not a ruling-7 second writer of a declared row, and a
-#     BACKSTOP rather than the primary door (see the step at the bottom).
+#     account-wide engineering floors (IMP-99988ef54942; one per category in
+#     its CATEGORIES) — CORE rows with one CORE seam, so not a ruling-7 second
+#     writer of a declared row, and a BACKSTOP rather than the primary door
+#     (see the step at the bottom).
 # Both are absence-only and idempotent, so re-running `db:seed` on an
 # established install neither resets a tuned verb nor deletes anything — which
 # is exactly what the retired seed upserts could not promise.
@@ -57,8 +58,10 @@ rescue StandardError => e
   puts "   ❌ [#{account.name}] reconcile failed: #{e.class}: #{e.message}"
 end
 
-# Core's account-wide `release.build_dispatch` FLOOR (HIER-P2B-ENG,
-# IMP-99988ef54942), through core's own absence-only seam.
+# Core's account-wide engineering FLOORS (HIER-P2B-ENG, IMP-99988ef54942;
+# release.build_dispatch and, since IMP-a51963f8717f, the two refine
+# categories — the seam's CATEGORIES is the authority), through core's own
+# absence-only seam.
 #
 # A BACKSTOP, not this run's primary door — say so plainly, because the
 # obvious reading is wrong. On a default `rails db:seed`, CORE's own
@@ -67,31 +70,31 @@ end
 # baseline block — long before any extension orchestrator loads. So in the
 # normal case the step below writes ZERO rows and its line is a positive
 # artifact, nothing more. It is the door for the runs where core's seed did
-# not land the floor:
+# not land the floors:
 #   * `POWERNODE_SEED_BASELINE=false` skips the whole baseline block,
 #     engineering seed included, while extension seeds still load; and
 #   * a core engineering seed that RAISED — db/seeds.rb's `safe_load` swallows
-#     the failure and continues, so the floor would silently not exist.
+#     the failure and continues, so the floors would silently not exist.
 # On a module-composed hub the per-boot governance-reconcile.rb (and the
 # operator's `rails system:governance:reconcile`) is what lands it on an
 # ESTABLISHED install, where `db:seed` never runs again.
 #
 # Not a second writer of an EXTENSION-declared row (ruling 7 is about those):
-# the floor is a CORE row with one CORE seam, and this file only calls it —
+# the floors are CORE rows with one CORE seam, and this file only calls it —
 # pinned as such in spec/db/seeds/policy_single_writer_spec.rb's
 # `lint_exceptions`. `defined?` because an older core tree has no seam — a
 # named skip, not a failed seed.
 if defined?(Ai::Engineering::ReleaseDispatchFloorSeeder)
   begin
     floors_written = Ai::Engineering::ReleaseDispatchFloorSeeder.ensure_all!
-    puts "   🧱 release.build_dispatch floor: #{floors_written} row(s) written"
+    puts "   🧱 engineering floors: #{floors_written} row(s) written"
   rescue StandardError => e
-    failed << "(release-floor)"
-    Rails.logger.error("[system seeds] release.build_dispatch floor failed: #{e.class}: #{e.message}")
-    puts "   ❌ release.build_dispatch floor failed: #{e.class}: #{e.message}"
+    failed << "(engineering-floors)"
+    Rails.logger.error("[system seeds] engineering floors failed: #{e.class}: #{e.message}")
+    puts "   ❌ engineering floors failed: #{e.class}: #{e.message}"
   end
 else
-  puts "   ⚠️  release.build_dispatch floor: core seam not present (module skew) — skipped"
+  puts "   ⚠️  engineering floors: core seam not present (module skew) — skipped"
 end
 
 puts "   ✅ #{accounts} account(s), #{created_total} declared row(s) created, #{failed.size} failed"
