@@ -61,10 +61,15 @@ func TestHotReconcile_BudgetAbortRequestsRetry(t *testing.T) {
 	mod := mount.Module{ID: "runtime-go", Digest: "sha256:budget"}
 	writeOversizePayload(t, layout.ModuleMountPath(mod.Digest))
 
-	// A free-space floor no filesystem can satisfy forces the budget abort
-	// deterministically, rather than depending on the host's actual free space
-	// (which would make this pass or fail by accident of the build machine).
-	r.cfg.ScratchMinFreeBytes = ^uint64(0) >> 1
+	// Pins the MID-WALK abort arm specifically. A floor no filesystem can
+	// satisfy no longer reaches it: escalateIfHotRungTooSmall now prices the
+	// whole diff first and refuses before the walk (see
+	// TestHotReconcile_OversizeModuleEscalatesInsteadOfRatcheting). The arm
+	// under test here is the one that survives that pre-flight — the scratch
+	// filled up between the plan and the copy — and it must still request the
+	// retry, because the plan is an estimate and the guard is the backstop.
+	r.cfg.ScratchMinFreeBytes = 1000
+	preflightPassesThenScratchVanishes(t, 1<<20, 1000)
 
 	mf := &manifest.Manifest{}
 	retry := r.hotReconcileIfNeeded(mod, mf, false, nil, mount.ModuleStack{mod})

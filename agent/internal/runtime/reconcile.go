@@ -1153,6 +1153,11 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     safely hot-swapped (base-os-ubuntu-noble is the canonical example —
 //     it's the root OS layer itself). Surface a "reboot pending" signal
 //     via OnError instead of copying, once per module per tick.
+//   - Scratch pre-flight (escalateIfHotRungTooSmall): the module's whole
+//     remaining diff is priced against the scratch's usable budget BEFORE
+//     anything is copied. A module that cannot fit is refused here, with
+//     nothing written, and routed to the soft-recompose rung — copying part
+//     of it first is what turns one abort into a permanent ratchet.
 //   - Otherwise: copy the module's mounted erofs content onto the live
 //     root. Errors surface via OnError; a quiet success (including
 //     changed == 0, i.e. nothing had actually drifted) is not logged —
@@ -1168,8 +1173,13 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 // reboot_required module and a first-boot attach both decline to sync here and
 // must return false: retrying either would re-enter toReattach on every tick
 // forever, spamming signals without ever making progress, because nothing the
-// reconciler does resolves them. Only the scratch-budget abort is genuinely
-// transient — the space may exist next time.
+// reconciler does resolves them. Only the scratch-budget arms are genuinely
+// transient — the space may exist next time — and that covers BOTH the mid-walk
+// abort and the pre-flight escalation. The escalation stays in toReattach on
+// purpose even though the reconciler alone will not resolve it: unlike
+// reboot_required, its every-tick cost is a walk that stops at the first blown
+// budget, and staying queued is what keeps the module listed as unmaterialized
+// so the heartbeat does not resume claiming the unwritten version is running.
 func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool, oldPaths map[string]bool, desired mount.ModuleStack) (retryNeeded bool) {
 	if r.cfg.DryRun || stateWasEmpty || mf == nil {
 		return false
@@ -1184,10 +1194,14 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	}
 	srcDir := r.cfg.Layout.ModuleMountPath(mod.Digest)
 	dstRoot := filepath.Join(r.cfg.Layout.Root, "/")
-	res, err := SyncModuleFiles(srcDir, dstRoot, SyncOptions{
+	opts := SyncOptions{
 		HigherLayers: r.higherPriorityLayerDirs(desired, mod.ID),
 		MinFreeBytes: r.scratchMinFreeBytes(),
-	})
+	}
+	if escalated := r.escalateIfHotRungTooSmall(mod, srcDir, dstRoot, opts); escalated {
+		return true
+	}
+	res, err := SyncModuleFiles(srcDir, dstRoot, opts)
 	if errors.Is(err, ErrScratchBudget) {
 		// The materialization would exhaust the scratch tmpfs backing the
 		// live root's upperdir. Surface it as its own signal so the
@@ -1252,6 +1266,88 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, pruneRes.Restored))
 	}
 	return false
+}
+
+// escalateIfHotRungTooSmall is the PRE-FLIGHT: it asks whether this module's
+// whole remaining diff fits the live root's scratch BEFORE a single byte is
+// copied, and when it does not, refuses the hot rung outright and says so.
+//
+// WHY, IN ONE SENTENCE: a mid-walk budget abort is a RATCHET. The per-file
+// guard copies until one file would breach the floor, and everything it wrote
+// stays (correctly — it is winner content, and the module keeps serving its old
+// files intact because hotReconcileIfNeeded returns before the prune). But those
+// bytes are exactly the free space the retry needs, so the next tick has LESS
+// room than the one that just failed and refuses the first non-identical file it
+// reaches regardless of size. Live on ops-hub 2026-09-04: a 195-byte
+// BUILD_INFO.json refused at 34 MB free against a 64 MiB floor. Every later tick
+// made exactly zero progress until an operator deleted 54 MB of cache by hand.
+// Declining the copy ENTIRELY keeps that space, and keeps the module coherently
+// on its old version instead of split at an arbitrary alphabetical boundary with
+// its units already restarted against the mixture.
+//
+// WHAT IT ESCALATES TO. The middle rung of the recompose ladder:
+// `powernode-agent soft-recompose --execute` composes at /run/nextroot against
+// its OWN scratch tmpfs (mount.NextrootLayout — never shares upper/work with the
+// live root), so the same diff costs zero bytes of the live upper and a module
+// the hot rung can never take lands there. That pointer already existed in the
+// abort's error string; what did not exist was any code that decided a module
+// belongs on that rung rather than retrying this one forever. This is a SIGNAL,
+// deliberately not an invocation: soft-reboot takes userspace down, which is an
+// operator's decision (and on a self-hosted control plane, a decision about the
+// machine issuing it).
+//
+// The floor is NOT raised to make this fit, and the ceiling is not either. The
+// scratch is 512 MiB (mount.DefaultScratchSize, no caller sets
+// Overlay.ScratchSize) and the upper never reclaims, so a 1 GiB ceiling buys
+// about one extra deploy per boot before failing identically — at the cost of
+// doubling tmpfs RAM on every node in the fleet for what is a hub-shaped
+// problem. See f72ede5a's message for the arithmetic.
+//
+// Returns escalated=true when the caller must skip the sync (and the prune —
+// same reasoning as the abort arm: whiteouts are upperdir entries too) and
+// report retryNeeded. Retry stays TRUE on purpose: it is what keeps the module
+// in toReattach, which is what keeps it in State.UnmaterializedModules, which is
+// what keeps the heartbeat from claiming the unwritten version is running
+// (IMP-bc1b0495352d / f72ede5a). A module that escalates re-runs this pre-flight
+// every tick — cheap, because the walk stops as soon as the budget is blown —
+// and converges the moment the space appears or the operator takes the next rung.
+func (r *Reconciler) escalateIfHotRungTooSmall(mod mount.Module, srcDir, dstRoot string, opts SyncOptions) bool {
+	floor := opts.MinFreeBytes
+	if floor == 0 {
+		return false // guard disabled: no budget to pre-flight against
+	}
+	free, ferr := freeBytesAt(dstRoot)
+	if ferr != nil {
+		// Fail open, exactly as the per-file guard does: a probe failure must
+		// not block a materialization that may well fit, and the guard is
+		// still armed underneath.
+		return false
+	}
+	var budget uint64
+	if free > floor {
+		budget = free - floor
+	}
+	plan, perr := PlanScratchBudget(srcDir, dstRoot, budget, opts)
+	if perr != nil {
+		// Advisory: PlanScratchBudget counts an uncomparable entry as needing
+		// its full size, so these can only have made the plan more
+		// conservative, and the Fits verdict rests on measured bytes alone.
+		// Surfaced through OnError rather than noteUnconverged — an unreadable
+		// entry is not by itself a failure to converge, and the sync below
+		// reports it again if we do proceed.
+		r.cfg.OnError("reconciler:hot_preflight", fmt.Errorf("module %s: %w", mod.ID, perr))
+	}
+	if plan.Fits {
+		return false
+	}
+	r.noteUnconverged("reconciler:recompose_escalate", mod.ID,
+		fmt.Errorf("module %s: at least %d bytes of new content against %d usable (%d free, %d-byte floor) — "+
+			"declining the live materialization ENTIRELY rather than copying part of it, because a partial copy "+
+			"consumes exactly the space a retry needs and every later tick then refuses. This module needs the "+
+			"next rung: `powernode-agent soft-recompose --execute` composes at /run/nextroot with its own scratch, "+
+			"where this diff costs zero bytes of the live root's upper",
+			mod.ID, plan.RequiredBytes, budget, free, floor))
+	return true
 }
 
 // higherPriorityLayerDirs returns the mount dirs of every module in the

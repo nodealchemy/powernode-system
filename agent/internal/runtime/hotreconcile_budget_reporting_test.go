@@ -115,10 +115,13 @@ func heartbeatFrom(t *testing.T, statePath string) HeartbeatPayload {
 func TestHeartbeatOmitsDigestOfBudgetAbortedModule(t *testing.T) {
 	r, statePath := budgetReportingFixture(t)
 
-	// A free-space floor no filesystem can satisfy forces the budget abort
-	// deterministically, rather than depending on the build machine's actual
-	// free space. Same lever as TestHotReconcile_BudgetAbortRequestsRetry.
-	r.cfg.ScratchMinFreeBytes = ^uint64(0) >> 1
+	// The MID-WALK abort, specifically — an unsatisfiable floor is now caught
+	// earlier by the scratch pre-flight (escalateIfHotRungTooSmall), whose own
+	// heartbeat guarantee is pinned by TestHeartbeatOmitsDigestOfEscalatedModule.
+	// Same lever as TestHotReconcile_BudgetAbortRequestsRetry: the pre-flight
+	// sees room, the copy does not.
+	r.cfg.ScratchMinFreeBytes = 1000
+	preflightPassesThenScratchVanishes(t, 1<<20, 1000)
 
 	var signals []string
 	r.cfg.OnError = func(kind string, _ error) { signals = append(signals, kind) }

@@ -249,6 +249,137 @@ func SyncModuleFiles(srcErofsDir, dstRoot string, opts SyncOptions) (SyncResult,
 	return res, errors.Join(errs...)
 }
 
+// ScratchBudgetPlan is what a pre-flight of a hot materialization found,
+// without writing anything.
+type ScratchBudgetPlan struct {
+	// RequiredBytes is how many bytes SyncModuleFiles would write for this
+	// module: the size of every entry it would actually copy, priced the
+	// same way the copy prices it (already-identical entries cost nothing,
+	// a contested path costs the WINNER's size, symlinks and directories
+	// cost nothing).
+	//
+	// When Fits is false this is a LOWER bound. The walk stops as soon as
+	// the budget is exceeded, because the only remaining question is which
+	// rung takes the module, not by how much it overshoots — and hashing
+	// the rest of a 200 MB tree to refine a number nobody acts on would be
+	// paid on every tick.
+	RequiredBytes uint64
+
+	// Fits reports RequiredBytes <= the budget the caller passed.
+	Fits bool
+}
+
+// PlanScratchBudget reports whether materializing srcErofsDir onto dstRoot
+// fits in `budget` bytes, WITHOUT writing anything. opts is the same value
+// the corresponding SyncModuleFiles call takes (only HigherLayers is read —
+// MinFreeBytes is the guard's per-file concern, not the plan's).
+//
+// WHY A PRE-FLIGHT AND NOT JUST THE PER-FILE GUARD. The guard refuses one
+// FILE at a time and everything already copied stays, which is correct for
+// the guard's purpose (that content is winner content either way) but makes
+// a too-large module a permanent RATCHET: the partial copy consumes exactly
+// the free space the retry needs, so the next tick refuses the first
+// non-identical file it reaches regardless of its size, and every tick after
+// that makes zero progress. Live on ops-hub 2026-09-04: a 195-byte
+// BUILD_INFO.json refused at 34 MB free against a 64 MiB floor, on a scratch
+// whose upper was largely the partial copies of earlier aborted ticks.
+// Asking "does the whole diff fit" BEFORE copying is what lets the caller
+// route the module to the next rung of the recompose ladder while the space
+// that rung does not need — but a retry does — is still there.
+//
+// Errors are per-entry and advisory: a source or destination that cannot be
+// compared is counted as needing its full size and the walk continues, so an
+// unreadable entry can only make the plan MORE conservative. The joined error
+// is returned for the caller to surface; the Fits verdict never rests on it,
+// because RequiredBytes only ever counts bytes that were actually measured.
+//
+// COST. This repeats the identical-check the sync then makes, so a module that
+// FITS pays its comparison twice — and filesIdentical only hashes when the sizes
+// match, so that second pass is cheap for a genuinely changed tree and real for
+// an unchanged one. It is bounded: hotReconcileIfNeeded is only reached when a
+// module's digest or services hash actually moved, not on a steady tick, and the
+// case this exists for (does not fit) stops at the first blown budget and is
+// cheaper than what it replaces.
+func PlanScratchBudget(srcErofsDir, dstRoot string, budget uint64, opts SyncOptions) (ScratchBudgetPlan, error) {
+	plan := ScratchBudgetPlan{Fits: true}
+	var errs []error
+
+	// charge adds size unless the destination already holds that exact
+	// content — the same test syncRegularFile makes before it consults the
+	// guard, so a file copied by an earlier tick costs the plan nothing and
+	// a resume is priced by its REMAINING diff. Reports whether the budget
+	// is now blown.
+	charge := func(src, target string, size int64) bool {
+		identical, err := filesIdentical(src, target)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("compare %s: %w", src, err))
+		} else if identical {
+			return false
+		}
+		if size > 0 {
+			plan.RequiredBytes += uint64(size)
+		}
+		if plan.RequiredBytes > budget {
+			plan.Fits = false
+			return true
+		}
+		return false
+	}
+
+	walkErr := filepath.WalkDir(srcErofsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			errs = append(errs, fmt.Errorf("walk %s: %w", path, err))
+			return nil
+		}
+		rel, relErr := filepath.Rel(srcErofsDir, path)
+		if relErr != nil {
+			errs = append(errs, fmt.Errorf("rel %s: %w", path, relErr))
+			return nil
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dstRoot, rel)
+
+		// Mirrors SyncModuleFiles' order exactly: winner resolution first,
+		// so a contested path is priced from the layer whose content would
+		// actually be written. Divergence here would price a module the
+		// sync does not copy — which is how a pre-flight starts refusing
+		// (or admitting) the wrong thing.
+		if len(opts.HigherLayers) > 0 && !d.IsDir() {
+			if winSrc, winInfo, found := findInLayers(opts.HigherLayers, rel); found {
+				if winInfo.Mode().IsRegular() && charge(winSrc, target, winInfo.Size()) {
+					return fs.SkipAll
+				}
+				return nil // symlink or other kind: no bytes
+			}
+		}
+
+		// Symlinks and directories cost no scratch bytes worth budgeting:
+		// a symlink is an inode plus its target string, a directory is an
+		// inode. Counting them would make the plan depend on the tmpfs's
+		// per-inode overhead, which the guard it feeds does not model
+		// either.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			errs = append(errs, fmt.Errorf("stat %s: %w", rel, statErr))
+			return nil
+		}
+		if charge(path, target, info.Size()) {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		errs = append(errs, fmt.Errorf("walk %s: %w", srcErofsDir, walkErr))
+	}
+
+	return plan, errors.Join(errs...)
+}
+
 // syncSymlink recreates the symlink at src (read via os.Readlink, never
 // followed) at dst. No-ops if dst is already a symlink pointing at the
 // same target. Returns wrote=true only when dst was actually created or
