@@ -16,31 +16,29 @@ RSpec.describe System::ProvisioningService do
     allow(System::Providers::Registry).to receive(:for_node).and_return(adapter)
   end
 
-  # M1 Self-Serve Hardening — when the business extension is loaded
-  # (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1) ProvisioningService consults
-  # Billing::ProvisioningQuotaGuard early in #provision_instance: after
-  # validate_node!, the INV-1 self-management fence and the operation_id
-  # idempotency reuse (IMP-b54e49ddfc40: a replay of a SUCCEEDED operation
-  # provisions nothing, so it is answered from the existing row and never
-  # quota-gated — which also means it re-validates none of the replay's own
-  # arguments; see the SCOPE note on the reuse block in provisioning_service.rb),
-  # but before region lookup, the capability gate and
-  # the RCP INV-2/INV-6 checks. A bare
-  # `create(:account)` carries no Billing subscription, so the guard denies
-  # with "no_subscription" and every example whose subject sits BELOW that
-  # point (47 of the 68 here — the INV-1 raise and the #terminate_instance
-  # examples are unaffected) asserted against the quota guard instead of its
-  # own subject. Allowing the guard here is what lets those examples reach
-  # their subject in the extension-loaded configuration —
-  # it is NOT a way of pinning the file to the flagless one. Same idiom as
-  # server/spec/services/ai/tools/provisioning_tool_spec.rb and
-  # extensions/system/server/spec/services/ai/tools/system_fleet_tool_provision_contract_spec.rb.
-  # The guard's own precedence is covered explicitly in the
-  # "billing quota guard precedence" block at the bottom of this file.
+  # M1 Self-Serve Hardening — ProvisioningService asks core's
+  # Powernode::BillingBridge.check_provisioning_quota early in
+  # #provision_instance (IMP-01b1e152f667 routed it through the seam; this
+  # file names no Billing:: constant): after validate_node!, the INV-1
+  # self-management fence and the operation_id idempotency reuse
+  # (IMP-b54e49ddfc40: a replay of a SUCCEEDED operation provisions nothing,
+  # so it is answered from the existing row and never quota-gated — which also
+  # means it re-validates none of the replay's own arguments; see the SCOPE
+  # note on the reuse block in provisioning_service.rb), but before region
+  # lookup, the capability gate and the RCP INV-2/INV-6 checks. When the
+  # business extension is loaded (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1) its
+  # registered handler denies a bare `create(:account)` — no subscription —
+  # with "no_subscription", and every example whose subject sits BELOW that
+  # point (the INV-1 raise and the #terminate_instance examples are
+  # unaffected) would assert against the quota verdict instead of its own
+  # subject. Allowing at the BRIDGE is what lets those examples reach their
+  # subject in either configuration — it is NOT a way of pinning the file to
+  # the flagless one, and it stubs the seam this file's subject actually
+  # calls, not the private class behind it. The quota's own precedence is
+  # covered explicitly in the "billing quota guard precedence" block at the
+  # bottom of this file.
   before do
-    if defined?(::Billing::ProvisioningQuotaGuard)
-      allow(::Billing::ProvisioningQuotaGuard).to receive(:allow?).and_return([ true, nil ])
-    end
+    allow(::Powernode::BillingBridge).to receive(:check_provisioning_quota).and_return({ allowed: true })
   end
 
   def provision(operation_id: nil, options: {})
@@ -1082,15 +1080,16 @@ RSpec.describe System::ProvisioningService do
     end
   end
 
-  # The counterpart to the top-of-file `allow?` stub: the stub keeps every
-  # other example on its own subject, so the quota guard's own precedence
+  # The counterpart to the top-of-file bridge stub: the stub keeps every
+  # other example on its own subject, so the quota check's own precedence
   # needs coverage of its own rather than being silently stubbed away.
   #
-  # This block only has a subject when the business extension is loaded
-  # (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1 / BUNDLE_GEMFILE=Gemfile.private).
-  # In the core-mode / public-clone configuration there is no guard to
-  # exercise, so it reports PENDING with that reason rather than passing
-  # vacuously.
+  # Since IMP-01b1e152f667 the service reads the verdict from
+  # Powernode::BillingBridge, so this block has a subject in BOTH
+  # configurations — the denying verdict is installed at the seam, exactly
+  # the shape the bridge normalizes every handler denial to. The real-guard,
+  # real-capped-subscription version lives beside the guard in the business
+  # extension.
   describe "billing quota guard precedence (business extension)" do
     # default_storage is load-bearing: rcp_member_storage_violation returns
     # early on a blank storage_name, so with an empty connection config the
@@ -1105,11 +1104,9 @@ RSpec.describe System::ProvisioningService do
     end
 
     before do
-      unless defined?(::Billing::ProvisioningQuotaGuard)
-        skip "Billing::ProvisioningQuotaGuard is not loaded — run with "              "POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1 to exercise this block"
-      end
-      allow(::Billing::ProvisioningQuotaGuard).to receive(:allow?)
-        .with(account: node.account).and_return([ false, "no_subscription" ])
+      allow(::Powernode::BillingBridge).to receive(:check_provisioning_quota)
+        .with(account: node.account, mission: nil, on_error: :deny)
+        .and_return({ allowed: false, payload: ::Powernode::BillingBridge.upgrade_payload(reason: "no_subscription") })
     end
 
     it "denies with the guard's reason and an upgrade payload, creating no instance row" do
@@ -1156,7 +1153,103 @@ RSpec.describe System::ProvisioningService do
       expect(result.data[:instance].id).to eq(existing.id)
       expect(result.data[:cloud_instance_id]).to eq("i-existing")
       expect(result.data).not_to have_key(:requires_upgrade)
-      expect(::Billing::ProvisioningQuotaGuard).not_to have_received(:allow?)
+      expect(::Powernode::BillingBridge).not_to have_received(:check_provisioning_quota)
+    end
+  end
+
+  # IMP-01b1e152f667 — extension isolation. Both billing touch-points in this
+  # public extension go through core's Powernode::BillingBridge seam; the
+  # private Billing:: namespace is never named here (ratchet:
+  # spec/lint/billing_namespace_seam_spec.rb). These examples pin the CALLS
+  # the seam receives and what the service does with each answer, so a
+  # future edit cannot quietly re-inline the private class behind a
+  # `defined?` guard that the lint alone would still catch but a behaviour
+  # change would not.
+  describe "Powernode::BillingBridge seam (IMP-01b1e152f667)" do
+    before do
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-seam", status: "running")
+    end
+
+    describe "quota" do
+      it "asks the bridge with the node's account, no mission, and an EXPLICIT fail-closed posture" do
+        expect(::Powernode::BillingBridge).to receive(:check_provisioning_quota)
+          .with(account: node.account, mission: nil, on_error: :deny)
+          .and_return({ allowed: true })
+
+        expect(provision.success?).to be(true)
+      end
+
+      # Posture trace (a posture change is a CONTRACT change): before the seam,
+      # a raising guard fell through to the outer StandardError rescue, which
+      # emitted a high-severity provision_failed event. The bridge now closes
+      # on a failed check instead of raising, so the service must keep that
+      # signal alive itself — a degraded check is an OUTAGE, not a plan verdict.
+      it "surfaces a degraded (fail-closed) verdict as a failure event, not as a plan verdict" do
+        degraded = ::Powernode::BillingBridge::DEGRADED_QUOTA_REASON
+        allow(::Powernode::BillingBridge).to receive(:check_provisioning_quota)
+          .and_return({ allowed: false, payload: ::Powernode::BillingBridge.upgrade_payload(reason: degraded) })
+
+        result = nil
+        expect { result = provision }.not_to change(System::NodeInstance, :count)
+
+        expect(result.success?).to be(false)
+        expect(result.error).to eq(degraded)
+        expect(result.data[:reason]).to eq(degraded)
+
+        ev = System::FleetEvent.where(account: account, kind: "system.instance_provision_failed").last
+        expect(ev).not_to be_nil
+        expect(ev.severity).to eq("high")
+        expect(ev.payload["error"]).to eq(degraded)
+        expect(ev.node_id).to eq(node.id)
+      end
+
+      it "emits NO failure event for a real plan verdict — that is the user's plan, not an outage" do
+        allow(::Powernode::BillingBridge).to receive(:check_provisioning_quota)
+          .and_return({ allowed: false, payload: ::Powernode::BillingBridge.upgrade_payload(reason: "no_subscription") })
+
+        expect { provision }
+          .not_to change { System::FleetEvent.where(account: account, kind: "system.instance_provision_failed").count }
+      end
+    end
+
+    describe "meter" do
+      it "records the `created` event through the bridge with the new instance" do
+        expect(::Powernode::BillingBridge).to receive(:record_provisioning_event)
+          .with(node_instance: an_instance_of(System::NodeInstance), event: "created")
+          .and_return({ recorded: true })
+
+        result = provision
+
+        expect(result.success?).to be(true)
+      end
+
+      it "records the `terminated` event through the bridge on terminate" do
+        instance = create(:system_node_instance, node: node, status: "running",
+                          config: { "cloud_instance_id" => "i-seam" })
+        allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter)
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+        expect(::Powernode::BillingBridge).to receive(:record_provisioning_event)
+          .with(node_instance: instance, event: "terminated")
+          .and_return({ recorded: true })
+
+        expect(described_class.terminate_instance(instance: instance).success?).to be(true)
+        expect(instance.reload.status).to eq("terminated")
+      end
+
+      # The bridge's decided posture is fail-OPEN (metering runs after the
+      # billable state change, so a raise could only fail a provision that
+      # already happened). The service must honour that: an unrecorded meter
+      # event never fails the provision and never leaves the row in :error.
+      it "never fails a provision because the meter did not record" do
+        allow(::Powernode::BillingBridge).to receive(:record_provisioning_event)
+          .and_return({ recorded: false, reason: ::Powernode::BillingBridge::METER_HANDLER_FAILED_REASON })
+
+        result = provision
+
+        expect(result.success?).to be(true)
+        expect(result.data[:instance].reload.status).to eq("running")
+      end
     end
   end
 end
