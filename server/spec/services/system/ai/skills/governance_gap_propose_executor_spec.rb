@@ -302,5 +302,64 @@ RSpec.describe System::Ai::Skills::GovernanceGapProposeExecutor do
         expect(Ai::AgentSkill.where(ai_agent_id: storage.id)).to be_empty
       end
     end
+
+    # IMP-a51963f8717f (proposal §5 ruling 11c) WIDENED this lane, and the
+    # widening is the point of this context rather than an aside.
+    #
+    # Ai::Engineering::ReleaseDispatchFloorSeeder writes a scope-"global"
+    # auto_approve FLOOR for dev.skill_refine / dev.prompt_refine on EVERY
+    # account (core's db/seeds/ai_engineering_agents_seed.rb calls `ensure_all!`,
+    # and so does every boot reconcile door). The trust-conditioned PAIR that
+    # would outrank it is written only on the "Powernode Admin" account's
+    # canonicals. So on ANY other account the acting Platform Architect — the
+    # per-account clone HIER-P2I's AgentResolver mints — owns no refine row, and
+    # Ai::InterventionPolicyService#resolve admits scope-"global" rows for an
+    # agent caller. The floor is then what decides, at EVERY trust tier.
+    #
+    # The context above stays true only because it deletes the floor too. Both
+    # are real states: the floor's absence parks, its presence applies.
+    context "when the account carries the account-wide refine floor and the architect owns no refine row" do
+      before do
+        Ai::InterventionPolicy
+          .where(account: account, action_category: %w[dev.skill_refine dev.prompt_refine])
+          .delete_all
+        Ai::Engineering::ReleaseDispatchFloorSeeder.ensure_for!(account)
+      end
+
+      it "APPLIES the binding at the SUPERVISED tier — the floor decides, not the trust pair" do
+        expect(Ai::AgentTrustScore.find_by(agent_id: architect.id)).to be_nil # supervised by default
+
+        result = executor.execute(gap: binding_gap, fingerprint: fingerprint)
+
+        expect(result[:data][:materialization]).to include(status: "applied", action_category: "dev.skill_refine")
+        expect(Ai::AgentSkill.where(ai_agent_id: storage.id, ai_skill_id: skill.id, is_active: true)).to exist
+        expect(offers.first.status).to eq("applied")
+
+        # The floor is what matched: scope "global", agent-less, auto_approve.
+        floor = Ai::Engineering::ReleaseDispatchFloorSeeder.find_for(account, "dev.skill_refine")
+        expect(floor).to have_attributes(scope: "global", ai_agent_id: nil, policy: "auto_approve")
+      end
+
+      it "still PARKS a structural change — no floor covers dev.governance_materialize" do
+        concierge = create(:ai_agent, account: nil, name: "System Concierge", agent_type: "assistant",
+                                      source_key: "system-concierge", slug: "system-concierge", is_system: true,
+                                      provider: provider, creator: user)
+        edge_gap = {
+          "gap_kind" => "lineage_edge_missing", "subject" => "system-concierge/storage-manager",
+          "recommendation_type" => "team_composition", "severity" => "medium",
+          "summary" => "Storage Manager has no active lineage edge under System Concierge",
+          "files" => [],
+          "materialization" => { "kind" => "lineage_edge", "child_agent_id" => storage.id,
+                                 "parent_agent_id" => concierge.id, "agent_key" => "storage-manager" }
+        }
+
+        result = executor.execute(gap: edge_gap,
+                                  fingerprint: "governance_gap:lineage_edge_missing:system-concierge/storage-manager")
+
+        expect(result[:data][:materialization]).to include(status: "pending",
+                                                           action_category: "dev.governance_materialize")
+        expect(Ai::AgentLineage.for_child(storage.id).active).to be_empty
+      end
+    end
   end
 end

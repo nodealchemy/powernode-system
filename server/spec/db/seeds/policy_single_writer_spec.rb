@@ -328,7 +328,7 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       # Writes nothing itself: it CALLS two absence-only seams — the
       # PolicyReconciler for the extension's declared rows (ruling 7's single
       # writer) and core's ReleaseDispatchFloorSeeder for core's own
-      # `release.build_dispatch` floor, a CORE row with one core seam
+      # account-wide engineering floors, CORE rows with one core seam
       # (IMP-99988ef54942). Pinned here so the lint keeps the file in view
       # rather than leaving it silently uncovered.
       "system_governance_policy_reconcile.rb" => :calls_the_two_absence_only_seams
