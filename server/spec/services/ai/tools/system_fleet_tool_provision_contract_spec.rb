@@ -26,12 +26,12 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_provision_instance contract" 
   # stubbed service would just hand back the double we fed it.
   before do
     allow(::System::Providers::Registry).to receive(:for_node).and_return(adapter)
-    # A spec account carries no Billing subscription, so with the business
-    # extension loaded the quota guard denies before the provider is ever
-    # reached. Same idiom as server/spec/services/ai/tools/provisioning_tool_spec.rb.
-    if defined?(::Billing::ProvisioningQuotaGuard)
-      allow(::Billing::ProvisioningQuotaGuard).to receive(:allow?).and_return([ true, nil ])
-    end
+    # A spec account carries no subscription, so with the private billing
+    # extension loaded its registered quota handler denies before the provider
+    # is ever reached. Stub core's Powernode::BillingBridge seam, never the
+    # private class behind it (spec/lint/billing_namespace_seam_spec.rb) — the
+    # same idiom as server/spec/services/ai/tools/provisioning_tool_spec.rb.
+    allow(::Powernode::BillingBridge).to receive(:check_provisioning_quota).and_return({ allowed: true })
   end
 
   def provision
