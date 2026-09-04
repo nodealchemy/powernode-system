@@ -193,6 +193,14 @@ module Api
               end
               version.update_columns(artifacts: normalized)
             end
+            # The blob signature the on-node agent can verify, made server-side
+            # over the bytes at the digest resolved above (ModuleBlobSigner;
+            # skipped by name when the digest fetch failed, non-blocking on a
+            # signing failure). The CI's own `cosign sign` is an image signature
+            # a node cannot check. Re-read below so the promote decision and the
+            # response see the signed artifacts.
+            ::System::ModuleBlobSigner.attach!(version, node_module: node_module)
+            normalized = version.reload.artifacts
           else
             Rails.logger.warn "[ModulePublicationsController] empty artifacts hash for #{module_name}@#{tag}"
           end
@@ -241,6 +249,14 @@ module Api
               "published and awaiting its siblings."
             )
             emit_promotion_deferred_event(node_module, version, tag, deferring_batch)
+          elsif (unsigned_reason = ::System::Fleet::PromotionCriteria.signature_gate(version))
+            # Opt-in (module_promotion_require_signature; DEFAULT OFF) — the
+            # same gate the processor path applies. Published, not promoted.
+            Rails.logger.error(
+              "[ModulePublicationsController] REFUSING to promote #{module_name}@#{tag}: #{unsigned_reason}. " \
+              "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
+            )
+            emit_promotion_withheld_event(node_module, version, tag, unsigned_reason)
           elsif promotable_publish?(normalized)
             node_module.promote_to_version!(version)
           else
@@ -378,6 +394,21 @@ module Api
           )
         rescue StandardError => e
           Rails.logger.warn "[ModulePublicationsController] deferred event emit failed: #{e.class}: #{e.message}"
+        end
+
+        def emit_promotion_withheld_event(node_module, version, tag, reason)
+          return unless defined?(::System::Fleet::EventBroadcaster)
+          ::System::Fleet::EventBroadcaster.emit!(
+            account:                node_module.account,
+            kind:                   "system.module_promotion_withheld",
+            severity:               :high,
+            source:                 "ci_webhook",
+            node_module_id:         node_module.id,
+            node_module_version_id: version.id,
+            payload: { module_name: node_module.name, version_number: version.version_number, git_tag: tag, reason: reason }
+          )
+        rescue StandardError => e
+          Rails.logger.warn "[ModulePublicationsController] withheld event emit failed: #{e.class}: #{e.message}"
         end
 
         def emit_published_event(node_module, version, tag)

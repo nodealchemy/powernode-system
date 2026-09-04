@@ -550,4 +550,44 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(System::RestartAfterUpdate.armed?(result.node_module_version.reload)).to be false
     end
   end
+
+  # The platform's blob signature is produced on the ingest paths (Gitea
+  # webhook ingest! and native ingest_native!) through the same seam,
+  # after the artifacts JSONB is written and before the promote decision.
+  describe "platform blob signature" do
+    let(:bundle_b64) { Base64.strict_encode64('{"pretend":"bundle"}') }
+
+    before { ::SiteSetting.set(System::ModuleBlobSigner::ENABLED_SETTING, true, setting_type: "boolean") }
+
+    it "signs the ingested erofs digest and persists the bundle beside the fs-verity root" do
+      expect(System::ModuleSigningService).to receive(:sign_blob!) do |args|
+        expect(args[:digest]).to be_present
+        expect(args[:oci_ref]).to be_present
+        System::ModuleSigningService::BlobResult.new(ok?: true, digest: args[:digest], bundle_b64: bundle_b64)
+      end
+
+      result = described_class.process!(node_module: node_module, tag: "sig0001")
+      expect(result.ok?).to be true
+      erofs = result.node_module_version.reload.artifacts["erofs"]
+      expect(erofs[System::ModuleBlobSigner::BUNDLE_KEY]).to eq(bundle_b64)
+      expect(erofs["oci_digest"]).to be_present
+      expect(node_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    it "withholds promotion of an unsigned version only when module_promotion_require_signature is on" do
+      allow(System::ModuleSigningService).to receive(:sign_blob!)
+        .and_return(System::ModuleSigningService::BlobResult.new(ok?: false, error: "vault sealed"))
+
+      unsigned = described_class.process!(node_module: node_module, tag: "sig0002")
+      expect(unsigned.ok?).to be true
+      expect(node_module.reload.current_version_id).to eq(unsigned.node_module_version.id), "default: unsigned still promotes"
+
+      ::SiteSetting.set(System::Fleet::PromotionCriteria::REQUIRE_SIGNATURE_KEY, true, setting_type: "boolean")
+      gated = described_class.process!(node_module: node_module, tag: "sig0003")
+      expect(gated.ok?).to be true
+      expect(node_module.reload.current_version_id).to eq(unsigned.node_module_version.id), "gated: the fleet keeps the previous version"
+      withheld = System::FleetEvent.where(kind: "system.module_promotion_withheld").last
+      expect(withheld&.payload&.dig("reason")).to match(/no platform blob signature/)
+    end
+  end
 end

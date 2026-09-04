@@ -416,4 +416,61 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
              "a rootless re-notify nulled a root the previous publish had established"
     end
   end
+
+  # The platform's blob signature (the artefact the agent's Verifier can check)
+  # is produced on THIS path too — the CI's own `cosign sign` is an image
+  # signature a node cannot consume. Attached after the artifacts JSONB is
+  # written, before the promote decision, so the opt-in gate sees it.
+  describe "platform blob signature on the CI notify path" do
+    let(:digest) { "sha256:#{'d' * 64}" }
+    let(:bundle_b64) { Base64.strict_encode64('{"pretend":"bundle"}') }
+
+    before do
+      allow_any_instance_of(::System::OciLayerDigestFetcher).to receive(:fetch_oci_layer_digest)
+        .and_return({ digest: digest, size: 12_345_678, media_type: "application/vnd.powernode.erofs" })
+      ::SiteSetting.set(System::ModuleBlobSigner::ENABLED_SETTING, true, setting_type: "boolean")
+    end
+
+    it "signs the resolved erofs blob and persists the bundle on the version's artifacts" do
+      expect(System::ModuleSigningService).to receive(:sign_blob!)
+        .with(hash_including(oci_ref: artifacts[:erofs][:oci_ref], digest: digest))
+        .and_return(System::ModuleSigningService::BlobResult.new(ok?: true, digest: digest, bundle_b64: bundle_b64))
+
+      post "/api/v1/system/module_publications", params: base_body.to_json, headers: bearer
+      expect(response).to have_http_status(:ok)
+
+      version = System::NodeModuleVersion.find(JSON.parse(response.body)["data"]["node_module_version_id"])
+      expect(version.artifacts.dig("erofs", System::ModuleBlobSigner::BUNDLE_KEY)).to eq(bundle_b64)
+      expect(version.artifacts.dig("erofs", "oci_digest")).to eq(digest), "the merge must keep the resolved digest"
+      expect(JSON.parse(response.body)["data"]["promoted_to_current"]).to be true
+    end
+
+    it "publishes unsigned (and still promotes, by default) when signing fails" do
+      allow(System::ModuleSigningService).to receive(:sign_blob!)
+        .and_return(System::ModuleSigningService::BlobResult.new(ok?: false, error: "vault sealed"))
+
+      post "/api/v1/system/module_publications", params: base_body.to_json, headers: bearer
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      version = System::NodeModuleVersion.find(data["node_module_version_id"])
+      expect(version.artifacts["erofs"]).not_to have_key(System::ModuleBlobSigner::BUNDLE_KEY)
+      expect(data["promoted_to_current"]).to be true
+    end
+
+    it "withholds promotion of an unsigned publish once module_promotion_require_signature is on" do
+      allow(System::ModuleSigningService).to receive(:sign_blob!)
+        .and_return(System::ModuleSigningService::BlobResult.new(ok?: false, error: "vault sealed"))
+      ::SiteSetting.set(System::Fleet::PromotionCriteria::REQUIRE_SIGNATURE_KEY, true, setting_type: "boolean")
+      expect(System::Fleet::EventBroadcaster).to receive(:emit!)
+        .with(hash_including(kind: "system.module_promotion_withheld",
+                             payload: hash_including(reason: /no platform blob signature/))).and_call_original
+      allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_call_original
+
+      post "/api/v1/system/module_publications", params: base_body.to_json, headers: bearer
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      expect(data["promoted_to_current"]).to be false
+      expect(System::NodeModule.find_by(name: "powernode-hub-backend").current_version_id).to be_nil
+    end
+  end
 end

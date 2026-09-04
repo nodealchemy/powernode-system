@@ -77,6 +77,13 @@ module System
               }
             }
           )
+          # The blob signature the on-node agent can verify — produced HERE,
+          # after the ingest above verified the builder's image signature, so
+          # the bundle attests "the platform verified and re-signed exactly
+          # these bytes". Non-blocking: a failure is logged + emitted and the
+          # publish continues unsigned (see ModuleBlobSigner). Before the
+          # promotion decision so the opt-in signature gate below sees it.
+          ::System::ModuleBlobSigner.attach!(node_module_version, node_module: node_module)
         end
         # An artifact that contains nothing must never become current_version.
         # Publishing it is fine — the row is kept so a bad build can be
@@ -105,6 +112,11 @@ module System
             # Checked AFTER the non-empty floor: an artifact that fails both
             # should report the emptier, more fundamental problem.
             withhold_promotion_for_core_drift!(node_module, node_module_version, tag, core_verdict)
+          elsif (unsigned_reason = ::System::Fleet::PromotionCriteria.signature_gate(node_module_version.reload))
+            # Opt-in (module_promotion_require_signature; DEFAULT OFF). Publish
+            # auto-promotes straight to the fleet, so a promote gate that lived
+            # only on the staging->blessed ladder would be inert here.
+            withhold_promotion_unsigned!(node_module, node_module_version, tag, unsigned_reason)
           else
             promote_current_version(node_module, node_module_version)
             # Read the STATE, not promote_to_version!'s return: that returns
@@ -436,6 +448,16 @@ module System
     # the difference is only the reason. A stale-core artifact is not empty and
     # not unsigned; nothing else about it looks wrong, which is exactly why it
     # got two nodes into an outage on 2026-08-15.
+    # Same shape again: published, not promoted, event emitted. Only reached
+    # when an operator turned module_promotion_require_signature on.
+    def withhold_promotion_unsigned!(node_module, version, tag, reason)
+      Rails.logger.error(
+        "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
+        "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, reason)
+    end
+
     def withhold_promotion_for_core_drift!(node_module, version, tag, verdict)
       reason = "core-source provenance #{verdict.state}: #{verdict.reason}"
       # Carry the raw operands, not just the prose. The reason string is
