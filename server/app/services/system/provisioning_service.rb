@@ -86,20 +86,48 @@ module System
       # plan limits. Surfaces a structured deny reason that propagates up through
       # Runtime::Result.err and onto the caller's `requires_upgrade` payload.
       #
-      # The payload is built by Powernode::BillingBridge.upgrade_payload so this
-      # producer and the bridge's own denials share ONE key set — the frontend
-      # UpgradeRequiredCard must not have to branch on which of them denied.
-      # `cap` / `upgrade_url` are nil here: this direct-guard path has no plan
-      # context to compute them from (the bridge path does).
-      if defined?(::Billing::ProvisioningQuotaGuard)
-        allow, reason = ::Billing::ProvisioningQuotaGuard.allow?(account: node.account)
-        unless allow
-          Rails.logger.info("[ProvisioningService] Quota guard denied provisioning: #{reason}")
-          return Runtime::Result.err(
-            error: reason,
-            data: ::Powernode::BillingBridge.upgrade_payload(reason: reason)
+      # Asked through core's Powernode::BillingBridge seam (IMP-01b1e152f667),
+      # never the billing extension's classes: this public extension may not
+      # name a private one. In core mode the bridge has no handler and allows.
+      # The bridge normalizes every denial onto ONE key set, so this producer
+      # and the worker-path controller share a contract — the frontend
+      # UpgradeRequiredCard never branches on which of them denied. No mission
+      # is in scope on this direct path (the guard treats it as optional).
+      #
+      # POSTURE, stated: `on_error: :deny` — the bridge's fail-CLOSED default,
+      # made explicit. A quota check that cannot run must not provision
+      # billable infrastructure unmetered. A degraded verdict is NOT a plan
+      # verdict, though: before the seam a raising guard reached the outer
+      # StandardError rescue below and emitted a high-severity
+      # provision_failed event; the bridge now closes instead of raising, so
+      # that signal is kept alive here rather than lost in a "requires
+      # upgrade" card the user cannot act on.
+      quota = ::Powernode::BillingBridge.check_provisioning_quota(
+        account: node.account, mission: nil, on_error: :deny
+      )
+      unless quota[:allowed]
+        payload = quota[:payload]
+        reason = payload[:reason]
+        if reason == ::Powernode::BillingBridge::DEGRADED_QUOTA_REASON
+          # DELIBERATE DIAGNOSTIC LOSS, stated so the next reader does not
+          # re-discover it: the pre-seam path reached the outer StandardError
+          # rescue, which emitted this same event with `payload: { error:
+          # e.message }` — the raising guard's own class/message. The bridge
+          # absorbs the exception now, so the FleetEvent below carries only
+          # the generic reason and the cause survives in the bridge's
+          # error log ("[Powernode::BillingBridge] provisioning quota handler
+          # failed (<class>): <message>"). It is kept out of the RESULT
+          # payload on purpose: that payload is the user-facing
+          # `requires_upgrade` card data, no place for an internal message.
+          Rails.logger.error("[ProvisioningService] Quota check unavailable — refusing to provision unmetered for node #{node.name}")
+          emit_provision_event(
+            account: node.account, kind: "system.instance_provision_failed", severity: :high,
+            node: node, payload: { error: reason }
           )
+        else
+          Rails.logger.info("[ProvisioningService] Quota guard denied provisioning: #{reason}")
         end
+        return Runtime::Result.err(error: reason, data: payload)
       end
 
       region = ::System::ProviderRegion.find_by(id: provider_region_id)
@@ -684,14 +712,17 @@ module System
       Rails.logger.warn("[ProvisioningService] template apply raised for node #{node.name}: #{e.class}: #{e.message}")
     end
 
-    # M1 Self-Serve Hardening — emit a Billing::ProvisioningUsageRecord for
-    # one lifecycle event. Wrapped to swallow errors: meter failures must
-    # never break a provisioning happy-path.
+    # M1 Self-Serve Hardening — meter one lifecycle event through core's
+    # Powernode::BillingBridge seam (IMP-01b1e152f667); the billing
+    # extension's meter service is never named here. The posture is the
+    # bridge's, decided there and not re-decided by a rescue of our own: it
+    # fails OPEN (metering runs after the billable state change, so a raise
+    # could only fail a provision that already happened) and reports
+    # `recorded: false` with a reason, logging the loss at error level. Both
+    # callers discard the return — a meter outcome never changes a
+    # provisioning Result.
     def record_meter_event(instance, event)
-      return unless defined?(::Billing::ProvisioningMeterService)
-      ::Billing::ProvisioningMeterService.record_event(node_instance: instance, event: event)
-    rescue StandardError => e
-      Rails.logger.warn("[ProvisioningService] meter #{event} failed: #{e.class}: #{e.message}")
+      ::Powernode::BillingBridge.record_provisioning_event(node_instance: instance, event: event)
     end
 
     # Increment 13 — resolves the SDWAN overlay for a just-provisioned node.
@@ -779,8 +810,9 @@ module System
 
     # Best-effort — an overlay-join failure (or the Sdwan extension being
     # absent from a given deployment) must never fail an otherwise-successful
-    # provision. Mirrors the `defined?(::Billing::ProvisioningQuotaGuard)`
-    # extension-boundary guard used earlier in this file.
+    # provision. The `defined?` guard is the extension-boundary idiom for a
+    # namespace this extension owns; a PRIVATE extension is reached only
+    # through a core seam (see Powernode::BillingBridge above).
     def auto_enroll_sdwan_peer!(instance, node)
       return unless defined?(::Sdwan::PeerEnroller)
 
