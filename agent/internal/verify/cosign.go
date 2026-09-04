@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
@@ -47,8 +48,16 @@ type CosignVerifier struct {
 	Runner mount.Runner
 	// KeyPath, when set, selects static-key verification against the cosign
 	// public key at this path (`--key <KeyPath>`). Takes precedence over the
-	// keyless identity/issuer pins.
+	// keyless identity/issuer pins. Kept singular for the boot/UKI upgrade
+	// path, which carries exactly one key inline; tried before KeyPaths.
 	KeyPath string
+	// KeyPaths are additional trusted public keys (PEM files), tried in order
+	// after KeyPath until one verifies. The platform trusts a LIST
+	// (system.module_signing.trusted_public_keys — rotation is append-new,
+	// cut over, keep old), so the node must too: a module signed under the
+	// previous key stays mountable across a key rotation. The first key that
+	// verifies wins; when none does the error names how many were tried.
+	KeyPaths []string
 	// IdentityRegexp pins the Sigstore Fulcio identity (keyless mode only).
 	IdentityRegexp string
 	// IssuerRegexp pins the Sigstore Fulcio issuer (keyless mode only).
@@ -70,27 +79,44 @@ func (v *CosignVerifier) VerifyBlob(ctx context.Context, blobPath, bundlePath st
 	if v.Runner == nil {
 		return errors.New("CosignVerifier: nil Runner")
 	}
-	var args []string
-	if v.KeyPath != "" {
-		// Static-key verification. --insecure-ignore-tlog=true skips the Sigstore
-		// transparency-log (Rekor) check, which cosign v3 otherwise performs
-		// ONLINE against tuf-repo-cdn.sigstore.dev — unreachable from offline
-		// fleet nodes, so verify fails with a hard i/o timeout on every node.
-		// With a static --key the signature IS the trust anchor; the tlog is
-		// supplementary provenance, not required for trust. (Pair with the CI
-		// signing `--tlog-upload=false` so future bundles carry no Rekor entry.)
-		args = []string{"verify-blob", "--key", v.KeyPath, "--bundle", bundlePath,
-			"--insecure-ignore-tlog=true", blobPath}
-	} else {
-		if v.IdentityRegexp == "" || v.IssuerRegexp == "" {
-			return errors.New("CosignVerifier: no KeyPath and no identity/issuer pins — refusing to verify without a trust anchor")
+	if keys := v.trustedKeys(); len(keys) > 0 {
+		// Static-key verification. A bundle path the puller constructed but
+		// never materialised is the shape of a module the platform published
+		// with no blob signature; refuse it here, by name, rather than let
+		// cosign report "open: no such file" — the operator needs to know the
+		// fix is on the publish side (sign_blob at publish / backfill), not on
+		// the node.
+		if st, err := os.Stat(bundlePath); err != nil || st.IsDir() {
+			return fmt.Errorf("no cosign bundle at %s: the platform published no blob signature for this artifact (see docs/runbooks/module-signature-verification.md)", bundlePath)
 		}
-		args = []string{"verify-blob",
-			"--bundle", bundlePath,
-			"--certificate-identity-regexp", v.IdentityRegexp,
-			"--certificate-oidc-issuer-regexp", v.IssuerRegexp,
-			blobPath,
+		var last error
+		for _, key := range keys {
+			// --insecure-ignore-tlog=true skips the Sigstore transparency-log
+			// (Rekor) check, which cosign v3 otherwise performs ONLINE against
+			// tuf-repo-cdn.sigstore.dev — unreachable from offline fleet nodes,
+			// so verify fails with a hard i/o timeout on every node. With a
+			// static --key the signature IS the trust anchor; the tlog is
+			// supplementary provenance, not required for trust. (Pair with the
+			// signer's `--tlog-upload=false` / no-tlog signing config so bundles
+			// carry no Rekor entry.)
+			args := []string{"verify-blob", "--key", key, "--bundle", bundlePath,
+				"--insecure-ignore-tlog=true", blobPath}
+			if err := v.Runner.Run(ctx, "cosign", args...); err == nil {
+				return nil
+			} else {
+				last = err
+			}
 		}
+		return fmt.Errorf("cosign verify-blob: no trusted key verified %s (tried %d trusted key(s)); last error: %w", blobPath, len(keys), last)
+	}
+	if v.IdentityRegexp == "" || v.IssuerRegexp == "" {
+		return errors.New("CosignVerifier: no KeyPath and no identity/issuer pins — refusing to verify without a trust anchor")
+	}
+	args := []string{"verify-blob",
+		"--bundle", bundlePath,
+		"--certificate-identity-regexp", v.IdentityRegexp,
+		"--certificate-oidc-issuer-regexp", v.IssuerRegexp,
+		blobPath,
 	}
 	if err := v.Runner.Run(ctx, "cosign", args...); err != nil {
 		return fmt.Errorf("cosign verify-blob: %w", err)
@@ -98,10 +124,25 @@ func (v *CosignVerifier) VerifyBlob(ctx context.Context, blobPath, bundlePath st
 	return nil
 }
 
-// AlwaysOK is a Verifier implementation that approves every blob. It
-// exists for tests and dev builds where a real signing key isn't
-// available. NEVER use in production — the reconciler should always
-// be wired with a real CosignVerifier or its embedded equivalent.
+// trustedKeys is KeyPath (first, when set) followed by KeyPaths, blanks
+// dropped. Empty means keyless mode.
+func (v *CosignVerifier) trustedKeys() []string {
+	out := make([]string, 0, 1+len(v.KeyPaths))
+	if v.KeyPath != "" {
+		out = append(out, v.KeyPath)
+	}
+	for _, k := range v.KeyPaths {
+		if k != "" {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// AlwaysOK is a Verifier implementation that approves every blob. It is what
+// NewModuleVerifier returns for ModeOff — the DEFAULT — so every production
+// module mount is wired with it until an operator opts in (see module.go and
+// docs/runbooks/module-signature-verification.md). Tests use it directly.
 type AlwaysOK struct{}
 
 // VerifyBlob always returns nil.
