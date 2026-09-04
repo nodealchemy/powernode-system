@@ -11,6 +11,11 @@
 # Intended wiring: `system:governance:reconcile` runs on EVERY boot in
 # rails-start.sh, immediately after `db:migrate`, in both the first-boot and
 # the already-initialized branches. It is idempotent and creates absence only.
+#
+# It carries the same steps as the hub image's per-boot governance-reconcile.rb
+# — declared policy rows, skill bindings, canonical teams and core's
+# `release.build_dispatch` floor — so the two doors converge the same rows
+# rather than only the ones the boot script happens to have grown.
 namespace :system do
   namespace :governance do
     desc "Create declared governance policy rows this database is missing (absence only; never overwrites) and reconcile skill bindings"
@@ -54,6 +59,22 @@ namespace :system do
       end
       puts(bindings.changed? ? "✅ Skill bindings reconcile upserted #{bindings.upserted}, removed #{bindings.removed}" \
                              : "✅ Skill bindings already in sync")
+
+      # Core's account-wide `release.build_dispatch` FLOOR (IMP-99988ef54942).
+      # The boot script's third step, mirrored here so the OPERATOR-invoked
+      # door converges the same rows: an install with no hub image reaches
+      # governance only through this verb, and the extension docs point
+      # remediation at it. Core's own seam — this task already reconciles a
+      # core reconciler (canonical teams, below) — called behind `defined?`
+      # because core and the extension are separate trees that can skew by a
+      # deploy. Absence-only, so a row an operator retuned survives.
+      if defined?(::Ai::Engineering::ReleaseDispatchFloorSeeder)
+        floors = ::Ai::Engineering::ReleaseDispatchFloorSeeder.ensure_all!
+        puts(floors.zero? ? "✅ release.build_dispatch floor already in sync" \
+                          : "✅ release.build_dispatch floor created #{floors} row(s)")
+      else
+        puts "  ⚠️  release.build_dispatch floor: core seam not present (tree skew) — skipped"
+      end
 
       # Canonical teams (HIER-P4): the per-account materialisation of every
       # canonical Ai::TeamTemplate ("System Operations", "Platform

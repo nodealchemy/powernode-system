@@ -302,8 +302,16 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
   # must be deleted from this list rather than quietly protecting a new file.
   # (Comment lines are dropped, so a seed may still SAY the reconciler writes
   # the rows — every rewritten seed does.)
+  # A SEAM that writes policy rows without naming the model counts too:
+  # `Ai::Engineering::ReleaseDispatchFloorSeeder` creates
+  # Ai::InterventionPolicy rows and mentions neither the model nor a write
+  # verb, so the containment rule above would have walked past it
+  # (IMP-99988ef54942). `System::Governance::PolicyReconciler` is deliberately
+  # NOT in the pattern: a dozen agent seeds name it in a `puts` line saying who
+  # writes their rows, so it would flag files that write nothing — its one call
+  # site is the pinned exception below.
   let(:policy_touch) do
-    /Ai::InterventionPolicy|upsert_(operator_)?policies!|clean_stale_(operator_)?policies!/
+    /Ai::InterventionPolicy|Ai::Engineering::ReleaseDispatchFloorSeeder|upsert_(operator_)?policies!|clean_stale_(operator_)?policies!/
   end
 
   # file => why it is allowed to touch the model.
@@ -316,7 +324,14 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       "system_manual_operation_policies.rb" => :writes_the_manual_set,
       # Delete-only: collects rows whose action_category is no longer
       # registered (IMP-0a3ff97f6fbb). Ruling 7 forbids a second WRITER.
-      "system_autonomy_orphan_cleanup.rb" => :deletes_deregistered_rows
+      "system_autonomy_orphan_cleanup.rb" => :deletes_deregistered_rows,
+      # Writes nothing itself: it CALLS two absence-only seams — the
+      # PolicyReconciler for the extension's declared rows (ruling 7's single
+      # writer) and core's ReleaseDispatchFloorSeeder for core's own
+      # `release.build_dispatch` floor, a CORE row with one core seam
+      # (IMP-99988ef54942). Pinned here so the lint keeps the file in view
+      # rather than leaving it silently uncovered.
+      "system_governance_policy_reconcile.rb" => :calls_the_two_absence_only_seams
     }
   end
 
