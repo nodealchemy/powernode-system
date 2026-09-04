@@ -19,7 +19,7 @@ RSpec.describe System::InstancePoolService, "reuse-without-reset MCP grant reset
   let(:node_template) { create(:system_node_template, account: account) }
   let(:provider_region) { create(:system_provider_region) }
   let(:provider_instance_type) { create(:system_provider_instance_type) }
-  let(:node) { create(:system_node, account: account, node_template: node_template, lifecycle_class: "ephemeral") }
+  let(:node) { create(:system_node, account: account, node_template: node_template) }
 
   let(:pool) do
     System::InstancePool.create!(

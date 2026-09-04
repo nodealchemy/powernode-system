@@ -30,17 +30,18 @@ require "yaml"
 #     ephemeral|spot, so a pool member was never `persistent`) on an unattended
 #     path — InstancePoolReplenisherJob, a 60s cron — and
 #     PlatformDeploymentOrchestrator wrote the literal "persistent". The
-#     wire-or-retire fork was settled as RETIRE: both writes are gone and the
-#     column is nullable with a NULL default, so a Node created today carries
-#     nil rather than a confident wrong answer. The examples below are the
-#     ENUMERATION that keeps that sentence honest — they redden if ANY writer
-#     reappears under server/app.
-#   * ONE WRITER SURVIVES, out of scope on purpose: db/seeds/example_multi_tenant.rb
-#     writes the column directly through find_or_initialize_by +
-#     assign_attributes, defaulted to "persistent". It is a dev seed, not an
-#     operator path, and it is swept by the column DROP (step 2) together with
-#     the CHECK constraint and the index. Its shape has its own example below,
-#     BECAUSE the create!-shaped scan cannot see it.
+#     wire-or-retire fork was settled as RETIRE: both writes went in step 1,
+#     which left the column nullable with a NULL default, and step 2
+#     (IMP-f2a7a729d39b) dropped the column, its CHECK constraint and its
+#     index outright, so there is nothing for a Node to carry. The examples
+#     below are the ENUMERATION that keeps that sentence honest — they redden
+#     if ANY writer reappears under server/app.
+#   * NO WRITER SURVIVES. Step 1 left db/seeds/example_multi_tenant.rb out of
+#     scope on purpose — a dev seed writing the column through
+#     find_or_initialize_by + assign_attributes, defaulted to "persistent" —
+#     and step 2 swept it with the column. Its ABSENCE has its own example
+#     below, BECAUSE the create!-shaped scan cannot see an assign_attributes
+#     writer coming back.
 #
 # GUARD SHAPE, and what it can and cannot see. Stated up front because the
 # spec this one sits beside failed in exactly this way: docs/tutorials/
@@ -83,11 +84,13 @@ require "yaml"
 #     - a System::Node writer that does NOT go through `System::Node.create!`.
 #       The server/app enumeration is paren-balanced over that constructor only,
 #       so an `assign_attributes` / `update!` / mass-assignment writer is
-#       invisible to it. One such writer exists — db/seeds/example_multi_tenant.rb
-#       — and has its own example below BECAUSE the create!-shaped scan could not
-#       see it. A writer of that shape appearing under server/app would not
-#       redden anything here, nor would one in server/lib/ or db/migrate/
-#       (a backfill migration), which neither glob covers.
+#       invisible to it. One such writer existed — db/seeds/example_multi_tenant.rb
+#       — and its example below now asserts absence BECAUSE the create!-shaped
+#       scan could not see it. A writer of that shape appearing under
+#       server/app would not redden anything here (it would raise
+#       UnknownAttributeError at runtime, which the retirement spec pins), nor
+#       would one in server/lib/ or db/migrate/ (a backfill migration), which
+#       neither glob covers.
 
 # Namespaced rather than left on Object. A bare `MATRIX = ...` inside a
 # describe block lands as a TOP-LEVEL constant, and these are generic names —
@@ -317,11 +320,15 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       expect(create).to include('"instance_pool_id" => pool.id')
     end
 
-    it "constrains a pool to ephemeral|spot, and a Node to those plus persistent" do
+    it "constrains a pool to ephemeral|spot, and declares no value space on Node at all" do
       pool = self.class.read(ext_root, "server/app/models/system/instance_pool.rb")
       node = self.class.read(ext_root, "server/app/models/system/node.rb")
       expect(pool[/LIFECYCLE_CLASSES = %w\[([^\]]+)\]/, 1].split).to eq(%w[ephemeral spot])
-      expect(node[/LIFECYCLE_CLASSES = %w\[([^\]]+)\]/, 1].split).to eq(%w[persistent ephemeral spot])
+      # Step 2 (IMP-f2a7a729d39b) removed the node constant and validation
+      # with the column; parsed from the source so a re-declaration reddens
+      # here as well as in the retirement spec.
+      expect(node).not_to match(/^\s*LIFECYCLE_CLASSES = /)
+      expect(node).not_to match(/^\s*validates :lifecycle_class/)
     end
 
     # The enumeration that keeps the docs' "no path sets it" sentence honest. A
@@ -356,15 +363,14 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     end
 
     # The `create!` scan above cannot see an `assign_attributes` writer, and
-    # there IS one: db/seeds/example_multi_tenant.rb builds Nodes through
-    # find_or_initialize_by + assign_attributes. It is why the docs say no API
-    # SURFACE sets the column rather than "only the pool service writes it" —
-    # a seed writes it directly, and a coarser claim would have been false.
-    #
-    # Pinned as a value, not just a location: the helper defaults to the DB
-    # default and both call sites take the default, so no seeded Node is
-    # non-persistent. A caller passing ephemeral here would redden this.
-    it "has one seed writer, defaulted to persistent, with no caller overriding it" do
+    # there WAS one: db/seeds/example_multi_tenant.rb built Nodes through
+    # find_or_initialize_by + assign_attributes with a `lifecycle_class:`
+    # keyword defaulted to "persistent". Step 2 dropped the column and the
+    # keyword with it; this pins that no seed builds a Node with the token
+    # anywhere near the constructor, and that the helper's signature stays
+    # keyword-free (a caller could not pass it back in without the helper
+    # accepting it first).
+    it "has no seed writer of the column, and the multi-tenant helper takes no lifecycle keyword" do
       files = Dir.glob(File.join(ext_root, "server/db/seeds/**/*.rb")).select do |f|
         src = File.read(f)
         # An InstancePool creation carries ITS OWN lifecycle_class (the pool
@@ -375,12 +381,12 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
         without_pool_args.match?(/System::Node\.(create!|new|find_or_create_by!?|find_or_initialize_by)/) &&
           without_pool_args.include?("lifecycle_class")
       end
-      expect(files.map { |f| f.sub("#{ext_root}/", "") }).to eq(%w[server/db/seeds/example_multi_tenant.rb])
+      expect(files.map { |f| f.sub("#{ext_root}/", "") }).to eq([])
 
       seed = self.class.read(ext_root, "server/db/seeds/example_multi_tenant.rb")
-      expect(seed).to include('def ensure_node!(account:, name:, node_template:, lifecycle_class: "persistent")')
+      expect(seed).to include("def ensure_node!(account:, name:, node_template:)")
       call_sites = seed.scan(/^\s*\w+ = ensure_node!\(([^)]*)\)/).flatten
-      expect(call_sites.length).to eq(2)
+      expect(call_sites.length).to eq(2), "the two tenant Node call sites are the presence half of this check"
       expect(call_sites.select { |a| a.include?("lifecycle_class") }).to be_empty
     end
   end
@@ -426,7 +432,9 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       # A pointer is not the thing it points at.
       expect(doc.lines.grep(/\A### How `lifecycle_class` is actually set\s*\z/).length).to eq(1)
       expect(self.class.absent(doc, [
-        /nullable with no default/,
+        # Step 2's claim, not step 1's: the column is gone, not merely nullable.
+        /dropped the column, its CHECK constraint and its index/,
+        /A Node records no class at all/,
         /`System::InstancePool`/,
         /provision_warming_member!/,
         /InstancePoolReplenisherJob/,
@@ -469,13 +477,17 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     # left them unpinned, so the annotation itself is what gets pinned. The
     # annotation's WORDING moved with IMP-19843220ac68 — "DB default" became
     # "retired column", because there is no default any more and a pin that
-    # keeps mandating the old phrasing would keep a false claim in the doc.
+    # keeps mandating the old phrasing would keep a false claim in the doc. It
+    # moved AGAIN with IMP-f2a7a729d39b — "retired column" became "dropped
+    # column", because the same document now says the column was dropped and a
+    # pin that kept mandating "retired" would keep mandating the weaker of the
+    # two claims the doc makes about one fact.
     {
       "the Use Case 7 persistent assignment" => [
-        /^\s*Node\.lifecycle_class = "persistent"/, /retired column — nothing to set/
+        /^\s*Node\.lifecycle_class = "persistent"/, /dropped column — nothing to set/
       ],
       "the Use Case 2 persistent bullet" => [
-        /^\/\/\s*- lifecycle_class: persistent/, /retired column — not settable, nothing to do/
+        /^\/\/\s*- lifecycle_class: persistent/, /dropped column — not settable, nothing to do/
       ]
     }.each do |label, (site, annotation)|
       it "keeps #{label} annotated as a default, not a step" do

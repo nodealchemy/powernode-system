@@ -38,7 +38,7 @@ RSpec.describe System::PackageClosureBuildBridge do
 
   def seed_pool_member
     pool
-    node = create(:system_node, account: account, node_template: node_template, lifecycle_class: "ephemeral")
+    node = create(:system_node, account: account, node_template: node_template)
     create(:system_node_instance,
            node: node, name: "member-#{SecureRandom.hex(3)}", variety: "cloud", status: "running",
            provider_region: provider_region, provider_instance_type: instance_type,

@@ -2,69 +2,57 @@
 
 require "rails_helper"
 
-# IMP-19843220ac68 — RETIREMENT, step 1 of two.
-#
-# `system_nodes.lifecycle_class` was written by two application paths and read
-# by NOTHING (no serializer, no MCP/REST parameter, no GitOps kind, no Go agent
-# symbol, no frontend reference). The operator decision at approval was to
-# RETIRE it rather than wire it: the pool is the authoritative holder, and no
-# surface ever let anybody express intent through the Node column.
-#
-# WHY THE TWO HALVES MUST LAND TOGETHER, and why this file exists rather than a
-# bare "delete the writes" diff. The column was NOT NULL DEFAULT 'persistent'.
-# Stopping the writers ALONE would have been actively wrong, not merely inert:
-# every pool member — which is by construction `ephemeral` or `spot`, since
-# `System::InstancePool` is CHECK-constrained to those two — would have silently
-# fallen back to `persistent`, turning an unread column into a WRONG one and
-# handing the eventual short-circuit a plausible, confidently-stated lie. So the
-# default becomes NULL and the column nullable in the SAME change that stops the
-# writes, and "unset" becomes representable.
+# IMP-f2a7a729d39b — RETIREMENT of `system_nodes.lifecycle_class`, step 2 of
+# two. Step 1 (IMP-19843220ac68, migration 20260902160000) stopped both
+# application writers and made the column nullable with a NULL default, and
+# this file's previous shape guarded THAT state — column present, default
+# gone, nil on create. Step 1 has since been live on ops-hub across two
+# deploys, which is the one-release window it bought, so step 2 drops
+# everything step 1 deliberately left behind: the column, its
+# chk_system_nodes_lifecycle_class CHECK constraint, its index,
+# System::Node::LIFECYCLE_CLASSES and the inclusion validation — and the one
+# writer step 1 put out of scope, the example_multi_tenant dev seed.
 #
 # WHAT THIS GUARD CAN SEE:
-#   - the default or the NOT NULL coming back (schema read from the live
-#     connection, not from schema.rb, so a hand-edited schema file cannot
-#     satisfy it);
-#   - a Node created without the attribute acquiring a value again — the
-#     BEHAVIOUR the schema assertion stands for, exercised through create!;
-#   - the model validation rejecting nil again (which would make every
-#     unattributed create! raise);
-#   - the pool→member back-reference disappearing. That reference is what makes
-#     the retirement safe: `pool.lifecycle_class` stays reachable FROM a member
-#     because provision_warming_member! stamps `instance_pool_id` into the
-#     member's config, so a future short-circuit can read the authoritative row
-#     instead of a stale copy.
+#   - any of the three schema objects coming back, read from the LIVE
+#     connection (schema.rb is core-only and lags extension columns);
+#   - the attribute coming back on the model by any route — a real column, an
+#     `attribute` declaration, an `attr_accessor` — because both the
+#     UnknownAttributeError example and the respond_to example are exercised
+#     against the class, not against a column list;
+#   - the constant or the validation being re-declared;
+#   - the seed helper re-acquiring the keyword, and the seed file re-acquiring
+#     the token anywhere (the docs-accuracy spec's seed scan is file-level and
+#     would also redden, but that scan skips InstancePool argument blocks and a
+#     token in a comment would slip past it here);
+#   - the step-2 migration losing its explicit `down`, or `down` restoring the
+#     BASELINE (NOT NULL, default persistent) instead of step 1's end state —
+#     the shape a module rollback to the step-1 release actually needs;
+#   - the pool→member back-reference disappearing, which is what keeps
+#     pool.lifecycle_class reachable from a member now that no copy exists.
 #
-# WHAT IT CANNOT SEE — and what it deliberately does NOT duplicate:
-#   - THE WRITER ENUMERATION ITSELF. Scanning server/app for a
-#     `System::Node.create!` that sets the column lives in ONE place,
-#     spec/docs/node_lifecycle_class_docs_accuracy_spec.rb, which owned it
-#     before this change (it asserted "exactly two writers"; it now asserts
-#     none, names the orchestrator individually, and carries the surviving
-#     seed writer's own example). Running the same paren-balanced scan here would
-#     make reintroducing either write redden two files, which is precisely the
-#     shape that stops a reviewer mutating one guard from learning which guard
-#     is load-bearing. This file asserts what is NEW instead: the column state,
-#     the behaviour, and the back-reference.
-#   - a writer that does not go through `System::Node.create!` —
-#     `assign_attributes`, `update!`, mass assignment. One such writer exists,
-#     `db/seeds/example_multi_tenant.rb`, and it is deliberately OUT of scope
-#     here: it writes the literal "persistent" to a dev-seed Node, is not an
-#     operator path, and is swept by the column DROP (step 2) along with the
-#     CHECK constraint and the index. Its shape is pinned by
-#     spec/docs/node_lifecycle_class_docs_accuracy_spec.rb.
-#   - a writer under server/lib/ or db/migrate/ (a backfill), neither of which
-#     the glob covers.
-#   - anything about step 2. The column, its CHECK constraint, its index and
-#     `System::Node::LIFECYCLE_CLASSES` all still exist on purpose: dropping
-#     them in the same deploy as the write-stop would leave a window in which
-#     running code writes a column the migration has removed.
-RSpec.describe "System::Node lifecycle_class retirement (writes stopped, default NULL)" do
+# WHAT IT CANNOT SEE — and deliberately does not duplicate:
+#   - THE WRITER ENUMERATION under server/app. That paren-balanced scan is
+#     owned by spec/docs/node_lifecycle_class_docs_accuracy_spec.rb; repeating
+#     it here would make one regression redden two files. After step 2 a
+#     writer would fail at runtime anyway (UnknownAttributeError), which the
+#     example below pins directly.
+#   - the pool value space. spec/models/system/lifecycle_class_value_space_spec.rb
+#     pins System::InstancePool::LIFECYCLE_CLASSES by wire value and the pool
+#     CHECK constraint; this file only asserts the pool still HOLDS a value.
+#   - a rollback actually being exercised: `down` is pinned by shape, not run.
+#
+# Examples tagged `needs_step2_migration` read the live schema; they are
+# SKIPPED (spec/support/lifecycle_class_migration_helpers.rb) while 20260904100000
+# is absent from schema_migrations, and run for real once it is applied — keyed
+# on the migration and not on the column, so a column that comes back fails
+# here rather than skipping. Every other example is green on the source alone.
+RSpec.describe "System::Node lifecycle_class retirement (step 2: column, CHECK, index, constant and validation dropped)" do
   ext_root = File.expand_path("../../../..", __dir__)
 
-  # Paren-balanced over the constructor's ARGUMENT LIST. A file-level
-  # co-occurrence test is not evidence: system_fleet_tool.rb contains a
-  # `System::Node.create!` and a `lifecycle_class:` in two different methods
-  # that have nothing to do with each other.
+  # Paren-balanced over the constructor's ARGUMENT LIST, as in the sibling
+  # specs: file-level co-occurrence of `System::Node.create!` and a token is
+  # not evidence the constructor sets it.
   def self.node_create_arguments(src)
     src.enum_for(:scan, /System::Node\.create!\(/).map { Regexp.last_match.end(0) }.map do |start|
       depth = 1
@@ -84,69 +72,103 @@ RSpec.describe "System::Node lifecycle_class retirement (writes stopped, default
   let(:account) { create(:account) }
   let(:node_template) { create(:system_node_template, account: account) }
 
-  describe "the column no longer manufactures a value" do
-    let(:column) do
-      ActiveRecord::Base.connection.columns("system_nodes").find { |c| c.name == "lifecycle_class" }
+  describe "the model" do
+    it "declares no LIFECYCLE_CLASSES constant" do
+      expect(::System::Node.const_defined?(:LIFECYCLE_CLASSES, false)).to be(false)
     end
 
-    it "still exists — step 2 drops it, this change must not" do
-      expect(column).not_to be_nil
-    end
-
-    it "is nullable with a NULL default" do
-      expect(column.default).to be_nil
-      expect(column.null).to be(true)
-    end
-
-    # The behaviour the schema assertion stands for. A default can also be
-    # reintroduced in Ruby (an `after_initialize`, an attribute default), which
-    # the column read above would not see.
-    it "leaves lifecycle_class nil on a Node created without it" do
-      node = ::System::Node.create!(
-        account: account,
-        node_template: node_template,
-        name: "unattributed-#{SecureRandom.hex(4)}",
-        enabled: true,
-        config: {}
-      )
-
-      expect(node.lifecycle_class).to be_nil
-      expect(node.reload.lifecycle_class).to be_nil
-    end
-
-    # The CHECK constraint survives step 1 and must tolerate NULL; a
-    # three-valued CHECK does, but only while it is not rewritten with a
-    # COALESCE or an IS NOT NULL arm.
-    it "still rejects a value outside the declared space, and still accepts each declared one" do
-      invalid = ::System::Node.new(
-        account: account, node_template: node_template,
-        name: "bad-#{SecureRandom.hex(4)}", lifecycle_class: "task_scoped"
-      )
-      expect(invalid).not_to be_valid
-      expect(invalid.errors[:lifecycle_class]).to be_present
-
-      ::System::Node::LIFECYCLE_CLASSES.each do |value|
-        node = ::System::Node.create!(
-          account: account, node_template: node_template,
-          name: "explicit-#{value}-#{SecureRandom.hex(4)}", enabled: true,
-          config: {}, lifecycle_class: value
-        )
-        expect(node.reload.lifecycle_class).to eq(value)
-      end
+    it "validates nothing on lifecycle_class" do
+      expect(::System::Node.validators_on(:lifecycle_class)).to be_empty
     end
   end
 
-  # NO WRITER-ENUMERATION EXAMPLES HERE, on purpose. That scan is owned by
-  # spec/docs/node_lifecycle_class_docs_accuracy_spec.rb — "has no System::Node
-  # writer of the column left in server/app", plus the orchestrator named
-  # individually and the surviving seed writer. See the header for why it is
-  # not repeated in this file.
+  describe "the database", :needs_step2_migration do
+    let(:connection) { ActiveRecord::Base.connection }
+
+    it "has no lifecycle_class column on system_nodes" do
+      expect(connection.columns("system_nodes").map(&:name)).not_to include("lifecycle_class")
+      expect(::System::Node.column_names).not_to include("lifecycle_class")
+    end
+
+    it "has no index_system_nodes_on_lifecycle_class" do
+      expect(connection.indexes("system_nodes").map(&:name)).not_to include("index_system_nodes_on_lifecycle_class")
+    end
+
+    it "has no chk_system_nodes_lifecycle_class, nor any CHECK mentioning the column" do
+      checks = connection.check_constraints("system_nodes")
+      expect(checks.map(&:name)).not_to include("chk_system_nodes_lifecycle_class")
+      expect(checks.select { |c| c.expression.to_s.include?("lifecycle_class") }).to be_empty
+    end
+
+    # The behaviour the schema assertions stand for. A Node created the way
+    # every remaining caller creates one persists without the attribute, and
+    # supplying the attribute by name is an error rather than a silent no-op —
+    # which is what makes a reintroduced writer fail loudly instead of writing
+    # to nothing.
+    it "persists a Node without the attribute and rejects the attribute by name" do
+      node = ::System::Node.create!(
+        account: account,
+        node_template: node_template,
+        name: "post-retirement-#{SecureRandom.hex(4)}",
+        enabled: true,
+        config: {}
+      )
+      expect(node.reload.attributes).not_to have_key("lifecycle_class")
+      expect(node).not_to respond_to(:lifecycle_class)
+
+      expect do
+        ::System::Node.new(
+          account: account, node_template: node_template,
+          name: "revived-#{SecureRandom.hex(4)}", lifecycle_class: "persistent"
+        )
+      end.to raise_error(ActiveModel::UnknownAttributeError)
+    end
+  end
+
+  describe "the migration" do
+    let(:file) do
+      Dir[File.join(ext_root, "server/db/migrate", "*_drop_lifecycle_class_from_system_nodes.rb")].first
+    end
+
+    it "exists, drops all three objects in `up`, and restores step 1's end state in `down`" do
+      expect(file).not_to be_nil, "the step-2 migration is missing from db/migrate"
+      src = File.read(file)
+
+      up = src[/^\s*def up\n(.*?)^\s*end\n/m, 1]
+      down = src[/^\s*def down\n(.*?)^\s*end\n/m, 1]
+      expect(up).not_to be_nil, "explicit `def up` not found — a `change` cannot express this down"
+      expect(down).not_to be_nil, "explicit `def down` not found — the drop must be reversible"
+
+      expect(up).to include('remove_index :system_nodes, name: "index_system_nodes_on_lifecycle_class"')
+      expect(up).to include('remove_check_constraint :system_nodes, name: "chk_system_nodes_lifecycle_class"')
+      expect(up).to include("remove_column :system_nodes, :lifecycle_class")
+
+      # Step 1's end state — nullable, no default — NOT the baseline. The
+      # step-1 release's model validates with allow_nil, so this is the shape
+      # a rollback to it needs; restoring NOT NULL here would fail on the
+      # first row anyway, since the values are gone with the column.
+      expect(down).to include("add_column :system_nodes, :lifecycle_class, :string")
+      expect(down).not_to include("null: false")
+      expect(down).not_to include("default:")
+      expect(down).to include('name: "chk_system_nodes_lifecycle_class"')
+      expect(down).to include('name: "index_system_nodes_on_lifecycle_class"')
+      expect(down).not_to include("execute(")
+    end
+  end
+
+  describe "the last writer" do
+    # Step 1 put db/seeds/example_multi_tenant.rb out of scope on purpose (a
+    # dev seed, not an operator path, "swept by the column DROP"). This is the
+    # sweep. Token-level over the whole file, not just the helper signature,
+    # so the keyword cannot survive in a call site or a comment.
+    it "no longer exists in the example_multi_tenant seed" do
+      seed = self.class.read(ext_root, "server/db/seeds/example_multi_tenant.rb")
+      expect(seed).to include("def ensure_node!(account:, name:, node_template:)")
+      expect(seed).not_to include("lifecycle_class")
+    end
+  end
+
   describe "the authoritative value stays reachable from a member" do
-    # Retiring the copy is only safe because the ORIGINAL is still findable.
-    # provision_warming_member! stamps the pool id into the member's config, so
-    # a future short-circuit reads pool.lifecycle_class — the row GitOps
-    # apply_pool "update" can rotate — instead of a snapshot that was already
-    # allowed to go stale.
     it "still stamps instance_pool_id into the member Node's config" do
       args = self.class.node_create_arguments(
         self.class.read(ext_root, "server/app/services/system/instance_pool_service.rb")
@@ -156,6 +178,7 @@ RSpec.describe "System::Node lifecycle_class retirement (writes stopped, default
                             "provision_warming_member! no longer records the pool on the member; " \
                             "pool.lifecycle_class is then unreachable from the Node"
       expect(member).to include('"instance_pool_id" => pool.id')
+      expect(member).not_to include("lifecycle_class")
     end
 
     it "keeps InstancePool as the holder of a real, constrained value" do

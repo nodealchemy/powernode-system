@@ -6,10 +6,11 @@ require "rails_helper"
 # AXIS wearing a name that already meant something else.
 #
 # IMP-2fc66d5b7e00 established the two facts: system_nodes vs
-# system_instance_pools is deliberate LAYERING (the pool value space is a
-# correct strict subset of the node one, and
-# `InstancePoolService#provision_warming_member!` depends on that relation),
-# while system_node_instances was the ACCIDENT — its only value, "task_scoped",
+# system_instance_pools was deliberate LAYERING (the pool value space a
+# correct strict subset of the node one, which
+# `InstancePoolService#provision_warming_member!` depended on until
+# IMP-19843220ac68 retired the copy and IMP-f2a7a729d39b dropped the node
+# column), while system_node_instances was the ACCIDENT — its only value, "task_scoped",
 # answers "why was this instance leased", not "how long-lived is this machine",
 # and would violate the CHECK constraint standing on EITHER sibling table. That
 # task could only document the divergence at the write site, because a rename is
@@ -18,10 +19,11 @@ require "rails_helper"
 # `lease_class`.
 #
 # WHAT THIS GUARD CAN SEE:
-#   - the accident coming back anywhere in the schema, by EQUALITY: exactly two
-#     tables may carry a `lifecycle_class` column, and they are named here. A
+#   - the accident coming back anywhere in the schema, by EQUALITY: exactly one
+#     table may carry a `lifecycle_class` column, and it is named here. A
 #     containment assertion ("system_node_instances is not among them") would
-#     stay green if a fourth table acquired one.
+#     stay green if another table acquired one — including system_nodes
+#     getting its dropped copy back.
 #   - the column or the partial index failing to move (both are asserted on the
 #     LIVE database, not on schema.rb, which is core-only and lags extension
 #     columns by construction — see System::SchemaDriftDetector).
@@ -50,9 +52,11 @@ require "rails_helper"
 module NodeInstanceLeaseClass
   SERVER_ROOT = File.expand_path("../../..", __dir__)
 
-  # Tables that legitimately carry `lifecycle_class` — the layered node/pool
-  # pair, and nothing else.
-  LIFECYCLE_CLASS_TABLES = %w[system_instance_pools system_nodes].freeze
+  # Tables that legitimately carry `lifecycle_class` — the pool, and nothing
+  # else. system_nodes carried the layered copy until IMP-f2a7a729d39b dropped
+  # it (retirement step 2); the drop itself is pinned on the live schema by
+  # spec/models/system/node_lifecycle_class_retirement_spec.rb.
+  LIFECYCLE_CLASS_TABLES = %w[system_instance_pools].freeze
 
   # The migrated sites, with the expression each must now carry EXACTLY once.
   MIGRATED_SITES = {
@@ -74,8 +78,9 @@ module NodeInstanceLeaseClass
   # skip-list: a NEW stale line in an allowed file reddens too. Both entries
   # here assert a SIBLING table REJECTS the value, which is the point of the
   # rename, so they are not stale.
-  #   spec/models/system/lifecycle_class_value_space_spec.rb — the System::Node
-  #   and System::InstancePool rejection examples (2 lines).
+  #   spec/models/system/lifecycle_class_value_space_spec.rb — the
+  #   System::InstancePool rejection example, and the System::Node example
+  #   showing there is no attribute left for the value to land on (2 lines).
   ALLOWED_OLD_NAME_LINES = {
     "spec/models/system/lifecycle_class_value_space_spec.rb" => 2
   }.freeze
@@ -107,7 +112,12 @@ RSpec.describe "system_node_instances.lease_class (renamed from lifecycle_class)
   let(:connection) { ActiveRecord::Base.connection }
 
   describe "the schema" do
-    it "leaves EXACTLY the layered node/pool pair carrying a lifecycle_class column" do
+    # `needs_step2_migration`: the equality below only reaches its post-drop
+    # answer once extension migration 20260904100000 is applied; the tag is
+    # registered in spec/support/lifecycle_class_migration_helpers.rb and skips
+    # this example until then (keyed on the migration, so a re-added column
+    # fails here rather than skipping).
+    it "leaves EXACTLY the pool carrying a lifecycle_class column", :needs_step2_migration do
       tables = connection.select_values(<<~SQL.squish)
         SELECT table_name FROM information_schema.columns
         WHERE table_schema = current_schema() AND column_name = 'lifecycle_class'

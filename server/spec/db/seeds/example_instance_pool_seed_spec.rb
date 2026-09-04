@@ -82,8 +82,7 @@ RSpec.describe "example_instance_pool seed — demo claim" do
   end
 
   let!(:node) do
-    create(:system_node, account: account, node_template: template,
-           lifecycle_class: "ephemeral")
+    create(:system_node, account: account, node_template: template)
   end
 
   let!(:member) do

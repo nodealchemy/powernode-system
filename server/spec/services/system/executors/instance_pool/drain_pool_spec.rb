@@ -30,8 +30,7 @@ RSpec.describe System::Executors::InstancePool::DrainPool do
   end
 
   def seed_pool_member(state:, acquired_at: nil)
-    node = create(:system_node, account: account, node_template: node_template,
-                                lifecycle_class: "ephemeral")
+    node = create(:system_node, account: account, node_template: node_template)
     create(:system_node_instance,
            node: node,
            name: "member-#{SecureRandom.hex(3)}",

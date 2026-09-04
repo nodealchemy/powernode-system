@@ -48,8 +48,7 @@ RSpec.describe "pool claim attribution", type: :service do
   end
 
   def seed_ready_member
-    node = create(:system_node, account: account, node_template: node_template,
-                                lifecycle_class: "ephemeral")
+    node = create(:system_node, account: account, node_template: node_template)
     create(:system_node_instance,
            node: node,
            name: "member-#{SecureRandom.hex(3)}",
@@ -186,8 +185,7 @@ RSpec.describe "pool claim attribution", type: :service do
   # reconstructed later.
   describe "release of a claim that predates the ledger" do
     it "records the disposition with a null claim id instead of failing" do
-      node = create(:system_node, account: account, node_template: node_template,
-                                  lifecycle_class: "ephemeral")
+      node = create(:system_node, account: account, node_template: node_template)
       legacy = create(:system_node_instance,
                       node: node, variety: "cloud", status: "running",
                       provider_region: provider_region,

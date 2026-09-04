@@ -32,8 +32,7 @@ RSpec.describe System::InstancePoolService, type: :service do
   # attribute instead gets a backfilled id.
   def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil,
                        **instance_attrs)
-    node = create(:system_node, account: account, node_template: node_template,
-                                 lifecycle_class: "ephemeral")
+    node = create(:system_node, account: account, node_template: node_template)
     create(:system_node_instance,
            node: node,
            name: "member-#{SecureRandom.hex(3)}",
@@ -1310,7 +1309,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     describe "orphaned pool Node shells with no instances left" do
       def seed_pool_node_shell(age:, config: { "instance_pool_id" => pool.id })
         node = create(:system_node, account: account, node_template: node_template,
-                                    lifecycle_class: "ephemeral", config: config)
+                                    config: config)
         node.update_columns(created_at: age.ago, updated_at: age.ago)
         node
       end
@@ -1361,7 +1360,6 @@ RSpec.describe System::InstancePoolService, type: :service do
         other_account = create(:account)
         other_template = create(:system_node_template, account: other_account)
         foreign = create(:system_node, account: other_account, node_template: other_template,
-                                       lifecycle_class: "ephemeral",
                                        config: { "instance_pool_id" => pool.id })
         foreign.update_columns(created_at: 90.days.ago, updated_at: 90.days.ago)
 
