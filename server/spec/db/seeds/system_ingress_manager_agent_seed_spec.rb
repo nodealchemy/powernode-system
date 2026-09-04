@@ -47,8 +47,12 @@ RSpec.describe "system_ingress_manager_agent seed" do
       identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("ingress-manager")
       expect(agent.name).to eq(identity[:name])
       expect(agent.agent_type).to eq(identity[:agent_type])
-      expect(System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "ingress-manager")&.id)
-        .to eq(agent.id)
+      # HIER-P2I: the resolver answers with the account's clone of the seeded
+      # canonical (a canonical never executes), so the identity match shows as
+      # a clone OF the seeded agent.
+      resolved = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "ingress-manager")
+      expect(resolved&.cloned_from_id).to eq(agent.id)
+      expect(resolved&.account_id).to eq(account.id)
     end
 
     it "carries a ROUTING description (trigger + exclusion naming the siblings) within the export budget" do

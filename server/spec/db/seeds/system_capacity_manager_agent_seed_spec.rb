@@ -45,11 +45,15 @@ RSpec.describe "system_capacity_manager_agent seed" do
       expect(Ai::Routing::RoutableAgents.canonical).to include(agent)
     end
 
-    it "matches the declared identity exactly, so AgentResolver resolves it for the fleet tick" do
+    # HIER-P2I: the canonical is a template; what the tick ACTS as is the
+    # account's clone of it, so the resolver answers with a row cloned from
+    # the seeded agent rather than the seeded agent itself.
+    it "matches the declared identity exactly, so AgentResolver resolves the account's clone of it for the fleet tick" do
       identity = declarations::AGENT_IDENTITIES.fetch("capacity-manager")
       expect([ agent.name, agent.agent_type ]).to eq([ identity[:name], identity[:agent_type] ])
-      expect(System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "capacity-manager"))
-        .to eq(agent)
+      resolved = System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "capacity-manager")
+      expect(resolved.cloned_from_id).to eq(agent.id)
+      expect(resolved.account_id).to eq(account.id)
     end
 
     it "carries a ROUTING description (trigger + exclusion naming the siblings) within the export budget" do
