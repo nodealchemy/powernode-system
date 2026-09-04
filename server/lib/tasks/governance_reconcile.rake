@@ -54,6 +54,35 @@ namespace :system do
       end
       puts(bindings.changed? ? "✅ Skill bindings reconcile upserted #{bindings.upserted}, removed #{bindings.removed}" \
                              : "✅ Skill bindings already in sync")
+
+      # Canonical teams (HIER-P4): the per-account materialisation of every
+      # canonical Ai::TeamTemplate ("System Operations", "Platform
+      # Engineering") — team, members, roles and lead repaired to the template
+      # on the account's executing principals. Membership only: lineage edges
+      # and delegation rows keep their writers above; a missing edge stays
+      # reported by `drift` until the hierarchy seed runs.
+      #
+      # NOT Account.all: materialising a canonical team MINTS an account
+      # principal per seat, so a walk over every account would create two teams
+      # and up to twenty agent rows in every tenant on every boot. The write
+      # set is the accounts that already hold a canonical team plus the primary
+      # account the seeds materialise in (Ai::Teams::CanonicalTeamReconciler
+      # .reconcilable_accounts). The `drift` task below still reads every account.
+      team_accounts = ::Ai::Teams::CanonicalTeamReconciler.reconcilable_accounts
+      puts "  canonical teams: reconciling #{team_accounts.count} of #{accounts.count} account(s) " \
+           "(a tenant holding no canonical team is left untouched)"
+      team_changes = 0
+      team_accounts.find_each do |account|
+        ::Ai::Teams::CanonicalTeamReconciler.reconcile_all!(account: account).each do |team|
+          next unless team.changed? || team.skipped.any?
+
+          team_changes += 1 if team.changed?
+          puts "  [#{account.id}] team #{team.template.slug}: #{team.created ? 'materialised' : 'present'}, " \
+               "+#{team.members_added} -#{team.members_removed} ~#{team.members_updated} member(s)" if team.changed?
+          puts "  [#{account.id}] team #{team.template.slug} skipped #{team.skipped.size}: #{team.skipped.join(', ')}" if team.skipped.any?
+        end
+      end
+      puts(team_changes.zero? ? "✅ Canonical teams already in sync" : "✅ Canonical teams reconciled on #{team_changes} account-team(s)")
     end
 
     desc "Report declared governance rows and skill bindings missing from this database (read-only; exits 1 on drift)"
@@ -87,6 +116,27 @@ namespace :system do
         drifted = true
         warn "  skill bindings MISSING #{bindings.missing.size}: #{bindings.missing.join(', ')}" if bindings.missing.any?
         warn "  skill bindings STALE #{bindings.stale.size}: #{bindings.stale.join(', ')}" if bindings.stale.any?
+      end
+
+      # Canonical teams (HIER-P4): where the template, the lineage forest, the
+      # delegation graph and the materialised team disagree. Read-only — it
+      # mints no principal (AccountPrincipalResolver.existing).
+      ::Account.find_each do |account|
+        ::Ai::Teams::CanonicalTeamReconciler.drift_all(account: account).each do |team|
+          next unless team.drifted?
+
+          drifted = true
+          warn "  [#{account.id}] team #{team.template_slug} DRIFT:"
+          warn "    absent canonicals: #{team.absent_agents.join(', ')}" if team.absent_agents.any?
+          warn "    missing lineage edges: #{team.missing_edges.join(', ')}" if team.missing_edges.any?
+          warn "    members the manager may not delegate to: #{team.undelegatable_members.join(', ')}" if team.undelegatable_members.any?
+          warn "    manager delegate types no member carries: #{team.unrepresented_delegate_types.join(', ')}" if team.unrepresented_delegate_types.any?
+          warn "    team not materialised" if team.team_absent
+          warn "    missing members: #{team.missing_members.join(', ')}" if team.missing_members.any?
+          warn "    extra members: #{team.extra_members.join(', ')}" if team.extra_members.any?
+          warn "    role mismatches: #{team.role_mismatches.join(', ')}" if team.role_mismatches.any?
+          warn "    lead mismatch" if team.lead_mismatch
+        end
       end
 
       if drifted

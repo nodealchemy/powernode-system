@@ -38,7 +38,10 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # seeded them in wave 2, so an "(agent absent)" skip line here now means a seed
 # above failed, not a pending wave) under System Concierge and derives each
 # delegation policy from POLICY_SETS and the SkillBindings registry (HIER-P1),
-# so every agent it attaches must already exist.
+# so every agent it attaches must already exist. `system_operations_team_seed.rb`
+# (HIER-P4) runs right after it: the "System Operations" canonical
+# Ai::TeamTemplate is materialised for the admin account on top of those
+# edges and delegation rows, so it must see them.
 #
 # POLICY-WRITE CONVENTION (proposal §5 ruling 7; HIER-P2SWEEP, then
 # IMP-10e4f6c3bcd2 / offer 01a0696f):
@@ -104,6 +107,7 @@ SYSTEM_SEED_FILES = %w[
   node_module_catalog.rb
   role_modules_seed.rb
   system_agent_hierarchy.rb
+  system_operations_team_seed.rb
   system_autonomy_orphan_cleanup.rb
   system_skill_graph_sync.rb
   system_governance_policy_reconcile.rb
