@@ -1172,11 +1172,15 @@ SKILLS_DATA = [
       recommendation_type, summary, files, materialization), fingerprint (required),
       severity, dry_run.
       Runtime-closable gaps are ALSO materialised through
-      System::Governance::GapMaterializer: a skill binding or a prompt refinement
-      auto-applies only from the `trusted` trust tier (dev.skill_refine /
-      dev.prompt_refine); a lineage edge or delegation policy parks for an operator
-      whatever the tier (dev.governance_materialize). A parked materialisation is
-      NOT a failure — report the deferred_operation_id and stop.
+      System::Governance::GapMaterializer under the policy rows that account
+      carries: a skill binding or a prompt refinement (dev.skill_refine /
+      dev.prompt_refine) auto-applies from the `trusted` tier where the
+      trust-conditioned pair is seeded, and at any tier where only the
+      account-wide floor covers the category; a lineage edge or delegation policy
+      parks for an operator whatever the tier (dev.governance_materialize). Do
+      not predict the verdict — read the returned status. A parked
+      materialisation is NOT a failure: report the deferred_operation_id and
+      stop.
     PROMPT
   },
 ].freeze

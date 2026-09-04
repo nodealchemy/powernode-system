@@ -33,8 +33,26 @@ module System
     # an Ai::DeferredOperation with an ApprovalRequest on the Platform
     # Architect's chain, and approval REPLAYS it through `.execute` below (the
     # gate's executor contract) as the same principal. An unmatched category
-    # meets the require_approval default: a fresh account with no rows parks,
-    # it never applies.
+    # meets the require_approval default, so a category NO row covers parks and
+    # never applies.
+    #
+    # BUT THE REFINE CATEGORIES ARE COVERED ON EVERY ACCOUNT, AND THE TRUST
+    # CONDITION ABOVE IS NOT WHAT DECIDES THERE (IMP-a51963f8717f, proposal §5
+    # ruling 11c). Core's Ai::Engineering::ReleaseDispatchFloorSeeder writes a
+    # scope-"global", agent-less `auto_approve` FLOOR for dev.skill_refine and
+    # dev.prompt_refine on EVERY account — it exists so the principals that
+    # refine a skill over MCP and own no row (an operator's `mcp_client`
+    # identity, a dev-cell instance principal) keep running. The
+    # trust-conditioned PAIR that outranks a floor is seeded only on the
+    # "Powernode Admin" account's canonicals, so on any OTHER account the
+    # acting Platform Architect (the per-account clone AgentResolver mints)
+    # owns no refine row and Ai::InterventionPolicyService#resolve — which
+    # admits scope-"global" rows for an agent caller — lands on the floor.
+    #
+    # Net: a skill binding or prompt refinement is trust-conditioned on the
+    # admin account and applies at ANY tier elsewhere. The STRUCTURAL kinds are
+    # unaffected: no floor covers dev.governance_materialize, so they park
+    # everywhere. governance_gap_propose_executor_spec pins both states.
     #
     # The existing MCP tools (set_delegation_policy, attach_skill_to_agent,
     # mutate_skill) are deliberately NOT called from here: each carries its

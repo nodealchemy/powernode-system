@@ -75,10 +75,37 @@ reviewable fix in one paragraph.
 
 | Materialisation | Gate | `trusted` Platform Architect | Below `trusted` |
 |---|---|---|---|
-| `skill_binding` — an `Ai::AgentSkill` row | `dev.skill_refine` (core's trust-conditioned pair) | applies at once | parks |
-| `prompt_refinement` (**seam only — no sensor detector produces it yet**) — a new active `Ai::SkillVersion` on an existing skill, the previous prompt kept in the version's metadata | `dev.prompt_refine` (core's trust-conditioned pair) | applies at once | parks |
+| `skill_binding` — an `Ai::AgentSkill` row | `dev.skill_refine` (core's trust-conditioned pair, **or the account-wide floor** — see below) | applies at once | parks **only where the pair is seeded** |
+| `prompt_refinement` (**seam only — no sensor detector produces it yet**) — a new active `Ai::SkillVersion` on an existing skill, the previous prompt kept in the version's metadata | `dev.prompt_refine` (core's trust-conditioned pair, **or the account-wide floor**) | applies at once | parks **only where the pair is seeded** |
 | `lineage_edge` — `HierarchyWriter#attach!` under System Concierge | `dev.governance_materialize` (`require_approval`, `PLATFORM_ARCHITECT_POLICIES`) | parks | parks |
 | `delegation_policy` — `HierarchyWriter#ensure_delegation_policy!` with the declared attributes | `dev.governance_materialize` | parks | parks |
+
+**The refine rows are not trust-conditioned on every account** (IMP-a51963f8717f,
+proposal §5 ruling 11c). Core writes a scope-`global`, agent-less `auto_approve`
+FLOOR for `dev.skill_refine` and `dev.prompt_refine` on EVERY account
+(`Ai::Engineering::ReleaseDispatchFloorSeeder`), so that the MCP principals that
+own no policy row — an operator's `mcp_client` identity, a dev-cell instance
+principal — keep refining instead of parking. The trust-conditioned PAIR that
+outranks a floor is seeded only on the **`Powernode Admin`** account's
+canonicals. On any other account the acting Platform Architect owns no refine
+row, so the floor decides and a binding or prompt refinement **applies at every
+trust tier**, including `supervised`.
+
+To restore the fail-safe on an account, give that account's Platform Architect
+its own row for the category — an agent-scoped row outranks a global one at any
+priority (`Ai::InterventionPolicy#specificity_key`), so `priority` cannot do it:
+
+```ruby
+Ai::InterventionPolicy.create!(
+  account: account, scope: "agent", ai_agent_id: architect.id,
+  action_category: "dev.skill_refine", policy: "require_approval",
+  priority: 10, is_active: true, conditions: {}
+)
+```
+
+The STRUCTURAL kinds are unaffected: nothing writes a floor for
+`dev.governance_materialize`, so a lineage edge or delegation policy parks on
+every account whatever the tier.
 
 `prompt_refinement` is WIRED but UNPRODUCED: every `materialization` hash
 `GovernanceGapSensor` stamps today is `skill_binding`, `lineage_edge` or
