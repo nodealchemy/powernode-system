@@ -265,4 +265,108 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
       call("system_create_module_from_package", repository_id: repo.id, package_name: "curl")
     end
   end
+
+  # IMP-915d1dbdcdba — `system_refresh_package_module` is the MCP door onto
+  # the package-module refresh, declared `mutating: true`, and it used to
+  # answer `enqueued: true` for work nothing would ever run.
+  #
+  # THE MECHANISM (established before the fix, and pinned by the first example
+  # below): the handler read
+  #
+  #   SystemPackageModuleRefreshJob.perform_async(...) if defined?(SystemPackageModuleRefreshJob)
+  #
+  # That class is defined ONLY in the worker app
+  # (extensions/system/worker/app/jobs/system_package_module_refresh_job.rb);
+  # PowernodeSystem::Engine puts only extensions/system/server/app/* on the
+  # server's autoload paths, and there is no server-side app/jobs at all. So
+  # `defined?` answered nil, the `if` modifier suppressed the call ENTIRELY —
+  # no NameError was ever raised, which is why this survived — and the method
+  # fell straight through to `success_result(enqueued: true)`.
+  #
+  # The oracle here is therefore the ENQUEUE, never the absence of an
+  # exception: the server's only route to Sidekiq is System::WorkerJobEnqueuer
+  # (raw Sidekiq wire format LPUSHed into the worker's Redis), so a refresh
+  # that did not reach it was not queued anywhere.
+  describe "system_refresh_package_module (IMP-915d1dbdcdba)" do
+    let(:platform) { create(:system_node_platform, account: account) }
+    let(:category) { create(:system_node_module_category, account: account) }
+    let(:mod) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: "subscription", name: "openssl-base")
+    end
+    let(:repo) { create(:system_package_repository, account: account) }
+    let!(:link) do
+      create(:system_package_module_link, node_module: mod, package_repository: repo,
+             package_name: "openssl", package_version: "3.1.3", architecture: "amd64")
+    end
+    let(:jid) { SecureRandom.hex(12) }
+
+    # Never let a spec LPUSH into the worker's real Redis (DB 1 is live on
+    # this host): every example stubs the seam and asserts on the call.
+    before { allow(::System::WorkerJobEnqueuer).to receive(:enqueue).and_return(jid) }
+
+    it "queues the refresh on the worker's system queue and only then reports enqueued" do
+      # Precondition, not the assertion under test: if this constant ever DID
+      # resolve server-side the example could go green against the old
+      # `perform_async if defined?` path for the wrong reason.
+      expect(defined?(SystemPackageModuleRefreshJob)).to be_nil
+
+      r = call("system_refresh_package_module", package_module_link_id: link.id, force: true)
+
+      # Wire contract of SystemPackageModuleRefreshJob#execute:
+      # args [package_module_link_id, force], queue "system".
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        job_class: "SystemPackageModuleRefreshJob",
+        args:      [ link.id, true ],
+        queue:     "system"
+      )
+      expect(r[:success]).to be true
+      expect(r[:data][:enqueued]).to be true
+      expect(r[:data][:package_module_link_id]).to eq(link.id)
+    end
+
+    it "sends force=false on the wire when the caller omits it" do
+      call("system_refresh_package_module", package_module_link_id: link.id)
+
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        hash_including(job_class: "SystemPackageModuleRefreshJob", args: [ link.id, false ])
+      )
+    end
+
+    it "reports an honest failure — not enqueued: true — when nothing was queued" do
+      # WorkerJobEnqueuer is fail-soft: an unreachable Redis logs and returns
+      # nil rather than raising. That is exactly the state in which the old
+      # handler's unconditional `enqueued: true` was most misleading.
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue).and_return(nil)
+
+      r = call("system_refresh_package_module", package_module_link_id: link.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/enqueue/i)
+      expect(r[:data]).to be_nil
+    end
+
+    it "refuses a link whose module belongs to another account, and queues nothing" do
+      other = create(:account)
+      other_mod = create(:system_node_module, account: other,
+                         node_platform: create(:system_node_platform, account: other),
+                         category: create(:system_node_module_category, account: other),
+                         variety: "subscription", name: "foreign")
+      other_link = create(:system_package_module_link, node_module: other_mod,
+                          package_repository: create(:system_package_repository, account: other))
+
+      r = call("system_refresh_package_module", package_module_link_id: other_link.id)
+
+      expect(::System::WorkerJobEnqueuer).not_to have_received(:enqueue)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/not found or not accessible/)
+    end
+
+    it "refuses a missing package_module_link_id instead of reporting a queued refresh" do
+      r = call("system_refresh_package_module")
+
+      expect(::System::WorkerJobEnqueuer).not_to have_received(:enqueue)
+      expect(r[:success]).to be false
+    end
+  end
 end

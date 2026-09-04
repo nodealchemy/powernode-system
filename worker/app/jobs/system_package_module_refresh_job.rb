@@ -8,16 +8,17 @@
 # Invoked by:
 #   * Fleet Autonomy `package_module.refresh` skill executor when
 #     PackageDriftSensor flags an outdated module, and by the CVE remediation
-#     orchestrator through the same executor. Both reach this job over the
-#     server->worker seam (System::WorkerJobEnqueuer LPUSHes the Sidekiq wire
-#     format into the worker's Redis) — the server cannot `perform_async`,
-#     since this class exists only in the worker app (IMP-594bfa5e1be5).
+#     orchestrator through the same executor (IMP-594bfa5e1be5).
+#   * the MCP `system_refresh_package_module` operator action, which since
+#     IMP-915d1dbdcdba delegates to that same executor rather than calling
+#     `perform_async if defined?(...)` from the Rails server, where the guard
+#     never fired and the action queued nothing while answering
+#     `enqueued: true`.
 #
-# NOT currently invoked by the MCP `system_refresh_package_module` operator
-# action: that door still calls `perform_async if defined?(...)` from the
-# Rails server, where the guard never fires, so it queues nothing. Tracked
-# separately; do not treat this job as reachable from MCP until it routes
-# through WorkerJobEnqueuer too.
+# EVERY caller reaches this job over the server->worker seam
+# (System::WorkerJobEnqueuer LPUSHes the Sidekiq wire format into the worker's
+# Redis). The server cannot `perform_async`: this class exists only in the
+# worker app, which the Rails server never autoloads.
 class SystemPackageModuleRefreshJob < BaseJob
   sidekiq_options queue: "system", retry: 2
 

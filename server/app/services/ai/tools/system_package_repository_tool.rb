@@ -585,16 +585,33 @@ module Ai
         end
       end
 
+      # IMP-915d1dbdcdba — thin MCP wrapper over the skill executor, for the
+      # same reason #suggest_architectures_for_fleet is one: one
+      # implementation, identical shapes from MCP and from direct skill
+      # invocation.
+      #
+      # This used to read `SystemPackageModuleRefreshJob.perform_async(...) if
+      # defined?(SystemPackageModuleRefreshJob)` followed by an unconditional
+      # `success_result(enqueued: true)`. That class is defined ONLY in the
+      # worker app (extensions/system/worker/app/jobs/), and
+      # PowernodeSystem::Engine puts only extensions/system/server/app/* on the
+      # Rails server's autoload paths — there is no server-side app/jobs at
+      # all — so `defined?` answered nil and the `if` modifier suppressed the
+      # call entirely. No NameError was ever raised (which is why it survived);
+      # the operator simply got `enqueued: true` for work nothing would run.
+      #
+      # System::Ai::Skills::PackageModuleRefreshExecutor is the server-side
+      # door onto the same action and already does this correctly: it scopes
+      # the link to the caller's account, hands the Sidekiq wire format to the
+      # worker's Redis through System::WorkerJobEnqueuer, and returns a
+      # FAILURE — not a flag — when the fail-soft enqueuer queued nothing.
       def refresh_package_module(params)
-        # Trigger via worker job — refresh involves CI dispatch and is async
-        SystemPackageModuleRefreshJob.perform_async(
-          params[:package_module_link_id],
-          params[:force] || false
-        ) if defined?(SystemPackageModuleRefreshJob)
-        success_result(
-          enqueued: true,
-          package_module_link_id: params[:package_module_link_id]
+        executor = build_skill_executor(::System::Ai::Skills::PackageModuleRefreshExecutor)
+        result = executor.execute(
+          package_module_link_id: params[:package_module_link_id],
+          force:                  params[:force] || false
         )
+        result[:success] ? success_result(**result[:data]) : error_result(result[:error])
       end
 
       # T2.B — thin MCP wrapper over the skill executor. Keeps the
