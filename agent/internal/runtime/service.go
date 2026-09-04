@@ -596,8 +596,29 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		s.cfg.OnError("load_state", err)
 		st = &mount.State{}
 	}
+	// A module whose live materialization the reconciler refused is MOUNTED but
+	// not RUNNING: on a pivot node the services read the live root, which still
+	// holds the previous version's files (see State.UnmaterializedModules).
+	// Reporting its digest here would tell the platform the node is running a
+	// version whose bytes it could not write — ops-hub 2026-09-04, where
+	// hub-backend v92/v93 aborted on the scratch budget every tick while
+	// running_module_digests advanced and the deploy read as successful.
+	//
+	// Omission is the honest report and is already a consumed signal: an
+	// instance that heartbeats WITHOUT a digest for a module it is assigned
+	// counts as DRIFTED on the platform side, which is exactly what a node
+	// stuck on the old files is. Reporting the previous digest instead is not
+	// available — the state records one digest per module, and it is the new
+	// one; inventing a digest would be worse than declining to claim one.
+	unmaterialized := make(map[string]bool, len(st.UnmaterializedModules))
+	for _, id := range st.UnmaterializedModules {
+		unmaterialized[id] = true
+	}
 	digests := map[string]string{}
 	for _, m := range st.AttachedModules {
+		if unmaterialized[m.ID] {
+			continue
+		}
 		digests[m.ID] = m.Digest
 	}
 	mountState := "unmounted"

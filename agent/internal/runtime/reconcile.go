@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -595,6 +596,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Reaching the compose stage re-opens the verdict: a failure recorded on an
 	// earlier pass must not outlive a pass that composed cleanly.
 	r.composeFailed.Store(false)
+
+	// Modules whose live materialization this pass refused. Rebuilt from
+	// nothing every pass for the same reason convergeFailures is: it must
+	// describe the pass that just ran, never an older one — a module converges
+	// off the set simply by materializing on a later tick. A set (not a slice)
+	// because a module whose digest AND services hash both changed appears in
+	// toAttach and toReattach in the SAME tick, so hotReconcileIfNeeded can
+	// refuse it twice. Written into State.UnmaterializedModules below, after
+	// the detach filter, so it can never name a module that is no longer
+	// attached.
+	unmaterialized := map[string]bool{}
 	attachStack := mount.ModuleStack(toAttach).SortByPriority()
 	for _, mod := range attachStack {
 		mf, ok := manifests[mod.ID]
@@ -615,8 +627,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// it in place after a refused materialization tells the next tick
 			// this module is fully synced when it is not. Clear it to re-queue.
 			// The module STAYS in AttachedModules — the erofs layer really is
-			// attached; only the file copy was refused.
+			// attached; only the file copy was refused. That is precisely why
+			// it must ALSO be recorded as unmaterialized: the heartbeat reads
+			// AttachedModules, and without this it would report the new digest
+			// as running while the live root still serves the old files.
 			delete(current.LastAttachedManifestHashes, mod.ID)
+			unmaterialized[mod.ID] = true
 		}
 	}
 
@@ -637,8 +653,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
 			// Same re-queue as the attach loop: a refused materialization must
-			// not leave a stamp claiming this manifest is materialized.
+			// not leave a stamp claiming this manifest is materialized, and
+			// must not leave the heartbeat claiming it is running.
 			delete(current.LastAttachedManifestHashes, mod.ID)
+			unmaterialized[mod.ID] = true
 		}
 	}
 
@@ -699,6 +717,28 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				current.UnionMounted = true
 			}
 		}
+	}
+
+	// Record which of the still-attached modules this pass could not
+	// materialize, so buildHeartbeat can leave their digests out of the
+	// reported running set. Intersected with AttachedModules deliberately: the
+	// detach filter above may have dropped a module the loops touched, and a
+	// module that is not attached at all is already absent from the report —
+	// naming it here would be a stale claim rather than an honest one. Sorted
+	// so a no-change pass rewrites byte-identical state.
+	current.UnmaterializedModules = nil
+	if len(unmaterialized) > 0 {
+		// Deduped: a refused detach (filterUnsafeDetaches) can leave two
+		// digests of ONE module id attached at once, and a module id repeated
+		// in the reported set would read as two stuck modules.
+		listed := map[string]bool{}
+		for _, m := range current.AttachedModules {
+			if unmaterialized[m.ID] && !listed[m.ID] {
+				listed[m.ID] = true
+				current.UnmaterializedModules = append(current.UnmaterializedModules, m.ID)
+			}
+		}
+		sort.Strings(current.UnmaterializedModules)
 	}
 
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {

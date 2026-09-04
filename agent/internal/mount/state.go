@@ -35,6 +35,32 @@ type State struct {
 	// via qemu-guest-agent dogfood: services row populated post-publish
 	// (after a delayed migration) but no unit file ever generated.
 	LastAttachedManifestHashes map[string]string `json:"last_attached_manifest_hashes,omitempty"`
+
+	// UnmaterializedModules names the module IDs that are MOUNTED — they are
+	// in AttachedModules, their erofs layer really is attached — but whose
+	// file content was never copied onto the live root, because the
+	// hot-materialization was refused (today: the scratch budget guard, see
+	// runtime.ErrScratchBudget). On a pivot node the running files come from
+	// the live root, so such a module is running the PREVIOUS version's files
+	// no matter what digest AttachedModules records.
+	//
+	// It exists to keep the heartbeat honest. buildHeartbeat reported every
+	// AttachedModules digest as `module_digests` (the platform's
+	// running_module_digests), so a refused materialization read as a
+	// successful deploy — ops-hub 2026-09-04, where hub-backend v92/v93 were
+	// reported running while the node served v91's files. Modules listed here
+	// are omitted from that report instead.
+	//
+	// Recomputed from scratch by every reconcile pass that reaches the state
+	// write, so it always describes the pass that just ran: a module converges
+	// off the list simply by materializing on a later tick.
+	//
+	// Read it INTERSECTED with AttachedModules, never on its own. An entry is
+	// a statement about an attachment, and the single-module CLI paths
+	// (AttachOne/DetachOne) are not reconcile passes — they can leave an id
+	// here whose module is no longer attached, until the next pass rewrites
+	// the field.
+	UnmaterializedModules []string `json:"unmaterialized_modules,omitempty"`
 }
 
 // LoadState reads State from `path`. Returns a zero-value State and
