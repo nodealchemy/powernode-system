@@ -414,8 +414,8 @@ cordoned (recycled, errored): it clears the marker and reports
 **Both directions are approval-gated** under ONE category,
 `system.instance_cordon` (`require_approval` by default — declared in
 `System::Governance::PolicyDeclarations::INSTANCE_CORDON_OPERATOR_POLICIES`,
-seeded by `db/seeds/system_instance_cordon_policies.rb` on first boot and by
-`PolicyReconciler` on an already-booted install; tunable in the Autonomy
+written by `PolicyReconciler` on every boot, the first one included;
+tunable in the Autonomy
 modal's node-lifecycle section). Where policy requires approval the call
 returns `{ pending: true, deferred_operation_id }` and **nothing is written
 until an operator approves**. The uncordon is gated on purpose: an agent

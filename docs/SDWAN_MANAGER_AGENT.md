@@ -34,7 +34,7 @@ What it does **not** own:
 
 ## Intervention Policies
 
-The agent ships with **57 intervention policies** — **43** `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`, which consumes `PolicyDeclarations::SDWAN_OPERATOR_POLICIES`) plus the **14** autonomous `system.sdwan_*` / `system.federation_*` remediations it gained at HIER-P2A (`PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`). Each policy maps an `action_category` to one of four policy types:
+The agent ships with **57 intervention policies** — **43** `sdwan.*` operator-initiated CRUD (source: `PolicyDeclarations::SDWAN_OPERATOR_POLICIES`, written by `PolicyReconciler`) plus the **14** autonomous `system.sdwan_*` / `system.federation_*` remediations it gained at HIER-P2A (`PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`). Each policy maps an `action_category` to one of four policy types:
 
 | Policy type | Behavior |
 |---|---|
@@ -129,7 +129,7 @@ Ai::InterventionPolicy.find_by(
 ).update!(policy: "auto_approve")
 ```
 
-The change takes effect on the next tick (within 60s). To make the change durable across re-seeds, edit `system_sdwan_manager_agent.rb` and re-run `cd server && rails db:seed`.
+The change takes effect on the next tick (within 60s) and is durable: `PolicyReconciler` — the only writer of declared rows — creates absence only and never resets a tuned verb. To change the DEFAULT new installs get, edit `PolicyDeclarations::SDWAN_MANAGER_POLICIES` / `SDWAN_OPERATOR_POLICIES`.
 
 ---
 

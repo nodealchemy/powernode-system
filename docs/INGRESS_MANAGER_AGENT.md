@@ -9,9 +9,12 @@ Source of truth: `System::Governance::PolicyDeclarations::INGRESS_MANAGER_POLICI
 `monitor`). Seed: `db/seeds/system_ingress_manager_agent.rb` — a GLOBAL seeded canonical
 (`AgentSetupHelpers.find_or_initialize_global_agent`, which refuses to adopt a stray
 account-scoped row), attached under the System Concierge by `db/seeds/system_agent_hierarchy.rb`
-with the P1 leaf delegation (conservative, max depth 2, no delegate types). The seed consumes
-the constant and declares nothing of its own; `PolicyReconciler` asserts the same set on every
-boot and **re-homes** any row an established install still holds on Fleet Autonomy — in place,
+with the P1 leaf delegation (conservative, max depth 2, no delegate types). The seed writes
+the agent's identity, trust score and approval chain and NO policy row (IMP-10e4f6c3bcd2,
+proposal §5 ruling 7); `PolicyReconciler` is the single writer of the set, on every boot
+including the first (the seed orchestrator ends with
+`db/seeds/system_governance_policy_reconcile.rb`), and it **re-homes** any row an
+established install still holds on Fleet Autonomy — in place,
 verb / `is_active` / conditions / priority preserved, a `system.intervention_policy.rehomed`
 audit row written — from the `PolicyReconciler::FORMER_OWNERS` map.
 

@@ -246,8 +246,10 @@ recording a restore point that does not exist. See
 (list), `system.volumes.delete` (delete), `system.volumes.manage` (restore).
 Delete is additionally **approval-gated**: it parks under
 `system.volume_snapshot_delete` (an operator-scope policy row — `require_approval`,
-seeded on a first boot and minted by `rake system:governance:reconcile` on an
-install that had already booted, tunable in the Autonomy modal's storage domain) and is
+written by `System::Governance::PolicyReconciler` alone since IMP-10e4f6c3bcd2: on a first
+boot through the seed orchestrator's reconcile pass, on every later boot through
+rails-start.sh, and on demand via `rake system:governance:reconcile`; tunable in the
+Autonomy modal's storage domain) and is
 replayed by `Ai::Executors::DeferredToolCall` as the original principal once
 an operator approves — a `{pending: true}` response means nothing was deleted.
 

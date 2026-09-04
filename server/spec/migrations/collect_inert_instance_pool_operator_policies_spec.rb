@@ -11,8 +11,10 @@ require Rails.root.join(
 # the operator-path rows for `_acquire` / `_drain` / `_replenish` / `_update`
 # being CREATED. It does nothing about the rows every already-booted install
 # has: db:seed runs on first boot only, PolicyReconciler is create-only by
-# explicit design, AgentSetupHelpers.clean_stale_operator_policies! keys on
-# scope "action_type" (these are scope "global"), and the orphan-cleanup seed
+# explicit design, the seed-side operator sweep of the day
+# (AgentSetupHelpers.clean_stale_operator_policies!, since deleted by
+# IMP-10e4f6c3bcd2) keyed on scope "action_type" (these are scope "global"),
+# and the orphan-cleanup seed
 # collects only DEREGISTERED categories — all eight stay registered via the
 # agent set. So the disposition is a bounded one-shot SWEEP, and the sweep is
 # this migration — which is what an operator's install actually executes.

@@ -13,23 +13,23 @@ Source of truth: `System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLIC
 (`System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent`, which refuses to adopt a
 stray account-scoped row of the same name), attached under the System Concierge by
 `db/seeds/system_agent_hierarchy.rb` with the P1 leaf delegation (conservative, `max_depth` 2,
-no delegate types). On a FRESH install the seed writes the 22 rows below at the agent shape
-(`project.scale_horizontal` with its `auto_apply_window` condition override); on an
-ESTABLISHED install — `db:seed` is first-boot only — `PolicyReconciler` **re-homes** every
-row below that Fleet Autonomy already holds, in place, verb / `is_active` / conditions /
-priority preserved, a `system.intervention_policy.rehomed` audit row written, from the
-`PolicyReconciler::FORMER_OWNERS` map.
+no delegate types). The 22 rows below are written by `PolicyReconciler`, the single writer of
+declared policy rows (proposal §5 ruling 7, IMP-10e4f6c3bcd2) — on a FRESH install it creates
+them at the agent shape on the account's acting principal (`project.scale_horizontal` with its
+`auto_apply_window` condition override, carried by the `capacity-manager` `POLICY_SETS` entry's
+`condition_overrides`); on an ESTABLISHED install it **re-homes** every row below that Fleet
+Autonomy already holds, in place, verb / `is_active` / conditions / priority preserved, a
+`system.intervention_policy.rehomed` audit row written, from the `PolicyReconciler::FORMER_OWNERS`
+map. The seed writes identity, prompt, trust, tool access and the approval chain only.
 
-The two first-boot policy seeds that carry fourteen of those rows —
-`db/seeds/system_instance_pool_policies.rb` (the eight `system.instance_pool_*`) and
-`db/seeds/system_provisioning_intervention_policies.rb` (the six `project.*`) — write onto
-**this agent**, not Fleet Autonomy (HIER-P2B). That is not cosmetic: both run AFTER this
-seed in `SYSTEM_SEED_FILES`, and `PolicyReconciler#reconcile!` answers `present` and never
-consults `rehomable_row` for a category the owner already has — so a row they left on Fleet
-Autonomy on a fresh install would be an active agent-scope control no gate ever reads, with
-nothing to collect it (`clean_unregistered_policies!` only collects DEREGISTERED categories).
-Pinned by `spec/services/system/fleet/routed_lane_policy_coherence_spec.rb`, which loads the
-seeds in `SYSTEM_SEED_FILES` order.
+The two first-boot policy seeds that used to carry fourteen of those rows
+(`system_instance_pool_policies.rb`, `system_provisioning_intervention_policies.rb`) are gone:
+they ran AFTER this seed and, while they resolved Fleet Autonomy, left duplicates the reconciler
+could never re-home (`reconcile!` answers `present` for a category the owner already has, and
+`clean_unregistered_policies!` only collects DEREGISTERED categories). With one writer there is
+no ordering to get wrong; pinned by
+`spec/services/system/fleet/routed_lane_policy_coherence_spec.rb` and
+`spec/db/seeds/policy_single_writer_spec.rb`.
 
 ---
 

@@ -24,7 +24,9 @@
 #     ai_agent_id only, for a key whose declared owner changed. It never
 #     touches a verb and never removes a row.) Withdrawing the declaration
 #     therefore strands the rows.
-#   * System::Seeds::AgentSetupHelpers.clean_stale_operator_policies! keys on
+#   * the seed-side operator sweep of the day
+#     (System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!, since
+#     deleted by IMP-10e4f6c3bcd2 with the seeds' policy upserts) keyed on
 #     scope "action_type"; these rows are scope "global".
 #   * db/seeds/system_autonomy_orphan_cleanup.rb collects only DEREGISTERED
 #     categories, and all eight instance-pool categories stay registered —

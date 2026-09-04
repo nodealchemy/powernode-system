@@ -10,8 +10,10 @@ The **Storage Manager** is one of the twelve official system-extension agents. I
 Source of truth: `db/seeds/system_storage_manager_agent.rb`, which consumes
 `System::Governance::PolicyDeclarations::STORAGE_MANAGER_POLICIES` (identity
 `"storage-manager"` in `PolicyDeclarations::AGENT_IDENTITIES`, name `"Storage Manager"`, type
-`monitor`) and never re-declares a key. The seed writes the agent-shape rows on a
-first boot; on every boot after that `PolicyReconciler` asserts the set and
+`monitor`) and never re-declares a key. The seed writes the agent's identity, trust
+score and approval chain and NO policy row (IMP-10e4f6c3bcd2, proposal §5 ruling 7):
+`PolicyReconciler` is the single writer of the set, on every boot including the first
+(the seed orchestrator ends with `db/seeds/system_governance_policy_reconcile.rb`), and it
 **re-homes** every row below that an established install still holds on Fleet
 Autonomy — in place, verb / `is_active` / conditions / priority preserved, a
 `system.intervention_policy.rehomed` audit row written — from the

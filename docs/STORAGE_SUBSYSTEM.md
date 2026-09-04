@@ -436,10 +436,10 @@ Snapshot **delete** is approval-gated (IMP-e025722ef14e): the MCP verb
 declares the full gate quartet on `Ai::Executors::DeferredToolCall` under
 `system.volume_snapshot_delete`, declared in
 `System::Governance::PolicyDeclarations::VOLUME_SNAPSHOT_OPERATOR_POLICIES`
-(operator scope, `require_approval`; the row itself is written by
-`db/seeds/system_volume_snapshot_policies.rb` on a first boot and by the
-governance reconciler — `rake system:governance:reconcile` — on an install that
-had already booted, since the Autonomy modal's pivot is row-driven and a
+(operator scope, `require_approval`; the row itself is written by the
+governance reconciler — on every boot, the first one included, and via
+`rake system:governance:reconcile` — from the `volume-snapshot-operator`
+`POLICY_SETS` entry, since the Autonomy modal's pivot is row-driven and a
 declaration alone shows nothing). A pending response means nothing was deleted; on
 approval the same action body is replayed as the original principal. Create,
 list and restore keep the APO-1a `mutating:`-only shape.

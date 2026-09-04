@@ -280,9 +280,12 @@ module System
       # constant, so first boot and every later reconcile agree by construction
       # rather than by two lists staying in sync.
 
-      # The trust gate every seeded policy row carries. Mirrors
-      # System::Seeds::AgentSetupHelpers::DEFAULT_TRUST_CONDITIONS — an
-      # emergency trust demotion knocks out agent and operator rows together.
+      # The trust gate every declared policy row carries. Since
+      # IMP-10e4f6c3bcd2 made PolicyReconciler the single writer (proposal §5
+      # ruling 7) this is the ONLY copy — the seed-side mirror
+      # System::Seeds::AgentSetupHelpers::DEFAULT_TRUST_CONDITIONS went with
+      # the seeds' policy upserts. An emergency trust demotion knocks out agent
+      # and operator rows together.
       DEFAULT_TRUST_CONDITIONS = { "trust_tier_minimum" => "monitored" }.freeze
 
       # ================================================================
@@ -993,7 +996,9 @@ module System
       # collects them, by design and not by oversight — PolicyReconciler is
       # create-only ("reconcile ABSENCE ONLY ... never delete": at this shape
       # it cannot tell a stale seeded row from an operator's tuning),
-      # clean_stale_operator_policies! keys on scope "action_type" rather than
+      # the operator-row sweep the retired seeds carried
+      # (AgentSetupHelpers#clean_stale_operator_policies!, deleted with them by
+      # IMP-10e4f6c3bcd2) keyed on scope "action_type" rather than
       # "global", and clean_unregistered_policies! collects only DEREGISTERED
       # categories — these four stay registered via the agent set below, which
       # is correct. The bounded ONE-SHOT collection that question came down to
@@ -1099,10 +1104,13 @@ module System
       # lands, so one row governs a delete whichever door it arrives through
       # (System::VolumeManagementService.snapshot_schedule_for).
       #
-      # BOTH WRITERS, as for the instance-pool operator set: declaring here
-      # makes the gate resolve, but the row an operator actually tunes is
-      # written by db/seeds/system_volume_snapshot_policies.rb on a first boot
-      # and by PolicyReconciler on an install that had already booted. The
+      # ONE WRITER, as for the instance-pool operator set: declaring here
+      # makes the gate resolve, and the row an operator actually tunes is
+      # written by PolicyReconciler alone — on a first boot through the
+      # orchestrator's db/seeds/system_governance_policy_reconcile.rb pass and
+      # on every later boot through rails-start.sh. (Until IMP-10e4f6c3bcd2 a
+      # first boot got it from db/seeds/system_volume_snapshot_policies.rb
+      # instead; that seed is deleted.) The
       # declared verb EQUALS the unmatched default, so the discriminating
       # oracle for "is the control there" is the resolved RECORD, not the
       # resolved verb — see
@@ -1123,9 +1131,9 @@ module System
       # no sensor lane routes it; since HIER-P2DECL the key is also on the
       # Capacity Manager's agent set (CAPACITY_MANAGER_POLICIES, this set's
       # twin), read only when the cordon verb is called AS that agent. The
-      # operator row is written by
-      # db/seeds/system_instance_cordon_policies.rb on a first boot and by
-      # PolicyReconciler on an install that had already booted; as with the
+      # operator row is written by PolicyReconciler alone, first boot included
+      # (IMP-10e4f6c3bcd2 deleted the db/seeds/system_instance_cordon_policies.rb
+      # first-boot writer and added the orchestrator's reconcile pass); as with the
       # snapshot set the declared verb EQUALS the unmatched default, so the
       # oracle for "is the control there" is the resolved RECORD — see
       # spec/db/seeds/system_instance_cordon_operator_policies_spec.rb.
