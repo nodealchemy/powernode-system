@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "base64"
 require "tempfile"
 require "tmpdir"
 
@@ -30,6 +31,9 @@ module System
   # independently confirmed are the expected ones (fail-closed).
   class ModuleSigningService
     Result = Struct.new(:ok?, :error, :oci_ref, :digest, :cosign_output, keyword_init: true)
+    # #sign_blob!'s result: the `cosign sign-blob` bundle (base64) over the
+    # erofs bytes at `digest`.
+    BlobResult = Struct.new(:ok?, :error, :digest, :bundle_b64, keyword_init: true)
 
     class SigningError < StandardError; end
     class DigestMismatchError < SigningError; end
@@ -61,6 +65,14 @@ module System
         account: account,
         node_module_id: node_module_id,
         node_module_version_id: node_module_version_id
+      )
+    end
+
+    # Signs the erofs BLOB BYTES — see #sign_blob!.
+    def self.sign_blob!(oci_ref:, digest:, size: nil, account: nil, node_module: nil, node_module_version_id: nil)
+      new.sign_blob!(
+        oci_ref: oci_ref, digest: digest, size: size, account: account,
+        node_module: node_module, node_module_version_id: node_module_version_id
       )
     end
 
@@ -122,10 +134,99 @@ module System
       failure("signing failed: #{sanitized}")
     end
 
+    # Signs the erofs BLOB BYTES with `cosign sign-blob --bundle`, the
+    # SIGNING SUBJECT the on-node agent's Verifier.VerifyBlob can check. #sign!
+    # above signs the OCI manifest REF — an image signature the registry
+    # holds as a .sig tag, which a node (no registry client, by design) can
+    # neither fetch nor verify. Both are made: the image signature is what
+    # ingest verifies server-side; this bundle is what a node verifies before
+    # mounting, against ModuleSigningTrust.public_keys.
+    #
+    # The bytes come through OciBlobProxyService BY DIGEST (content-addressed;
+    # the registry cannot return other bytes for it), which also warms the
+    # fleet-wide blob cache nodes pull from. Same key, same env discipline as
+    # #sign!: the Vault token / local-key password reach cosign via the
+    # subprocess env only, never argv, and are never logged. The bundle is
+    # returned base64 for the artifacts JSONB and the node wire.
+    #
+    # @return [BlobResult]
+    def sign_blob!(oci_ref:, digest:, size: nil, account: nil, node_module: nil, node_module_version_id: nil)
+      return blob_failure("oci_ref required") if oci_ref.blank?
+      return blob_failure("digest required") if digest.blank?
+
+      ensure_binary!("cosign")
+
+      blob_path = fetch_blob_path!(oci_ref: oci_ref, digest: digest, size: size, node_module: node_module, account: account)
+      bundle = Dir.mktmpdir("powernode-sign-blob-") do |dir|
+        bundle_path = File.join(dir, "artifact.cosign-bundle")
+        cosign_sign_blob!(blob_path, bundle_path)
+        File.read(bundle_path)
+      end
+
+      emit_blob_signed_event!(account: account, oci_ref: oci_ref, digest: digest,
+                              node_module_id: node_module&.id, node_module_version_id: node_module_version_id)
+      BlobResult.new(ok?: true, digest: digest, bundle_b64: Base64.strict_encode64(bundle))
+    rescue SigningError => e
+      blob_failure(e.message)
+    rescue StandardError => e
+      sanitized = ::System::ShellOutputSanitizer.redact(e.message)
+      Rails.logger.error("[ModuleSigningService#sign_blob!] #{e.class}: #{sanitized}")
+      blob_failure("blob signing failed: #{sanitized}")
+    end
+
     private
 
     def failure(msg)
       Result.new(ok?: false, error: msg)
+    end
+
+    def blob_failure(msg)
+      BlobResult.new(ok?: false, error: msg)
+    end
+
+    def fetch_blob_path!(oci_ref:, digest:, size:, node_module:, account:)
+      ::System::OciBlobProxyService.new(
+        oci_ref:     oci_ref,
+        media_type:  ::System::ModuleBlobSigner::EROFS_MEDIA_TYPE,
+        digest:      digest,
+        size:        size,
+        node_module: node_module,
+        account:     account
+      ).fetch_blob!
+    rescue ::System::OciBlobProxyService::PullError => e
+      raise SigningError, "blob fetch for #{oci_ref}@#{digest} failed: #{::System::ShellOutputSanitizer.redact(e.message)}"
+    end
+
+    # `cosign sign-blob` with the SAME key selection + env discipline as
+    # #cosign_sign!. LOCAL mode adds the no-tlog signing config for the same
+    # cosign-3.x TUF reason documented on #ensure_signing_config!; the vault
+    # path stays byte-identical to #cosign_sign!'s flags. The bundle lands at
+    # bundle_path; a success exit with no bundle is treated as failure.
+    def cosign_sign_blob!(blob_path, bundle_path)
+      key_flag, sign_env = signing_key_flag_and_env
+      cmd = [ "cosign", "sign-blob", "--yes" ]
+      cmd += [ "--signing-config", ensure_signing_config!(File.dirname(key_flag)) ] if signing_mode == "local"
+      cmd += [ "--key", key_flag, "--bundle", bundle_path, blob_path ]
+      _out, err, status = ::Open3.capture3(sign_env, *cmd)
+      unless status.success? && File.size?(bundle_path)
+        raise CosignError,
+              "cosign sign-blob failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
+      end
+    end
+
+    def emit_blob_signed_event!(account:, oci_ref:, digest:, node_module_id:, node_module_version_id:)
+      return unless account
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "system.module_blob_signed",
+        severity: :low,
+        source: "module_signing_service",
+        node_module_id: node_module_id,
+        node_module_version_id: node_module_version_id,
+        payload: { oci_ref: oci_ref, digest: digest, mode: signing_mode,
+                   keyname: (signing_mode == "local" ? "local" : keyname) }
+      )
     end
 
     def keyname

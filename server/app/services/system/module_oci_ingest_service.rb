@@ -683,35 +683,13 @@ module System
       # kept only as a migration-window fallback entry). Verification
       # tries each in order and succeeds on the first match — this is
       # what lets both legacy-Gitea-signed and new-Vault-signed
-      # artifacts verify while the fleet migrates. Public keys are not
-      # secret; any read failure degrades to "no trusted keys from this
-      # source" rather than raising, so a SiteSetting hiccup can't block
-      # ingest (it just narrows verification to whatever other source is
-      # configured, or keyless if none are).
+      # artifacts verify while the fleet migrates.
+      #
+      # Resolved by System::ModuleSigningTrust — the SAME list the platform
+      # serves to nodes as their trust anchor for its blob signatures, so
+      # what ingest trusts and what a node trusts cannot drift apart.
       def trusted_public_keys
-        (site_setting_trusted_keys + [ legacy_static_key ]).compact.uniq
-      end
-
-      def site_setting_trusted_keys
-        raw = ::SiteSetting.get(TRUSTED_KEYS_SETTING)
-        Array(raw).map(&:presence).compact
-      rescue StandardError => e
-        Rails.logger.warn("[OrasOciAdapter] trusted_public_keys SiteSetting read failed: #{e.message}")
-        []
-      end
-
-      # The pre-inc8 verification path — a single static cosign public
-      # key provisioned via POWERNODE_COSIGN_PUBLIC_KEY (inline) or
-      # POWERNODE_COSIGN_PUBLIC_KEY_FILE (path). Kept as the trailing
-      # fallback entry in the trusted-key list so operators who haven't
-      # yet migrated the legacy key into the SiteSetting list keep
-      # verifying exactly as before.
-      def legacy_static_key
-        if (inline = ENV["POWERNODE_COSIGN_PUBLIC_KEY"]).present?
-          inline
-        elsif (path = ENV["POWERNODE_COSIGN_PUBLIC_KEY_FILE"]).present? && File.exist?(path)
-          File.read(path)
-        end
+        ::System::ModuleSigningTrust.public_keys
       end
 
       def verify_with_trusted_keys(oci_ref, keys, registry_env: {})

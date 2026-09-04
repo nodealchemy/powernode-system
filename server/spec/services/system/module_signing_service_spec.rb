@@ -287,3 +287,105 @@ RSpec.describe System::ModuleSigningService do
     end
   end
 end
+
+# The blob-signature PRODUCER: `cosign sign-blob --bundle` over the erofs
+# BYTES, server-side, with the same key and the same env discipline as #sign!.
+# This is the signing subject the agent's Verifier.VerifyBlob can check; the
+# image signature #sign! pushes to the registry is not.
+RSpec.describe System::ModuleSigningService, "#sign_blob!" do
+  let(:account) { create(:account) }
+  let(:vault_address) { "https://vault.example.internal:8200" }
+  let(:vault_token) { "s.faketoken-not-a-real-secret" }
+  let(:fake_inner_client) { instance_double(Vault::Client, address: vault_address, token: vault_token) }
+  let(:fake_vault_client) { instance_double(Security::VaultClient, client: fake_inner_client) }
+  let(:service) { described_class.new(vault_client: fake_vault_client) }
+  let(:oci_ref) { "registry.example.com/powernode/blob-mod:v1" }
+  let(:digest) { "sha256:#{'c' * 64}" }
+  let(:expected_vault_env) { { "VAULT_ADDR" => vault_address, "VAULT_TOKEN" => vault_token } }
+  let(:blob_path) { Tempfile.create([ "blob", ".erofs" ]).tap { |f| f.write("erofs bytes"); f.flush }.path }
+  let(:proxy) { instance_double(System::OciBlobProxyService, fetch_blob!: blob_path) }
+
+  def status_double(ok, code: 0)
+    instance_double(Process::Status, success?: ok, exitstatus: code)
+  end
+
+  before do
+    allow(Open3).to receive(:capture3).with("which", "cosign").and_return([ "", "", status_double(true) ])
+    allow(System::OciBlobProxyService).to receive(:new)
+      .with(hash_including(oci_ref: oci_ref, digest: digest, media_type: "application/vnd.powernode.erofs"))
+      .and_return(proxy)
+  end
+
+  # Simulates cosign writing the bundle file named by --bundle.
+  def stub_sign_blob(ok: true, env: expected_vault_env, key: "hashivault://powernode-module-signing", extra: [])
+    allow(Open3).to receive(:capture3) do |*args|
+      next [ "", "", status_double(true) ] if args.first == "which"
+
+      e, *cmd = args
+      expect(e).to eq(env)
+      expect(cmd[0, 3]).to eq([ "cosign", "sign-blob", "--yes" ])
+      expect(cmd).to include("--key", key)
+      extra.each { |x| expect(cmd).to include(x) }
+      expect(cmd.last).to eq(blob_path)
+      bundle_path = cmd[cmd.index("--bundle") + 1]
+      File.write(bundle_path, '{"real":"bundle"}') if ok
+      ok ? [ "", "", status_double(true) ] : [ "", "error: signing failed", status_double(false, code: 1) ]
+    end
+  end
+
+  it "fetches the blob by digest through the platform proxy, signs it via hashivault://, and returns the bundle base64" do
+    stub_sign_blob
+    expect(::System::Fleet::EventBroadcaster).to receive(:emit!)
+      .with(hash_including(kind: "system.module_blob_signed", payload: hash_including(digest: digest, oci_ref: oci_ref)))
+
+    result = service.sign_blob!(oci_ref: oci_ref, digest: digest, size: 11, account: account)
+
+    expect(result.ok?).to be true
+    expect(result.digest).to eq(digest)
+    expect(Base64.strict_decode64(result.bundle_b64)).to eq('{"real":"bundle"}')
+  end
+
+  it "surfaces a cosign failure and returns no bundle" do
+    stub_sign_blob(ok: false)
+    result = service.sign_blob!(oci_ref: oci_ref, digest: digest, account: account)
+    expect(result.ok?).to be false
+    expect(result.error).to match(/sign-blob/)
+    expect(result.bundle_b64).to be_nil
+  end
+
+  it "surfaces a blob fetch failure without invoking cosign" do
+    allow(proxy).to receive(:fetch_blob!).and_raise(System::OciBlobProxyService::PullError, "registry 502")
+    expect(Open3).not_to receive(:capture3).with(anything, "cosign", "sign-blob", any_args)
+    result = service.sign_blob!(oci_ref: oci_ref, digest: digest, account: account)
+    expect(result.ok?).to be false
+    expect(result.error).to match(/registry 502/)
+  end
+
+  it "requires oci_ref and digest" do
+    expect(service.sign_blob!(oci_ref: "", digest: digest).error).to match(/oci_ref required/)
+    expect(service.sign_blob!(oci_ref: oci_ref, digest: "").error).to match(/digest required/)
+  end
+
+  context "local signing mode" do
+    let(:local_dir) { Dir.mktmpdir("sign-blob-local-") }
+    let(:local_material) do
+      System::ModuleSigningKey::Material.new(key_path: File.join(local_dir, "cosign.key"),
+                                             password: "local-pass-not-a-real-secret",
+                                             public_key_pem: "PEM")
+    end
+
+    before do
+      ::SiteSetting.set("system.module_signing.mode", "local", setting_type: "string")
+      allow(System::ModuleSigningKey).to receive(:ensure!).and_return(local_material)
+      File.write(File.join(local_dir, "signing-config.json"), "{}")
+    end
+
+    it "signs with the on-disk key, the password via env only, and the no-tlog signing config" do
+      stub_sign_blob(env: { "COSIGN_PASSWORD" => "local-pass-not-a-real-secret" },
+                     key: local_material.key_path,
+                     extra: [ "--signing-config", File.join(local_dir, "signing-config.json") ])
+      result = described_class.new.sign_blob!(oci_ref: oci_ref, digest: digest, account: account)
+      expect(result.ok?).to be true
+    end
+  end
+end
