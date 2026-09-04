@@ -830,6 +830,52 @@ module System
           action_category: "system.capability_gap_review",
           advisory: true
         },
+        # HIER-P3 — GovernanceGapSensor. The platform's own governance drift
+        # (a declared category nobody owns, an agent with policies and no
+        # skill, a lane bound to no skill, an executor with no catalog row, a
+        # missing lineage edge or delegation policy, ...), routed to the
+        # Platform Architect's propose executor: it files ONE reviewable
+        # Ai::ImprovementRecommendation per fingerprint (re-detections update
+        # it) and materialises the runtime-closable kinds under the ruling-3
+        # gates (System::Governance::GapMaterializer).
+        #
+        # dev.campaign_propose is a CORE category, declared on the Platform
+        # Architect by PolicyDeclarations::PLATFORM_ARCHITECT_POLICIES (and
+        # written by core's engineering seed on the admin account at the same
+        # verb): auto_approve — the OFFER is the human gate, so proposing is
+        # free. The owner is a CORE canonical, the first to gate an
+        # extension-routed lane; #for_owner resolves it through AgentResolver
+        # exactly like the extension's own managers.
+        #
+        # side_effectful: filing the offer IS the action, so under
+        # auto_approve the executor runs for real (F3-06) and under a retuned
+        # require_approval it runs plan-only (dry_run) into the request.
+        #
+        # SCORED, NOT EXEMPT (proposal §2 step 4). Unlike the project.*
+        # proposal lane and the capability-gap advisory, proposing IS this
+        # lane's remediation: the sensor clears when the gap closes, so the
+        # fingerprint's persistence is the right thing to score, and
+        # #record_governance_proposal (REMEDIATION_APPLIERS) reports applied:true
+        # so RemediationValidator mints the outcome. A gap that stands
+        # STUCK_STREAK_THRESHOLD settle windows escalates through the ordinary
+        # F3-11 lane, under its own event kind (`stuck_event_kind`) so an
+        # operator can tell governance drift from a fleet remediation that
+        # stopped converging — and the forced require_approval it carries mints
+        # the operator decision on the Platform Architect's chain.
+        "system.governance_gap" => {
+          skill: ::System::Ai::Skills::GovernanceGapProposeExecutor,
+          action_category: "dev.campaign_propose",
+          owner: "platform-architect",
+          side_effectful: true,
+          dry_run_supported: true,
+          stuck_event_kind: "fleet.governance_gap_stuck",
+          input_mapper: lambda { |signal|
+            payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+            next nil if payload["gap_kind"].blank?
+
+            { gap: payload, fingerprint: signal.fingerprint, severity: signal.severity.to_s }
+          }
+        },
         # IMP-5b38cd356010 (APO-6b) — ReplicaLagSensor. The sample it just
         # wrote onto the cluster_member peer is one PromoteReplicaExecutor's
         # data-loss gate would REFUSE on (over the DB-resolved bound, or the
@@ -1367,7 +1413,11 @@ module System
 
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
-          kind: "fleet.remediation_stuck",
+          # HIER-P3: a binding may name its own escalation kind (the
+          # governance-gap lane emits fleet.governance_gap_stuck) so a
+          # dashboard can separate governance drift from a fleet remediation
+          # that stopped converging; the lane's mechanics are identical.
+          kind: binding[:stuck_event_kind].presence || "fleet.remediation_stuck",
           severity: :high,
           payload: {
             "fingerprint" => signal.fingerprint,
@@ -1562,10 +1612,38 @@ module System
         #     `rotate` method on NodeCertificate that has never existed.
         "system.cert_expiring" => { method: :rotate_node_certificate },
         "system.gitops.drift_detected" => { method: :apply_gitops_drift },
-        "system.package_drift_pressure" => { method: :sync_package_repository }
+        "system.package_drift_pressure" => { method: :sync_package_repository },
+        # HIER-P3: the governance-gap lane. The propose executor's offer IS the
+        # remediation (see the binding), so the applier reports what the skill
+        # did rather than dispatching anything further — applied:true when the
+        # offer was filed or updated, applied:false (refused by the validator)
+        # when the executor failed. NOT `proposal: true`: that flag skips the
+        # outcome row, and this lane WANTS the row — the gap's persistence
+        # across settle windows is exactly what fleet.governance_gap_stuck
+        # measures.
+        "system.governance_gap" => { method: :record_governance_proposal }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
+
+      # HIER-P3 — see REMEDIATION_APPLIERS["system.governance_gap"].
+      def record_governance_proposal(signal, skill_result)
+        unless skill_result.is_a?(Hash) && skill_result[:success] == true
+          return { applied: false, reason: (skill_result.is_a?(Hash) && skill_result[:error]).presence ||
+                                           "propose executor did not run for #{signal.fingerprint}" }
+        end
+
+        data = skill_result[:data].is_a?(Hash) ? skill_result[:data] : {}
+        return { applied: false, reason: "dry run — no offer filed" } if data[:dry_run]
+
+        {
+          applied: true,
+          offer_id: data[:offer_id],
+          deduped: data[:deduped] == true,
+          recommendation_type: data[:recommendation_type],
+          materialization: data[:materialization]
+        }
+      end
 
       def apply_remediation!(signal, skill_result)
         applier = REMEDIATION_APPLIERS[signal.kind]

@@ -79,7 +79,11 @@ module System
       "Storage Manager",
       "Ingress Manager",
       "Supply Chain Manager",
-      "System Topology Designer"
+      "System Topology Designer",
+      # HIER-P3: a CORE canonical carrying an extension-declared set
+      # (PolicyDeclarations::PLATFORM_ARCHITECT_POLICIES) — the pivot derives
+      # from POLICY_SETS × AGENT_IDENTITIES, and it is in both.
+      "Platform Architect"
     ].freeze
 
     # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST

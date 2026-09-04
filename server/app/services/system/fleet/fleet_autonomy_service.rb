@@ -332,6 +332,11 @@ module System
         # Advisory only — closing a gap means authoring a module, which must
         # pass the human reuse gate (see the sensor's own doc).
         ::System::Fleet::Sensors::CapabilityGapSensor,
+        # HIER-P3 — the platform's OWN governance drift (unowned categories,
+        # skill-less agents, edge-less canonicals, ...). Its binding declares
+        # `owner: "platform-architect"`, a CORE canonical, so the decision is
+        # gated under the Platform Architect through #for_owner.
+        ::System::Fleet::Sensors::GovernanceGapSensor,
         ::System::Fleet::Sensors::ConfigDriftSensor,
         ::System::Fleet::Sensors::SloViolationSensor,
         ::System::Fleet::Sensors::HoneypotAccessSensor,
