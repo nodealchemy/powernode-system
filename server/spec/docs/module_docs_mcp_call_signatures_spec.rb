@@ -1497,7 +1497,9 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       end
     end
 
-    let(:action_keys) { %i[description name parameters requires_approval].sort }
+    # :examples is an INPUT worked-example list (see declare_action), not a
+    # return/output shape — the header's reason 1 is unaffected by it.
+    let(:action_keys) { %i[description examples name parameters requires_approval].sort }
     let(:definition_keys) { %i[description name parameters].sort }
 
     it "declares no return shape on any ACTION, in any tool" do
@@ -1556,6 +1558,24 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
             "error" => {
               "type" => "string",
               "description" => "Failure message. Present only when success is false."
+            },
+            # HIER-P2I added the caller-refusal discriminator: a refusal about
+            # WHO is calling is otherwise readable only out of `error` prose.
+            # Re-typed rather than named, like success/error above, so the wire
+            # strings a client matches on are pinned here too.
+            "refusal" => {
+              "type" => "string",
+              "description" => "Refusal discriminator. Present only when success is false and the " \
+                               "call was refused for WHO is calling rather than what was asked. " \
+                               "\"canonical_principal\": the acting agent is a global canonical " \
+                               "(a template, never an executing principal) — clone it into an " \
+                               "account and run the clone."
+            },
+            "canonical_slug" => {
+              "type" => "string",
+              "description" => "The refused canonical's slug. Present only with " \
+                               "refusal=\"canonical_principal\"; it is the canonical_slug to pass " \
+                               "to agent_management create_agent."
             },
             # IMP-e809396f9eda (2026-09-02) added `data`, whose properties are
             # the pending-approval envelope every gated action can return. The
