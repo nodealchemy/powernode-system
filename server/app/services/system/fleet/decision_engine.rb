@@ -1065,6 +1065,14 @@ module System
       # drives this engine over CVE signals only and gates as the CVE Responder
       # — the owner every CVE binding declares — so there is nothing to
       # re-resolve there.
+      #
+      # HIER-P2I — `gate.agent` is the ACTING principal every skill executor
+      # receives (`skill_class.new(account:, agent: gate.agent, user: nil)`,
+      # #invoke_skill below), so it must be an account-scoped row: #for_owner
+      # resolves each owner through System::Governance::AgentResolver, which
+      # answers with the account's clone of the seeded canonical (minted on
+      # first use). The canonical itself never executes — Ai::Tools::BaseTool
+      # refuses it by name.
       def gate_for(binding)
         return autonomy_service unless autonomy_service.respond_to?(:for_owner)
 

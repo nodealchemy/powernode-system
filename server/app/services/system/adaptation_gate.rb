@@ -370,9 +370,13 @@ module System
         end
       end
 
+      # HIER-P2I: the account's clone of the seeded canonical, through the same
+      # rule the fleet tick and the reconciler use, so the agent this gate
+      # attributes and parks under is the one whose policy rows it reads.
       def fleet_agent(account)
-        ::Ai::Agent.resolve_for(account.id, name: FLEET_AGENT_NAME, agent_type: "monitor")
-                   &.tap { |a| a.resolving_account = account }
+        ::System::Governance::AgentResolver.resolve(
+          account_id: account.id, agent_key: ::System::Fleet::FleetAutonomyService::DEFAULT_OWNER
+        )&.tap { |a| a.resolving_account = account }
       rescue StandardError => e
         Rails.logger.warn("[AdaptationGate] fleet agent lookup failed: #{e.message}")
         nil

@@ -52,7 +52,11 @@ module System
       ].freeze
 
       def self.tick!(account:, control_plane_reading: nil)
-        agent = ::Ai::Agent.resolve_for(account.id, name: "CVE Responder", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
+        # HIER-P2I: the account's clone of the seeded CVE Responder canonical
+        # (System::Governance::AgentResolver), never the global row — a
+        # canonical never executes.
+        agent = ::System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: "cve-responder")
+                                                    &.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "CVE Responder agent not seeded for account" } unless agent
 
         new(account: account, agent: agent).tick!(control_plane_reading: control_plane_reading)

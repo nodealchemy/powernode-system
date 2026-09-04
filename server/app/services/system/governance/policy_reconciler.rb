@@ -234,6 +234,10 @@ module System
       def initialize(account:, logger: Rails.logger)
         @account = account
         @logger = logger
+        # Whether resolving an agent may MINT the account's principal for a
+        # canonical (HIER-P2I). True for the write paths; #drift flips it off
+        # for the length of the report — see #without_minting_principals.
+        @mint_principals = true
       end
 
       # Creates every declared row the account is missing. Returns a Result.
@@ -329,32 +333,54 @@ module System
       # filter is_active, "off" means the lane hard-blocks. Off is off there,
       # not a fall-through to some looser row.)
       def drift
-        missing = []
-        present = []
-        skipped = []
+        without_minting_principals do
+          missing = []
+          present = []
+          skipped = []
 
-        each_set do |set, agent, skip_reason|
-          if skip_reason
-            skipped << "#{set[:key]}(#{skip_reason})"
-            next
-          end
+          each_set do |set, agent, skip_reason|
+            if skip_reason
+              skipped << "#{set[:key]}(#{skip_reason})"
+              next
+            end
 
-          existing = existing_categories(set, agent)
-          set[:policies].each do |action_category, verb|
-            if existing.include?(action_category)
-              present << "#{set[:key]}/#{action_category}"
-            else
-              stale = rehomable_row(set, agent, action_category)
-              missing << MissingRow.new(set_key: set[:key], action_category: action_category, policy: verb,
-                                        rehome_from: (stale_owner_name(stale) if stale))
+            existing = existing_categories(set, agent)
+            set[:policies].each do |action_category, verb|
+              if existing.include?(action_category)
+                present << "#{set[:key]}/#{action_category}"
+              else
+                stale = rehomable_row(set, agent, action_category)
+                missing << MissingRow.new(set_key: set[:key], action_category: action_category, policy: verb,
+                                          rehome_from: (stale_owner_name(stale) if stale))
+              end
             end
           end
-        end
 
-        DriftReport.new(missing: missing, present: present.sort, skipped_sets: skipped)
+          DriftReport.new(missing: missing, present: present.sort, skipped_sets: skipped)
+        end
       end
 
       private
+
+      # HIER-P2I. Resolving a declared agent may MINT the account's clone of a
+      # global canonical, and AGENT_IDENTITIES has eleven keys — so a drift run
+      # on a fresh account, made from a health check or a CI assertion, would
+      # create up to eleven agents plus their lineage, trust, delegation and
+      # policy re-homes. The report is documented as mutating nothing, and the
+      # platform's bulk-operation rule forbids a read doing that many writes
+      # unasked, so it asks for the CANONICAL and reports against the principal
+      # the declarations name. The memos are swapped out and back rather than
+      # shared: a caller that runs `drift` and then `reconcile!` on the same
+      # instance must not have the report's no-mint answers steer the write pass.
+      def without_minting_principals
+        previous = [ @mint_principals, @agents, @declared_agent_ids ]
+        @mint_principals = false
+        @agents = nil
+        @declared_agent_ids = nil
+        yield
+      ensure
+        @mint_principals, @agents, @declared_agent_ids = previous
+      end
 
       # The manual operator set, expressed in the same record shape as the
       # declared agent sets so there is ONE iteration and no special case.
@@ -400,7 +426,8 @@ module System
         @agents ||= {}
         return @agents[agent_key] if @agents.key?(agent_key)
 
-        @agents[agent_key] = AgentResolver.resolve(account_id: @account.id, agent_key: agent_key)
+        @agents[agent_key] = AgentResolver.resolve(account_id: @account.id, agent_key: agent_key,
+                                                   mint: @mint_principals)
       end
 
       # ---- re-homing ----------------------------------------------------------

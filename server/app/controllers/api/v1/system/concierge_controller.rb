@@ -49,9 +49,12 @@ module Api
           @account = current_user.account
         end
 
+        # HIER-P2I: the account's clone of the System Concierge canonical —
+        # the principal that executes this conversation — never the global row.
         def find_concierge_agent
-          ::Ai::Agent.resolve_for(@account.id, name: "System Concierge", agent_type: "assistant")
-                     &.tap { |a| a.resolving_account = @account }
+          resolved = ::Ai::Agent.resolve_for(@account.id, name: "System Concierge", agent_type: "assistant")
+          ::Ai::Agents::AccountPrincipalResolver.acting(resolved, account: @account, user: current_user)
+                                                &.tap { |a| a.resolving_account = @account }
         end
 
         # Reuse the user's existing active Concierge conversation when it

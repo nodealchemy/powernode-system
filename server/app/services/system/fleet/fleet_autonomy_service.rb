@@ -113,8 +113,16 @@ module System
       # Manager for the sdwan_* remediations, GitOps Reconciler for gitops
       # drift, Disk Image Manager for the publication streak — and under this
       # agent by default.
+      #
+      # HIER-P2I: resolved through System::Governance::AgentResolver — the
+      # same rule #for_owner and PolicyReconciler use — so the tick agent is
+      # the account's CLONE of the seeded (global) canonical, minted on first
+      # use. The canonical itself never executes: every skill executor and
+      # nested tool receives this agent as `agent:`, and Ai::Tools::BaseTool
+      # refuses a global one by name.
       def self.tick!(account:, control_plane_reading: nil)
-        agent = ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
+        agent = ::System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: DEFAULT_OWNER)
+                                                    &.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "Fleet Autonomy agent not seeded for account" } unless agent
 
         service = new(account: account, agent: agent)
