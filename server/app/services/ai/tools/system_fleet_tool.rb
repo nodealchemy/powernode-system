@@ -723,10 +723,10 @@ module Ai
       # in the same change, so the verdict is visible and tunable in the
       # Autonomy modal rather than falling to the unmatched default. DECLARING
       # is not the same as HAVING: that modal's pivot is ROW-driven, so the
-      # row is written by server/db/seeds/system_volume_snapshot_policies.rb on a
-      # first boot and by System::Governance::PolicyReconciler
-      # (`rake system:governance:reconcile`) on an install that had already
-      # booted — without a writer the delete still parks, but on the unmatched
+      # row is written by System::Governance::PolicyReconciler — on every boot,
+      # the first included, and via `rake system:governance:reconcile` — from
+      # the `volume-snapshot-operator` POLICY_SETS entry; without a writer the
+      # delete still parks, but on the unmatched
       # default, with nothing for an operator to see or tune. The gate
       # context resolves the row under the account BEFORE parking, so an
       # unknown or foreign id keeps its inline error instead of becoming an

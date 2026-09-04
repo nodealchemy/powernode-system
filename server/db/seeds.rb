@@ -16,7 +16,7 @@
 #     "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_<x>.rb')"
 #
 # Order matters — skill catalogs first, then agents that bind skills,
-# then policy/permission seeds.
+# then the manual-operations policy seed and the graph/catalog seeds.
 #
 # NOTE: extension permissions + role grants are NO LONGER seeded imperatively.
 # They are declared in lib/powernode_system/engine.rb via the Permissions
@@ -40,21 +40,32 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # delegation policy from POLICY_SETS and the SkillBindings registry (HIER-P1),
 # so every agent it attaches must already exist.
 #
-# POLICY-WRITE CONVENTION (HIER-P2SWEEP, driver ruling 2026-09-03):
+# POLICY-WRITE CONVENTION (proposal §5 ruling 7; HIER-P2SWEEP, then
+# IMP-10e4f6c3bcd2 / offer 01a0696f):
 # System::Governance::PolicyReconciler is the SINGLE WRITER of declared
-# intervention-policy rows (POLICY_SETS × AGENT_IDENTITIES, every boot). An
-# agent seed writes identity, prompt, approval chain, trust, tool_access and
-# skills ONLY — the Supply Chain Manager seed is the reference shape (the only
-# agent seed that writes no row). Every other agent seed still upserts its
-# declared set at first boot (fleet_autonomy_agent and the system_{runtime_
-# manager,cve_responder,disk_image_manager,sdwan_manager,topology_designer,
-# gitops_reconciler,capacity_manager,storage_manager,ingress_manager}_agent
-# seeds, through AgentSetupHelpers.upsert_policies!), as do the four operator-
-# set policy seeds (system_{instance_pool,instance_cordon,volume_snapshot}_
-# policies, system_provisioning_intervention_policies). They are grandfathered
-# until the reconciler runs BEFORE them at first boot — a live install depends
-# on their idempotent upserts today; improvement 01a0696f-823f-7415-acc8-
-# a898facabff5 files the rewrite. Do not add a new one.
+# intervention-policy rows (POLICY_SETS × AGENT_IDENTITIES plus the
+# manual-operations set) — on every boot, the FIRST one included
+# (rails-start.sh runs governance-reconcile.rb after db:seed and after every
+# later db:migrate), and via `rails system:governance:reconcile`. An agent
+# seed writes identity, prompt, approval chain, trust, tool_access and skills
+# ONLY; every agent seed below now has the Supply Chain Manager's shape and
+# writes NO policy row. The four first-boot policy seeds whose whole body was
+# an upsert (system_{instance_pool,instance_cordon,volume_snapshot}_policies,
+# system_provisioning_intervention_policies) are DELETED: their sets are
+# POLICY_SETS entries the reconciler writes at the declared shape. Do not add
+# a seed that writes a declared row — spec/db/seeds/policy_single_writer_spec
+# runs every agent seed against an empty database and asserts zero rows, and
+# lints the list. `system_governance_policy_reconcile.rb` runs LAST and is how
+# the rows reach a `rails db:seed` install: retiring the fourteen upserts left
+# the reconciler running only from rails-start.sh (hub images) and the manual
+# `rails system:governance:reconcile`, so every other documented install path
+# would have come up with NO declared row and gated everything through the
+# require_approval default. That file performs no write of its own — it calls
+# the single writer, absence-only and idempotent. The ONE remaining writer
+# besides the reconciler is
+# system_manual_operation_policies.rb (outside that task's file list — it still
+# upserts the manual-operations set and destroys unlisted system.task.* rows;
+# named in that spec as the exception until it is retired the same way).
 # `system_skill_graph_sync.rb` runs LAST, after every catalog seed: the catalog
 # skills are GLOBAL rows since HIER-P2G and a global row never fires the
 # per-account knowledge-graph sync hook, so without it every system skill is
@@ -82,11 +93,7 @@ SYSTEM_SEED_FILES = %w[
   system_supply_chain_manager_agent.rb
   system_fleet_kg_schema.rb
   system_kg_entities_seed.rb
-  system_instance_pool_policies.rb
-  system_volume_snapshot_policies.rb
-  system_instance_cordon_policies.rb
   system_manual_operation_policies.rb
-  system_provisioning_intervention_policies.rb
   system_provisioning_mission_template.rb
   system_agent_fleet_mission_template.rb
   system_skills_seed.rb
@@ -99,6 +106,7 @@ SYSTEM_SEED_FILES = %w[
   system_agent_hierarchy.rb
   system_autonomy_orphan_cleanup.rb
   system_skill_graph_sync.rb
+  system_governance_policy_reconcile.rb
 ].freeze
 
 SYSTEM_SEED_FILES.each do |seed_file|

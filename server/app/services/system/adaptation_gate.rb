@@ -58,11 +58,12 @@ module System
     # change_type -> fleet action category.
     #
     # NOT invented here: these are the six categories
-    # `system_provisioning_intervention_policies.rb` seeds on the Fleet
-    # Autonomy agent, and the six `Ai::InterventionPolicy::STATIC_CATEGORIES`
-    # declares. Each carries its own seeded policy — scale_horizontal is
-    # `auto_approve` (deliberately paired with core's watch_policies ceiling,
-    # which the seed's own comment names as the re-check), while relocate,
+    # `PolicyDeclarations::PROVISIONING_POLICIES` declares on the Capacity
+    # Manager (PolicyReconciler writes the rows), and the six
+    # `Ai::InterventionPolicy::STATIC_CATEGORIES` declares. Each carries its own
+    # declared policy — scale_horizontal is `auto_approve` (deliberately paired
+    # with core's watch_policies ceiling, which
+    # `PROVISIONING_CONDITION_OVERRIDES` names as the re-check), while relocate,
     # schema_change and security_change are `require_approval`.
     #
     # Resolving at CHANGE_TYPE granularity rather than collapsing everything
@@ -158,9 +159,9 @@ module System
         # defect, one router over.
         #
         # HIER-P2B seeded the Capacity Manager
-        # (db/seeds/system_capacity_manager_agent.rb) and re-pointed
-        # db/seeds/system_provisioning_intervention_policies.rb at it, so on a
-        # current install the owner exists and the fallback is not taken.
+        # (db/seeds/system_capacity_manager_agent.rb) and PolicyReconciler
+        # writes the project.* rows onto it, so on a current install the owner
+        # exists and the fallback is not taken.
         #
         # COST OF THE FALLBACK where it IS still taken — an account whose
         # first boot predates that seed and has not yet run

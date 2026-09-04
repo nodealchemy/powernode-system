@@ -2,18 +2,24 @@
 
 # Shared helpers for system-extension agent seed files.
 #
-# The 7 system agent seeds (Fleet Autonomy, System Concierge, Runtime Manager,
-# CVE Responder, SDWAN Manager, Disk Image Manager, Topology Designer) all
-# repeat the same four operations:
+# Every system agent seed (Fleet Autonomy, System Concierge, Runtime Manager,
+# CVE Responder, SDWAN Manager, Disk Image Manager, Topology Designer, GitOps
+# Reconciler and the four operations managers) repeats the same operations:
 #
 #   1. Resolve admin account + admin user + a provider
-#   2. Bootstrap an `Ai::AgentTrustScore` row for the agent
-#   3. Upsert a set of `Ai::InterventionPolicy` rows
-#   4. Delete stale `Ai::InterventionPolicy` rows the seed no longer declares
+#   2. Find-or-initialize the GLOBAL canonical agent (never adopt a stray)
+#   3. Bootstrap an `Ai::AgentTrustScore` row for the agent
 #
-# This module centralizes those operations so every agent seed gets identical
-# behavior — including the previously-missing stale-policy cleanup that
-# Fleet Autonomy + Runtime Manager had but the other 5 did not.
+# What is deliberately NOT here any more (proposal §5 ruling 7,
+# IMP-10e4f6c3bcd2): the intervention-policy upserts and their stale-row
+# sweeps (`upsert_policies!`, `upsert_operator_policies!`,
+# `clean_stale_policies!`, `clean_stale_operator_policies!`).
+# System::Governance::PolicyReconciler is the SINGLE WRITER of declared policy
+# rows — it creates absence only, against the account's acting principal, on
+# every boot — and a seed writes identity, prompt, chain, trust, tool access
+# and skills only. spec/db/seeds/policy_single_writer_spec pins that no seed
+# writes a row. The one sweep that remains, `clean_unregistered_policies!`,
+# DELETES rows for DEREGISTERED categories and writes nothing.
 #
 # Usage from a seed file:
 #
@@ -22,7 +28,7 @@
 #   ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
 #     preferred_provider_types: ["anthropic", "openai"]
 #   )
-#   agent = ctx[:account].ai_agents.find_or_initialize_by(...)
+#   agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(...)
 #   ...
 #   System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 #     account: ctx[:account], agent: agent,
@@ -36,17 +42,6 @@
 module System
   module Seeds
     module AgentSetupHelpers
-      # Shared by the agent-scoped and operator-path upserts.
-      # InterventionPolicyService#resolve never lets an agent caller land on a
-      # scope-"action_type" row (IMP-cb36021d4094), and every row this module
-      # writes agent-less is that scope, so the primary reason to keep this ONE
-      # value (a demoted agent falling through to the weaker row) is
-      # structurally closed. It stays shared as defense in depth: if the
-      # resolution-level audience split ever regresses, two drifted copies
-      # would silently hand a demoted agent the weaker policy again.
-      # See `upsert_operator_policies!` for the full argument.
-      DEFAULT_TRUST_CONDITIONS = { "trust_tier_minimum" => "monitored" }.freeze
-
       # The action_category namespaces this extension answers for, and the ONLY
       # namespaces `clean_unregistered_policies!` will delete inside
       # (IMP-0a3ff97f6fbb).
@@ -55,8 +50,8 @@ module System
       # lib/powernode_system/engine.rb registers falls under one of them.
       #
       # `project.` is CORE's namespace, claimed here because this extension
-      # seeds rows into it: system_provisioning_intervention_policies.rb writes
-      # the six `project.*` verbs onto the Capacity Manager (onto Fleet
+      # writes rows into it: PolicyReconciler writes the six `project.*` verbs
+      # of CAPACITY_MANAGER_POLICIES onto the Capacity Manager (onto Fleet
       # Autonomy before HIER-P2B). Whoever creates a row has
       # to be able to collect it, or that row is orphaned by construction — the
       # defect this constant exists to close. Claiming it cannot reap a live core
@@ -142,10 +137,12 @@ module System
       # attributes and saves.
       #
       # NOTE: a global agent has no account of its own — its operational config
-      # (trust score, intervention policies, approval chain) is still seeded
-      # per-account (the admin account here), since that is where the autonomy
-      # tick gates actions. The DEFINITION (name, prompt, type, model
-      # requirements, skill bindings) is global; the POLICY is per-account.
+      # (trust score, approval chain) is still seeded per-account (the admin
+      # account here), and its intervention-policy rows are written per-account
+      # by PolicyReconciler against the account's acting principal (HIER-P2I),
+      # since that is where the autonomy tick gates actions. The DEFINITION
+      # (name, prompt, type, model requirements, skill bindings) is global; the
+      # POLICY is per-account.
       def find_or_initialize_global_agent(name:, agent_type:, source_key:)
         agent = ::Ai::Agent.find_by(account_id: nil, name: name, agent_type: agent_type)
 
@@ -196,216 +193,25 @@ module System
         score
       end
 
-      # Idempotent upsert for a set of agent-scoped intervention policies.
-      #
-      # @param account [Account]
-      # @param agent [Ai::Agent]
-      # @param definitions [Hash{String=>String}] map of action_category → policy verb
-      #   (e.g. "system.cert_rotate" → "auto_approve")
-      # @param conditions [Hash] policy-level conditions JSON (e.g.
-      #   { "trust_tier_minimum" => "monitored" })
-      # @param channels [Array<String>] preferred_channels (default ["notification"])
-      # @param priority [Integer] policy priority (default 10)
-      # @return [Integer] number of rows created or updated
-      def upsert_policies!(account:, agent:, definitions:, conditions: DEFAULT_TRUST_CONDITIONS,
-                            channels: %w[notification], priority: 10)
-        return 0 unless agent
-
-        changed = 0
-        definitions.each do |action_category, policy_verb|
-          policy = ::Ai::InterventionPolicy.find_or_initialize_by(
-            account: account,
-            action_category: action_category,
-            scope: "agent",
-            ai_agent_id: agent.id
-          )
-          policy.assign_attributes(
-            policy:             policy_verb,
-            priority:           priority,
-            is_active:          true,
-            conditions:         conditions,
-            preferred_channels: channels
-          )
-          if policy.new_record? || policy.changed?
-            policy.save!
-            changed += 1
-          end
-        end
-        changed
-      end
-
-      # Idempotent upsert for OPERATOR-path (agent-less) intervention policies.
-      #
-      # `Ai::GatedActions#gate!` passes no `agent:`, so an operator HTTP request
-      # resolves with `agent = nil`, and `Ai::InterventionPolicy#agent_matches?`
-      # is `return true if ai_agent_id.nil?; agent_record && ...` — an
-      # agent-SCOPED row can never match an agent-less caller. Without a row of
-      # this shape every gated operator request falls through
-      # `Ai::InterventionPolicyService` to its require_approval default, no
-      # matter what the agent-scoped seed recorded for the same verb.
-      #
-      # Seeded with `scope: "action_type"` and a nil ai_agent_id, so this set and
-      # the agent-scoped set are disjoint by construction and each seed's stale
-      # cleanup can only reach its own rows.
-      #
-      # A row of THIS shape is operator-only by resolution contract, and the
-      # load-bearing part of the shape is `scope: "action_type"`, not the nil
-      # ai_agent_id (IMP-cb36021d4094): `agent_matches?` still admits it for any
-      # caller, but `InterventionPolicyService#resolve` drops the
-      # scope-"action_type" audience when an agent is present — an agent with no
-      # matching row falls to the require_approval default rather than catching
-      # this one. Before that cut (IMP-bfbf8052e179), any agent WITHOUT its own
-      # row for a category (Fleet Autonomy, Concierge, Topology Designer on
-      # sdwan.*) inherited these rows' laxer verbs — human intent silently
-      # widening agent autonomy.
-      #
-      # Do NOT re-seed this set at scope "global" to "cover both audiences":
-      # that scope is the account-wide floor and DOES bind agent callers, so it
-      # would reinstate exactly the widening this shape exists to prevent.
-      #
-      # The row still carries the same trust_tier_minimum condition as
-      # `upsert_policies!` even though the operator path never evaluates it
-      # (`conditions_met?` skips the tier check when agent_record is nil), and
-      # its priority stays lower than the agent set's. Both are defense in depth
-      # for the same regression: if the resolution-level audience split is ever
-      # removed, the shared condition keeps an emergency-demoted agent
-      # escalating to require_approval instead of landing here, and the ranking
-      # keeps an agent's own row winning over this one.
-      #
-      # The ranking half no longer DEPENDS on that priority gap.
-      # `Ai::InterventionPolicy#specificity_key` is lexicographic, so an
-      # agent-scoped row out-ranks this one at any priority either carries
-      # (IMP-6430e3a8c4a1). Until then the key was an additive score giving an
-      # agent-scoped row a mere +5, so 5-vs-10 was doing real work here: an
-      # operator raising this set's priority by 6 would have inverted the
-      # ranking. Keep the gap anyway — it costs nothing and it states the
-      # intent — but the guarantee now rests on the tier, not on the numbers.
-      #
-      # WARNING before adding a condition key here: the two paths do not see the
-      # same keys, and "trust_tier_minimum" is not the only asymmetric one.
-      # "max_daily_notifications" is guarded on `user`, not `agent`
-      # (InterventionPolicyService#notification_limit_reached?), so it is the
-      # MIRROR of this case — near-inert for agent dispatch, live on the operator
-      # path, which always carries a requested_by. Since IMP-73dff8186c1e it no
-      # longer DENIES: exhausting the budget degrades the verb only as far as
-      # require_approval, a 202 park. Until that fix it rewrote resolution to
-      # "silent", which Ai::AutonomyGate folds into its "block" branch, so
-      # setting it here would have turned "stop emailing me about this" into a
-      # hard 422 refusal of every operator write in the category for the rest of
-      # the day.
-      #
-      # It still does not do what its name promises ON THIS PATH, so read the
-      # rest before setting it. The suppression half of that fix reaches
-      # Ai::AgentOutreachService only; parking emits an approval notification of
-      # its own — one per approver, and the default chain's ["*"] resolves to
-      # every active user. Setting this key on an operator row therefore does
-      # not reduce notification volume in the category, it INCREASES it, while
-      # the healthy under-cap path emits none. Nothing sets it today; still
-      # check the guard's operand — the asymmetry above is unchanged — before
-      # adding any key.
-      #
-      # "quiet_hours" fails the OTHER way, and belongs beside max_daily so a
-      # human tuning conditions sees both directions: conditions_met? returns
-      # false while the current hour is inside the window, so the row stops
-      # matching and resolution falls to the require_approval default — 202,
-      # MORE approval friction, never max_daily's hard 422 denial.
-      #
-      # @param account [Account]
-      # @param definitions [Hash{String=>String}] action_category → policy verb
-      # @return [Integer] number of rows created or updated
-      def upsert_operator_policies!(account:, definitions:,
-                                    conditions: DEFAULT_TRUST_CONDITIONS,
-                                    channels: %w[notification], priority: 5)
-        changed = 0
-        definitions.each do |action_category, policy_verb|
-          policy = ::Ai::InterventionPolicy.find_or_initialize_by(
-            account: account,
-            action_category: action_category,
-            scope: "action_type",
-            ai_agent_id: nil
-          )
-          policy.assign_attributes(
-            policy:             policy_verb,
-            priority:           priority,
-            is_active:          true,
-            conditions:         conditions,
-            preferred_channels: channels
-          )
-          if policy.new_record? || policy.changed?
-            policy.save!
-            changed += 1
-          end
-        end
-        changed
-      end
-
-      # Destroy operator-path (agent-less) policies whose action_category is no
-      # longer declared. The mirror of `clean_stale_policies!` for the set
-      # `upsert_operator_policies!` owns; `owned_prefixes` is what stops one
-      # extension's operator seed from reaping another's.
-      #
-      # @return [Integer] number of rows destroyed
-      def clean_stale_operator_policies!(account:, keep_keys:, owned_prefixes: nil,
-                                         excluded_prefixes: [])
-        stale = ::Ai::InterventionPolicy
-          .where(account: account, ai_agent_id: nil, scope: "action_type")
-          .where.not(action_category: keep_keys)
-        stale = restrict_to_prefixes(stale, owned_prefixes, excluded_prefixes)
-
-        count = stale.count
-        stale.destroy_all if count.positive?
-        count
-      end
-
-      # Destroy agent-scoped intervention policies whose action_category is
-      # not in the current seed's definitions. Idempotent — destroy_all
-      # returns 0 rows after the first run.
-      #
-      # F3-10: an agent may be SHARED between seed files (Fleet Autonomy
-      # also carries project.* and system.instance_pool_* policies from
-      # sibling seeds). Pass owned_prefixes/excluded_prefixes so a seed
-      # only cleans the namespace it owns — otherwise a targeted re-run
-      # destroys the sibling seeds' policies.
-      #
-      # @param account [Account]
-      # @param agent [Ai::Agent]
-      # @param keep_keys [Array<String>] action_category values to retain
-      # @param owned_prefixes [Array<String>, nil] restrict cleanup to
-      #   categories starting with one of these prefixes (nil = whole agent)
-      # @param excluded_prefixes [Array<String>] never destroy categories
-      #   starting with one of these prefixes (carve-outs inside owned)
-      # @return [Integer] number of rows destroyed
-      def clean_stale_policies!(account:, agent:, keep_keys:, owned_prefixes: nil, excluded_prefixes: [])
-        return 0 unless agent
-
-        stale = ::Ai::InterventionPolicy
-          .where(account: account, ai_agent_id: agent.id, scope: "agent")
-          .where.not(action_category: keep_keys)
-        stale = restrict_to_prefixes(stale, owned_prefixes, excluded_prefixes)
-
-        count = stale.count
-        stale.destroy_all if count.positive?
-        count
-      end
-
       # Destroy every policy row in an owned namespace whose action_category is
       # no longer REGISTERED — whatever shape that row has (IMP-0a3ff97f6fbb).
       #
       # WHO OWNS AN OPERATOR-AUTHORED POLICY ROW. Until this helper, nothing
       # did, because collectability was keyed on a row's SHAPE and each sweep
-      # enumerated a different one: `clean_stale_policies!` takes
-      # (ai_agent_id: agent.id, scope "agent"), `clean_stale_operator_policies!`
-      # takes (ai_agent_id: nil, scope "action_type"), and
-      # system_manual_operation_policies.rb takes (scope "global", both ids nil)
-      # narrowed to `system.task.%`. Two live producers write outside all three:
-      # `System::AutonomyActions#update` mints scope "global" with a nil
-      # ai_agent_id for any update whose row identity the panel could not
-      # recover (useAutonomyConfig.ts `save()` degrades to category + verb), and
-      # system_instance_pool_policies.rb seeds that same shape for
-      # `system.instance_pool_*` with no sweep at all. A row in that gap whose
-      # category is later deregistered is a ghost: the by_domain pivot still
-      # renders it (prefix match over rows, not the registry), every save 422s
-      # on the unknown category, and no seed re-run clears it.
+      # enumerated a different one: the since-retired `clean_stale_policies!`
+      # took (ai_agent_id: agent.id, scope "agent"), the since-retired
+      # `clean_stale_operator_policies!` took (ai_agent_id: nil, scope
+      # "action_type"), and system_manual_operation_policies.rb takes (scope
+      # "global", both ids nil) narrowed to `system.task.%`. Two producers wrote
+      # outside all three: `System::AutonomyActions#update` mints scope "global"
+      # with a nil ai_agent_id for any update whose row identity the panel could
+      # not recover (useAutonomyConfig.ts `save()` degrades to category + verb),
+      # and the since-deleted system_instance_pool_policies.rb seeded that same
+      # shape for `system.instance_pool_*` with no sweep at all (PolicyReconciler
+      # writes that operator set at the same shape today). A row in that gap
+      # whose category is later deregistered is a ghost: the by_domain pivot
+      # still renders it (prefix match over rows, not the registry), every save
+      # 422s on the unknown category, and no seed re-run clears it.
       #
       # THE RULE: a row is collectable exactly when the write path would refuse
       # to create it. `#update` gates on `category_registered?`, so this gates
@@ -502,8 +308,7 @@ module System
       end
 
       # Narrow a stale-policy relation to an owned action_category namespace,
-      # minus any carve-outs. Shared by the agent-scoped and operator-path
-      # cleanups so both answer namespace ownership the same way.
+      # minus any carve-outs.
       def restrict_to_prefixes(relation, owned_prefixes, excluded_prefixes)
         if owned_prefixes.present?
           owned = Array(owned_prefixes)

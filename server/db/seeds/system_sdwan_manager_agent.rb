@@ -2,8 +2,7 @@
 
 require_relative "concerns/agent_setup_helpers"
 
-# Seeds the SDWAN Manager AI agent + per-action policies + dedicated approval
-# chain. Carved out of Fleet Autonomy (2026-05-10) so SDWAN operations have
+# Seeds the SDWAN Manager AI agent + dedicated approval chain. Carved out of Fleet Autonomy (2026-05-10) so SDWAN operations have
 # their own intervention queue + can be paused independently during network
 # maintenance windows without halting fleet operations.
 #
@@ -11,7 +10,7 @@ require_relative "concerns/agent_setup_helpers"
 # access grants, user devices, federation peers — both autonomous (BGP /
 # topology remediation) and operator-initiated (delete network, revoke peer).
 
-puts "\n  Seeding SDWAN Manager agent + policies..."
+puts "\n  Seeding SDWAN Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -85,87 +84,28 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created' : 'updated'}"
 
-# Action category registration happens in System::Engine#after_initialize so
-# validation passes when these policies are created.
-
-# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
-# assert it against a RUNNING database without executing this seed.
-#
-# TWO constants, two audiences (HIER-P2A). The AGENT set is operator CRUD plus
-# the 14 sensor-routed system.sdwan_* / system.federation_* remediation rows —
-# the fleet tick gates those under THIS agent now (each binding declares
-# `owner: "sdwan-manager"`), so they live here again instead of on Fleet
-# Autonomy. The OPERATOR set below is the 43 CRUD keys only. 13 of the 14
-# remediations are sensor-routed, so no operator door issues them; the 14th,
-# system.federation_acceptance, is a Concierge/MCP-driven gated executor whose
-# ACTING agent is this one — either way the acting principal is the agent, so
-# no operator-shape row is written for any of them.
-sdwan_policies = System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES
-sdwan_operator_policies = System::Governance::PolicyDeclarations::SDWAN_OPERATOR_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: sdwan_agent,
-  definitions: sdwan_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: sdwan_agent,
-  keep_keys: sdwan_policies.keys
-)
-puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} total)"
-
-# IMP-187124ca2984 — the OPERATOR path needs its own rows.
-#
-# The upsert above scopes every row to this agent (ai_agent_id set), and
-# Ai::InterventionPolicy#agent_matches? is
-# `return true if ai_agent_id.nil?; agent_record && ai_agent_id == agent_record.id`.
-# Ai::GatedActions#gate! passes no `agent:`, so an operator HTTP request through
-# any of the SDWAN controllers matches NONE of them and falls through
-# Ai::InterventionPolicyService to its require_approval default. The per-verb
-# intent recorded above therefore bound only on the agent-dispatch path: every
-# operator create/update/delete was hard-approval-gated by accident, not by
-# decision.
-#
-# Mirroring the same table onto operator-path rows makes the recorded intent
-# govern both audiences, and changes nothing about what any agent is allowed to
-# do: `resolve` skips scope-"action_type" rows for an agent caller, so these
-# rows bind exclusively on the operator path — an agent without its own row for
-# a verb (Fleet Autonomy, Concierge, Topology Designer on sdwan.*) lands on the
-# require_approval default, never here.
-#
-# The discriminator is `scope`, NOT ai_agent_id nil-ness (IMP-cb36021d4094,
-# landed; it superseded the duplicate IMP-d21b4c0cd5fd). SCOPES =
-# %w[global agent action_type] names THREE audiences: these operator rows are
-# scope "action_type" (upsert_operator_policies!), while scope "global" rows are
-# agent-binding by design — server/db/seeds/autonomy_data_seed.rb seeds
-# status_update/proposal/escalation there and Ai::AgentOutreachService resolves
-# them with an agent always set. IMP-bfbf8052e179's cut keyed on ai_agent_id and
-# so over-caught the global audience: measured, an agent resolving a global
-# auto_approve row got require_approval (fail-safe) and a global block row
-# stopped binding an agent at all (fail-OPEN, since require_approval is not a
-# denial — the gate parks it for an approval any active user may grant).
-#
-# Two further guards remain as defense in depth should the resolution contract
-# ever regress: an agent-scoped row out-ranks these on specificity_key at ANY
-# priority, since that key is lexicographic and the agent tier sits above the
-# agent-less one (IMP-6430e3a8c4a1 — while it was an additive score, this
-# out-ranking held only because of the priority gap seeded below), and
-# both sets carry the SAME trust_tier_minimum condition so an emergency trust
-# demotion knocks out the agent row and this row together, preserving the
-# escalation to require_approval.
-#
-# Note this is per-account: only accounts whose policies are seeded get the
-# recorded intent. Any other account still lands on the require_approval
-# default until an operator configures policies for it.
-operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
-  account: admin_account,
-  definitions: sdwan_operator_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
-  account: admin_account,
-  keep_keys: sdwan_operator_policies.keys,
-  owned_prefixes: [ "sdwan." ]
-)
-puts "  ✅ SDWAN operator-path policies: #{operator_count} changed (#{sdwan_operator_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::SDWAN_MANAGER_POLICIES, POLICY_SETS "sdwan-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# TWO sets, two audiences (HIER-P2A, IMP-187124ca2984). The AGENT set is the
+# 43 `sdwan.*` operator CRUD keys plus the 14 sensor-routed `system.sdwan_*`
+# / `system.federation_*` remediations the fleet tick gates under THIS
+# agent. The OPERATOR-path twin (SDWAN_OPERATOR_POLICIES, POLICY_SETS
+# "sdwan-operator", scope "action_type") mirrors the 43 CRUD verbs for an
+# agent-less caller — `Ai::GatedActions#gate!` passes no `agent:`, and an
+# agent-scoped row can never match one — while `InterventionPolicyService
+# #resolve` drops that audience for an agent caller (IMP-cb36021d4094), so
+# neither set widens the other. system_sdwan_operator_policies_spec pins
+# both audiences against the reconciled rows.
+puts "  ℹ️  SDWAN Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 sdwan_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

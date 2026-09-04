@@ -16,7 +16,7 @@ require_relative "concerns/agent_setup_helpers"
 #
 # Spicy-bear plan slice 3a.
 
-puts "\n  Seeding Runtime Manager agent + policies..."
+puts "\n  Seeding Runtime Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -92,86 +92,26 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Runtime Manager agent: #{runtime_agent.previously_new_record? ? 'created' : 'updated'} (id=#{runtime_agent.id[0, 8]})"
 
-# ── Default action policies ───────────────────────────────────────────
-#
-# Vocabulary uses `system.runtime_*` prefix so the autonomy executor
-# can dispatch on (extension, action_category) without colliding with
-# Fleet Autonomy's `system.cert_*` / `system.sdwan_*` action space.
-#
-# Decision rationale:
-#   notify_and_proceed — operator already opted-in by assigning the
-#                        runtime module to a NodeInstance; provisioning
-#                        is the obvious follow-through.
-#   require_approval   — destructive (decommission destroys managed
-#                        host row + Vault credentials; cluster
-#                        decommission cascade-deletes node rows;
-#                        upgrades affect workloads).
-#   auto_approve       — routine reversible.
-#
-# NOTE: `system.runtime_docker_tls_rotate` was previously seeded as
-# `auto_approve` but had no executor implementation; removed during the
-# 2026-05-19 doc accuracy audit. Operators rotate Docker daemon TLS via
-# the `system.cert_rotate` skill (the broader cert-rotation flow) or by
-# re-running the daemon provisioner; a dedicated TLS-rotate executor
-# would be added when the lifecycle requires it.
-
-# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
-# assert it against a RUNNING database without executing this seed.
-runtime_policies = System::Governance::PolicyDeclarations::RUNTIME_MANAGER_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: runtime_agent,
-  definitions: runtime_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: runtime_agent,
-  keep_keys: runtime_policies.keys
-)
-puts "  ✅ Runtime Manager policies: #{count} changed (#{runtime_policies.size} total)"
-
-# ── Operator-path policies ────────────────────────────────────────────
-#
-# IMP-9b9653e6514e. The rows above are scope "agent", and
-# `Ai::InterventionPolicy#agent_matches?` is
-# `return true if ai_agent_id.nil?; agent_record && ai_agent_id == agent_record.id`
-# — so they bind ONLY when a caller passes `agent:`. Every operator-initiated
-# path resolves with `agent = nil` (`Ai::GatedActions#gate!` never passes one;
-# neither does an operator MCP call), and without a row of this shape it falls
-# through `Ai::InterventionPolicyService` to its require_approval default no
-# matter what the table above records. Same ruling as the SDWAN Manager's
-# (IMP-187124ca2984) — see that seed for the full rationale on why the two row
-# sets are disjoint by construction (scope "action_type" here, "agent" above)
-# and why each carries its own stale cleanup.
-#
-# That default is why the ONE runtime category that was already gated
-# (system.runtime_k8s_cluster_decommission, at
-# server/app/controllers/api/v1/devops/kubernetes/clusters_controller.rb)
-# looked correct while being inert: the default it fell to happens to equal the
-# seeded verb, so an operator EDITING that row changed nothing. It is in the
-# set below for that reason, at its seeded verb — no behaviour change today,
-# but the control now binds.
-#
-# DELIBERATELY THE GATED SUBSET, NOT ALL SEVEN. Seeding an operator row for a
-# category no gate site passes would manufacture the very defect this task
-# removes — a row that renders as a working control and is read by nothing —
-# one layer further out. The other four
-# (k8s_cluster_bootstrap, k8s_node_join, k8s_node_drain, k8s_runtime_upgrade)
-# stay agent-scoped-only until a surface exists to gate; each is tracked as its
-# own improvement offer. `system_runtime_operator_policies_spec.rb` pins both
-# halves: the three that must resolve, and the four that must NOT.
-gated_runtime_policies = System::Governance::PolicyDeclarations::RUNTIME_OPERATOR_POLICIES
-
-operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
-  account: admin_account,
-  definitions: gated_runtime_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
-  account: admin_account,
-  keep_keys: gated_runtime_policies.keys,
-  owned_prefixes: [ "system.runtime_" ]
-)
-puts "  ✅ Runtime Manager operator-path policies: #{operator_count} changed " \
-     "(#{gated_runtime_policies.size} of #{runtime_policies.size} gated)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::RUNTIME_MANAGER_POLICIES, POLICY_SETS "runtime-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# TWO sets, two audiences: the agent set above and the OPERATOR-path twin
+# (RUNTIME_OPERATOR_POLICIES, POLICY_SETS "runtime-operator", scope
+# "action_type") — deliberately the GATED subset, not all seven, so no
+# operator row renders for a category no gate site reads
+# (IMP-9b9653e6514e; system_runtime_operator_policies_spec pins both halves).
+# The vocabulary is `system.runtime_*`; `system.runtime_docker_tls_rotate`
+# was removed in the 2026-05-19 audit (no executor) — rotate daemon TLS
+# through `system.cert_rotate` or a daemon re-provision.
+puts "  ℹ️  Runtime Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::RUNTIME_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # ── Runtime Manager Approval Chain ────────────────────────────────────
 # Single-step chain for runtime require_approval actions. Surfaces in

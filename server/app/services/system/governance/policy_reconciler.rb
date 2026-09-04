@@ -18,13 +18,15 @@ module System
     # The seed path is DESTRUCTIVE by design, and safe today only because it
     # never re-runs:
     #
-    #   * `upsert_manual_policies!` and AgentSetupHelpers#upsert_policies! both
-    #     `assign_attributes(policy: <declared verb>, ...)` and save when
-    #     `changed?` — so re-running RESETS an operator's deliberately tuned
-    #     verb back to the seeded default.
+    #   * `upsert_manual_policies!` (and, until IMP-10e4f6c3bcd2 retired it
+    #     with every agent seed's policy upsert, AgentSetupHelpers
+    #     #upsert_policies!) `assign_attributes(policy: <declared verb>, ...)`
+    #     and save when `changed?` — so re-running RESETS an operator's
+    #     deliberately tuned verb back to the seeded default.
     #   * system_manual_operation_policies.rb then `destroy_all`s every
     #     `system.task.*` global row whose category is not in the seed's key
-    #     list.
+    #     list. (Proposal §5 ruling 7 makes THIS class the single writer of
+    #     declared rows; that seed is the one remaining exception.)
     #
     # On first boot there is no operator intent to destroy. On every boot
     # thereafter both behaviours are live regressions — an operator who set

@@ -2,11 +2,11 @@
 
 require_relative "concerns/agent_setup_helpers"
 
-# Seeds the Capacity Manager AI agent + its intervention policies + dedicated
-# approval chain. HIER-P2B (Phase 2 wave 2, 2026-09-03): HIER-P2DECL declared
+# Seeds the Capacity Manager AI agent + dedicated approval chain (the declared
+# policy set is PolicyReconciler's to write). HIER-P2B (Phase 2 wave 2, 2026-09-03): HIER-P2DECL declared
 # the agent — identity, the 22-key CAPACITY_MANAGER_POLICIES set, the
 # `owner: "capacity-manager"` sensor bindings and the hierarchy seat — ahead
-# of this seed; this file gives the declaration a row to land on.
+# of this seed; this file gives the declaration an agent to land on.
 #
 # Owns fleet CAPACITY, split out of Fleet Autonomy so capacity decisions
 # (cost-bearing, often irreversible) have a queue of their own: the DR
@@ -20,7 +20,7 @@ require_relative "concerns/agent_setup_helpers"
 # which runs after this file (SYSTEM_SEED_FILES) and writes the lineage edge
 # and the P1 leaf delegation policy (conservative, max_depth 2).
 
-puts "\n  Seeding Capacity Manager agent + policies..."
+puts "\n  Seeding Capacity Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -189,49 +189,27 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Capacity Manager agent: #{capacity_agent.previously_new_record? ? 'created' : 'updated'}"
 
-# Action category registration happens in System::Engine#after_initialize so
-# validation passes when these policies are created.
-
-# The declared set lives in System::Governance::PolicyDeclarations
-# (CAPACITY_MANAGER_POLICIES — 22 keys, one agent set, no duplicate
-# declaration here) so PolicyReconciler can assert it against a RUNNING
-# database without executing this seed, and re-home the rows an established
-# install still holds on Fleet Autonomy (PolicyReconciler::FORMER_OWNERS) the
-# first boot after this agent exists.
-#
-# AGENT SHAPE ONLY. The three operator twins (instance-pool-operator,
-# platform-scaling, instance-cordon-operator — PolicyDeclarations::
-# OPERATOR_TWINS) keep their own rows, written by
-# system_instance_pool_policies.rb / system_instance_cordon_policies.rb /
-# PolicyReconciler at the global shape; no operator-shape row is written here.
-#
-# project.scale_horizontal carries a per-category condition override
-# (PROVISIONING_CONDITION_OVERRIDES — the auto_apply_window on top of the
-# trust gate); upsert_policies! takes one `conditions:` per call, so the
-# overridden keys are written in their own call rather than flattened to the
-# set default.
-capacity_policies  = System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES
-capacity_overrides = System::Governance::PolicyDeclarations::PROVISIONING_CONDITION_OVERRIDES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: capacity_agent,
-  definitions: capacity_policies.except(*capacity_overrides.keys)
-)
-capacity_overrides.each do |action_category, conditions|
-  next unless capacity_policies.key?(action_category)
-
-  count += System::Seeds::AgentSetupHelpers.upsert_policies!(
-    account: admin_account, agent: capacity_agent,
-    definitions: capacity_policies.slice(action_category),
-    conditions: conditions
-  )
-end
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: capacity_agent,
-  keep_keys: capacity_policies.keys,
-  owned_prefixes: [ "system.", "project." ]
-)
-puts "  ✅ Capacity Manager policies: #{count} changed (#{capacity_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::CAPACITY_MANAGER_POLICIES, POLICY_SETS "capacity-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# 22 keys, one agent set (the former "instance-pool-agent" and "provisioning"
+# sets that keyed Fleet Autonomy are folded in); project.scale_horizontal's
+# `auto_apply_window` rides the POLICY_SETS entry's `condition_overrides`
+# (PROVISIONING_CONDITION_OVERRIDES), so the reconciler writes it too. An
+# established install's rows still on Fleet Autonomy are re-homed here
+# (PolicyReconciler::FORMER_OWNERS). AGENT SHAPE ONLY: the three operator
+# twins (instance-pool-operator, platform-scaling, instance-cordon-operator
+# — PolicyDeclarations::OPERATOR_TWINS) are their own POLICY_SETS entries
+# at the global shape, written by the same reconciler.
+puts "  ℹ️  Capacity Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 capacity_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

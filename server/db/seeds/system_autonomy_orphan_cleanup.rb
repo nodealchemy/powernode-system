@@ -3,12 +3,14 @@
 # Collect autonomy policy rows for categories that are no longer registered
 # (IMP-0a3ff97f6fbb).
 #
-# WHY THIS IS A SEED OF ITS OWN. The sibling seeds each clean the rows they
-# themselves declare, keyed on the SHAPE they write — agent-scoped, operator
-# (scope "action_type"), or the `system.task.` global set. Two producers write
-# outside all three: `System::AutonomyActions#update` mints scope "global" with
-# a nil ai_agent_id whenever the Autonomy modal saves a control whose row
-# identity it could not recover, and system_instance_pool_policies.rb seeds that
+# WHY THIS IS A SEED OF ITS OWN. Every other sweep was keyed on the SHAPE a
+# writer used — agent-scoped, operator (scope "action_type"), or the
+# `system.task.` global set (the first two sweeps were retired with the seeds'
+# policy upserts under IMP-10e4f6c3bcd2; PolicyReconciler now writes every
+# declared set and deletes nothing). Two producers wrote outside all three:
+# `System::AutonomyActions#update` mints scope "global" with a nil ai_agent_id
+# whenever the Autonomy modal saves a control whose row identity it could not
+# recover, and the since-deleted system_instance_pool_policies.rb seeded that
 # same shape with no cleanup at all (the four REGISTERED-but-ungated rows it
 # used to write there were collected once, by migration 20260903033000 —
 # IMP-57a4b1ef94b3 — which this pass cannot reach: they are not deregistered).

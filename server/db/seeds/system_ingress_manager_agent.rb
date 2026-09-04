@@ -39,7 +39,7 @@ require_relative "concerns/agent_setup_helpers"
 # (SkillBindings::AGENT_ALIASES) and are materialised by
 # system_skill_bindings_seed.rb — nothing here binds a skill by hand.
 
-puts "\n  Seeding Ingress Manager agent + policies..."
+puts "\n  Seeding Ingress Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -270,25 +270,20 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Ingress Manager agent: #{ingress_agent.previously_new_record? ? 'created' : 'updated'} (id=#{ingress_agent.id[0, 8]})"
 
-# Declared set lives in System::Governance::PolicyDeclarations (its
-# POLICY_SETS entry keyed "ingress-manager"), so PolicyReconciler can assert it
-# against a RUNNING database without executing this seed; the seed consumes
-# the constant and declares nothing of its own. On an established install the
-# Fleet Autonomy seed (which runs first) has already dropped these keys from
-# its own rows — they are no longer in FLEET_AUTONOMY_POLICIES — so the rows
-# written here are the only ones for these categories.
-ingress_policies = System::Governance::PolicyDeclarations::INGRESS_MANAGER_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: ingress_agent,
-  definitions: ingress_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: ingress_agent,
-  keep_keys: ingress_policies.keys,
-  owned_prefixes: [ "system." ]
-)
-puts "  ✅ Ingress Manager policies: #{count} changed (#{ingress_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::INGRESS_MANAGER_POLICIES, POLICY_SETS "ingress-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# An established install's rows still on Fleet Autonomy are re-homed here
+# (PolicyReconciler::FORMER_OWNERS).
+puts "  ℹ️  Ingress Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::INGRESS_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # Exposure changes are operator-visible and reversible (unexpose is ungated),
 # so the chain mirrors the SDWAN Manager's 4h window rather than the

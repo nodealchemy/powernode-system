@@ -30,7 +30,7 @@ require_relative "concerns/agent_setup_helpers"
 #     independently (e.g. freeze GitOps applies during a maintenance window
 #     without halting the rest of fleet autonomy).
 
-puts "\n  Seeding GitOps Reconciler agent + policies..."
+puts "\n  Seeding GitOps Reconciler agent..."
 
 agent_name = "GitOps Reconciler"
 
@@ -136,25 +136,21 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ GitOps Reconciler agent: #{gitops_agent.previously_new_record? ? 'created' : 'updated'} (id=#{gitops_agent.id[0, 8]})"
 
-# ── Operator-initiated GitOps action policies ─────────────────────────────
-#
-# These own the `system.gitops_*` operator surface (the `system_gitops_*` MCP
-# actions) AND the sensor-routed `system.gitops_drift_remediate` row: the action
-# vocabulary + approval posture is declared on the owning agent so the GitOps
-# queue is independently pause-able (see header).
-# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
-# assert it against a RUNNING database without executing this seed.
-gitops_policies = System::Governance::PolicyDeclarations::GITOPS_RECONCILER_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: gitops_agent,
-  definitions: gitops_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: gitops_agent,
-  keep_keys: gitops_policies.keys
-)
-puts "  ✅ GitOps Reconciler policies: #{count} changed (#{gitops_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::GITOPS_RECONCILER_POLICIES, POLICY_SETS "gitops-reconciler") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# The set is the `system.gitops_*` operator surface AND the sensor-routed
+# `system.gitops_drift_remediate` row (see the header), so the GitOps queue
+# is independently pause-able.
+puts "  ℹ️  GitOps Reconciler policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::GITOPS_RECONCILER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # ── GitOps Reconciler Approval Chain ──────────────────────────────────────
 # Single-step chain for GitOps require_approval actions (apply proposal /

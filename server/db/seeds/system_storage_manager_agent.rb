@@ -17,13 +17,14 @@ require_relative "concerns/agent_setup_helpers"
 #     `system.storage_assignment_reconcile`.
 #   - EXECUTOR: `system.restore_volume` gates RestoreVolumeExecutor, bound here.
 #   - OPERATOR TWIN: `system.volume_snapshot_delete` is the agent-shape twin of
-#     the `volume-snapshot-operator` set (db/seeds/system_volume_snapshot_policies.rb
-#     keeps the global-shape row); it binds only when the MCP verb is called AS
-#     this agent.
+#     the `volume-snapshot-operator` set (its global-shape row is the
+#     reconciler's too, from that POLICY_SETS entry); it binds only when the
+#     MCP verb is called AS this agent.
 # The declared set lives in System::Governance::PolicyDeclarations
-# (STORAGE_MANAGER_POLICIES); this seed consumes it and never re-declares a key.
+# (STORAGE_MANAGER_POLICIES); this seed re-declares no key and writes no row —
+# PolicyReconciler does.
 
-puts "\n  Seeding Storage Manager agent + policies..."
+puts "\n  Seeding Storage Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -207,26 +208,20 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Storage Manager agent: #{storage_agent.previously_new_record? ? 'created' : 'updated'}"
 
-# Action category registration happens in System::Engine#after_initialize so
-# validation passes when these policies are created.
-#
-# The declared set lives in System::Governance::PolicyDeclarations so the
-# reconciler can assert it against a RUNNING database without executing this
-# seed — and re-home rows an established install still holds on Fleet
-# Autonomy (PolicyReconciler::FORMER_OWNERS). This seed writes the agent-shape
-# rows on a first boot; the operator-shape twin of system.volume_snapshot_delete
-# is written by db/seeds/system_volume_snapshot_policies.rb, not here.
-storage_policies = System::Governance::PolicyDeclarations::STORAGE_MANAGER_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: storage_agent,
-  definitions: storage_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: storage_agent,
-  keep_keys: storage_policies.keys
-)
-puts "  ✅ Storage Manager policies: #{count} changed (#{storage_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::STORAGE_MANAGER_POLICIES, POLICY_SETS "storage-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# An established install's rows still on Fleet Autonomy are re-homed here
+# (PolicyReconciler::FORMER_OWNERS).
+puts "  ℹ️  Storage Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::STORAGE_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 storage_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

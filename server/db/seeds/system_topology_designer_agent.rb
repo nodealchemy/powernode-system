@@ -28,9 +28,10 @@ require_relative "concerns/agent_setup_helpers"
 #
 # HIER-P2F: since HIER-P2DECL this agent carries the topology policy set
 # (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES — the three composer
-# executor gates); this seed now consumes it like its siblings, adds the
-# "Topology Designer Actions" approval chain those require_approval gates
-# route to, a routing description and a tool-family scope. The composer
+# executor gates, written by PolicyReconciler like every declared set); this
+# seed adds the "Topology Designer Actions" approval chain those
+# require_approval gates route to, a routing description and a tool-family
+# scope. The composer
 # executors (sdwan_federation_compose / multi_tenant_isolation /
 # service_discovery_composer) bind here via `binds_to "topology_designer"`;
 # system_skill_bindings_seed.rb materialises the rows.
@@ -299,25 +300,18 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 
 puts "  ✅ System Topology Designer agent: #{topology_agent.previously_new_record? ? 'created' : 'updated'} (id=#{topology_agent.id})"
 
-# ── Intervention policies (HIER-P2F) ──────────────────────────────────────
-# The topology set (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES — the three
-# composer executor gates, declared on this agent since HIER-P2DECL) is
-# consumed here the way every sibling seed consumes its constant, so a FIRST
-# boot lands the rows without waiting for the next boot's PolicyReconciler
-# pass. The reconciler still asserts the same set on every later boot (it
-# creates only what is absent — an operator-tuned verb is never reset by it),
-# and the two agree by construction: same constant, same row shape.
-topology_policies = System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES
-
-topology_policy_count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: topology_agent,
-  definitions: topology_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: topology_agent,
-  keep_keys: topology_policies.keys
-)
-puts "  ✅ System Topology Designer policies: #{topology_policy_count} changed (#{topology_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES, POLICY_SETS "topology-designer") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+puts "  ℹ️  System Topology Designer policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # ── Topology Designer Approval Chain (HIER-P2F) ───────────────────────────
 # Single-step chain for the require_approval composer gates (federation

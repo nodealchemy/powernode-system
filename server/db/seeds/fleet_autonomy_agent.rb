@@ -2,14 +2,13 @@
 
 require_relative "concerns/agent_setup_helpers"
 
-# Seeds the Fleet Autonomy AI agent, intervention policies (per-action
-# default behavior), and the fleet approval chain.
+# Seeds the Fleet Autonomy AI agent and the fleet approval chain.
 #
 # Reference: Golden Eclipse plan M7 — fleet_autonomy_agent seed.
 # Mirrors trading_overseer_autonomy.rb shape so trading + fleet decisions
 # share the same approval queue UI without code paths diverging.
 
-puts "\n  Seeding Fleet Autonomy agent + policies..."
+puts "\n  Seeding Fleet Autonomy agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -84,37 +83,21 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Fleet Autonomy agent: #{fleet_agent.previously_new_record? ? 'created' : 'updated'}"
 
-# ── Default action policies (mirrors plan M7 vocabulary) ────────────────
-
-# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
-# assert it against a RUNNING database without executing this seed.
-fleet_policies = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: fleet_agent,
-  definitions: fleet_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: fleet_agent,
-  keep_keys: fleet_policies.keys,
-  # F3-10: Fleet Autonomy WAS a shared agent — sibling seeds attached
-  # project.* (system_provisioning_intervention_policies.rb) and
-  # system.instance_pool_* (system_instance_pool_policies.rb) rows to it.
-  # HIER-P2B re-pointed both at the Capacity Manager, so on a FRESH install
-  # neither writes here any more.
-  #
-  # The carve-out STAYS, for the established install. `db:seed` is first-boot
-  # only, but this file is also run on its own ("Invoke explicitly" above), and
-  # an install seeded before HIER-P2B still holds those eight rows here until
-  # PolicyReconciler re-homes them (PolicyReconciler::FORMER_OWNERS) — verb,
-  # is_active, conditions and priority preserved. Without the exclusion a
-  # targeted re-run would DELETE them first, discarding operator tuning the
-  # re-home was going to carry across. Same reasoning for `owned_prefixes`:
-  # clean only the namespace this seed writes.
-  owned_prefixes: [ "system." ],
-  excluded_prefixes: [ "system.instance_pool_" ]
-)
-puts "  ✅ Fleet Autonomy policies: #{count} changed (#{fleet_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::FLEET_AUTONOMY_POLICIES, POLICY_SETS "fleet-autonomy") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+# An established install's rows for the categories HIER-P2A / HIER-P2DECL
+# moved off this agent are RE-HOMED by the reconciler
+# (PolicyReconciler::FORMER_OWNERS), tuning preserved — nothing here deletes.
+puts "  ℹ️  Fleet Autonomy policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # ── Fleet Approval Chain ────────────────────────────────────────────────
 # Single-step chain for fleet require_approval actions. The trading approval

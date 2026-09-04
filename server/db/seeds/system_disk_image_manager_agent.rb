@@ -7,7 +7,7 @@ require_relative "concerns/agent_setup_helpers"
 # (2026-05-10) so image-publishing automations have their own queue
 # (e.g., a nightly canary promotion can be paused independently of fleet ops).
 
-puts "\n  Seeding Disk Image Manager agent + policies..."
+puts "\n  Seeding Disk Image Manager agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -121,19 +121,18 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 puts "  ✅ Disk Image Manager agent: #{disk_image_agent.previously_new_record? ? 'created' : 'updated'}"
 
-# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
-# assert it against a RUNNING database without executing this seed.
-disk_image_policies = System::Governance::PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES
-
-count = System::Seeds::AgentSetupHelpers.upsert_policies!(
-  account: admin_account, agent: disk_image_agent,
-  definitions: disk_image_policies
-)
-System::Seeds::AgentSetupHelpers.clean_stale_policies!(
-  account: admin_account, agent: disk_image_agent,
-  keep_keys: disk_image_policies.keys
-)
-puts "  ✅ Disk Image Manager policies: #{count} changed (#{disk_image_policies.size} total)"
+# ── Intervention policies: NOT written here ──────────────────────────────
+# System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
+# set (PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES, POLICY_SETS "disk-image-manager") —
+# on every boot, the first one included (rails-start.sh runs the governance
+# reconcile after db:seed), and via `rails system:governance:reconcile`. It
+# writes against the account's acting principal for this agent (HIER-P2I)
+# and creates absence only, so an operator's tuned verb survives a re-seed.
+# The approval chain below stays here: the reconciler writes policy rows and
+# nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
+puts "  ℹ️  Disk Image Manager policies: written by System::Governance::PolicyReconciler " \
+     "(#{System::Governance::PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES.size} declared; " \
+     "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 disk_image_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,
