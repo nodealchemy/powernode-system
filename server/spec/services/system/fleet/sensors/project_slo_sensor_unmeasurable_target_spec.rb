@@ -226,3 +226,110 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor, "unmeasurable declared 
       "no row means not yet sampled, which is not the same as no producer"
   end
 end
+
+# ── THE LANE END TO END ─────────────────────────────────────────────────────
+#
+# The examples above prove the SENSOR emits a stable fingerprint. That is the
+# sensor's whole contribution to constraint 1, but it is not the constraint:
+# what the driver asked for is that this lane rides the standing-signal
+# machinery rather than emitting per tick, and the machinery is generic code
+# proven for ONE representative kind (system.cert_expiring, in
+# standing_signal_hygiene_spec). "Generic code works for my kind too" is an
+# inference, and inferring it is how a notify-only lane ends up flooding or
+# silently blocked. So drive the real DecisionEngine over THIS kind.
+#
+# Both halves are asserted, because either alone is worthless: the event stream
+# must be throttled AND the standing condition must reach a person.
+RSpec.describe "the unmeasurable-target lane's standing behaviour" do
+  let(:account)   { create(:account) }
+  let!(:operator) { create(:user, account: account) }
+  let(:agent)     { create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy") }
+  let(:service)   { System::Fleet::FleetAutonomyService.new(account: account, agent: agent) }
+  let(:engine)    { System::Fleet::DecisionEngine.new(autonomy_service: service) }
+
+  # The lane's declared owner. Without the agent the binding falls back to
+  # Fleet Autonomy with a fleet.owner_agent_missing event, which would make
+  # this pass for the wrong reason — the gate would be a different agent's.
+  let!(:owner) do
+    create(:ai_agent, account: account, agent_type: "monitor", name: "Capacity Manager")
+  end
+
+  let!(:chain) do
+    create(:ai_approval_chain, account: account, trigger_type: "autonomy_action",
+                               status: "active", name: "Fleet Autonomy Chain")
+  end
+
+  # Cross-tick dedup is Rails.cache-backed and the memory_store is shared
+  # across examples, so the standing path only runs from a clean cache.
+  before do
+    Rails.cache.clear
+    Ai::InterventionPolicy.create!(
+      account: account, ai_agent_id: owner.id, scope: "agent",
+      action_category: "project.target_unmeasurable_investigate",
+      policy: "notify_and_proceed", is_active: true
+    )
+    SiteSetting.set("system.fleet.signal_state.escalate_after_ticks", 2, setting_type: "integer")
+    SiteSetting.set("system.fleet.signal_state.heartbeat_seconds", 3600, setting_type: "integer")
+  end
+
+  let(:fingerprint) { "project_target_unmeasurable:m-1:p99_latency_ms" }
+
+  def tick!
+    engine.decide(
+      kind: System::Fleet::Sensors::ProjectSloSensor::UNMEASURABLE_SIGNAL_KIND,
+      severity: :low,
+      payload: { "mission_id" => "m-1", "metric" => "p99_latency_ms",
+                 "target" => 100.0, "unavailable_reason" => "no_producer" },
+      fingerprint: fingerprint
+    )
+  end
+
+  it "throttles the deduped event stream instead of emitting one per tick" do
+    6.times { tick! }
+
+    # NON-VACUITY FIRST. "<= 1 event" is also what a lane blocked at the gate
+    # produces, so anchor on the state row: it exists only if the ticks
+    # actually reached the dedupe path and were counted there.
+    state = System::Fleet::SignalState.find_by(account_id: account.id, fingerprint: fingerprint)
+    expect(state).to be_present, "no state row means the ticks never reached the dedupe path"
+    expect(state.tick_count).to be >= 1
+
+    deduped = System::FleetEvent.where(account_id: account.id, kind: "decision.deduped")
+                                .select { |e| e.payload["fingerprint"] == fingerprint }
+    expect(deduped.size).to be <= 1,
+      "a standing target gap re-detected every 60s must not put an event on the stream every " \
+      "60s — that is the 29k/day flood app-2 removed, reintroduced through a new lane"
+  end
+
+  it "reaches an operator exactly once and then goes quiet" do
+    6.times { tick! }
+
+    approvals = Ai::ApprovalRequest.where(account_id: account.id)
+    expect(approvals.count).to eq(1),
+      "a declared target nothing measures is resolved by a person; if the lane never reaches " \
+      "one it is the silent-declaration defect again, wearing a signal kind"
+
+    state = System::Fleet::SignalState.find_by(account_id: account.id, fingerprint: fingerprint)
+    expect(state.escalation_count).to eq(1)
+
+    approvals_before = approvals.count
+    6.times { tick! }
+    expect(Ai::ApprovalRequest.where(account_id: account.id).count).to eq(approvals_before)
+    expect(state.reload.escalation_count).to eq(1)
+  end
+
+  # The category is in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES
+  # precisely so this stays zero. A pending outcome here would be scored
+  # ineffective every settle window until F3-11 manufactured a
+  # fleet.remediation_stuck for a lane that never acted and cannot act.
+  it "records no remediation outcome, because it actuates nothing" do
+    6.times { tick! }
+
+    # Same non-vacuity problem: zero outcomes is also what a blocked lane
+    # yields. The approval row proves the lane ran and PROCEEDED.
+    expect(Ai::ApprovalRequest.where(account_id: account.id).count).to eq(1)
+
+    expect(System::Fleet::RemediationOutcome.where(account_id: account.id,
+                                                   fingerprint: fingerprint).count).to eq(0)
+  end
+end
