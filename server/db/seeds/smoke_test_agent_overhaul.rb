@@ -93,10 +93,12 @@ ok.call("SkillBindings.validate! passed (every registered slug → Ai::Skill row
 # ────────────────────────────────────────────────────────────────────
 step.call("Verify (registry, DB) parity for system-agent bindings")
 
-system_agent_ids = ::Ai::Agent.where(name: EXPECTED_AGENTS.keys).pluck(:name, :id).to_h
+# Keyed on source_key: SkillBindings.discover now projects an agent_key (a
+# canonical source_key), because a display name is not an identity.
+system_agent_ids = ::Ai::Agent.where(name: EXPECTED_AGENTS.keys).pluck(:source_key, :id).to_h
 
 discovered_pairs = discovered.filter_map do |entry|
-  agent_id = system_agent_ids[entry[:agent_name]]
+  agent_id = system_agent_ids[entry[:agent_key]]
   skill    = ::Ai::Skill.find_by(slug: entry[:skill_slug])
   next unless agent_id && skill
   [ agent_id, skill.id ]

@@ -35,7 +35,7 @@ module System
           }
         )
 
-        binds_to "System Concierge", "CVE Responder"
+        binds_to "concierge", "CVE Responder"
 
         protected
 

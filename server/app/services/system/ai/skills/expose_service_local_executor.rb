@@ -82,7 +82,7 @@ module System
         # HIER-P2D: owned by the Ingress Manager (its system.expose_service_* row
         # gates this executor when run as that agent); System Concierge keeps the
         # operator-chat door and its approval card.
-        binds_to "ingress_manager", "System Concierge"
+        binds_to "ingress_manager", "concierge"
 
         protected
 

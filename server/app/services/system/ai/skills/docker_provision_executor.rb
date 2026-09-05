@@ -35,7 +35,7 @@ module System
           }
         )
 
-        binds_to "Runtime Manager", "System Concierge"
+        binds_to "Runtime Manager", "concierge"
 
         protected
 

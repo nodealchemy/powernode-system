@@ -88,7 +88,7 @@ module System
 
         # System Concierge = the NL surface; Fleet Autonomy = policy-gated
         # autonomous fulfillment.
-        binds_to "System Concierge", "Fleet Autonomy"
+        binds_to "concierge", "Fleet Autonomy"
 
         protected
 

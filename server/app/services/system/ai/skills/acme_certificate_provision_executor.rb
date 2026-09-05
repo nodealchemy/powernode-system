@@ -58,7 +58,7 @@ module System
         # sensor-routed system.acme_cert_rotate renewal lane fires
         # PlatformMaintenanceExecutor and stays Fleet Autonomy's. System
         # Concierge keeps the operator-chat door.
-        binds_to "ingress_manager", "System Concierge"
+        binds_to "ingress_manager", "concierge"
 
         protected
 

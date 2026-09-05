@@ -45,7 +45,7 @@ module System
           }
         )
 
-        binds_to "System Concierge"
+        binds_to "concierge"
 
         protected
 

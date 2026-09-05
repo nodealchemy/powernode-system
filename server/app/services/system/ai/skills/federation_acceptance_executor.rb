@@ -54,7 +54,7 @@ module System
           blast_radius: :high
         )
 
-        binds_to "SDWAN Manager", "System Concierge"
+        binds_to "SDWAN Manager", "concierge"
 
         protected
 

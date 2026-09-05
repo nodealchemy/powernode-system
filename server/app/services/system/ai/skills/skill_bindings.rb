@@ -21,42 +21,61 @@ module System
       module SkillBindings
         @registrations = []
 
-        # The skill catalog uses canonical agent names; aliases let executor
-        # authors refer to them via short slugs without typos.
+        # Executor-facing LABEL -> canonical SOURCE KEY.
+        #
+        # The values used to be DISPLAY NAMES and the reconciler looked agents
+        # up by name. That made a display name a binding key: renaming an agent
+        # in the UI silently orphaned every skill bound to it, and
+        # Ai::Agent#generate_slug meant the rename also rewrote the slug, so
+        # one edit moved two identifiers that other code addressed the agent
+        # by. `source_key` is the only field on a seeded canonical that is set
+        # explicitly and derived from nothing (AgentSetupHelpers
+        # .find_or_initialize_global_agent), which is what makes it the right
+        # key. It is the same key space System::Governance::PolicyDeclarations
+        # ::AGENT_IDENTITIES is keyed on and HierarchyReconciler resolves the
+        # forest root through.
+        #
+        # Both spellings map to the same key on purpose. The short tokens are
+        # what new executors should use. The display-name spellings are LEGACY
+        # LABELS kept working for executors that still write them out; a label
+        # going stale is a cosmetic failure, whereas a lookup keyed on a label
+        # is a correctness one, and only the lookup moved.
         AGENT_ALIASES = {
-          "concierge"          => "System Concierge",
-          "fleet_autonomy"     => "Fleet Autonomy",
-          "runtime_manager"    => "Runtime Manager",
-          "cve_responder"      => "CVE Responder",
-          "sdwan_manager"      => "SDWAN Manager",
-          "disk_image_manager" => "Disk Image Manager",
-          # HIER-P2A: added ahead of the skill re-binding increment (P2F) so a
-          # gitops executor could `binds_to "gitops_reconciler"`. HIER-P2F
-          # landed the three binders: gitops_sync_repository,
-          # gitops_apply_proposal and gitops_register_repository all route
-          # through this slug now.
-          "gitops_reconciler"  => "GitOps Reconciler",
-          "topology_designer"  => "System Topology Designer",
-          # HIER-P2DECL: the four operations managers, added with their policy
-          # sets (PolicyDeclarations::AGENT_IDENTITIES) in wave 1; wave 2
-          # (HIER-P2B/P2C/P2D/P2E, 2026-09-03) seeded the agents and re-bound
-          # their executors — six capacity executors (+ attach_storage since
-          # HIER-P2SWEEP), restore_volume, the four ingress expose/ACME
-          # executors and the eight supply-chain executors bind through these
-          # slugs now. The alias targets are pinned to the declared identity
-          # names by policy_declarations_ownership_spec so a typo cannot bind
-          # to nobody.
-          "capacity_manager"     => "Capacity Manager",
-          "storage_manager"      => "Storage Manager",
-          "ingress_manager"      => "Ingress Manager",
-          "supply_chain_manager" => "Supply Chain Manager",
-          # HIER-P3: the Platform Architect is a CORE canonical (seeded by
-          # db/seeds/ai_engineering_agents_seed.rb in the parent tree), the
-          # first one an extension executor binds — GovernanceGapProposeExecutor
-          # routes through this slug. Declared in PolicyDeclarations::
-          # AGENT_IDENTITIES under CORE_CANONICAL_KEYS, so the alias target is
-          # pinned to a declared identity like the others.
-          "platform_architect"   => "Platform Architect"
+          # short tokens
+          "concierge"            => "system-concierge",
+          "fleet_autonomy"       => "fleet-autonomy",
+          "runtime_manager"      => "runtime-manager",
+          "cve_responder"        => "cve-responder",
+          "sdwan_manager"        => "sdwan-manager",
+          "disk_image_manager"   => "disk-image-manager",
+          "gitops_reconciler"    => "gitops-reconciler",
+          "topology_designer"    => "topology-designer",
+          "capacity_manager"     => "capacity-manager",
+          "storage_manager"      => "storage-manager",
+          "ingress_manager"      => "ingress-manager",
+          "supply_chain_manager" => "supply-chain-manager",
+          # The Platform Architect is a CORE canonical (seeded by
+          # server/db/seeds/ai_engineering_agents_seed.rb), the only one an
+          # extension executor binds.
+          "platform_architect"   => "platform-architect",
+
+          # legacy display-name labels — same targets, still accepted
+          "Fleet Autonomy"            => "fleet-autonomy",
+          "Runtime Manager"           => "runtime-manager",
+          "CVE Responder"             => "cve-responder",
+          "SDWAN Manager"             => "sdwan-manager",
+          "Disk Image Manager"        => "disk-image-manager",
+          "GitOps Reconciler"         => "gitops-reconciler",
+          "System Topology Designer"  => "topology-designer",
+          "Capacity Manager"          => "capacity-manager",
+          "Storage Manager"           => "storage-manager",
+          "Ingress Manager"           => "ingress-manager",
+          "Supply Chain Manager"      => "supply-chain-manager",
+          "Platform Architect"        => "platform-architect"
+          # NOTE: no "System Concierge" entry. That agent was renamed to
+          # Infrastructure Generalist, and every executor that bound it by
+          # display name now uses the "concierge" token, so no label here can
+          # go stale against it.
         }.freeze
 
         class << self
@@ -64,13 +83,13 @@ module System
           # reload-safe: dedupes by executor class *name* (not object identity)
           # so dev-mode class reloads don't create phantom duplicate entries.
           def register(executor_class, agents:)
-            agent_names = Array(agents).flatten.map { |a| AGENT_ALIASES.fetch(a.to_s, a.to_s) }
+            agent_keys = Array(agents).flatten.map { |a| AGENT_ALIASES.fetch(a.to_s, a.to_s) }
             existing = @registrations.find { |r| r[:executor].name == executor_class.name }
             if existing
               existing[:executor] = executor_class
-              existing[:agents]   = (existing[:agents] + agent_names).uniq
+              existing[:agents]   = (existing[:agents] + agent_keys).uniq
             else
-              @registrations << { executor: executor_class, agents: agent_names.uniq }
+              @registrations << { executor: executor_class, agents: agent_keys.uniq }
             end
             self
           end
@@ -82,7 +101,8 @@ module System
           end
 
           # Discovery projection: each registration emits one entry per
-          # (skill_slug, agent_name) pair so the seed can iterate flatly.
+          # (skill_slug, agent_key) pair so the seed can iterate flatly.
+          # `agent_key` is a canonical source_key — see AGENT_ALIASES.
           #
           # Slug derivation mirrors `system_skills_seed.rb`'s convention for
           # `Ai::Skill.slug`: take the executor class name, demodulize,
@@ -94,11 +114,11 @@ module System
           def discover
             @registrations.flat_map do |reg|
               slug = derive_slug(reg[:executor])
-              reg[:agents].map do |agent_name|
+              reg[:agents].map do |agent_key|
                 {
                   executor:   reg[:executor],
                   skill_slug: slug,
-                  agent_name: agent_name
+                  agent_key:  agent_key
                 }
               end
             end

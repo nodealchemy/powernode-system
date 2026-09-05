@@ -46,7 +46,7 @@ module System
           }
         )
 
-        binds_to "supply_chain_manager", "System Concierge"
+        binds_to "supply_chain_manager", "concierge"
 
         protected
 

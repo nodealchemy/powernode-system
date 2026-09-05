@@ -33,7 +33,7 @@ module System
           }
         )
 
-        binds_to "supply_chain_manager", "System Concierge", "CVE Responder"
+        binds_to "supply_chain_manager", "concierge", "CVE Responder"
 
         protected
 

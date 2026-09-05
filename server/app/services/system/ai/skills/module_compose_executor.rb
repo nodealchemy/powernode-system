@@ -76,7 +76,7 @@ module System
 
         # System Concierge is the NL surface for on-demand composition; Fleet
         # Autonomy drives it policy-gated.
-        binds_to "Fleet Autonomy", "System Concierge"
+        binds_to "Fleet Autonomy", "concierge"
 
         protected
 

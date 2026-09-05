@@ -42,7 +42,9 @@ module System
         # system_provisioning_skills_seed.rb) and so never registers through
         # `binds_to`; it is bound to the System Concierge here, and thereby
         # both upserted AND spared by the drift correction.
-        ENTRY_SKILL_BINDINGS = { "system-provision-infrastructure" => "System Concierge" }.freeze
+        # skill_slug => canonical SOURCE KEY (not a display name — see
+        # SkillBindings::AGENT_ALIASES for why the key moved).
+        ENTRY_SKILL_BINDINGS = { "system-provision-infrastructure" => "system-concierge" }.freeze
 
         EXECUTOR_GLOB = "../extensions/system/server/app/services/system/ai/skills/**/*_executor.rb"
 
@@ -124,19 +126,23 @@ module System
           SkillBindings.validate! if @strict
 
           registrations = SkillBindings.discover
-          agent_names = (registrations.map { |e| e[:agent_name] } + ENTRY_SKILL_BINDINGS.values).uniq
+          # Resolved by SOURCE KEY. This lookup used to key on the agent's
+          # DISPLAY NAME, which made renaming an agent in the UI silently
+          # orphan every skill bound to it — the bindings did not error, they
+          # simply stopped matching and the agent lost its whole skill set.
+          agent_keys = (registrations.map { |e| e[:agent_key] } + ENTRY_SKILL_BINDINGS.values).uniq
           slugs = (registrations.map { |e| e[:skill_slug] } + ENTRY_SKILL_BINDINGS.keys).uniq
-          agents = ::Ai::Agent.global.where(name: agent_names).index_by(&:name)
+          agents = ::Ai::Agent.global.where(source_key: agent_keys).index_by(&:source_key)
           skills = ::Ai::Skill.global.where(slug: slugs).index_by(&:slug)
 
           desired = []
           unknown_agents = Hash.new(0)
           missing_skills = []
-          pairs = registrations.map { |e| [ e[:skill_slug], e[:agent_name] ] } + ENTRY_SKILL_BINDINGS.to_a
-          pairs.each do |slug, agent_name|
-            agent = agents[agent_name]
+          pairs = registrations.map { |e| [ e[:skill_slug], e[:agent_key] ] } + ENTRY_SKILL_BINDINGS.to_a
+          pairs.each do |slug, agent_key|
+            agent = agents[agent_key]
             unless agent
-              unknown_agents[agent_name] += 1
+              unknown_agents[agent_key] += 1
               next
             end
             skill = skills[slug]
@@ -156,7 +162,7 @@ module System
             desired: desired.uniq,
             # Drift is corrected on the agents the REGISTRY names (plus the
             # entry-skill owner), never on agents outside this extension.
-            registry_agent_ids: agents.values_at(*agent_names).compact.map(&:id),
+            registry_agent_ids: agents.values_at(*agent_keys).compact.map(&:id),
             agents_by_id: agents.values.index_by(&:id),
             skills_by_id: skills.values.index_by(&:id),
             unknown_agents: unknown_agents.keys.sort,

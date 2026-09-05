@@ -102,7 +102,7 @@ module System
           }
         )
 
-        binds_to "Fleet Autonomy", "System Concierge", "CVE Responder"
+        binds_to "Fleet Autonomy", "concierge", "CVE Responder"
 
         protected
 

@@ -69,7 +69,7 @@ module System
           blast_radius: :medium
         )
 
-        binds_to "Runtime Manager", "System Concierge"
+        binds_to "Runtime Manager", "concierge"
 
         # Instance-method rollback contract — invoked by `SkillCompositionRunner`
         # via `executor.public_send(:rollback_provision_cluster, **outputs)`,

@@ -3,11 +3,12 @@
 module Api
   module V1
     module System
-      # Operator-facing entry point for the System Concierge.
+      # Operator-facing entry point for the Infrastructure Generalist
+      # (formerly "System Concierge"; source_key is unchanged).
       #
       # The Concierge itself runs on the platform's Ai::ConciergeService /
       # Ai::ConciergeToolBridge stack — this controller's only job is to
-      # bootstrap (or reuse) a conversation for the System Concierge agent
+      # bootstrap (or reuse) a conversation for that agent
       # and surface a current fleet snapshot the operator UI can display
       # alongside the chat. Subsequent messages use the standard
       # /api/v1/ai/conversations/:id/messages endpoint.
@@ -27,7 +28,7 @@ module Api
           require_permission("system.fleet.read")
 
           agent = find_concierge_agent
-          return render_error("System Concierge agent not seeded; run rails db:seed", status: :precondition_failed) unless agent
+          return render_error("Infrastructure Generalist agent not seeded; run rails db:seed", status: :precondition_failed) unless agent
 
           ::ProviderAvailabilityService.validate_agent_provider!(agent)
           conversation = find_or_create_conversation(agent)
@@ -49,10 +50,28 @@ module Api
           @account = current_user.account
         end
 
-        # HIER-P2I: the account's clone of the System Concierge canonical —
-        # the principal that executes this conversation — never the global row.
+        # HIER-P2I: the account's clone of the canonical — the principal that
+        # executes this conversation — never the global row.
+        #
+        # Resolved by SOURCE KEY, not display name. This used to be
+        # `resolve_for(name: "System Concierge")`, which made the operator-
+        # visible name a lookup key: renaming the agent turned this into the
+        # "not seeded" refusal below even though the row was right there.
+        # `source_key` is set explicitly by the seed and derived from nothing,
+        # and GloballyScopable#clone_to_account copies it onto an account's
+        # clone, so the same key resolves the override and the global.
+        #
+        # `resolve_for` takes name/slug only, so the override preference is
+        # spelled out here rather than routed through it — `for_account` is
+        # global + this account, and `account_override_first` puts the
+        # account's own row ahead of the global one.
+        AGENT_SOURCE_KEY = "system-concierge"
+
         def find_concierge_agent
-          resolved = ::Ai::Agent.resolve_for(@account.id, name: "System Concierge", agent_type: "assistant")
+          resolved = ::Ai::Agent.for_account(@account.id)
+                                .where(source_key: AGENT_SOURCE_KEY, agent_type: "assistant")
+                                .account_override_first
+                                .first
           ::Ai::Agents::AccountPrincipalResolver.acting(resolved, account: @account, user: current_user)
                                                 &.tap { |a| a.resolving_account = @account }
         end
@@ -74,7 +93,7 @@ module Api
             ai_provider_id: agent.ai_provider_id,
             status: "active",
             conversation_type: "agent",
-            title: "System Concierge",
+            title: "Infrastructure Generalist",
             conversation_context: { "kind" => "system_concierge" },
             last_activity_at: Time.current
           )
