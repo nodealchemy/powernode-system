@@ -196,11 +196,16 @@ begin
   kinds = System::FleetEvent.where(account_id: account.id)
                             .where("payload->>'operation_id' = ?", operation_id)
                             .pluck(:kind).uniq.sort
+  # Five steps since IMP-0c10b9fd5596 added rehome_service_backends (the
+  # service-backend set follows the workload like the volumes and the VIP
+  # do). It runs — and lands its ledger row — even when the failed instance
+  # backed no service, which is this graph.
   expected = %w[
     system.instance_replace.acquire_replacement
     system.instance_replace.move_vips
     system.instance_replace.reattach_volumes
     system.instance_replace.reenrol_sdwan
+    system.instance_replace.rehome_service_backends
   ]
   abort("  ❌ Test 5 FAILED — step ledger is #{kinds.inspect}, expected #{expected.inspect}") \
     unless kinds == expected
