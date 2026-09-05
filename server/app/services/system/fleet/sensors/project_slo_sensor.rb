@@ -30,6 +30,31 @@ module System
         # doesn't supply them. These mirror the side-business persona quality
         # bar from the provisioning plan.
         DEFAULT_AVAILABILITY_PCT  = 99.5
+
+        # p99_latency_ms HAS NO PRODUCER, AND THAT IS A DECISION, NOT AN
+        # OVERSIGHT. Read this before treating the unpopulated field as a gap
+        # to fill.
+        #
+        # Nothing on this platform measures workload latency. The node agent
+        # measures cpu from /proc/stat and memory from memory_free_kb and
+        # nothing else; there is no prober. The intended transport
+        # (System::Slo::TelemetryAdapter, FleetEvent kind "metric.latency_ms")
+        # was ruled DORMANT on 2026-08-23 (IMP-6355c5adc382), the adapter says
+        # in as many words not to wire a producer to revive it, and
+        # spec/services/system/slo/dormancy_guard_spec.rb fails loudly if an
+        # emitter reappears. SDWAN flow samples carry byte and packet counters,
+        # not timings, so they cannot yield latency either.
+        #
+        # So ProjectMetricsCollector records p99_latency_ms as an honest
+        # `unavailable` sample forever, this target is compared against nothing,
+        # and the arm below never fires on live telemetry. Reviving it means
+        # building a prober from nothing — a real piece of work with an operator
+        # decision in front of it, not a loose end.
+        #
+        # The one response-time measurement in the tree
+        # (System::Platform::CompositeHealthProbe) probes the CONTROL PLANE's
+        # own components. It is not a workload measurement and must not be
+        # borrowed as one.
         DEFAULT_P99_LATENCY_MS    = 250
         DEFAULT_COST_CEILING_USD  = nil # falls back to brief.budget_cap_usd_monthly
 

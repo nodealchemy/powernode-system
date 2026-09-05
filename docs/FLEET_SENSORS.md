@@ -318,11 +318,15 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 | Key | Metric | Default |
 |---|---|---|
 | `availability_pct` | `availability_pct` | 99.5 |
-| `p99_latency_ms` | `p99_latency_ms` | 250 (or `brief.latency_targets_ms.p99`) |
+| `p99_latency_ms` | `p99_latency_ms` | 250 (or `brief.latency_targets_ms.p99`) — **compared against nothing; see below** |
 | `cost_ceiling_usd` | `cost_usd_mtd` | none — declared-only (falls back to `brief.budget_cap_usd_monthly`) |
 | `min_throughput_bytes_per_s` | `sdwan_throughput_bytes_per_s` | **none — declared-only** |
 | `max_cpu_pct` | `cpu_pct` | **none — declared-only** |
 | `max_memory_pct` | `memory_pct` | **none — declared-only** |
+
+**`p99_latency_ms` has NO PRODUCER, by decision.** Nothing on this platform measures workload latency: the node agent measures cpu from `/proc/stat` and memory from `memory_free_kb`, and there is no prober. The intended transport (`System::Slo::TelemetryAdapter`, FleetEvent kind `metric.latency_ms`) was ruled DORMANT on 2026-08-23 (IMP-6355c5adc382); the adapter says in as many words not to wire a producer to revive it, and `spec/services/system/slo/dormancy_guard_spec.rb` fails loudly if an emitter reappears. SDWAN flow samples carry byte and packet counters, not timings. So `ProjectMetricsCollector` records this metric as an honest `unavailable` sample forever and the latency arm never fires on live telemetry. The declared target is not an oversight and the empty field is not a loose end — reviving the metric means building a prober from nothing. (`System::Platform::CompositeHealthProbe`'s `response_time_ms` measures the CONTROL PLANE's own components and must not be borrowed as a workload measurement.)
+
+**The four non-utilization targets read the MISSION's own `configuration["slo_targets"]` directly**, not the ladder — so a target declared on an `Ai::Project` does not reach `availability_pct`, `p99_latency_ms`, `cost_ceiling_usd` or `min_throughput_bytes_per_s`. Only the two utilization ceilings below see the project rung. Closing that needs a public reader on `Ai::Mission` (the rung's accessor is private) and is tracked as a core-side handoff.
 
 The two utilization CEILINGS (IMP-7684d3f8658a) resolve through `Ai::Mission#utilization_targets`, not through this sensor: mission `slo_targets` → the mission TEMPLATE's `default_configuration` → `Account#settings` → the `ai.provisioning.max_cpu_pct` / `ai.provisioning.max_memory_pct` SiteSettings. That is the same home as the scaling window (`#scaling_bounds`), so the sensor that fires and the composer that sizes the response read one number.
 
