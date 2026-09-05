@@ -56,14 +56,14 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **21 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **36 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   external workload pressure (cross-extension stigmergic coordination), instance
   state drift, GitOps drift, package repository drift, project SLO breaches,
   disk-image publication failure streaks, SDWAN health (peer reachability, BGP
   session, VIP reachability, drift, credential expiry), and storage assignment
   drift
-- **50 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+- **65 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
   package + module authoring, architecture catalog, federation, and platform
@@ -102,12 +102,11 @@ This extension contributes:
   subdomains, 153 controllers across operator API + on-node API + worker API)
 - React/TypeScript frontend (~250 TS/TSX files including 11 page components +
   ~156 reusable components + custom hooks + API client services)
-- Worker jobs (12): `system_task_reaper`, `system_fleet_reconcile`,
+- Worker jobs (10 scheduled): `system_task_reaper`, `system_fleet_reconcile`,
   `system_cve_feed`, `system_cve_responder_reconcile`,
-  `system_fleet_event_retention`, `system_cloud_sync`, `system_execute_task`,
-  `system_gitops_sync`, `system_package_embedding`,
-  `system_package_module_materialize`, `system_package_module_refresh`,
-  `system_package_repository_sync`
+  `system_fleet_event_retention`, `sdwan_flow_sample_retention`,
+  `system_gitops_sync`, `system_cloud_sync`,
+  `system_fulfillment_request_reconcile`, `system_package_repository_sync`
 - Database migrations (137)
 - Sidekiq cron schedule entries
 
