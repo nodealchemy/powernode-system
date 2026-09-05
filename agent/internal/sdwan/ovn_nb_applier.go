@@ -483,7 +483,7 @@ func nbNormalizeMatch(m string) string {
 
 // nbAclListRe parses one `ovn-nbctl acl-list <switch>` line, e.g.
 //
-//	 to-lport  1000 (ip4.src == 10.0.0.0/24) allow
+//	to-lport  1000 (ip4.src == 10.0.0.0/24) allow
 //
 // The match expression may itself contain parentheses, so `(.*)` is
 // greedy and the action-word anchor disambiguates the closing paren.
