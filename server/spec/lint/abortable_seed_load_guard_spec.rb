@@ -48,6 +48,21 @@ RSpec.describe "abortable seeds are only loaded through load_abortable_seed!", t
     expect(seeds).to include("smoke_test_instance_replace.rb", "smoke_test_k3s_federation.rb")
   end
 
+  # The helper keys on the exit status: a seed that stops early with `exit 0`
+  # is reporting a graceful skip and must NOT red its example. That arm is
+  # only meaningful if such seeds exist — pin that they do, so a future
+  # "simplification" back to converting every SystemExit cannot claim there
+  # was nothing to preserve.
+  it "discovers seeds with a zero-status exit path, which the helper must let pass" do
+    zero_exit = Dir.glob(File.join(ASL_SEEDS_ROOT, "**", "*.rb")).sort.select do |path|
+      File.readlines(path).any? { |l| !l.strip.start_with?("#") && l.match?(/(?<![\w.])exit\s+0\b/) }
+    end.map { |p| File.basename(p) }
+
+    expect(zero_exit.size).to be >= 5, "found #{zero_exit.size} seeds with an `exit 0` path"
+    expect(zero_exit).to include("smoke_test_k3s_federation.rb")
+    expect(self.class.abortable_seeds).to include(*zero_exit)
+  end
+
   it "finds the specs that load them (the scan is scoped to something)" do
     seeds = self.class.abortable_seeds
     in_scope = self.class.spec_sources.select { |p| src = File.read(p); seeds.any? { |s| src.include?(s) } }

@@ -34,9 +34,19 @@ module AbortableSeedHelpers
     end
   end
 
+  # KEYED ON THE STATUS. `abort` exits 1 and is a failed assertion. A bare
+  # `exit 0` is the seeds' other idiom — "preconditions absent, nothing to
+  # do, and that is a success" (nine smoke seeds stop that way: an
+  # insufficient tier, an absent cluster). Converting every SystemExit would
+  # red exactly those graceful skips, and only on a host that does not
+  # satisfy the gate — green while the skip path is unreachable, wrong the
+  # moment it is reached, which is the conditional-execution trap in
+  # another layer. A zero status returns normally, as the seed intended.
   def load_abortable_seed!(path)
     load path
   rescue SystemExit => e
+    return nil if e.success?
+
     raise SeedAborted.new(e.message, status: e.status, seed: File.basename(path.to_s))
   end
 end
