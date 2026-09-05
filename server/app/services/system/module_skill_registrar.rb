@@ -45,7 +45,16 @@ module System
           # community-tier skills go through Ai::SkillProposal so an
           # operator approves before they become callable. Internal +
           # verified-publisher tiers register directly.
-          if tier == "community" && defined?(::Ai::SkillProposal)
+          #
+          # Ai::SkillProposal is a CORE model (server/app/models/ai/
+          # skill_proposal.rb), so it is always defined here. This used to be
+          # guarded with `defined?(::Ai::SkillProposal)` and fall through to
+          # DIRECT registration when it was not — a "back-compat" arm that
+          # could never run, whose spec was permanently skipped, and which
+          # would have silently made community skills callable without an
+          # operator if the constant had ever gone missing. The gate is now
+          # unconditional.
+          if tier == "community"
             create_skill_proposal(attrs, node_module)
             proposed += 1
           else
@@ -83,7 +92,6 @@ module System
     private
 
     def create_skill_proposal(attrs, node_module)
-      return unless defined?(::Ai::SkillProposal)
       proposal = ::Ai::SkillProposal.find_or_initialize_by(
         account: node_module.account,
         slug: attrs[:slug]

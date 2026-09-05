@@ -86,7 +86,7 @@ RSpec.describe System::ModuleSkillRegistrar do
       end
 
       it "routes through Ai::SkillProposal instead of creating Skill directly",
-         skip: !System::NodeModule.column_names.include?("manifest_yaml") || !defined?(::Ai::SkillProposal) do
+         skip: !System::NodeModule.column_names.include?("manifest_yaml") do
         expect {
           result = described_class.register_for_module!(node_module: mod)
           expect(result.ok?).to be true
@@ -95,11 +95,16 @@ RSpec.describe System::ModuleSkillRegistrar do
         }.not_to change(Ai::Skill, :count)
       end
 
-      it "registers directly when SkillProposal model isn't defined (back-compat)",
-         skip: !System::NodeModule.column_names.include?("manifest_yaml") || defined?(::Ai::SkillProposal) do
+      # No "registers directly when SkillProposal isn't defined" example: the
+      # model is core, the arm it tested was unreachable, and the example had
+      # been skipped on every run since it was written. Community-tier skills
+      # ALWAYS go through a proposal.
+      it "never registers a community-tier skill directly, whatever the manifest says",
+         skip: !System::NodeModule.column_names.include?("manifest_yaml") do
         expect {
           described_class.register_for_module!(node_module: mod)
-        }.to change(Ai::Skill, :count).by(1)
+        }.not_to change(Ai::Skill, :count)
+        expect(Ai::SkillProposal.where(account: mod.account).count).to eq(1)
       end
     end
 
