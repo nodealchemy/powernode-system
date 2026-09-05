@@ -261,7 +261,15 @@ RSpec.describe "service-seam instance provenance", type: :service do
         "defect.)",
 
       "fulfillment_advance_orchestrator.rb:ModuleSmokeVerifyExecutor" =>
-        "Same seam and same reasoning as ProvisionFullStackExecutor above."
+        "Same seam and same reasoning as ProvisionFullStackExecutor above.",
+
+      "scheduled_health_check_service.rb:PlatformMaintenanceExecutor" =>
+        "Scheduler-only. Reached from the worker-API tick " \
+        "(Api::V1::System::WorkerApi::PlatformHealthController#run_due), " \
+        "never from an MCP tool, and passes user: nil meaning a genuine " \
+        "in-process caller. Runs `gated: true` with the fixed action " \
+        "health_check, a read-only probe that nests no tool, so there is no " \
+        "bypass to hand out and no principal to carry."
     }.freeze
 
     let(:service_sources) do
