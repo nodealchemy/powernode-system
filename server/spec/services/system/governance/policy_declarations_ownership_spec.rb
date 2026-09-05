@@ -193,12 +193,16 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
   def agent_sets = d::POLICY_SETS.select { |s| s[:scope] == "agent" && s[:agent_key] }
 
   describe "the five lifted sets" do
-    it "Capacity Manager = the capacity keys + instance pools + provisioning + platform scaling + cordon (22)" do
+    # 22 at wave 1; 23 since campaign 01a07025 added
+    # project.target_unmeasurable_investigate to PROVISIONING_POLICIES — born on
+    # this manager, never lifted off Fleet Autonomy (see
+    # policy_reconciler_rehome_spec's added_after_wave1).
+    it "Capacity Manager = the capacity keys + instance pools + provisioning + platform scaling + cordon (23)" do
       expect(d::CAPACITY_MANAGER_POLICIES.keys).to match_array(
         d::CAPACITY_POLICY_KEYS.keys + d::INSTANCE_POOL_POLICIES.keys + d::PROVISIONING_POLICIES.keys +
         d::PLATFORM_SCALING_POLICIES.keys + d::INSTANCE_CORDON_OPERATOR_POLICIES.keys
       )
-      expect(d::CAPACITY_MANAGER_POLICIES.size).to eq(22)
+      expect(d::CAPACITY_MANAGER_POLICIES.size).to eq(23)
       expect(set("capacity-manager")).to include(agent_key: "capacity-manager", scope: "agent",
                                                   condition_overrides: d::PROVISIONING_CONDITION_OVERRIDES)
       expect(set("capacity-manager")[:policies]).to equal(d::CAPACITY_MANAGER_POLICIES)

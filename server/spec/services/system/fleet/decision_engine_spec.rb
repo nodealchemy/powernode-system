@@ -2613,14 +2613,30 @@ RSpec.describe System::Fleet::DecisionEngine do
   # project.* binding could re-open the same dead end.
   describe "REMEDIATION_APPLIERS covers the gated project.* lane" do
     it "declares an applier for every binding routed to a project.* action category" do
-      project_kinds = described_class::SIGNAL_BINDINGS
-                        .select { |_kind, b| b[:action_category].to_s.start_with?("project.") }
-                        .keys
+      project_bindings = described_class::SIGNAL_BINDINGS
+                           .select { |_kind, b| b[:action_category].to_s.start_with?("project.") }
+      project_kinds = project_bindings.keys
       expect(project_kinds).to match_array(
-        %w[system.project_slo_violation system.project_drift system.project_cost_breach]
+        %w[system.project_slo_violation system.project_drift system.project_cost_breach
+           system.project_target_unmeasurable]
       )
 
-      unwired = project_kinds.reject { |kind| described_class::REMEDIATION_APPLIERS.key?(kind) }
+      # A lane may bind NO skill and NO applier only by declaring, in
+      # RemediationValidator, that its category remediates nothing — the
+      # unmeasurable-target lane reaches an operator and actuates nothing
+      # because there is no remediation for "no producer exists". Both halves
+      # are required: a skill-less binding whose category is NOT declared
+      # non-remediating is exactly the dead end this guard exists for, and the
+      # exempt set is pinned so a new notify-only lane is a visible decision
+      # here rather than a silent widening.
+      notify_only = project_kinds.select do |kind|
+        binding = project_bindings[kind]
+        binding[:skill].nil? &&
+          System::Fleet::RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.include?(binding[:action_category])
+      end
+      expect(notify_only).to eq(%w[system.project_target_unmeasurable])
+
+      unwired = (project_kinds - notify_only).reject { |kind| described_class::REMEDIATION_APPLIERS.key?(kind) }
       expect(unwired).to eq([])
     end
   end

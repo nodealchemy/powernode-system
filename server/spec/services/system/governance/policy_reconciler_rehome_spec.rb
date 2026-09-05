@@ -227,7 +227,10 @@ RSpec.describe System::Governance::PolicyReconciler, "FORMER_OWNERS (HIER-P2DECL
     # number that drifts with every later addition.
     #   system.volume_snapshot_create — IMP-c22215ae9546, the scheduled-
     #     snapshot lane, new on the Storage Manager.
-    let(:added_after_wave1) { %w[system.volume_snapshot_create] }
+    #   project.target_unmeasurable_investigate — campaign 01a07025, the
+    #     notify-only unmeasurable-SLO-target lane, new on the Capacity Manager
+    #     (PROVISIONING_POLICIES).
+    let(:added_after_wave1) { %w[system.volume_snapshot_create project.target_unmeasurable_investigate] }
 
     it "records every key wave 1 lifted off Fleet Autonomy — 35 — and P2A's 16 before them" do
       wave1 = d::CAPACITY_POLICY_KEYS.keys + d::INSTANCE_POOL_POLICIES.keys + d::PROVISIONING_POLICIES.keys +
