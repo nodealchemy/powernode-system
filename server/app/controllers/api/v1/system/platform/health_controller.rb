@@ -5,34 +5,81 @@ module Api
     module System
       module Platform
         # Aggregate platform-health snapshot for the
-        # /app/system/compute/platform/health dashboard panel. Pulls
-        # per-subsystem signals (rails, worker, redis, postgres, traefik,
-        # sdwan, federation, sidekiq cron) and returns a flat envelope
-        # the frontend renders as cards.
+        # /app/system/compute/platform/health dashboard panel.
         #
-        # No new persistence layer — everything is aggregated live from
-        # existing models + Redis/PG stats. Safe to call repeatedly
-        # (~30s polling target from the UI).
+        # ── WHY THIS IS A THIN ADAPTER NOW ────────────────────────────────
+        #
+        # This endpoint used to carry its OWN copy of every subsystem probe.
+        # That made it the fourth producer of "is the platform healthy?" on a
+        # platform that already had three, and it disagreed with them the same
+        # way they disagreed with each other (offer 01a07024-d980):
+        #
+        #   * `rails_health` returned the literal `{ status: "ok" }` — a value
+        #     that could never come back anything else, on the card an operator
+        #     looks at first.
+        #   * there was no fleet-instance subsystem at all, so the panel could
+        #     render every card green while NodeInstances sat in status
+        #     "error". That is the dashboard version of the Concierge telling
+        #     an operator "there are no node instances in error status" while
+        #     12 were.
+        #   * `worker_health` tried `require "sidekiq/api"` inside the Rails
+        #     app. The server is deliberately Sidekiq-free (no such gem in
+        #     server/Gemfile), so that require has always raised LoadError, the
+        #     stats hash has always been empty, and the Worker Pool card has
+        #     always read "unknown / — live". Removed: the composite reads the
+        #     Sidekiq process registry out of the worker's Redis instead, which
+        #     answers the question without the dependency.
+        #
+        # Every status now comes from System::Platform::CompositeHealthProbe,
+        # which is the single producer. This controller only ADAPTS that output
+        # to the response contract the frontend already consumes.
+        #
+        # ── THE CONTRACT ──────────────────────────────────────────────────
+        #
+        # frontend/src/features/system/types/platform-health.types.ts pins
+        # `SubsystemStatus = 'ok' | 'degraded' | 'down' | 'unknown'`, and
+        # HealthPanel's StatusPill indexes a Record keyed by exactly those four
+        # and dereferences the result with NO default. A fifth value is not a
+        # cosmetic problem — it is a TypeError that blanks the whole panel.
+        #
+        # So the probe's `not_measured` is mapped onto the contract's existing
+        # `unknown`, which already means "we do not know" and already renders
+        # as a grey HelpCircle. The precise value travels beside it in an
+        # ADDITIVE `measurement` field, which the current renderer ignores and
+        # a future one can use. Nothing is removed from the response; the new
+        # keys (overall, fleet_instances, worker_web, reverse_proxy,
+        # mcp_endpoint, fleet_tick, ai_providers, and the down/degraded/
+        # not_measured name lists) are additions.
+        #
+        # ── PRESENTATION ENRICHMENT ───────────────────────────────────────
+        #
+        # A few fields the cards render are decoration the probe does not
+        # measure: process uptime, database size, active connection count, the
+        # cache store's class name. Those are gathered here and are NEVER
+        # status-bearing — if an enrichment query fails the card loses a
+        # number, and the subsystem keeps whatever status the probe gave it. A
+        # formatting failure must not be able to manufacture an outage.
         #
         # Plan reference: Decentralized Federation §I + P7.2.
         class HealthController < ApplicationController
           before_action :authenticate_request
 
+          # `not_measured` is the probe's word; `unknown` is the contract's.
+          # Same meaning, and only one of them is renderable.
+          WIRE_STATUS = { "not_measured" => "unknown" }.freeze
+
           def show
             return forbidden unless current_user&.has_permission?("system.platform.health.read")
 
-            render_success(
-              health: {
-                rails:        rails_health,
-                worker:       worker_health,
-                redis:        redis_health,
-                postgres:     postgres_health,
-                acme:         acme_health,
-                sdwan:        sdwan_health,
-                federation:   federation_health,
-                generated_at: Time.current.iso8601
-              }
-            )
+            # `call`, not `call_and_persist!`. The panel polls every 30s; an
+            # operator invoking the MCP verb is a discrete event worth a row,
+            # a poll is not, and persisting one would write thousands of rows
+            # a day per open tab.
+            result = ::System::Platform::CompositeHealthProbe
+                     .new(account: current_account, source: "platform_health_dashboard")
+                     .call
+
+            render_success(health: envelope(result))
           end
 
           private
@@ -41,230 +88,170 @@ module Api
             render_error("Forbidden", status: :forbidden)
           end
 
-          # ── Rails API ────────────────────────────────────────────────────
-          def rails_health
-            uptime_seconds = process_uptime_seconds
+          def envelope(result)
+            subsystems = result[:subsystems]
+
             {
-              status: "ok",
-              uptime_seconds: uptime_seconds,
-              uptime_human: humanize_duration(uptime_seconds),
-              db_connected: db_connected?,
-              rails_env: Rails.env,
-              ruby_version: RUBY_VERSION
+              # Additive: the old response had no aggregate at all, which is
+              # part of why nobody noticed the cards disagreeing.
+              overall: wire_status(result[:overall]),
+
+              # The seven legacy keys, in their original order.
+              rails:      rails_entry(subsystems[:rails], subsystems[:postgres]),
+              worker:     worker_entry(subsystems[:sidekiq]),
+              redis:      redis_entry(subsystems[:redis]),
+              postgres:   postgres_entry(subsystems[:postgres]),
+              acme:       acme_entry(subsystems[:acme]),
+              sdwan:      sdwan_entry(subsystems[:sdwan]),
+              federation: federation_entry(subsystems[:federation]),
+
+              # Additive subsystems. `fleet_instances` is the one whose absence
+              # let this panel report green during a fleet incident.
+              fleet_instances: entry(subsystems[:fleet_instances]),
+              worker_web:      entry(subsystems[:worker_web]),
+              reverse_proxy:   entry(subsystems[:reverse_proxy]),
+              mcp_endpoint:    entry(subsystems[:mcp_endpoint]),
+              fleet_tick:      entry(subsystems[:fleet_tick]),
+              ai_providers:    entry(subsystems[:ai_providers]),
+
+              # Additive: name the subsystems at each status so blindness is
+              # readable without walking every card.
+              down:         result[:down],
+              degraded:     result[:degraded],
+              not_measured: result[:not_measured],
+
+              generated_at: result[:generated_at]
             }
-          rescue StandardError => e
-            { status: "down", error: e.message }
           end
 
-          # Returns Rails process uptime in seconds. Reads /proc/self/stat
-          # field 22 (starttime in clock ticks since boot) and subtracts
-          # from current monotonic time. Falls back to 0 if /proc is
+          # Adapts one probe entry to the wire: renderable status, plus the
+          # precise measurement word when the probe could not observe.
+          def entry(probe_entry)
+            probe_entry = (probe_entry || {}).dup
+            raw = probe_entry[:status].to_s
+            probe_entry[:status] = wire_status(raw)
+            probe_entry[:measurement] = raw if raw == "not_measured"
+            probe_entry
+          end
+
+          def wire_status(status)
+            WIRE_STATUS.fetch(status.to_s, status.to_s)
+          end
+
+          # ── legacy-shaped entries ────────────────────────────────────────
+
+          # `db_connected` is the Postgres probe's verdict rather than a second
+          # SELECT 1 — one connectivity check, one answer, no way for the two
+          # to disagree on the same page.
+          def rails_entry(probe_entry, postgres_entry)
+            uptime = enrich { process_uptime_seconds }
+
+            entry(probe_entry).merge(
+              rails_env: probe_entry&.dig(:env) || Rails.env,
+              ruby_version: probe_entry&.dig(:ruby) || RUBY_VERSION,
+              uptime_seconds: uptime,
+              uptime_human: humanize_duration(uptime),
+              db_connected: postgres_entry&.dig(:status).to_s == "ok"
+            )
+          end
+
+          # The card wants a `stats` hash. The probe reports what it can see of
+          # Sidekiq from the worker Redis process registry; queue-depth
+          # counters are not observable from this process and are simply
+          # absent rather than guessed at.
+          def worker_entry(probe_entry)
+            last_seen = enrich { ::Worker.where(is_system: false).maximum(:last_seen_at) if defined?(::Worker) }
+
+            entry(probe_entry).merge(
+              stats: { processes: probe_entry&.dig(:process_count) }.compact,
+              last_seen_at: last_seen&.iso8601
+            )
+          end
+
+          # The next three rename probe fields onto the names the cards read.
+          # The probe keeps a flat payload for its own consumers; naming the
+          # contract shape is this adapter's whole job, and getting it wrong
+          # is silent — the card renders a fallback dash rather than erroring.
+
+          def acme_entry(probe_entry)
+            entry(probe_entry).merge(count: probe_entry&.dig(:total))
+          end
+
+          def sdwan_entry(probe_entry)
+            entry(probe_entry).merge(
+              virtual_ips: {
+                count: probe_entry&.dig(:virtual_ip_count),
+                assigned: probe_entry&.dig(:virtual_ips_assigned)
+              }
+            )
+          end
+
+          def federation_entry(probe_entry)
+            entry(probe_entry).merge(degraded: probe_entry&.dig(:degraded_peers))
+          end
+
+          def redis_entry(probe_entry)
+            entry(probe_entry).merge(
+              cache_store: Rails.cache.class.name,
+              probe_at: Time.current.iso8601
+            )
+          end
+
+          def postgres_entry(probe_entry)
+            metrics = enrich { postgres_metrics } || {}
+            entry(probe_entry).merge(metrics)
+          end
+
+          # ── presentation enrichment (never status-bearing) ───────────────
+
+          # Runs a decoration query and swallows its failure. The caller merges
+          # whatever came back; a nil merges as an absent field, and the
+          # subsystem keeps the status the PROBE gave it.
+          def enrich
+            yield
+          rescue StandardError => e
+            Rails.logger.warn("[PlatformHealth] enrichment failed: #{e.class}: #{e.message}")
+            nil
+          end
+
+          def postgres_metrics
+            conn = ActiveRecord::Base.connection
+            size = conn.execute("SELECT pg_database_size(current_database()) AS bytes").first["bytes"].to_i
+            active = conn.execute(
+              "SELECT count(*) AS n FROM pg_stat_activity WHERE state = 'active'"
+            ).first["n"].to_i
+
+            {
+              database: conn.current_database,
+              size_bytes: size,
+              size_human: humanize_bytes(size),
+              active_connections: active
+            }
+          end
+
+          # Rails process uptime in seconds, from /proc/self/stat field 22
+          # (starttime in clock ticks since boot). Returns 0 where /proc is
           # unavailable (non-Linux dev).
           def process_uptime_seconds
             return @process_uptime_seconds if defined?(@process_uptime_seconds)
             return (@process_uptime_seconds = 0) unless File.exist?("/proc/self/stat")
 
             stat = File.read("/proc/self/stat")
-            # Field 22 is starttime (clock ticks since boot). Skip past
-            # the process name (in parens) so we don't trip on names
-            # containing spaces.
+            # Skip past the process name (in parens) so a name containing
+            # spaces does not shift the field offsets.
             after_name = stat.sub(/\A\d+ \([^)]*\) /, "")
             fields = after_name.split(" ")
-            starttime_ticks = fields[19].to_i # 22 - 3 (pid, comm, state) = 19 0-indexed
-            ticks_per_sec   = `getconf CLK_TCK`.to_i
-            ticks_per_sec   = 100 if ticks_per_sec.zero?
+            starttime_ticks = fields[19].to_i # field 22, minus pid/comm/state
+            ticks_per_sec = `getconf CLK_TCK`.to_i
+            ticks_per_sec = 100 if ticks_per_sec.zero?
 
-            uptime_seconds = File.read("/proc/uptime").split(" ").first.to_f
-            process_age_ticks = (uptime_seconds * ticks_per_sec) - starttime_ticks
+            boot_uptime = File.read("/proc/uptime").split(" ").first.to_f
+            process_age_ticks = (boot_uptime * ticks_per_sec) - starttime_ticks
             @process_uptime_seconds = (process_age_ticks / ticks_per_sec).to_i
           rescue StandardError
             @process_uptime_seconds = 0
           end
 
-          def db_connected?
-            ActiveRecord::Base.connection.execute("SELECT 1")
-            true
-          rescue StandardError
-            false
-          end
-
-          # ── Worker (Sidekiq) ─────────────────────────────────────────────
-          # Worker state is reported by the standalone worker process via
-          # the worker_api → server bridge. We read the most recent
-          # FleetEvent or fall back to summarizing what we can see from
-          # cached cron metadata.
-          def worker_health
-            # Best-effort: most platform deployments run Sidekiq stats
-            # against the same Redis the server uses for caching. If the
-            # gem isn't available in the server's path, the values fall
-            # back to "unknown".
-            stats = begin
-              require "sidekiq/api"
-              s = Sidekiq::Stats.new
-              {
-                processed: s.processed,
-                failed: s.failed,
-                enqueued: s.enqueued,
-                scheduled: s.scheduled_size,
-                retry_size: s.retry_size,
-                dead_size: s.dead_size,
-                processes: s.processes_size,
-                default_queue_latency: s.default_queue_latency&.round(2)
-              }
-            rescue LoadError, StandardError
-              {}
-            end
-
-            last_seen = ::Worker.where(is_system: false).maximum(:last_seen_at) if defined?(::Worker)
-            status =
-              if stats[:processes]&.positive?
-                "ok"
-              elsif stats[:enqueued]&.positive? || stats[:processed]&.positive?
-                # Stats visible but no live process — degraded
-                "degraded"
-              else
-                "unknown"
-              end
-
-            {
-              status: status,
-              stats: stats,
-              last_seen_at: last_seen&.iso8601
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── Redis ────────────────────────────────────────────────────────
-          def redis_health
-            cache_ok = Rails.cache.write("__platform_health_probe", Time.current.iso8601, expires_in: 5.seconds)
-            roundtrip = Rails.cache.read("__platform_health_probe")
-            {
-              status: cache_ok && roundtrip.present? ? "ok" : "degraded",
-              cache_store: Rails.cache.class.name,
-              probe_at: Time.current.iso8601
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── Postgres ─────────────────────────────────────────────────────
-          def postgres_health
-            conn = ActiveRecord::Base.connection
-            db_size = conn.execute("SELECT pg_database_size(current_database()) AS bytes").first["bytes"].to_i
-            active_conns = conn.execute(
-              "SELECT count(*) AS n FROM pg_stat_activity WHERE state = 'active'"
-            ).first["n"].to_i
-
-            {
-              status: "ok",
-              database: conn.current_database,
-              size_bytes: db_size,
-              size_human: humanize_bytes(db_size),
-              active_connections: active_conns
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── ACME / Traefik ───────────────────────────────────────────────
-          def acme_health
-            return { status: "unknown" } unless defined?(::System::AcmeCertificate)
-
-            certs = ::System::AcmeCertificate.where(account: current_account)
-            valid = certs.where(status: "valid")
-            expiring_30d = valid.where("expires_at < ?", 30.days.from_now).count
-            expiring_7d  = valid.where("expires_at < ?", 7.days.from_now).count
-            failed       = certs.where(status: "failed").count
-
-            status =
-              if expiring_7d.positive? || failed.positive?
-                "degraded"
-              else
-                "ok"
-              end
-
-            {
-              status: status,
-              count: certs.count,
-              by_status: certs.group(:status).count,
-              expiring_within_30d: expiring_30d,
-              expiring_within_7d: expiring_7d,
-              failed_count: failed,
-              nearest_expiry_at: valid.minimum(:expires_at)&.iso8601
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── SDWAN ────────────────────────────────────────────────────────
-          def sdwan_health
-            return { status: "unknown" } unless defined?(::Sdwan::VirtualIp)
-
-            vips = ::Sdwan::VirtualIp.where(account: current_account)
-            assignments = if defined?(::Sdwan::VirtualIpAssignment)
-                            ::Sdwan::VirtualIpAssignment.joins(:virtual_ip)
-                                                        .where(system_sdwan_virtual_ips: { account_id: current_account.id })
-            end
-            networks = ::Sdwan::Network.where(account: current_account) if defined?(::Sdwan::Network)
-            bgp_total = bgp_established = nil
-            if defined?(::Sdwan::BgpSession)
-              bgp_total = ::Sdwan::BgpSession.count
-              bgp_established = ::Sdwan::BgpSession.established.count
-            end
-
-            bgp_status =
-              if bgp_total.nil? || bgp_total.zero?
-                "ok"
-              elsif bgp_established == bgp_total
-                "ok"
-              else
-                "degraded"
-              end
-
-            {
-              status: bgp_status,
-              networks_count: networks&.count || 0,
-              virtual_ips: { count: vips.count, assigned: assignments&.count || 0 },
-              bgp: { total: bgp_total, established: bgp_established }
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── Federation ───────────────────────────────────────────────────
-          def federation_health
-            return { status: "unknown" } unless defined?(::System::FederationPeer)
-
-            peers = ::System::FederationPeer.where(account: current_account, peer_kind: "platform")
-            stale = peers.heartbeat_stale.count
-            active = peers.active_status.count
-            degraded = peers.degraded.count
-            total = peers.count
-
-            status =
-              if total.zero?
-                "ok"
-              elsif degraded.positive? || stale.positive?
-                "degraded"
-              else
-                "ok"
-              end
-
-            {
-              status: status,
-              total: total,
-              active: active,
-              degraded: degraded,
-              suspended: peers.suspended.count,
-              heartbeat_stale: stale,
-              last_handshake_at: peers.maximum(:last_handshake_at)&.iso8601
-            }
-          rescue StandardError => e
-            { status: "down", error: e.message }
-          end
-
-          # ── Helpers ──────────────────────────────────────────────────────
           def humanize_duration(seconds)
             return "—" if seconds.nil? || seconds.negative?
 

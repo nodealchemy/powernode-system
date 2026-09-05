@@ -511,6 +511,10 @@ module System
         return { status: NOT_MEASURED, reason: "Sdwan::VirtualIp not loaded" } unless defined?(::Sdwan::VirtualIp)
 
         vips = ::Sdwan::VirtualIp.where(account: account)
+        assigned = if defined?(::Sdwan::VirtualIpAssignment)
+                     ::Sdwan::VirtualIpAssignment.joins(:virtual_ip)
+                       .where(system_sdwan_virtual_ips: { account_id: account.id }).count
+                   end
         networks = defined?(::Sdwan::Network) ? ::Sdwan::Network.where(account: account).count : nil
         bgp_total = bgp_established = nil
         if defined?(::Sdwan::BgpSession)
@@ -530,6 +534,7 @@ module System
           observed_via: "BGP session state",
           networks_count: networks,
           virtual_ip_count: vips.count,
+          virtual_ips_assigned: assigned,
           bgp: { total: bgp_total, established: bgp_established }
         }
       end
@@ -548,6 +553,7 @@ module System
           total: total,
           active: peers.active_status.count,
           degraded_peers: degraded,
+          suspended: peers.suspended.count,
           heartbeat_stale: stale,
           last_handshake_at: peers.maximum(:last_handshake_at)&.iso8601
         }
