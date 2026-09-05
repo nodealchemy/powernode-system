@@ -246,13 +246,34 @@ module System
         Rails.logger.warn("[Gitops::Reconciler] failed to revert proposal=#{proposal.id} after auto-apply failure: #{e.message}")
       end
 
+      # The agent every GitOps proposal is attributed to (seeded by
+      # db/seeds/system_gitops_reconciler_agent.rb).
+      AGENT_SOURCE_KEY = "gitops-reconciler"
+      AGENT_IDENTITY   = { name: "GitOps Reconciler", agent_type: "monitor" }.freeze
+
+      # SOURCE KEY FIRST, matching System::Governance::HierarchyReconciler
+      # #resolve_agent. This used to lead with the display name, and its only
+      # fallback is the arbitrary-agent one below — so renaming the agent did
+      # not fail loudly, it silently re-attributed every proposal to whichever
+      # row came back first. A wrong author is worse than no author, because
+      # nothing about the result looks broken.
+      #
+      # The name lookup is kept as the second rung for an install whose
+      # canonical predates source_key being set; the arbitrary fallback stays
+      # as the third, still preferable to a nil author, and the seed should
+      # make both unreachable.
       def gitops_agent_id
-        # Attribute GitOps proposals to the dedicated "GitOps Reconciler" agent
-        # (seeded by db/seeds/system_gitops_reconciler_agent.rb). Falls back to
-        # an arbitrary account agent only if the seed hasn't run — preferable to
-        # a nil author, but the seed should make the fallback unreachable.
-        ::Ai::Agent.resolve_for(@repository.account_id, name: "GitOps Reconciler", agent_type: "monitor")&.id ||
-          ::Ai::Agent.for_account(@repository.account_id).first&.id
+        account_id = @repository.account_id
+
+        by_key = ::Ai::Agent.for_account(account_id)
+                            .where(source_key: AGENT_SOURCE_KEY)
+                            .account_override_first.first
+        return by_key.id if by_key
+
+        by_name = ::Ai::Agent.resolve_for(account_id, **AGENT_IDENTITY)
+        return by_name.id if by_name
+
+        ::Ai::Agent.for_account(account_id).first&.id
       end
 
       def priority_for(diff)

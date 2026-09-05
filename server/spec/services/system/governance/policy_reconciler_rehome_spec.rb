@@ -379,7 +379,8 @@ RSpec.describe System::Governance::PolicyReconciler, "the Topology Designer set 
   let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil) }
   subject(:reconciler) { described_class.new(account: account, logger: logger) }
 
-  let(:identity) { System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("topology-designer") }
+  let(:identity_key) { "topology-designer" }
+  let(:identity) { System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(identity_key) }
 
   let!(:fleet) do
     create(:ai_agent, account: account, name: "Fleet Autonomy", agent_type: "monitor",
@@ -498,8 +499,11 @@ RSpec.describe System::Governance::PolicyReconciler, "the Topology Designer set 
       System::Ai::Skills::SdwanFederationComposeExecutor ].each do |klass|
       registration = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor].name == klass.name }
       expect(registration).to be_present, "#{klass.name} is not registered with SkillBindings"
-      expect(registration[:agents]).to include(identity[:name]),
-                                       "#{klass.name} no longer binds to #{identity[:name]}"
+      # The registry stores SOURCE KEYS, not display names: an agent's name is
+      # not its identity, and resolving bindings through one silently orphaned
+      # them on a rename. AGENT_IDENTITIES is keyed on exactly that source key.
+      expect(registration[:agents]).to include(identity_key),
+                                       "#{klass.name} no longer binds to #{identity_key}"
     end
   end
 

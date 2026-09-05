@@ -50,18 +50,24 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
   # roster (SYSTEM_AGENT_NAMES) covers only declared policy-set owners, and
   # the Infrastructure Generalist carries no policy set.
   ALLOWED = {
-    # SAFE — source_key is tried FIRST in #resolve_agent; the name is only the
-    # fallback for an install whose canonical predates source_key being set.
+    # ── SAFE: source_key FIRST, name only as a documented second rung for an
+    # install whose canonical predates source_key being set.
+    #
+    # This textual scan cannot tell a name lookup that LEADS from one that
+    # FALLS BACK — both read the same. So for these three the precedence
+    # itself is pinned behaviourally instead, by
+    # spec/lint/agent_lookup_precedence_spec.rb, which renames the canonical
+    # and asserts resolution still finds that row rather than nil, an
+    # arbitrary agent, or the global in preference to an account's clone.
+    # Promoting a fallback back to primary turns THAT spec red.
     "services/system/governance/hierarchy_reconciler.rb" =>
-      "documented source_key-first fallback",
-
-    # DEBT — precedence is INVERTED relative to HierarchyReconciler: name
-    # first, source_key second. It works today only because the source_key
-    # fallback catches a renamed agent, so a rename degrades this from a
-    # primary lookup to a fallback rather than breaking it. Flipping the two
-    # is the correct fix and is out of this increment's scope.
+      "source_key-first; precedence pinned by agent_lookup_precedence_spec",
     "services/system/governance/agent_resolver.rb" =>
-      "pre-existing: name-first with a source_key fallback; precedence should be flipped",
+      "source_key-first since the precedence flip; pinned by agent_lookup_precedence_spec",
+    "services/system/gitops/reconciler.rb" =>
+      "source_key-first since the precedence fix; pinned by agent_lookup_precedence_spec",
+
+    # ── DEBT: genuinely name-keyed, grandfathered.
 
     # DEBT — lane B owns this tree (fleet services); read-only for this
     # increment. Same shape as agent_resolver: resolves a declared identity by
@@ -79,11 +85,6 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
     "services/ai/tools/system_architecture_catalog_tool.rb" =>
       "pre-existing: name arrives from the caller",
 
-    # DEBT — a hardcoded "GitOps Reconciler" literal with no source_key
-    # fallback. The most exposed of the five, since that agent has a declared
-    # source_key already.
-    "services/system/gitops/reconciler.rb" =>
-      "pre-existing: hardcoded display name, no fallback"
   }.freeze
 
   def ruby_sources

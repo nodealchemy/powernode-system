@@ -57,10 +57,21 @@ module System
         key = agent_key.to_s
         identity = PolicyDeclarations::AGENT_IDENTITIES[key]
 
-        by_identity = identity && ::Ai::Agent.resolve_for(account_id, name: identity[:name],
-                                                                        agent_type: identity[:agent_type])
-        resolved = by_identity ||
-                   ::Ai::Agent.for_account(account_id).where(source_key: key).account_override_first.first
+        # SOURCE KEY FIRST, matching HierarchyReconciler#resolve_agent. The two
+        # used to disagree: this one led with the display name and fell back to
+        # the key, which was not merely redundant. An account that CLONED a
+        # canonical and renamed its copy resolved to the GLOBAL row, because
+        # the name matched the global and not the clone — the override was
+        # silently skipped for exactly the accounts that had customised it.
+        # Keying first fixes that, since clone_to_account copies source_key
+        # and account_override_first prefers the account's row.
+        #
+        # The name lookup stays as the fallback for an install whose canonical
+        # predates source_key being set.
+        by_key = ::Ai::Agent.for_account(account_id).where(source_key: key).account_override_first.first
+        resolved = by_key ||
+                   (identity && ::Ai::Agent.resolve_for(account_id, name: identity[:name],
+                                                                    agent_type: identity[:agent_type]))
         return resolved if resolved.nil? || !resolved.global?
         return resolved unless mint
 
