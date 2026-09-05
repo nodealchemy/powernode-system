@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../support/project_metric_samplers"
 require "pathname"
 
 # Campaign 01a07025 — the census of METRICS THIS PLATFORM PROMISES TO SAMPLE.
@@ -112,21 +113,18 @@ RSpec.describe "System::ProjectMetric producer census" do
   end
 
   # WIRED = the metrics #sample_one dispatches to a real sampler. Everything
-  # else falls to its `else unavailable_sample(metric_name)` arm, which is the
+  # else falls to its `else unavailable_sample(...)` arm, which is the
   # collector's honest "no telemetry backend wired" record.
   #
-  # `when THROUGHPUT_METRIC` is resolved through the live constant rather than
-  # being special-cased as a string, so renaming the constant cannot quietly
-  # drop a metric out of the wired set.
+  # MOVED to spec/support/project_metric_samplers.rb, not copied: the note
+  # census in project_metrics_collector_unavailable_reason_spec.rb needs the
+  # same set to assert that the default note reaches only metrics that
+  # genuinely have no sampler, and two hand-rolled parsers of one dispatch are
+  # how the two oracles come to disagree about what "wired" means. The
+  # extraction follows spec/support/fleet_signal_kinds.rb, which exists for
+  # exactly this on the sensor side.
   def self.wired_metrics
-    body = read(COLLECTOR_REL)[/def sample_one\b.*?\n    end\n/m]
-    raise "could not locate #sample_one — the census would be vacuous" if body.nil?
-
-    literals = body.scan(/when\s+"([a-z0-9_]+)"\s+then\s+sample_/).flatten
-    consts   = body.scan(/when\s+([A-Z][A-Z0-9_]*)\s+then\s+sample_/).flatten.map do |const|
-      ::System::ProjectMetricsCollector.const_get(const)
-    end
-    (literals + consts).uniq
+    ProjectMetricSamplers.wired
   end
 
   # READ = the metric names ProjectSloSensor pulls out of the ProjectMetric

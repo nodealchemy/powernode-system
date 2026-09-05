@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../support/project_metric_samplers"
 
 # Campaign 01a07025 — WHY a metric has no observation, DECLARED rather than
 # inferred from prose.
@@ -65,12 +66,57 @@ RSpec.describe System::ProjectMetricsCollector, "unavailable_reason" do
     end
   end
 
-  it "declares no_producer for exactly the metric that has no sampler" do
-    rows = rows_for(mission)
-    no_producer = rows.values.select { |r| r.value["unavailable_reason"] == described_class::UNAVAILABLE_NO_PRODUCER }
+  # ── THE DERIVED CENSUS ─────────────────────────────────────────────────────
+  #
+  # DERIVED FROM THE DISPATCH, never a hardcoded list. A list is a place for a
+  # third omission to be added, and adding it is how the defect this spec
+  # closes came to cover two metrics instead of one. ProjectMetricSamplers
+  # reads `#sample_one`'s case statement, so the truth about which metrics have
+  # samplers comes from the code that dispatches to them; a metric that stops
+  # being dispatched joins the unproduced set here without anybody editing this
+  # file, and a metric that omits its note reddens rather than joining.
+  #
+  # Both directions matter. A sampler-less metric that does NOT get the default
+  # note is also wrong — it would be claiming a temporary gap for a capability
+  # that does not exist.
+  it "gives the no-telemetry-backend note to EXACTLY the metrics with no sampler" do
+    unproduced = ProjectMetricSamplers.unproduced
+    expect(unproduced).not_to be_empty,
+      "every metric has a sampler, so this oracle proves nothing — delete it or fix the scan"
 
-    expect(no_producer.map(&:metric_name)).to eq([ "p99_latency_ms" ]),
-                                              "the no-producer reason must name only the metric nothing measures"
+    rows = rows_for(mission)
+    defaulted = rows.values
+                    .select { |r| r.value["note"].to_s.include?("no telemetry backend wired") }
+                    .map(&:metric_name).sort
+
+    expect(defaulted).to eq(unproduced), <<~MSG
+      The collector's default note claims NO TELEMETRY BACKEND IS WIRED. It must reach
+      exactly the metrics #sample_one dispatches to no sampler.
+
+        metrics with no sampler:   #{unproduced.inspect}
+        metrics given the default: #{defaulted.inspect}
+
+      A metric in the second list but not the first has a WORKING sampler and is
+      telling an operator to go debug a subsystem that is fine — that is the defect
+      this spec was written for, arriving through a third call site. Pass that
+      sampler's real reason as the note argument to #unavailable_sample.
+    MSG
+  end
+
+  # The same set, through the DECLARED token rather than the prose. The two
+  # must agree: the token is what code reads and the note is what a person
+  # reads, and a lane that fires on one while an operator reads the other is
+  # the discriminator problem again with an extra step.
+  it "declares no_producer for exactly the metrics with no sampler" do
+    unproduced = ProjectMetricSamplers.unproduced
+    rows = rows_for(mission)
+    no_producer = rows.values
+                      .select { |r| r.value["unavailable_reason"] == described_class::UNAVAILABLE_NO_PRODUCER }
+                      .map(&:metric_name).sort
+
+    expect(no_producer).to eq(unproduced),
+      "the no_producer token and the no-telemetry-backend note must name the same metrics; " \
+      "code reads the token, an operator reads the note, and they cannot disagree"
   end
 
   it "declares no_data for every other unavailable metric" do
@@ -78,7 +124,7 @@ RSpec.describe System::ProjectMetricsCollector, "unavailable_reason" do
     unavailable = rows.values.select { |r| r.value["source"] == "unavailable" }
     expect(unavailable.size).to be >= 7, "the fixture stopped producing unavailable rows — this would be vacuous"
 
-    no_data = unavailable.reject { |r| r.metric_name == "p99_latency_ms" }
+    no_data = unavailable.reject { |r| ProjectMetricSamplers.unproduced.include?(r.metric_name) }
     expect(no_data.map { |r| r.value["unavailable_reason"] }.uniq)
       .to eq([ described_class::UNAVAILABLE_NO_DATA ])
   end
