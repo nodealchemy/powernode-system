@@ -209,6 +209,22 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
   describe "the MCP twin (system_promote_module_version)" do
     let(:tool) { Ai::Tools::SystemFleetTool.new(account: account, internal: true) }
 
+    # HIER-P2B-ENG approval-gated this verb on core's `release.promote`
+    # category, and the platform's no-row default is require_approval — so
+    # with nothing seeded every call below would park (success: true,
+    # data.pending) and promote nothing. An auto_approve row is the operator
+    # ruling that lets the body run; the gate then replays the call through
+    # Ai::Executors::DeferredToolCall as the ORIGINAL principal, which is what
+    # makes the actor_type assertions below a test of the replayed identity
+    # rather than of this spec's own constructor.
+    before do
+      Ai::InterventionPolicy.create!(
+        account: account, scope: "action_type",
+        action_category: Ai::Tools::SystemFleetTool::RELEASE_PROMOTE_CATEGORY,
+        policy: "auto_approve", priority: 10, is_active: true
+      )
+    end
+
     def promote(target_state)
       tool.execute(params: { action: "system_promote_module_version",
                              module_version_id: version.id, target_state: target_state })
@@ -232,9 +248,17 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     end
 
     it "names a human principal when the MCP caller carries a user" do
-      user = create(:user, account: account)
+      # The permissions are REAL, not a stubbed action_permitted?: the gate
+      # replays the call on a tool Ai::Executors::DeferredToolCall rebuilds
+      # from the recorded principal, and a stub on this instance never reaches
+      # that one — the rebuilt tool would refuse, promote nothing and audit
+      # nothing, which is exactly what a stub hid here. Both the tool-level
+      # REQUIRED_PERMISSION (what the replay re-asks) and the per-action
+      # permission (what the door asks) are needed, as they are for a real
+      # operator.
+      user = create(:user, account: account,
+                           permissions: [ Ai::Tools::SystemFleetTool::REQUIRED_PERMISSION, "system.modules.update" ])
       user_tool = Ai::Tools::SystemFleetTool.new(account: account, user: user)
-      allow(user_tool).to receive(:action_permitted?).and_return(true)
 
       user_tool.execute(params: { action: "system_promote_module_version",
                                   module_version_id: version.id, target_state: "blessed" })
