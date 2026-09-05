@@ -975,6 +975,15 @@ module System
       # instance lasts more than 60s).
       DEDUP_TTL_SECONDS = (ENV["FLEET_DEDUP_TTL_SECONDS"] || 600).to_i
 
+      # Campaign 01a07025 / app-2 — the escalation the STANDING-SIGNAL lane
+      # emits. A distinct kind from fleet.remediation_stuck on purpose: that one
+      # means "a remediation ran N times and did not converge", this one means
+      # "nothing has ever acted on this at all". Conflating them would put the
+      # 12 config-drift assignments whose last_apply_at is null into the same
+      # bucket as lanes that are trying and failing, and the operator's next
+      # move differs (one is a broken applier, the other an absent one).
+      STANDING_SIGNAL_EVENT_KIND = "fleet.standing_signal"
+
       # F1-12: a member silent past this threshold is presumed dead. The
       # InstanceStatusSensor re-emits system.instance_silent every tick for as
       # long as the instance stays running/starting with a stale heartbeat —
@@ -1034,13 +1043,47 @@ module System
           return decision
         end
 
+        # Campaign 01a07025 / app-2 — THE STANDING-SIGNAL PATH.
+        #
+        # This branch used to do exactly one thing: emit another
+        # `decision.deduped` FleetEvent. Every tick. Forever. The ops-hub tick
+        # of 2026-09-05 04:48Z is the whole shape of the defect —
+        # `signal_count 25, decision_count 25, by_decision {deduped: 25},
+        # approved_executed 0, remediations_recorded 0` — and
+        # LearningExtractor's own comment puts the fleet-wide rate at 29k/day
+        # of events it then has to filter out as "zero-information buckets".
+        # Twelve of those 25 were system.config_drift assignments last changed
+        # 2026-07-19..08-10 with last_apply_at null, and one was a CRITICAL
+        # system.sdwan_hub_unreachable re-firing since August. Nobody was told
+        # about any of them, because a deduped decision has no notify arm.
+        #
+        # THE TWO HALVES BELOW ARE ONE FIX AND NEITHER WORKS ALONE. Throttling
+        # the event without escalating buries a standing condition completely;
+        # escalating without throttling keeps the flood. The state row is what
+        # makes both possible — it is now the record of a standing condition,
+        # and the event stream is a heartbeat over it.
         if recently_decided?(signal)
+          state = ::System::Fleet::SignalState.record_dedupe!(account: account, signal: signal)
+
+          # Aged past the threshold with nothing ever applied? That is the
+          # operator's problem, not the loop's, and it is checked BEFORE the
+          # heartbeat so an escalating tick spends its budget on the escalation
+          # rather than on one more deduped event.
+          if (escalated = escalate_standing_signal!(signal, binding, state))
+            return escalated
+          end
+
           decision = {
             decision: :deduped,
             reason: "fingerprint #{signal.fingerprint} decided within last #{DEDUP_TTL_SECONDS}s",
-            signal_kind: signal.kind
-          }
-          ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
+            signal_kind: signal.kind,
+            fingerprint: signal.fingerprint,
+            tick_count: state&.tick_count,
+            standing_since: state&.first_seen_at&.iso8601
+          }.compact
+          if dedup_event_due?(state)
+            ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
+          end
           return decision
         end
 
@@ -1379,6 +1422,209 @@ module System
         return nil unless payload["requires_approval"] || payload[:requires_approval]
 
         "require_approval"
+      end
+
+      # Campaign 01a07025 / app-2 — is this fingerprint's heartbeat slot due?
+      #
+      # nil state means the state write failed, and the answer there is TRUE:
+      # with no row there is nothing to rate-limit against, and the only two
+      # options are the pre-existing loud behaviour or silence. Restoring the
+      # flood on a broken table is bad; going silent about a standing condition
+      # because bookkeeping broke is worse, and it is the failure mode nobody
+      # would notice.
+      def dedup_event_due?(state)
+        return true unless state
+
+        state.claim_dedup_event!
+      end
+
+      # Campaign 01a07025 / app-2 — THE AGING LANE.
+      #
+      # A fingerprint that has been re-detected past the threshold and has NO
+      # remediation on record has, by definition, been standing while the loop
+      # did nothing about it. That is the live ops-hub condition: 12
+      # system.config_drift assignments whose last_apply_at is null and whose
+      # assignments last changed in July, plus a severity-critical
+      # system.sdwan_hub_unreachable on dryrun-fabric with last_handshake_at
+      # null. Each of them re-decided, deduped and was forgotten ~1440 times a
+      # day.
+      #
+      # THE SHAPE IS DELIBERATELY #escalate_stuck_remediation!'s, not a second
+      # convention: the same #open_operator_request? terminal state, the same
+      # forced require_approval, the same HIGH event + quiet arm. They differ in
+      # their trigger and their event kind (see STANDING_SIGNAL_EVENT_KIND) —
+      # stuck means "acted N times, ineffective", standing means "never acted at
+      # all" — and they cannot both fire for one fingerprint, because a stuck
+      # streak requires RemediationOutcome rows and this lane requires their
+      # absence.
+      #
+      # ONE DELIBERATE DIVERGENCE, and it is in the quiet arm: that lane calls
+      # record_decision! and this one must not. See the comment at the call site
+      # — the stuck lane is reached once per DEDUP_TTL from the non-deduped
+      # path, this one runs every tick.
+      #
+      # Returns nil (let the ordinary dedupe path run) unless it actually
+      # escalates or finds an escalation already open.
+      def escalate_standing_signal!(signal, binding, state)
+        return nil unless state
+
+        threshold = ::System::Fleet::SignalState.setting(:escalate_after_ticks)
+        return nil unless state.tick_count.to_i > threshold
+        return nil if remediation_recorded?(signal)
+
+        gate = gate_for(binding)
+        metadata = standing_metadata(signal, binding, state, threshold)
+
+        # Same terminal state as the stuck lane, and load-bearing for the same
+        # reason: without it every tick past the threshold would re-emit a HIGH
+        # event, re-notify every operator, and re-consume the target module's
+        # daily consent budget for a request the operator already has open.
+        if gate.open_operator_request?(binding[:action_category], metadata: metadata)
+          state.record_decision!("standing_escalation_open")
+          # DELIBERATELY NOT record_decision!(signal) — unlike
+          # #escalate_stuck_remediation!, which is reached from the NON-deduped
+          # path once per DEDUP_TTL. This arm runs on every 60s tick, so
+          # refreshing the dedup cache here would keep the key alive forever and
+          # the fingerprint would never take the ordinary gate path again, not
+          # even after the operator settled the request. Leaving the key to
+          # expire on its own restores exactly the pre-existing cadence: this
+          # whole lane rides ON TOP of the dedupe path and changes nothing about
+          # when a real decision is next made.
+          return {
+            decision: :awaiting_operator,
+            gate: "standing_signal",
+            reason: "operator request already open for #{signal.fingerprint} — " \
+                    "standing-signal escalation already delivered",
+            signal_kind: signal.kind,
+            fingerprint: signal.fingerprint,
+            action_category: binding[:action_category],
+            standing_signal: true,
+            tick_count: state.tick_count
+          }
+        end
+
+        summary = standing_summary(signal, state, threshold)
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: STANDING_SIGNAL_EVENT_KIND,
+          severity: :high,
+          payload: {
+            "fingerprint" => signal.fingerprint,
+            "signal_kind" => signal.kind,
+            "signal_severity" => signal.severity.to_s,
+            "action_category" => binding[:action_category],
+            "remediation_action" => metadata["remediation_action"],
+            "tick_count" => state.tick_count,
+            "threshold_ticks" => threshold,
+            "standing_since" => state.first_seen_at&.iso8601
+          }.merge(signal.payload.is_a?(Hash) ? signal.payload.slice("instance_id", "node_id", "module_id") : {}),
+          source: "decision_engine.standing_signal",
+          correlation_id: signal.fingerprint
+        )
+
+        gate_result = gate.gate_action!(
+          binding[:action_category],
+          metadata: metadata,
+          reasoning: { summary: summary },
+          force_policy: "require_approval",
+          advisory: advisory?(binding)
+        )
+
+        # The approval row is the inbox entry; this is the page. Both, because
+        # an ApprovalRequest only notifies the CHAIN's approvers and a fleet
+        # install without a resolvable chain mints no request at all — in which
+        # case the notification is the only thing that reaches a person.
+        notify_standing_escalation!(signal, binding, state, metadata, summary)
+
+        state.record_escalation!
+        record_decision!(signal)
+
+        gate_result.merge(
+          signal_kind: signal.kind,
+          fingerprint: signal.fingerprint,
+          action_category: binding[:action_category],
+          owner: self.class.owner_for(binding),
+          agent_id: gate.agent&.id,
+          standing_signal: true,
+          tick_count: state.tick_count
+        )
+      end
+
+      # The approval's payload. Carries the SENSOR's own remediation_action when
+      # it declared one — several sensors do, and a few declare it nil on
+      # purpose (see SdwanUserDeviceConfigStalenessSensor: "NOT a
+      # remediation_action: nothing the fleet can do"). A declared nil must NOT
+      # be papered over with the binding's category, so `.presence ||` is wrong
+      # here and `key?` is right: absent means "the sensor never said", present
+      # means "the sensor said this, including nil".
+      def standing_metadata(signal, binding, state, threshold)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        declared = payload.key?("remediation_action") ? payload["remediation_action"] : binding[:action_category]
+
+        skill_metadata_payload(signal, nil).merge(
+          "standing_signal" => true,
+          "standing_tick_count" => state.tick_count,
+          "standing_threshold_ticks" => threshold,
+          "standing_since" => state.first_seen_at&.iso8601,
+          "remediation_action" => declared
+        )
+      end
+
+      def standing_summary(signal, state, threshold)
+        "Standing fleet signal: #{signal.kind} (#{signal.fingerprint}) has been re-detected " \
+          "#{state.tick_count} times since #{state.first_seen_at&.iso8601} with no remediation " \
+          "ever recorded (threshold #{threshold}); an operator decision is required"
+      end
+
+      # Has ANYTHING ever acted on this fingerprint?
+      #
+      # FAILS CLOSED (returns true → no escalation) on a broken read, which is
+      # the opposite of #ineffective_streak's fail-to-0. The asymmetry is
+      # deliberate: a bad streak read makes the loop behave as it did before
+      # F3-11, while a bad read here would MANUFACTURE an operator obligation —
+      # an ApprovalRequest and a notification per standing fingerprint — out of
+      # a database hiccup. The condition is not lost by suppressing: the
+      # heartbeat event still fires, and the next tick with a working read
+      # escalates.
+      def remediation_recorded?(signal)
+        ::System::Fleet::RemediationOutcome
+          .where(account_id: account.id, fingerprint: signal.fingerprint)
+          .exists?
+      rescue StandardError => e
+        Rails.logger.error("[FleetDecisionEngine] remediation-history read failed for " \
+                           "#{signal.fingerprint} (suppressing escalation this tick): " \
+                           "#{e.class}: #{e.message}")
+        true
+      end
+
+      # Notification.create_for_account fans out one row per ACTIVE user, which
+      # is the fleet's operator set. Best-effort: a notification failure must
+      # never take down a decide pass, and the FleetEvent above plus the
+      # approval row are already durable by the time this runs.
+      def notify_standing_escalation!(signal, binding, state, metadata, summary)
+        return unless defined?(::Notification)
+
+        ::Notification.create_for_account(
+          account,
+          type: "agent_escalation",
+          title: "Standing fleet signal needs a decision: #{signal.kind}",
+          message: summary,
+          severity: signal.severity.to_s == "critical" ? "critical" : "warning",
+          category: "system",
+          action_url: "/app/notifications",
+          metadata: {
+            "fingerprint" => signal.fingerprint,
+            "signal_kind" => signal.kind,
+            "action_category" => binding[:action_category],
+            "remediation_action" => metadata["remediation_action"],
+            "tick_count" => state.tick_count,
+            "standing_since" => state.first_seen_at&.iso8601
+          }
+        )
+      rescue StandardError => e
+        Rails.logger.error("[FleetDecisionEngine] standing-signal notification failed for " \
+                           "#{signal.fingerprint}: #{e.class}: #{e.message}")
       end
 
       # F3-11: the escalation lane. Emits the fleet.remediation_stuck event
