@@ -32,6 +32,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [template-authoring.md](./template-authoring.md) | Template designers, SREs preparing a node type, agents driving the same flow over MCP | A `NodePlatform` on the account, the `NodeModule` rows to compose, `system.templates.*` | ~20 min per template |
 | [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) | SREs and network operators deciding how to expose a service | None to read; some paths depend on unbuilt campaign increments (marked planned) | ~5 min decision + per-path setup time |
 | [vault-credential-restoration.md](./vault-credential-restoration.md) | Security operators handling Vault DR | Vault snapshot, Shamir unseal keys | ~30 min – 2 hours |
+| [vault-test-instance.md](./vault-test-instance.md) | Platform maintainers exercising the Vault-backed paths | `vault` module published + assigned; operator shell on the node | ~20 min first init, ~2 min per reboot |
 | [vendored-binary-bump.md](./vendored-binary-bump.md) | Platform maintainers updating Traefik / rpi4-firmware / dracut / kernel pins | Clean working tree; for ARM-only items, Pi 4 or QEMU-aarch64 | 15–60 min per bump |
 
 ## When to read which
@@ -55,6 +56,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Managing TLS certs | [acme-issuance.md](./acme-issuance.md) for day-2, [acme-smoke.md](./acme-smoke.md) for release gates |
 | Validating K3s + SDWAN before a release | [k3s-smoke-full-lifecycle.md](./k3s-smoke-full-lifecycle.md) |
 | Recovering Vault | [vault-credential-restoration.md](./vault-credential-restoration.md) |
+| Standing up a Vault to test the Vault-backed paths against | [vault-test-instance.md](./vault-test-instance.md) (sealed by design; unseal after every reboot) |
 
 ## Authoring conventions
 

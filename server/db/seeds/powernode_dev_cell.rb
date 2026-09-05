@@ -49,7 +49,16 @@ DEV_CELL_MODULES = %w[
   tmux-manager
   gitleaks
   gh
+  vault
 ].freeze
+# vault ships SEALED with file storage (see its manifest and
+# docs/runbooks/vault-test-instance.md) — assignment starts a Vault that
+# refuses every request until an operator unseals it by hand. It is here
+# because all three consumers of the platform's Vault-backed paths
+# (System::ModuleSigningService, Security::VaultClient,
+# System::ModuleSigningKey) run inside the Rails process on this same cell,
+# so co-location makes every call a loopback call, which the agent's egress
+# policy accepts unconditionally.
 # tmux-manager ships installed-but-not-enabled (see its own manifest) —
 # template-wide assignment is safe: no dev-cell instance auto-starts a tmux
 # session just by carrying this module. The operator's personal session

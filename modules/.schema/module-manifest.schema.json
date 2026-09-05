@@ -89,11 +89,11 @@
           "type": "array",
           "items": {
             "type": "string",
-            "description": "A module this one requires. Two forms: a name pin '<owner>/<module>@<version-constraint>' (e.g. 'powernode/powernode-base-ruby@^1.0'), or a capability requirement 'capability:<tag>[@<constraint>]' (e.g. 'capability:os.userland', 'capability:database.postgres@>= 16'). A capability constraint is matched at import with Gem::Requirement, so it must use Gem syntax ('>= 16', '~> 1.0', '1.0') — npm caret ('^16') is NOT valid there, even though name pins conventionally use it. The runtime authority is System::CapabilityResolver.constraint_valid?; this pattern is the PR-time mirror of that rule and must stay consistent with it.",
+            "description": "A module this one requires. Two forms: a name pin '<owner>/<module>@<version-constraint>' (e.g. 'powernode/powernode-base-ruby@^1.0'), or a capability requirement 'capability:<tag>[@<constraint>]' (e.g. 'capability:os.userland', 'capability:database.postgres@>= 16'). A capability constraint is matched at import with Gem::Requirement, so it must use Gem syntax ('>= 16', '~> 1.0', '1.0') \u2014 npm caret ('^16') is NOT valid there, even though name pins conventionally use it. The runtime authority is System::CapabilityResolver.constraint_valid?; this pattern is the PR-time mirror of that rule and must stay consistent with it.",
             "anyOf": [
               {
                 "title": "Name pin",
-                "description": "'<owner>/<module>@<constraint>' or a bare module name. The constraint is recorded but never parsed — the platform has no module semver (NodeModuleVersion#version_number is an integer counter) — so caret syntax is accepted here.",
+                "description": "'<owner>/<module>@<constraint>' or a bare module name. The constraint is recorded but never parsed \u2014 the platform has no module semver (NodeModuleVersion#version_number is an integer counter) \u2014 so caret syntax is accepted here.",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?(@[^@\\s][^@]*)?$"
               },
               {
@@ -438,12 +438,12 @@
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
         "claude_code_version": {
-          "description": "Pinned Claude Code CLI version installed by the claude-tmux module (read at scripts/module-build/stage15.sh's claude-tmux case). The script's jq fallback silently unpins when this key is absent — declare it here rather than deleting it from a manifest.",
+          "description": "Pinned Claude Code CLI version installed by the claude-tmux module (read at scripts/module-build/stage15.sh's claude-tmux case). The script's jq fallback silently unpins when this key is absent \u2014 declare it here rather than deleting it from a manifest.",
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
         "grok_version": {
-          "description": "Pinned Grok Build CLI (@xai-official/grok) version npm-installed by the grok-cli module (read at scripts/module-build/stage15.sh's grok-cli case). Same reproducibility unit as claude_code_version — an npm package has no single release-binary sha256, so the exact version plus npm's own integrity metadata IS the pin. The script's jq fallback silently unpins when this key is absent — declare it here rather than deleting it from a manifest.",
+          "description": "Pinned Grok Build CLI (@xai-official/grok) version npm-installed by the grok-cli module (read at scripts/module-build/stage15.sh's grok-cli case). Same reproducibility unit as claude_code_version \u2014 an npm package has no single release-binary sha256, so the exact version plus npm's own integrity metadata IS the pin. The script's jq fallback silently unpins when this key is absent \u2014 declare it here rather than deleting it from a manifest.",
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
@@ -495,6 +495,11 @@
         },
         "act_runner_version": {
           "description": "Pinned Gitea act_runner version fetched as a sha256-verified linux-amd64 binary (gitea-act-runner module). Bump alongside the pinned checksum(s) in build-platform-modules.yaml Stage 1.5.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "vault_version": {
+          "description": "Pinned HashiCorp Vault release for the `vault` module. Bump alongside the per-arch sha256 pair in the `vault` case of scripts/module-build/stage15.sh \u2014 the checksums are per-version AND per-arch, and a version bump without them fails the build closed.",
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         }

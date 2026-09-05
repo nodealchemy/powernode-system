@@ -24,8 +24,11 @@ description: >
 # INTERNAL platform testing is within that grant; it is not MIT-compatible and
 # must not be described as such anywhere the platform's own MIT licensing is
 # asserted. If a permissive licence is required, OpenBao (MPL-2.0, the community
-# fork of Vault 1.14) is a drop-in for the transit + kv paths this module exists
-# to exercise — swapping is a version/URL change in the stage-1.5 case below.
+# fork of Vault 1.14) covers the transit + kv paths this module exists to
+# exercise — but it is NOT a version/URL edit to the stage-1.5 case below: the
+# binary is `bao`, the release naming and checksums differ, and the exec check
+# greps VAULT_VERSION. It would be a sibling `openbao` module, and the
+# credential-restoration runbook targets HashiCorp Vault specifically.
 license: BUSL-1.1
 category: data-plane
 
@@ -46,10 +49,14 @@ mask:
 # stage2-carve.sh's fat-root carve keeps it.
 #
 # Vault is a fully-static Go binary: one entry, no *.so companions.
+# ONLY the fetched binary. rootfs/ content (vault.hcl, vault-start.sh) is
+# overlaid onto the fat root by stage2-carve.sh before the carve and onto the
+# slim tree after, and derive-file-spec.sh's exclude_rootfs_owned drops those
+# paths from the over-inclusion check precisely because they are module-owned
+# without being dpkg-owned. Listing them here would be redundant at best and
+# would mask a real over-carve at worst — redis and gitleaks both omit theirs.
 file_spec:
   - "/usr/local/bin/vault"
-  - "/etc/vault.d/vault.hcl"
-  - "/usr/local/bin/vault-start.sh"
 
 # No apt closure to waive — package_spec is empty.
 carve_waivers: []
@@ -86,7 +93,12 @@ reboot_required: false
 users:
   - name: vault
     shell: /usr/sbin/nologin
-    home: /persist/var/lib/vault
+    # /var/lib/vault, NOT the /persist storage path: ManifestImportService's
+    # ALLOWED_HOME_ROOTS does not permit /persist/, and import! returns not-ok
+    # on a violation, which would keep the module out of the catalog entirely.
+    # The home is never created anyway (the agent's managedHomeRoots is /home/
+    # only) and is independent of where storage lives.
+    home: /var/lib/vault
     gecos: HashiCorp Vault server
 
 services:
@@ -132,6 +144,16 @@ security:
   egress_allow: []
   privileged: false
   user_namespace: false
+
+# One-binary module, same shape as gitleaks/gh — and the reason `verify:` exists
+# is the empty-artifact auto-promote incident those modules document. Asserts the
+# bare name resolves through PATH to exactly this path, in both login and
+# non-login shells.
+verify:
+  probes:
+    - name: vault-binary
+      command: vault
+      resolves_to: /usr/local/bin/vault
 
 build:
   # Pinned upstream release. Bump alongside the sha256 pair in the `vault` case

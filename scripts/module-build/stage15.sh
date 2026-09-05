@@ -1860,15 +1860,14 @@ case "$MODULE" in
     echo "${VAULT_SHA256}  /tmp/vault.zip" | sha256sum -c -
 
     mkdir -p /tmp/fat/usr/local/bin
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -o -j /tmp/vault.zip vault -d /tmp/fat/usr/local/bin
-    elif command -v python3 >/dev/null 2>&1; then
-      python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract('vault', sys.argv[2])" \
-        /tmp/vault.zip /tmp/fat/usr/local/bin
-    else
-      echo "[stage-1.5] FATAL: neither unzip nor python3 available to extract the vault release zip"
-      exit 1
-    fi
+    # python3, not unzip. The CI container is debian:trixie-slim and installs a
+    # fixed apt list (build-platform-modules.yaml) that includes python3-yaml but
+    # NOT unzip; module-forge's buildroot mirrors the same list. An `unzip ||
+    # python3` fallback would therefore have a primary branch that never
+    # executes, which is worse than no branch: it reads as covered and is never
+    # exercised. python3 is guaranteed by python3-yaml being installed.
+    python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract('vault', sys.argv[2])" \
+      /tmp/vault.zip /tmp/fat/usr/local/bin
     chmod 0755 /tmp/fat/usr/local/bin/vault
     rm -f /tmp/vault.zip
 
