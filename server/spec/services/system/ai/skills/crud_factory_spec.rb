@@ -111,8 +111,8 @@ RSpec.describe System::Ai::Skills::CrudFactory do
       reg = System::Ai::Skills::SkillBindings.all
         .find { |r| r[:executor] == expected }
       expect(reg).not_to be_nil
-      expect(reg[:agents]).to include("Supply Chain Manager")
-      expect(reg[:agents]).not_to include("Fleet Autonomy")
+      expect(reg[:agents]).to include("supply-chain-manager")
+      expect(reg[:agents]).not_to include("fleet-autonomy")
     end
 
     it "delegates name + family to system_create_architecture action" do

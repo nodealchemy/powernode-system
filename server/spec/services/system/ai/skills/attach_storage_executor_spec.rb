@@ -45,7 +45,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
       reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == described_class }
 
       expect(reg).not_to be_nil
-      expect(reg[:agents]).to eq([ "Capacity Manager" ])
+      expect(reg[:agents]).to eq([ "capacity-manager" ])
     end
   end
 

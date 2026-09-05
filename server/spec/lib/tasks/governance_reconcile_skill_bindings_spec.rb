@@ -35,9 +35,18 @@ RSpec.describe "governance reconcile — skill bindings step" do
   end
 
   let!(:account) { create(:account) }
-  let!(:cve) { create(:ai_agent, :global, name: "CVE Responder", agent_type: "monitor", is_system: true) }
+  # The reconciler resolves a registration's agent by SOURCE KEY, never by
+  # display name (a name is a label; renaming the agent must not orphan its
+  # skills). A canonical seeded by AgentSetupHelpers carries that key, so the
+  # fixture must too — without it the reconciler finds nobody to bind, the
+  # `before` block's destroy! has no row to remove, and every example here
+  # reads as a NoMethodError on nil instead of the drift it exists to catch.
+  let!(:cve) do
+    create(:ai_agent, :global, name: "CVE Responder", source_key: "cve-responder",
+                               agent_type: "monitor", is_system: true)
+  end
   let(:cve_slugs) do
-    System::Ai::Skills::SkillBindings.discover.select { |e| e[:agent_name] == "CVE Responder" }
+    System::Ai::Skills::SkillBindings.discover.select { |e| e[:agent_key] == "cve-responder" }
                                      .map { |e| e[:skill_slug] }.uniq
   end
 

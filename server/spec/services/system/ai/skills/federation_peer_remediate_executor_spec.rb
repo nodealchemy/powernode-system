@@ -40,7 +40,7 @@ RSpec.describe System::Ai::Skills::FederationPeerRemediateExecutor do
                 .find { |e| e[:executor].name == described_class.name }
       expect(entry).not_to be_nil
       expect(entry[:skill_slug]).to eq("system-federation-peer-remediate")
-      expect(entry[:agents]).to include("SDWAN Manager")
+      expect(entry[:agents]).to include("sdwan-manager")
     end
 
     it "fails on an unknown reason" do

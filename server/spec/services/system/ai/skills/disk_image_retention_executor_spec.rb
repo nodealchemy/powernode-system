@@ -23,7 +23,7 @@ RSpec.describe System::Ai::Skills::DiskImageRetentionExecutor do
         .to have_key(described_class.action_category)
 
       reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == described_class }
-      expect(reg[:agents]).to eq([ "Disk Image Manager" ])
+      expect(reg[:agents]).to eq([ "disk-image-manager" ])
     end
   end
 

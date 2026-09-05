@@ -32,7 +32,7 @@ RSpec.describe System::Ai::Skills::DiskImagePromoteExecutor do
 
       reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == described_class }
       expect(reg).to be_present
-      expect(reg[:agents]).to eq([ "Disk Image Manager" ])
+      expect(reg[:agents]).to eq([ "disk-image-manager" ])
     end
   end
 

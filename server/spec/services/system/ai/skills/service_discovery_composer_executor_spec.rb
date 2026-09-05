@@ -79,7 +79,7 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
       reg = System::Ai::Skills::SkillBindings.all
                                              .find { |r| r[:executor].name == described_class.name }
       expect(reg).to be_present
-      expect(reg[:agents]).to include("System Topology Designer")
+      expect(reg[:agents]).to include("topology-designer")
     end
   end
 

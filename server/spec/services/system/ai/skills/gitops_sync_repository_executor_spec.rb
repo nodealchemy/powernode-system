@@ -32,7 +32,7 @@ RSpec.describe System::Ai::Skills::GitopsSyncRepositoryExecutor do
         .to have_key(described_class.action_category)
 
       reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == described_class }
-      expect(reg[:agents]).to eq([ "GitOps Reconciler" ])
+      expect(reg[:agents]).to eq([ "gitops-reconciler" ])
     end
   end
 
