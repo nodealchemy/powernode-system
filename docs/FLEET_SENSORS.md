@@ -309,9 +309,46 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `project_slo_sensor.rb`
 **Watches:** Project-scoped rolling-window metrics (latency, availability, cpu/memory utilization, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
-**Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`).
-**Signals:** `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`
-**Recommended remediation:** None automated — feeds the project dashboard for operator review. The three bindings route to `project.adapt` / `project.cost_control`, declared on the **Capacity Manager** since HIER-P2DECL (`PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, `owner: "capacity-manager"` on each binding; `System::AdaptationGate` gates the `project.*` change types under the same owner).
+**Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`). Separately, a DECLARED target whose metric has no producer → `system.project_target_unmeasurable`.
+**Signals:** `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`, `system.project_target_unmeasurable`
+**Recommended remediation:** None automated — feeds the project dashboard for operator review. The three breach bindings route to `project.adapt` / `project.cost_control`, declared on the **Capacity Manager** since HIER-P2DECL (`PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, `owner: "capacity-manager"` on each binding; `System::AdaptationGate` gates the `project.*` change types under the same owner).
+
+**`system.project_target_unmeasurable` — a declared target nothing measures.**
+A project can declare `p99_latency_ms` today, have it resolve through the
+ladder into the target hash, and have it compared against nothing forever,
+because no producer exists and none is planned (see **Latency has no producer**
+below). Nothing told the operator who declared it. This lane does, once per
+`(mission, metric)`.
+
+It fires only when BOTH hold:
+
+- an operator **declared** the target, at any rung of `Ai::Mission`'s ladder. A
+  target this sensor *defaulted* does not count — `p99_latency_ms` has a 250ms
+  default, so every infrastructure mission resolves one, and firing on a
+  resolved target would reach the operator of every mission on the fleet.
+- the metric's latest `System::ProjectMetric` row carries
+  `unavailable_reason == "no_producer"`. A row saying `no_data` stays silent:
+  that sampler works and had nothing to measure this tick, and it fills in on
+  its own as soon as the fleet has instances. A metric with no row at all is
+  silent too — the collector has not sampled that mission yet, which is not
+  evidence about producers.
+
+The reason is a token the collector **declares**, never inferred from the note
+prose (`ProjectMetricsCollector#unavailable_sample`). Two rows can carry the
+same note and mean opposite things, which is the defect the token closed.
+
+Fingerprint is `project_target_unmeasurable:<mission_id>:<metric>`, stable
+across ticks on purpose: the lane rides the standing-signal machinery, so the
+engine dedupes it every tick, `System::Fleet::SignalState` emits one heartbeat
+event per window, and it escalates to a human exactly once after the aging
+threshold. Routed to `project.target_unmeasurable_investigate`
+(`notify_and_proceed`, Capacity Manager) with `skill: nil` — there is no
+applier for "nobody built a prober" and there can be none, so the category is
+listed in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES`.
+
+**Silencing it:** drop the declaration, or set an operator policy on
+`project.target_unmeasurable_investigate`. There is no third option until
+somebody builds the producer.
 
 **Operator-declared targets** live on the mission's `configuration["slo_targets"]`:
 
@@ -829,7 +866,7 @@ Source: `PolicyDeclarations::FLEET_AUTONOMY_POLICIES`, written by `PolicyReconci
 
 ### Capacity Manager agent (22 policies)
 
-Source: `PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, written by `PolicyReconciler` (agent seeded by `db/seeds/system_capacity_manager_agent.rb`; HIER-P2B, wave 2). Approval chain: `Capacity Manager Actions` (4-hour timeout, `system.infra_tasks.control` approver, reject on timeout). On an established install `PolicyReconciler` re-homes every row below that Fleet Autonomy still holds (`PolicyReconciler::FORMER_OWNERS`) the first boot after the agent exists. Twin of the `instance-pool-operator`, `platform-scaling` and `instance-cordon-operator` operator sets, which keep their rows. Operator guide: [`CAPACITY_MANAGER_AGENT.md`](./CAPACITY_MANAGER_AGENT.md) — the full table lives there. Sensor-routed here: `system.instance_replace` (`instance_unrecoverable_sensor`) and `project.adapt` / `project.cost_control` (`project_slo_sensor`); everything else gates an executor or operator door. Executors bound here: `replace_instance`, `reap_instance`, `relocate_workload`, `scale_project`, `provision_full_stack` (re-bound from Fleet Autonomy), `attach_storage` (re-bound from Fleet Autonomy by HIER-P2SWEEP — it runs during provisioning, so the provisioning-step owner has it, not the Storage Manager, which owns the volume data plane) and `platform_resilience` (shared with the System Concierge).
+Source: `PolicyDeclarations::CAPACITY_MANAGER_POLICIES`, written by `PolicyReconciler` (agent seeded by `db/seeds/system_capacity_manager_agent.rb`; HIER-P2B, wave 2). Approval chain: `Capacity Manager Actions` (4-hour timeout, `system.infra_tasks.control` approver, reject on timeout). On an established install `PolicyReconciler` re-homes every row below that Fleet Autonomy still holds (`PolicyReconciler::FORMER_OWNERS`) the first boot after the agent exists. Twin of the `instance-pool-operator`, `platform-scaling` and `instance-cordon-operator` operator sets, which keep their rows. Operator guide: [`CAPACITY_MANAGER_AGENT.md`](./CAPACITY_MANAGER_AGENT.md) — the full table lives there. Sensor-routed here: `system.instance_replace` (`instance_unrecoverable_sensor`) and `project.adapt` / `project.cost_control` / `project.target_unmeasurable_investigate` (`project_slo_sensor`); everything else gates an executor or operator door. Executors bound here: `replace_instance`, `reap_instance`, `relocate_workload`, `scale_project`, `provision_full_stack` (re-bound from Fleet Autonomy), `attach_storage` (re-bound from Fleet Autonomy by HIER-P2SWEEP — it runs during provisioning, so the provisioning-step owner has it, not the Storage Manager, which owns the volume data plane) and `platform_resilience` (shared with the System Concierge).
 
 | Action category | Default policy | Why |
 |---|---|---|

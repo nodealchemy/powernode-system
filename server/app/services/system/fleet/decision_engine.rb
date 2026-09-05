@@ -643,6 +643,30 @@ module System
           action_category: "project.cost_control",
           owner: "capacity-manager"
         },
+        # Campaign 01a07025 — the visibility lane for a declared target nothing
+        # measures. ProjectSloSensor emits it once per (mission, metric) with a
+        # fingerprint stable across ticks, so it rides the standing-signal
+        # machinery: deduped every tick, one heartbeat event per window, one
+        # escalation to a human when it has stood past the aging threshold.
+        #
+        # `skill: nil` and a NOTIFY-ONLY category, deliberately and on the
+        # record. There is no applier for "nobody built a latency prober" and
+        # there can be none — the fix is either an operator dropping an inert
+        # declaration or somebody funding a producer, and neither is a fleet
+        # action. Listed in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES
+        # so the validate arc does not score a proceed that actuated nothing as
+        # an ineffective remediation and trip F3-11 on work no code attempted;
+        # that listing is also what keeps GovernanceGapSensor's
+        # `binding_without_skill` detector quiet, since it reports exactly the
+        # skill-less bindings nothing DECLARES deliberate.
+        #
+        # Owner is the Capacity Manager, like the three project.* bindings
+        # above it — the category is declared in that agent's set.
+        "system.project_target_unmeasurable" => {
+          skill: nil,
+          action_category: "project.target_unmeasurable_investigate",
+          owner: "capacity-manager"
+        },
         # CVE Responder bindings (2026-05-11 wiring completion). The
         # binding's skill is CveResponseExecutor — a side-effect-free
         # triage planner whose output lands in the approval request's

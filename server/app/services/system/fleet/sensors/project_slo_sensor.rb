@@ -67,6 +67,38 @@ module System
           [ "memory_pct", "max_memory_pct" ]
         ].freeze
 
+        # Campaign 01a07025 — THE VISIBILITY LANE.
+        #
+        # A declared target whose metric has no producer is inert and looks
+        # enforced. `p99_latency_ms` is the live case (see the block at
+        # DEFAULT_P99_LATENCY_MS): a project declares it, the ladder resolves
+        # it, this hash carries it, and it is compared against nothing forever.
+        # Nothing told the operator who declared it.
+        #
+        # This kind says so ONCE per (mission, metric) — the fingerprint is
+        # stable across ticks, so DecisionEngine#recently_decided? dedupes it
+        # and System::Fleet::SignalState ages it into a single escalation
+        # rather than a per-tick event. It is routed to a notify-only
+        # investigate category: there is no applier for "nobody built a
+        # prober", and there can be none.
+        UNMEASURABLE_SIGNAL_KIND = "system.project_target_unmeasurable"
+
+        # A DECLARED target key → the System::ProjectMetric row that would
+        # carry its observation. The lane needs both halves: the declaration
+        # (an operator asked for this) and the metric name (what the collector
+        # says about measuring it). Metrics that have producers today are
+        # listed on purpose — whether one is measurable is READ FROM THE ROW's
+        # reason token, never assumed from this table, so a metric that loses
+        # its producer starts reporting without an edit here.
+        DECLARED_TARGET_METRICS = {
+          "p99_latency_ms"             => "p99_latency_ms",
+          "availability_pct"           => "availability_pct",
+          "cost_ceiling_usd"           => "cost_usd_mtd",
+          "min_throughput_bytes_per_s" => "sdwan_throughput_bytes_per_s",
+          "max_cpu_pct"                => "cpu_pct",
+          "max_memory_pct"             => "memory_pct"
+        }.freeze
+
         # Severity scaling — breach % over target threshold.
         SEVERITY_THRESHOLDS = [
           [ 50.0, :critical ], # ≥50% above target → critical
@@ -89,6 +121,13 @@ module System
           # uncached find_by. See Ai::Mission.global_utilization_settings.
           @global_utilization_settings = resolve_global_utilization_settings
 
+          # Per-TICK, not per-instance. FleetAutonomyService may hold one
+          # sensor across ticks, and a metric row cached from the last minute
+          # would make this pass report a producer gap the collector has since
+          # filled. Cleared here so every pass reads the fleet as it is now.
+          @metric_rows_cache = {}
+          @declared_targets_cache = {}
+
           missions.find_each.flat_map { |m| evaluate_mission(m) }.compact
         rescue StandardError => e
           Rails.logger.warn("[ProjectSloSensor] failed: #{e.class}: #{e.message}")
@@ -108,7 +147,7 @@ module System
             slo_violation_signal(mission, targets, observations, correlation),
             drift_signal(mission, targets, observations, correlation),
             cost_breach_signal(mission, targets, observations, correlation)
-          ]
+          ] + unmeasurable_target_signals(mission, correlation)
         rescue StandardError => e
           Rails.logger.warn("[ProjectSloSensor] mission=#{mission.id} eval failed: #{e.message}")
           []
@@ -273,7 +312,7 @@ module System
         def sample_from_db(mission)
           return nil unless defined?(::System::ProjectMetric)
 
-          rows = ::System::ProjectMetric.recent_for_mission(mission.id)
+          rows = metric_rows_for(mission)
           by_name = rows.each_with_object({}) { |row, h| h[row.metric_name] = row.observed }
 
           return nil if by_name.empty?
@@ -338,6 +377,131 @@ module System
             "cpu_pct" => obs["cpu_pct"]&.to_f,
             "memory_pct" => obs["memory_pct"]&.to_f
           }
+        end
+
+        # The latest sample per metric_name, read ONCE per mission per tick.
+        #
+        # Two readers now want these rows — the observation mapper above and
+        # the unmeasurable-target lane below — and `recent_for_mission` is a
+        # DISTINCT ON subselect plus a join back. Sharing the read keeps the
+        # visibility lane free rather than doubling this sensor's query count
+        # per mission per tick. Rescued to an empty list rather than raised:
+        # the callers each have their own answer for "no rows", and neither
+        # should cost the mission its whole evaluation.
+        def metric_rows_for(mission)
+          @metric_rows_cache ||= {}
+          return @metric_rows_cache[mission.id] if @metric_rows_cache.key?(mission.id)
+
+          @metric_rows_cache[mission.id] =
+            begin
+              ::System::ProjectMetric.recent_for_mission(mission.id).to_a
+            rescue StandardError => e
+              Rails.logger.warn("[ProjectSloSensor] metric rows unreadable for " \
+                                "mission=#{mission.id}: #{e.class}: #{e.message}")
+              []
+            end
+        end
+
+        # ----- the unmeasurable-target lane ----------------------------------
+
+        # Campaign 01a07025. One signal per (mission, metric) where an operator
+        # DECLARED a target and the collector says the metric has no producer.
+        #
+        # THE TWO THINGS THIS DELIBERATELY DOES NOT DO.
+        #
+        # It does not fire on a RESOLVED target. p99_latency_ms carries a 250ms
+        # default, so every infrastructure mission resolves one; keying off
+        # #extract_targets would page the operator of every mission on the
+        # fleet the first tick after deploy. Only a declaration counts —
+        # somebody asked for this and is entitled to know it is inert.
+        #
+        # It does not fire on `no_data`. That absence fills in on its own as
+        # soon as the fleet has instances, and escalating it would recreate the
+        # per-tick flood app-2 removed. The discriminator is the token the
+        # collector DECLARES, never the note prose: two rows can carry the same
+        # note and mean opposite things, which is precisely the defect the
+        # reason token closed (see ProjectMetricsCollector#unavailable_sample).
+        #
+        # A metric with NO row at all is silent too. Absence of a row means the
+        # collector has not sampled this mission yet, which is not evidence
+        # about whether a producer exists.
+        def unmeasurable_target_signals(mission, correlation)
+          reasons = unavailable_reasons_for(mission)
+          return [] if reasons.empty?
+
+          declared_targets(mission).filter_map do |target_key, target|
+            metric = DECLARED_TARGET_METRICS[target_key]
+            next if metric.nil?
+            next unless reasons[metric] == ::System::ProjectMetricsCollector::UNAVAILABLE_NO_PRODUCER
+
+            build_signal(
+              kind: UNMEASURABLE_SIGNAL_KIND,
+              # LOW on purpose. Nothing is broken and no workload is degraded;
+              # an operator's expectation is. The escalation the standing lane
+              # raises after the aging threshold is what makes a human look,
+              # and it carries its own severity.
+              severity: :low,
+              payload: {
+                mission_id: mission.id,
+                metric: metric,
+                target: target,
+                unavailable_reason: reasons[metric],
+                correlation_id: correlation
+              },
+              fingerprint: "project_target_unmeasurable:#{mission.id}:#{metric}"
+            )
+          end
+        rescue StandardError => e
+          Rails.logger.warn("[ProjectSloSensor] unmeasurable-target pass failed for " \
+                            "mission=#{mission.id}: #{e.class}: #{e.message}")
+          []
+        end
+
+        # metric_name => the collector's declared reason for carrying no
+        # observation, nil for a row that has one. Rows written before the
+        # collector declared reasons map to nil, and nil never matches
+        # UNAVAILABLE_NO_PRODUCER — an unknown reason is not a producer gap.
+        def unavailable_reasons_for(mission)
+          return {} unless defined?(::System::ProjectMetric)
+
+          metric_rows_for(mission)
+            .each_with_object({}) { |row, h| h[row.metric_name] = row.unavailable_reason }
+        end
+
+        # The targets an operator actually DECLARED, at whichever rung of
+        # Ai::Mission's ladder they declared them, with the defaults this
+        # sensor supplies deliberately absent.
+        #
+        # WHY IT IS NOT #extract_targets. That hash is the EVALUATION view and
+        # folds in DEFAULT_AVAILABILITY_PCT and DEFAULT_P99_LATENCY_MS, which is
+        # right for a comparison and wrong here: "nobody said" and "somebody
+        # said exactly the default" have to stay distinguishable, and this lane
+        # only speaks about the second. The comment at #extract_targets makes
+        # the same point about the availability default from the other side.
+        #
+        # Latency is read raw from slo / brief because the ladder does not
+        # carry it — the same two rungs #extract_targets consults, minus the
+        # `|| DEFAULT` tail.
+        def declared_targets(mission)
+          @declared_targets_cache ||= {}
+          return @declared_targets_cache[mission.id] if @declared_targets_cache.key?(mission.id)
+
+          cfg   = mission.configuration.is_a?(Hash) ? mission.configuration.deep_stringify_keys : {}
+          slo   = cfg["slo_targets"].is_a?(Hash) ? cfg["slo_targets"] : {}
+          brief = cfg["brief"].is_a?(Hash) ? cfg["brief"] : {}
+
+          declared = declared_service_level_targets(mission, slo, brief)
+          util     = utilization_targets_for(mission)
+
+          @declared_targets_cache[mission.id] = {
+            "p99_latency_ms" => slo["p99_latency_ms"]&.to_f ||
+                                  brief.dig("latency_targets_ms", "p99")&.to_f,
+            "availability_pct" => declared["availability_pct"],
+            "cost_ceiling_usd" => declared["cost_ceiling_usd"],
+            "min_throughput_bytes_per_s" => declared["min_throughput_bytes_per_s"],
+            "max_cpu_pct" => util["max_cpu_pct"],
+            "max_memory_pct" => util["max_memory_pct"]
+          }.compact
         end
 
         # ----- signal builders ----------------------------------------------

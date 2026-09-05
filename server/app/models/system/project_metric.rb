@@ -63,6 +63,21 @@ module System
       v["observed"] || v[:observed]
     end
 
+    # Campaign 01a07025 — WHY this sample carries no observation, as the token
+    # ProjectMetricsCollector DECLARED rather than a phrase inferred from the
+    # note. `no_producer` means nothing on this platform measures the metric;
+    # `no_data` means the sampler works and had nothing to measure this tick.
+    # nil for a live sample, and nil for any row written before the collector
+    # started declaring it — a reader must treat nil as "unknown", never as
+    # either token, because the two need opposite operator responses.
+    #
+    # ProjectSloSensor's unmeasurable-target lane is the consumer; see
+    # System::ProjectMetricsCollector#unavailable_sample for the contract.
+    def unavailable_reason
+      v = value.is_a?(Hash) ? value : {}
+      v["unavailable_reason"] || v[:unavailable_reason]
+    end
+
     # Convenience: the target threshold the collector recorded alongside the
     # observation, if any. Sensors usually pull the target from
     # `mission.configuration["slo_targets"]`, but collectors may also stamp

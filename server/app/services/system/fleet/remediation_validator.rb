@@ -161,6 +161,7 @@ module System
         system.task_backlog_investigate
         system.node_lkg_investigate
         system.module_promotion_investigate
+        project.target_unmeasurable_investigate
       ].freeze
 
       # The same exemption, keyed by SIGNAL KIND instead of action_category —

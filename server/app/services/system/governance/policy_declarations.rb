@@ -1050,7 +1050,16 @@ module System
         "project.scale_horizontal" => "auto_approve",
         "project.relocate" => "require_approval",
         "project.schema_change" => "require_approval",
-        "project.security_change" => "require_approval"
+        "project.security_change" => "require_approval",
+        # Campaign 01a07025 — the notify-only lane for a project that declared
+        # an SLO target nothing on this platform measures (today: latency; see
+        # the block at ProjectSloSensor::DEFAULT_P99_LATENCY_MS). It reaches an
+        # operator and actuates nothing: there is no remediation for "no
+        # producer exists", so the row exists to route the notification and to
+        # give an operator a place to silence it, not to gate an action.
+        # notify_and_proceed matches project.adapt / project.cost_control, the
+        # sibling sensor-routed keys in this set.
+        "project.target_unmeasurable_investigate" => "notify_and_proceed"
       }.freeze
 
       # IMP-8c0f0fe9a8cf (APO-3b) — the two halves of PlatformDeployment
