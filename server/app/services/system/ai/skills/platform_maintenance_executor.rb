@@ -21,8 +21,12 @@ module System
       #                       active instances — what each agent reports
       #                       mounted vs the current version of the modules
       #                       its node is assigned (read-only)
-      #   - "health_check"  → aggregate platform health (rails, worker,
-      #                       redis, pg, acme, sdwan, federation)
+      #   - "health_check"  → COMPOSITE platform health, delegated whole to
+      #                       System::Platform::CompositeHealthProbe. Every
+      #                       subsystem it declares gets its own entry with its
+      #                       own status, and a subsystem that could not be
+      #                       observed reports `not_measured` rather than "ok".
+      #                       See that class for the oracle rule and ranking.
       #
       # Plan reference: chat-driven platform deployment + maintenance
       # (D2-ext.1).
@@ -254,75 +258,68 @@ module System
           { id: instance.id, status: instance.status, name: instance.name }
         end
 
-        # ── health_check: aggregate snapshot (mirrors PlatformHealthController) ─
+        # ── health_check: THE composite platform-health answer ───────────
+        #
+        # Delegated whole to System::Platform::CompositeHealthProbe. This used
+        # to build four subsystem entries here — rails, postgres, acme,
+        # federation — with `rails_health` returning the literal
+        # `{ status: "ok" }`, under a comment claiming the method "mirrors
+        # PlatformHealthController". No class of that name exists in either
+        # repository. The comment was pointing, inexactly, at
+        # Api::V1::System::Platform::HealthController, which is a REAL and
+        # SEPARATE fourth health surface: it feeds the compute/platform health
+        # dashboard, carries its own copy of these probes, has the same
+        # constant-"ok" rails entry, and likewise has no fleet-instance
+        # subsystem. Delegating this verb does not fix that one. See the
+        # increment report: the controller is the remaining divergent producer
+        # and should be re-pointed at CompositeHealthProbe.
+        #
+        # The cost of that shape was measured. Live 2026-09-05 04:48Z this verb
+        # returned overall "ok" while `platform_resilience op=failover_check`
+        # returned 11 (now 12) NodeInstances in status "error" in the same
+        # minute — health_check had no fleet subsystem to see them with, and
+        # the constant "ok" carried the aggregate.
+        #
+        # The probe persists every run, so "show me health over the last hour"
+        # is answerable from System::PlatformHealthSnapshot afterwards.
         def health_check
-          health = {
-            rails: rails_health,
-            postgres: postgres_health,
-            acme: acme_health,
-            federation: federation_health
-          }
-
-          status = health.values.map { |h| h[:status] }
-          overall =
-            if status.include?("down") then "down"
-            elsif status.include?("degraded") then "degraded"
-            else "ok"
-            end
-
-          recs = []
-          if health[:acme][:expiring_within_7d].to_i.positive?
-            recs << "#{health[:acme][:expiring_within_7d]} cert(s) expire within 7 days — call platform_maintenance with action=cert_rotate."
-          end
-          if health[:federation][:heartbeat_stale].to_i.positive?
-            recs << "#{health[:federation][:heartbeat_stale]} federation peer(s) with stale heartbeat — call platform_resilience with action=failover_check."
-          end
-          recs << "Platform health is OK." if recs.empty? && overall == "ok"
+          probe = ::System::Platform::CompositeHealthProbe.new(
+            account: @account, source: "platform_maintenance.health_check"
+          )
+          result = probe.call_and_persist!
 
           success(
             action: "health_check",
-            data: { overall: overall, subsystems: health, generated_at: Time.current.iso8601 },
-            recommendations: recs
+            data: result,
+            recommendations: health_recommendations(result)
           )
         end
 
-        def rails_health
-          { status: "ok", env: Rails.env, ruby: RUBY_VERSION }
-        end
+        # Recommendations name the SPECIFIC subsystems, and they never claim
+        # everything is fine while something went unobserved — a run carrying
+        # `not_measured` gets told what it could not see, not reassurance.
+        def health_recommendations(result)
+          recs = []
 
-        def postgres_health
-          ActiveRecord::Base.connection.execute("SELECT 1")
-          { status: "ok" }
-        rescue StandardError => e
-          { status: "down", error: e.message }
-        end
+          if result[:down].any?
+            recs << "DOWN: #{result[:down].join(', ')} — observed failing; investigate before anything else."
+          end
+          if result[:degraded].any?
+            recs << "DEGRADED: #{result[:degraded].join(', ')}."
+          end
+          if result[:not_measured].any?
+            recs << "NOT MEASURED: #{result[:not_measured].join(', ')} — these were not observed and are " \
+                    "NOT known to be healthy. Configure or reach them before treating this run as complete."
+          end
 
-        def acme_health
-          certs = ::System::AcmeCertificate.where(account: @account)
-          valid = certs.where(status: "valid")
-          expiring_30d = valid.where("expires_at < ?", 30.days.from_now).count
-          expiring_7d  = valid.where("expires_at < ?", 7.days.from_now).count
-          {
-            status: expiring_7d.positive? ? "degraded" : "ok",
-            total: certs.count,
-            expiring_within_30d: expiring_30d,
-            expiring_within_7d: expiring_7d
-          }
-        rescue StandardError => e
-          { status: "down", error: e.message }
-        end
+          fleet = result.dig(:subsystems, :fleet_instances) || {}
+          if fleet[:error_count].to_i.positive?
+            recs << "#{fleet[:error_count]} node instance(s) in status=error — call platform_resilience " \
+                    "with action=failover_check for the per-instance detail."
+          end
 
-        def federation_health
-          return { status: "ok", total: 0 } unless defined?(::System::FederationPeer)
-          peers = ::System::FederationPeer.where(account: @account, peer_kind: "platform")
-          stale = peers.heartbeat_stale.count
-          {
-            status: stale.positive? ? "degraded" : "ok",
-            total: peers.count,
-            heartbeat_stale: stale
-          }
-        rescue StandardError => e
-          { status: "down", error: e.message }
+          recs << "All subsystems observed healthy." if result[:overall] == "ok"
+          recs
         end
       end
     end
