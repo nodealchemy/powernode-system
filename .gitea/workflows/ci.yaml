@@ -219,16 +219,11 @@ jobs:
         run: |
           bundle exec rails db:create
           bundle exec rails db:schema:load
-          # Backfill schema_migrations from extension migrations so rspec
-          # doesn't complain about pending migrations
-          bundle exec rails runner '
-            Dir.glob("../extensions/*/server/db/migrate/*.rb").each do |f|
-              v = File.basename(f)[/\A\d+/]
-              ActiveRecord::Base.connection.execute(
-                "INSERT INTO schema_migrations (version) VALUES ('"'"'#{v}'"'"') ON CONFLICT DO NOTHING"
-              )
-            end
-          '
+          # Backfill schema_migrations for everything db:schema:load did not
+          # stamp — extension migrations, AND core migrations newer than
+          # schema.rb's version (a data-only migration never bumps it). See the
+          # script header; it is shared so the two jobs cannot drift.
+          bundle exec rails runner ../extensions/system/scripts/ci-stamp-migration-versions.rb
 
       - name: Run system extension specs (all suites, sequential)
         working-directory: powernode-platform/server
@@ -386,16 +381,11 @@ jobs:
         run: |
           bundle exec rails db:create
           bundle exec rails db:schema:load
-          # Backfill schema_migrations from extension migrations so rspec
-          # doesn't complain about pending migrations
-          bundle exec rails runner '
-            Dir.glob("../extensions/*/server/db/migrate/*.rb").each do |f|
-              v = File.basename(f)[/\A\d+/]
-              ActiveRecord::Base.connection.execute(
-                "INSERT INTO schema_migrations (version) VALUES ('"'"'#{v}'"'"') ON CONFLICT DO NOTHING"
-              )
-            end
-          '
+          # Backfill schema_migrations for everything db:schema:load did not
+          # stamp — extension migrations, AND core migrations newer than
+          # schema.rb's version (a data-only migration never bumps it). See the
+          # script header; it is shared so the two jobs cannot drift.
+          bundle exec rails runner ../extensions/system/scripts/ci-stamp-migration-versions.rb
 
       # The script generates a throwaway supplementary Gemfile beside the core
       # Gemfile (eval_gemfile "Gemfile" + aws-sdk-ec2 + fog-openstack), does a
