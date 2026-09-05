@@ -632,7 +632,7 @@ flowchart TB
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
 - [docs/SDWAN_ARCHITECTURE.md](./SDWAN_ARCHITECTURE.md) — SDWAN compile pipeline (intent → per-stage compilers → on-node artifacts)
-- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (28 seeds, 9 passes)
+- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (34 seeds, 9 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
 - [Parent platform's CLAUDE.md](../../../CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details

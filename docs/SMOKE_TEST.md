@@ -5,7 +5,7 @@
 End-to-end validation that the System extension can boot a node, attach a
 runtime, build an overlay network, federate, issue certs, provision
 storage, exercise hardware / CI publication paths, and run a full
-K3s lifecycle smoke — exercised through 28 seeded smoke scripts grouped
+K3s lifecycle smoke — exercised through 34 seeded smoke scripts grouped
 into nine passes. Each pass is independently runnable; a clean run of
 all nine means the platform's primary capability surface works against
 your local environment.
@@ -56,7 +56,7 @@ states what it adds beyond the previous.
 
 ## Smoke test catalog
 
-All 28 smoke seeds, grouped by pass. Each is idempotent and DB-level
+All 34 smoke seeds, grouped by pass. Each is idempotent and DB-level
 unless marked **VM**; VM-spawning seeds require the boot prerequisites
 listed in [Pass 1](#pass-1--single-node-qemu).
 

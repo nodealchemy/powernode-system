@@ -358,7 +358,7 @@ single point of control for resuming vs. starting over.
 
 ## Cross-references
 
-- [`SMOKE_TEST.md`](../SMOKE_TEST.md) — catalog of all 28 smoke seeds
+- [`SMOKE_TEST.md`](../SMOKE_TEST.md) — catalog of all 34 smoke seeds
 - [`multi-cluster-k3s.md`](multi-cluster-k3s.md) — operator-facing multi-cluster K3s workflow
 - [`sdwan-network-setup.md`](sdwan-network-setup.md) — SDWAN end-to-end (networks, peers, VIPs, federation)
 - [`federation-setup.md`](federation-setup.md) — multi-region/multi-account federation peering
