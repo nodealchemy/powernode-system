@@ -1,0 +1,140 @@
+schema_version: 1
+
+name: vault
+display_name: "HashiCorp Vault (test)"
+description: >
+  Runs a HashiCorp Vault server on a fleet instance, for TESTING the platform's
+  Vault-backed paths — module signing via transit (System::ModuleSigningService
+  in "vault" mode), Security::VaultClient, and the credential-restoration
+  runbook — without depending on the shared vault.ipnode.org, which has been
+  sealed since 2026-07-29 and whose unseal keys are operator-held.
+
+  DELIBERATELY NOT `vault server -dev`. Dev mode auto-unseals with an in-memory
+  backend and prints a root token to the journal; publishing a module
+  AUTO-PROMOTES it fleet-wide (the built->staging->blessed ladder is
+  decorative), so a self-unsealing Vault with a well-known root token would be
+  one assignment away from any node. This ships production mode with file
+  storage: it starts SEALED and stays sealed until an operator runs
+  `vault operator init` / `vault operator unseal`. That is the point, not an
+  omission — see docs/runbooks/vault-test-instance.md.
+
+# BUSL-1.1, NOT MPL-2.0. HashiCorp relicensed Vault at 1.15; 1.20.4 is Business
+# Source License 1.1, whose "Additional Use Grant" forbids offering the software
+# as a competing hosted service. Shipping the upstream binary inside a module for
+# INTERNAL platform testing is within that grant; it is not MIT-compatible and
+# must not be described as such anywhere the platform's own MIT licensing is
+# asserted. If a permissive licence is required, OpenBao (MPL-2.0, the community
+# fork of Vault 1.14) is a drop-in for the transit + kv paths this module exists
+# to exercise — swapping is a version/URL change in the stage-1.5 case below.
+license: BUSL-1.1
+category: data-plane
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# Vault has no apt package in the Ubuntu archive (HashiCorp ship their own apt
+# repo, which this build model does not consume). The binary is fetched from the
+# pinned upstream release and sha256-verified at CI build time by the `vault`
+# case in scripts/module-build/stage15.sh — the same hermetic pattern as
+# gitleaks/oras/cosign. It is therefore NOT apt-derivable, so
+# derive-file-spec.sh --mode deb-payload structurally cannot verify it (it never
+# appears in the apt-resolved candidate set the tool diffs against); the same
+# blind spot gitleaks and claude-tmux document. Declared here so
+# stage2-carve.sh's fat-root carve keeps it.
+#
+# Vault is a fully-static Go binary: one entry, no *.so companions.
+file_spec:
+  - "/usr/local/bin/vault"
+  - "/etc/vault.d/vault.hcl"
+  - "/usr/local/bin/vault-start.sh"
+
+# No apt closure to waive — package_spec is empty.
+carve_waivers: []
+
+# The operator edits vault.hcl on the node (listener address, storage path, TLS)
+# and MUST NOT have it clobbered by a module refresh. Same treatment redis gives
+# /etc/redis/redis.conf.
+protected_spec:
+  - /etc/vault.d/vault.hcl
+
+# Empty on purpose: the Vault binary is fully static (CGO disabled upstream) and
+# needs no apt-installed dependencies. base-os-ubuntu-noble already provides
+# ca-certificates.
+package_spec: []
+
+dependency_spec: []
+
+dependencies:
+  requires:
+    # Base layer only. No capability:os.userland edge: unlike redis/postgres,
+    # this payload links no glibc, so it carries no closure guarantee to assert
+    # (same reasoning as gitleaks).
+    - powernode/powernode-system-base@^1.0
+  provides:
+    - secrets.vault
+    - secrets.transit
+
+reboot_required: false
+
+# Platform-allocated fleet-wide Unix identity — the UID itself comes from
+# System::Identity::UserAllocator (70_000..UID_MAX), not from this file.
+# Locked shell: vault is daemon-only, and an interactive shell on the account
+# that owns the unseal-key-derived storage is a liability, not a convenience.
+users:
+  - name: vault
+    shell: /usr/sbin/nologin
+    home: /persist/var/lib/vault
+    gecos: HashiCorp Vault server
+
+services:
+  - name: vault
+    # Wrapper creates the storage dir under /persist with vault ownership,
+    # refuses to start on a world-readable storage dir, then drops privileges.
+    # /var is NOT shipped in the erofs and a soft-reboot preserves only /run,
+    # so storage lives under /persist or it does not survive (see
+    # soft-reboot-does-not-preserve-mounts).
+    start_command: "/usr/local/bin/vault-start.sh"
+    restart_policy: always
+    user: root
+    # Loopback only by default. Widening this to a routable address is an
+    # operator edit to BOTH vault.hcl (listener) and this port declaration, and
+    # it must not be done while tls_disable is set — see the runbook.
+    exposed_ports: []
+    capabilities: []
+
+security:
+  # CAP_IPC_LOCK       — Vault mlock()s its memory so secrets are never paged
+  #                      to disk. The alternative (disable_mlock = true) is a
+  #                      real weakening and is NOT taken here.
+  # CAP_CHOWN,
+  # CAP_DAC_OVERRIDE,
+  # CAP_FOWNER         — vault-start.sh preps the /persist storage dir as root.
+  # CAP_SETUID/GID,
+  # CAP_SETPCAP        — runuser drops to the vault user before exec'ing the
+  #                      server (mirrors redis/postgres-primary).
+  # With RootDirectory=/sysroot the agent emits an empty CapabilityBoundingSet=
+  # unless caps are declared here, which strips even root's ability to chown.
+  capabilities:
+    - CAP_IPC_LOCK
+    - CAP_CHOWN
+    - CAP_DAC_OVERRIDE
+    - CAP_FOWNER
+    - CAP_SETUID
+    - CAP_SETGID
+    - CAP_SETPCAP
+  # Vault needs no outbound reach for the file-storage + transit paths this
+  # module exists to test. Left empty deliberately: if a future auto-unseal
+  # (KMS/transit seal) is added it needs an explicit entry here, and that edit
+  # is the moment to reconsider the whole seal story.
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+build:
+  # Pinned upstream release. Bump alongside the sha256 pair in the `vault` case
+  # of scripts/module-build/stage15.sh — the checksums are per-version AND
+  # per-arch, and a version bump without them fails the build closed.
+  vault_version: "1.20.4"

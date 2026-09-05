@@ -1826,6 +1826,63 @@ case "$MODULE" in
       echo "[stage-1.5] skipping gh version exec check for ARCH=${ARCH:-amd64} (cross-arch binary) — sha256 already verified above"
     fi
     ;;
+
+  vault)
+    # HashiCorp Vault has no package in the Ubuntu archive (HashiCorp ship
+    # their own apt repo, which this build model does not consume) — fetch the
+    # pinned upstream release and verify its sha256, the same hermetic pattern
+    # as the gh / gitleaks / act_runner / oras / cosign fetches above. Vault is
+    # a fully-static Go binary, so it needs no *.so companions.
+    #
+    # UNLIKE every other fetch in this stage, the release asset is a ZIP, not a
+    # tar.gz. unzip is not guaranteed in the builder image and no other case
+    # needs it, so this falls back to python3's zipfile module (present in the
+    # base image for the platform's own tooling) and fails LOUDLY if neither
+    # extractor exists — rather than silently shipping a module with no binary.
+    #
+    # LICENCE: Vault is BUSL-1.1 from 1.15 onward, not MPL/MIT. See the manifest
+    # header before widening where this module is used.
+    VAULT_VERSION=$(jq -r '.build.vault_version // "1.20.4"' /tmp/manifest.json)
+
+    # Pinned sha256 for vault_${VAULT_VERSION}_linux_<arch>.zip, taken from
+    # https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS
+    # Bump both alongside build.vault_version on any version change; a version
+    # bump without them fails closed here rather than shipping unverified bytes.
+    case "${ARCH:-amd64}" in
+      amd64) VAULT_ARCH=amd64; VAULT_SHA256=fc5fb5d01d192f1216b139fb5c6af17e3af742aaeffc289fd861920ec55f2c9c ;;
+      arm64) VAULT_ARCH=arm64; VAULT_SHA256=d1e9548efd89e772b6be9dc37914579cabd86362779b7239d2d769cfb601d835 ;;
+      *) echo "[stage-1.5] FATAL: no pinned vault sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+    esac
+
+    curl -fsSL \
+      "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
+      -o /tmp/vault.zip
+    echo "${VAULT_SHA256}  /tmp/vault.zip" | sha256sum -c -
+
+    mkdir -p /tmp/fat/usr/local/bin
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -o -j /tmp/vault.zip vault -d /tmp/fat/usr/local/bin
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract('vault', sys.argv[2])" \
+        /tmp/vault.zip /tmp/fat/usr/local/bin
+    else
+      echo "[stage-1.5] FATAL: neither unzip nor python3 available to extract the vault release zip"
+      exit 1
+    fi
+    chmod 0755 /tmp/fat/usr/local/bin/vault
+    rm -f /tmp/vault.zip
+
+    # Verify what actually shipped. Only exec on an amd64 runner (the only ARCH
+    # built today) — a cross-arch fetch has its integrity confirmed by the
+    # sha256sum -c above and can't be exec'd on this runner anyway.
+    if [ "${ARCH:-amd64}" = "amd64" ]; then
+      VAULT_OUT=$(/tmp/fat/usr/local/bin/vault version 2>&1 || true)
+      echo "[stage-1.5] vault: $VAULT_OUT"
+      echo "$VAULT_OUT" | grep -q "${VAULT_VERSION}" || { echo "[stage-1.5] FATAL: expected vault ${VAULT_VERSION}, got: $VAULT_OUT"; exit 1; }
+    else
+      echo "[stage-1.5] skipping vault version exec check for ARCH=${ARCH:-amd64} (cross-arch binary) — sha256 already verified above"
+    fi
+    ;;
 esac
 
 echo "=== /tmp/fat top-level layout after stage 1.5 ==="
