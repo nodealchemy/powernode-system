@@ -121,12 +121,24 @@ module System
           slo  = cfg["slo_targets"].is_a?(Hash) ? cfg["slo_targets"] : {}
           brief = cfg["brief"].is_a?(Hash) ? cfg["brief"] : {}
 
+          declared = declared_service_level_targets(mission, slo, brief)
+
           {
-            "availability_pct" => slo["availability_pct"]&.to_f || DEFAULT_AVAILABILITY_PCT,
+            # The DEFAULT stays here, not in the reader. `nil` from the ladder
+            # means nobody declared an availability target, and this sensor's
+            # own answer to that is 99.5 — folding it into the reader would make
+            # "nobody said" indistinguishable from "somebody said exactly 99.5".
+            "availability_pct" => declared["availability_pct"] || DEFAULT_AVAILABILITY_PCT,
             "p99_latency_ms" => slo["p99_latency_ms"]&.to_f ||
                                   brief.dig("latency_targets_ms", "p99")&.to_f ||
                                   DEFAULT_P99_LATENCY_MS.to_f,
-            "cost_ceiling_usd" => (slo["cost_ceiling_usd"] || brief["budget_cap_usd_monthly"])&.to_f,
+            # The brief's budget_cap_usd_monthly fallback is GONE from here on
+            # purpose: Ai::Mission's ladder now carries it as a rung BELOW the
+            # project's declaration. Keeping a copy here would put it back
+            # ABOVE — budget_cap_usd_monthly is a required brief field, so every
+            # provisioning mission has one and it would outrank every project
+            # ceiling, which is the exact defect this closes.
+            "cost_ceiling_usd" => declared["cost_ceiling_usd"],
             "expected_replica_count" => brief.dig("scale", "initial")&.to_i,
             "expected_region_count" => Array(brief["regions"]).size,
             # IMP-25e75f960dee — SDWAN throughput floor. NO DEFAULT, on purpose:
@@ -135,8 +147,58 @@ module System
             # mission the moment the metric went live. Declared-only, exactly
             # like cost_ceiling_usd — so a mission that says nothing keeps its
             # current behaviour byte for byte.
-            "min_throughput_bytes_per_s" => slo["min_throughput_bytes_per_s"]&.to_f
+            "min_throughput_bytes_per_s" => declared["min_throughput_bytes_per_s"]
           }.merge(utilization_targets_for(mission))
+        end
+
+        # The three service-level targets, resolved through Ai::Mission's ONE
+        # ladder (the mission's own slo_targets -> the PROJECT's -> the mission
+        # template -> the account -> the SiteSetting -> not declared) rather
+        # than read straight off the mission's configuration here.
+        #
+        # WHY THIS EXISTS. The project rung was already wired into the scaling
+        # window and the two utilization ceilings, and these three were not:
+        # this sensor read them directly, so a project that DECLARED an
+        # availability target had it land in a row nothing on the evaluation
+        # path ever looked at. The declaration was silently unobserved.
+        #
+        # It asks the MISSION, never the project. Two readers of one project's
+        # targets are two opinions free to disagree, which is what the single
+        # ladder exists to prevent.
+        #
+        # `respond_to?` for the same reason #utilization_targets_for carries it
+        # — a core without the reader, or a mission double in a spec — and the
+        # rescue for a reader that raises. Both fall back to the LEGACY direct
+        # read rather than to nothing, because an empty availability target
+        # would make the comparison below raise and cost the mission its whole
+        # evaluation. The fallback is the bypass this change removes, so it logs
+        # when it is taken; it is a compatibility path, not a second opinion
+        # anyone should be resolving through.
+        def declared_service_level_targets(mission, slo, brief)
+          return legacy_service_level_targets(slo, brief) unless mission.respond_to?(:service_level_targets)
+
+          targets = mission.service_level_targets
+          {
+            "availability_pct" => targets.availability_pct,
+            "cost_ceiling_usd" => targets.cost_ceiling_usd,
+            "min_throughput_bytes_per_s" => targets.min_throughput_bytes_per_s
+          }
+        rescue StandardError => e
+          Rails.logger.warn("[ProjectSloSensor] service-level targets unresolved for " \
+                            "mission=#{mission.id}: #{e.class}: #{e.message} — falling back to the " \
+                            "mission's own configuration, so a PROJECT declaration is unobserved " \
+                            "this tick")
+          legacy_service_level_targets(slo, brief)
+        end
+
+        # Byte for byte what #extract_targets did before the ladder gained
+        # these three rungs. Reachable only from the two guards above.
+        def legacy_service_level_targets(slo, brief)
+          {
+            "availability_pct" => slo["availability_pct"]&.to_f,
+            "cost_ceiling_usd" => (slo["cost_ceiling_usd"] || brief["budget_cap_usd_monthly"])&.to_f,
+            "min_throughput_bytes_per_s" => slo["min_throughput_bytes_per_s"]&.to_f
+          }
         end
 
         # IMP-7684d3f8658a — the cpu / memory ceilings, read from the mission
