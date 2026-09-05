@@ -87,6 +87,26 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # (its predicate is the boot category registry, not any seed's declarations) —
 # IMP-0a3ff97f6fbb.
 #
+# `powernode_platform_categories.rb` + `powernode_platform_modules.rb` run
+# after `node_module_catalog.rb` (which supplies the ubuntu-24.04-lts
+# NodePlatform) and before `role_modules_seed.rb`. The categories seed is pure
+# DB. The modules seed reads extensions/system/modules/<name>/manifest.yaml off
+# disk — a tree powernode-extension-system MASKS out of its shipped artifact —
+# so it SKIPS itself when that tree is absent rather than raising; see the
+# disk-root guard at the top of that file. Listing them is what makes a
+# manifest on disk reach the NodeModule table on `rails db:seed` instead of
+# only on an explicit `rails runner`.
+#
+# DELIBERATELY STILL UNLISTED, and named here so the orphan lint reads this as
+# the reason rather than flagging them as dead code:
+#   - `powernode_platform_templates.rb` — composes the platform NodeTemplates.
+#     Which templates an install should have is an operator decision, not a
+#     catalog fact; it also runs only after the modules seed above has landed
+#     the rows it composes.
+#   - `powernode_dev_cell.rb` — the dev-cell topology (NodeTemplate + a PAUSED
+#     InstancePool + an isolated Sdwan::Network). Creating a pool on every
+#     install would be a capacity decision made for the operator.
+#
 # Keep prose OUT of the %w[] literal below: it does not honour `#`, so a comment
 # line becomes one array element per word.
 SYSTEM_SEED_FILES = %w[
@@ -113,6 +133,8 @@ SYSTEM_SEED_FILES = %w[
   system_skill_bindings_seed.rb
   system_kb_seed.rb
   node_module_catalog.rb
+  powernode_platform_categories.rb
+  powernode_platform_modules.rb
   role_modules_seed.rb
   system_agent_hierarchy.rb
   system_operations_team_seed.rb

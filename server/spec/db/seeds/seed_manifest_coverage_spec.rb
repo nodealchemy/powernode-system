@@ -77,20 +77,6 @@ module SeedManifestCoverage
     "inference_runtime_module.rb" =>
       "Same family as gpu_nvidia_runtime_module.rb (AI/MCP workload substrate L1) and requires it. Never " \
       "runs, so its ollama module row never exists. Shares that offer's disposition.",
-    "powernode_platform_modules.rb" =>
-      "Operator/deploy-time platform bootstrapper: imports every extensions/system/modules/<name>/ " \
-      "manifest from disk via System::PlatformModuleManifestLoader. Self-documented 'Invoke explicitly: " \
-      "rails runner load ...'. Deliberately not part of db:seed (it needs the modules tree on disk), but " \
-      "the orchestrator never says so.",
-    "powernode_platform_categories.rb" =>
-      "Prerequisite of powernode_platform_modules.rb (must run first). Same operator-run bootstrapper " \
-      "class; loaded directly by integration specs.",
-    "powernode_platform_templates.rb" =>
-      "Runs after powernode_platform_modules.rb to compose the platform templates. Same operator-run " \
-      "bootstrapper class.",
-    "powernode_dev_cell.rb" =>
-      "Operator-run dev-cell topology bootstrapper (template + paused InstancePool + isolated " \
-      "Sdwan::Network). Depends on powernode_platform_modules.rb having run first.",
     "cutover_renamed_modules.rb" =>
       "One-off cutover script for the 2026-05-24 module-rename pass; destructive (deletes stale " \
       "NodeModule rows) and re-loads the two platform bootstrappers. Correctly never part of db:seed.",
@@ -168,17 +154,19 @@ module SeedManifestCoverage
 
   # Creation sites the scanner cannot resolve, each with why it is safe to
   # leave unresolved. An entry is a declared BLIND SPOT in the advertised set,
-  # so it needs a reason the gap cannot hide behind it.
+  # so it needs a reason the gap cannot hide behind it. Covers BOTH regions —
+  # the running one (assertion (i)) and the operator-invocable one (assertion
+  # (iii)) — because a file can move between them.
   UNRESOLVED_MODULE_CREATION_SITES = {
     "powernode_platform_modules.rb" =>
-      "Not a catalog seed but the platform-module LOADER: it iterates " \
-      "PLATFORM_MODULE_MANIFESTS_TO_SEED, read off POWERNODE_PLATFORM_MODULES_DISK_ROOT by " \
-      "System::PlatformModuleManifestLoader (:67, :69), so the name is a block parameter (:81, creation " \
-      "site :82-85) the " \
-      "scanner cannot see. Nothing is hidden by that: every module it creates comes FROM a " \
-      "modules/<name>/ manifest on disk, so by construction it can never contribute to the gap " \
-      "above. It also sets `public = false` (:93), which keeps its rows out of the catalog-advertised " \
-      "reading entirely."
+      "RUNNING region since it was listed in SYSTEM_SEED_FILES (vault module work). Not a catalog " \
+      "seed but the platform-module LOADER: it iterates PLATFORM_MODULE_MANIFESTS_TO_SEED, read off " \
+      "POWERNODE_PLATFORM_MODULES_DISK_ROOT by System::PlatformModuleManifestLoader, so the name is a " \
+      "block parameter the scanner cannot see. Nothing is hidden by that: every module it creates " \
+      "comes FROM a modules/<name>/ manifest on disk, so by construction it can never contribute to " \
+      "the gap above — a name it creates always has a modules/<name>/ directory, which is precisely " \
+      "what assertion (i) checks for. It also sets `public = false`, which keeps its rows out of the " \
+      "catalog-advertised reading entirely."
   }.freeze
 
   module_function
@@ -463,6 +451,30 @@ module SeedManifestCoverage
   def operator_creation_site_counts
     scanned_operator_seeds.transform_values(&:creation_sites).sort.to_h
   end
+
+  # Same two, for the RUNNING region. powernode_platform_modules.rb is listed
+  # in SYSTEM_SEED_FILES as of the vault module work, and it creates its rows
+  # from a block parameter — so the unresolvable-site declaration is no longer
+  # an operator-region-only concern and neither is the per-file count pin.
+  def scanned_running_seeds_with_modules
+    scanned_running_seeds.select { |_file, result| result.creation_sites.positive? }
+  end
+
+  def unresolved_running_sites
+    scanned_running_seeds_with_modules.reject { |_file, result| result.unresolved.empty? }.keys.sort
+  end
+
+  def running_creation_site_counts
+    scanned_running_seeds_with_modules.transform_values(&:creation_sites).sort.to_h
+  end
+
+  # The declaration covers BOTH regions, so the equality that keeps it from
+  # rotting has to be taken over their union — a per-region equality would go
+  # stale the moment a file moved between them, which is exactly what listing
+  # powernode_platform_modules.rb did.
+  def unresolved_creation_sites
+    (unresolved_running_sites + unresolved_operator_sites).uniq.sort
+  end
 end
 
 RSpec.describe "seeded node-module manifest coverage (IMP-1634d69fafc8)" do
@@ -475,24 +487,25 @@ RSpec.describe "seeded node-module manifest coverage (IMP-1634d69fafc8)" do
       expect(result.names).to eq(%w[docker-runtime nodejs-runtime postgres-server python-runtime redis-cache])
     end
 
-    it "pins which running seeds create NodeModules, so a new creation site cannot slip past" do
-      creating = SeedManifestCoverage.scanned_running_seeds
-                                     .select { |_file, result| result.creation_sites.positive? }
-                                     .keys.sort
-
-      expect(creating).to eq(%w[role_modules_seed.rb]),
-        "a running seed gained or lost a System::NodeModule creation site. If a new one appeared, " \
-        "confirm the scanner extracts its names (see the UNRESOLVED example) before updating this pin."
+    # Pins the COUNT per file, not just which files — the same rigor the
+    # operator region has. A file already declared as unresolvable could
+    # otherwise gain a SECOND unresolvable site and nothing would move.
+    it "pins how many NodeModule creation sites each running seed has" do
+      expect(SeedManifestCoverage.running_creation_site_counts).to eq(
+        "powernode_platform_modules.rb" => 1,
+        "role_modules_seed.rb"          => 1
+      ), "a running seed gained or lost a System::NodeModule creation site. If a new one appeared, " \
+         "confirm the scanner extracts its names (see the UNRESOLVED example) before updating this pin."
     end
 
-    it "leaves no NodeModule creation site unresolved" do
-      unresolved = SeedManifestCoverage.scanned_running_seeds
-                                       .transform_values(&:unresolved)
-                                       .reject { |_file, sites| sites.empty? }
+    it "leaves no UNDECLARED NodeModule creation site unresolved among running seeds" do
+      undeclared = SeedManifestCoverage.unresolved_running_sites -
+                   SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys
 
-      expect(unresolved).to be_empty,
-        "the scanner found System::NodeModule creation sites whose name: argument it cannot resolve — " \
-        "it would silently under-report:\n#{unresolved.map { |f, s| "  #{f}: #{s.join(' | ')}" }.join("\n")}"
+      expect(undeclared).to be_empty,
+        "a running seed creates a System::NodeModule whose name: argument the scanner cannot resolve, " \
+        "with no UNRESOLVED_MODULE_CREATION_SITES entry — it would silently under-report assertion " \
+        "(i):\n#{undeclared.map { |f| "  #{f}" }.join("\n")}"
     end
 
     it "reads real manifest directories off disk" do
@@ -653,7 +666,6 @@ RSpec.describe "seeded node-module manifest coverage (IMP-1634d69fafc8)" do
         "gpu_nvidia_runtime_module.rb"    => 1,
         "inference_runtime_module.rb"     => 1,
         "k3s_modules.rb"                  => 2,
-        "powernode_platform_modules.rb"   => 1,
         "sdwan_flow_exporter_module.rb"   => 1,
         "sdwan_overlay_module.rb"         => 1
       ), "an operator-invocable seed gained or lost a System::NodeModule creation site. Confirm the " \
@@ -662,12 +674,28 @@ RSpec.describe "seeded node-module manifest coverage (IMP-1634d69fafc8)" do
     end
 
     it "declares every operator-region creation site whose name it cannot resolve" do
-      expect(SeedManifestCoverage.unresolved_operator_sites)
-        .to match_array(SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys),
+      undeclared = SeedManifestCoverage.unresolved_operator_sites -
+                   SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys
+
+      expect(undeclared).to be_empty,
         "an operator-invocable seed creates a System::NodeModule whose name: argument the scanner " \
         "cannot resolve. Every such site is a hole in the advertised set above — the equality " \
         "cannot fail for a module it never extracted.\n" \
-        "  derived: #{SeedManifestCoverage.unresolved_operator_sites.inspect}\n" \
+        "  undeclared: #{undeclared.inspect}\n" \
+        "  declared:   #{SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys.sort.inspect}"
+    end
+
+    # The two per-region examples above are existence checks, which cannot see
+    # a STALE declaration. This equality can, and it is taken over the UNION so
+    # that a file moving between the regions (as powernode_platform_modules.rb
+    # did when it was listed in SYSTEM_SEED_FILES) neither reddens it nor slips
+    # a declaration past it.
+    it "has no stale UNRESOLVED_MODULE_CREATION_SITES entry, in either region" do
+      expect(SeedManifestCoverage.unresolved_creation_sites)
+        .to match_array(SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys),
+        "the declared unresolvable-creation-site set no longer equals the derived one across both " \
+        "regions.\n" \
+        "  derived:  #{SeedManifestCoverage.unresolved_creation_sites.inspect}\n" \
         "  declared: #{SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys.sort.inspect}"
     end
   end

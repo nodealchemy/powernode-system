@@ -66,6 +66,31 @@
 # (F7-03 resurrection-debris guard) when git info is available.
 POWERNODE_PLATFORM_MODULES_DISK_ROOT = ::System::PlatformModuleManifestLoader::DEFAULT_ROOT
 
+# DISK-ROOT GUARD — the precondition for listing this file in
+# SYSTEM_SEED_FILES at all.
+#
+# powernode-extension-system's manifest MASKS
+# /opt/powernode/extensions/system/modules/*** out of the shipped artifact
+# (alongside .git/, docs/, initramfs/, agent/dist/), so on a module-composed
+# hub this tree does not exist and load_from_disk RAISES. The orchestrator
+# rescues and logs a ❌, which would put a permanent red line in every such
+# install's db:seed output for a seed that has nothing to do there.
+#
+# So: skip, loudly and successfully, when the tree is absent. Where the tree
+# IS present — a source checkout, CI, a dev-cell — the seed runs and the
+# NodeModule rows land on db:seed instead of only on an explicit rails runner.
+#
+# This is NOT a silent no-op: an operator invoking the file directly on a
+# plane with no modules tree gets the same message and a zero exit rather
+# than a backtrace, which is the honest outcome either way. The raise stays
+# in load_from_disk for callers that genuinely require the tree.
+unless ::Dir.exist?(POWERNODE_PLATFORM_MODULES_DISK_ROOT)
+  puts "  ⏭  Skipping platform modules seed: no modules tree at " \
+       "#{POWERNODE_PLATFORM_MODULES_DISK_ROOT} (masked out of the deployed " \
+       "extension artifact — expected on a module-composed hub)."
+  return
+end
+
 PLATFORM_MODULE_MANIFESTS_TO_SEED = ::System::PlatformModuleManifestLoader.load_from_disk
 puts "  Loaded #{PLATFORM_MODULE_MANIFESTS_TO_SEED.size} platform module manifests from #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}"
 
