@@ -488,7 +488,7 @@ module Ai
       # HIER-P2B-ENG — the four RELEASE verbs gate on the CORE `engineering`
       # policy set the Release Manager owns (Ai::InterventionPolicy::
       # ENGINEERING_CATEGORIES, rows seeded by core's
-      # db/seeds/ai_engineering_agents_seed.rb): build dispatch auto-approves
+      # server/db/seeds/ai_engineering_agents_seed.rb): build dispatch auto-approves
       # (plus an account-wide floor — Ai::Engineering::ReleaseDispatchFloor
       # Seeder — because the principals that dispatch a build over MCP carry no
       # agent-scoped row: an operator's `mcp_client` session and a dev-cell
