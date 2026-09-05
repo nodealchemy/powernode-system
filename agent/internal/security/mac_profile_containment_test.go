@@ -106,6 +106,17 @@ func TestLoadAppArmorProfile_FailsClosedWhenAbsent(t *testing.T) {
 	}
 	// A profile that DOES exist in the agent-owned dir resolves and loads
 	// (over-rejection guard — the containment must not strand a real profile).
+	//
+	// LoadAppArmorProfile consults apparmorAvailable() AFTER resolution, so
+	// this arm needs the LSM present to reach the loader at all. Pinning it
+	// true makes the assertion measure the CONTAINMENT decision on every host
+	// instead of the host's LSM state: unpinned it passed on a dev box and
+	// failed in CI with "present agent-owned profile rejected", which
+	// described neither the code nor the cause. Skipping when AppArmor is
+	// absent would be worse — the over-rejection guard would then never run
+	// in CI, silently, which is the failure this test exists to catch.
+	stubApparmorAvailable(t, true)
+
 	if err := os.WriteFile(filepath.Join(dir, "app-profile"), []byte("profile app {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +162,46 @@ func TestLoadAppArmorProfile_RefusesSymlinkEscape(t *testing.T) {
 	for _, inv := range rec.Invocations {
 		if inv.Name == "apparmor_parser" {
 			t.Fatalf("loader ran for a symlink escape: %v", inv.Args)
+		}
+	}
+}
+
+// stubApparmorAvailable pins the host-LSM probe for one test, restoring it on
+// cleanup. Only the over-rejection arm needs it: every REFUSAL assertion here
+// is deliberately host-independent, because containment runs before the
+// availability check and those tests assert the error is NOT
+// ErrAppArmorNotAvailable.
+func stubApparmorAvailable(t *testing.T, present bool) {
+	t.Helper()
+	orig := apparmorAvailable
+	apparmorAvailable = func() bool { return present }
+	t.Cleanup(func() { apparmorAvailable = orig })
+}
+
+// The availability gate itself must stay real. Without this, the seam added
+// for the over-rejection arm could be left stubbed, or the gate deleted
+// outright, and nothing in the suite would object — a profile would then be
+// handed to apparmor_parser on a host with no AppArmor at all.
+func TestLoadAppArmorProfile_RefusesWhenLSMAbsent(t *testing.T) {
+	dir := t.TempDir()
+	orig := AppArmorProfileDir
+	AppArmorProfileDir = dir
+	t.Cleanup(func() { AppArmorProfileDir = orig })
+
+	if err := os.WriteFile(filepath.Join(dir, "app-profile"), []byte("profile app {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubApparmorAvailable(t, false)
+
+	rec := &mount.RecorderRunner{}
+	err := LoadAppArmorProfile(context.Background(), rec, "app-profile")
+	if !errors.Is(err, ErrAppArmorNotAvailable) {
+		t.Fatalf("a present, contained profile on a host with no AppArmor must report "+
+			"ErrAppArmorNotAvailable; got %v", err)
+	}
+	for _, inv := range rec.Invocations {
+		if inv.Name == "apparmor_parser" {
+			t.Fatalf("loader ran with no AppArmor on the host: %v", inv.Args)
 		}
 	}
 }

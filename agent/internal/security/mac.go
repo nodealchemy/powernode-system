@@ -178,7 +178,16 @@ func selinuxAvailable() bool {
 
 // apparmorAvailable returns true when /sys/kernel/security/apparmor is
 // present (the canonical signal AppArmor is loaded).
-func apparmorAvailable() bool {
+//
+// A package var rather than a plain func, for the same reason
+// AppArmorProfileDir is one: it is a test seam. The containment contract is
+// host-independent, but LoadAppArmorProfile consults this AFTER resolution, so
+// a test that asserts a VALID profile reaches the loader cannot run at all on
+// a host without AppArmor. Leaving it a func made that assertion pass on
+// dev-cell and fail in CI, where the container has no LSM — the failure said
+// "present agent-owned profile rejected", which is not what happened.
+// Production callers never touch this.
+var apparmorAvailable = func() bool {
 	_, err := os.Stat("/sys/kernel/security/apparmor")
 	return err == nil
 }
