@@ -265,7 +265,7 @@ RSpec.describe "service-seam instance provenance", type: :service do
 
       "scheduled_health_check_service.rb:PlatformMaintenanceExecutor" =>
         "Scheduler-only. Reached from the worker-API tick " \
-        "(Api::V1::System::WorkerApi::PlatformHealthController#run_due), " \
+        "(Api::V1::System::WorkerApi::PlatformHealthController#sweep), " \
         "never from an MCP tool, and passes user: nil meaning a genuine " \
         "in-process caller. Runs `gated: true` with the fixed action " \
         "health_check, a read-only probe that nests no tool, so there is no " \
