@@ -240,16 +240,18 @@ RSpec.describe System::InternalCaService do
     # The in-memory fallback is gone. A CA that cannot be persisted is unique
     # per process, so everything it signs verifies nowhere — and the old code
     # reported that with a log warning. Losing issuance loudly is correct.
+    #
+    # The store sits under a regular FILE rather than a chmod 500 directory:
+    # root ignores mode bits, so the chmod fixture never refused under CI
+    # (which runs as root) and this example passed vacuously there. mkdir_p
+    # through a file raises for every uid.
     it "refuses rather than falling back to an in-memory CA when the store is unwritable" do
       Dir.mktmpdir do |dir|
-        unwritable = File.join(dir, "nope")
-        FileUtils.mkdir_p(unwritable)
-        FileUtils.chmod(0o500, unwritable)
-        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => File.join(unwritable, "ca")))
+        not_a_dir = File.join(dir, "nope")
+        File.write(not_a_dir, "")
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => File.join(not_a_dir, "ca")))
 
-        expect { described_class::LocalCaAdapter.new }.to raise_error(StandardError)
-      ensure
-        FileUtils.chmod(0o700, unwritable) if File.exist?(unwritable)
+        expect { described_class::LocalCaAdapter.new }.to raise_error(described_class::CaError, /POWERNODE_CA_LOCAL_DIR/)
       end
     end
 

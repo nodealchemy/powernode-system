@@ -500,8 +500,19 @@ module System
         File.rename(tmp_link, File.join(@persist_dir, LIVE_LINK))
         fsync_dir(@persist_dir)
       rescue SystemCallError => e
+        refuse_unpersistable_store!(e)
+      end
+
+      # The ONE refusal for a store this process cannot write. Raised from both
+      # places the store is first touched — #with_lock creates the directory
+      # and the lock file before #write_generation! ever runs, so an
+      # unwritable path used to surface there as a bare Errno with none of
+      # the operator guidance below, and only a path that failed LATER (inside
+      # the generation write) got the message. Same refusal, whichever call
+      # hits the wall first.
+      def refuse_unpersistable_store!(error)
         raise CaError,
-              "could not persist the internal CA to #{@persist_dir}: #{e.class}: #{e.message}. " \
+              "could not persist the internal CA to #{@persist_dir}: #{error.class}: #{error.message}. " \
               "Refusing to continue with an in-memory CA — it would be unique per process and " \
               "every certificate it signed would verify nowhere. Fix the path or set " \
               "POWERNODE_CA_LOCAL_DIR to a writable, DURABLE location (§17)."
@@ -543,10 +554,18 @@ module System
       # Single-writer discipline (§3.1). Writers only: readers are lockless
       # because version dirs are immutable and `live` resolves in one readlink.
       def with_lock
-        FileUtils.mkdir_p(@persist_dir, mode: 0o700)
-        File.open(File.join(@persist_dir, LOCK_FILE), File::RDWR | File::CREAT, 0o600) do |lock|
+        begin
+          FileUtils.mkdir_p(@persist_dir, mode: 0o700)
+          lock = File.open(File.join(@persist_dir, LOCK_FILE), File::RDWR | File::CREAT, 0o600)
+        rescue SystemCallError => e
+          refuse_unpersistable_store!(e)
+        end
+
+        begin
           lock.flock(File::LOCK_EX)
           yield
+        ensure
+          lock.close
         end
       end
 
