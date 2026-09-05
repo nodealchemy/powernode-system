@@ -45,7 +45,11 @@ RSpec.describe "replay-baseline stamp adoption" do
       ruby_sources.filter_map do |path|
         source = File.read(path)
         next unless source.include?(%(executor_class: "#{klass.name}"))
-        next if source.include?("#{klass.name}.replay_baseline(")
+        # Whitespace-tolerant between receiver and message: the instance-pool
+        # surface line-wraps `UpdatePool\n  .replay_baseline(` (a rubocop
+        # line-length sweep did that), and a literal substring match read the
+        # stamp that IS there as absent. The stamp is the call, not its layout.
+        next if source.match?(/#{Regexp.escape(klass.name)}\s*\.replay_baseline\(/)
 
         "#{path.delete_prefix(APP_ROOT.to_s)} parks #{klass.name} " \
           "(declares #{klass.replay_baseline_attributes.join(', ')}) without stamping replay_baseline"
