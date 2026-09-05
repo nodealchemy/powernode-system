@@ -207,6 +207,13 @@ module System
           duration_ms: ((completed_at - started_at) * 1000).round
         )
       rescue StandardError => e
+        # Attribution is half of what this increment promises. A runtime
+        # failure must not sink the check itself (the DutyCycleService
+        # posture); a schema defect is re-raised so #run_if_due! reports
+        # `reason: "error"` instead of `ran: true` over an execution row that
+        # can never be written. See System::DeployDefect.
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[ScheduledHealthCheck] failed to record attribution for agent #{agent.id}: #{e.message}")
       end
     end

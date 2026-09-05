@@ -97,10 +97,13 @@ module System
 
       # Record one DEDUPED re-detection and return the row.
       #
-      # Returns nil on any failure. Every caller treats nil as "bookkeeping is
-      # unavailable this tick" and falls back to the behaviour that predates
-      # this table (emit the event, do not escalate) — a broken write must
-      # never be able to silence an operator OR manufacture an obligation.
+      # Returns nil on a RUNTIME failure. Every caller treats nil as
+      # "bookkeeping is unavailable this tick" and falls back to the behaviour
+      # that predates this table (emit the event, do not escalate) — a broken
+      # write must never be able to silence an operator OR manufacture an
+      # obligation. A SCHEMA failure (the table or a column missing) is not a
+      # tick-scoped condition and is re-raised instead — see
+      # System::DeployDefect.
       #
       # Read-modify-write under a ROW LOCK, and re-raising into a retry on the
       # insert race, for the same reason SensorConfig.upsert_for does: two
@@ -116,6 +119,13 @@ module System
           row.last_decision = "deduped"
         end
       rescue StandardError => e
+        # A table or column that does not exist is not "bookkeeping unavailable
+        # this tick" — it is unavailable every tick until a deploy, and the
+        # fallback below would report a healthy tick over a dead lane for as
+        # long as that took. Re-raise it so the tick FAILS for this account
+        # (contained per account by the worker-API reconcile), never no-ops.
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[FleetSignalState] dedupe record failed for #{signal.fingerprint}: " \
                           "#{e.class}: #{e.message}")
         nil
@@ -144,6 +154,8 @@ module System
         end
         claimed
       rescue StandardError => e
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[FleetSignalState] notification claim failed for #{fingerprint}: " \
                           "#{e.class}: #{e.message}")
         # Fail OPEN: an operator who chose notify_and_proceed asked to be told,
@@ -159,6 +171,8 @@ module System
                        last_decision: "standing_escalated", updated_at: now)
         true
       rescue StandardError => e
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[FleetSignalState] escalation stamp failed for #{fingerprint}: " \
                           "#{e.class}: #{e.message}")
         false
@@ -168,6 +182,8 @@ module System
         update_columns(last_decision: decision.to_s, updated_at: Time.current)
         true
       rescue StandardError => e
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[FleetSignalState] decision stamp failed for #{fingerprint}: " \
                           "#{e.class}: #{e.message}")
         false
@@ -227,6 +243,8 @@ module System
         update_columns(column => now, :updated_at => now)
         true
       rescue StandardError => e
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.warn("[FleetSignalState] #{column} claim failed for #{fingerprint}: " \
                           "#{e.class}: #{e.message}")
         # Fail OPEN on the observability lane for the same reason as

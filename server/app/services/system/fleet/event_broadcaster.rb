@@ -60,6 +60,12 @@ module System
           Rails.logger.warn("[FleetEventBroadcaster] persist failed: #{e.message}")
           nil
         rescue StandardError => e
+          # FleetEvent is the ledger every sensor, step and decision writes
+          # to. Its table being absent would make every emission vanish at
+          # WARN while the tick reads as healthy; that is a deploy defect, not
+          # an "unexpected" runtime error. See System::DeployDefect.
+          raise if ::System::DeployDefect.schema?(e)
+
           Rails.logger.warn("[FleetEventBroadcaster] unexpected: #{e.class}: #{e.message}")
           nil
         end

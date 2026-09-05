@@ -164,6 +164,12 @@ module System
           captured_at: Time.current
         )
       rescue StandardError => e
+        # The snapshot IS the history the dashboard and the health-check skill
+        # read. A missing table (the exact state CI ran in for weeks) must not
+        # come back as `persisted: false` on an otherwise healthy result —
+        # nothing about the next run will differ. See System::DeployDefect.
+        raise if ::System::DeployDefect.schema?(e)
+
         Rails.logger.error("[CompositeHealthProbe] snapshot write failed: #{e.class}: #{e.message}")
         nil
       end

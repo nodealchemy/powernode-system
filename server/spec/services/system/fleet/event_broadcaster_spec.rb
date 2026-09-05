@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../../support/schema_defect_helpers"
 
 # Golden Eclipse Block I — FleetEvent + EventBroadcaster.
 RSpec.describe System::Fleet::EventBroadcaster do
@@ -46,6 +47,24 @@ RSpec.describe System::Fleet::EventBroadcaster do
     it "returns nil when account is missing" do
       result = described_class.emit!(account: nil, kind: "x", severity: :low, payload: {})
       expect(result).to be_nil
+    end
+
+    # FleetEvent is the ledger every sensor, step and decision writes to. A
+    # transient write failure is swallowed to nil (the tick must go on); the
+    # table itself being absent is a deploy defect and must not vanish at
+    # WARN while the tick reads as healthy (System::DeployDefect).
+    it "re-raises when the fleet_events table is missing" do
+      allow(System::FleetEvent).to receive(:create!).and_raise(schema_defect_error("system_fleet_events"))
+
+      expect {
+        described_class.emit!(account: account, kind: "x.y", severity: :low, payload: {}, source: "test")
+      }.to raise_error(ActiveRecord::StatementInvalid, /does not exist/)
+    end
+
+    it "still returns nil on a transient write failure" do
+      allow(System::FleetEvent).to receive(:create!).and_raise(transient_statement_error)
+
+      expect(described_class.emit!(account: account, kind: "x.y", severity: :low, payload: {}, source: "test")).to be_nil
     end
   end
 

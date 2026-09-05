@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../../support/schema_defect_helpers"
 
 # Campaign 01a07025 increment 3 — the scheduled, attributed, persisted
 # platform-health duty. Before this service, System::Platform::
@@ -147,6 +148,30 @@ RSpec.describe System::Platform::ScheduledHealthCheckService do
         expect { result = described_class.new(account: account).run_if_due! }.not_to raise_error
         expect(result[:ran]).to be(true)
         expect(result[:success]).to be(false)
+      end
+
+      # Attribution is half of what this increment promises. A runtime
+      # failure writing the execution row must not sink the check; a schema
+      # defect must not be reported as `ran: true` over a row that can never
+      # be written (System::DeployDefect).
+      it "reports reason: error, not ran: true, when the execution row's schema is missing" do
+        stub_probes_ok
+        allow(Ai::AgentExecution).to receive(:create!).and_raise(schema_defect_error("ai_agent_executions"))
+
+        result = described_class.new(account: account).run_if_due!
+
+        expect(result).to include(ran: false, reason: "error")
+        expect(result[:error]).to match(/does not exist/)
+      end
+
+      it "still runs and reports ran: true when the execution row fails to write transiently" do
+        stub_probes_ok
+        allow(Ai::AgentExecution).to receive(:create!).and_raise(transient_statement_error)
+
+        result = described_class.new(account: account).run_if_due!
+
+        expect(result[:ran]).to be(true)
+        expect(Ai::AgentExecution.where(account: account)).to be_empty
       end
     end
   end
