@@ -95,7 +95,7 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
       expect(d[:requires_approval]).to be true
       expect(d[:blast_radius]).to eq(:high)
       entry = System::Ai::Skills::SkillBindings.by_skill.find { |r| r[:executor] == described_class }
-      expect(entry[:agents]).to include("System Concierge", "Fleet Autonomy")
+      expect(entry[:agents]).to include("system-concierge", "fleet-autonomy")
     end
   end
 

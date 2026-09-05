@@ -271,7 +271,7 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
     # ...and the positive list names all twelve, so the emptiness above is a
     # real agreement and not two scans that both returned nothing.
     expect(seeded_agents).to include(
-      "Fleet Autonomy", "System Concierge", "Runtime Manager", "CVE Responder",
+      "Fleet Autonomy", "Infrastructure Generalist", "Runtime Manager", "CVE Responder",
       "Disk Image Manager", "SDWAN Manager", "System Topology Designer", "GitOps Reconciler",
       "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
     )
@@ -288,7 +288,7 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
 
     # And the empty policy scan is a real derivation, not an artifact of the
     # seed files being unreadable: the identity scan reads the same files.
-    expect(seeded_agents).to include("System Concierge", "Supply Chain Manager")
+    expect(seeded_agents).to include("Infrastructure Generalist", "Supply Chain Manager")
     expect(Dir[File.join(seed_dir, "system_{concierge,supply_chain_manager}_agent.rb")].size).to eq(2)
   end
 end

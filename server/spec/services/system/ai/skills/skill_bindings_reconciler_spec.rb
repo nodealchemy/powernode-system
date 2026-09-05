@@ -34,12 +34,19 @@ RSpec.describe System::Ai::Skills::SkillBindingsReconciler do
     %w[system_skills_seed.rb system_provisioning_skills_seed.rb system_dr_skills_seed.rb].each { |f| load_seed!(f) }
   end
 
-  def canonical(name, agent_type: "monitor")
-    create(:ai_agent, :global, name: name, agent_type: agent_type, is_system: true)
+  # The reconciler resolves agents by SOURCE KEY, not display name, so a
+  # fixture without one binds nothing. The key is derived the way the seeds
+  # set it: the declared identity key where one exists, otherwise the
+  # parameterized name (which is what AgentSetupHelpers effectively writes).
+  def canonical(name, agent_type: "monitor", source_key: nil)
+    key = source_key ||
+          System::Governance::PolicyDeclarations::AGENT_IDENTITIES.find { |_k, i| i[:name] == name }&.first ||
+          name.parameterize
+    create(:ai_agent, :global, name: name, agent_type: agent_type, is_system: true, source_key: key)
   end
 
   let(:registry) { System::Ai::Skills::SkillBindings.discover }
-  let(:cve_slugs) { registry.select { |e| e[:agent_name] == "CVE Responder" }.map { |e| e[:skill_slug] }.uniq }
+  let(:cve_slugs) { registry.select { |e| e[:agent_key] == "cve-responder" }.map { |e| e[:skill_slug] }.uniq }
 
   subject(:reconciler) { described_class.new }
 
@@ -144,7 +151,8 @@ RSpec.describe System::Ai::Skills::SkillBindingsReconciler do
 
       result = reconciler.reconcile!
 
-      expect(result.unknown_agents).to include("CVE Responder")
+      # Reported by SOURCE KEY now — the reconciler no longer knows a display name.
+      expect(result.unknown_agents).to include("cve-responder")
       expect(result.upserted).to eq(0)
     end
 

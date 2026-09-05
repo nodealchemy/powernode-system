@@ -162,7 +162,7 @@ RSpec.describe "system_supply_chain_manager_agent seed" do
       load_seed!("system_agent_hierarchy.rb")
     end
 
-    let(:root) { Ai::Agent.global.find_by!(name: "System Concierge") }
+    let(:root) { Ai::Agent.global.find_by!(source_key: "system-concierge") }
 
     it "is attached with exactly one active seed edge and the conservative depth-2 leaf delegation" do
       edges = Ai::AgentLineage.for_child(agent.id).active
@@ -244,19 +244,19 @@ RSpec.describe "system_supply_chain_manager_agent seed" do
     let(:registry) { System::Ai::Skills::SkillBindings.discover }
 
     def owners_of(slug)
-      registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_name] }
+      registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_key] }
     end
 
     it "registers every supply-chain executor on the Supply Chain Manager and on Fleet Autonomy no longer" do
       SUPPLY_CHAIN_SKILL_SLUGS.each do |slug|
         owners = owners_of(slug)
-        expect(owners).to include("Supply Chain Manager"), "#{slug} should bind to Supply Chain Manager (owners=#{owners.inspect})"
-        expect(owners).not_to include("Fleet Autonomy"), "#{slug} still binds to Fleet Autonomy (owners=#{owners.inspect})"
+        expect(owners).to include("supply-chain-manager"), "#{slug} should bind to Supply Chain Manager (owners=#{owners.inspect})"
+        expect(owners).not_to include("fleet-autonomy"), "#{slug} still binds to Fleet Autonomy (owners=#{owners.inspect})"
       end
     end
 
     it "keeps package_module_refresh reachable from the CVE lane (CVE Responder stays bound)" do
-      expect(owners_of("system-package-module-refresh")).to include("CVE Responder")
+      expect(owners_of("system-package-module-refresh")).to include("cve-responder")
     end
 
     it "materialises the bindings through system_skill_bindings_seed and drops the Fleet Autonomy rows" do

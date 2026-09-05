@@ -126,7 +126,7 @@ RSpec.describe "system_disk_image_manager_agent seed" do
     end
 
     it "hangs under System Concierge with one seed edge and a conservative depth-2 delegation policy" do
-      root = Ai::Agent.global.find_by!(name: "System Concierge")
+      root = Ai::Agent.global.find_by!(source_key: "system-concierge")
       edges = Ai::AgentLineage.for_child(agent.id).active
       expect(edges.pluck(:parent_agent_id)).to eq([ root.id ])
       expect(edges.first.spawn_reason).to eq("seed")

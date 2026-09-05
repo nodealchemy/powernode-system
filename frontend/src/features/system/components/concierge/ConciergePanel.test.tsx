@@ -87,7 +87,7 @@ function envelope<T>(data: T) {
 const START_RESPONSE = {
   conversation_id: 'conv-1',
   agent_id:        'agent-1',
-  agent_name:      'System Concierge',
+  agent_name:      'Infrastructure Generalist',
   snapshot:        'nodes: 3, healthy: 3',
 };
 
@@ -187,7 +187,7 @@ describe('ConciergePanel', () => {
   it('renders the panel when open=true', () => {
     setupHappyPath();
     renderPanel();
-    expect(screen.getByText('System Concierge')).toBeInTheDocument();
+    expect(screen.getByText('Infrastructure Generalist')).toBeInTheDocument();
   });
 
   it('calls onClose when the × button is clicked', async () => {
@@ -289,7 +289,7 @@ describe('ConciergePanel', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Hi! I'm the System Concierge/),
+        screen.getByText(/Hi! I'm the Infrastructure Generalist/),
       ).toBeInTheDocument();
     });
   });
@@ -301,7 +301,7 @@ describe('ConciergePanel', () => {
     await waitFor(() => {
       expect(screen.getByText(MSG_USER.content)).toBeInTheDocument();
     });
-    expect(screen.queryByText(/Hi! I'm the System Concierge/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Hi! I'm the Infrastructure Generalist/)).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

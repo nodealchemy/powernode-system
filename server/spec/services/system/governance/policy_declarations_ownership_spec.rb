@@ -370,14 +370,18 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
   it "aliases the four managers for binds_to" do
     aliases = System::Ai::Skills::SkillBindings::AGENT_ALIASES
     expect(aliases).to include(
-      "capacity_manager"     => "Capacity Manager",
-      "storage_manager"      => "Storage Manager",
-      "ingress_manager"      => "Ingress Manager",
-      "supply_chain_manager" => "Supply Chain Manager"
+      "capacity_manager"     => "capacity-manager",
+      "storage_manager"      => "storage-manager",
+      "ingress_manager"      => "ingress-manager",
+      "supply_chain_manager" => "supply-chain-manager"
     )
-    # Every alias target is a declared identity name (a typo here binds to nobody).
-    expect(aliases.values - d::AGENT_IDENTITIES.values.map { |i| i[:name] })
-      .to eq([ "System Concierge" ])
+    # Every alias target is a declared identity KEY — a source_key, not a
+    # display name. The targets moved off names because SkillBindingsReconciler
+    # resolves through them, and a name-keyed resolution silently orphaned
+    # every binding when an agent was renamed. The concierge is the one agent
+    # with no policy set, so it is absent from AGENT_IDENTITIES and named here.
+    expect(aliases.values.uniq - d::AGENT_IDENTITIES.keys)
+      .to eq([ "system-concierge" ])
   end
 
   it "lists the new managers and the Topology Designer in the Autonomy panel's agent roster" do

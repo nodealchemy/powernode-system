@@ -36,7 +36,7 @@ function envelope<T>(data: T) {
 const START_RESPONSE = {
   conversation_id: 'conv-abc123',
   agent_id: 'agent-xyz',
-  agent_name: 'System Concierge',
+  agent_name: 'Infrastructure Generalist',
   snapshot: 'Ready to assist with fleet operations.',
 };
 
@@ -103,7 +103,7 @@ describe('useConcierge', () => {
         expect(result.current.conversationId).toBe('conv-abc123');
       });
 
-      expect(result.current.agentName).toBe('System Concierge');
+      expect(result.current.agentName).toBe('Infrastructure Generalist');
       expect(result.current.snapshot).toBe('Ready to assist with fleet operations.');
       expect(result.current.messages).toEqual([MSG_USER, MSG_ASSISTANT]);
       expect(result.current.pending).toBe(false);

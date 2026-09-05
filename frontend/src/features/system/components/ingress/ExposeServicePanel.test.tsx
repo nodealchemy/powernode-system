@@ -22,7 +22,7 @@ const mockSend = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../hooks/useConcierge', () => ({
   useConcierge: () => ({
     conversationId: 'conv-1',
-    agentName: 'System Concierge',
+    agentName: 'Infrastructure Generalist',
     snapshot: null,
     messages: [],
     pending: false,

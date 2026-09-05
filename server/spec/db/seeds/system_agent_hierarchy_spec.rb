@@ -2,7 +2,8 @@
 
 require "rails_helper"
 
-# HIER-P1 — the system agent hierarchy as seeded data: System Concierge is the
+# HIER-P1 — the system agent hierarchy as seeded data: the Infrastructure
+# Generalist (formerly "System Concierge"; source_key unchanged) is the
 # root, every domain agent hangs under it (and so does the CORE concierge, so
 # an install carrying this extension has ONE forest) with exactly one active
 # lineage edge and one delegation policy, written through
@@ -70,7 +71,9 @@ RSpec.describe "system_agent_hierarchy seed" do
   # ai_concierge_seed binds the concierge skill and raises without it.
   let!(:concierge_skill) { create(:ai_skill, account: account, slug: "powernode-concierge", name: "Powernode Concierge") }
 
-  let(:root) { Ai::Agent.global.find_by(name: "System Concierge") }
+  # Resolved by SOURCE KEY, which is what HierarchyReconciler::ROOT_KEY is and
+  # why renaming the agent to "Infrastructure Generalist" did not move the root.
+  let(:root) { Ai::Agent.global.find_by(source_key: "system-concierge") }
   let(:core_root) { Ai::Agent.global.find_by(slug: SystemAgentHierarchySeeds::CORE_ROOT_SLUG) }
 
   def agent(name) = Ai::Agent.global.find_by!(name: name)
@@ -109,7 +112,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(Ai::AgentLineage.for_parent(root.id).active.count).to eq(domain_agents.size + 1)
 
       rootless = Ai::Agent.global.where(parent_agent_id: nil).pluck(:name)
-      expect(rootless).to eq([ "System Concierge" ])
+      expect(rootless).to eq([ "Infrastructure Generalist" ])
     end
 
     it "reports the declared-but-unseeded managers as skipped (drift), not as an error" do
@@ -150,7 +153,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(edges.first.spawn_reason).to eq("seed")
       expect(architect.reload.parent_agent_id).to eq(root.id)
       expect(Ai::DelegationPolicy.where(agent_id: architect.id)).to be_empty
-      expect(Ai::Agent.global.where(parent_agent_id: nil).pluck(:name)).to eq([ "System Concierge" ])
+      expect(Ai::Agent.global.where(parent_agent_id: nil).pluck(:name)).to eq([ "Infrastructure Generalist" ])
     end
 
     it "is skipped, never invented, when the Platform Architect has not been seeded" do
@@ -190,7 +193,7 @@ RSpec.describe "system_agent_hierarchy seed" do
     # Keyed on the seeding account rather than as an account_id-NULL canonical
     # row, so the seed is legal under both the pre- and post-HIER-P0 schema.
     it "writes exactly one policy per system agent, keyed on the seeding account" do
-      ([ "System Concierge" ] + domain_agents).each do |name|
+      ([ "Infrastructure Generalist" ] + domain_agents).each do |name|
         rows = Ai::DelegationPolicy.where(agent_id: agent(name).id)
         expect(rows.count).to eq(1), "#{name} should carry exactly one delegation policy"
         expect(rows.first.account_id).to eq(account.id)
@@ -214,7 +217,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(concierge.inheritance_policy).to eq("moderate")
       expect(concierge.max_depth).to eq(3)
 
-      declared_types = ([ "System Concierge" ] + domain_agents).map { |n| agent(n).agent_type }.uniq.sort
+      declared_types = ([ "Infrastructure Generalist" ] + domain_agents).map { |n| agent(n).agent_type }.uniq.sort
       expect(concierge.allowed_delegate_types).to eq(declared_types)
       expect(concierge.allowed_delegate_types).to include("monitor", "assistant")
       expect(concierge.delegatable_actions).to eq([])

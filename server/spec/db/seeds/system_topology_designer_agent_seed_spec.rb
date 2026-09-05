@@ -127,7 +127,7 @@ RSpec.describe "system_topology_designer_agent seed" do
     end
 
     it "hangs under System Concierge with one seed edge and a conservative depth-2 delegation policy" do
-      root = Ai::Agent.global.find_by!(name: "System Concierge")
+      root = Ai::Agent.global.find_by!(source_key: "system-concierge")
       edges = Ai::AgentLineage.for_child(agent.id).active
       expect(edges.pluck(:parent_agent_id)).to eq([ root.id ])
       expect(agent.reload.parent_agent_id).to eq(root.id)
@@ -161,7 +161,7 @@ RSpec.describe "system_topology_designer_agent seed" do
                                            "system", "ai", "skills", "#{base}_executor.rb"))
         expect(source).to match(/^\s*binds_to "topology_designer"/), "#{base}_executor.rb should bind via the alias"
       end
-      expect(System::Ai::Skills::SkillBindings::AGENT_ALIASES.fetch("topology_designer")).to eq("System Topology Designer")
+      expect(System::Ai::Skills::SkillBindings::AGENT_ALIASES.fetch("topology_designer")).to eq("topology-designer")
     end
   end
 end

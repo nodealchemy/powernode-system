@@ -10,7 +10,8 @@ RSpec.describe "Api::V1::System::Concierge", type: :request do
   let(:headers) { auth_headers_for(user) }
   let!(:concierge_agent) do
     create(:ai_agent,
-           account: account, name: "System Concierge", agent_type: "assistant",
+           account: account, name: "Infrastructure Generalist", agent_type: "assistant",
+           source_key: "system-concierge",
            metadata: { "concierge_tool_filter" => [ "system_*" ] })
   end
 
@@ -28,7 +29,7 @@ RSpec.describe "Api::V1::System::Concierge", type: :request do
       expect(response).to have_http_status(:ok)
       data = JSON.parse(response.body).fetch("data")
       expect(data["agent_id"]).to eq(concierge_agent.id)
-      expect(data["agent_name"]).to eq("System Concierge")
+      expect(data["agent_name"]).to eq("Infrastructure Generalist")
       expect(data["conversation_id"]).to be_present
       expect(data).to have_key("snapshot")
 

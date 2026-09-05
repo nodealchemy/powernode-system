@@ -2,7 +2,8 @@
 
 require_relative "concerns/agent_setup_helpers"
 
-# Seeds the System Concierge AI agent — operator-facing chat agent that
+# Seeds the Infrastructure Generalist AI agent (renamed from "System
+# Concierge"; source_key unchanged) — operator-facing chat agent that
 # can answer questions about the fleet (nodes, instances, modules, tasks,
 # CVE exposures) and SDWAN overlay (networks, peers, firewall rules,
 # VIPs, BGP) and dispatch state-changing skills with operator confirmation.
@@ -18,7 +19,7 @@ require_relative "concerns/agent_setup_helpers"
 #
 # Reference: comprehensive stabilization sweep Phase 10.3.
 
-puts "\n  Seeding System Concierge agent..."
+puts "\n  Seeding Infrastructure Generalist agent..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
   preferred_provider_types: [ "anthropic", "openai" ]
@@ -28,7 +29,7 @@ creator       = ctx[:creator]
 provider      = ctx[:provider]
 
 system_prompt = <<~PROMPT
-  You are the **System Concierge** — an operator-facing assistant for the Powernode platform's
+  You are the **Infrastructure Generalist** — an operator-facing assistant for the Powernode platform's
   System extension. Your job is to help operators understand, navigate, and operate every
   aspect of the system extension capability surface.
 
@@ -142,7 +143,7 @@ system_prompt = <<~PROMPT
     collectors) today; container networking + storage topology in future
     phases. 5 SDWAN compose skills bound. Invoked by you (Concierge) via
     `execute_agent` when an operator requests topology composition.
-  - **System Concierge** (you) — operator chat agent + delegation router:
+  - **Infrastructure Generalist** (you) — operator chat agent + delegation router:
     read-shape skills + dispatch confirmation cards for destructive actions +
     delegate composition work to specialist agents.
 
@@ -197,11 +198,16 @@ system_prompt = <<~PROMPT
 PROMPT
 
 concierge_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
-  name: "System Concierge",
+  name: "Infrastructure Generalist",
   agent_type: "assistant",
   source_key: "system-concierge"
 )
 concierge_agent.assign_attributes(
+  # STATED, not inferred. Ai::Agent#generate_slug would derive this from the
+  # name anyway, but the slug is the addressable handle (RoutableAgents.key —
+  # it IS the Claude Code subagent_type), so it is written here rather than
+  # left to a callback whose trigger is `name_changed?`.
+  slug: "infrastructure-generalist",
   description: "Operator chat agent for the full system extension surface (fleet, SDWAN, container runtimes, modules, disk image CI) — read-only by default, dispatches state-changing skills with operator confirmation",
   status: "active",
   system_prompt: system_prompt,
@@ -240,4 +246,4 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 
-puts "  ✅ System Concierge agent: #{concierge_agent.previously_new_record? ? 'created' : 'updated'} (id=#{concierge_agent.id})"
+puts "  ✅ Infrastructure Generalist agent: #{concierge_agent.previously_new_record? ? 'created' : 'updated'} (id=#{concierge_agent.id})"

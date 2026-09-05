@@ -41,7 +41,7 @@ RSpec.describe System::Ai::Skills::ModuleComposeExecutor do
 
     it "binds to Fleet Autonomy and System Concierge" do
       entry = System::Ai::Skills::SkillBindings.by_skill.find { |r| r[:executor] == described_class }
-      expect(entry[:agents]).to include("Fleet Autonomy", "System Concierge")
+      expect(entry[:agents]).to include("fleet-autonomy", "system-concierge")
     end
   end
 

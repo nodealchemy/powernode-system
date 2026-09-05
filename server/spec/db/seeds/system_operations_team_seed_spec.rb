@@ -32,7 +32,7 @@ module SystemOperationsTeamSeeds
 
   # canonical slug => [member role, lead?]
   ROSTER = {
-    "system-concierge"         => [ "manager",    true ],
+    "infrastructure-generalist" => [ "manager",    true ],
     "fleet-autonomy"           => [ "executor",   false ],
     "sdwan-manager"            => [ "specialist", false ],
     "cve-responder"            => [ "executor",   false ],
@@ -68,7 +68,7 @@ RSpec.describe "system_operations_team seed" do
 
   let(:template) { Ai::TeamTemplate.global.find_by(slug: SystemOperationsTeamSeeds::TEMPLATE_SLUG) }
   let(:team)     { account.ai_agent_teams.find_by(template_id: template.id) }
-  let(:root)     { Ai::Agent.global.find_by!(name: "System Concierge") }
+  let(:root)     { Ai::Agent.global.find_by!(source_key: "system-concierge") }
   def reconciler = Ai::Teams::CanonicalTeamReconciler.new(account: account, template: template)
 
   it "is listed in SYSTEM_SEED_FILES after the hierarchy seed and before the governance reconcile" do
@@ -90,7 +90,7 @@ RSpec.describe "system_operations_team seed" do
     expect(template.default_config).to include("coordination_strategy" => "manager_led",
                                                "communication_pattern" => "hub_spoke")
     expect(template.member_definitions.map { |d| d["agent_slug"] }).to eq(SystemOperationsTeamSeeds::ROSTER.keys)
-    expect(template.manager_definition["agent_slug"]).to eq("system-concierge")
+    expect(template.manager_definition["agent_slug"]).to eq("infrastructure-generalist")
   end
 
   it "materialises the team on the admin account, System Concierge's principal as manager, every domain agent a member" do
@@ -143,7 +143,7 @@ RSpec.describe "system_operations_team seed" do
 
     report = reconciler.drift
     expect(report).to be_drifted
-    expect(report.missing_edges).to eq([ "system-concierge/sdwan-manager" ])
+    expect(report.missing_edges).to eq([ "infrastructure-generalist/sdwan-manager" ])
   end
 
   it "shows a Concierge delegate type the team lacks as drift" do

@@ -40,7 +40,7 @@ function envelope<T>(payload: T) {
 const START_RESPONSE = {
   conversation_id: 'conv-123',
   agent_id: 'agent-abc',
-  agent_name: 'System Concierge',
+  agent_name: 'Infrastructure Generalist',
   snapshot: 'snapshot-xyz',
 };
 
@@ -107,7 +107,7 @@ describe('conciergeApi', () => {
       expect(result).toEqual(START_RESPONSE);
       expect(result.conversation_id).toBe('conv-123');
       expect(result.agent_id).toBe('agent-abc');
-      expect(result.agent_name).toBe('System Concierge');
+      expect(result.agent_name).toBe('Infrastructure Generalist');
       expect(result.snapshot).toBe('snapshot-xyz');
     });
 

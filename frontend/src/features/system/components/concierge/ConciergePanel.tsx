@@ -12,7 +12,7 @@ const WELCOME_MESSAGE: ConciergeChatMessage = {
   id: 'welcome',
   role: 'assistant',
   content:
-    "Hi! I'm the System Concierge. Ask me about your fleet, modules, SDWAN networks, or operations — I can also dispatch system skills (provision_cluster, module_compose, runbook_generate, etc.) on your behalf, with confirmation for any destructive action.",
+    "Hi! I'm the Infrastructure Generalist. Ask me about your fleet, modules, SDWAN networks, or operations — I can also dispatch system skills (provision_cluster, module_compose, runbook_generate, etc.) on your behalf, with confirmation for any destructive action.",
   timestamp: new Date().toISOString(),
 };
 
@@ -69,7 +69,7 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
     <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-theme-surface border-l border-theme flex flex-col shadow-xl">
       <div className="p-4 border-b border-theme flex justify-between items-center">
         <div>
-          <h3 className="font-semibold">System Concierge</h3>
+          <h3 className="font-semibold">Infrastructure Generalist</h3>
           <p className="text-xs text-theme-tertiary">
             {concierge.agentName ? `Connected to ${concierge.agentName}` : 'Ask, plan, dispatch'}
           </p>

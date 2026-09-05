@@ -238,7 +238,7 @@ end
   end
 
   describe "hierarchy seat (system_agent_hierarchy.rb after the seed)" do
-    let(:root) { Ai::Agent.global.find_by(name: "System Concierge") }
+    let(:root) { Ai::Agent.global.find_by(source_key: "system-concierge") }
 
     before do
       load_seed!("system_concierge_agent.rb")
@@ -286,8 +286,8 @@ end
     it "registers every ingress executor to the Ingress Manager AND System Concierge, none to Fleet Autonomy" do
       registry = System::Ai::Skills::SkillBindings.discover
       INGRESS_SKILL_SLUGS.each do |slug|
-        owners = registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_name] }
-        expect(owners).to contain_exactly("Ingress Manager", "System Concierge"), "#{slug} owners=#{owners.inspect}"
+        owners = registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_key] }
+        expect(owners).to contain_exactly("ingress-manager", "system-concierge"), "#{slug} owners=#{owners.inspect}"
       end
       binding = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.fetch("system.acme_cert_expiring")
       expect(binding[:skill]).not_to eq(System::Ai::Skills::AcmeCertificateProvisionExecutor)

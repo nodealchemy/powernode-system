@@ -105,11 +105,11 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
         def self.name; "System::Ai::Skills::ExampleBindsToExecutor"; end
         skill_descriptor(name: "ex", description: "x", category: "fleet",
                          inputs: {}, outputs: {})
-        binds_to "Fleet Autonomy", "System Concierge"
+        binds_to "fleet-autonomy", "system-concierge"
       end
 
       reg = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == klass }
-      expect(reg[:agents]).to include("Fleet Autonomy", "System Concierge")
+      expect(reg[:agents]).to include("fleet-autonomy", "system-concierge")
     end
   end
 

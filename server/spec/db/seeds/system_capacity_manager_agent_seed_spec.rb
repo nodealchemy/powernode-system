@@ -213,7 +213,7 @@ RSpec.describe "system_capacity_manager_agent seed" do
       load_seed!("system_agent_hierarchy.rb")
     end
 
-    let(:root) { Ai::Agent.global.find_by!(name: "System Concierge") }
+    let(:root) { Ai::Agent.global.find_by!(source_key: "system-concierge") }
 
     it "attaches the agent under System Concierge with one active seed edge and a conservative depth-2 leaf policy" do
       edges = Ai::AgentLineage.for_child(agent.id).active
@@ -273,7 +273,7 @@ RSpec.describe "system_capacity_manager_agent seed" do
     end
 
     it "keeps platform_resilience on the System Concierge too (the operator chat door)" do
-      expect(bound_slugs("System Concierge")).to include("system-platform-resilience")
+      expect(bound_slugs("Infrastructure Generalist")).to include("system-platform-resilience")
     end
   end
 end

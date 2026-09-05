@@ -189,7 +189,7 @@ RSpec.describe "system_storage_manager_agent seed" do
 
   describe "the hierarchy seam (HIER-P1)" do
     let!(:concierge_skill) { create(:ai_skill, account: account, slug: "powernode-concierge", name: "Powernode Concierge") }
-    let(:root) { Ai::Agent.global.find_by(name: "System Concierge") }
+    let(:root) { Ai::Agent.global.find_by(source_key: "system-concierge") }
 
     before do
       load_seed!("system_concierge_agent.rb")
@@ -261,7 +261,8 @@ RSpec.describe "system_storage_manager_agent seed" do
         r[:executor].name == "System::Ai::Skills::RestoreVolumeExecutor"
       end
       expect(registration).to be_present
-      expect(registration[:agents]).to eq([ identity[:name] ])
+      # The registry stores SOURCE KEYS now, not display names.
+      expect(registration[:agents]).to eq([ "storage-manager" ])
     end
 
     it "materialises system-restore-volume on the Storage Manager and not on Fleet Autonomy" do

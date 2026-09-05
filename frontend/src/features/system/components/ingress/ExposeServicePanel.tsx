@@ -15,7 +15,7 @@ import type { SdwanNetwork, SdwanPeer } from '../../types/sdwan.types';
  * Expose Service tab — an approval-gated wizard for publishing a service
  * publicly. It does NOT call any ingress executor or REST endpoint directly:
  * instead it reuses the Phase 1 Concierge mission compose path. On submit it
- * starts (or resumes) the operator's System Concierge conversation and sends a
+ * starts (or resumes) the operator's Infrastructure Generalist conversation and sends a
  * natural-language "expose this service publicly" brief embedding the
  * structured fields. The platform's ConciergeService classifies the intent,
  * composes an approval-gated mission, and emits an inline approval card —
@@ -210,7 +210,7 @@ export const ExposeServicePanel: React.FC = () => {
         <div className="p-4 space-y-4">
           <p className="text-xs text-theme-secondary">
             Describe the service to publish. Submitting composes an approval-gated mission via the
-            System Concierge — nothing is exposed until you approve the plan in the conversation
+            Infrastructure Generalist — nothing is exposed until you approve the plan in the conversation
             panel.
           </p>
 

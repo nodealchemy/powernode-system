@@ -15,9 +15,9 @@ export interface UseConciergeResult {
 }
 
 /**
- * Wires the System Concierge UI to the platform's AI conversation API.
+ * Wires the Infrastructure Generalist UI to the platform's AI conversation API.
  *
- * On mount: bootstraps (or reuses) the operator's active System Concierge
+ * On mount: bootstraps (or reuses) the operator's active Infrastructure Generalist
  * conversation via POST /api/v1/system/concierge/start, then fetches any
  * existing messages for that conversation.
  *

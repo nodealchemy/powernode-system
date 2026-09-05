@@ -95,9 +95,9 @@ RSpec.describe "system_skills_seed — SkillBindings coverage" do
 
     owners = ::System::Ai::Skills::SkillBindings.discover
       .select { |e| e[:skill_slug] == "system-fulfill-capability-request" }
-      .map { |e| e[:agent_name] }
+      .map { |e| e[:agent_key] }
 
-    expect(owners).to contain_exactly("System Concierge", "Fleet Autonomy")
+    expect(owners).to contain_exactly("system-concierge", "fleet-autonomy")
   end
 
   it "is idempotent across re-runs" do

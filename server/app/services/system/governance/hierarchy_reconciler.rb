@@ -56,7 +56,12 @@ module System
     # (AgentManagementTool#create_agent), not a seat in this forest.
     class HierarchyReconciler
       ROOT_KEY = "system-concierge"
-      ROOT_IDENTITY = { name: "System Concierge", agent_type: "assistant" }.freeze
+      # NOTE the precedence in #resolve_agent: ROOT_KEY (a source_key) is tried
+      # FIRST and this name is only the fallback, which is why renaming the
+      # agent to "Infrastructure Generalist" did not move the root of the
+      # forest. The name is kept current so the fallback still resolves an
+      # install whose canonical predates source_key being set.
+      ROOT_IDENTITY = { name: "Infrastructure Generalist", agent_type: "assistant" }.freeze
 
       # THE ATTACH LIST. Every agent PolicyDeclarations declares an identity
       # for is a child of the Concierge — the six original policy-carrying

@@ -40,7 +40,7 @@ RSpec.describe "system agents persona + model tier" do
   ].freeze
 
   ALL_AGENTS = [
-    "Fleet Autonomy", "System Concierge", "Runtime Manager", "CVE Responder",
+    "Fleet Autonomy", "Infrastructure Generalist", "Runtime Manager", "CVE Responder",
     "Disk Image Manager", "SDWAN Manager", "System Topology Designer",
     "GitOps Reconciler", "Capacity Manager", "Storage Manager", "Ingress Manager",
     "Supply Chain Manager"
@@ -50,7 +50,7 @@ RSpec.describe "system agents persona + model tier" do
   # topology / declarative-diff / capacity / restore / exposure / provenance
   # reasoning).
   REASONING_AGENTS = [
-    "CVE Responder", "SDWAN Manager", "System Concierge",
+    "CVE Responder", "SDWAN Manager", "Infrastructure Generalist",
     "System Topology Designer", "GitOps Reconciler",
     "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager"
   ].freeze
@@ -112,7 +112,7 @@ RSpec.describe "system agents persona + model tier" do
   # gets specific: name the fleet-inventory tools an operator-facing agent
   # should check before proposing a new module/template/package.
   it "points the Concierge at fleet-discovery tools before building new infrastructure" do
-    prompt = agent("System Concierge").system_prompt
+    prompt = agent("Infrastructure Generalist").system_prompt
     expect(prompt).to include("system_discover_packages")
     expect(prompt).to include("system_list_modules")
     expect(prompt).to include("system_list_templates")

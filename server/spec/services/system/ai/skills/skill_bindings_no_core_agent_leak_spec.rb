@@ -29,9 +29,9 @@ RSpec.describe "System SkillBindings registry — no core-agent leak" do
   end
 
   it "binds no skill to a generic core planning/research agent" do
-    leaked = registry.select { |e| FORBIDDEN_AGENT_NAMES.include?(e[:agent_name]) }
+    leaked = registry.select { |e| FORBIDDEN_AGENT_NAMES.include?(e[:agent_key]) }
     expect(leaked).to be_empty,
-      "system skills leaked to core agents: #{leaked.map { |e| "#{e[:skill_slug]}→#{e[:agent_name]}" }.inspect}"
+      "system skills leaked to core agents: #{leaked.map { |e| "#{e[:skill_slug]}→#{e[:agent_key]}" }.inspect}"
   end
 
   it "keeps the formerly-leaked skills bound to their system agents" do
@@ -41,8 +41,8 @@ RSpec.describe "System SkillBindings registry — no core-agent leak" do
       system-suggest-architectures-for-fleet system-discover-packages-by-intent
     ]
     formerly_leaked.each do |slug|
-      owners = registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_name] }
-      expect(owners).to include("System Concierge"),
+      owners = registry.select { |e| e[:skill_slug] == slug }.map { |e| e[:agent_key] }
+      expect(owners).to include("system-concierge"),
         "#{slug} should still be bound to System Concierge (owners=#{owners.inspect})"
     end
   end

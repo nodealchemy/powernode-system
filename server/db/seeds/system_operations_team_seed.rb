@@ -50,7 +50,7 @@ SYSTEM_OPERATIONS_TEAM = {
                "ingress, supply chain, SDWAN, images, runtimes and GitOps — managed by System Concierge under " \
                "the delegation policies the hierarchy reconciler writes.",
   members: [
-    { slug: "system-concierge",         name: "System Concierge",         role: "manager",    lead: true,
+    { slug: "infrastructure-generalist", name: "Infrastructure Generalist", role: "manager",    lead: true,
       description: "Routes and coordinates; decomposes the objective and synthesises the result" },
     { slug: "fleet-autonomy",           name: "Fleet Autonomy",           role: "executor",
       description: "Runs the sensor tick and applies the remediations its policy rows admit" },

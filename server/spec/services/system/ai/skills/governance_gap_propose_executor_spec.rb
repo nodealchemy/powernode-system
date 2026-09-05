@@ -64,7 +64,8 @@ RSpec.describe System::Ai::Skills::GovernanceGapProposeExecutor do
       expect(described_class.action_category).to eq("dev.campaign_propose")
       expect(described_class.gate_required?).to be(true)
       registration = System::Ai::Skills::SkillBindings.all.find { |r| r[:executor].name == described_class.name }
-      expect(registration[:agents]).to eq([ "Platform Architect" ])
+      # The registry stores SOURCE KEYS now, not display names.
+      expect(registration[:agents]).to eq([ "platform-architect" ])
     end
   end
 
