@@ -60,6 +60,20 @@ module System
     AVAILABILITY_NOT_EXPECTED_NOTE = "no replica of this mission is in a state where a heartbeat is " \
                                      "expected (stopped/rebooting replicas are silent by design)"
 
+    # The note five samplers already wrote as a string literal, and two omitted
+    # entirely — so those two fell back to "no telemetry backend wired", which
+    # is false for both: their samplers work, the mission simply has nothing for
+    # them to measure. Named once so the seven cannot drift apart again.
+    NO_RESOLVABLE_INSTANCES_NOTE = "mission has no resolvable instances"
+
+    # WHY a metric carries no observation, as a DECLARED token rather than a
+    # phrase a reader has to pattern-match. no_producer means nothing on this
+    # platform measures the metric and nothing will until somebody builds a
+    # producer; no_data means the producer exists and had nothing to measure
+    # this tick. An operator's next move differs completely between the two.
+    UNAVAILABLE_NO_PRODUCER = "no_producer"
+    UNAVAILABLE_NO_DATA     = "no_data"
+
     METRIC_TYPE_MAP = {
       "p99_latency_ms"   => "latency",
       "availability_pct" => "latency",   # availability is co-evaluated w/ latency
@@ -247,7 +261,7 @@ module System
       when "cpu_pct"         then sample_cpu_pct(instance_ids)
       when "availability_pct" then sample_availability_pct(instance_ids)
       when "cost_usd_mtd"     then sample_cost_usd_mtd(instance_ids)
-      else unavailable_sample(metric_name)
+      else unavailable_sample(metric_name, reason: UNAVAILABLE_NO_PRODUCER)
       end
     end
 
@@ -270,7 +284,7 @@ module System
     # as capacity loss and provoke a replacement provision — trading a silent
     # failure for a noisy false one.
     def sample_replica_count(instance_ids)
-      return unavailable_sample("replica_count") if instance_ids.empty?
+      return unavailable_sample("replica_count", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       count = ::System::NodeInstance.where(id: instance_ids).live_replicas.count
       live_sample("replica_count", count)
@@ -287,7 +301,7 @@ module System
     # mission no longer occupies, and reporting it as still-occupied overstates
     # geographic coverage the same way the replica count overstated capacity.
     def sample_region_count(instance_ids)
-      return unavailable_sample("region_count") if instance_ids.empty?
+      return unavailable_sample("region_count", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       count = ::System::NodeInstance.where(id: instance_ids)
                                     .live_replicas
@@ -352,7 +366,7 @@ module System
     # mission's throughput and is not published as an observation. The counts
     # stay in the blob so an operator can see WHY it went dark.
     def sample_sdwan_throughput(instance_ids)
-      return unavailable_sample(THROUGHPUT_METRIC, "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample(THROUGHPUT_METRIC, NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
       return unavailable_sample(THROUGHPUT_METRIC, "Sdwan::Peer unavailable") unless defined?(::Sdwan::Peer)
 
       peer_rows = mission_peer_rows(instance_ids)
@@ -538,7 +552,7 @@ module System
     # `instance_count` exposes that gap so a reader can see the sample covers
     # only part of the fleet instead of inferring full coverage.
     def sample_memory_pct(instance_ids)
-      return unavailable_sample("memory_pct", "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample("memory_pct", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       instances = live_mission_instances(instance_ids)
       cutoff = sample_freshness.ago
@@ -567,7 +581,7 @@ module System
     # reliably have. So an instance whose document carries only load_average
     # contributes NOTHING here — the honest outcome, not a fallback.
     def sample_cpu_pct(instance_ids)
-      return unavailable_sample("cpu_pct", "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample("cpu_pct", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       instances = live_mission_instances(instance_ids)
       cutoff = sample_freshness.ago
@@ -627,7 +641,7 @@ module System
     # visible as measured_instance_count vs instance_count rather than hidden
     # in the ratio.
     def sample_availability_pct(instance_ids)
-      return unavailable_sample("availability_pct", "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample("availability_pct", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       instances = live_mission_instances(instance_ids)
       return unavailable_sample("availability_pct", AVAILABILITY_NO_LIVE_NOTE) if instances.empty?
@@ -721,7 +735,7 @@ module System
     # two opinions about which hardware is free would let the forecast and the
     # accrual disagree about the same fleet.
     def sample_cost_usd_mtd(instance_ids)
-      return unavailable_sample("cost_usd_mtd", "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample("cost_usd_mtd", NO_RESOLVABLE_INSTANCES_NOTE) if instance_ids.empty?
 
       instances = live_mission_instances(instance_ids)
       accruing = instances.select { |instance| COST_ACCRUING_STATUSES.include?(instance.status.to_s) }
@@ -948,16 +962,33 @@ module System
       { "observed" => observed, "unit" => unit_for(metric_name), "source" => "live" }
     end
 
-    # Honest stand-in for a metric whose telemetry backend isn't wired yet.
-    # `observed: nil` (NOT 0) so ProjectSloSensor's `.present?` guards skip it
-    # rather than treating a fabricated zero as a real sample. Replaces the
-    # prior zero-valued stub, which risked false SLO/availability violations
-    # the moment any single real metric was wired alongside it.
-    def unavailable_sample(metric_name, note = nil)
+    # Honest stand-in for a metric with no observation this tick.
+    # `observed: nil` (NOT 0) so ProjectSloSensor's guards skip it rather than
+    # treating a fabricated zero as a real sample. Replaces the prior
+    # zero-valued stub, which risked false SLO/availability violations the
+    # moment any single real metric was wired alongside it.
+    #
+    # `reason:` is DECLARED BY THE CALLER, never inferred from the note.
+    #
+    # WHY. Until campaign 01a07025 the only thing separating "nothing measures
+    # this" from "nothing to measure yet" was the note text, and it did not
+    # actually separate them: two samplers omitted their note and so announced
+    # "no telemetry backend wired" for metrics whose samplers work fine (see
+    # #sample_replica_count / #sample_region_count). Three metrics claimed it;
+    # one was true. A discriminator inferred from prose is one a reword can
+    # break, and the two conditions need OPPOSITE operator responses — a
+    # capability that does not exist, versus a gap that fills on its own.
+    #
+    # The default is NO_DATA because that is what every sampler-side absence
+    # is. Only #sample_one's unwired arm says otherwise, and the census in
+    # spec/lint/project_metric_producer_census_spec.rb is what keeps that arm
+    # the only unwired path.
+    def unavailable_sample(metric_name, note = nil, reason: UNAVAILABLE_NO_DATA)
       {
         "observed" => nil,
         "unit" => unit_for(metric_name),
         "source" => "unavailable",
+        "unavailable_reason" => reason,
         "note" => note || "no telemetry backend wired for #{metric_name} yet (TODO metrics-backend)"
       }
     end
