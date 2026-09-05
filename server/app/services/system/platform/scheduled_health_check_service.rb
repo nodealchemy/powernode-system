@@ -33,15 +33,38 @@ module System
     #     cron itself ticks more often than the default interval purely so a
     #     narrowed setting takes effect promptly (see sidekiq_system.yml); this
     #     service is what decides whether a tick is a no-op.
-    #   - ATTRIBUTED: writes an Ai::AgentExecution row naming the agent that
-    #     performed the check — the account's OWN System Concierge CLONE,
-    #     resolved via Ai::Agent.resolve_concierge_for, which prefers the
-    #     account's row but falls back to the GLOBAL canonical when no clone
-    #     exists yet. That fallback is deliberately refused here: "a global
-    #     canonical never executes" is the platform's ratified design, so an
-    #     account with no materialised Concierge clone is simply skipped for
-    #     this tick, rather than crediting the canonical or minting a clone as
-    #     a side effect of a health check.
+    #   - ATTRIBUTED: writes an Ai::AgentExecution row naming the agent this
+    #     executor is ACTUALLY BOUND TO — discovered through
+    #     System::Ai::Skills::SkillBindings itself (the same registry
+    #     SkillBindingsReconciler materialises into Ai::AgentSkill rows),
+    #     never through a second, independent resolver.
+    #
+    #     An earlier version of this service called
+    #     Ai::Agent.resolve_concierge_for, which resolves the account's
+    #     `is_concierge`-flagged agent — Powernode Assistant, a CORE agent
+    #     with no relationship to this executor at all. The executor
+    #     `binds_to "concierge"`, and SkillBindings::AGENT_ALIASES maps that
+    #     token to the source_key "system-concierge" (the system extension's
+    #     own concierge canonical, mid-rename to a different display name and
+    #     slug as of this writing — see the source_key comment below for why
+    #     that rename cannot break this). Two different lookups, two
+    #     different agents, one attribution row that would have named the
+    #     wrong one — the exact duplication the front-door consolidation
+    #     campaign exists to remove, caught here as a live mis-attribution.
+    #
+    #     So the resolution is now: ask SkillBindings which source_key(s)
+    #     PlatformMaintenanceExecutor is registered against (never hardcoded
+    #     here — a future `binds_to` change cannot silently re-point this),
+    #     resolve the GLOBAL canonical by that source_key (never slug, never
+    #     display name — both are mid-rename; source_key is "explicitly set
+    #     and derived from nothing", the one identifier a rename cannot
+    #     touch), then ask Ai::Agents::AccountPrincipalResolver.existing —
+    #     the platform's ONE resolver of "which row acts for canonical X in
+    #     account Y" — for the account's clone, READ-ONLY (never minting).
+    #     No clone yet is simply skipped for this tick, rather than crediting
+    #     the canonical or minting one as a side effect of a health check:
+    #     "a global canonical never executes" is the platform's ratified
+    #     design.
     #
     #     This is the piece missing everywhere else, too, not just here: every
     #     autonomous fleet-tick remediation already writes an agent_id into a
@@ -81,13 +104,14 @@ module System
       end
 
       # Runs the check if due, else a documented no-op. Never raises: one
-      # mis-configured account (no concierge clone, no resolvable provider or
-      # creator) must not take down the sweep for every other account.
+      # mis-configured account (no clone of the bound agent yet, no
+      # resolvable provider or creator) must not take down the sweep for
+      # every other account.
       def run_if_due!
         return { account_id: @account.id, ran: false, reason: "not_due" } unless due?
 
-        agent = concierge_clone
-        return { account_id: @account.id, ran: false, reason: "no_concierge_clone" } unless agent
+        agent = bound_agent_clone
+        return { account_id: @account.id, ran: false, reason: "no_bound_agent_clone" } unless agent
 
         run_and_attribute!(agent)
       rescue StandardError => e
@@ -109,13 +133,41 @@ module System
         last.nil? || last <= interval_minutes.minutes.ago
       end
 
-      # The account's OWN concierge clone — never the global canonical
-      # (account_id nil). resolve_concierge_for prefers the clone but falls
-      # back to the canonical when none exists yet; that fallback is refused
-      # here on purpose (see class comment).
-      def concierge_clone
-        agent = ::Ai::Agent.resolve_concierge_for(@account.id)
-        agent if agent&.account_id.present?
+      # The GLOBAL canonical PlatformMaintenanceExecutor is actually
+      # registered against, resolved through the SAME registry
+      # SkillBindingsReconciler reads — never a hardcoded source_key, never
+      # the executor's `binds_to` label re-derived by hand, so this cannot
+      # drift from the reconciler's own answer to "who owns this skill".
+      def bound_canonical
+        # The bare constant reference forces Rails to autoload
+        # PlatformMaintenanceExecutor NOW if it has not been loaded yet in
+        # this process — which is what runs its `binds_to` class-body line
+        # and registers it with SkillBindings. Referencing the constant only
+        # inside the `.find` block below would autoload it too late: `.all`
+        # would already have returned its (registration-less) snapshot by
+        # the time the block ran.
+        executor_class = ::System::Ai::Skills::PlatformMaintenanceExecutor
+        registration = ::System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == executor_class }
+        return nil unless registration
+
+        agent_keys = registration[:agents]
+        # A skill bound to more than one agent has no single owner to credit
+        # — refuse to guess rather than pick the first key silently.
+        return nil unless agent_keys.size == 1
+
+        ::Ai::Agent.global.find_by(source_key: agent_keys.first)
+      end
+
+      # The account's EXISTING clone of the bound canonical — never the
+      # canonical itself (a global agent never executes), and never minted
+      # here: AccountPrincipalResolver.existing is the read-only twin of the
+      # minting `acting`/`for`, exactly because a health check must not have
+      # the side effect of creating an agent.
+      def bound_agent_clone
+        canonical = bound_canonical
+        return nil unless canonical
+
+        ::Ai::Agents::AccountPrincipalResolver.existing(canonical, account: @account)
       end
 
       def run_and_attribute!(agent)
