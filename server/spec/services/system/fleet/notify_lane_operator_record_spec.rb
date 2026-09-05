@@ -324,7 +324,7 @@ RSpec.describe "notify lanes and skill executions leave a durable operator recor
         limit  = described_class::AUDIT_TEXT_LIMIT
         slice  = limit * 4
         secret = "AKIAZZZZZZZZZZZZZZZZ"
-        pem_body = (["MIIEowIBAAKCAQEAxGqQnMHYQm0lWJ9d3cVfLpQ8ZzYqR1sTnUvWxYz0AbCdEfGh"] * 23).join("\n")
+        pem_body = ([ "MIIEowIBAAKCAQEAxGqQnMHYQm0lWJ9d3cVfLpQ8ZzYqR1sTnUvWxYz0AbCdEfGh" ] * 23).join("\n")
         pem = "-----BEGIN RSA PRIVATE KEY-----\n#{pem_body}\n-----END RSA PRIVATE KEY-----"
         filler = slice - pem.length - 10
         # Fixture preconditions: the secret really does straddle the slice, and

@@ -83,7 +83,7 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
 
     # DEBT — resolves a monitor agent by a name passed in from the caller.
     "services/ai/tools/system_architecture_catalog_tool.rb" =>
-      "pre-existing: name arrives from the caller",
+      "pre-existing: name arrives from the caller"
 
   }.freeze
 

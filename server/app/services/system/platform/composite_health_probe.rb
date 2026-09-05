@@ -514,7 +514,7 @@ module System
         assigned = if defined?(::Sdwan::VirtualIpAssignment)
                      ::Sdwan::VirtualIpAssignment.joins(:virtual_ip)
                        .where(system_sdwan_virtual_ips: { account_id: account.id }).count
-                   end
+        end
         networks = defined?(::Sdwan::Network) ? ::Sdwan::Network.where(account: account).count : nil
         bgp_total = bgp_established = nil
         if defined?(::Sdwan::BgpSession)
@@ -525,9 +525,9 @@ module System
         # No BGP sessions is an observed-empty control plane, not a broken one.
         status = if bgp_total.nil? || bgp_total.zero? || bgp_established == bgp_total
                    OK
-                 else
+        else
                    DEGRADED
-                 end
+        end
 
         {
           status: status,
