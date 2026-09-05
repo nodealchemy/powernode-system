@@ -997,10 +997,13 @@ RSpec.describe System::KubernetesClusterProvisionerService do
     end
 
     it "does NOT stamp pod_cidr for ovn_kubernetes clusters (flannel-only feature)" do
-      # ovn-K8s + heavyweight network_profile path. We need to avoid the
-      # network_profile compatibility check; this is best-effort and may
-      # skip cleanly if the profile resolver rejects ovn-K8s for this
-      # node. The provisioner emits a warning event but proceeds.
+      # OVN-Kubernetes needs the heavyweight network_profile
+      # (resolve_bootstrap_cni_plugin! refuses it on a lightweight host).
+      # This example used to bootstrap on the default host, rescue the
+      # CniProfileMismatchError and `skip` — so it had never once reached its
+      # assertions. The host is now the one the feature requires.
+      server_instance.update!(network_profile: "heavyweight")
+
       cluster = described_class.bootstrap!(
         node_instance: server_instance,
         kubeconfig: "kc", server_token: "tok", agent_token: "atok",
@@ -1008,10 +1011,6 @@ RSpec.describe System::KubernetesClusterProvisionerService do
       )
       expect(cluster.metadata["pod_cidr"]).to be_nil
       expect(cluster.cni_plugin).to eq("ovn_kubernetes")
-    rescue System::KubernetesClusterProvisionerService::CniProfileMismatchError
-      # Profile mismatch is expected on a default lightweight node — skip
-      # this assertion when the network_profile guard rejects ovn-K8s.
-      skip "node network_profile rejects ovn_kubernetes"
     end
 
     it "preserves baseline cluster fields when pod overlay activates" do
