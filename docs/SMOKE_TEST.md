@@ -5,10 +5,15 @@
 End-to-end validation that the System extension can boot a node, attach a
 runtime, build an overlay network, federate, issue certs, provision
 storage, exercise hardware / CI publication paths, and run a full
-K3s lifecycle smoke — exercised through 34 seeded smoke scripts grouped
-into nine passes. Each pass is independently runnable; a clean run of
-all nine means the platform's primary capability surface works against
-your local environment.
+K3s lifecycle smoke — exercised through 34 seeded smoke scripts: 28
+grouped into nine numbered passes, plus six standalone smokes (CI-runner
+registration, edge exposure, ingress exposure, DR instance replace,
+pivot_root boot, and storage-migration revert/cleanup) whose own headers
+reference campaign/increment or APO/DR tags rather than this doc's pass
+numbering, so none is force-assigned a pass here. Each pass is
+independently runnable; a clean run of all nine passes plus the six
+standalone smokes means the platform's primary capability surface works
+against your local environment.
 
 ## What this validates — and what it doesn't
 
@@ -56,9 +61,12 @@ states what it adds beyond the previous.
 
 ## Smoke test catalog
 
-All 34 smoke seeds, grouped by pass. Each is idempotent and DB-level
-unless marked **VM**; VM-spawning seeds require the boot prerequisites
-listed in [Pass 1](#pass-1--single-node-qemu).
+All 34 smoke seeds. The first 28 are grouped by pass; the last six do not
+state a pass in their own header (see the note above the table) and are
+listed at the end with `—` in the Pass/Phase columns rather than a guessed
+number. Each is idempotent and DB-level unless marked **VM**; VM-spawning
+seeds require the boot prerequisites listed in
+[Pass 1](#pass-1--single-node-qemu).
 
 | Seed | Pass | Phase | Validates | Spawns VM? |
 |------|------|-------|-----------|------------|
@@ -90,6 +98,12 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (one atomic affected set; asserts no staging structure) | site+ (db tier: plan only) |
 | `smoke_test_k3s_cve_drill.rb` | 9 | K3s lifecycle ph.7 | Synthetic CVE → CveResponseExecutor triage + CveRunbookGenerateExecutor runbook | no |
 | `smoke_test_k3s_drain_reprovision.rb` | 9 | K3s lifecycle ph.8 | drain (mark_node_stopped) → terminate → reprovision → re-join → node_count restored | site+ (db tier: synth) |
+| `smoke_test_ci_runner.rb` | — | — | CI-runner registration wiring: assigns the `gitea-act-runner` NodeModule to an enrolled Node, asserts a sibling Node without the module fails the module-presence gate before any Gitea credential is touched, then live-mints a registration token via `Devops::RunnerLifecycleService#registration_token_for_scope` (skips, does not fail, if no Gitea credential is configured) | no |
+| `smoke_test_edge_exposure.rb` | — | — | End-to-end smoke across all six ingress/egress exposure paths (HTTPS via VIP+PortMapping, federated TLS passthrough, federated TCP via tcpfwd, public TLS-carrying TCP via Traefik SNI in three edge_mode/client_auth shapes, public TCP+UDP via nftables DNAT with the hardening tier, site-local tcpfwd); reports the actual verification depth achieved per path (real socket handshake vs. config-plane re-parse only) instead of claiming uniform coverage | no |
+| `smoke_test_expose_service.rb` | — | — | DB-level integration test driving the real `ExposeServicePubliclyExecutor` and `ExposeServiceLocalExecutor` end to end against a fresh SDWAN hub+backend peer enrollment — the same entry points the `system_expose_service_publicly` / `system_expose_service_local` MCP tools use in production | no |
+| `smoke_test_instance_replace.rb` | — | — | DB-level integration test driving the real `ReplaceInstanceExecutor` against a live object graph (real InstancePool, ProviderVolume, Sdwan::Network + PeerEnroller) the way `System::Fleet::DecisionEngine` does when `InstanceUnrecoverableSensor` fires; asserts the reap approval is never implicitly granted (the provider is stubbed for volume/reap verbs only) | no |
+| `smoke_test_pivot_root.rb` | — | — | End-to-end pivot_root boot-chain driver: boots a diskless qemu VM via fw-cfg identity injection, drives federation accept + node-api enrollment + mTLS cert issuance, then a reconcile tick assembles `/sysroot` from system-base + base-os erofs blobs and `switch_root`'s into it | **VM** |
+| `smoke_test_storage_migration_revert_cleanup.rb` | — | — | Model + node_api-layer smoke for the storage-migration fail → revert → cleanup lifecycle against SCRATCH state; simulates agent call-backs by invoking the exact `#revert_completed!` / `#cleanup_completed!` methods the real node_api actions call — does not start a real agent, VM, or NFS mount | no |
 
 Most seeds run in **DB-level** mode and complete in under a minute. The VM-spawning
 seeds (Pass 1 + Powernode Hub + cluster_member HA) require the boot prerequisites and
