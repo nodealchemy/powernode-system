@@ -81,6 +81,39 @@ RSpec.describe System::Autonomy::RoutedLaneGuard do
     }
   }.freeze
 
+  # THE OTHER SHAPE a gate_action! can have, and why it is not a twin.
+  #
+  # BaseSkillExecutor#gate_action! (APO-1c) is the approval gate every
+  # gate-required skill executor runs before #perform. It shares the name and
+  # the "can refuse an action" property with the twins above, and it IS a
+  # routing surface (ActionCategoryRouter's third router, IMP-4ba48fd088ce) —
+  # but it is not a reconcile gate. It has no `permitted_actions` row set to
+  # hand the seam, because it never resolves a policy against a permitted
+  # list at all: it asks Ai::InterventionPolicyService and sends the verdict
+  # through core Ai::AutonomyGate, whose NO-ROW default is require_approval.
+  # So the failure this seam exists for — a routed lane with no policy row
+  # dying as a silent block — cannot occur on this shape: the unseeded lane
+  # parks a durable Ai::DeferredOperation + approval an operator sees. That
+  # property is what the behavioural examples below prove, on the REAL
+  # executor and the REAL gate, with nothing seeded.
+  #
+  # Registering it here rather than including the seam is the honest choice:
+  # a class that included RoutedLaneGuard without `permitted_actions` would
+  # pass the include check and NoMethodError the first time the arm ran. A
+  # new gate of THIS shape is declared here with what it takes to drive it;
+  # one that instead exposes `permitted_actions` belongs in
+  # RLG_GATE_IMPLEMENTATIONS, and the structural examples refuse a class that
+  # sits in the wrong registry.
+  RLG_APPROVAL_GATES = {
+    "System::Ai::Skills::BaseSkillExecutor" => {
+      # A real gate-required executor whose input validation is the base
+      # presence check, so the gate is reached with nothing else stubbed.
+      executor: "System::Ai::Skills::MultiTenantIsolationExecutor",
+      inputs: { tenant_key: "tenant-rlg" },
+      routed_category: "system.multi_tenant_isolation"
+    }
+  }.freeze
+
   def self.discovered_gate_classes
     Dir.glob(File.join(RLG_SERVICES_ROOT.to_s, "**", "*.rb")).sort.filter_map do |path|
       next unless File.read(path).match?(RLG_GATE_DEFINITION)
@@ -102,19 +135,26 @@ RSpec.describe System::Autonomy::RoutedLaneGuard do
     end
 
     it "exercises EVERY discovered gate_action! implementation" do
-      expect(RLG_DISCOVERED).to match_array(RLG_GATE_IMPLEMENTATIONS.keys), <<~MSG
+      registered = RLG_GATE_IMPLEMENTATIONS.keys + RLG_APPROVAL_GATES.keys
+      expect(RLG_DISCOVERED).to match_array(registered), <<~MSG
         A gate_action! implementation in extensions/system was found that this spec
         does not drive end-to-end:
 
-          #{(RLG_DISCOVERED - RLG_GATE_IMPLEMENTATIONS.keys).join("\n  ")}
+          #{(RLG_DISCOVERED - registered).join("\n  ")}
 
         Every gate that can refuse an action must distinguish a routed-but-unseeded
         lane (a deploy defect) from an ordinary refusal, or that lane dies silently.
-        Add it to RLG_GATE_IMPLEMENTATIONS so the examples below actually gate it.
+        Add it to RLG_GATE_IMPLEMENTATIONS (a reconcile gate with permitted_actions,
+        which must include the seam) or to RLG_APPROVAL_GATES (an Ai::AutonomyGate
+        -backed gate whose unseeded lane must be shown to PARK, not block) so the
+        examples below actually gate it.
       MSG
     end
 
-    RLG_DISCOVERED.each do |class_name|
+    # Discovery, not the registries, drives these contexts: a discovered class
+    # in NEITHER registry is held to the seam contract (and fails it loudly)
+    # rather than being skipped.
+    (RLG_DISCOVERED - RLG_APPROVAL_GATES.keys).each do |class_name|
       context class_name do
         let(:klass) { class_name.constantize }
 
@@ -154,6 +194,93 @@ RSpec.describe System::Autonomy::RoutedLaneGuard do
             "#{class_name}::GATE_POLICY_MISSING resolves from #{definer.inspect}, not " \
             "System::Autonomy::RoutedLaneGuard. A twin that includes the seam but shadows " \
             "the constant can hand-roll its own refusal arm and still pass the include check."
+        end
+      end
+    end
+
+    RLG_APPROVAL_GATES.each_key do |class_name|
+      context "#{class_name} (approval gate)" do
+        let(:klass) { class_name.constantize }
+
+        # The registry boundary, both ways. A reconcile gate that grows a
+        # permitted_actions row set has the seam's exposure and must move to
+        # RLG_GATE_IMPLEMENTATIONS; a class here that included the seam would
+        # pass an include check while unable to honour the arm.
+        it "is not a reconcile gate — exposes no permitted_actions to hand the seam" do
+          expect(klass.method_defined?(:permitted_actions)).to be(false),
+            "#{class_name} exposes permitted_actions; it is a reconcile gate and belongs in " \
+            "RLG_GATE_IMPLEMENTATIONS, where it must include System::Autonomy::RoutedLaneGuard"
+        end
+
+        it "does not include a seam it has no permitted_actions to honour" do
+          expect(klass.include?(described_class)).to be(false),
+            "#{class_name} includes System::Autonomy::RoutedLaneGuard without permitted_actions — " \
+            "the refusal arm would NoMethodError the first time it ran"
+        end
+
+        # Its lanes must be in the routed set the seam reads, or a twin handed
+        # one of its categories would take the quiet arm.
+        it "declares itself an ActionCategoryRouter with a non-empty routed set" do
+          expect(System::Autonomy::ActionCategoryRouter::ROUTERS).to include(class_name)
+          expect(klass.routed_action_categories).to be_present
+        end
+      end
+    end
+  end
+
+  # An approval gate has no GATE_POLICY_MISSING arm because it has no missing
+  # arm at all: with nothing seeded the platform default is require_approval,
+  # so the unseeded lane PARKS — durable row, operator-visible approval — and
+  # a `block` row still refuses through the same gate. Driven on the REAL
+  # executor's REAL #execute → #gate_action! with no policy row, because a
+  # module-level claim about the default proves nothing about whether this
+  # class reaches it.
+  describe "behavioural: each approval gate PARKS a routed-but-unseeded lane instead of blocking it" do
+    RLG_APPROVAL_GATES.each do |class_name, config|
+      context class_name do
+        let(:gate_class) { class_name.constantize }
+        let(:executor_class) { config[:executor].constantize }
+        let(:user) { create(:user, account: account) }
+        let(:executor) { executor_class.new(account: account, user: user) }
+
+        def pending_operations(category)
+          Ai::DeferredOperation.where(account_id: account.id, action_category: category, status: "pending")
+        end
+
+        it "is a category this gate actually routes" do
+          expect(executor_class).to be < gate_class
+          expect(executor_class.gate_required?).to be(true)
+          expect(executor_class.action_category).to eq(config[:routed_category])
+          expect(System::Autonomy::ActionCategoryRouter.router_for(config[:routed_category])).to eq(gate_class)
+        end
+
+        it "parks a routed lane with no policy row as a durable, operator-visible approval" do
+          expect_any_instance_of(executor_class).not_to receive(:perform)
+
+          result = executor.execute(**config[:inputs])
+
+          expect(result[:success]).to be(true)
+          expect(result[:pending]).to be(true)
+          expect(result.dig(:data, :action_category)).to eq(config[:routed_category])
+          expect(pending_operations(config[:routed_category]).count).to eq(1)
+          expect(result.dig(:data, :deferred_operation_id)).to eq(pending_operations(config[:routed_category]).first.id)
+        end
+
+        # Fail-safe in the other direction: the parking default must not have
+        # turned an operator's block into an approval request.
+        it "still refuses a lane an operator blocked, and does not park it" do
+          Ai::InterventionPolicy.create!(
+            account: account, scope: "action_type", action_category: config[:routed_category],
+            policy: "block", priority: 10, is_active: true
+          )
+          expect_any_instance_of(executor_class).not_to receive(:perform)
+
+          result = executor.execute(**config[:inputs])
+
+          expect(result[:success]).to be(false)
+          expect(result[:pending]).to be_nil
+          expect(result[:error]).to match(/blocked by policy/)
+          expect(pending_operations(config[:routed_category]).count).to eq(0)
         end
       end
     end
