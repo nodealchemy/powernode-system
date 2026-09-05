@@ -205,3 +205,99 @@ func TestLoadAppArmorProfile_RefusesWhenLSMAbsent(t *testing.T) {
 		}
 	}
 }
+
+// stubSelinuxAvailable pins the host-LSM probe for one test, restoring it on
+// cleanup. Twin of stubApparmorAvailable, and load-bearing in a way that one
+// is not: NEITHER dev-cell NOR the CI container has /sys/fs/selinux, so
+// without this seam an assertion that a valid profile reaches semodule would
+// execute on no machine in the pipeline.
+func stubSelinuxAvailable(t *testing.T, present bool) {
+	t.Helper()
+	orig := selinuxAvailable
+	selinuxAvailable = func() bool { return present }
+	t.Cleanup(func() { selinuxAvailable = orig })
+}
+
+// The SELinux half of the fail-closed + over-rejection pair. Until this
+// landed, LoadSELinuxProfile had exactly ONE test (RefusesHostPath) and
+// nothing asserted that a valid, contained profile ever reaches semodule —
+// so the whole SELinux arm could have been refusing everything and the suite
+// would have called it correct.
+//
+// Scope note: the traversal and symlink-escape spellings are deliberately not
+// duplicated here. Containment is resolveAgentOwnedProfile + profileNamePattern,
+// SHARED with the AppArmor path and already pinned by its tests; re-asserting
+// them through a second caller would exercise identical code. What is NOT
+// shared, and is what this pins, is the per-loader wiring: SELinuxProfileDir
+// (not the AppArmor dir), the semodule command, and its argument order.
+func TestLoadSELinuxProfile_FailsClosedWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	orig := SELinuxProfileDir
+	SELinuxProfileDir = dir
+	t.Cleanup(func() { SELinuxProfileDir = orig })
+
+	rec := &mount.RecorderRunner{}
+	// Grammar-valid bare name, but nothing exists at dir/app-policy.
+	if err := LoadSELinuxProfile(context.Background(), rec, "app-policy"); err == nil {
+		t.Fatal("absent profile accepted — must fail closed")
+	} else if errors.Is(err, ErrSELinuxNotAvailable) {
+		t.Fatalf("must fail as not-found, not LSM-availability; got %v", err)
+	}
+	for _, inv := range rec.Invocations {
+		if inv.Name == "semodule" {
+			t.Fatalf("loader ran for an absent profile: %v", inv.Args)
+		}
+	}
+
+	// Over-rejection guard: a profile that DOES exist in the agent-owned dir
+	// must resolve and load. Pinned available so this measures the containment
+	// decision rather than the host's LSM state — see stubSelinuxAvailable.
+	stubSelinuxAvailable(t, true)
+
+	if err := os.WriteFile(filepath.Join(dir, "app-policy"), []byte("policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := &mount.RecorderRunner{}
+	if err := LoadSELinuxProfile(context.Background(), rec2, "app-policy"); err != nil {
+		t.Fatalf("present agent-owned profile rejected: %v", err)
+	}
+	var loaded bool
+	for _, inv := range rec2.Invocations {
+		if inv.Name == "semodule" {
+			loaded = true
+			if inv.Args[len(inv.Args)-1] != filepath.Join(dir, "app-policy") {
+				t.Errorf("loaded wrong path: %v", inv.Args)
+			}
+		}
+	}
+	if !loaded {
+		t.Error("expected semodule to run for a present agent-owned profile")
+	}
+}
+
+// Non-vacuity twin, mirroring the AppArmor one: the availability gate must
+// stay real, or the seam above could be left pinned and a profile handed to
+// semodule on a host with no SELinux.
+func TestLoadSELinuxProfile_RefusesWhenLSMAbsent(t *testing.T) {
+	dir := t.TempDir()
+	orig := SELinuxProfileDir
+	SELinuxProfileDir = dir
+	t.Cleanup(func() { SELinuxProfileDir = orig })
+
+	if err := os.WriteFile(filepath.Join(dir, "app-policy"), []byte("policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubSelinuxAvailable(t, false)
+
+	rec := &mount.RecorderRunner{}
+	err := LoadSELinuxProfile(context.Background(), rec, "app-policy")
+	if !errors.Is(err, ErrSELinuxNotAvailable) {
+		t.Fatalf("a present, contained profile on a host with no SELinux must report "+
+			"ErrSELinuxNotAvailable; got %v", err)
+	}
+	for _, inv := range rec.Invocations {
+		if inv.Name == "semodule" {
+			t.Fatalf("loader ran with no SELinux on the host: %v", inv.Args)
+		}
+	}
+}

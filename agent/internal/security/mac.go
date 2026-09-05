@@ -171,7 +171,12 @@ var ErrAppArmorNotAvailable = errors.New("security: AppArmor not available on th
 
 // selinuxAvailable returns true when /sys/fs/selinux is mounted (the
 // canonical signal SELinux is loaded).
-func selinuxAvailable() bool {
+//
+// A package var for the same reason as apparmorAvailable: a test asserting
+// that a VALID contained profile reaches semodule cannot run at all on a host
+// without SELinux, and neither dev-cell nor the CI container has it — so that
+// assertion would never execute anywhere. Production callers never touch it.
+var selinuxAvailable = func() bool {
 	_, err := os.Stat("/sys/fs/selinux/enforce")
 	return err == nil
 }
