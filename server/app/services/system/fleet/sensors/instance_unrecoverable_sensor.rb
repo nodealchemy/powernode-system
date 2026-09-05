@@ -27,6 +27,15 @@ module System
       # kind (system.instance_unrecoverable) on a distinct action_category
       # (system.instance_replace, seeded require_approval).
       #
+      # A FOURTH CONDITION JOINED THEM (campaign 01a07025 / app-2): an
+      # ephemeral POOL MEMBER sitting in status `error` past a grace window.
+      # It reaches the same lane for the same reason — a reboot cannot bring it
+      # back and the pool's own lifecycle_class says nothing on it is worth
+      # preserving — but it is classified from the platform's own rows rather
+      # than from a provider read, so it is written and documented separately
+      # (see #ephemeral_pool_error) instead of being folded into the three
+      # below.
+      #
       # UNKNOWN IS NOT UNRECOVERABLE. A missing adapter, a blank
       # cloud_instance_id, a failed sync_status read, a provider carrying no
       # connection rows, and a provider whose connections are merely `pending`
@@ -108,6 +117,34 @@ module System
         # Fallback; overridable per account as "reboot_attempt_threshold".
         REBOOT_ATTEMPT_THRESHOLD = 2
 
+        # Campaign 01a07025 / app-2 — how long an ERRORED ephemeral pool member
+        # must have been quiet before it counts as unrecoverable.
+        #
+        # THE LIVE POPULATION THIS EXISTS FOR: 12 NodeInstances sat in status
+        # `error` on ops-hub, 9 of them ephemeral `ci-native-builders-*` pool
+        # members dating to 2026-08-09. Not one was reachable by any
+        # classification above. They are not running/starting, so
+        # InstanceStatusSensor never saw them; no presumed-dead FleetEvent was
+        # ever minted for them, so #in_scope_status_sql's `error` arm excluded
+        # them; and with no instance_silent lane ever having run, their
+        # ineffective streak is 0, so #reboot_exhausted would decline them even
+        # if they were in scope. They were invisible for four weeks.
+        #
+        # 24h, not minutes: a pool member that errors during provisioning is a
+        # provisioning failure with its own owner and its own retry, and this
+        # lane must not race it. Fallback; overridable per account as
+        # "ephemeral_error_grace_seconds".
+        EPHEMERAL_ERROR_GRACE_SECONDS = 86_400
+
+        # The pool lifecycle_class this lane admits.
+        #
+        # `spot` is the OTHER member of System::InstancePool::LIFECYCLE_CLASSES
+        # and is deliberately NOT here. A spot member in `error` may be a
+        # provider reclaim, which is a different condition with a different
+        # answer (re-bid, or fall back to on-demand) and no ruling behind it
+        # yet. Widening this list is a decision, not a typo fix.
+        REAPABLE_LIFECYCLE_CLASSES = %w[ephemeral].freeze
+
         # Provider-reported states from which a reboot cannot recover. A
         # `stopped` VM is deliberately NOT here — start is the legal, correct
         # remediation for it, and instance_state_drifted already converges the
@@ -120,7 +157,13 @@ module System
           {
             "max_per_tick" => MAX_PER_TICK,
             "emit_window_seconds" => EMIT_WINDOW_SECONDS,
-            "reboot_attempt_threshold" => REBOOT_ATTEMPT_THRESHOLD
+            "reboot_attempt_threshold" => REBOOT_ATTEMPT_THRESHOLD,
+            # Campaign 01a07025 / app-2 — registered HERE, in the seam
+            # `platform.system_get_sensor_config` reads, and not as a constant
+            # an operator would need a redeploy to change. This sensor is one
+            # of the four already on that seam; the increment adds a key to it
+            # rather than a fifth registration mechanism.
+            "ephemeral_error_grace_seconds" => EPHEMERAL_ERROR_GRACE_SECONDS
           }
         end
 
@@ -160,14 +203,23 @@ module System
         # is never looked at.
         def candidates
           ::System::NodeInstance
-            .includes(:provider_region)
+            # instance_pool alongside provider_region: #ephemeral_pool_error reads
+            # the pool for every candidate it reaches, and a per-row lookup there is
+            # the N+1 the eager-loading convention exists to stop.
+            .includes(:provider_region, :instance_pool)
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(
               "system_node_instances.last_heartbeat_at < ? OR system_node_instances.last_heartbeat_at IS NULL",
               Time.current - silent_threshold_seconds.seconds
             )
-            .where(in_scope_status_sql, account_id: account.id, presumed_dead: PRESUMED_DEAD_KIND)
+            .where(
+              in_scope_status_sql,
+              account_id: account.id,
+              presumed_dead: PRESUMED_DEAD_KIND,
+              reapable_classes: REAPABLE_LIFECYCLE_CLASSES,
+              ephemeral_grace_cutoff: Time.current - threshold("ephemeral_error_grace_seconds").seconds
+            )
             .where(
               outside_emit_window_sql,
               account_id: account.id, kind: SIGNAL_KIND,
@@ -176,7 +228,26 @@ module System
         end
 
         # running/starting (InstanceStatusSensor's own population) PLUS the
-        # rows the presumed-dead reaper retired out of it.
+        # rows the presumed-dead reaper retired out of it PLUS, since campaign
+        # 01a07025 / app-2, errored EPHEMERAL POOL MEMBERS past the grace
+        # window.
+        #
+        # THE THIRD ARM IS NOT A WIDENING OF THE SECOND. The presumed-dead arm
+        # re-admits rows THIS PLATFORM retired on a timer, and is deliberately
+        # narrow about it ("no other `error` row — a failed provision is a
+        # different problem with a different owner"). That reasoning still
+        # holds and is untouched: a persistent instance in `error` is still out
+        # of scope here. What the third arm adds is a population where the
+        # owner question has a settled answer — a pool member whose pool
+        # declares it EPHEMERAL is disposable by construction, the pool
+        # replenishes, and there is nothing to preserve. Nine such rows
+        # (`ci-native-builders-*`, errored since 2026-08-09) sat unreachable by
+        # every lane for four weeks.
+        #
+        # The grace clause reads COALESCE(last_heartbeat_at, created_at): a
+        # member that never enrolled has no heartbeat to age, and its row age
+        # is the only honest measure available. It is NOT `updated_at`, which
+        # any unrelated write bumps.
         def in_scope_status_sql
           <<~SQL.squish
             (
@@ -188,6 +259,20 @@ module System
                   WHERE reaped.node_instance_id = system_node_instances.id
                     AND reaped.account_id = :account_id
                     AND reaped.kind = :presumed_dead
+                )
+              )
+              OR (
+                system_node_instances.status = 'error'
+                AND system_node_instances.instance_pool_id IS NOT NULL
+                AND COALESCE(
+                      system_node_instances.last_heartbeat_at,
+                      system_node_instances.created_at
+                    ) < :ephemeral_grace_cutoff
+                AND EXISTS (
+                  SELECT 1 FROM system_instance_pools pool
+                  WHERE pool.id = system_node_instances.instance_pool_id
+                    AND pool.account_id = :account_id
+                    AND pool.lifecycle_class IN (:reapable_classes)
                 )
               )
             )
@@ -226,7 +311,7 @@ module System
           )
         end
 
-        # The three classifications, most definitive first. Returns
+        # The four classifications, most definitive first. Returns
         # [reason, extra_payload] or nil.
         #
         # host_unreachable is an INFERENCE about the control path, so a
@@ -241,7 +326,53 @@ module System
           return [ "provider_terminal", detail ] if state == :terminal
 
           host = state == :unknown ? host_unreachable(instance) : nil
-          host || reboot_exhausted(instance)
+          host || reboot_exhausted(instance) || ephemeral_pool_error(instance)
+        end
+
+        # 4. Campaign 01a07025 / app-2 — an errored EPHEMERAL pool member.
+        #
+        # LAST ON PURPOSE, so this arm is strictly additive: it can only
+        # classify a row that provider_terminal, host_unreachable and
+        # reboot_exhausted all declined, and it therefore changes the reason
+        # (and so the fingerprint) of no instance that was already classified.
+        #
+        # It is also the ONE arm that does not read the provider, and that is
+        # not a relaxation of this sensor's "unknown is not unrecoverable"
+        # rule. The other three infer a machine's fate from provider state,
+        # where absence of evidence must stay absence. Here the evidence is the
+        # platform's OWN two rows: this instance is in `error`, and its pool
+        # declares it ephemeral. Neither is an inference, and the conclusion
+        # ("this member is disposable and the pool will replenish") is the
+        # pool's definition rather than a guess about a host.
+        #
+        # Still only DETECTION. The binding routes this to
+        # ReplaceInstanceExecutor under system.instance_replace (seeded
+        # require_approval), whose additive half is all an approved replace
+        # applies; the terminate is a SECOND approval on system.instance_reap
+        # replaying ReapInstanceExecutor. Nothing here shortens that path —
+        # per the ratified rule in
+        # docs/operations/autonomous-infrastructure-readiness-2026-08-12.md §7,
+        # removals never auto-apply.
+        def ephemeral_pool_error(instance)
+          return nil unless instance.status == "error"
+          return nil if instance.instance_pool_id.blank?
+
+          # Through the association so the #candidates preload is used; the
+          # account check stays because a preloaded row is not a scoped one.
+          pool = instance.instance_pool
+          return nil unless pool && pool.account_id == account.id
+          return nil unless REAPABLE_LIFECYCLE_CLASSES.include?(pool.lifecycle_class)
+
+          [ "ephemeral_pool_error",
+            { instance_pool_id: pool.id,
+              instance_pool_name: pool.name,
+              pool_lifecycle_class: pool.lifecycle_class,
+              pool_state: instance.pool_state } ]
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] pool read failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          nil
         end
 
         # 1. Read the provider the same way InstanceStateDriftSensor does.

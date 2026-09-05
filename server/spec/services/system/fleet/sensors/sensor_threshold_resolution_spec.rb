@@ -72,7 +72,11 @@ RSpec.describe "Fleet sensor threshold resolution", type: :service do
       expect(unrecoverable_sensor.default_thresholds).to eq(
         "max_per_tick" => unrecoverable_sensor::MAX_PER_TICK,
         "emit_window_seconds" => unrecoverable_sensor::EMIT_WINDOW_SECONDS,
-        "reboot_attempt_threshold" => unrecoverable_sensor::REBOOT_ATTEMPT_THRESHOLD
+        "reboot_attempt_threshold" => unrecoverable_sensor::REBOOT_ATTEMPT_THRESHOLD,
+        # Campaign 01a07025 / app-2 — the ephemeral-pool reap lane's grace
+        # window, registered on the SAME seam rather than as a fifth
+        # mechanism, so `platform.system_get_sensor_config` lists it.
+        "ephemeral_error_grace_seconds" => unrecoverable_sensor::EPHEMERAL_ERROR_GRACE_SECONDS
       )
     end
 
