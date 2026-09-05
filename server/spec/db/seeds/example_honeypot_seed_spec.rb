@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../support/abortable_seed_helpers"
 
 # IMP-b5fabc7a9d7f — the honeypot drill could not fail.
 #
@@ -43,11 +44,16 @@ RSpec.describe "example_honeypot seed drill" do
   # Runs the seed, returning [stdout, error_or_nil]. `load` is used (not
   # require) because the seed uses top-level `return` for its skip paths.
   #
-  # `Exception` — not `StandardError` — is caught deliberately: SystemExit (what
-  # `abort` raises) is not a StandardError, and it is the outcome under test.
-  # Both an abort and an uncaught error mean the same thing to the operator
-  # running this under `rails runner`: a non-zero exit. The examples below
-  # distinguish the two only where the distinction is the point.
+  # The seed is loaded through load_abortable_seed!, which turns the
+  # SystemExit `abort` raises into a SeedAborted carrying the same message and
+  # exit status — RSpec does not rescue SystemExit, so a bare `load` here
+  # would end the whole rspec process on the seed's failure path instead of
+  # failing this example (spec/lint/abortable_seed_load_guard_spec.rb).
+  # `Exception` is still caught rather than `StandardError` so an uncaught
+  # error from the seed lands in `err` too. Both an abort and an uncaught
+  # error mean the same thing to the operator running this under
+  # `rails runner`: a non-zero exit. The examples below distinguish the two
+  # only where the distinction is the point.
   def run_seed
     out = StringIO.new
     err = nil
@@ -58,7 +64,7 @@ RSpec.describe "example_honeypot seed drill" do
     $stdout = out
     $stderr = StringIO.new
     begin
-      silence_warnings { load seed_path }
+      silence_warnings { load_abortable_seed!(seed_path) }
     rescue Exception => e # rubocop:disable Lint/RescueException
       err = e
     ensure
@@ -79,7 +85,7 @@ RSpec.describe "example_honeypot seed drill" do
 
       output, error = run_seed
 
-      expect(error).to be_a(SystemExit),
+      expect(error).to be_a(AbortableSeedHelpers::SeedAborted),
         "the drill completed successfully while the sensor observed nothing"
       expect(error.status).to eq(1)
       # `abort` writes its message to stderr, so the diagnosis is on the
@@ -135,7 +141,7 @@ RSpec.describe "example_honeypot seed drill" do
 
       output, error = run_seed
 
-      expect(error).to be_a(SystemExit)
+      expect(error).to be_a(AbortableSeedHelpers::SeedAborted)
       expect(error.message).to include("ESCALATION CHAIN BROKEN")
       # Load-bearing: a NON-ZERO count here is what proves `signals.any?` would
       # have passed. If this ever reads "raised 0", the example has stopped
@@ -150,7 +156,7 @@ RSpec.describe "example_honeypot seed drill" do
 
       output, error = run_seed
 
-      expect(error).to be_a(SystemExit),
+      expect(error).to be_a(AbortableSeedHelpers::SeedAborted),
         "zero signals is the broken-chain outcome, not an informational one"
       expect(error.status).to eq(1)
       expect(output).not_to include("Done.")
@@ -201,7 +207,7 @@ RSpec.describe "example_honeypot seed drill" do
 
       output, error = run_seed
 
-      expect(error).to be_a(SystemExit)
+      expect(error).to be_a(AbortableSeedHelpers::SeedAborted)
       expect(error.message).to include("FleetAutonomyService::SENSORS")
       expect(output).not_to include("Done.")
     end
@@ -212,7 +218,7 @@ RSpec.describe "example_honeypot seed drill" do
 
       output, error = run_seed
 
-      expect(error).to be_a(SystemExit)
+      expect(error).to be_a(AbortableSeedHelpers::SeedAborted)
       expect(error.message).to include("bound to no action category")
       expect(output).not_to include("Done.")
     end

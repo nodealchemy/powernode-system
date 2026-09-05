@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../support/abortable_seed_helpers"
 
 # IMP-555db48d41f1 (APO-4) — the DR replace smoke seed, RUN.
 #
@@ -15,8 +16,13 @@ require "rails_helper"
 # executors through a constructor they had never had).
 #
 # The seed is a straight-line script that `abort`s on any failed assertion, so
-# running it IS the oracle: a SystemExit here means one of its five tests
-# failed, and the message says which.
+# running it IS the oracle: an abort here means one of its five tests failed,
+# and the message says which. It is loaded through load_abortable_seed!
+# because RSpec does not rescue SystemExit: a bare `load` of a regressed seed
+# ended the whole rspec process after this file's examples and hid every
+# example scheduled after it (CI run 1762 reported 89 of 2172), while
+# `not_to raise_error` — which rescues no SystemExit either — read as one
+# ordinary failure.
 RSpec.describe "smoke_test_instance_replace seed" do
   # ActiveSupport's Kernel#silence_stream was removed in Rails 5 and this
   # extension has no global replacement, so the seed's progress output is
@@ -24,7 +30,7 @@ RSpec.describe "smoke_test_instance_replace seed" do
   def run_seed!
     original = $stdout
     $stdout = StringIO.new
-    load seed_path
+    load_abortable_seed!(seed_path)
   ensure
     $stdout = original
   end

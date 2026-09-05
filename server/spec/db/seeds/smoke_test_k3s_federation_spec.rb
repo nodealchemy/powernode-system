@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../support/abortable_seed_helpers"
 require Rails.root.join("../extensions/system/server/db/seeds/_smoke_k3s_helpers").to_s
 
 # IMP-de7b0ec66dea — Phase 5 of the K3s lifecycle smoke drove all three
@@ -74,6 +75,8 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
     # #fail_with aborts the process, which RSpec deliberately does not rescue
     # (SystemExit is in AVOID_RESCUING). Re-raise as a StandardError so a
     # failed h.assert surfaces as a spec failure instead of killing the run.
+    # This stub covers the helper's own vocabulary only; every `load` below
+    # goes through load_abortable_seed! for the seed's other exits.
     allow(helpers).to receive(:fail_with) { |msg| raise "SMOKE FAIL: #{msg}" }
   end
 
@@ -99,7 +102,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
       captured = nil
       allow(helpers).to receive(:fetch_kubeconfig!) { |**kw| captured = kw[:dest_path] }
 
-      load seed_path
+      load_abortable_seed!(seed_path)
 
       expect(captured).to be_present, "the cross-site API leg never fetched a kubeconfig"
       expect(File.dirname(captured)).to eq(kubeconfig_dir)
@@ -137,7 +140,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
   end
 
   it "proposes and accepts a federation peer through the executor contract" do
-    expect { load seed_path }.not_to raise_error
+    expect { load_abortable_seed!(seed_path) }.not_to raise_error
 
     expect(peer.status).to eq("accepted")
     expect(peer.remote_instance_url).to eq("https://powernode-site-b.smoke.local")
@@ -148,7 +151,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
   # `deferred_operation&.account`, so a context that does not carry it would
   # fail FederationPeer's `belongs_to :account` rather than land elsewhere.
   it "creates the peer under the smoke's account" do
-    load seed_path
+    load_abortable_seed!(seed_path)
 
     expect(peer.account_id).to eq(account.id)
   end
@@ -158,7 +161,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
   # smoke has to carry the minted token from propose into accept; if it does
   # not, AcceptFederationPeer raises (e655659f made that refusal loud).
   it "threads the minted single-use acceptance token into the accept leg" do
-    load seed_path
+    load_abortable_seed!(seed_path)
 
     expect(peer.metadata["acceptance_token_used"]).to be(true)
     expect(peer.acceptance_token_digest).to be_nil
@@ -168,7 +171,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
   # accept! stamps the accepting operator from `deferred_operation&.requested_by`,
   # never from params — so this pins that the smoke's context carries a user.
   it "records the accepting operator on the peer" do
-    load seed_path
+    load_abortable_seed!(seed_path)
 
     expect(peer.metadata["accepted_by_user_id"]).to eq(operator.id)
   end
@@ -183,7 +186,7 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
     end
 
     it "revokes the peer with an audited reason" do
-      expect { load seed_path }.not_to raise_error
+      expect { load_abortable_seed!(seed_path) }.not_to raise_error
 
       expect(peer.status).to eq("revoked")
       expect(peer.metadata["revocation_reason"]).to be_present
