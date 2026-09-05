@@ -730,6 +730,65 @@ module System
             "agent_id" => agent&.id
           ).compact
         )
+
+        notify_operator_inbox!(action_category, md, reasoning)
+      end
+
+      # Campaign 01a07025 / app-2 — the notify half of notify_and_proceed now
+      # reaches the OPERATOR'S INBOX, not just a FleetEvent and a log line.
+      #
+      # WHY THIS WAS NOT ENOUGH BEFORE. The FleetEvent above is a durable,
+      # broadcast RECORD; it is not a page. An operator who selects
+      # notify_and_proceed is asking to be told that the fleet acted on their
+      # behalf, and what they got was a row in a stream they would have to be
+      # already watching. The ten *_investigate lanes have no applier at all —
+      # the notification IS the remediation for those — so for them this was the
+      # whole deliverable and it was landing nowhere a person looks.
+      #
+      # RATE-LIMITED, and that limit is not optional. A notify_and_proceed lane
+      # re-decides once per DecisionEngine::DEDUP_TTL_SECONDS (600s) for as long
+      # as its condition stands — 144 times a day, per fingerprint, times every
+      # active user in the account. The claim goes through the SAME
+      # System::Fleet::SignalState row the standing-signal lane keeps, so one
+      # fingerprint has one place that knows when a human was last told about
+      # it, whichever lane did the telling.
+      #
+      # Best-effort in both directions: a failure here must not affect the gate
+      # decision (the action has already been authorised), and the claim itself
+      # fails OPEN so a bookkeeping error cannot be what silences the lane.
+      def notify_operator_inbox!(action_category, md, reasoning)
+        return unless defined?(::Notification)
+
+        # A gate call carrying no signal identity (a direct MCP-driven action,
+        # say) still deserves one inbox row per interval — keyed on the action
+        # rather than on a fingerprint it does not have.
+        fingerprint = md["signal_fingerprint"].presence || "notify:#{action_category}"
+        return unless ::System::Fleet::SignalState.claim_notification!(
+          account: account,
+          fingerprint: fingerprint,
+          signal_kind: md["signal_kind"].presence || action_category
+        )
+
+        ::Notification.create_for_account(
+          account,
+          type: "agent_status_update",
+          title: "Fleet acted automatically: #{action_category}",
+          message: (reasoning[:summary] || reasoning["summary"]).presence&.to_s&.truncate(NOTIFY_SUMMARY_LIMIT) ||
+                   "The fleet proceeded with #{action_category} under notify_and_proceed.",
+          severity: "warning",
+          category: "system",
+          action_url: "/app/notifications",
+          metadata: {
+            "action_category" => action_category,
+            "gate" => "notify_and_proceed",
+            "signal_kind" => md["signal_kind"],
+            "signal_fingerprint" => md["signal_fingerprint"],
+            "agent_id" => agent&.id
+          }.compact
+        )
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] notify inbox row failed for #{action_category}: " \
+                           "#{e.class}: #{e.message}")
       end
 
       def decision_ttl_for(action_category)

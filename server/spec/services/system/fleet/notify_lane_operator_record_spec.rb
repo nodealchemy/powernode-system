@@ -96,6 +96,13 @@ RSpec.describe "notify lanes and skill executions leave a durable operator recor
 
     it "broadcasts the notify event on the account's fleet channel" do
       seed_policy!("system.node_lkg_investigate", "notify_and_proceed")
+      # `allow` FIRST so the message expectation below constrains only the
+      # fleet-channel call. Since campaign 01a07025 / app-2 the notify lane also
+      # writes an operator-inbox Notification, whose after_create broadcasts on
+      # "account_<id>" — a second, unrelated call this expectation used to
+      # reject outright. What is being pinned here is that the FLEET event goes
+      # out, not that it is the only thing that ever does.
+      allow(ActionCable.server).to receive(:broadcast)
       expect(ActionCable.server).to receive(:broadcast)
         .with("system_fleet:#{account.id}", hash_including(kind: described_class::NOTIFY_EVENT_KIND))
 
