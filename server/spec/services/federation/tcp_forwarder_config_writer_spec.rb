@@ -184,19 +184,18 @@ RSpec.describe Federation::TcpForwarderConfigWriter, type: :service do
       expect(entries).to eq([ File.basename(config_path) ])
     end
 
+    # A regular FILE where the parent directory has to be, not a chmod 000
+    # directory: root ignores mode bits, so the chmod fixture never refused
+    # under CI (which runs as root) and this example passed vacuously there.
+    # mkdir_p through a file raises for every uid.
     it "raises WriteError when the target directory can't be created" do
-      locked_parent = File.join(tmp_dir, "locked")
-      FileUtils.mkdir_p(locked_parent)
-      FileUtils.chmod(0o000, locked_parent)
-      unwritable_path = File.join(locked_parent, "nested", "forwards.json")
+      not_a_dir = File.join(tmp_dir, "locked")
+      File.write(not_a_dir, "")
+      unwritable_path = File.join(not_a_dir, "nested", "forwards.json")
 
-      begin
-        expect {
-          described_class.write!(account: account, config_path: unwritable_path)
-        }.to raise_error(Federation::TcpForwarderConfigWriter::WriteError)
-      ensure
-        FileUtils.chmod(0o755, locked_parent)
-      end
+      expect {
+        described_class.write!(account: account, config_path: unwritable_path)
+      }.to raise_error(Federation::TcpForwarderConfigWriter::WriteError)
     end
 
     describe "ENV path override" do
