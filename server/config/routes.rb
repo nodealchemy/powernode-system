@@ -693,6 +693,13 @@ Rails.application.routes.draw do
           # Per-peer cluster_member PG replica slot + credential
           # materialization. Plan: P6.4.
           post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"
+          # Campaign 01a07025 increment 3 — scheduled, attributed, persisted
+          # platform-health duty. Worker ticks every 5min; the controller
+          # delegates per-account to System::Platform::ScheduledHealthCheckService,
+          # which reads the actual cadence from a SiteSetting rather than the
+          # cron frequency, and skips an account whose Concierge has no
+          # materialised clone yet rather than crediting the global canonical.
+          post "platform/health_sweep", to: "platform_health#sweep"
 
           # AI/MCP workload substrate L3 — agent-fleet mission phase callbacks.
           # Each AiAgentFleet*Job (dispatched by core's OrchestratorService)

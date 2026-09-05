@@ -156,3 +156,15 @@
     class: "SystemPackageRepositorySyncJob"
     queue: system
     description: "System: sync apt/rpm package metadata from enabled upstream repositories"
+
+  # Scheduled platform-health duty — campaign 01a07025 increment 3. Ticks
+  # every 5 minutes; the server-side ScheduledHealthCheckService decides per
+  # account, from the system.platform_health_check_interval_minutes
+  # SiteSetting (default 15min), whether the tick actually runs the probe —
+  # this cron frequency is deliberately NOT the check's cadence, only its
+  # upper bound on how stale a retuned setting can be before it takes effect.
+  system_platform_health_sweep:
+    cron: "*/5 * * * *"
+    class: "SystemPlatformHealthSweepJob"
+    queue: system
+    description: "Platform: scheduled composite health check, persisted and attributed to the account's Concierge clone"

@@ -102,11 +102,12 @@ This extension contributes:
   subdomains, 153 controllers across operator API + on-node API + worker API)
 - React/TypeScript frontend (~250 TS/TSX files including 11 page components +
   ~156 reusable components + custom hooks + API client services)
-- Worker jobs (10 scheduled): `system_task_reaper`, `system_fleet_reconcile`,
+- Worker jobs (11 scheduled): `system_task_reaper`, `system_fleet_reconcile`,
   `system_cve_feed`, `system_cve_responder_reconcile`,
   `system_fleet_event_retention`, `sdwan_flow_sample_retention`,
   `system_gitops_sync`, `system_cloud_sync`,
-  `system_fulfillment_request_reconcile`, `system_package_repository_sync`
+  `system_fulfillment_request_reconcile`, `system_package_repository_sync`,
+  `system_platform_health_sweep`
 - Database migrations (137)
 - Sidekiq cron schedule entries
 
