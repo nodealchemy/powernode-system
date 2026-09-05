@@ -505,6 +505,34 @@
         }
       }
     },
+    "restart_after_update": {
+      "description": "Declares that updating THIS module requires restarting ANOTHER module's service \u2014 for a module whose own `services` block is empty, updating it otherwise restarts nothing and the new code sits on disk unloaded. Fires on the heartbeat that reports this module's new digest materialised, not at promotion. Mirrors System::ModuleConfigValidator.validate_restart_after_update; see System::RestartAfterUpdate.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "module",
+          "services"
+        ],
+        "properties": {
+          "module": {
+            "description": "NAME of the module whose service must restart.",
+            "type": "string",
+            "minLength": 1
+          },
+          "services": {
+            "description": "Service names within that module. Note the plural \u2014 a singular `service:` key is ignored by the importer and would silently restart nothing, which is the inert-deploy failure this block exists to remove.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
     "verify": {
       "type": "object",
       "description": "IMP-3855ff9908f2 \u2014 post-deploy self-proof. Each probe asserts that a BARE command name resolves, through PATH, to exactly the declared path. `resolves_to` is REQUIRED: an existence check is what passed while the VM-9000 binary was shadowed. There is deliberately no `shells` key \u2014 every probe runs in BOTH a login and a non-login shell, because the divergence between the two IS the bug class. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md and System::ModuleVerify.",
