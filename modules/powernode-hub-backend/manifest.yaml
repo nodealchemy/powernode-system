@@ -72,16 +72,54 @@ services:
       # first-boot secret generation, so a persisted secrets file from an older
       # image would never pick this up on a later image upgrade.
       POWERNODE_DEPLOYED: "1"
-      # This all-in-one hub ships neither the solid_cache nor solid_queue tables
-      # (their schemas live in db/{cache,queue}_schema.rb and are never loaded by
-      # db:migrate). The Rails 8 defaults (solid_cache_store / solid_queue) then hit
-      # a missing table — Rails.cache writes (footer cache) and db:seed's site-settings
-      # step fail on "solid_cache_entries does not exist". Use the table-free, in-bundle
-      # Rails cores. MUST live here (systemd env), not just in the generated
-      # backend-default.conf: rails-start.sh only writes the secrets file on first-boot
-      # generation, so a persisted secrets file from an older image never picks these up.
-      # The server does NOT bundle sidekiq (background work goes to hub-worker over HTTP),
-      # so async is the safe table-free ActiveJob fallback for stray enqueues.
+      # These two overrides were introduced together because this all-in-one hub
+      # had NEITHER backing table: the Rails 8 defaults (solid_cache_store /
+      # solid_queue) hit a missing table, and Rails.cache writes plus db:seed's
+      # site-settings step failed on "solid_cache_entries does not exist".
+      #
+      # MUST live here (systemd env), not just in the generated
+      # backend-default.conf: rails-start.sh only writes the secrets file on
+      # first-boot generation, so a persisted secrets file from an older image
+      # never picks these up.
+      #
+      # THAT JUSTIFICATION HAS EXPIRED FOR CACHE, AND ONLY FOR CACHE
+      # (IMP-a95f7b6b3e01). db/cache_migrate/20260904175500_create_solid_cache_entries.rb
+      # now ships the table, and config/database.yml's production `cache:` entry
+      # declares `migrations_paths: db/cache_migrate`, so the db:migrate
+      # rails-start.sh already runs creates it — on a fresh install and on an
+      # established host's next boot alike. rails-start.sh's own copy of this
+      # note was corrected in 815d07cb7 and says the same thing in different
+      # words; grepping one of the two misses the other.
+      #
+      # There is still NO db/queue_migrate (nor db/cable_migrate), so
+      # solid_queue's table genuinely does not exist and QUEUE_ADAPTER keeps its
+      # original reason. The server also does not bundle sidekiq (background work
+      # goes to hub-worker over HTTP), so async remains the safe table-free
+      # ActiveJob fallback for stray enqueues.
+      #
+      # WHY CACHE_STORE STAYS PINNED ANYWAY, deliberately and not by inertia:
+      # unpinning it is a live-hub deploy decision, not a config tidy-up. A cache
+      # store that cannot be reached at boot fails a self-hosted hub closed, and
+      # this hub cannot be recovered by the control plane it is running.
+      #
+      # The correctness prerequisite for solid_cache IS now landed:
+      # CacheVersioning no longer uses a resumable counter, and no longer falls
+      # back to a shared "never bumped" namespace either — a swept version row
+      # used to let a later bump re-issue keys a previous bump had retired.
+      # Deliberately NOT listed as a further prerequisite: config/cache.yml's
+      # missing max_age. Setting it explicitly to 2.weeks changes nothing, and
+      # setting it to nil only disables the age sweep — the cache_full sweep
+      # (max_size: 256 MB) evicts the version row regardless and ignores
+      # created_at entirely, so that knob protects nothing the token change did
+      # not already handle.
+      #
+      # WHAT THE PIN COSTS TODAY, stated so nobody assumes otherwise: MemoryStore
+      # is per-process, so each puma worker holds its own cache and a
+      # CacheVersioning bump in one retires nothing in the others or in
+      # hub-worker. Every invalidation is therefore per-process here. That is not
+      # a regression — MemoryStore's #delete_matched was equally per-process — but
+      # it does mean cross-process invalidation is not yet delivered in
+      # production. See app/services/concerns/cache_versioning.rb.
       CACHE_STORE: "memory_store"
       QUEUE_ADAPTER: "async"
       # Pin the internal CA adapter. Unset, System::InternalCaService#
