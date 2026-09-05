@@ -95,7 +95,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 55,
+      line: 56,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -171,7 +171,7 @@ module GateComposedTaskCategories
     },
     {
       file: "app/services/ai/tools/system_fleet_tool.rb",
-      line: 562,
+      line: 604,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —
