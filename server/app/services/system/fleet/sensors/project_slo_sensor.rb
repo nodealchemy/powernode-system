@@ -287,7 +287,27 @@ module System
             )
           end
 
-          if obs["availability_pct"].present? && obs["availability_pct"] < targets["availability_pct"]
+          # `!nil?`, not `.present?` — the SAME spelling the SDWAN throughput
+          # floor below uses, for the same reason and now stated on both. These
+          # are the sensor's only two FLOORS, and a floor is where the
+          # absent-vs-zero distinction becomes observable: a measured 0.0 means
+          # every replica that owes us a heartbeat has gone silent (a total
+          # outage, the most severe thing this sensor says) while nil means the
+          # collector could not measure availability at all, and rendering that
+          # as 0% manufactures an outage that is not happening.
+          #
+          # `.present?` was CORRECT here — 0.0 is present in Ruby — but it is
+          # the exact truthiness test the throughput floor's comment warns a
+          # later reader against, and having one floor spell it defensively
+          # while its sibling did not is what let that warning cover only half
+          # of what it describes. Behaviour is unchanged; the pair below it in
+          # project_slo_sensor_availability_spec.rb is what holds the line.
+          #
+          # The latency and cost arms deliberately keep `.present?`: they are
+          # CEILINGS, where an unmeasured nil and a fabricated 0.0 both sit
+          # below the threshold and produce the same outcome, so there is no
+          # property to pin and changing them would be churn.
+          if !obs["availability_pct"].nil? && obs["availability_pct"] < targets["availability_pct"]
             breach_pct = pct_under(obs["availability_pct"], targets["availability_pct"])
             return build_signal(
               kind: "system.project_slo_violation",
