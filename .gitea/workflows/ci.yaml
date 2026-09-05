@@ -258,6 +258,17 @@ jobs:
           # script header; it is shared so the two jobs cannot drift.
           bundle exec rails runner ../extensions/system/scripts/ci-stamp-migration-versions.rb
 
+      # Fails when a migration is stamped applied but its table was never
+      # created — db:schema:load + assume_migrated_upto_version produces
+      # exactly that for any table missing from schema.rb, and db:migrate
+      # cannot repair it. Cheap (~1s) and runs before any spec, so the failure
+      # names the schema gap instead of surfacing as an unrelated
+      # PG::UndefinedTable thousands of examples later — or, worse, not
+      # surfacing at all where the caller rescues StandardError.
+      - name: Assert every stamped migration actually materialised
+        working-directory: powernode-platform/server
+        run: bundle exec rails runner ../extensions/system/scripts/ci-assert-schema-materialised.rb
+
       - name: Run system extension specs (all suites, sequential)
         working-directory: powernode-platform/server
         # Each named suite runs a disjoint subset; `misc` sweeps every
@@ -419,6 +430,17 @@ jobs:
           # schema.rb's version (a data-only migration never bumps it). See the
           # script header; it is shared so the two jobs cannot drift.
           bundle exec rails runner ../extensions/system/scripts/ci-stamp-migration-versions.rb
+
+      # Fails when a migration is stamped applied but its table was never
+      # created — db:schema:load + assume_migrated_upto_version produces
+      # exactly that for any table missing from schema.rb, and db:migrate
+      # cannot repair it. Cheap (~1s) and runs before any spec, so the failure
+      # names the schema gap instead of surfacing as an unrelated
+      # PG::UndefinedTable thousands of examples later — or, worse, not
+      # surfacing at all where the caller rescues StandardError.
+      - name: Assert every stamped migration actually materialised
+        working-directory: powernode-platform/server
+        run: bundle exec rails runner ../extensions/system/scripts/ci-assert-schema-materialised.rb
 
       # The script generates a throwaway supplementary Gemfile beside the core
       # Gemfile (eval_gemfile "Gemfile" + aws-sdk-ec2 + fog-openstack), does a
