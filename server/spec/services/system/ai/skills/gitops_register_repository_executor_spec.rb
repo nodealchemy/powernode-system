@@ -100,5 +100,4 @@ RSpec.describe System::Ai::Skills::GitopsRegisterRepositoryExecutor do
       expect(Ai::DeferredOperation.where(account: account).count).to eq(0)
     end
   end
-
 end

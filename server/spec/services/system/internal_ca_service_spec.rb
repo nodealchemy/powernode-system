@@ -707,5 +707,4 @@ RSpec.describe System::InternalCaService do
       end
     end
   end
-
 end

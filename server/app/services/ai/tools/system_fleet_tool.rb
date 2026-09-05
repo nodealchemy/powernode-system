@@ -4189,7 +4189,7 @@ module Ai
       #
       #   * There is no retrieval path to name. No endpoint anywhere
       #     re-delivers a minted capability token to a caller. The two places
-      #     that mint server-side both keep it: 
+      #     that mint server-side both keep it:
       #     Api::V1::System::NodeInstancePeersController#execute mints a
       #     SELF-EDGE token (caller == target — the peer executes its own
       #     offered skill) and hands it to the peer inside a System::Task's

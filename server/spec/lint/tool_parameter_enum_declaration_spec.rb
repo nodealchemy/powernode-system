@@ -91,22 +91,22 @@ module ToolEnumLint
   # a rename forces re-acknowledgement rather than silently widening the
   # exemption. `action` is "__definition__" for a tool-level parameter.
   PROSE_WITHOUT_ENUM = {
-    ["Ai::Tools::SystemFleetTool", "system_create_volume", "nfs_version"] =>
+    [ "Ai::Tools::SystemFleetTool", "system_create_volume", "nfs_version" ] =>
       "No server-side validator: the value is interpolated straight into " \
       "`nfsvers=` in the mount options, so the accepted set belongs to the " \
       "NFS client on the node, not to the platform.",
-    ["Ai::Tools::SystemFleetTool", "system_lease_ci_runner", "pool_name"] =>
+    [ "Ai::Tools::SystemFleetTool", "system_lease_ci_runner", "pool_name" ] =>
       "The 'One of pool_name/pool_id is required' phrasing names two " \
       "PARAMETERS, not two accepted values — there is no value set here.",
-    ["Ai::Tools::SystemFleetTool", "system_create_provider", "provider_type"] =>
+    [ "Ai::Tools::SystemFleetTool", "system_create_provider", "provider_type" ] =>
       "The accepted set is the runtime provider registry (supported? / " \
       "sdk_available?), which varies with the gems installed on the node — " \
       "a static enum would be wrong on some deployments.",
-    ["Ai::Tools::SystemFleetTool", "system_create_cve", "feed_source"] =>
+    [ "Ai::Tools::SystemFleetTool", "system_create_cve", "feed_source" ] =>
       "System::Cve has no feed_source validator and the column is free-form: " \
       "CveOps::FeedIngestService writes whatever `source` the feed run names, " \
       "and the CVE drill seeds write \"DRILL\". nvd/ghsa/manual is a naming " \
-      "CONVENTION, so an enum would forbid values the platform itself writes.",
+      "CONVENTION, so an enum would forbid values the platform itself writes."
   }.freeze
 
   Row = Struct.new(:tool, :action, :name, :spec, keyword_init: true) do
@@ -123,36 +123,36 @@ RSpec.describe "Extension MCP tool parameter enum/items declarations" do
   # declaration that merely exists cannot pass for a correct one.
   def positive_control_expectations
     [
-      ["Ai::Tools::SystemFleetTool", "system_promote_module_version", "target_state",
-       ::System::NodeModuleVersion::PROMOTION_STATES],
-      ["Ai::Tools::SystemFleetTool", "system_update_instance_pool", "status",
-       ::System::InstancePool::STATUSES],
-      ["Ai::Tools::SdwanTool", "system_sdwan_create_firewall_rule", "firewall_action",
-       ::Sdwan::FirewallRule::ACTIONS],
-      ["Ai::Tools::SdwanTool", "system_sdwan_list_subnet_advertisements", "source",
-       ::Sdwan::SubnetAdvertisement::SOURCES],
-      ["Ai::Tools::SystemIngressTool", "system_create_service", "protocol",
-       ::Sdwan::Service::PROTOCOLS],
-      ["Ai::Tools::SystemAcmeTool", "system_acme_create_dns_credential", "provider",
-       ::System::AcmeDnsCredential::SUPPORTED_PROVIDERS],
-      ["Ai::Tools::SystemPackageRepositoryTool", "system_search_packages", "kind",
-       ::System::PackageRepository::KINDS],
-      ["Ai::Tools::SystemArchitectureCatalogTool", "system_create_architecture", "family",
-       ::System::NodeArchitecture::FAMILIES],
-      ["Ai::Tools::SystemStorageOwnerTool", "system_assign_storage_owner", "owner_kind",
-       ::System::StorageAssignment::OWNER_KINDS],
+      [ "Ai::Tools::SystemFleetTool", "system_promote_module_version", "target_state",
+       ::System::NodeModuleVersion::PROMOTION_STATES ],
+      [ "Ai::Tools::SystemFleetTool", "system_update_instance_pool", "status",
+       ::System::InstancePool::STATUSES ],
+      [ "Ai::Tools::SdwanTool", "system_sdwan_create_firewall_rule", "firewall_action",
+       ::Sdwan::FirewallRule::ACTIONS ],
+      [ "Ai::Tools::SdwanTool", "system_sdwan_list_subnet_advertisements", "source",
+       ::Sdwan::SubnetAdvertisement::SOURCES ],
+      [ "Ai::Tools::SystemIngressTool", "system_create_service", "protocol",
+       ::Sdwan::Service::PROTOCOLS ],
+      [ "Ai::Tools::SystemAcmeTool", "system_acme_create_dns_credential", "provider",
+       ::System::AcmeDnsCredential::SUPPORTED_PROVIDERS ],
+      [ "Ai::Tools::SystemPackageRepositoryTool", "system_search_packages", "kind",
+       ::System::PackageRepository::KINDS ],
+      [ "Ai::Tools::SystemArchitectureCatalogTool", "system_create_architecture", "family",
+       ::System::NodeArchitecture::FAMILIES ],
+      [ "Ai::Tools::SystemStorageOwnerTool", "system_assign_storage_owner", "owner_kind",
+       ::System::StorageAssignment::OWNER_KINDS ],
 
       # The three sets with the WEAKEST upstream oracle get a control each,
       # because they are the ones most likely to drift unnoticed:
       #   `op` cites a constant in a file another lane rewrites often;
       #   `transport` is the tool's OWN allow-list (no model validator);
       #   `mode` is a constant this campaign extracted out of an inline literal.
-      ["Ai::Tools::SystemFleetTool", "system_platform_resilience", "op",
-       ::System::Ai::Skills::PlatformResilienceExecutor::ACTIONS],
-      ["Ai::Tools::SystemFleetTool", "system_create_volume", "transport",
-       ::Ai::Tools::SystemFleetTool::VOLUME_TRANSPORTS],
-      ["Ai::Tools::SystemPackageRepositoryTool", "system_search_packages", "mode",
-       ::System::PackageSearchService::MODES]
+      [ "Ai::Tools::SystemFleetTool", "system_platform_resilience", "op",
+       ::System::Ai::Skills::PlatformResilienceExecutor::ACTIONS ],
+      [ "Ai::Tools::SystemFleetTool", "system_create_volume", "transport",
+       ::Ai::Tools::SystemFleetTool::VOLUME_TRANSPORTS ],
+      [ "Ai::Tools::SystemPackageRepositoryTool", "system_search_packages", "mode",
+       ::System::PackageSearchService::MODES ]
     ]
   end
 
@@ -239,7 +239,7 @@ RSpec.describe "Extension MCP tool parameter enum/items declarations" do
     offenders = parameter_rows.select { |r|
       ToolEnumLint::PROSE_ENUM_SHAPES.any? { |shape| r.description.match?(shape) }
     }.reject { |r|
-      ToolEnumLint::PROSE_WITHOUT_ENUM.key?([r.tool, r.action, r.name])
+      ToolEnumLint::PROSE_WITHOUT_ENUM.key?([ r.tool, r.action, r.name ])
     }.reject { |r|
       enum = r.fetch(:enum)
       next true if enum.is_a?(Array) && enum.any?

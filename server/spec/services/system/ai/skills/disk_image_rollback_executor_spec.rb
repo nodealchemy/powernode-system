@@ -171,5 +171,4 @@ RSpec.describe System::Ai::Skills::DiskImageRollbackExecutor do
       expect(platform.reload.disk_image_file_object_id).to eq(active.file_object_id)
     end
   end
-
 end

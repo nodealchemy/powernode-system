@@ -2209,10 +2209,10 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         # is what reddens for it.
         next if declared.nil?
 
-        tracked = known_broken[[relative_path, verb]]
+        tracked = known_broken[[ relative_path, verb ]]
 
         if tracked
-          exercised_exclusions << [relative_path, verb]
+          exercised_exclusions << [ relative_path, verb ]
 
           it "#{verb} at line #{line} is still the known-broken call its finding describes" do
             expect(keys & tracked).to(

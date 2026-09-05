@@ -70,7 +70,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps apply advertised kinds (IMP-f
   it "parses the service correctly (sanity: five applied kinds; assignment destroy is the implemented one)" do
     expect(applied_kinds).to include("pool", "platform")
     expect(applied_kinds.size).to be >= 5
-    expect(destroy_applied).to eq(["assignment"])
+    expect(destroy_applied).to eq([ "assignment" ])
     expect(destroy_refused).to match_array(%w[template module pool platform])
     # provider_config is routed to #informational — accepted, nothing written.
     expect(dispatch_body).to match(/return informational\(.*?\)\s+if kind == "provider_config"/)

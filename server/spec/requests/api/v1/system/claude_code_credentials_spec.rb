@@ -132,7 +132,7 @@ RSpec.describe "Api::V1::System::ClaudeCodeCredentials", type: :request do
         "refreshToken" => "fake-oauth-refresh-token-for-spec",
         "expiresAt" => future_ms,
         "refreshTokenExpiresAt" => future_ms,
-        "scopes" => ["user:inference"],
+        "scopes" => [ "user:inference" ],
         "subscriptionType" => "max"
       }
     end

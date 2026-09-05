@@ -120,5 +120,4 @@ RSpec.describe System::Ai::Skills::GitopsSyncRepositoryExecutor do
       expect(::System::Gitops::Reconciler).not_to have_received(:reconcile!)
     end
   end
-
 end

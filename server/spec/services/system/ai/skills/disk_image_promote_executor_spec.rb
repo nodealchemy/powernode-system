@@ -119,5 +119,4 @@ RSpec.describe System::Ai::Skills::DiskImagePromoteExecutor do
       expect(platform.reload.disk_image_file_object_id).to be_nil
     end
   end
-
 end

@@ -107,5 +107,4 @@ RSpec.describe System::Ai::Skills::DiskImageRetentionExecutor do
       expect(platform.reload.disk_image_retention_count).to eq(3)
     end
   end
-
 end

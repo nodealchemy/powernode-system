@@ -139,5 +139,4 @@ RSpec.describe System::Ai::Skills::GitopsApplyProposalExecutor do
       expect(template_applied?).to be false
     end
   end
-
 end

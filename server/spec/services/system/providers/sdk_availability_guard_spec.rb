@@ -27,10 +27,10 @@ RSpec.describe "Provider SDK availability guard (IMP-384a74c79f86)" do
   # A local, NOT a constant: a spec-level constant leaks onto Object and
   # collides with the next file that names it.
   sdk_backed = {
-    "aws"       => ["System::Providers::AwsProvider", "Aws::EC2::Client", "aws-sdk-ec2"],
-    "gcp"       => ["System::Providers::GcpProvider",
-                    "Google::Cloud::Compute::V1::Instances::Rest::Client", "google-cloud-compute"],
-    "openstack" => ["System::Providers::OpenStackProvider", "Fog::OpenStack::Compute", "fog-openstack"]
+    "aws"       => [ "System::Providers::AwsProvider", "Aws::EC2::Client", "aws-sdk-ec2" ],
+    "gcp"       => [ "System::Providers::GcpProvider",
+                    "Google::Cloud::Compute::V1::Instances::Rest::Client", "google-cloud-compute" ],
+    "openstack" => [ "System::Providers::OpenStackProvider", "Fog::OpenStack::Compute", "fog-openstack" ]
   }.freeze
 
   # Withdraw every optional SDK constant. A no-op where the gem is already

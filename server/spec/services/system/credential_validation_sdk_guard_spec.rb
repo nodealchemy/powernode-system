@@ -28,10 +28,10 @@ RSpec.describe System::CredentialValidationService, "SDK availability guard" do
   # provider_type => [adapter class, SDK constant path, gem name]. A local,
   # not a constant: a spec-level constant leaks onto Object.
   sdk_backed = {
-    "aws"       => ["System::Providers::AwsProvider", "Aws::EC2::Client", "aws-sdk-ec2"],
-    "gcp"       => ["System::Providers::GcpProvider",
-                    "Google::Cloud::Compute::V1::Instances::Rest::Client", "google-cloud-compute"],
-    "openstack" => ["System::Providers::OpenStackProvider", "Fog::OpenStack::Compute", "fog-openstack"]
+    "aws"       => [ "System::Providers::AwsProvider", "Aws::EC2::Client", "aws-sdk-ec2" ],
+    "gcp"       => [ "System::Providers::GcpProvider",
+                    "Google::Cloud::Compute::V1::Instances::Rest::Client", "google-cloud-compute" ],
+    "openstack" => [ "System::Providers::OpenStackProvider", "Fog::OpenStack::Compute", "fog-openstack" ]
   }.freeze
 
   sdk_backed.each do |type, (class_name, const_path, gem_name)|

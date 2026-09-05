@@ -72,5 +72,4 @@ RSpec.describe System::Seeds::AgentSetupHelpers do
       expect(override.reload.account_id).to eq(account.id)
     end
   end
-
 end

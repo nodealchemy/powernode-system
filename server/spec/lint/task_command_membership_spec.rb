@@ -57,15 +57,15 @@ RSpec.describe "System::Task command membership across the spec tree" do
     {
       # `cmd` ranges over described_class::COMMANDS itself — the example IS
       # the membership check.
-      "models/system/task_spec.rb" => [56],
+      "models/system/task_spec.rb" => [ 56 ],
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
-      "models/system/preserves_task_history_spec.rb" => [28],
-      "requests/api/v1/system/worker_api/janitor_spec.rb" => [27],
-      "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [31],
+      "models/system/preserves_task_history_spec.rb" => [ 28 ],
+      "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 27 ],
+      "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
       # `command` ranges over a hardcoded
       # %w[start stop restart reboot terminate] list in the enclosing .each.
-      "services/system/runtime/control_instance_spec.rb" => [38],
+      "services/system/runtime/control_instance_spec.rb" => [ 38 ],
       # `command_insertable?` is an INSERTABILITY PROBE, not a fixture. It is
       # reached from two call sites (:310, :332) whose values are the command
       # names DECLARED BY GATE SITES plus KNOWN_BROKEN_COMMANDS — precisely the
@@ -75,7 +75,7 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # the "every named category resolves to an insertable command" example is
       # red exactly when one does. It calls .new + .valid? and never persists,
       # so an unlisted value reaches no database and no dispatch route.
-      "integration/gate_composed_task_categories_spec.rb" => [234]
+      "integration/gate_composed_task_categories_spec.rb" => [ 234 ]
     }
   end
 
@@ -243,7 +243,7 @@ RSpec.describe "System::Task command membership across the spec tree" do
     args = call_args(src, open_idx)
     assignments = command_assignments(args)
 
-    expect(assignments.map { |a| a[:kind] }).to eq([:literal])
+    expect(assignments.map { |a| a[:kind] }).to eq([ :literal ])
     expect(assignments.first[:value]).to eq("not_a_real_command")
     expect(System::Task::COMMANDS).not_to include(assignments.first[:value])
   end

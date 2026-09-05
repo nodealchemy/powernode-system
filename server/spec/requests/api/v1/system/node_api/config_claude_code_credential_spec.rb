@@ -131,7 +131,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
         "refreshToken" => "fake-oauth-refresh-token-for-spec",
         "expiresAt" => 4_102_444_800_000,
         "refreshTokenExpiresAt" => 4_102_444_800_000,
-        "scopes" => ["user:inference"],
+        "scopes" => [ "user:inference" ],
         "subscriptionType" => "max"
       }
     end

@@ -1682,7 +1682,7 @@ module Ai
                    executor_class: "Sdwan::Executors::ReactivateAccessGrant",
                    description: "Reinstate SDWAN access for #{user.email} on #{network_label}"
                  }
-               else
+        else
                  {
                    action_category: ::Sdwan::Executors::CreateAccessGrant::ACTION_CATEGORY,
                    executor_class: "Sdwan::Executors::CreateAccessGrant",
@@ -1690,7 +1690,7 @@ module Ai
                    # executor's #summarize, so all three speak one sentence.
                    description: "Grant SDWAN access to #{user.email} on #{network_label}"
                  }
-               end
+        end
 
         gated_result(**common, **gate) do |result|
           grant = ::Sdwan::AccessGrant.find(result.result&.dig(:data, :grant_id))

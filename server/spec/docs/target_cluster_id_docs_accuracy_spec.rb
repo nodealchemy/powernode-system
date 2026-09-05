@@ -206,8 +206,8 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     end
 
     starts.each_with_index.map do |i, n|
-      lo = [i - 60, n.zero? ? 0 : starts[n - 1] + REFUSAL_EVENT.length, 0].max
-      hi = [i + REFUSAL_EVENT.length + 90, starts[n + 1] || squished.length].min
+      lo = [ i - 60, n.zero? ? 0 : starts[n - 1] + REFUSAL_EVENT.length, 0 ].max
+      hi = [ i + REFUSAL_EVENT.length + 90, starts[n + 1] || squished.length ].min
       squished[lo...hi]
     end
   end
@@ -306,7 +306,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
   describe "the agent tree as a whole" do
     let(:go_sources) do
       Dir[File.join(ext_root, "agent", "**", "*.go")].sort.to_h do |path|
-        [path.sub("#{ext_root}/", ""), File.read(path)]
+        [ path.sub("#{ext_root}/", ""), File.read(path) ]
       end
     end
 
@@ -326,7 +326,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
         end
       end
 
-      expect(writes).to eq(["agent/internal/k3sd/handshake.go: TargetClusterID: targetClusterID,"])
+      expect(writes).to eq([ "agent/internal/k3sd/handshake.go: TargetClusterID: targetClusterID," ])
     end
 
     it "has exactly one production caller of JoinRequest, passing the unwritten field" do
@@ -339,7 +339,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       end
 
       expect(callers).to eq(
-        ["agent/internal/k3sd/agent_manager.go: payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)"]
+        [ "agent/internal/k3sd/agent_manager.go: payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)" ]
       )
     end
 
@@ -1365,7 +1365,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # the second cluster. The runbook is its instruction sheet, so this line
     # is an actuator, not prose.
     it "no longer instructs the Concierge to propose Phase 4" do
-      expect(self.class.present_sites(doc, [/For HA, propose Phase 4/])).to be_empty
+      expect(self.class.present_sites(doc, [ /For HA, propose Phase 4/ ])).to be_empty
     end
 
     # Same root cause as the parked HA gap, surfacing as a PERSISTENCE claim
@@ -1407,7 +1407,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # — a diagnosis that sends the operator to `journalctl` on two servers
     # that were never trying to join each other.
     it "corrects the troubleshooting row that blamed etcd quorum" do
-      expect(self.class.present_sites(doc, [/Token mismatch or etcd quorum issue/])).to be_empty
+      expect(self.class.present_sites(doc, [ /Token mismatch or etcd quorum issue/ ])).to be_empty
     end
 
     # Found by independent review of the first draft of this withdrawal, which
@@ -1764,7 +1764,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # Both were rewritten rather than kept as rows: neither was an instruction
     # an operator could have followed, so there is nothing to recognise.
     it "no longer claims k3s-server joins clusters by target_cluster_id" do
-      expect(self.class.present_sites(doc, [/joins clusters by target_cluster_id metadata/]))
+      expect(self.class.present_sites(doc, [ /joins clusters by target_cluster_id metadata/ ]))
         .to be_empty
     end
 
@@ -1772,7 +1772,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # nothing reads target_cluster_id from NodeInstance.metadata, from module
     # assignment config, or from anywhere but the handshake request parameter.
     it "no longer places the field on NodeInstance.metadata" do
-      expect(self.class.present_sites(doc, [/lives on the `NodeInstance\.metadata` JSONB/]))
+      expect(self.class.present_sites(doc, [ /lives on the `NodeInstance\.metadata` JSONB/ ]))
         .to be_empty
     end
 
@@ -1884,5 +1884,4 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(negative[/^ensure$.*/m]).to match(/network_profile: prior_profile/)
     end
   end
-
 end

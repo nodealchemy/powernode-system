@@ -150,12 +150,12 @@ module Api
           end
 
           if api_key.present?
-            ["api_key", { "api_key" => api_key }]
+            [ "api_key", { "api_key" => api_key } ]
           elsif oauth.present?
             # Not model mass-assignment — the hash goes through the shape
             # validator and then straight to Vault, so unwrap the params.
             blob = oauth.respond_to?(:to_unsafe_h) ? oauth.to_unsafe_h : oauth
-            ["oauth", { "oauth" => ::System::ClaudeCodeCredential.normalize_oauth_payload!(blob) }]
+            [ "oauth", { "oauth" => ::System::ClaudeCodeCredential.normalize_oauth_payload!(blob) } ]
           else
             raise PayloadError,
                   "supply exactly one of api_key (Anthropic API key) or oauth " \
