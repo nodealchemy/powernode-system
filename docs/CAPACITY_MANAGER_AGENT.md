@@ -103,7 +103,7 @@ provider reads, task reads, storage reads — so the Claude Code counterpart
 
 ## Intervention Policies
 
-The agent ships with **22 intervention policies**:
+The agent ships with **23 intervention policies**:
 
 | Action | Policy | Reached through | Why |
 |---|---|---|---|
@@ -126,6 +126,7 @@ The agent ships with **22 intervention policies**:
 | `project.relocate` | `require_approval` | `AdaptationGate` | Cross-region move |
 | `project.schema_change` | `require_approval` | `AdaptationGate` | Storage / schema mutation |
 | `project.security_change` | `require_approval` | `AdaptationGate` | SDWAN / firewall change |
+| `project.target_unmeasurable_investigate` | `notify_and_proceed` | sensor: `project_slo_sensor` (`project_target_unmeasurable`) — notify-only, no applier: it reaches an operator and actuates nothing | A project declared an SLO target no producer on this platform measures (today: latency); the row routes the notification and gives an operator a place to silence it |
 | `system.platform.scale_out` | `auto_approve` | `System::Platform::ReplicaReconciler` — twin; read at this shape when `platform_resilience` runs AS this agent | Auto-executes inside the deployment's declared window, parks otherwise |
 | `system.platform.scale_in` | `require_approval` | `ReplicaReconciler` — twin | Terminates instances — not reversible |
 | `system.instance_cordon` | `require_approval` | `SystemFleetTool` cordon / uncordon — twin | Takes capacity out of / back into scheduling |
@@ -159,6 +160,7 @@ Ai::InterventionPolicy.find_by(
 | `instance_unrecoverable_sensor` | `system.instance_unrecoverable` | `system.instance_replace` | `require_approval` |
 | `project_slo_sensor` | `system.project_slo_violation`, `system.project_drift` | `project.adapt` | `notify_and_proceed` |
 | `project_slo_sensor` | `system.project_cost_breach` | `project.cost_control` | `notify_and_proceed` |
+| `project_slo_sensor` | `system.project_target_unmeasurable` | `project.target_unmeasurable_investigate` (notify-only) | `notify_and_proceed` |
 | (core) `Ai::Provisioning::AdaptationDispatchService` → `System::AdaptationGate` | an `adaptation_diff` plan | `project.<change_type>` | per row |
 
 See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) for sensor implementation details.
