@@ -1,5 +1,10 @@
 # AI/MCP Workload Substrate — Design & Roadmap
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<ops-hub-ip>`, `<pve-host>`, `<dev-host>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 > Status: active
 
 Owner: platform · Created 2026-06-02
@@ -231,7 +236,7 @@ without rework.
 
 ## Reference: DNA (real GPU node)
 
-`dna.ipnode.net` (10.125.0.10) — Dell host, swarm node, **NVIDIA Quadro RTX 4000,
+`<pve-host>` (<pve-ip>) — Dell host, swarm node, **NVIDIA Quadro RTX 4000,
 8 GB**, driver 590.48.01, **host-driver-bound + container-shared** (ollama / emby /
 open-webui), clean IOMMU group 2 (passthrough-capable but *not* configured for it).
 Single 8 GB card → effectively one inference backend; **shared via the host driver

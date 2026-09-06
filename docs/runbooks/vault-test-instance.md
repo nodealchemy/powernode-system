@@ -1,5 +1,10 @@
 # Runbook — Vault test instance
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<ops-hub-ip>`, `<pve-host>`, `<dev-host>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 > Status: active
 > Audience: platform maintainers exercising the platform's Vault-backed paths
 > Prerequisites: the `vault` NodeModule built and published; a NodeInstance
@@ -8,7 +13,7 @@
 
 Stands up a **real, sealed** HashiCorp Vault on a fleet instance so the
 platform's Vault-dependent code paths can be exercised without the shared
-`vault.ipnode.org`, which has been sealed since 2026-07-29 and whose unseal
+`<vault-host>`, which has been sealed since 2026-07-29 and whose unseal
 keys are operator-held.
 
 What this unblocks:

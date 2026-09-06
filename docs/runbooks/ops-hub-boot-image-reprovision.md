@@ -1,5 +1,10 @@
 # Runbook — Ops-Hub Boot-Image Re-Provision (campaign 019f505f, Inc 5)
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<ops-hub-ip>`, `<pve-host>`, `<dev-host>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 > Status: draft — awaiting hardware-validation gate + operator go/no-go before execution.
 > **Destructive.** This re-images the running ops-hub VM. Read the whole runbook,
 > snapshot first, and do not run the cutover until steps 1–4 of the checklist are green.
@@ -24,7 +29,7 @@ after it, the ops-hub upgrades like any other fleet node.
 | Target git_sha | `34f2af6dff33212ba12c403f9eba4e65bfe12073` |
 | Target sha256 | `46236c442ac141004fb0772f4f280e79fd626da67e29b6099e496931e9dbc9e1` |
 | Publication | `019f5329-a593-74c2-b3d2-b9356e852fb9` |
-| Platform URL | `https://dev.ipnode.us` |
+| Platform URL | `https://<dev-host>` |
 
 ## Pre-cutover checklist (ALL must be green before touching VM 102)
 
@@ -80,7 +85,7 @@ the 257a gap — and read it from `/sys/firmware/qemu_fw_cfg/by_name/opt/com.pow
 | fw-cfg key (`opt/com.powernode/…`) | Required | Value |
 |---|---|---|
 | `instance_uuid/raw` | **yes** (else `ErrNotFound`) | `019f4f4e-4abb-7072-ab54-6bb6d757606e` |
-| `platform_url/raw` | for enroll | `https://dev.ipnode.us` |
+| `platform_url/raw` | for enroll | `https://<dev-host>` |
 | `ca_pem/raw` | for enroll | **the Let's Encrypt chain** (must be the LE chain, not a leaf) |
 | `bootstrap_token/raw` | for enroll | **single-use token minted by the platform** — see secret note |
 

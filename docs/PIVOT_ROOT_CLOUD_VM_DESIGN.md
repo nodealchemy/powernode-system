@@ -1,5 +1,10 @@
 # Cloud‑VM `pivot_root` Deployment — Design
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<ops-hub-ip>`, `<pve-host>`, `<dev-host>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 > Status: partially shipped. The kernel+initramfs artifact is mechanically
 > proven (boot → systemd-in-initramfs → agent invoked; see memory
 > `powernode.pivot_root_smoke_proven_2026_05_24`). The agent-side OCI/dynamic boot
@@ -16,7 +21,7 @@
 
 > **2026-07-05 — ops-tier rebuild cross-reference.** Campaign
 > `019f3458-e607-7528-937d-3c159f097901` uses exactly this `direct_kernel` pivot-boot mechanism to
-> rebuild the `ops.ipnode.us` control plane as a replace-never-in-place standalone
+> rebuild the `<ops-host>` control plane as a replace-never-in-place standalone
 > `powernode-hub` `NodeInstance` on Proxmox: parallel burn-in alongside the untouched existing
 > systemd install, a single dump/restore + DNS-flip cutover (deliberately the campaign's **last**
 > DNS flip), then VIP-based `system_fleet` rolling redeploys for everything after. Same

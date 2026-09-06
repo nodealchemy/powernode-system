@@ -1,5 +1,10 @@
 # Vault Credential Restoration Runbook
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<ops-hub-ip>`, `<pve-host>`, `<dev-host>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 > Status: active
 
 Disaster-recovery runbook for the platform's credential storage layer. Operator companion to [`credential-restoration.md`](../credential-restoration.md) (which covers the design). This runbook focuses on hands-on backup, restoration, and audit verification procedures.
@@ -141,11 +146,11 @@ The Rails app reads Vault via `Security::VaultCredentialProvider` on first secre
 
 ```bash
 # As an operator:
-curl -H "Authorization: Bearer $JWT" https://platform.ipnode.org/api/v1/accounts/<id>/credentials
+curl -H "Authorization: Bearer $JWT" https://<platform-host>/api/v1/accounts/<id>/credentials
 # → returns metadata only (NEVER the actual secret values per `cryptographic_material_safety` rules)
 
 # Verify a known credential decrypts (e.g., billing test mode key):
-curl -X POST -H "Authorization: Bearer $JWT" https://platform.ipnode.org/api/v1/billing/test-charge
+curl -X POST -H "Authorization: Bearer $JWT" https://<platform-host>/api/v1/billing/test-charge
 # → if this succeeds, the encryption stack is functional
 ```
 
