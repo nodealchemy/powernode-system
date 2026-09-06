@@ -4389,6 +4389,54 @@ end
       end
     end
 
+    # Deployment-knowledge follow-through: per-connection wiring such as
+    # snippets_storage is deployment-local and lives on the connection, never
+    # as a default in source — so it has to be readable and settable over MCP.
+    describe "provider connection read/update verbs" do
+      let!(:connection) do
+        create(:system_provider_connection, account: account, provider: provider,
+               name: "lab-conn", config: { "default_node" => "pve1", "default_storage" => "pve1-data" })
+      end
+
+      it "lists the account's connections, filterable by provider" do
+        r = call("system_list_provider_connections", provider_id: provider.id)
+        expect(r[:success]).to be true
+        names = r[:data][:provider_connections].map { |c| c[:name] || c["name"] }
+        expect(names).to include("lab-conn")
+      end
+
+      it "fetches one connection with its non-secret config" do
+        r = call("system_get_provider_connection", id: connection.id)
+        expect(r[:success]).to be true
+        cfg = r[:data][:provider_connection][:config] || r[:data][:provider_connection]["config"]
+        expect(cfg).to include("default_node" => "pve1")
+      end
+
+      it "merge-updates config: sets one key, keeps the rest, nil deletes" do
+        r = call("system_update_provider_connection", id: connection.id,
+                 config: { "snippets_storage" => "shared-nfs", "default_storage" => nil })
+        expect(r[:success]).to be true
+        expect(connection.reload.config).to eq("default_node" => "pve1", "snippets_storage" => "shared-nfs")
+      end
+
+      it "updates scalar attributes and refuses credential or provider changes by construction" do
+        r = call("system_update_provider_connection", id: connection.id, name: "renamed", enabled: false)
+        expect(r[:success]).to be true
+        expect(connection.reload).to have_attributes(name: "renamed", enabled: false)
+        params = described_class.action_definitions
+                                .fetch("system_update_provider_connection")[:parameters].keys.map(&:to_s)
+        expect(params).not_to include("access_key", "secret_key", "tenant", "credentials", "provider_id")
+      end
+
+      it "scopes every verb to the current account" do
+        foreign = create(:system_provider_connection) # different account
+        expect(call("system_get_provider_connection", id: foreign.id)[:success]).to be false
+        expect(call("system_update_provider_connection", id: foreign.id, name: "x")[:success]).to be false
+        listed = call("system_list_provider_connections")[:data][:provider_connections].map { |c| c[:id] || c["id"] }
+        expect(listed).not_to include(foreign.id)
+      end
+    end
+
     describe "system_create_provider_region" do
       it "creates a region under the provider" do
         r = call("system_create_provider_region",

@@ -395,6 +395,15 @@ module Ai
         # (provider_connections/provider_regions gate their own families;
         # the instance-types controller gates create on providers.create).
         "system_create_provider_connection"    => "system.connections.create",
+        # Deployment-knowledge follow-through: per-connection wiring such as
+        # `snippets_storage` / `snippets_local_path` / `default_node` is
+        # deployment-local and MUST be set on the connection rather than
+        # defaulted in source — so an operator (or agent) needs to read and
+        # update connections over MCP, not only create them. Mirrors the REST
+        # ProviderConnectionsController index/show/update permission gates.
+        "system_list_provider_connections"     => "system.connections.read",
+        "system_get_provider_connection"       => "system.connections.read",
+        "system_update_provider_connection"    => "system.connections.update",
         "system_create_provider_region"        => "system.regions.create",
         "system_create_provider_instance_type" => "system.providers.create"
       }.freeze
@@ -768,6 +777,7 @@ module Ai
       declare_action "system_get_module", mutating: false
       declare_action "system_get_node", mutating: false
       declare_action "system_get_provider", mutating: false
+      declare_action "system_get_provider_connection", mutating: false
       declare_action "system_get_silent_instances", mutating: false
       declare_action "system_get_sensor_config", mutating: false
       declare_action "system_get_storage_migration", mutating: false
@@ -833,6 +843,7 @@ module Ai
       declare_action "system_list_module_versions", mutating: false
       declare_action "system_list_modules", mutating: false
       declare_action "system_list_nodes", mutating: false
+      declare_action "system_list_provider_connections", mutating: false
       declare_action "system_list_providers", mutating: false
       declare_action "system_list_storage_migrations", mutating: false
       declare_action "system_list_tasks", mutating: false
@@ -1015,6 +1026,7 @@ module Ai
       declare_action "system_update_module_assignment", mutating: true
       declare_action "system_update_node", mutating: true
       declare_action "system_update_provider", mutating: true
+      declare_action "system_update_provider_connection", mutating: true
       declare_action "system_update_storage_recommendations", mutating: true
       declare_action "system_update_sensor_config", mutating: true
       declare_action "system_update_template", mutating: true
@@ -2394,6 +2406,30 @@ module Ai
               test_connection: { type: "boolean", required: false, description: "Run the live credential test after create (uses BYOC credentials)" }
             }
           },
+          "system_list_provider_connections" => {
+            description: "List the account's ProviderConnections (id, name, provider, status, endpoint, non-secret config). Optional provider_id / status filters. Credentials are never included.",
+            parameters: {
+              provider_id: { type: "string", required: false, description: "Only connections of this System::Provider" },
+              status: { type: "string", required: false, description: "Only connections in this status (pending/connected/error/...)" }
+            }
+          },
+          "system_get_provider_connection" => {
+            description: "Fetch one ProviderConnection with its full non-secret config — the place to read per-connection, deployment-local wiring such as default_node, default_storage, snippets_storage, snippets_local_path, cidata_transport. Credentials are never included.",
+            parameters: {
+              id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" }
+            }
+          },
+          "system_update_provider_connection" => {
+            description: "Update a ProviderConnection — name, description, endpoint_url, enabled, config. Config is merge-updated (existing keys preserved; a key passed with an explicit nil value is deleted), so set one key such as snippets_storage without re-sending the rest. Deployment-local wiring belongs HERE, never as a default in source. NO credential parameters are accepted (BYOC ProviderCredential flow only). The provider cannot be changed through this verb.",
+            parameters: {
+              id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" },
+              name: { type: "string", required: false, description: "New display name" },
+              description: { type: "string", required: false, description: "Free-text description" },
+              endpoint_url: { type: "string", required: false, description: "Provider API endpoint URL for this connection" },
+              enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the connection" },
+              config: { type: "object", required: false, description: "Non-secret wiring keys to merge (e.g. snippets_storage, snippets_local_path, default_node, default_storage). nil deletes a key." }
+            }
+          },
           "system_create_provider_region" => {
             description: "Create a ProviderRegion under a provider — the placement target referenced by nodes/instances (provider_region_id).",
             parameters: {
@@ -2659,6 +2695,9 @@ module Ai
         when "system_create_provider"               then create_provider(params)
         when "system_delete_provider"               then delete_provider(params)
         when "system_create_provider_connection"    then create_provider_connection(params)
+        when "system_list_provider_connections"     then list_provider_connections(params)
+        when "system_get_provider_connection"       then get_provider_connection(params)
+        when "system_update_provider_connection"    then update_provider_connection(params)
         when "system_create_provider_region"        then create_provider_region(params)
         when "system_create_provider_instance_type" then create_provider_instance_type(params)
         else error_result("Unknown action: #{params[:action]}")
@@ -8679,6 +8718,47 @@ module Ai
         payload[:provider_connection] = ::System::ProviderConnectionSerializer.new(connection.reload).as_json
 
         success_result(payload)
+      end
+
+      def list_provider_connections(params)
+        scope = ::System::ProviderConnection.where(account_id: @account.id).includes(:provider)
+        scope = scope.where(provider_id: params[:provider_id]) if params[:provider_id].present?
+        scope = scope.where(status: params[:status]) if params[:status].present?
+        paginated_result(:provider_connections, scope, params, sort: :name, direction: :asc) do |c|
+          ::System::ProviderConnectionSerializer.new(c).as_json
+        end
+      end
+
+      def get_provider_connection(params)
+        connection = ::System::ProviderConnection.where(account_id: @account.id).find(params[:id])
+        success_result(provider_connection: ::System::ProviderConnectionSerializer.new(connection).as_json)
+      end
+
+      # Same merge-update contract as update_provider: existing config keys
+      # survive, an explicit nil deletes a key. No credential fields and no
+      # provider_id: the connection's provider is fixed at create time (the
+      # REST twin re-runs the APO-7 SDK refusal on a provider swap; here the
+      # swap is simply not offered).
+      def update_provider_connection(params)
+        connection = ::System::ProviderConnection.where(account_id: @account.id).find(params[:id])
+
+        attrs = {}
+        attrs[:name]         = params[:name]         if params.key?(:name)
+        attrs[:description]  = params[:description]  if params.key?(:description)
+        attrs[:endpoint_url] = params[:endpoint_url] if params.key?(:endpoint_url)
+        attrs[:enabled]      = params[:enabled] unless params[:enabled].nil?
+
+        if params[:config].is_a?(Hash)
+          merged = (connection.config || {}).merge(params[:config].transform_keys(&:to_s))
+          merged.delete_if { |_, v| v.nil? }
+          attrs[:config] = merged
+        end
+
+        unless connection.update(attrs)
+          return error_result("Validation failed: #{connection.errors.full_messages.join(', ')}")
+        end
+
+        success_result(provider_connection: ::System::ProviderConnectionSerializer.new(connection.reload).as_json)
       end
 
       def create_provider_region(params)
