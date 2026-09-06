@@ -78,8 +78,6 @@ module System
     # leases for modules in state "queued", so a batch with nothing queued is a
     # cheap no-op and this can't over-dispatch past max_concurrent_builders.
     def redispatch_queued_batches!
-      return 0 unless defined?(::System::ModuleBuildBatch) && defined?(::System::NativeModuleBuildOrchestrator)
-
       redispatched = 0
       non_terminal_batches.find_each do |batch|
           mods = (batch.metadata || {})["modules"] || {}
@@ -105,8 +103,6 @@ module System
     # resolved entries, so re-advancing such a batch does exactly the missing
     # sign + publish and nothing else.
     def readvance_stalled_batches!
-      return 0 unless defined?(::System::ModuleBuildBatch) && defined?(::System::NativeModuleBuildOrchestrator)
-
       readvanced = 0
       non_terminal_batches.where(status: %w[dispatched awaiting_signature publishing]).find_each do |batch|
         next unless stalled_member?(batch)
@@ -192,8 +188,6 @@ module System
     # release below then dropped the lease, and no later tick ever advanced
     # the batch again (hub-frontend built + pushed, never recorded).
     def trigger_orchestrator_advance(task)
-      return unless defined?(::System::NativeModuleBuildOrchestrator)
-
       batch_id = ::System::NativeModuleBuildOrchestrator.task_batch_id(task)
       return if batch_id.blank?
       return if task_resolved_in_batch?(batch_id, task)
@@ -209,8 +203,6 @@ module System
     # fresh Task; this one's outcome has been consumed). An unknown batch
     # is "unresolved" so advance_for_task! gets its normal not-found no-op.
     def task_resolved_in_batch?(batch_id, task)
-      return false unless defined?(::System::ModuleBuildBatch)
-
       batch = ::System::ModuleBuildBatch.find_by(id: batch_id)
       return false unless batch
 
@@ -369,8 +361,6 @@ module System
     end
 
     def emit_event(lease, kind, reason: nil, severity: :low)
-      return unless defined?(::System::Fleet::EventBroadcaster)
-
       ::System::Fleet::EventBroadcaster.emit!(
         account: @account,
         kind: kind,

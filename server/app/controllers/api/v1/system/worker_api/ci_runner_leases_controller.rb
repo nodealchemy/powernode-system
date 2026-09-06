@@ -66,8 +66,6 @@ module Api
           end
 
           def in_flight_batch_account_ids
-            return [] unless defined?(::System::ModuleBuildBatch)
-
             ::System::ModuleBuildBatch
               .where(status: %w[planning dispatched awaiting_signature publishing])
               .distinct.pluck(:account_id)
