@@ -323,6 +323,7 @@ module Ai
         "system_list_disk_image_webhooks"            => "system.modules.read",
         # Campaign 019f5885 inc9 — native module-build batch orchestration.
         "system_dispatch_module_build_batch"         => "system.module_builds.dispatch",
+        "system_get_module_build_batch"              => "system.module_builds.read",
         # Cancel is deliberately NOT gated on ...dispatch: that permission is
         # granted only to system_worker, so reusing it would leave the human
         # operator — the one who notices mid-batch that the wrong thing was
@@ -775,6 +776,7 @@ module Ai
       declare_action "system_get_instance", mutating: false
       declare_action "system_get_instance_pool", mutating: false
       declare_action "system_get_module", mutating: false
+      declare_action "system_get_module_build_batch", mutating: false
       declare_action "system_get_node", mutating: false
       declare_action "system_get_provider", mutating: false
       declare_action "system_get_provider_connection", mutating: false
@@ -2298,6 +2300,13 @@ module Ai
             }
           },
 
+          "system_get_module_build_batch" => {
+            description: "Inspect one native module-build batch in full: the batch row plus its per-module orchestration state (metadata.modules — state queued/dispatched/succeeded/failed/cancelled, attempts, tag, error) joined with each member ci.module_build Task's status and its builder lease's status, plus the plan, excluded modules, source_repo and expected_core_sha. `stalled: true` on a module is the exact shape the lease sweep's readvance backstop heals on its next tick (task finished, entry still `dispatched`): a batch parked in `publishing` with a stalled module is a sweep gap, not a publish failure — check this before reaching for a manual publish.",
+            parameters: {
+              batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id" }
+            }
+          },
+
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
             description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository. " \
@@ -2581,6 +2590,7 @@ module Ai
         when "system_compose_preview_template" then compose_preview_template(params)
         when "system_list_modules"             then list_modules(params)
         when "system_get_module"               then get_module(params)
+        when "system_get_module_build_batch"   then get_module_build_batch(params)
         when "system_list_module_versions"     then list_module_versions(params)
         when "system_discover_modules"         then discover_modules(params)
         when "system_discover_templates"       then discover_templates(params)
@@ -8208,6 +8218,57 @@ module Ai
         end
 
         success_result(module_build_batch: serialize_module_build_batch(batch.reload))
+      end
+
+      def get_module_build_batch(params)
+        batch_id = params[:batch_id].to_s
+        return error_result("batch_id is required") if batch_id.blank?
+
+        batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
+        return error_result("Module build batch '#{batch_id}' not found") unless batch
+
+        success_result(module_build_batch: serialize_module_build_batch_detail(batch))
+      end
+
+      # The summary row plus the orchestrator's per-module state joined with
+      # the member Task and builder lease each entry points at. Entries are
+      # keyed as the orchestrator keys them (bare slug, or "slug@arch" for a
+      # multi-arch package plan); `module` is always the real module name.
+      def serialize_module_build_batch_detail(batch)
+        meta    = batch.metadata || {}
+        entries = (meta["modules"] || {}).select { |_, e| e.is_a?(::Hash) }
+        tasks   = ::System::Task.where(id: entries.values.filter_map { |e| e["task_id"] }).index_by(&:id)
+        leases  = ::System::CiRunnerLease.where(id: entries.values.filter_map { |e| e["lease_id"] }).index_by(&:id)
+
+        serialize_module_build_batch(batch).merge(
+          shadow: batch.shadow,
+          source_repo: meta["source_repo"],
+          expected_core_sha: meta["expected_core_sha"],
+          created_at: batch.created_at&.iso8601,
+          updated_at: batch.updated_at&.iso8601,
+          plan: meta["plan"],
+          excluded: meta["excluded"],
+          excluded_count: meta["excluded_count"],
+          modules: entries.map do |key, entry|
+            task  = tasks[entry["task_id"]]
+            lease = leases[entry["lease_id"]]
+            {
+              key: key,
+              module: entry["module"],
+              architecture: entry["architecture"],
+              tag: entry["tag"],
+              state: entry["state"],
+              attempts: entry["attempts"],
+              error: entry["error"],
+              stalled: entry["state"] == "dispatched" && task.present? && task.finished?,
+              task: task && {
+                id: task.id, status: task.status, error_message: task.error_message,
+                created_at: task.created_at&.iso8601, completed_at: task.completed_at&.iso8601
+              },
+              lease: lease && { id: lease.id, status: lease.status, released_at: lease.released_at&.iso8601 }
+            }
+          end
+        )
       end
 
       def serialize_module_build_batch(batch)

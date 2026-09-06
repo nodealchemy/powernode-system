@@ -4562,6 +4562,74 @@ end
     end
   end
 
+  describe "system_get_module_build_batch" do
+    let(:instance) { create(:system_node_instance, :running, account: account) }
+    let(:batch) do
+      System::ModuleBuildBatch.create_for(account: account, trigger: "manual", base_sha: "base", head_sha: "head",
+                                          source_repo: "powernode/powernode-platform",
+                                          plan: [ { module: "mod-x", oci_ref: "abc1234" }, { module: "mod-y", oci_ref: "abc1234" } ])
+    end
+    let!(:task_x) do
+      create(:system_task, account: account, operable: instance, command: "ci.module_build", status: "complete",
+                           completed_at: Time.current,
+                           options: { "module" => "mod-x", "sha" => "abc", "oci_ref" => "abc1234", "batch_id" => batch.id })
+    end
+    let!(:lease_x) do
+      System::CiRunnerLease.create!(account: account, node_instance: instance, status: "released", purpose: "module_build",
+                                    build_task_id: task_x.id, released_at: 1.minute.ago)
+    end
+
+    before do
+      batch.update!(metadata: batch.metadata.merge("expected_core_sha" => "coresha", "modules" => {
+        "mod-x" => { "module" => "mod-x", "architecture" => nil, "tag" => "abc1234", "state" => "dispatched",
+                     "attempts" => 1, "lease_id" => lease_x.id, "task_id" => task_x.id, "error" => nil },
+        "mod-y" => { "module" => "mod-y", "architecture" => nil, "tag" => "abc1234", "state" => "succeeded",
+                     "attempts" => 1, "lease_id" => nil, "task_id" => nil, "error" => nil }
+      }))
+      batch.update_columns(status: "publishing")
+    end
+
+    it "returns the batch with per-module orchestration state joined to its task and lease, flagging a stalled member" do
+      result = call("system_get_module_build_batch", batch_id: batch.id)
+
+      expect(result[:success]).to be true
+      payload = result[:data][:module_build_batch]
+      expect(payload[:status]).to eq("publishing")
+      expect(payload[:source_repo]).to eq("powernode/powernode-platform")
+      expect(payload[:expected_core_sha]).to eq("coresha")
+      expect(payload[:plan].map { |p| p["module"] }).to eq(%w[mod-x mod-y])
+
+      mod_x = payload[:modules].find { |m| m[:key] == "mod-x" }
+      expect(mod_x).to include(module: "mod-x", state: "dispatched", attempts: 1, tag: "abc1234", stalled: true)
+      expect(mod_x[:task]).to include(id: task_x.id, status: "complete")
+      expect(mod_x[:lease]).to include(id: lease_x.id, status: "released")
+
+      mod_y = payload[:modules].find { |m| m[:key] == "mod-y" }
+      expect(mod_y).to include(state: "succeeded", stalled: false, task: nil, lease: nil)
+    end
+
+    it "does not flag a dispatched member whose task is still running" do
+      task_x.update!(status: "running", started_at: Time.current, completed_at: nil)
+
+      payload = call("system_get_module_build_batch", batch_id: batch.id)[:data][:module_build_batch]
+
+      expect(payload[:modules].find { |m| m[:key] == "mod-x" }[:stalled]).to be false
+    end
+
+    it "refuses a blank id and a batch that is not in this account" do
+      expect(call("system_get_module_build_batch", batch_id: "")[:error]).to include("batch_id is required")
+
+      other = System::ModuleBuildBatch.create_for(account: create(:account), trigger: "manual", base_sha: "b", head_sha: "h",
+                                                  plan: [ { module: "mod-z", oci_ref: "abc1234" } ])
+      expect(call("system_get_module_build_batch", batch_id: other.id)[:error]).to include("not found")
+    end
+
+    it "is a read verb: gated on system.module_builds.read and declared non-mutating" do
+      expect(described_class::ACTION_PERMISSIONS.fetch("system_get_module_build_batch")).to eq("system.module_builds.read")
+      expect(described_class.action_definitions.fetch("system_get_module_build_batch")[:parameters].keys).to eq([ :batch_id ])
+    end
+  end
+
   describe "system_dispatch_module_build_batch (campaign 019f5885 inc9)" do
     # HIER-P2B-ENG — this verb is approval-gated (release.*); these examples
     # assert the WRITTEN state, so they opt into the :proceed branch. The gate
