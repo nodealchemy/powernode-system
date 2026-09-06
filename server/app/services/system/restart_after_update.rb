@@ -164,8 +164,25 @@ module System
         return false if version.nil?
         return false if declarations(node_module).empty?
 
+        # TIMESTAMP + NONCE, and the nonce is the load-bearing half.
+        #
+        # This stamp is the only thing distinguishing a rollback from the
+        # original promotion of the same digest, so it must identify the
+        # promotion EVENT. Deriving that identity from a clock made it
+        # collidable: at the original second resolution, a rollback landing in
+        # the same wall-clock second as the promotion it reverts produced an
+        # IDENTICAL idempotency key, the restart was deduped away, and the
+        # recovery path became the one path that stays inert — precisely the
+        # failure the block comment above warns about.
+        #
+        # Not hypothetical: it turned restart_after_update_spec's rollback
+        # example red in CI (run 1780) while it passed in isolation, purely on
+        # machine speed. Raising the clock to microseconds only narrows the
+        # window; a nonce closes it, and holds even when a caller freezes time.
+        # The timestamp is kept because the value is surfaced to operators.
         config = version.config.is_a?(Hash) ? version.config.dup : {}
-        version.update_columns(config: config.merge(ARMED_KEY => Time.current.iso8601))
+        stamp  = "#{Time.current.iso8601(6)}##{::SecureRandom.hex(4)}"
+        version.update_columns(config: config.merge(ARMED_KEY => stamp))
         true
       end
 

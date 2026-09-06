@@ -256,6 +256,40 @@ RSpec.describe System::RestartAfterUpdate do
       expect { described_class.reconcile!(instance: instance) }
         .to change { instance.tasks.where(command: "restart").count }.by(1)
     end
+
+    # The arm stamp is what makes a rollback distinguishable from the original
+    # promotion of the same digest, and it was written with second resolution
+    # (Time.current.iso8601). A rollback that lands in the SAME WALL-CLOCK
+    # SECOND as the promotion it reverts therefore produced an identical
+    # idempotency key and was silently suppressed — on the recovery path,
+    # which is the one place inertness is most damaging.
+    #
+    # This is not hypothetical: it is why run 1780's services suite was red
+    # while the same example passed in isolation. Freezing the clock makes the
+    # race deterministic instead of dependent on how fast the machine is.
+    it "still restarts when the whole rollback lands inside one second" do
+      freeze_time do
+        declare!(extension, [ { "module" => "powernode-hub-backend", "services" => [ "rails" ] } ])
+        v1 = publish_version!(extension, digest: digest)
+        instance = instance_running(extension.id => digest)
+        described_class.reconcile!(instance: instance)
+        instance.tasks.where(command: "restart").each { |t| t.update_columns(status: "complete") }
+
+        next_digest = "sha256:#{'d' * 64}"
+        publish_version!(extension, digest: next_digest)
+        instance.update!(running_module_digests: { extension.id => next_digest })
+        described_class.reconcile!(instance: instance)
+        instance.tasks.where(command: "restart").each { |t| t.update_columns(status: "complete") }
+
+        extension.promote_to_version!(v1)
+        instance.update!(running_module_digests: { extension.id => digest })
+
+        expect { described_class.reconcile!(instance: instance) }
+          .to change { instance.tasks.where(command: "restart").count }.by(1),
+              "a rollback inside one second must still fire — a second-resolution " \
+              "arm stamp makes the recovery path the one path that stays inert"
+      end
+    end
   end
 
   describe ".reconcile! — target not attached to this instance" do
