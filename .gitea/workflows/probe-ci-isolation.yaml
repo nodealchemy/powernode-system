@@ -1,0 +1,196 @@
+# probe-ci-isolation.yaml — step 0 of the spec-suite parallelisation design
+# (docs/reference/ci-spec-suite-parallelisation-design-2026-09-05.md, §9).
+#
+# PURPOSE. That design replaces ci.yaml's `services:` blocks with sidecars
+# started by `docker run -p <gw>::<port>` so concurrent runs stop colliding on
+# the fixed host port 5432. Six runner behaviours it depends on are unproven
+# HERE (§1.4 lists them as "unverified — probe first"), and the failure mode of
+# guessing is not a red job but a silently wrong one, so they get proven in a
+# workflow_dispatch probe before anything touches the gate. Same shape as
+# probe-matrix.yaml: dispatch-only, records its own outcomes in this header.
+#
+# WHY NOT just make `services.*.ports` ephemeral: an ephemeral publish needs
+# the mapped port read back, which inside a `services:` block requires either
+# `${{ }}` expansion there or the `job.services.*.ports` context. ci.yaml's own
+# comment records that the former fails UNSAFE if unsupported (the literal
+# string becomes the port and every sidecar dies), and the latter is untried.
+# `docker run` needs neither: the port comes back from `docker port`, a plain
+# CLI call on a socket already proven mounted in job containers (ci-hygiene,
+# job 12507).
+#
+# WHAT IS PROVEN vs WHAT IS NOT. P1-P3 are load-bearing: the design uses no
+# feature they did not pass. P4-P6 only widen options and may fail without
+# blocking anything.
+#
+#   P1  `-p <gw>::<port>` yields a distinct kernel-assigned port per container,
+#       `docker port` reads it back, and the job container reaches it at the
+#       bridge gateway. Two matrix entries run at once precisely so the ports
+#       can be compared — one entry proves nothing about collisions.
+#       Also exercises `docker network inspect bridge` for the gateway, which
+#       §10 lists as never having been run in a job here (172.17.0.1 fallback).
+#   P2  `$GITHUB_ENV` carries a value from one step to the next.
+#   P3  `${{ github.run_id }}` is non-empty (it seeds the sidecar owner label).
+#   P4  `timeout-minutes` actually kills an overrunning job. Expected to FAIL
+#       this job if the key works; `continue-on-error` keeps that from reading
+#       as a broken probe.
+#   P5  `--network container:` joins another container's netns (optional §3.5
+#       path; if it passes, sidecars need no published port at all).
+#   P6  `needs.<job>.result` is readable in an `if:`. Observable as "did this
+#       job run or skip", so both outcomes are informative.
+#
+# NOT COVERED. §9 step 0.5's orphan-reap check is deliberately absent: it
+# assumes the label+deadline reaper from §2.3, and the reaper that shipped in
+# both repos scopes by container AGE instead. A container young enough to be
+# created by this probe is never reaped by the age rule, so the test as written
+# could only ever pass vacuously.
+#
+# RESULTS — fill in from the run, the way ci.yaml records runs 1673-1676:
+#   run <id> (<sha>): P1 ? · P2 ? · P3 ? · P4 ? · P5 ? · P6 ?
+#
+# Delete this file once the design's step 3 has landed and its verdicts are
+# recorded in §1.4.
+name: probe-ci-isolation
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # P1 — the load-bearing one. No `container:` key: the job then runs in the
+  # act base image, which is where the docker CLI and the mounted socket live
+  # (ci-hygiene relies on exactly this).
+  p1-sidecar-ports:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        idx: [0, 1]
+    steps:
+      - name: P1 start sidecars on kernel-assigned ports and reach them
+        env:
+          IDX: ${{ matrix.idx }}
+        run: |
+          set -euo pipefail
+
+          GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+          if [ -n "$GW" ]; then
+            echo "[P1] gateway discovered: $GW"
+          else
+            GW=172.17.0.1
+            echo "[P1] gateway discovery FAILED, using fallback: $GW"
+          fi
+
+          OWNER="${GITHUB_RUN_ID:-norun}-p1-${IDX}-$(date +%s)-$RANDOM"
+          DEADLINE=$(( $(date +%s) + 5400 ))
+          echo "CI_SIDECAR_OWNER=$OWNER" >> "$GITHUB_ENV"
+          LABELS="--label powernode.ci=sidecar --label powernode.ci.owner=$OWNER --label powernode.ci.deadline=$DEADLINE"
+
+          PG=$(docker run -d $LABELS -p "$GW::5432" \
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                pgvector/pgvector:pg16 -c fsync=off -c synchronous_commit=off)
+          RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
+
+          PGPORT=$(docker port "$PG" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          RDPORT=$(docker port "$RD" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          echo "[P1] entry $IDX -> postgres $GW:$PGPORT  redis $GW:$RDPORT"
+
+          # A kernel-assigned port is numeric and is not the fixed 5432/6379
+          # this whole exercise exists to stop using. Compare the two entries'
+          # printed ports by eye (or in the run log) to confirm distinctness.
+          case "$PGPORT" in ''|*[!0-9]*) echo "[P1] FAIL: postgres port not numeric: '$PGPORT'"; exit 1 ;; esac
+          case "$RDPORT" in ''|*[!0-9]*) echo "[P1] FAIL: redis port not numeric: '$RDPORT'"; exit 1 ;; esac
+          [ "$PGPORT" != "5432" ] || { echo "[P1] FAIL: postgres took the fixed port, not an ephemeral one"; exit 1; }
+          [ "$RDPORT" != "6379" ] || { echo "[P1] FAIL: redis took the fixed port, not an ephemeral one"; exit 1; }
+
+          for _ in $(seq 1 60); do docker exec "$PG" pg_isready -U postgres -q && break; sleep 1; done
+          docker exec "$PG" pg_isready -U postgres
+
+          # Reachability FROM THE JOB CONTAINER at the gateway address. This is
+          # the half that the `services:` + 172.17.0.1 arrangement gets right
+          # today and that the new one must not regress. bash's /dev/tcp needs
+          # nothing installed.
+          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$GW/$PGPORT" \
+            && echo "[P1] postgres reachable at $GW:$PGPORT" \
+            || { echo "[P1] FAIL: postgres unreachable at $GW:$PGPORT"; exit 1; }
+          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$GW/$RDPORT" \
+            && echo "[P1] redis reachable at $GW:$RDPORT" \
+            || { echo "[P1] FAIL: redis unreachable at $GW:$RDPORT"; exit 1; }
+
+          echo "[P1] PASS (entry $IDX)"
+
+      - name: P5 join a sidecar's network namespace
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          PG=$(docker ps -q --filter "label=powernode.ci.owner=$CI_SIDECAR_OWNER" \
+               --filter "ancestor=pgvector/pgvector:pg16" | head -1)
+          [ -n "$PG" ] || { echo "[P5] FAIL: could not find this entry's postgres"; exit 1; }
+          # If a container can share the sidecar's netns, a job could reach it
+          # on 127.0.0.1 with no published port at all (design §3.5).
+          if docker run --rm --network "container:$PG" docker.io/library/debian:trixie-slim \
+               sh -c 'cat /proc/self/mountinfo > /dev/null && echo joined'; then
+            echo "[P5] PASS: --network container: works"
+          else
+            echo "[P5] FAIL: --network container: rejected (optional path only)"
+            exit 1
+          fi
+
+      - name: Remove this entry's sidecars
+        if: always()
+        run: |
+          set +e
+          docker ps -aq --filter "label=powernode.ci.owner=$CI_SIDECAR_OWNER" | xargs -r docker rm -f
+          echo "[cleanup] removed sidecars for owner=$CI_SIDECAR_OWNER"
+
+  # P2/P3 — cheap context checks the sidecar step above already leans on.
+  p2-p3-context:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: P3 github.run_id is populated
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "[P3] github.run_id='${RUN_ID}' GITHUB_RUN_ID='${GITHUB_RUN_ID:-}'"
+          [ -n "${RUN_ID}" ] || { echo "[P3] FAIL: empty"; exit 1; }
+          echo "[P3] PASS"
+
+      - name: P2 write a value to GITHUB_ENV
+        run: echo "PROBE_HANDOFF=carried-$$" >> "$GITHUB_ENV"
+
+      - name: P2 read it back in a later step
+        run: |
+          set -euo pipefail
+          echo "[P2] PROBE_HANDOFF='${PROBE_HANDOFF:-}'"
+          case "${PROBE_HANDOFF:-}" in
+            carried-*) echo "[P2] PASS" ;;
+            *) echo "[P2] FAIL: GITHUB_ENV did not propagate"; exit 1 ;;
+          esac
+
+  # P4 — expected to be KILLED at 2 minutes if timeout-minutes is honoured.
+  # continue-on-error so an honoured timeout does not read as a broken probe;
+  # the tell is the job's elapsed time, not its conclusion.
+  p4-timeout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    continue-on-error: true
+    steps:
+      - name: P4 sleep past the timeout
+        run: |
+          echo "[P4] sleeping 300s under timeout-minutes: 2"
+          echo "[P4] killed near 2min => PASS; ran the full 5min => timeout-minutes IGNORED"
+          sleep 300
+          echo "[P4] FAIL: slept the whole 300s, timeout-minutes was not honoured"
+
+  # P6 — readable only as "did this job run at all". If needs.<job>.result is
+  # unsupported the condition cannot be true, so the job skips.
+  p6-needs-result:
+    runs-on: ubuntu-24.04
+    needs: [p2-p3-context]
+    if: needs.p2-p3-context.result == 'success'
+    steps:
+      - name: P6 report
+        run: |
+          echo "[P6] PASS - needs.p2-p3-context.result was readable in an if:"
