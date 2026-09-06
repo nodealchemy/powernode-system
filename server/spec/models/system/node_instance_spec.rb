@@ -929,6 +929,226 @@ RSpec.describe System::NodeInstance, type: :model do
     end
   end
 
+  # IMP-9cc83aa64bff — a terminated instance never returns, so every task still
+  # queued against it is unrunnable from that moment. Nothing noticed: the row
+  # sat `pending` until the worker janitor's 48h UNRUNNABLE_THRESHOLD, with the
+  # stuck-backlog sensor alarming at 72h if that failed. Correct as a backstop,
+  # wrong as the primary path — 48 hours of pending noise in the queue an
+  # operator scans to find real problems, and a task dispatched a minute before
+  # termination is indistinguishable from a genuinely stuck one.
+  #
+  # THE SEAM IS THE COLUMN, NOT THE AASM EVENT, and that is the whole reason
+  # these examples drive both. `terminated` reaches the column two ways: the
+  # mark_terminated! event, and a bare update! — System::CloudSyncService writes
+  # `status: data[:status]` straight from the provider's view (that is the
+  # dominant path on this fleet, since the hourly sync is what notices a VM has
+  # gone), and NodeApi::StatusController#update writes any member of STATUSES an
+  # agent reports. An after-event hook would miss both.
+  describe "cancelling unrunnable tasks on termination (IMP-9cc83aa64bff)" do
+    let(:instance) { create(:system_node_instance, node: node, status: "running") }
+
+    # System::Task's after_commit on: :create pushes straight to Redis, which is
+    # shared across every lane running specs. Stubbed the way
+    # spec/requests/api/v1/system/tasks_restart_scope_spec.rb does.
+    before { allow(::System::WorkerDispatch).to receive(:enqueue_operation_execution) }
+
+    def task_with(status: "pending", command: "sync_modules", target: instance)
+      create(:system_task, account: target.account, operable: target, command: command, status: status)
+    end
+
+    it "cancels a pending task when the finalizer confirms the termination" do
+      task = task_with
+
+      instance.mark_terminated!
+
+      expect(task.reload.status).to eq("cancelled")
+    end
+
+    # THE HOLE AN INDEPENDENT REVIEW FOUND, and the reason this hook keys on
+    # more than the column. InstanceControlService#execute stamps `terminated`
+    # via #terminate! BEFORE calling the provider, and reverts to :error on any
+    # provider failure — which for the terminate lane is the ONLY failure path.
+    # Sweeping on that stamp empties the queue of every instance whose terminate
+    # was refused by a rate limit, and this branch's own liveness gate then
+    # refuses to re-dispatch to an `error` instance, so nothing restores it.
+    it "does NOT cancel on the optimistic pre-provider stamp" do
+      task = task_with
+
+      instance.terminate!
+
+      expect(task.reload.status).to eq("pending")
+    end
+
+    it "cancels once the provider confirms, after an optimistic stamp" do
+      task = task_with
+      instance.terminate!
+
+      # mark_terminated is legal FROM :terminated, so this changes no column —
+      # the event alone has to be enough to fire the sweep.
+      instance.mark_terminated!
+
+      expect(task.reload.status).to eq("cancelled")
+    end
+
+    it "leaves the queue intact when a failed terminate is reverted to error" do
+      task = task_with
+
+      instance.terminate!
+      instance.revert_termination!
+
+      expect(instance.reload.status).to eq("error")
+      expect(task.reload.status).to eq("pending")
+    end
+
+    # Pins the saved_change_to_status? half of the guard. CloudSyncService
+    # writes last_synced_at on already-terminated rows every cycle; re-sweeping
+    # on each is a query per tick for nothing.
+    it "does not re-sweep on an unrelated update to an already-terminated row" do
+      instance.update!(status: "terminated")
+      later = task_with
+
+      instance.update!(last_synced_at: Time.current)
+
+      expect(later.reload.status).to eq("pending")
+    end
+
+    # The path an event hook would miss, and the one that actually fires on
+    # this fleet.
+    it "cancels when `terminated` is written by a bare update!, bypassing AASM" do
+      task = task_with
+
+      instance.update!(status: "terminated")
+
+      expect(task.reload.status).to eq("cancelled")
+    end
+
+    # THE EXAMPLE THAT MATTERS, per the operator's ruling. `error` is
+    # recoverable and these very instances oscillate out of it hourly, so a
+    # returning agent must find its work waiting. This kills the over-broad
+    # mutant that cancels on any terminal-LOOKING status.
+    it "leaves pending tasks ALONE when the instance moves to error" do
+      task = task_with
+
+      instance.update!(status: "error")
+
+      expect(task.reload.status).to eq("pending")
+    end
+
+    it "leaves pending tasks alone for every other status transition" do
+      task = task_with
+
+      %w[stopping stopped rebooting starting running].each do |status|
+        instance.update!(status: status)
+        expect(task.reload.status).to eq("pending"), "cancelled on #{status}"
+      end
+    end
+
+    it "cancels a scheduled task too" do
+      task = task_with(status: "scheduled")
+
+      instance.update!(status: "terminated")
+
+      expect(task.reload.status).to eq("cancelled")
+    end
+
+    # `cancel` transitions only from pending/scheduled, so a task the agent has
+    # already claimed is left to the janitor — deliberately, and the backstop
+    # stays in place for it.
+    it "leaves a RUNNING task to the janitor" do
+      task = task_with(status: "running")
+
+      instance.update!(status: "terminated")
+
+      expect(task.reload.status).to eq("running")
+    end
+
+    it "does not disturb a task that already finished" do
+      task = task_with(status: "complete")
+
+      instance.update!(status: "terminated")
+
+      expect(task.reload.status).to eq("complete")
+    end
+
+    # Every open task is unrunnable once the box is gone, not only the on-node
+    # reconcile pair — a queued `start` against a destroyed VM is equally dead.
+    it "cancels open tasks whatever the command" do
+      sync = task_with(command: "sync_modules")
+      config = task_with(command: "apply_config")
+      boot = task_with(command: "upgrade_boot_image")
+
+      instance.update!(status: "terminated")
+
+      expect([ sync, config, boot ].map { |t| t.reload.status }).to all(eq("cancelled"))
+    end
+
+    it "records why, so the cancellation is not a bare status flip" do
+      task = task_with
+
+      instance.update!(status: "terminated")
+
+      expect(task.reload.error_message).to match(/terminated/i)
+    end
+
+    it "touches no other instance's tasks" do
+      other = create(:system_node_instance, node: node, status: "running")
+      mine = task_with
+      theirs = task_with(target: other)
+
+      instance.update!(status: "terminated")
+
+      expect(mine.reload.status).to eq("cancelled")
+      expect(theirs.reload.status).to eq("pending")
+    end
+
+    it "is idempotent across a re-terminate" do
+      task = task_with
+      instance.update!(status: "terminated")
+
+      expect { instance.mark_terminated! }.not_to raise_error
+      expect(task.reload.status).to eq("cancelled")
+    end
+
+    # Cleanup must never break the lifecycle transition that triggered it.
+    it "still terminates when a task refuses to cancel" do
+      task_with
+      allow_any_instance_of(::System::Task).to receive(:cancel!).and_raise(StandardError, "boom")
+
+      expect { instance.update!(status: "terminated") }.not_to raise_error
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    # The CONTINUATION, which the single-task version above cannot see: with one
+    # task, deleting the per-iteration rescue leaves the outer one to catch and
+    # the example stays green. Two tasks, one refusing, is what pins it.
+    it "keeps sweeping after one task refuses" do
+      first = task_with
+      second = task_with
+
+      allow_any_instance_of(::System::Task).to receive(:cancel!).and_wrap_original do |original, *args|
+        raise StandardError, "boom" if original.receiver.id == first.id
+
+        original.call(*args)
+      end
+
+      instance.update!(status: "terminated")
+
+      expect(first.reload.status).to eq("pending")
+      expect(second.reload.status).to eq("cancelled")
+    end
+
+    it "does not reach another account's tasks" do
+      other_account = create(:account)
+      other_node = create(:system_node, account: other_account)
+      other_instance = create(:system_node_instance, node: other_node, status: "running")
+      theirs = task_with(target: other_instance)
+
+      instance.update!(status: "terminated")
+
+      expect(theirs.reload.status).to eq("pending")
+    end
+  end
+
   # IMP-cdf18862a7c1 — the three arms enumerated over EVERY status, because
   # #on_node_dispatch_refusal is now composed from #offline_dispatch_refusal
   # and #silence_verdict, and two operator-facing MCP verbs

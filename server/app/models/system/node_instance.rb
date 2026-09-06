@@ -455,6 +455,23 @@ module System
     scope :in_any_pool, -> { where.not(instance_pool_id: nil) }
     scope :not_in_pool, -> { where(instance_pool_id: nil) }
 
+    # IMP-9cc83aa64bff — a terminated instance never returns, so every task
+    # still queued against it is unrunnable from that moment.
+    #
+    # ON THE COLUMN, NOT ONLY THE AASM EVENT. `terminated` reaches this column
+    # by routes the state machine never sees: System::CloudSyncService writes
+    # `status:` straight from the provider's view with a bare update! — the
+    # hourly sync is what usually notices a VM has gone — and
+    # NodeApi::StatusController#update writes any member of STATUSES that an
+    # agent reports. An `after` hook on mark_terminated would miss both, which
+    # is the "sole writer" trap: the question is who writes the COLUMN, not who
+    # calls the method.
+    #
+    # ...BUT NOT EVERY WRITE OF `terminated` IS A TERMINATION. See
+    # #confirmed_termination? — the distinction that keeps this from destroying
+    # live work on every failed terminate.
+    after_commit :cancel_unrunnable_tasks!, on: :update, if: :confirmed_termination?
+
     # IMP-c9adb5a71dca — the cordon marker (`config["cordon"]`, see
     # System::InstanceCordonService) read through its single author. Every
     # reader that is not the allocator's own pool_state fence — the replica
@@ -899,6 +916,100 @@ module System
 
     has_many :node_certificates, class_name: "System::NodeCertificate", dependent: :destroy
     belongs_to :enrollment_token, class_name: "System::BootstrapToken", optional: true
+
+    # Only these can be cancelled — System::Task's `cancel` event transitions
+    # from pending/scheduled and nothing else. A task the agent has already
+    # claimed (`running`) is deliberately left to the worker janitor's 48h
+    # UNRUNNABLE_THRESHOLD, which stays in place as the backstop for exactly
+    # the cases this cannot reach.
+    CANCELLABLE_ON_TERMINATE_STATUSES = %w[pending scheduled].freeze
+
+    # The OPTIMISTIC stamp, which is not a termination yet.
+    # InstanceControlService#execute writes `terminated` via #terminate! BEFORE
+    # it calls the provider (the event has no transitional state), then on any
+    # provider failure calls #revert_termination! to land the row in :error.
+    # For the terminate lane that is not a rare path — it is the ONLY failure
+    # path, so a sweep on the raw column write would empty the queue of every
+    # instance whose terminate was refused by a rate limit or an auth blip.
+    #
+    # An earlier version of this comment claimed the cost of that was bounded
+    # because "the drift sensors re-dispatch". That was false, and falsified by
+    # this branch's own two preceding commits: `error` is outside
+    # LIVE_REPLICA_STATUSES, so #offline_dispatch_refusal refuses on-node
+    # dispatch to it and ConfigDriftSensor does not even consider it a
+    # candidate. Nothing would have re-dispatched until the row returned to
+    # `running`, and for commands with no sensor behind them at all — a leased
+    # builder's ci.module_build, the storage.* verbs — nothing ever would.
+    OPTIMISTIC_TERMINATE_EVENTS = %w[terminate].freeze
+
+    # The CONFIRMED ones: mark_terminated is the finalizer the worker and
+    # InstanceControlService call once the provider has actually reported the
+    # instance gone. It is legal from :terminated, so the confirming call after
+    # an optimistic stamp is a self-transition that changes no column — which
+    # is why event and column are both consulted here rather than either alone.
+    CONFIRMED_TERMINATE_EVENTS = %w[mark_terminated].freeze
+
+    def confirmed_termination?
+      return false unless status == "terminated"
+
+      event = aasm.current_event.to_s.delete_suffix("!")
+      return false if OPTIMISTIC_TERMINATE_EVENTS.include?(event)
+      return true if CONFIRMED_TERMINATE_EVENTS.include?(event)
+
+      # No AASM event, or an unrelated one: a bare column write. Only sweep when
+      # the column actually MOVED to terminated — CloudSyncService writes
+      # last_synced_at on already-terminated rows every cycle, and re-sweeping
+      # on each of those is a query per tick for nothing.
+      saved_change_to_status?
+    end
+
+    # Cancels every task that can no longer run, whatever its command: a queued
+    # `start` against a destroyed VM is as dead as a queued sync_modules, and an
+    # allowlist of commands would rot the first time one was added.
+    #
+    # NOT done on `error`, and that is the load-bearing restriction rather than
+    # an omission. Error is recoverable, and the instances that motivated this
+    # work oscillate out of it hourly as cloud sync re-reads the provider — so a
+    # returning agent must find its queued work waiting. Cancelling on any
+    # terminal-LOOKING status would destroy legitimate work for exactly the
+    # fleet this was written for.
+    #
+    # Known interaction, pinned rather than hidden: #revert_termination exists
+    # for a terminate stamp whose provider call then failed, and it moves
+    # terminated -> error. Tasks cancelled on the way in are NOT restored on the
+    # way out. The drift sensors re-dispatch, so the cost is one reconcile cycle,
+    # and the alternative — deferring cleanup until a terminate is confirmed —
+    # needs a confirmation signal the model does not have.
+    def cancel_unrunnable_tasks!
+      # The status filter is the ONLY guard, deliberately. A `may_cancel?` check
+      # beside it would be a second, redundant gate on the same fact, and a pair
+      # of redundant guards makes neither one testable — every mutation of one
+      # is masked by the other. The rescue below covers the case this filter
+      # gets wrong if System::Task's `cancel` event ever narrows its from-list.
+      tasks.where(status: CANCELLABLE_ON_TERMINATE_STATUSES).find_each do |task|
+        task.cancel!("instance #{id} terminated — task can never run")
+      rescue StandardError => e
+        raise if ::System::DeployDefect.schema?(e)
+
+        # One task's refusal must not abort the sweep, and none of it may break
+        # the lifecycle transition that triggered it. The janitor still covers
+        # whatever is left behind.
+        Rails.logger.error("[NodeInstance##{id}] cancel of task #{task.id} failed: #{e.message}")
+      end
+    rescue StandardError => e
+      # A missing system_tasks table is a deploy defect, not a hiccup: six other
+      # sites in this extension re-raise it so it reads as a FAILED operation
+      # rather than a healthy one, and swallowing it here would leave this lane
+      # dead until someone grepped the log.
+      raise if ::System::DeployDefect.schema?(e)
+
+      Rails.logger.error("[NodeInstance##{id}] unrunnable-task cleanup failed: #{e.message}")
+    end
+
+    # Callbacks, not API. Rails invokes both through the callback chain, which
+    # reaches private methods; a public bang method that empties an instance's
+    # queue is a footgun on a model this widely passed around.
+    private :confirmed_termination?, :cancel_unrunnable_tasks!
 
     def stale_heartbeat?
       return true if last_heartbeat_at.nil?
