@@ -2419,7 +2419,8 @@ module Ai
             description: "List the account's ProviderConnections (id, name, provider, status, endpoint, non-secret config). Optional provider_id / status filters. Credentials are never included.",
             parameters: {
               provider_id: { type: "string", required: false, description: "Only connections of this System::Provider" },
-              status: { type: "string", required: false, description: "Only connections in this status (pending/connected/error/...)" }
+              status: { type: "string", required: false, description: "Only connections in this status (pending/connected/error/...)" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_provider_connection" => {
