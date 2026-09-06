@@ -51,8 +51,18 @@
 # recorded in §1.4.
 name: probe-ci-isolation
 
+# The ci-probe/** push trigger exists because a dispatch-only workflow is
+# unrunnable by any principal without a Gitea dispatch grant, and the platform
+# instance grant carries get/list/cancel but NOT dispatch — so the workflow
+# this design depends on could be committed and then never executed by the
+# executor that needs its verdicts. Pushing a ci-probe/<name> branch runs it.
+# The prefix fires nothing else: ci.yaml, module-validate and carve-conformance
+# are all pinned to develop/master, and every other workflow here is
+# dispatch- or tag-triggered.
 on:
   workflow_dispatch: {}
+  push:
+    branches: [ "ci-probe/**" ]
 
 permissions:
   contents: read
