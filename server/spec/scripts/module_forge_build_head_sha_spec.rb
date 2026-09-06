@@ -46,6 +46,17 @@ RSpec.describe "module-forge-build.sh head_sha build-script selection" do
 
       write_stub(stubs, "git", git_stub(workspace_has_scripts))
       write_stub(stubs, "rsync", "#!/bin/sh\nexit 0\n")
+      # uuidgen is stubbed for the same reason git/rsync/mount are: this drives
+      # the REAL script under stubbed heavy commands, and the job id it
+      # generates is not what any assertion here is about. It was missed
+      # because the dev box has uuid-runtime installed and the CI image
+      # (ghcr.io/catthehacker/ubuntu:act-24.04) does not — so these two
+      # examples passed locally and died on
+      # `required command 'uuidgen' not found on PATH` the first time CI
+      # actually reached them (run 1781, once sharding meant spec/scripts ran
+      # at all). Stubbing it makes the example hermetic rather than dependent
+      # on the image's package set.
+      write_stub(stubs, "uuidgen", "#!/bin/sh\necho 11111111-2222-3333-4444-555555555555\n")
       write_stub(stubs, "mount", "#!/bin/sh\necho \"$@\" >> \"$MOUNT_LOG\"\nexit 0\n")
       write_stub(stubs, "umount", "#!/bin/sh\nexit 0\n")
       write_stub(stubs, "chroot", chroot_stub)

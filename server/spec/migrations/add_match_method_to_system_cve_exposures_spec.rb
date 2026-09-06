@@ -19,6 +19,21 @@ require Rails.root.join(
 RSpec.describe AddMatchMethodToSystemCveExposures do
   subject(:migration) { described_class.new }
 
+  # The round-trip example below runs REAL DDL against system_cve_exposures.
+  # The example's transaction rolls the DDL back, so the schema is restored --
+  # but PostgreSQL's per-connection prepared-statement plan cache still holds
+  # plans built against the shapes seen mid-example, and the next `reload` of a
+  # CveExposure ANYWHERE in the same rspec process then raises
+  # `PG::FeatureNotSupported: cached plan must not change result type`.
+  # It stayed invisible until sharding put this file in the same process as the
+  # CVE model + orchestration specs (run 1781, shard 3: 16 failures, every one
+  # of them that error and none of them this file). after(:context) runs after
+  # the rollback, so this is the point where the cache can be dropped for good.
+  after(:context) do
+    ActiveRecord::Base.connection.clear_cache!
+    System::CveExposure.reset_column_information
+  end
+
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
   let(:category) { create(:system_node_module_category, account: account) }

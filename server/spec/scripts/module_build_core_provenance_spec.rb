@@ -489,6 +489,13 @@ RSpec.describe "module build core-source provenance" do
           exit 0
         SH
         write_stub(stubs, "rsync",  "#!/bin/sh\nexit 0\n")
+        # uuidgen is stubbed for the same reason git/rsync/mount are: this drives
+        # the REAL script under stubbed heavy commands, and the job id it mints is
+        # not what any assertion here is about. The dev box has uuid-runtime; the
+        # CI image (ghcr.io/catthehacker/ubuntu:act-24.04) does not, so these
+        # examples passed locally and died on `required command 'uuidgen' not
+        # found on PATH` the first time CI reached them (run 1781, shard 4).
+        write_stub(stubs, "uuidgen", "#!/bin/sh\necho 11111111-2222-3333-4444-555555555555\n")
         write_stub(stubs, "mount",  "#!/bin/sh\nexit 0\n")
         write_stub(stubs, "umount", "#!/bin/sh\nexit 0\n")
 
