@@ -135,7 +135,7 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
     context "when instance_size names a provider-unique type (substrate disambiguation)" do
       # Reproduces the ops2 mis-spawn: the account has TWO connectable
       # providers — local-qemu (connection created first) and proxmox. The
-      # orchestrator passes region:"dna" + instance_size:"pve.vm.medium". The
+      # orchestrator passes region:"pve1" + instance_size:"pve.vm.medium". The
       # old resolver ignored both hints (it only read :preset) and picked
       # local-qemu's region — first connectable by created_at — building a
       # nested qemu instead of a PVE sibling. The instance-type name
@@ -152,7 +152,7 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
                                              status: "connected", enabled: true)
       end
       let!(:pve_region) do
-        create(:system_provider_region, provider: pve_provider, account: account, name: "dna")
+        create(:system_provider_region, provider: pve_provider, account: account, name: "pve1")
       end
       let!(:pve_type) do
         create(:system_provider_instance_type, provider: pve_provider, account: account,
@@ -171,7 +171,7 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
 
         result = described_class.new(account: account, current_user: user).provision!(
           payload: payload,
-          spawn_target: { template_id: template.name, region: "dna", instance_size: "pve.vm.medium" }
+          spawn_target: { template_id: template.name, region: "pve1", instance_size: "pve.vm.medium" }
         )
 
         expect(result[:ok?]).to be true

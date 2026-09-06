@@ -612,7 +612,7 @@ module System
           # real cloud VM (creation succeeded but the guest never came up /
           # never heartbeated). Marking it errored without tearing down the
           # VM leaked it on the provider forever; this was the dominant
-          # cause of the ci-builder VM sprawl on dna (2026-07-21).
+          # cause of the ci-builder VM sprawl on pve1 (2026-07-21).
           counts[:terminate_failed] += 1 unless terminate_member(m, pool: pool, phase: "stale-warming")
         end
         stale_ready.lock("FOR UPDATE SKIP LOCKED").find_each do |m|

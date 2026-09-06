@@ -35,10 +35,10 @@ RSpec.describe "system_node_instance factory — provider identity", type: :mode
     end
 
     it "leaves an explicitly supplied cloud_instance_id alone" do
-      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: "dna/qemu/4242")
+      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: "pve1/qemu/4242")
 
-      expect(instance.cloud_instance_id).to eq("dna/qemu/4242")
-      expect(instance.reload.config["cloud_instance_id"]).to eq("dna/qemu/4242")
+      expect(instance.cloud_instance_id).to eq("pve1/qemu/4242")
+      expect(instance.reload.config["cloud_instance_id"]).to eq("pve1/qemu/4242")
     end
 
     it "leaves an id supplied through an explicit config hash alone" do

@@ -1048,7 +1048,7 @@ RSpec.describe System::ProvisioningService do
     end
 
     it "rejects when the resolved storage cannot be verified as local (fails closed under strict mode)" do
-      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "dsm-data" })
+      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "nas1-data" })
       # A plain (non-verifying) double with no list_volume_types defined at
       # all — respond_to?(:list_volume_types) is naturally false, exercising
       # StorageLocalityCheck's "adapter doesn't support the query" branch
@@ -1061,15 +1061,15 @@ RSpec.describe System::ProvisioningService do
       expect(result.success?).to be(false)
       expect(result.error).to match(/could not verify/)
       expect(result.data[:invariant]).to eq("INV-6")
-      expect(result.data[:storage_name]).to eq("dsm-data")
+      expect(result.data[:storage_name]).to eq("nas1-data")
       expect(result.data[:verified]).to be(false)
       expect(System::NodeInstance.where(node: node)).to be_empty
     end
 
     it "allows provisioning once storage is confirmed local via a live list_volume_types answer" do
-      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "dna-data" })
+      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "pve1-data" })
       allow(proxmox_adapter).to receive(:list_volume_types).and_return([
-        { cloud_id: "dna-data", name: "dna-data", plugin_type: "zfspool", shared: false }
+        { cloud_id: "pve1-data", name: "pve1-data", plugin_type: "zfspool", shared: false }
       ])
       allow(proxmox_adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
 
@@ -1096,7 +1096,7 @@ RSpec.describe System::ProvisioningService do
     # `not_to receive(:network_backed_storage?)` expectation below could not
     # fail even if the guard stopped running first.
     let(:proxmox_connection) do
-      instance_double("System::ProviderConnection", config: { "default_storage" => "dsm-data" }, provider: nil)
+      instance_double("System::ProviderConnection", config: { "default_storage" => "nas1-data" }, provider: nil)
     end
     let(:proxmox_adapter) do
       instance_double("System::Providers::ProxmoxProvider",

@@ -97,7 +97,7 @@ jobs:
     # The addressing design below (host ports + 172.17.0.1) is correct and its
     # alternatives are already ruled out in the comment that follows — but it
     # assumes ONE runner, as the ci-hygiene job says outright ("true for
-    # single-runner act-runner deployments"). The fna host now runs THREE.
+    # single-runner act-runner deployments"). The pve3 host now runs THREE.
     # This matrix alone fans out four entries that each want 0.0.0.0:5432, so
     # two or more collide on every run and die before a single spec executes:
     #
@@ -176,7 +176,7 @@ jobs:
     #
     # Port-collision risk: cancelled jobs leak sidecar containers that
     # keep the host port bound. Manually mitigated 2026-05-24 by
-    # `docker rm -f` of orphan GITEA-ACTIONS-TASK containers on fna.
+    # `docker rm -f` of orphan GITEA-ACTIONS-TASK containers on pve3.
     # Runner-level systemd ExecStartPre hook is the proper fix (task
     # #76); workflow-level changes can't reach that.
     services:

@@ -289,7 +289,7 @@ RSpec.describe System::InstancePoolService, type: :service do
 
       # Pool members are ephemeral by definition; ProxmoxProvider defaults
       # new VMs to protection=1 (meant for durable instances) unless told
-      # otherwise. Regression for the dna orphan-VM cleanup (2026-07-21).
+      # otherwise. Regression for the pve1 orphan-VM cleanup (2026-07-21).
       it "provisions members with protection disabled" do
         described_class.replenish!(pool: pool)
         expect(::System::ProvisioningService).to have_received(:provision_instance)
@@ -512,14 +512,14 @@ RSpec.describe System::InstancePoolService, type: :service do
       expect(m.reload.pool_state).to eq("errored")
     end
 
-    # Regression for the ci-builder VM sprawl on dna (2026-07-21): a member
+    # Regression for the ci-builder VM sprawl on pve1 (2026-07-21): a member
     # stuck past warming_timeout was only marked errored in the DB — its
     # cloud VM (if creation actually succeeded but the guest never
     # heartbeated) was never terminated, leaking it on the provider
     # indefinitely. Mirrors the stale_ready coverage below.
     it "terminates the cloud VM for a member stuck past warming_timeout" do
       m = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
-      m.update!(config: { "cloud_instance_id" => "dna/qemu/999" })
+      m.update!(config: { "cloud_instance_id" => "pve1/qemu/999" })
       allow(::System::ProvisioningService).to receive(:terminate_instance)
 
       result = described_class.recycle_stale_members!(pool: pool)
@@ -531,9 +531,9 @@ RSpec.describe System::InstancePoolService, type: :service do
 
     it "logs + continues when terminate_instance raises for a stuck warming member, without blocking the others" do
       m1 = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
-      m1.update!(config: { "cloud_instance_id" => "dna/qemu/998" })
+      m1.update!(config: { "cloud_instance_id" => "pve1/qemu/998" })
       m2 = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
-      m2.update!(config: { "cloud_instance_id" => "dna/qemu/997" })
+      m2.update!(config: { "cloud_instance_id" => "pve1/qemu/997" })
       allow(::System::ProvisioningService).to receive(:terminate_instance)
         .with(instance: m1).and_raise(StandardError, "PVE unreachable")
       allow(::System::ProvisioningService).to receive(:terminate_instance).with(instance: m2)
@@ -795,7 +795,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       # backfilled one afterwards. `cloud_instance_id: nil` means "the
       # provider never created a VM for this member" and the factory honours
       # it, so this seeds the identity-less shape directly.
-      def seed_errored_member(cloud_instance_id: "dna/qemu/#{SecureRandom.hex(3)}", config_extra: {})
+      def seed_errored_member(cloud_instance_id: "pve1/qemu/#{SecureRandom.hex(3)}", config_extra: {})
         m = seed_pool_member(state: "errored", cloud_instance_id: cloud_instance_id)
         m.update!(config: m.config.merge(config_extra)) if config_extra.any?
         m
@@ -979,7 +979,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       # the same pass would double the provider calls.
       it "leaves a member errored by this same tick's warming phase for the next tick" do
         m = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
-        m.update!(config: m.config.merge("cloud_instance_id" => "dna/qemu/555"))
+        m.update!(config: m.config.merge("cloud_instance_id" => "pve1/qemu/555"))
         allow(::System::ProvisioningService).to receive(:terminate_instance)
           .and_return(::System::Runtime::Result.ok)
 
@@ -1021,7 +1021,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     def seed_warming_with_cloud_id(warming_started_at:, last_heartbeat_at: nil, config_extra: {})
       m = seed_pool_member(state: "warming", warming_started_at: warming_started_at,
                            last_heartbeat_at: last_heartbeat_at)
-      m.update!(config: m.config.merge({ "cloud_instance_id" => "dna/qemu/#{SecureRandom.hex(3)}" }.merge(config_extra)))
+      m.update!(config: m.config.merge({ "cloud_instance_id" => "pve1/qemu/#{SecureRandom.hex(3)}" }.merge(config_extra)))
       m
     end
 

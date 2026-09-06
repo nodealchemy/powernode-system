@@ -19,7 +19,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       provider: proxmox_provider
     )
   end
-  let(:region) { instance_double("System::ProviderRegion", region_code: "dna") }
+  let(:region) { instance_double("System::ProviderRegion", region_code: "pve1") }
   let(:client) { instance_double(System::Providers::Proxmox::Client) }
 
   subject(:provider) { described_class.new(connection, region: region) }
@@ -28,12 +28,12 @@ RSpec.describe System::Providers::ProxmoxProvider do
     allow(System::Providers::Proxmox::Client).to receive(:new).and_return(client)
     # The create paths now ask PVE what a storage actually is before hardcoding
     # a disk format or an import target — a qcow2 cannot exist on a zvol, and
-    # `import` is a content type block-backed storages cannot carry. dna-data is
+    # `import` is a content type block-backed storages cannot carry. pve1-data is
     # NFS (file-backed, carries import), which is what every expectation in this
     # file was written against, so this default keeps them asserting the same
     # bytes. Contexts that need a different storage shape override it locally.
     allow(client).to receive(:get).with(%r{\A/api2/json/nodes/[^/]+/storage\z}).and_return(
-      [ { "storage" => "dna-data", "type" => "nfs", "active" => 1, "shared" => 1,
+      [ { "storage" => "pve1-data", "type" => "nfs", "active" => 1, "shared" => 1,
           "content" => "import,rootdir,vztmpl,iso,images,snippets" } ]
     )
   end
@@ -53,23 +53,23 @@ RSpec.describe System::Providers::ProxmoxProvider do
   # waits on a shutdown that never lands. reboot_instance now issues a bounded
   # graceful reboot and, on timeout/failure, falls back to a force stop+start.
   describe "#reboot_instance" do
-    let(:reboot_url) { "/api2/json/nodes/dna/qemu/200/status/reboot" }
-    let(:stop_url)   { "/api2/json/nodes/dna/qemu/200/status/stop" }
-    let(:start_url)  { "/api2/json/nodes/dna/qemu/200/status/start" }
+    let(:reboot_url) { "/api2/json/nodes/pve1/qemu/200/status/reboot" }
+    let(:stop_url)   { "/api2/json/nodes/pve1/qemu/200/status/stop" }
+    let(:start_url)  { "/api2/json/nodes/pve1/qemu/200/status/start" }
     let(:ok_task)    { { "status" => "stopped", "exitstatus" => "OK" } }
 
     before do
       allow(client).to receive(:get)
-        .with("/api2/json/nodes/dna/qemu/200/status/current")
+        .with("/api2/json/nodes/pve1/qemu/200/status/current")
         .and_return({ "status" => "running", "name" => "vm-200" })
     end
 
     it "issues a bounded graceful reboot and does NOT force stop+start when it succeeds" do
       allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
       allow(client).to receive(:wait_task)
-        .with(node: "dna", upid: "UPID:reboot", timeout: anything).and_return(ok_task)
+        .with(node: "pve1", upid: "UPID:reboot", timeout: anything).and_return(ok_task)
 
-      result = provider.reboot_instance("dna/qemu/200")
+      result = provider.reboot_instance("pve1/qemu/200")
 
       expect(client).to have_received(:post).with(reboot_url, hash_including("timeout"))
       expect(client).not_to have_received(:post).with(stop_url)
@@ -80,14 +80,14 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
     it "falls back to force stop+start when the graceful reboot TIMES OUT (minimal guest)" do
       allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:reboot", timeout: anything)
         .and_raise(System::Providers::Proxmox::Client::TaskTimeoutError, "timed out waiting for reboot")
       allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
       allow(client).to receive(:post).with(start_url).and_return("UPID:start")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything).and_return(ok_task)
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:stop", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:start", timeout: anything).and_return(ok_task)
 
-      result = provider.reboot_instance("dna/qemu/200")
+      result = provider.reboot_instance("pve1/qemu/200")
 
       expect(client).to have_received(:post).with(stop_url)
       expect(client).to have_received(:post).with(start_url)
@@ -97,14 +97,14 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
     it "falls back to force stop+start when the graceful reboot TASK FAILS" do
       allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:reboot", timeout: anything)
         .and_raise(System::Providers::Proxmox::Client::TaskFailedError.new("reboot failed", exit_status: "timeout"))
       allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
       allow(client).to receive(:post).with(start_url).and_return("UPID:start")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything).and_return(ok_task)
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:stop", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:start", timeout: anything).and_return(ok_task)
 
-      result = provider.reboot_instance("dna/qemu/200")
+      result = provider.reboot_instance("pve1/qemu/200")
 
       expect(client).to have_received(:post).with(stop_url)
       expect(client).to have_received(:post).with(start_url)
@@ -113,15 +113,15 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
     it "still starts the VM when the force-stop errors because the guest is already down" do
       allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:reboot", timeout: anything)
         .and_raise(System::Providers::Proxmox::Client::TaskTimeoutError, "timed out")
       allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:stop", timeout: anything)
         .and_raise(System::Providers::Proxmox::Client::TaskFailedError.new("VM is not running", exit_status: "err"))
       allow(client).to receive(:post).with(start_url).and_return("UPID:start")
-      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "pve1", upid: "UPID:start", timeout: anything).and_return(ok_task)
 
-      result = provider.reboot_instance("dna/qemu/200")
+      result = provider.reboot_instance("pve1/qemu/200")
 
       expect(client).to have_received(:post).with(start_url)
       expect(result[:success]).to be true
@@ -190,14 +190,14 @@ RSpec.describe System::Providers::ProxmoxProvider do
         "version" => "9.1.5", "release" => "9.1"
       )
       allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-        [ { "node" => "dna", "status" => "online" }, { "node" => "rna", "status" => "online" } ]
+        [ { "node" => "pve1", "status" => "online" }, { "node" => "pve2", "status" => "online" } ]
       )
 
       result = provider.test_connection
       expect(result[:success]).to be true
       expect(result[:pve_version]).to eq("9.1.5")
       expect(result[:node_count]).to eq(2)
-      expect(result[:nodes].map { |n| n[:name] }).to contain_exactly("dna", "rna")
+      expect(result[:nodes].map { |n| n[:name] }).to contain_exactly("pve1", "pve2")
     end
 
     it "returns a failure payload on transport errors" do
@@ -216,25 +216,25 @@ RSpec.describe System::Providers::ProxmoxProvider do
   # cloud_init/direct_kernel/lxc fell back straight to "first online node" —
   # arbitrary placement on a multi-node cluster. And a storage chosen
   # explicitly (or via operator default_storage) was never validated against
-  # the TARGET node, so an rna placement with dna-scoped storage failed deep
+  # the TARGET node, so an pve2 placement with pve1-scoped storage failed deep
   # inside PVE instead of loudly at the adapter contract.
   describe "placement (IMP-14bc7e5b85f5)" do
-    let(:region) { instance_double("System::ProviderRegion", region_code: "rna") }
+    let(:region) { instance_double("System::ProviderRegion", region_code: "pve2") }
     let(:params) do
-      { name: "rna-vm", instance_type: "pve.vm.small",
-        image_id: "rna-data:import/noble.qcow2", storage: "rna-data",
+      { name: "pve2-vm", instance_type: "pve.vm.small",
+        image_id: "pve2-data:import/noble.qcow2", storage: "pve2-data",
         ssh_keys: [], start: false }
     end
 
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("300")
-      allow(client).to receive(:get).with("/api2/json/nodes/rna/storage").and_return(
-        [ { "storage" => "rna-data", "type" => "nfs", "active" => 1, "shared" => 0,
+      allow(client).to receive(:get).with("/api2/json/nodes/pve2/storage").and_return(
+        [ { "storage" => "pve2-data", "type" => "nfs", "active" => 1, "shared" => 0,
             "content" => "import,rootdir,iso,images,snippets" } ]
       )
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/rna/qemu", anything)
-        .and_return("UPID:rna:001:001:001:qmcreate:300:user!tok:")
+        .with("/api2/json/nodes/pve2/qemu", anything)
+        .and_return("UPID:pve2:001:001:001:qmcreate:300:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
     end
@@ -243,14 +243,14 @@ RSpec.describe System::Providers::ProxmoxProvider do
       result = provider.create_instance(params)
 
       expect(result[:success]).to be true
-      expect(result[:cloud_instance_id]).to eq("rna/qemu/300")
-      expect(client).to have_received(:post).with("/api2/json/nodes/rna/qemu", anything)
+      expect(result[:cloud_instance_id]).to eq("pve2/qemu/300")
+      expect(client).to have_received(:post).with("/api2/json/nodes/pve2/qemu", anything)
     end
 
     it "fails loud when the chosen storage is not present on the target node" do
       expect {
-        provider.create_instance(params.merge(storage: "dna-data"))
-      }.to raise_error(System::Providers::BaseProvider::ProviderError, /dna-data.*rna/)
+        provider.create_instance(params.merge(storage: "pve1-data"))
+      }.to raise_error(System::Providers::BaseProvider::ProviderError, /pve1-data.*pve2/)
     end
   end
 
@@ -259,9 +259,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
       {
         name: "test-vm",
         instance_type: "pve.vm.small",
-        image_id: "dna-data:import/noble.qcow2",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/noble.qcow2",
+        node: "pve1",
+        storage: "pve1-data",
         ssh_keys: [ "ssh-ed25519 AAAA test@example" ],
         # start: false keeps the spec scoped to the create+config flow.
         # The auto-start default is covered separately by #start_instance
@@ -274,32 +274,32 @@ RSpec.describe System::Providers::ProxmoxProvider do
       # PVE returns nextid as a string; the adapter converts to Integer before posting.
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("100")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu", hash_including("vmid" => 100, "name" => "test-vm"))
-        .and_return("UPID:dna:001:001:001:qmcreate:100:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu", hash_including("vmid" => 100, "name" => "test-vm"))
+        .and_return("UPID:pve1:001:001:001:qmcreate:100:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put)
-        .with("/api2/json/nodes/dna/qemu/100/resize", hash_including("disk" => "scsi0", "size" => "20G"))
+        .with("/api2/json/nodes/pve1/qemu/100/resize", hash_including("disk" => "scsi0", "size" => "20G"))
         .and_return(nil)
       allow(client).to receive(:put)
-        .with("/api2/json/nodes/dna/qemu/100/config", hash_including("sshkeys"))
+        .with("/api2/json/nodes/pve1/qemu/100/config", hash_including("sshkeys"))
         .and_return(nil)
       allow(client).to receive(:put)
-        .with("/api2/json/nodes/dna/qemu/100/config", hash_including("protection" => 1))
+        .with("/api2/json/nodes/pve1/qemu/100/config", hash_including("protection" => 1))
         .and_return(nil)
     end
 
     it "returns a successful instance response with the composite cloud_id" do
       result = provider.create_instance(params)
       expect(result[:success]).to be true
-      expect(result[:cloud_instance_id]).to eq("dna/qemu/100")
+      expect(result[:cloud_instance_id]).to eq("pve1/qemu/100")
     end
 
     it "sends import-from with size=0 in the scsi0 spec (PVE quirk)" do
       provider.create_instance(params)
       expect(client).to have_received(:post).with(
-        "/api2/json/nodes/dna/qemu",
+        "/api2/json/nodes/pve1/qemu",
         hash_including(
-          "scsi0" => match(/dna-data:0,import-from=dna-data:import\/noble\.qcow2/)
+          "scsi0" => match(/pve1-data:0,import-from=pve1-data:import\/noble\.qcow2/)
         )
       )
     end
@@ -307,7 +307,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "creates the efidisk as qcow2 (PVE quirk: required for snapshots)" do
       provider.create_instance(params)
       expect(client).to have_received(:post).with(
-        "/api2/json/nodes/dna/qemu",
+        "/api2/json/nodes/pve1/qemu",
         hash_including("efidisk0" => a_string_including("format=qcow2"))
       )
     end
@@ -315,7 +315,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "URL-encodes the sshkeys when setting them via config PUT" do
       provider.create_instance(params)
       expect(client).to have_received(:put).with(
-        "/api2/json/nodes/dna/qemu/100/config",
+        "/api2/json/nodes/pve1/qemu/100/config",
         hash_including("sshkeys" => match(/ssh-ed25519[%+]/))
       )
     end
@@ -323,42 +323,42 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "auto-starts the VM by default (Federation::SpawnProvisioner relies on this)" do
       # Mock the start POST that the auto-start path will fire (no body).
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu/100/status/start")
-        .and_return("UPID:dna:001:001:001:qmstart:100:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu/100/status/start")
+        .and_return("UPID:pve1:001:001:001:qmstart:100:user!tok:")
       # And the status GET that start_instance does to build the response.
       allow(client).to receive(:get)
-        .with("/api2/json/nodes/dna/qemu/100/status/current")
+        .with("/api2/json/nodes/pve1/qemu/100/status/current")
         .and_return({ "status" => "running", "name" => "test-vm" })
 
       result = provider.create_instance(params.except(:start))
       expect(result[:success]).to be true
       expect(client).to have_received(:post).with(
-        "/api2/json/nodes/dna/qemu/100/status/start"
+        "/api2/json/nodes/pve1/qemu/100/status/start"
       )
     end
   end
 
   describe "#apply_protection! (options override)" do
-    let(:cfg_path) { "/api2/json/nodes/dna/qemu/100/config" }
+    let(:cfg_path) { "/api2/json/nodes/pve1/qemu/100/config" }
 
     it "protects by default when no flag is given (durable VMs)" do
       expect(client).to receive(:put).with(cfg_path, { "protection" => 1 })
-      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: {})
+      provider.send(:apply_protection!, client, node: "pve1", vmid: 100, params: {})
     end
 
     it "skips protection when opted out via nested options (the MCP path)" do
       expect(client).not_to receive(:put)
-      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { options: { protection: false } })
+      provider.send(:apply_protection!, client, node: "pve1", vmid: 100, params: { options: { protection: false } })
     end
 
     it "skips protection when opted out top-level" do
       expect(client).not_to receive(:put)
-      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { protection: false })
+      provider.send(:apply_protection!, client, node: "pve1", vmid: 100, params: { protection: false })
     end
 
     it "still protects when options explicitly request it" do
       expect(client).to receive(:put).with(cfg_path, { "protection" => 1 })
-      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { options: { protection: true } })
+      provider.send(:apply_protection!, client, node: "pve1", vmid: 100, params: { options: { protection: true } })
     end
   end
 
@@ -371,8 +371,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
         name: "uefi-vm",
         instance_type: "pve.vm.small",
         boot_mode: "uefi_disk",
-        node: "dna",
-        storage: "dna-data",
+        node: "pve1",
+        storage: "pve1-data",
         start: false
       }
     end
@@ -380,27 +380,27 @@ RSpec.describe System::Providers::ProxmoxProvider do
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("200")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu", anything)
-        .and_return("UPID:dna:001:001:001:qmcreate:200:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu", anything)
+        .and_return("UPID:pve1:001:001:001:qmcreate:200:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
     end
 
     context "with an explicit params[:image_id] (already-imported PVE volid)" do
-      let(:params) { base_params.merge(image_id: "dna-data:import/uefi-uki.img") }
+      let(:params) { base_params.merge(image_id: "pve1-data:import/uefi-uki.img") }
 
       it "skips disk import and creates the VM with bios=ovmf + the given volid" do
         result = provider.create_instance(params)
         expect(result[:success]).to be true
 
         expect(client).not_to have_received(:post).with(
-          "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+          "/api2/json/nodes/pve1/storage/pve1-data/download-url", anything
         )
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including(
             "bios"  => "ovmf",
-            "scsi0" => a_string_including("import-from=dna-data:import/uefi-uki.img")
+            "scsi0" => a_string_including("import-from=pve1-data:import/uefi-uki.img")
           )
         )
       end
@@ -408,7 +408,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       it "never sets the `args` config key — no fw-cfg escape hatch, no root@pam requirement" do
         provider.create_instance(params)
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_excluding("args")
         )
       end
@@ -416,7 +416,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       it "defaults vga to serial0 — no getty@tty1 recovery path exists for these minimal pivot-boot images, so diagnosis depends on capturing everything (including pre-kernel firmware output) via the serial0 socket" do
         provider.create_instance(params)
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including("vga" => "serial0", "serial0" => "socket")
         )
       end
@@ -424,7 +424,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       it "still honors an explicit params[:vga] override" do
         provider.create_instance(params.merge(vga: "std"))
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including("vga" => "std")
         )
       end
@@ -437,13 +437,13 @@ RSpec.describe System::Providers::ProxmoxProvider do
     # is that power cycle.
     describe "#reload_cloudinit_seed! (cloud-init seed power cycle)" do
       it "issues a full stop+start (never a graceful reboot) so PVE reloads the CIDATA seed" do
-        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/stop").and_return("UPID:stop")
-        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/start").and_return("UPID:start")
+        allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop").and_return("UPID:stop")
+        allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/start").and_return("UPID:start")
 
-        provider.send(:reload_cloudinit_seed!, client, node: "dna", kind: "qemu", vmid: 200)
+        provider.send(:reload_cloudinit_seed!, client, node: "pve1", kind: "qemu", vmid: 200)
 
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/start")
         expect(client).not_to have_received(:post).with(a_string_matching(%r{status/reboot}))
       end
     end
@@ -454,33 +454,33 @@ RSpec.describe System::Providers::ProxmoxProvider do
     # reload_cloudinit_seed! internally, same as the removed inline call did.
     describe "#power_cycle_instance" do
       it "parses the instance_id, reuses reload_cloudinit_seed! (stop+start), and returns synced status" do
-        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/stop").and_return("UPID:stop")
-        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/start").and_return("UPID:start")
+        allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop").and_return("UPID:stop")
+        allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/start").and_return("UPID:start")
         allow(client).to receive(:get)
-          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .with("/api2/json/nodes/pve1/qemu/200/status/current")
           .and_return({ "status" => "running", "name" => "uefi-vm" })
 
-        result = provider.power_cycle_instance("dna/qemu/200")
+        result = provider.power_cycle_instance("pve1/qemu/200")
 
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/start")
         expect(result[:success]).to be true
         expect(result[:status]).to eq("running")
       end
 
       it "returns an error response on a PVE transport failure" do
         allow(client).to receive(:post)
-          .with("/api2/json/nodes/dna/qemu/200/status/stop")
+          .with("/api2/json/nodes/pve1/qemu/200/status/stop")
           .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
         # reload_cloudinit_seed! swallows Client::Error internally (best-effort,
         # logs a warning) — power_cycle_instance still proceeds to sync_status,
         # which is stubbed here to succeed so this spec isolates the
         # transport-failure path at the sync_status layer instead.
         allow(client).to receive(:get)
-          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .with("/api2/json/nodes/pve1/qemu/200/status/current")
           .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
 
-        result = provider.power_cycle_instance("dna/qemu/200")
+        result = provider.power_cycle_instance("pve1/qemu/200")
         expect(result[:success]).to be false
         expect(result[:error]).to include("connection refused")
       end
@@ -498,17 +498,17 @@ RSpec.describe System::Providers::ProxmoxProvider do
     context "when the VM auto-starts (default) with a cicustom user_data payload — no self-triggered power cycle" do
       let(:params) do
         base_params.except(:start).merge(
-          image_id: "dna-data:import/uefi-uki.raw",
+          image_id: "pve1-data:import/uefi-uki.raw",
           user_data: "ID=fake-instance\nKEY=plaintext-token\n"
         )
       end
 
       before do
         allow(client).to receive(:post)
-          .with("/api2/json/nodes/dna/qemu/200/status/start")
-          .and_return("UPID:dna:001:001:001:qmstart:200:user!tok:")
+          .with("/api2/json/nodes/pve1/qemu/200/status/start")
+          .and_return("UPID:pve1:001:001:001:qmstart:200:user!tok:")
         allow(client).to receive(:get)
-          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .with("/api2/json/nodes/pve1/qemu/200/status/current")
           .and_return({ "status" => "running", "name" => "uefi-vm" })
         allow(File).to receive(:directory?).and_return(true)
         allow(File).to receive(:writable?).and_return(true)
@@ -519,8 +519,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
         result = provider.create_instance(params)
         expect(result[:success]).to be true
 
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start").once
-        expect(client).not_to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/start").once
+        expect(client).not_to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop")
         expect(client).not_to have_received(:post).with(a_string_matching(%r{status/stop}))
       end
     end
@@ -529,7 +529,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       # The uefi_disk path imports the boot image into `storage` — that storage
       # must support `import` content, which an `images`-only auto-pick can miss.
       # Honoring the provider's default_storage avoids landing on the wrong pool.
-      let(:proxmox_provider) { instance_double("System::Provider", config: { "default_storage" => "dna-data" }) }
+      let(:proxmox_provider) { instance_double("System::Provider", config: { "default_storage" => "pve1-data" }) }
       let(:connection) do
         instance_double("System::ProviderConnection",
           access_key: "root@pam!powernode",
@@ -539,7 +539,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
           account: nil,
           provider: proxmox_provider)
       end
-      let(:params) { base_params.except(:storage).merge(image_id: "dna-data:import/uefi-uki.raw") }
+      let(:params) { base_params.except(:storage).merge(image_id: "pve1-data:import/uefi-uki.raw") }
 
       before { allow(System::ProviderCredential).to receive(:for).and_return(nil) }
 
@@ -557,27 +557,27 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
         expect(provider).not_to have_received(:first_shared_storage_with_content!)
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
-          hash_including("scsi0" => a_string_including("dna-data:0,import-from=dna-data:import/uefi-uki.raw"))
+          "/api2/json/nodes/pve1/qemu",
+          hash_including("scsi0" => a_string_including("pve1-data:0,import-from=pve1-data:import/uefi-uki.raw"))
         )
       end
     end
 
     context "when params[:node] isn't a PVE node string, places on the region node (not first-online)" do
-      # region.region_code is "dna" (a 16-core node); first-online could be a
+      # region.region_code is "pve1" (a 16-core node); first-online could be a
       # smaller node, which is where an 8-vcpu VM would fail to start.
-      let(:params) { base_params.except(:node).merge(image_id: "dna-data:import/uefi-uki.raw") }
+      let(:params) { base_params.except(:node).merge(image_id: "pve1-data:import/uefi-uki.raw") }
 
       before do
         allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-          [ { "node" => "lna", "status" => "online" }, { "node" => "dna", "status" => "online" } ]
+          [ { "node" => "pve4", "status" => "online" }, { "node" => "pve1", "status" => "online" } ]
         )
       end
 
-      it "creates the VM on the region node (dna), not the first-online node (lna)" do
+      it "creates the VM on the region node (pve1), not the first-online node (pve4)" do
         provider.create_instance(params)
-        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu", anything)
-        expect(client).not_to have_received(:post).with("/api2/json/nodes/lna/qemu", anything)
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu", anything)
+        expect(client).not_to have_received(:post).with("/api2/json/nodes/pve4/qemu", anything)
       end
     end
 
@@ -595,13 +595,13 @@ RSpec.describe System::Providers::ProxmoxProvider do
       let(:file_object) { instance_double("FileManagement::Object") }
       let(:storage_service) { instance_double(FileStorageService) }
       let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.raw" }
-      let(:expected_volid) { "dna-data:import/#{expected_filename}" }
+      let(:expected_volid) { "pve1-data:import/#{expected_filename}" }
 
       before do
         # params[:node] is the System::Node AR record here (not a string), so
         # pve_node_name filters it out and the cluster-picker fallback fires.
         allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-          [ { "node" => "dna", "status" => "online" } ]
+          [ { "node" => "pve1", "status" => "online" } ]
         )
         allow(::FileManagement::Object).to receive(:find_by).with(id: node_platform.disk_image_file_object_id)
                                                             .and_return(file_object)
@@ -613,10 +613,10 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
       context "when the volid isn't already imported on the target storage" do
         before do
-          allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return([])
+          allow(client).to receive(:get).with("/api2/json/nodes/pve1/storage/pve1-data/content").and_return([])
           allow(client).to receive(:post)
-            .with("/api2/json/nodes/dna/storage/dna-data/download-url", anything)
-            .and_return("UPID:dna:001:001:001:imgdl:200:user!tok:")
+            .with("/api2/json/nodes/pve1/storage/pve1-data/download-url", anything)
+            .and_return("UPID:pve1:001:001:001:imgdl:200:user!tok:")
         end
 
         it "imports the disk image via the PVE storage download-url task, then creates the VM" do
@@ -624,7 +624,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
           expect(result[:success]).to be true
 
           expect(client).to have_received(:post).with(
-            "/api2/json/nodes/dna/storage/dna-data/download-url",
+            "/api2/json/nodes/pve1/storage/pve1-data/download-url",
             hash_including(
               "content"  => "import",
               "filename" => expected_filename,
@@ -634,7 +634,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
             )
           )
           expect(client).to have_received(:post).with(
-            "/api2/json/nodes/dna/qemu",
+            "/api2/json/nodes/pve1/qemu",
             hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
           )
         end
@@ -642,7 +642,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
       context "when the volid is already imported (idempotent re-provision)" do
         before do
-          allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return(
+          allow(client).to receive(:get).with("/api2/json/nodes/pve1/storage/pve1-data/content").and_return(
             [ { "volid" => expected_volid } ]
           )
         end
@@ -650,10 +650,10 @@ RSpec.describe System::Providers::ProxmoxProvider do
         it "skips the download-url import and reuses the existing volid" do
           provider.create_instance(params)
           expect(client).not_to have_received(:post).with(
-            "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+            "/api2/json/nodes/pve1/storage/pve1-data/download-url", anything
           )
           expect(client).to have_received(:post).with(
-            "/api2/json/nodes/dna/qemu",
+            "/api2/json/nodes/pve1/qemu",
             hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
           )
         end
@@ -679,13 +679,13 @@ RSpec.describe System::Providers::ProxmoxProvider do
       let(:file_object) { instance_double("FileManagement::Object") }
       let(:storage_service) { instance_double(FileStorageService) }
       let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.raw" }
-      let(:expected_volid) { "dna-data:import/#{expected_filename}" }
+      let(:expected_volid) { "pve1-data:import/#{expected_filename}" }
 
       before do
         allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-          [ { "node" => "dna", "status" => "online" } ]
+          [ { "node" => "pve1", "status" => "online" } ]
         )
-        allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return([])
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/storage/pve1-data/content").and_return([])
         allow(::FileManagement::Object).to receive(:find_by).with(id: node_platform.disk_image_file_object_id)
                                                             .and_return(file_object)
         allow(FileStorageService).to receive(:new).with(node_platform.account).and_return(storage_service)
@@ -694,7 +694,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
           .and_return("/api/v1/files/0199aaaa-0000-7000-8000-000000000000/download")
         allow(storage_service).to receive(:stream_file).with(file_object).and_yield("uki-bytes")
         allow(client).to receive(:upload_file)
-          .and_return("UPID:dna:001:001:001:imgcopy:200:user!tok:")
+          .and_return("UPID:pve1:001:001:001:imgcopy:200:user!tok:")
       end
 
       it "streams the local bytes into PVE's multipart upload (content=import) instead of download-url, then creates the VM" do
@@ -702,11 +702,11 @@ RSpec.describe System::Providers::ProxmoxProvider do
         expect(result[:success]).to be true
 
         expect(client).not_to have_received(:post).with(
-          "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+          "/api2/json/nodes/pve1/storage/pve1-data/download-url", anything
         )
         expect(client).to have_received(:upload_file).with(
-          node: "dna",
-          storage: "dna-data",
+          node: "pve1",
+          storage: "pve1-data",
           filename: expected_filename,
           io: anything,
           content: "import",
@@ -714,7 +714,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
           checksum_algorithm: "sha256"
         )
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
         )
       end
@@ -730,7 +730,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         # string) runs before image resolution — same ordering as the
         # cloud_init path's `params.fetch(:image_id)`.
         allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-          [ { "node" => "dna", "status" => "online" } ]
+          [ { "node" => "pve1", "status" => "online" } ]
         )
       end
 
@@ -786,9 +786,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
           name: "uefi-fed-vm",
           instance_type: "pve.vm.small",
           boot_mode: "uefi_disk",
-          image_id: "dna-data:import/uefi-uki.raw",
-          node: "dna",
-          storage: "dna-data",
+          image_id: "pve1-data:import/uefi-uki.raw",
+          node: "pve1",
+          storage: "pve1-data",
           start: false,
           options: { spawn_payload: spawn_payload }
         }
@@ -797,8 +797,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
       before do
         allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("200")
         allow(client).to receive(:post)
-          .with("/api2/json/nodes/dna/qemu", anything)
-          .and_return("UPID:dna:001:001:001:qmcreate:200:user!tok:")
+          .with("/api2/json/nodes/pve1/qemu", anything)
+          .and_return("UPID:pve1:001:001:001:qmcreate:200:user!tok:")
       end
 
       it "delivers the cicustom user-data as the RAW spawn_payload JSON (no #cloud-config wrapper)" do
@@ -824,11 +824,11 @@ RSpec.describe System::Providers::ProxmoxProvider do
       it "still never sets the `args` config key (no fw-cfg escape hatch)" do
         provider.create_instance(params)
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("args")
         )
       end
 
-      # Regression for the 2026-07-21 dna outage: a manually-mounted NFS
+      # Regression for the 2026-07-21 pve1 outage: a manually-mounted NFS
       # snippets export that didn't survive a host reboot caused a raw
       # Errno::ENOENT on File.write, misreported by ProvisioningService as a
       # generic "Provisioning failed" with no indication it was a missing
@@ -862,9 +862,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         {
           name: "cloud-fed-vm",
           instance_type: "pve.vm.small",
-          image_id: "dna-data:import/noble.qcow2",
-          node: "dna",
-          storage: "dna-data",
+          image_id: "pve1-data:import/noble.qcow2",
+          node: "pve1",
+          storage: "pve1-data",
           start: false,
           options: { spawn_payload: spawn_payload }
         }
@@ -873,8 +873,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
       before do
         allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("300")
         allow(client).to receive(:post)
-          .with("/api2/json/nodes/dna/qemu", anything)
-          .and_return("UPID:dna:001:001:001:qmcreate:300:user!tok:")
+          .with("/api2/json/nodes/pve1/qemu", anything)
+          .and_return("UPID:pve1:001:001:001:qmcreate:300:user!tok:")
       end
 
       it "still renders the full #cloud-config, byte-identical to CloudSeed.render" do
@@ -898,9 +898,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
       params = {
         name: "bad-boot-mode-vm",
         instance_type: "pve.vm.small",
-        image_id: "dna-data:import/noble.qcow2",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/noble.qcow2",
+        node: "pve1",
+        storage: "pve1-data",
         boot_mode: "not-a-real-mode"
       }
 
@@ -921,9 +921,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
       {
         name: "fed-vm",
         instance_type: "pve.vm.small",
-        image_id: "dna-data:import/noble.qcow2",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/noble.qcow2",
+        node: "pve1",
+        storage: "pve1-data",
         start: false,
         options: {
           spawn_payload: {
@@ -952,8 +952,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("100")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu", hash_including("vmid" => 100, "name" => "fed-vm"))
-        .and_return("UPID:dna:001:001:001:qmcreate:100:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu", hash_including("vmid" => 100, "name" => "fed-vm"))
+        .and_return("UPID:pve1:001:001:001:qmcreate:100:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
 
@@ -1016,9 +1016,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         name: "uefi-pool-vm",
         instance_type: "pve.vm.small",
         boot_mode: "uefi_disk",
-        image_id: "dna-data:import/uefi-uki.raw",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/uefi-uki.raw",
+        node: "pve1",
+        storage: "pve1-data",
         start: false,
         instance: node_instance
       }
@@ -1027,8 +1027,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("400")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu", anything)
-        .and_return("UPID:dna:001:001:001:qmcreate:400:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu", anything)
+        .and_return("UPID:pve1:001:001:001:qmcreate:400:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
       allow(FileUtils).to receive(:mkdir_p)
@@ -1061,7 +1061,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
           a_string_including("-fwcfg/"), "plaintext-token-abc", mode: "w", perm: 0o600
         )
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including("args" => a_string_including("-fw_cfg name=opt/com.powernode/platform_url"))
         )
       end
@@ -1079,7 +1079,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
         expect(System::Providers::Proxmox::EnrollmentSeed).not_to have_received(:build)
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("args")
         )
       end
     end
@@ -1092,9 +1092,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
           name: "uefi-pool-vm",
           instance_type: "pve.vm.small",
           boot_mode: "uefi_disk",
-          image_id: "dna-data:import/uefi-uki.raw",
-          node: "dna",
-          storage: "dna-data",
+          image_id: "pve1-data:import/uefi-uki.raw",
+          node: "pve1",
+          storage: "pve1-data",
           start: false
         }
       end
@@ -1105,7 +1105,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         provider.create_instance(params)
 
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("args")
         )
       end
     end
@@ -1121,7 +1121,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         provider.create_instance(params)
 
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("args")
         )
       end
     end
@@ -1149,9 +1149,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         name: "uefi-pool-vm-cicustom",
         instance_type: "pve.vm.small",
         boot_mode: "uefi_disk",
-        image_id: "dna-data:import/uefi-uki.raw",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/uefi-uki.raw",
+        node: "pve1",
+        storage: "pve1-data",
         start: false,
         instance: node_instance
       }
@@ -1161,8 +1161,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("500")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/qemu", anything)
-        .and_return("UPID:dna:001:001:001:qmcreate:500:user!tok:")
+        .with("/api2/json/nodes/pve1/qemu", anything)
+        .and_return("UPID:pve1:001:001:001:qmcreate:500:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
       allow(FileUtils).to receive(:mkdir_p)
@@ -1212,11 +1212,11 @@ RSpec.describe System::Providers::ProxmoxProvider do
         expect(written_user_data).to eq(cicustom_seed[:user_data])
         expect(written_meta_data).to eq(cicustom_seed[:meta_data])
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu",
+          "/api2/json/nodes/pve1/qemu",
           hash_including("cicustom" => a_string_including("user=").and(a_string_including("meta=")))
         )
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("args")
         )
       end
     end
@@ -1258,7 +1258,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       it "never sets `cicustom` and never raises" do
         expect { provider.create_instance(params) }.not_to raise_error
         expect(client).to have_received(:post).with(
-          "/api2/json/nodes/dna/qemu", hash_excluding("cicustom")
+          "/api2/json/nodes/pve1/qemu", hash_excluding("cicustom")
         )
       end
     end
@@ -1269,9 +1269,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
       {
         name: "test-lxc",
         instance_type: "pve.lxc.small",
-        image_id: "dna-data:vztmpl/ubuntu-24.04-standard.tar.zst",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:vztmpl/ubuntu-24.04-standard.tar.zst",
+        node: "pve1",
+        storage: "pve1-data",
         ssh_keys: [ "ssh-ed25519 AAAA test@example" ],
         # See VM-mode let(:params) — scope the spec to the create flow.
         start: false
@@ -1281,8 +1281,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
     before do
       allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("101")
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/lxc", hash_including("vmid" => 101, "hostname" => "test-lxc"))
-        .and_return("UPID:dna:001:001:001:vzcreate:101:user!tok:")
+        .with("/api2/json/nodes/pve1/lxc", hash_including("vmid" => 101, "hostname" => "test-lxc"))
+        .and_return("UPID:pve1:001:001:001:vzcreate:101:user!tok:")
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
     end
@@ -1290,11 +1290,11 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "uses /lxc endpoint with hostname, ostemplate, rootfs, and net0 in LXC format" do
       provider.create_instance(params)
       expect(client).to have_received(:post).with(
-        "/api2/json/nodes/dna/lxc",
+        "/api2/json/nodes/pve1/lxc",
         hash_including(
           "hostname"   => "test-lxc",
-          "ostemplate" => "dna-data:vztmpl/ubuntu-24.04-standard.tar.zst",
-          "rootfs"     => a_string_including("dna-data:"),
+          "ostemplate" => "pve1-data:vztmpl/ubuntu-24.04-standard.tar.zst",
+          "rootfs"     => a_string_including("pve1-data:"),
           "net0"       => a_string_including("name=eth0,bridge=vmbr0,ip=dhcp")
         )
       )
@@ -1303,7 +1303,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "sends ssh-public-keys (hyphenated) URL-encoded" do
       provider.create_instance(params)
       expect(client).to have_received(:post).with(
-        "/api2/json/nodes/dna/lxc",
+        "/api2/json/nodes/pve1/lxc",
         hash_including("ssh-public-keys" => match(/ssh-ed25519[%+]/))
       )
     end
@@ -1314,7 +1314,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     # success here is what mints a phantom running row.
     it "does not report success when the create POST returns no UPID" do
       allow(client).to receive(:post)
-        .with("/api2/json/nodes/dna/lxc", anything).and_return(nil)
+        .with("/api2/json/nodes/pve1/lxc", anything).and_return(nil)
 
       expect { provider.create_instance(params) }
         .to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
@@ -1323,13 +1323,13 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
   describe "#start_instance" do
     it "POSTs to the qemu status/start endpoint, waits for the task, and returns the current status" do
-      allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/100/status/start")
-                                       .and_return("UPID:dna:start")
+      allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/100/status/start")
+                                       .and_return("UPID:pve1:start")
       allow(client).to receive(:wait_task)
-      allow(client).to receive(:get).with("/api2/json/nodes/dna/qemu/100/status/current")
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/100/status/current")
                                        .and_return("status" => "running", "agent" => 0, "uptime" => 5)
 
-      result = provider.start_instance("dna/qemu/100")
+      result = provider.start_instance("pve1/qemu/100")
       expect(result[:success]).to be true
       expect(result[:status]).to eq("running")
     end
@@ -1337,33 +1337,33 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
   describe "#terminate_instance" do
     it "issues stop best-effort, then DELETEs with purge + destroy-unreferenced-disks" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put) # protection-clear before delete
       allow(client).to receive(:delete).with(
-        "/api2/json/nodes/dna/qemu/100",
+        "/api2/json/nodes/pve1/qemu/100",
         hash_including("purge" => 1, "destroy-unreferenced-disks" => 1)
-      ).and_return("UPID:dna:destroy")
+      ).and_return("UPID:pve1:destroy")
 
-      result = provider.terminate_instance("dna/qemu/100")
+      result = provider.terminate_instance("pve1/qemu/100")
       expect(result[:success]).to be true
       expect(result[:status]).to eq("terminated")
     end
 
     it "clears the protection flag before DELETE (a protected VM otherwise refuses to delete → orphaned stopped VM)" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
-      allow(client).to receive(:delete).and_return("UPID:dna:destroy")
+      allow(client).to receive(:delete).and_return("UPID:pve1:destroy")
       expect(client).to receive(:put)
-        .with("/api2/json/nodes/dna/qemu/100/config", { "protection" => 0 })
-        .and_return("UPID:dna:config")
+        .with("/api2/json/nodes/pve1/qemu/100/config", { "protection" => 0 })
+        .and_return("UPID:pve1:config")
 
-      result = provider.terminate_instance("dna/qemu/100")
+      result = provider.terminate_instance("pve1/qemu/100")
       expect(result[:success]).to be true
     end
 
     it "treats an already-gone instance as success" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put) # protection-clear before delete
       allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
@@ -1372,7 +1372,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" }).and_return([])
 
-      result = provider.terminate_instance("dna/qemu/999")
+      result = provider.terminate_instance("pve1/qemu/999")
       expect(result[:success]).to be true
       expect(result[:status]).to eq("terminated")
     end
@@ -1383,24 +1383,24 @@ RSpec.describe System::Providers::ProxmoxProvider do
     # here would let finalize_termination! tear down the row, detach the SDWAN
     # peer and revoke deploy keys while the guest still runs elsewhere.
     it "refuses to call a MIGRATED vm already-gone (it is live on another node)" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put)
       allow(client).to receive(:delete)
         .and_raise(System::Providers::Proxmox::Client::NotFoundError,
-                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+                   "Configuration file 'nodes/pve1/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" } ])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2", "status" => "running" } ])
 
-      result = provider.terminate_instance("dna/qemu/9009")
+      result = provider.terminate_instance("pve1/qemu/9009")
 
       expect(result[:success]).to be false
-      expect(result[:error]).to include("rna")
+      expect(result[:error]).to include("pve2")
     end
 
     it "still succeeds when the cluster view is unreachable (fails to prior behaviour, invents no host)" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put)
       allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
@@ -1408,7 +1408,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         .with("/api2/json/cluster/resources", { "type" => "vm" })
         .and_raise(System::Providers::Proxmox::Client::Error, "cluster unreachable")
 
-      result = provider.terminate_instance("dna/qemu/999")
+      result = provider.terminate_instance("pve1/qemu/999")
       expect(result[:success]).to be true
     end
 
@@ -1418,54 +1418,54 @@ RSpec.describe System::Providers::ProxmoxProvider do
     # finalize_termination! never runs, the SDWAN peer stays attached and the
     # reaper retries indefinitely.
     it "treats a RECYCLED vmid as gone when the guest name does not match" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put)
       allow(client).to receive(:delete)
         .and_raise(System::Providers::Proxmox::Client::NotFoundError,
-                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+                   "Configuration file 'nodes/pve1/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna",
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2",
                        "name" => "someone-elses-vm", "status" => "running" } ])
 
-      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+      result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
       expect(result[:success]).to be true
       expect(result[:status]).to eq("terminated")
     end
 
     it "still refuses when the guest name MATCHES (a genuine migration)" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put)
       allow(client).to receive(:delete)
         .and_raise(System::Providers::Proxmox::Client::NotFoundError,
-                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+                   "Configuration file 'nodes/pve1/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna",
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2",
                        "name" => "dryrun-web-1", "status" => "running" } ])
 
-      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+      result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
       expect(result[:success]).to be false
-      expect(result[:error]).to include("rna")
+      expect(result[:error]).to include("pve2")
     end
 
     # Absent evidence is not evidence of absence: if either name is unknown we
     # cannot disprove a migration, so keep the conservative refusal.
     it "still refuses when the cluster row carries no name to compare" do
-      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:post).and_return("UPID:pve1:stop")
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put)
       allow(client).to receive(:delete)
         .and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" } ])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2", "status" => "running" } ])
 
-      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+      result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
       expect(result[:success]).to be false
     end
@@ -1480,20 +1480,20 @@ RSpec.describe System::Providers::ProxmoxProvider do
   describe "create postcondition (submitted-task assertion)" do
     it "raises rather than reporting success when the create POST returns no UPID" do
       expect {
-        provider.send(:assert_create_submitted!, nil, kind: "qemu", node: "dna", vmid: 9100)
+        provider.send(:assert_create_submitted!, nil, kind: "qemu", node: "pve1", vmid: 9100)
       }.to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
     end
 
     it "treats a blank/whitespace UPID as not submitted" do
       expect {
-        provider.send(:assert_create_submitted!, "  ", kind: "lxc", node: "dna", vmid: 9101)
+        provider.send(:assert_create_submitted!, "  ", kind: "lxc", node: "pve1", vmid: 9101)
       }.to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
     end
 
     it "accepts a real UPID" do
       expect {
-        provider.send(:assert_create_submitted!, "UPID:dna:0000A1B2:qmcreate:9100:root@pam:",
-                      kind: "qemu", node: "dna", vmid: 9100)
+        provider.send(:assert_create_submitted!, "UPID:pve1:0000A1B2:qmcreate:9100:root@pam:",
+                      kind: "qemu", node: "pve1", vmid: 9100)
       }.not_to raise_error
     end
   end
@@ -1501,28 +1501,28 @@ RSpec.describe System::Providers::ProxmoxProvider do
   describe "#list_instances" do
     it "queries cluster/resources and synthesizes composite cloud_instance_ids" do
       allow(client).to receive(:get).with("/api2/json/cluster/resources", {}).and_return([
-        { "type" => "qemu", "vmid" => 100, "node" => "dna", "name" => "ops", "status" => "running",
+        { "type" => "qemu", "vmid" => 100, "node" => "pve1", "name" => "ops", "status" => "running",
           "maxcpu" => 4, "maxmem" => 8_589_934_592 },
-        { "type" => "lxc", "vmid" => 200, "node" => "rna", "name" => "test", "status" => "stopped",
+        { "type" => "lxc", "vmid" => 200, "node" => "pve2", "name" => "test", "status" => "stopped",
           "maxcpu" => 2, "maxmem" => 2_147_483_648 },
-        { "type" => "storage", "storage" => "dna-data" } # should be filtered out
+        { "type" => "storage", "storage" => "pve1-data" } # should be filtered out
       ])
 
       result = provider.list_instances
       ids = result[:instances].map { |i| i[:cloud_instance_id] }
-      expect(ids).to contain_exactly("dna/qemu/100", "rna/lxc/200")
+      expect(ids).to contain_exactly("pve1/qemu/100", "pve2/lxc/200")
     end
   end
 
   describe "#list_regions" do
     it "treats PVE nodes as regions" do
       allow(client).to receive(:get).with("/api2/json/nodes").and_return([
-        { "node" => "dna", "status" => "online", "maxcpu" => 16, "maxmem" => 270_000_000_000 },
-        { "node" => "rna", "status" => "online", "maxcpu" => 20, "maxmem" => 270_000_000_000 }
+        { "node" => "pve1", "status" => "online", "maxcpu" => 16, "maxmem" => 270_000_000_000 },
+        { "node" => "pve2", "status" => "online", "maxcpu" => 20, "maxmem" => 270_000_000_000 }
       ])
 
       result = provider.list_regions
-      expect(result.map { |r| r[:cloud_id] }).to contain_exactly("dna", "rna")
+      expect(result.map { |r| r[:cloud_id] }).to contain_exactly("pve1", "pve2")
     end
   end
 
@@ -1541,24 +1541,24 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
   describe "#list_volume_types" do
     it "returns the visible storage pools on the target node" do
-      allow(client).to receive(:get).with("/api2/json/nodes/dna/storage").and_return([
-        { "storage" => "dna-data", "plugintype" => "nfs", "shared" => 1, "content" => "images,rootdir",
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/storage").and_return([
+        { "storage" => "pve1-data", "plugintype" => "nfs", "shared" => 1, "content" => "images,rootdir",
           "total" => 4_000_000_000_000, "avail" => 3_500_000_000_000 },
         { "storage" => "local-lvm", "plugintype" => "lvmthin", "shared" => 0, "content" => "rootdir,images",
           "total" => 200_000_000_000, "avail" => 200_000_000_000 }
       ])
 
-      result = provider.list_volume_types("dna")
-      shared_dna_data = result.find { |v| v[:cloud_id] == "dna-data" }
+      result = provider.list_volume_types("pve1")
+      shared_dna_data = result.find { |v| v[:cloud_id] == "pve1-data" }
       expect(shared_dna_data[:shared]).to be true
       expect(shared_dna_data[:plugin_type]).to eq("nfs")
       expect(shared_dna_data[:content_types]).to include("images")
       # NOTE for future readers (RCP v2 campaign 019f9250 audit): this stub
-      # fabricates plugintype "nfs" for the fixture entry named "dna-data"
+      # fabricates plugintype "nfs" for the fixture entry named "pve1-data"
       # purely to exercise this method's response parsing — it is arbitrary
-      # test data, NOT a claim about the real deployment's dna-data zpool
+      # test data, NOT a claim about the real deployment's pve1-data zpool
       # (confirmed elsewhere, via the live Provider record + ops-hub's own
-      # cloud_instance_id, to be dna's own local ZFS).
+      # cloud_instance_id, to be pve1's own local ZFS).
     end
   end
 
@@ -1598,7 +1598,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
 
     it "rejects unknown kinds (only qemu + lxc are valid)" do
-      expect { provider.start_instance("dna/container/100") }
+      expect { provider.start_instance("pve1/container/100") }
         .to raise_error(System::Providers::BaseProvider::ResourceNotFoundError)
     end
   end

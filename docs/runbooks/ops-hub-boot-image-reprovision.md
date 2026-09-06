@@ -23,7 +23,7 @@ after it, the ops-hub upgrades like any other fleet node.
 |---|---|
 | NodeInstance | `019f4f4e-4abb-7072-ab54-6bb6d757606e` (`ops-hub-20260711035238-6e32`) |
 | Node | `019f4ebc-a4d3-7505-8a5b-69e45d25413e` |
-| Proxmox VM | **`dna/qemu/102`** (host `dna`, vmid `102`) |
+| Proxmox VM | **`<pve-host>/qemu/102`** (host `<pve-host>`, vmid `102`) |
 | Arch | amd64 |
 | Target image | `git.powernode.org/powernode/disk-images/ubuntu-24.04-amd64-uefi:34f2af6dff33212ba12c403f9eba4e65bfe12073` |
 | Target git_sha | `34f2af6dff33212ba12c403f9eba4e65bfe12073` |
@@ -44,7 +44,7 @@ after it, the ops-hub upgrades like any other fleet node.
 3. **Cosign public key configured** — `POWERNODE_COSIGN_PUBLIC_KEY` (or `_FILE`) set on
    the platform. `UpgradeDispatcher.platform_blocker` fails closed without it; required
    for the ops-hub's *future* in-place upgrades (not for this re-image itself).
-4. **Proxmox protection flag cleared** — `qm set 102 --protection 0` on `dna` (protected
+4. **Proxmox protection flag cleared** — `qm set 102 --protection 0` on `<pve-host>` (protected
    VMs refuse stop/terminate; see the PVE-protection learning). Re-enable after cutover.
 
 ## Path A — preserve /persist (RECOMMENDED)
@@ -64,7 +64,7 @@ will do on its own from now on.
 1. **Snapshot** VM 102 for rollback: `qm snapshot 102 pre-34f2af6 --description "pre boot-image re-image 019f505f"`.
 2. **Drain / quiesce** any ops-hub workloads you don't want interrupted (this reboots the node).
 3. **Stop** the VM: `qm stop 102` (graceful; do **not** use `qm reset`).
-4. **Attach the new image** as a scratch disk on `dna` (pull the OCI image to a local
+4. **Attach the new image** as a scratch disk on `<pve-host>` (pull the OCI image to a local
    `.img`, e.g. via `skopeo copy` + the publication's `oci_ref`, verifying `sha256 =
    46236c44…`), then **copy only the ESP** contents (`/EFI/BOOT/BOOTX64.EFI` = systemd-boot
    manager + `/EFI/Linux/<uki>` = the boot-counted UKI slot) onto VM 102's existing ESP,
@@ -91,7 +91,7 @@ the 257a gap — and read it from `/sys/firmware/qemu_fw_cfg/by_name/opt/com.pow
 
 > **Secret handling.** The `bootstrap_token` is a credential. Obtain it from the platform
 > over TLS (re-provision / claim flow for instance `019f4f4e`); write it **only** into the
-> fw-cfg file on `dna`. **Never** echo it, put it in shell history, commit it, or paste it
+> fw-cfg file on `<pve-host>`. **Never** echo it, put it in shell history, commit it, or paste it
 > into logs/this doc. Delete the seed file after `qm start`.
 
 1. `qm snapshot 102 pre-34f2af6 …` (rollback).
@@ -138,4 +138,4 @@ direct `upgrade_boot_image` dispatches the agent-side UKI upgrade with cosign ve
 and A/B rollback — no re-provision, `/persist` preserved automatically. Inc 5 is a one-time
 bridge, not a recurring procedure.
 
-_Draft prepared 2026-07-11. Verify VM/partition specifics on `dna` before executing._
+_Draft prepared 2026-07-11. Verify VM/partition specifics on `<pve-host>` before executing._

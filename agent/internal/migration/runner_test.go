@@ -86,13 +86,13 @@ func TestRunner_ApprovedMigration_AdvancesToPreparing(t *testing.T) {
 			"volume_id":"vol-src","transport":"nfs","mount_type":"nfs",
 			"mount_point":"/tmp/mig-src","role":"postgres",
 			"subpath":"deployments/x/postgres",
-			"nfs":{"server":"src.dsm","export_path":"/v1/Powernode","mount_options":"nfsvers=4.1,hard","subpath":"deployments/x/postgres"}
+			"nfs":{"server":"src.nas1","export_path":"/v1/Powernode","mount_options":"nfsvers=4.1,hard","subpath":"deployments/x/postgres"}
 		},
 		"target_binding":{
 			"volume_id":"vol-tgt","transport":"nfs","mount_type":"nfs",
 			"mount_point":"/tmp/mig-tgt","role":"postgres",
 			"subpath":"deployments/x/postgres",
-			"nfs":{"server":"tgt.dsm","export_path":"/v2/Powernode","mount_options":"nfsvers=4.1,hard","subpath":"deployments/x/postgres"}
+			"nfs":{"server":"tgt.nas1","export_path":"/v2/Powernode","mount_options":"nfsvers=4.1,hard","subpath":"deployments/x/postgres"}
 		}
 	}]}}`
 

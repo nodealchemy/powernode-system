@@ -143,7 +143,7 @@ const TEMPLATE = {
 
 const CONNECTION = {
   id: 'conn-1',
-  name: 'proxmox-dna',
+  name: 'proxmox-pve1',
   config: {},
   provider_id: 'prov-1',
   provider_name: 'Proxmox',

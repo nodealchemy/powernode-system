@@ -133,7 +133,7 @@ module System
 
         # Encodes a UPID for use as a URL path segment.
         # UPIDs look like:
-        #   UPID:dna:000D6722:1867630E:6A0D37CC:qmstart:100:admin@pam!powernode:
+        #   UPID:pve1:000D6722:1867630E:6A0D37CC:qmstart:100:admin@pam!powernode:
         # The `:`, `@`, `!` and trailing characters all need escaping.
         def encode_upid(upid)
           # %2F-safe and friendly to the underlying CGI escape rules
@@ -146,9 +146,9 @@ module System
         # This is NOT always the node the request targeted. PVE runs a storage
         # UPLOAD as an `imgcopy` task on the node that RECEIVES the API call (the
         # endpoint host), then copies the bytes to the target node's storage. So
-        # uploading to /nodes/rna/storage/local/upload against a dna endpoint
-        # returns UPID:dna:...:imgcopy:, and polling /nodes/rna/tasks/<that>
-        # answers "no such task" — correctly, because the task belongs to dna.
+        # uploading to /nodes/pve2/storage/local/upload against a pve1 endpoint
+        # returns UPID:pve1:...:imgcopy:, and polling /nodes/pve2/tasks/<that>
+        # answers "no such task" — correctly, because the task belongs to pve1.
         #
         # Observed on PVE 9.2.3 while provisioning the first instance onto a node
         # other than the API endpoint. It stayed invisible for as long as every
@@ -158,7 +158,7 @@ module System
           m && m[1].presence
         end
 
-        # @param node [String] PVE node name (e.g. "dna")
+        # @param node [String] PVE node name (e.g. "pve1")
         # @param upid [String] task UPID returned from a write call
         # @param timeout [Integer] max seconds to wait
         # @param poll_every [Integer] seconds between polls

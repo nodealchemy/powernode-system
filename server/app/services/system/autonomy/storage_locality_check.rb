@@ -8,16 +8,16 @@ module System
     #
     # Ground truth (operator-locked decision, 2026-07-24; re-derived here
     # from the live Provider record rather than assumed from memory —
-    # confirmed via the "IPNode-PVE" Provider's config, endpoint
+    # confirmed via the "<pve-provider>" Provider's config, endpoint
     # pve.example.test:8006, default_node "pve1", default_storage "pve1-data",
-    # and ops-hub's own running instance cloud_instance_id "dna/qemu/104"):
-    # dna-data is dna's own ZFS pool — a dna failure already took ops-hub
-    # down once (the incident this whole campaign traces to). rna's
+    # and ops-hub's own running instance cloud_instance_id "pve1/qemu/104"):
+    # pve1-data is pve1's own ZFS pool — a pve1 failure already took ops-hub
+    # down once (the incident this whole campaign traces to). pve2's
     # local-data zpool is asserted independent by the same locked decision;
     # this module intentionally does NOT hardcode that as a fact — see
     # #network_backed_storage? below, which asks the provider directly
     # (PVE reports each storage pool's real plugin_type/shared flag) rather
-    # than trusting a name-based guess, so the rna claim gets re-verified
+    # than trusting a name-based guess, so the pve2 claim gets re-verified
     # the moment this runs against live Proxmox credentials instead of
     # perpetuating an unverified assumption.
     #

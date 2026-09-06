@@ -36,8 +36,8 @@ workloads *with ease*. Concretely, the platform must be able to:
    agents, delegate subtasks, coordinate, aggregate, reap).
 
 **Constraints (hard):** supported paths only — **no `vgpu_unlock`** or other
-unsupported GPU hacks; **do not change DNA's PCI/passthrough config**; smoke-test
-inference against the **existing ollama `Ai::Provider`** (DNA's running ollama)
+unsupported GPU hacks; **do not change <pve-host>'s PCI/passthrough config**; smoke-test
+inference against the **existing ollama `Ai::Provider`** (<pve-host>'s running ollama)
 or simulate. This design maps 1:1 onto the audit's "AI/MCP workload substrate"
 recommendations (`docs/history/operational-completeness-audit-2026-06.md` §AI/MCP).
 
@@ -213,7 +213,7 @@ without rework.
 
 | Phase | Layer | Deliverable | Status |
 |-------|-------|-------------|--------|
-| **1** | L1 | GPU + ollama modules; `system_deploy_inference_server`; ollama `Ai::Provider` wired to the VIP | **Shipped** — specs + `db:seed`; smoke against DNA's real ollama via the existing provider (no DNA changes); simulated GPU node for the deploy/expose path |
+| **1** | L1 | GPU + ollama modules; `system_deploy_inference_server`; ollama `Ai::Provider` wired to the VIP | **Shipped** — specs + `db:seed`; smoke against <pve-host>'s real ollama via the existing provider (no <pve-host> changes); simulated GPU node for the deploy/expose path |
 | **2** | L0-seam + L2 | `isolation_tier` dimension; instance MCP mTLS auth + default-deny `Mcp::Principal` + scoped catalog | **Shipped** — instance `tools/list` over mTLS returns the granted subset |
 | **3** | L2½ | A2A: instance↔instance MCP over mTLS; signed capability token; grant/discover/authorize | **Shipped** — live-smoke-passed (Ruby mint → Go verify over mTLS, cross-language Ed25519 interop) |
 | **4** | L3 | mission-driven dynamic agent fleet (provision → delegate → coordinate → reap) | **Shipped** — `system_agent_fleet` mission live-smoke-passed |
@@ -223,8 +223,8 @@ without rework.
 
 ## Smoke / test strategy
 
-- **No changes to DNA's PCI/driver config.** Inference smoke uses the **existing
-  ollama `Ai::Provider`** pointed at DNA's running ollama (`OLLAMA_API_ENDPOINT`) —
+- **No changes to <pve-host>'s PCI/driver config.** Inference smoke uses the **existing
+  ollama `Ai::Provider`** pointed at <pve-host>'s running ollama (`OLLAMA_API_ENDPOINT`) —
   a real chat round-trip proves the inference path.
 - The **deploy / assign / expose / A2A** logic is exercised with **simulated**
   (factory) GPU nodes + instances; the on-node module install is the agent's job,
@@ -234,7 +234,7 @@ without rework.
 
 ---
 
-## Reference: DNA (real GPU node)
+## Reference: <pve-host> (real GPU node)
 
 `<pve-host>` (<pve-ip>) — Dell host, swarm node, **NVIDIA Quadro RTX 4000,
 8 GB**, driver 590.48.01, **host-driver-bound + container-shared** (ollama / emby /

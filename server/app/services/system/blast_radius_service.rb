@@ -21,8 +21,8 @@ module System
   #      onboarded through the platform's own provisioning.
   #   2. A System::NodeInstance#name, for callers that already have the more
   #      specific handle.
-  #   3. A bare Proxmox (or other provider) cluster-node token (e.g. "dna",
-  #      "rna") — these are NOT modeled as first-class Node/NodeInstance rows
+  #   3. A bare Proxmox (or other provider) cluster-node token (e.g. "pve1",
+  #      "pve2") — these are NOT modeled as first-class Node/NodeInstance rows
   #      at all; they only ever appear as the leading path segment of
   #      NodeInstance#cloud_instance_id ("<node>/<kind>/<vmid>", set by
   #      System::Providers::ProxmoxProvider — see #parse_instance_id! there).
@@ -161,9 +161,9 @@ module System
       }
     end
 
-    # "dna" / "rna" — a Proxmox (or other provider) cluster-node token that is
+    # "pve1" / "pve2" — a Proxmox (or other provider) cluster-node token that is
     # never a first-class row, only the leading path segment of
-    # NodeInstance#config["cloud_instance_id"] ("dna/qemu/104"). Matches are
+    # NodeInstance#config["cloud_instance_id"] ("pve1/qemu/104"). Matches are
     # deliberately restricted to that one config key (not a fuzzy string
     # search over all config) so this can't silently misfire on an unrelated
     # substring.

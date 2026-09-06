@@ -31,14 +31,14 @@ func TestReconcileStorageVolume_NFS_FreshMount(t *testing.T) {
 
 	b := &StorageVolumeBinding{
 		VolumeID:   "vol-1",
-		VolumeName: "dsm-powernode",
+		VolumeName: "nas1-powernode",
 		Transport:  "nfs",
 		MountType:  "nfs",
 		MountPoint: "/tmp/powernode-test-mount-nfs",
 		Role:       "postgres",
 		Subpath:    "deployments/sim/postgres",
 		NFS: &NFSDetails{
-			Server:         "dsm.local",
+			Server:         "nas1.local",
 			ExportPath:     "/volume1/Powernode",
 			Version:        "4.1",
 			MountOptions:   "nfsvers=4.1,hard",

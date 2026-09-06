@@ -42,7 +42,7 @@ namespace :rcp do
     puts "(static pass — INV-6 findings are unverified against live Proxmox; re-run with LIVE=1 to confirm)" unless live
   end
 
-  desc "Live-only: resolve a Node's provider connection and print its Proxmox storage.cfg pool types (plugintype/shared) for one PVE cluster member. Usage: rails rcp:storage_topology[node_name,pve_node_name] — e.g. rcp:storage_topology[ops-hub,rna] to independently confirm rna's local-data zpool is NOT shared/nfs, the way this campaign's INV-6 ground truth for dna-data was confirmed for dna."
+  desc "Live-only: resolve a Node's provider connection and print its Proxmox storage.cfg pool types (plugintype/shared) for one PVE cluster member. Usage: rails rcp:storage_topology[node_name,pve_node_name] — e.g. rcp:storage_topology[ops-hub,pve2] to independently confirm pve2's local-data zpool is NOT shared/nfs, the way this campaign's INV-6 ground truth for pve1-data was confirmed for pve1."
   task :storage_topology, [ :node_name, :pve_node_name ] => :environment do |_t, args|
     node = System::Node.find_by!(name: args[:node_name])
     instance = node.node_instances.where(status: %w[running starting pending]).first ||

@@ -18,8 +18,8 @@
 #      named "physical-smoke-pivot-root", creating it if missing.
 #   3. PVE host with the kernel-initrd staged at
 #      /var/lib/vz/template/iso/powernode-{vmlinuz,initramfs.img}.
-#      The host hostname is read from the IPNode-PVE provider's
-#      connection.config.default_node (typically dna).
+#      The host hostname is read from the the Proxmox provider provider's
+#      connection.config.default_node; pass it as SMOKE_PVE_NODE.
 #   4. SSH access to operator@<pve-node>.<pve-domain> (admin sudo-ssh
 #      via the established escalation pattern).
 #
@@ -46,7 +46,7 @@ require "shellwords"
 ACCOUNT_NAME       = ENV.fetch("SMOKE_ACCOUNT_NAME", "Powernode Admin")
 NODE_NAME          = ENV.fetch("SMOKE_NODE_NAME", "physical-smoke-pivot-root")
 PARENT_URL         = ENV.fetch("SMOKE_PARENT_URL") { abort "SMOKE_PARENT_URL is required (the parent control plane URL, e.g. https://<ops-host>) — deployment-local, never defaulted in git" }
-PVE_NODE           = ENV.fetch("SMOKE_PVE_NODE", "dna")
+PVE_NODE           = ENV.fetch("SMOKE_PVE_NODE") { abort "SMOKE_PVE_NODE is required (the Proxmox node hostname the smoke VM is launched on) — deployment-local, never defaulted in git" }
 FWCFG_DIR_LOCAL    = ENV.fetch("SMOKE_FWCFG_DIR", "/tmp/pn-smoke-fwcfg")
 SYSTEM_BASE        = "powernode-system-base"
 OS_BASE_UBUNTU     = "base-os-ubuntu-noble"

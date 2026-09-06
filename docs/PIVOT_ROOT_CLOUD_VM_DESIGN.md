@@ -95,7 +95,7 @@ PVE VM boots -kernel/-initrd (no cloudimg, SeaBIOS, no grub)
    needs a rebuild from current `agent/`.
 2. **Staging on PVE** — **Gap:** `direct_kernel` reads `kernel_path`/`initrd_path`
    on the PVE host (default `/var/lib/vz/template/iso/powernode-{vmlinuz,initramfs.img}`).
-   Need tooling to pull the published OCI kernel/initramfs onto rna/dna/fna/lna
+   Need tooling to pull the published OCI kernel/initramfs onto <pve-b-host>/<pve-host>/<pve-c-host>/<pve-d-host>
    (or have the provider fetch+cache them), refreshed on each disk‑image publish.
 3. **Spawn wiring** — provider supports `boot_mode`; **Gap:** `SpawnPlatformService`
    / `Federation::SpawnProvisioner` / the `powernode-hub` template must pass

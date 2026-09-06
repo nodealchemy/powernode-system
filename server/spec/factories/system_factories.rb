@@ -178,7 +178,7 @@ FactoryBot.define do
         # rather than restating the variety list here — a third copy would
         # drift, and a typo'd variety would silently get an unguarded shape.
         unless instance.provider_identity_present?
-          instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
+          instance.cloud_instance_id = "pve1/qemu/#{9000 + SecureRandom.random_number(90_000)}"
         end
       elsif supplied.nil?
         instance.config = (instance.config || {}).except("cloud_instance_id")

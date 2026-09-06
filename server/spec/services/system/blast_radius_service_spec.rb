@@ -67,14 +67,14 @@ RSpec.describe System::BlastRadiusService, type: :service do
     it "matches the leading path segment and excludes terminated instances from the live set" do
       node = create(:system_node, account: account, name: "ops-hub")
       live = create(:system_node_instance, node: node, status: "error",
-                                            config: { "cloud_instance_id" => "dna/qemu/104" })
+                                            config: { "cloud_instance_id" => "pve1/qemu/104" })
       create(:system_node_instance, node: node, status: "terminated",
-                                     config: { "cloud_instance_id" => "dna/qemu/102" })
+                                     config: { "cloud_instance_id" => "pve1/qemu/102" })
       other_node = create(:system_node, account: account, name: "ci-builder-1")
       other_live = create(:system_node_instance, node: other_node, status: "running",
-                                                  config: { "cloud_instance_id" => "dna/qemu/200" })
+                                                  config: { "cloud_instance_id" => "pve1/qemu/200" })
 
-      result = service.trace("dna")
+      result = service.trace("pve1")
 
       expect(result[:success]).to be true
       expect(result[:target][:kind]).to eq("provider_host_token")
@@ -83,11 +83,11 @@ RSpec.describe System::BlastRadiusService, type: :service do
     end
 
     it "reports a historical-only match (all terminated) as an explicit caveat, not silently empty" do
-      node = create(:system_node, account: account, name: "future-rna-vm")
+      node = create(:system_node, account: account, name: "future-pve2-vm")
       create(:system_node_instance, node: node, status: "terminated",
-                                     config: { "cloud_instance_id" => "rna/qemu/1" })
+                                     config: { "cloud_instance_id" => "pve2/qemu/1" })
 
-      result = service.trace("rna")
+      result = service.trace("pve2")
 
       expect(result[:success]).to be true
       expect(result[:target][:instance_ids]).to eq([])
@@ -100,10 +100,10 @@ RSpec.describe System::BlastRadiusService, type: :service do
       create(:system_node_instance, node: node, status: "running",
                                      config: { "cloud_instance_id" => "dna2/qemu/1" })
 
-      result = service.trace("dna")
+      result = service.trace("pve1")
 
       expect(result[:success]).to be false
-      expect(result[:error]).to include("dna")
+      expect(result[:error]).to include("pve1")
     end
   end
 

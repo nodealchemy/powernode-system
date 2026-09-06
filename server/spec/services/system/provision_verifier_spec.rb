@@ -43,7 +43,7 @@ RSpec.describe System::ProvisionVerifier do
   end
 
   it "confirms a running instance the provider agrees exists" do
-    instance = make_instance(cloud_instance_id: "dna/qemu/9100")
+    instance = make_instance(cloud_instance_id: "pve1/qemu/9100")
     stub_adapter(success: true, status: "running")
 
     r = reconcile_one(instance.id)
@@ -65,7 +65,7 @@ RSpec.describe System::ProvisionVerifier do
   end
 
   it "fails when the provider has no record of the instance" do
-    instance = make_instance(cloud_instance_id: "dna/qemu/9101")
+    instance = make_instance(cloud_instance_id: "pve1/qemu/9101")
     stub_adapter(success: false, error_code: "NotFound", error: "not found")
 
     r = reconcile_one(instance.id)
@@ -74,7 +74,7 @@ RSpec.describe System::ProvisionVerifier do
   end
 
   it "fails when the provider reports a non-running state" do
-    instance = make_instance(cloud_instance_id: "dna/qemu/9102")
+    instance = make_instance(cloud_instance_id: "pve1/qemu/9102")
     stub_adapter(success: true, status: "stopped")
 
     r = reconcile_one(instance.id)
@@ -83,7 +83,7 @@ RSpec.describe System::ProvisionVerifier do
   end
 
   it "fails CLOSED when the provider cannot be reached" do
-    instance = make_instance(cloud_instance_id: "dna/qemu/9103")
+    instance = make_instance(cloud_instance_id: "pve1/qemu/9103")
     stub_adapter { raise StandardError, "connect timeout" }
 
     r = reconcile_one(instance.id)
@@ -93,7 +93,7 @@ RSpec.describe System::ProvisionVerifier do
 
   it "fails a region mismatch — placement the operator never approved" do
     other_region = create(:system_provider_region, account: account)
-    instance = make_instance(cloud_instance_id: "dna/qemu/9104")
+    instance = make_instance(cloud_instance_id: "pve1/qemu/9104")
     stub_adapter(success: true, status: "running")
 
     r = reconcile_one(instance.id, region_id: other_region.id)
@@ -105,7 +105,7 @@ RSpec.describe System::ProvisionVerifier do
     foreign = create(:account)
     foreign_node = create(:system_node, account: foreign)
     instance = create(:system_node_instance, node: foreign_node, provider_region: region,
-                                             status: "running", cloud_instance_id: "dna/qemu/9105")
+                                             status: "running", cloud_instance_id: "pve1/qemu/9105")
     r = reconcile_one(instance.id)
     expect(r[:ok]).to be false
     expect(r[:detail]).to match(/no NodeInstance/i)
@@ -131,7 +131,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "confirms an instance the provider no longer has" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9200", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9200", status: "terminated")
       stub_adapter(success: false, error_code: "NotFound", error: "not found")
 
       r = reconcile_absent(instance.id)
@@ -140,7 +140,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "FAILS a terminated row whose guest the provider still reports running" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9201", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9201", status: "terminated")
       stub_adapter(success: true, status: "running")
 
       r = reconcile_absent(instance.id)
@@ -149,7 +149,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "FAILS a terminated row whose guest the provider still reports STOPPED" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9204", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9204", status: "terminated")
       # A stopped guest still exists, still holds its disks, and on most
       # providers still bills. "Not running" is not "gone" — PVE normalizes
       # paused/suspended to stopped and shutdown to stopping, so treating
@@ -163,7 +163,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "confirms a guest the provider reports terminated" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9205", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9205", status: "terminated")
       stub_adapter(success: true, status: "terminated")
 
       r = reconcile_absent(instance.id)
@@ -171,7 +171,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "FAILS an unknown or blank provider status rather than reading it as gone" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9206", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9206", status: "terminated")
       stub_adapter(success: true, status: nil)
 
       r = reconcile_absent(instance.id)
@@ -179,7 +179,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "does not read an arbitrary provider error mentioning 'not found' as removal" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9207", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9207", status: "terminated")
       # ProxmoxProvider#get_instance raises ResourceNotFoundError for a real
       # not-found and funnels every OTHER client error into an error response
       # with no error_code — so matching the message would let "storage 'x'
@@ -220,14 +220,14 @@ RSpec.describe System::ProvisionVerifier do
       foreign = create(:account)
       foreign_node = create(:system_node, account: foreign)
       instance = create(:system_node_instance, node: foreign_node, provider_region: region,
-                                               status: "running", cloud_instance_id: "dna/qemu/9208")
+                                               status: "running", cloud_instance_id: "pve1/qemu/9208")
 
       r = reconcile_absent(instance.id)
       expect(r[:ok]).to be false
     end
 
     it "FAILS a row the platform never marked terminated" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9202", status: "running")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9202", status: "running")
       stub_adapter(success: false, error_code: "NotFound", error: "not found")
 
       r = reconcile_absent(instance.id)
@@ -246,7 +246,7 @@ RSpec.describe System::ProvisionVerifier do
     end
 
     it "fails CLOSED when the provider cannot be reached" do
-      instance = make_instance(cloud_instance_id: "dna/qemu/9203", status: "terminated")
+      instance = make_instance(cloud_instance_id: "pve1/qemu/9203", status: "terminated")
       stub_adapter { raise StandardError, "connect timeout" }
 
       r = reconcile_absent(instance.id)

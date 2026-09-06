@@ -7,7 +7,7 @@ require "rails_helper"
 # the seed as an ISO uploaded via the storage API + attached as a CD-ROM. DEV's
 # default cicustom/NFS path must stay the default + untouched.
 RSpec.describe System::Providers::ProxmoxProvider do
-  let(:region) { instance_double("System::ProviderRegion", region_code: "dna") }
+  let(:region) { instance_double("System::ProviderRegion", region_code: "pve1") }
   let(:client) { instance_double(System::Providers::Proxmox::Client) }
 
   def provider_with(config)
@@ -44,21 +44,21 @@ RSpec.describe System::Providers::ProxmoxProvider do
       end
       allow(client).to receive(:wait_task)
 
-      body = { "ide2" => "dna-data:cloudinit,media=cdrom" }
-      provider.send(:stage_cidata_iso, client, body, params, vmid: 777, node: "dna", storage: "dna-data")
+      body = { "ide2" => "pve1-data:cloudinit,media=cdrom" }
+      provider.send(:stage_cidata_iso, client, body, params, vmid: 777, node: "pve1", storage: "pve1-data")
 
       expect(captured[:content]).to eq("iso")
       # Instance-keyed name (F1): "cidata-<vmid>-<discriminator>.iso" — a bare
       # vmid key was last-writer-wins on shared storage under a vmid race.
       expect(captured[:filename]).to match(/\Acidata-777-\h{12}\.iso\z/)
-      expect(captured[:storage]).to eq("dna-data")
-      expect(captured[:node]).to eq("dna")
+      expect(captured[:storage]).to eq("pve1-data")
+      expect(captured[:node]).to eq("pve1")
       # the uploaded bytes are a real iso9660 carrying the CIDATA volume label
       expect(captured[:bytes].byteslice(16 * 2048 + 40, 32).strip).to eq("CIDATA".b)
       # attached as the CD-ROM (replacing the cloudinit drive); cicustom unused
-      expect(body["ide2"]).to eq("dna-data:iso/#{captured[:filename]},media=cdrom")
+      expect(body["ide2"]).to eq("pve1-data:iso/#{captured[:filename]},media=cdrom")
       expect(body).not_to have_key("cicustom")
-      expect(client).to have_received(:wait_task).with(node: "dna", upid: "UPID:upload")
+      expect(client).to have_received(:wait_task).with(node: "pve1", upid: "UPID:upload")
     end
 
     it "honors a config-overridden iso storage" do
@@ -67,7 +67,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:wait_task)
 
       body = {}
-      prov.send(:stage_cidata_iso, client, body, params, vmid: 5, node: "dna", storage: "dna-data")
+      prov.send(:stage_cidata_iso, client, body, params, vmid: 5, node: "pve1", storage: "pve1-data")
 
       expect(body["ide2"]).to match(%r{\Alocal:iso/cidata-5-\h{12}\.iso,media=cdrom\z})
       expect(client).to have_received(:upload_file).with(hash_including(storage: "local", content: "iso"))
@@ -76,7 +76,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "no-ops when there is no identity payload" do
       allow(client).to receive(:upload_file)
       body = {}
-      provider.send(:stage_cidata_iso, client, body, {}, vmid: 1, node: "dna", storage: "dna-data")
+      provider.send(:stage_cidata_iso, client, body, {}, vmid: 1, node: "pve1", storage: "pve1-data")
 
       expect(body).not_to have_key("ide2")
       expect(client).not_to have_received(:upload_file)

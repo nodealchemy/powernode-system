@@ -6,7 +6,7 @@ module Ai
     # counterpart to core's `code_blast_radius` (Ai::Tools::CodeAnalysisTool /
     # Ai::Codebase::BlastRadiusService). Given a fleet node identifier (a
     # System::Node name, a System::NodeInstance name, or a bare provider
-    # cluster-node token like "dna"/"rna" embedded in NodeInstance
+    # cluster-node token like "pve1"/"pve2" embedded in NodeInstance
     # #cloud_instance_id), derives what currently depends on it: SDWAN peers/
     # host-bridges/VIPs/services/port-mappings, instance-pool membership,
     # direct + cross-node storage assignments, and the other
@@ -31,13 +31,13 @@ module Ai
           name: "system_blast_radius",
           description: "Infrastructure blast-radius: given a fleet node (System::Node name, " \
                        "System::NodeInstance name, or a bare provider cluster-node token like " \
-                       "\"dna\"/\"rna\"), derive what currently depends on it — SDWAN peers/VIPs/" \
+                       "\"pve1\"/\"pve2\"), derive what currently depends on it — SDWAN peers/VIPs/" \
                        "services/port-mappings, instance-pool membership, direct + cross-node " \
                        "storage assignments, and other node_instance_id FK dependents.",
           parameters: {
             node: { type: "string", required: true,
                     description: "Fleet node identifier: a System::Node#name, a System::NodeInstance#name, " \
-                                 "or a provider cluster-node token (e.g. \"dna\") embedded in cloud_instance_id" }
+                                 "or a provider cluster-node token (e.g. \"pve1\") embedded in cloud_instance_id" }
           }
         }
       end

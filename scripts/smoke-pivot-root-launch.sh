@@ -24,7 +24,7 @@
 #
 # Usage:
 #   bash smoke-pivot-root-launch.sh \
-#     --pve-node dna \
+#     --pve-node pve1 \
 #     --fwcfg-dir /tmp/pn-smoke-fwcfg \
 #     --peer-id <federation-peer-uuid>
 #
@@ -47,7 +47,7 @@ usage() {
 Pivot-root smoke launcher.
 
 Required:
-  --pve-node <name>      Target PVE node hostname (e.g., dna, rna)
+  --pve-node <name>      Target PVE node hostname (e.g., pve1, pve2)
   --fwcfg-dir <path>     Local dir containing fw-cfg key files
   --peer-id <uuid>       Federation::Peer UUID for log correlation
 

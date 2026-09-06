@@ -1,11 +1,16 @@
 # Boot-Image In-Place Upgrade — Validation Log
 
+> **Placeholders.** Names like `<ops-hub-host>`, `<pve-host>`, `<pve-b-host>`, `<nas-host>`, `<pve-provider>` stand in for this
+> deployment's real values, which are deployment-local and never tracked in git. Recall them with
+> `search_knowledge tag:deployment-*` on the deployment's platform (see
+> [conventions/deployment-knowledge.md](https://github.com/nodealchemy/powernode-platform/blob/develop/docs/contributing/conventions/deployment-knowledge.md)).
+
 Campaign `019f505f` (smooth boot-image upgrades). Field-validation record for the
 in-place, `/persist`-preserving, A/B-rollback upgrade path.
 
 ## 2026-07-12 — hardware bootstrap (Inc 5)
 
-- ops-hub instance `019f5463` (VM `dna/qemu/102`, OVMF) re-provisioned onto image
+- ops-hub instance `019f5463` (VM `<pve-host>/qemu/102`, OVMF) re-provisioned onto image
   `34f2af6d` (`019f5329`): A/B systemd-boot booted on real hardware, nf_tables
   fix confirmed (11/11 modules attached), `booted_image_git_sha` reported, drift
   sensor = no drift. Cosign public key + standalone UKI plumbing wired and verified

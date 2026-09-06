@@ -6,7 +6,7 @@
 # node — the host NVIDIA driver + CUDA userland + nvidia-container-toolkit — so the
 # GPU is usable by BOTH native processes and OCI containers. This is the supported,
 # host-driver-shared model (no vGPU/passthrough reconfiguration); it is exactly how
-# a server like DNA already serves a GPU to multiple containers.
+# a server like pve1 already serves a GPU to multiple containers.
 #
 # Part of the AI/MCP workload substrate, L1 (shared GPU inference). See
 # docs/design/ai-mcp-workload-substrate.md.

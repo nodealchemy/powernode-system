@@ -18,7 +18,7 @@ RSpec.describe "instance ops hold" do
   let(:user)    { create(:user, account: account) }
   let(:node)    { create(:system_node, account: account) }
   let(:instance) do
-    create(:system_node_instance, node: node, account: account, status: "stopped", key: "dna:qemu:600")
+    create(:system_node_instance, node: node, account: account, status: "stopped", key: "pve1:qemu:600")
   end
 
   # No provider connection in specs — Registry.for_instance raises, the service

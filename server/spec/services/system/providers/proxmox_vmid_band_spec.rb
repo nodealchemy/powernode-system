@@ -12,7 +12,7 @@ require "rails_helper"
 # connection's own range fills. These cover the ceiling that makes a reservation
 # real, and pin the unfenced behaviour so existing connections are untouched.
 RSpec.describe System::Providers::ProxmoxProvider do
-  let(:region) { instance_double("System::ProviderRegion", region_code: "dna") }
+  let(:region) { instance_double("System::ProviderRegion", region_code: "pve1") }
   let(:client) { instance_double(System::Providers::Proxmox::Client) }
 
   def provider_with(config)
@@ -35,7 +35,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
-  describe "floor only (today's live ipnode-pve-conn: vmid_min 500, no max)" do
+  describe "floor only (today's live pve-conn: vmid_min 500, no max)" do
     it "floors a below-band nextid into the band" do
       stub_cluster(nextid: 102, used: [ 500, 502, 503, 504 ])
       expect(provider_with("vmid_min" => 500).send(:allocate_next_vmid!, client)).to eq(501)
