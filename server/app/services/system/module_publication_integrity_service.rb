@@ -24,9 +24,34 @@ module System
   # is normal and is NOT reported. The only question asked is: did something we
   # published get recorded?
   class ModulePublicationIntegrityService
+    # A cosign signature lives as a TAG in the same repo as the artifact it
+    # signs: `sha256-<digest>.sig` (and `.att` / `.sbom` for attestations), plus
+    # a bare `sha256-<digest>` when the registry answers referrers that way.
+    # None of them is a module publication, so none can ever have a
+    # NodeModuleVersion. Counting them as gaps is what made this checker report
+    # ~85 permanent findings for one module and become unreadable.
+    #
+    # This is NOT an ignore list for missed publications — those still report.
+    # It is the checker declining to treat a signature as a build.
+    COSIGN_TAG = /\Asha256-[0-9a-f]{7,64}(\.(sig|att|sbom))?\z/i
+
+    # A floating alias that always points at a tag already in the list.
+    FLOATING_TAGS = %w[latest].freeze
+
+    def self.publication_tag?(tag)
+      t = tag.to_s
+      return false if t.match?(COSIGN_TAG)
+      return false if FLOATING_TAGS.include?(t.downcase)
+
+      true
+    end
+
     Finding = Struct.new(:module_name, :repo, :registry_tags, :recorded_tags,
-                         :unrecorded_tags, :error, keyword_init: true) do
+                         :unrecorded_tags, :non_publication_tags, :error, keyword_init: true) do
       def ok?      = error.nil? && unrecorded_tags.empty?
+      # non_publication_tags is carried on the finding rather than dropped, so
+      # the exclusion is auditable: an operator can see exactly what was set
+      # aside and why the count changed.
       def to_h     = super.merge(ok: ok?)
     end
 
@@ -56,18 +81,24 @@ module System
       repo = node_module.gitea_repo_full_name.presence || "powernode/#{node_module.name}"
 
       tags = registry_tags(repo)
-      return Finding.new(module_name: node_module.name, repo: repo, error: tags[:error],
-                         registry_tags: [], recorded_tags: [], unrecorded_tags: []) if tags.is_a?(Hash) && tags[:error]
+      if tags.is_a?(Hash) && tags[:error]
+        return Finding.new(module_name: node_module.name, repo: repo, error: tags[:error],
+                           registry_tags: [], recorded_tags: [], unrecorded_tags: [],
+                           non_publication_tags: [])
+      end
 
       recorded = node_module.versions.filter_map { |v| v.config&.dig("git_tag").presence }.uniq
 
+      publications, non_publications = tags.partition { |t| self.class.publication_tag?(t) }
+
       Finding.new(
-        module_name:     node_module.name,
-        repo:            repo,
-        registry_tags:   tags,
-        recorded_tags:   recorded,
-        unrecorded_tags: tags - recorded,
-        error:           nil
+        module_name:          node_module.name,
+        repo:                 repo,
+        registry_tags:        tags,
+        recorded_tags:        recorded,
+        unrecorded_tags:      publications - recorded,
+        non_publication_tags: non_publications,
+        error:                nil
       )
     end
 
