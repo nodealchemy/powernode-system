@@ -10,10 +10,9 @@ module System
     # Concrete, already-known hazard this check targets: PVE's `cicustom`
     # cloud-init channel (System::Providers::ProxmoxProvider#stage_cicustom)
     # writes the guest's user-data/meta-data/network-config as snippet FILES
-    # onto a shared NFS storage (default "dsm-data" at
-    # /mnt/pve-data/snippets — see that method's doc comment, which
-    # literally names "the Powernode-platform-on-ops shape" as the default
-    # assumption). At boot, PVE's cloud-init drive needs that NFS mount
+    # onto a shared NFS storage (the connection's `snippets_storage`, else the
+    # first snippets-capable shared storage on the placement node — see that
+    # method's doc comment). At boot, PVE's cloud-init drive needs that NFS mount
     # reachable to construct the guest's NoCloud seed — a boot-time network
     # (NFS) dependency, for exactly the pivot-boot modes (`uefi_disk`,
     # `direct_kernel`) that exist specifically to satisfy INV-2 otherwise.
@@ -30,7 +29,7 @@ module System
     # is INV-2-compliant, so it can be checked BEFORE provisioning commits.
     #
     # Deliberately advisory-by-default / opt-in-strict, not a blanket hard
-    # reject: today's default Proxmox connection ("IPNode-PVE") has no
+    # reject: today's default Proxmox connection ("the Proxmox provider") has no
     # `cidata_transport: "iso"` override, and per ProxmoxProvider's own
     # comments, federation spawns using uefi_disk boot_mode currently ride
     # this SAME NFS cicustom channel as an intentional, working delivery

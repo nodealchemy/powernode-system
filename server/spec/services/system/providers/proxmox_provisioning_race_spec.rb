@@ -6,13 +6,13 @@ require "rails_helper"
 # concurrently in one process, both allocated vmid 9002 from /cluster/nextid
 # (which reserves nothing), and three defects compounded:
 #
-#   1. The rna step's cidata seed — named `cidata-9002.iso` on SHARED storage —
-#      OVERWROTE the dna step's seed. VM 9002 booted holding the rna
+#   1. The pve2 step's cidata seed — named `cidata-9002.iso` on SHARED storage —
+#      OVERWROTE the pve1 step's seed. VM 9002 booted holding the pve2
 #      instance's enrollment identity (identity cross-contamination).
-#   2. The rna qemu create then failed HTTP 500 ("VM 9002 already exists") and
-#      was never retried; the run lost its rna placement.
-#   3. VM 9002's heartbeats — authenticated as the rna instance — self-healed
-#      the rna row from :error to :running via mark_running, manufacturing a
+#   2. The pve2 qemu create then failed HTTP 500 ("VM 9002 already exists") and
+#      was never retried; the run lost its pve2 placement.
+#   3. VM 9002's heartbeats — authenticated as the pve2 instance — self-healed
+#      the pve2 row from :error to :running via mark_running, manufacturing a
 #      "running" instance with NO cloud_instance_id that live PVE has never
 #      seen (the phantom).
 #
@@ -30,7 +30,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
                     config: { "cidata_transport" => "iso", "verify_ssl" => "false" },
                     provider: proxmox_provider_record)
   end
-  let(:region) { instance_double("System::ProviderRegion", region_code: "dna") }
+  let(:region) { instance_double("System::ProviderRegion", region_code: "pve1") }
   let(:client) { instance_double(System::Providers::Proxmox::Client) }
 
   subject(:provider) { described_class.new(connection, region: region) }
@@ -38,7 +38,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
   before do
     allow(System::Providers::Proxmox::Client).to receive(:new).and_return(client)
     allow(client).to receive(:get).with(%r{\A/api2/json/nodes/[^/]+/storage\z}).and_return(
-      [ { "storage" => "dna-data", "type" => "nfs", "active" => 1, "shared" => 1,
+      [ { "storage" => "pve1-data", "type" => "nfs", "active" => 1, "shared" => 1,
           "content" => "import,rootdir,vztmpl,iso,images,snippets" } ]
     )
     described_class.reset_vmid_reservations!
@@ -68,7 +68,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
         body = {}
         provider.send(:stage_cidata_iso, client, body,
                       seed_params.merge(instance: fake_instance(uuid)),
-                      vmid: 9002, node: "dna", storage: "dna-data")
+                      vmid: 9002, node: "pve1", storage: "pve1-data")
         expect(body["ide2"]).to include(captured)
         captured
       end
@@ -81,7 +81,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
         captured = filename
         "UPID:upload"
       end
-      provider.send(:stage_cidata_iso, client, {}, seed_params, vmid: 9002, node: "dna", storage: "dna-data")
+      provider.send(:stage_cidata_iso, client, {}, seed_params, vmid: 9002, node: "pve1", storage: "pve1-data")
       expect(captured).not_to eq("cidata-9002.iso")
     end
 
@@ -92,7 +92,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
       allow(File).to receive(:write) { |path, *_| written << path; 1 }
 
       %w[aaaa1111-0000-7000-8000-000000000001 bbbb2222-0000-7000-8000-000000000002].each do |uuid|
-        provider.send(:stage_cicustom, {}, seed_params.merge(instance: fake_instance(uuid)), vmid: 9002)
+        provider.send(:stage_cicustom, {}, seed_params.merge(instance: fake_instance(uuid)), vmid: 9002, c: client, node: "pve1")
       end
       user_snippets = written.select { |p| p.end_with?("-user.yml") }
       expect(user_snippets.uniq.size).to eq(2),
@@ -124,9 +124,9 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
         name: "uefi-vm",
         instance_type: "pve.vm.small",
         boot_mode: "uefi_disk",
-        image_id: "dna-data:import/uefi-uki.img",
-        node: "dna",
-        storage: "dna-data",
+        image_id: "pve1-data:import/uefi-uki.img",
+        node: "pve1",
+        storage: "pve1-data",
         start: false
       }
     end
@@ -139,11 +139,11 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
 
     it "re-allocates a fresh vmid and succeeds when PVE says the vmid already exists" do
       attempts = []
-      allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu", anything) do |_url, body|
+      allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu", anything) do |_url, body|
         attempts << body["vmid"]
-        raise System::Providers::Proxmox::Client::Error, "unable to create VM 9002 - VM 9002 already exists on node 'dna'" if attempts.size == 1
+        raise System::Providers::Proxmox::Client::Error, "unable to create VM 9002 - VM 9002 already exists on node 'pve1'" if attempts.size == 1
 
-        "UPID:dna:001:001:001:qmcreate:#{body['vmid']}:user!tok:"
+        "UPID:pve1:001:001:001:qmcreate:#{body['vmid']}:user!tok:"
       end
 
       result = provider.create_instance(params)
@@ -155,9 +155,9 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
 
     it "does not retry a non-conflict PVE error" do
       calls = 0
-      allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu", anything) do
+      allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu", anything) do
         calls += 1
-        raise System::Providers::Proxmox::Client::Error, "storage 'dna-data' does not support vm images"
+        raise System::Providers::Proxmox::Client::Error, "storage 'pve1-data' does not support vm images"
       end
 
       result = provider.create_instance(params)
@@ -167,7 +167,7 @@ RSpec.describe System::Providers::ProxmoxProvider, "provisioning races" do
 
     it "gives up after bounded retries instead of looping" do
       calls = 0
-      allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu", anything) do
+      allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu", anything) do
         calls += 1
         raise System::Providers::Proxmox::Client::Error, "unable to create VM - already exists"
       end
@@ -202,7 +202,7 @@ RSpec.describe System::NodeInstance, "heartbeat self-heal guard" do
   end
 
   it "still self-heals an errored cloud instance that HAS provider identity" do
-    real = build_instance(variety: "cloud", cloud_instance_id: "dna/qemu/9002", status: "error")
+    real = build_instance(variety: "cloud", cloud_instance_id: "pve1/qemu/9002", status: "error")
     expect(real.may_mark_running?).to be true
     real.mark_running!
     expect(real.status).to eq("running")

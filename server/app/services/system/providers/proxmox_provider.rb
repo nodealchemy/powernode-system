@@ -463,7 +463,7 @@ module System
         # protected VM ("protection mode enabled"). Without this the DELETE fails,
         # the rescue below turns it into a best-effort error, and the reaper
         # silently accumulates orphaned STOPPED VMs (33 such orphans cleaned up on
-        # dna 2026-07-15). Best-effort: a config-PUT failure must not abort the
+        # pve1 2026-07-15). Best-effort: a config-PUT failure must not abort the
         # teardown — the delete attempt still follows.
         begin
           c.put("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config", { "protection" => 0 })
@@ -875,7 +875,7 @@ module System
         # The spawn payload itself reaches the agent via the fw-cfg block below.
         params = apply_default_federation_user_data(params, boot_mode: "cloud_init")
 
-        stage_cicustom(body, params, vmid: vmid)
+        stage_cicustom(body, params, vmid: vmid, c: c, node: node)
 
         # fw_cfg_entries: virtio-fw-cfg seed entries (the LocalQemu CloudSeed
         # pattern, mirrored for PVE). The Go agent at
@@ -911,7 +911,7 @@ module System
           fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
         end
 
-        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params)
+        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params, c: c, node: node)
         unless fw_args.empty?
           existing = body["args"].to_s
           body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
@@ -1063,18 +1063,17 @@ module System
       # snippets/ directory through the filesystem. We assume the operator
       # has mounted a snippets-enabled storage (typically NFS shared
       # across the cluster) at `:snippets_local_path` and configured the
-      # matching PVE storage name as `:snippets_storage`. Defaults assume
-      # the Powernode-platform-on-ops shape: dsm-data NFS at
+      # matching PVE storage name as `:snippets_storage`. The storage NAME is
+      # deployment-local and is never defaulted from source: see
+      # resolve_snippets_storage!. The local mount path defaults to
       # /mnt/pve-data/snippets. Sub-volume IDs in cicustom are relative
       # to the storage root, hence `snippets/<filename>`.
       #
       # Mutates `body["cicustom"]` in place when any snippet was staged.
-      def stage_cicustom(body, params, vmid:)
+      def stage_cicustom(body, params, vmid:, c: nil, node: nil)
         return unless params[:user_data].present? || params[:meta_data].present?
 
-        snippets_storage = params[:snippets_storage] ||
-                           connection&.config&.dig("snippets_storage") ||
-                           "dsm-data"
+        snippets_storage = resolve_snippets_storage!(params, c: c, node: node)
         snippets_local   = params[:snippets_local_path] ||
                            connection&.config&.dig("snippets_local_path") ||
                            "/mnt/pve-data/snippets"
@@ -1082,7 +1081,7 @@ module System
         # Fail fast with a clear error instead of a raw Errno::ENOENT when the
         # snippets storage isn't mounted (e.g. a manually-mounted NFS share
         # that didn't survive a reboot — cost a full day of silent
-        # provisioning failure on dna, 2026-07-21). Deliberately does NOT
+        # provisioning failure on pve1, 2026-07-21). Deliberately does NOT
         # mkdir_p: creating the directory locally would mask a missing mount
         # instead of surfacing it.
         unless File.directory?(snippets_local) && File.writable?(snippets_local)
@@ -1349,7 +1348,7 @@ module System
           fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
         end
 
-        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params)
+        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params, c: c, node: node)
 
         body["args"] = (kernel_args + fw_args).join(" ")
 
@@ -1469,7 +1468,7 @@ module System
         if cidata_iso_transport?
           stage_cidata_iso(c, body, params, vmid: vmid, node: node, storage: storage)
         else
-          stage_cicustom(body, params, vmid: vmid)
+          stage_cicustom(body, params, vmid: vmid, c: c, node: node)
         end
 
         # Enrollment identity fw-cfg — opt-in, see the class comment above.
@@ -1486,7 +1485,7 @@ module System
         if instance_for_seed && ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
           seed = ::System::Providers::Proxmox::EnrollmentSeed.build(instance: instance_for_seed)
           if seed
-            fw_args = stage_fw_cfg_entries(seed[:fw_cfg_entries], vmid: vmid, params: params)
+            fw_args = stage_fw_cfg_entries(seed[:fw_cfg_entries], vmid: vmid, params: params, c: c, node: node)
             unless fw_args.empty?
               existing = body["args"].to_s
               body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
@@ -1706,12 +1705,10 @@ module System
       # spawn_payload above). The snippets export is shared across PVE hosts +
       # the ops backend over NFS, so world-readable 0o644 would expose the
       # token to any tenant with read access on the export.
-      def stage_fw_cfg_entries(fw_cfg, vmid:, params:)
+      def stage_fw_cfg_entries(fw_cfg, vmid:, params:, c: nil, node: nil)
         return [] if fw_cfg.empty?
 
-        snippets_storage = params[:snippets_storage] ||
-                           connection&.config&.dig("snippets_storage") ||
-                           "dsm-data"
+        snippets_storage = resolve_snippets_storage!(params, c: c, node: node)
         snippets_local   = params[:snippets_local_path] ||
                            connection&.config&.dig("snippets_local_path") ||
                            "/mnt/pve-data/snippets"
@@ -2087,7 +2084,7 @@ module System
         id
       end
 
-      # PVE expects a node-name STRING (e.g. "pve1", "dna"). Filter out
+      # PVE expects a node-name STRING (e.g. "pve1", "pve2"). Filter out
       # non-string values that downstream callers (ProvisioningService)
       # pass via params[:node] for adapters that need the System::Node
       # AR record (e.g. LocalQemuProvider). Returns nil so callers can
@@ -2110,8 +2107,8 @@ module System
       end
 
       # Fail loud when an explicitly-chosen storage (param or operator
-      # default) is absent/inactive on the placement node — an rna placement
-      # with dna-scoped storage must fail at the adapter contract, not deep
+      # default) is absent/inactive on the placement node — an pve2 placement
+      # with pve1-scoped storage must fail at the adapter contract, not deep
       # inside a PVE import task (IMP-14bc7e5b85f5). Only called for
       # caller-chosen storage; the content-based fallback is node-scoped by
       # construction.
@@ -2134,6 +2131,25 @@ module System
 
         assert_storage_on_node!(c, node: node, storage: chosen)
         chosen
+      end
+
+      # The PVE storage that holds cloud-init snippet files. Its NAME is a
+      # deployment-local fact, so there is no default spelled in source:
+      #   1. params[:snippets_storage]
+      #   2. the provider connection's config["snippets_storage"]
+      #   3. the first active, shared, snippets-capable storage on the placement
+      #      node — the same node-scoped discovery every other storage choice
+      #      here uses (first_shared_storage_with_content!).
+      # With no client/node to discover from, fail with the config key to set.
+      def resolve_snippets_storage!(params, c: nil, node: nil)
+        chosen = params[:snippets_storage].presence ||
+                 connection&.config&.dig("snippets_storage").presence
+        return chosen if chosen
+        return first_shared_storage_with_content!(c, node: node, content: "snippets") if c && node
+
+        raise ProviderError,
+              "no snippets storage resolvable — set `snippets_storage` (and `snippets_local_path`) " \
+              "in the provider connection config, or pass :snippets_storage"
       end
 
       def first_shared_storage_with_content!(c, node:, content:)
