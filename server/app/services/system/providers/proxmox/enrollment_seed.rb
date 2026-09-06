@@ -129,7 +129,7 @@ module System
 
         # DO EXACTLY THIS — no fallbacks beyond the two listed here, ever.
         # NEVER fall back to InternalCaService/an internal CA default: a
-        # builder dialing a public-LE edge (e.g. dev.ipnode.us) needs the
+        # builder dialing a public-LE edge (e.g. dev.example.test) needs the
         # LE chain, and a wrong/internal CA default fails enrollment TLS
         # SILENTLY on the guest. ca_pem is a PUBLIC cert chain (not
         # secret) but correctness here is safety-critical.

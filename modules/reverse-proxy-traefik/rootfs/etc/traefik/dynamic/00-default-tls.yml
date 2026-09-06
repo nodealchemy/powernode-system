@@ -8,7 +8,7 @@
 #
 #   18:52:43  boot
 #   18:53:01  agent -> platform: x509: certificate is valid for
-#             <hash>.traefik.default, not ops-hub.ipnode.us
+#             <hash>.traefik.default, not ops-hub.example.test
 #   18:54:50  00-host-login.yaml finally written; agent recovers 12s earlier-ish
 #
 # In that window Traefik has no TLS config matching any hostname, so it serves

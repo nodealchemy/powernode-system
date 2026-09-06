@@ -6,7 +6,7 @@ description: >
   Runs a HashiCorp Vault server on a fleet instance, for TESTING the platform's
   Vault-backed paths — module signing via transit (System::ModuleSigningService
   in "vault" mode), Security::VaultClient, and the credential-restoration
-  runbook — without depending on the shared vault.ipnode.org, which has been
+  runbook — without depending on the shared <vault-host>, which has been
   sealed since 2026-07-29 and whose unseal keys are operator-held.
 
   DELIBERATELY NOT `vault server -dev`. Dev mode auto-unseals with an in-memory

@@ -5,7 +5,7 @@ require "rails_helper"
 RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
   let(:instance) { create(:system_node_instance) }
   let(:ca_pem) { "-----BEGIN CERTIFICATE-----\nFAKE-LE-CHAIN\n-----END CERTIFICATE-----" }
-  let(:platform_url) { "https://dev.ipnode.us" }
+  let(:platform_url) { "https://dev.example.test" }
 
   def stub_site_setting(ca: nil, url: nil)
     allow(::SiteSetting).to receive(:get).and_call_original

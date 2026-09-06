@@ -91,9 +91,9 @@ RSpec.describe Sdwan::Ovn::NbProbe do
     it "honors the operator's control-plane CIDR denylist" do
       allow(::SiteSetting).to receive(:get).and_call_original
       allow(::SiteSetting).to receive(:get)
-        .with("system.sdwan.ovn.probe_denied_cidrs").and_return("10.125.0.0/16, 192.0.2.0/24")
+        .with("system.sdwan.ovn.probe_denied_cidrs").and_return("198.51.100.0/24, 192.0.2.0/24")
 
-      expect(described_class.probe("tcp:10.125.0.227:6641")).to be_not_measured
+      expect(described_class.probe("tcp:192.0.2.227:6641")).to be_not_measured
       expect(described_class.probe("tcp:192.0.2.7:6641")).to be_not_measured
     end
   end

@@ -20,7 +20,7 @@
 #      /var/lib/vz/template/iso/powernode-{vmlinuz,initramfs.img}.
 #      The host hostname is read from the IPNode-PVE provider's
 #      connection.config.default_node (typically dna).
-#   4. SSH access to operator@<pve-node>.ipnode.net (admin sudo-ssh
+#   4. SSH access to operator@<pve-node>.<pve-domain> (admin sudo-ssh
 #      via the established escalation pattern).
 #
 # Invoke:
@@ -45,7 +45,7 @@ require "shellwords"
 
 ACCOUNT_NAME       = ENV.fetch("SMOKE_ACCOUNT_NAME", "Powernode Admin")
 NODE_NAME          = ENV.fetch("SMOKE_NODE_NAME", "physical-smoke-pivot-root")
-PARENT_URL         = ENV.fetch("SMOKE_PARENT_URL", "https://ops.ipnode.us")
+PARENT_URL         = ENV.fetch("SMOKE_PARENT_URL") { abort "SMOKE_PARENT_URL is required (the parent control plane URL, e.g. https://<ops-host>) — deployment-local, never defaulted in git" }
 PVE_NODE           = ENV.fetch("SMOKE_PVE_NODE", "dna")
 FWCFG_DIR_LOCAL    = ENV.fetch("SMOKE_FWCFG_DIR", "/tmp/pn-smoke-fwcfg")
 SYSTEM_BASE        = "powernode-system-base"

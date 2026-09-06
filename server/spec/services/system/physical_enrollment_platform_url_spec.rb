@@ -17,8 +17,8 @@ RSpec.describe System::PhysicalEnrollmentService do
   describe ".platform_url" do
     it "reads the same SiteSetting the VM enrollment path uses" do
       allow(::SiteSetting).to receive(:get).with(described_class::PLATFORM_URL_SETTING)
-                                           .and_return("https://ops-hub.ipnode.us")
-      expect(described_class.platform_url).to eq("https://ops-hub.ipnode.us")
+                                           .and_return("https://ops-hub.example.test")
+      expect(described_class.platform_url).to eq("https://ops-hub.example.test")
     end
 
     # Two sources of truth for "where do devices enroll" is how a fleet ends up
@@ -67,7 +67,7 @@ RSpec.describe System::PhysicalEnrollmentService do
   end
 
   describe ".private_ca?" do
-    # ops-hub is self-signed (verified live: subject == issuer == CN=ops-hub.ipnode.us,
+    # ops-hub is self-signed (verified live: subject == issuer == CN=ops-hub.example.test,
     # openssl verify code 18). A device using the stock public-root image cannot
     # verify it, so the CA must travel on the BOOT partition.
     it "is true when an enrollment CA chain is configured" do

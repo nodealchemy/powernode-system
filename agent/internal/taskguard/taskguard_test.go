@@ -219,7 +219,7 @@ func TestPeerAddress(t *testing.T) {
 	} {
 		mustRefuse(t, name, PeerAddress("peer_ip", v))
 	}
-	for _, v := range []string{"fd00::abcd/128", "fd00::1", "10.125.0.227", "10.0.0.0/24", "::1"} {
+	for _, v := range []string{"fd00::abcd/128", "fd00::1", "192.0.2.227", "10.0.0.0/24", "::1"} {
 		mustAccept(t, v, PeerAddress("peer_ip", v))
 	}
 }
@@ -235,7 +235,7 @@ func TestIPAddress(t *testing.T) {
 	} {
 		mustRefuse(t, name, IPAddress("peer_ip", v))
 	}
-	for _, v := range []string{"fd00::1", "10.125.0.227", "::1"} {
+	for _, v := range []string{"fd00::1", "192.0.2.227", "::1"} {
 		mustAccept(t, v, IPAddress("peer_ip", v))
 	}
 }

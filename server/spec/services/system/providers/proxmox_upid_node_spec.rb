@@ -16,7 +16,7 @@ require "rails_helper"
 # provision happened to target the endpoint host itself.
 RSpec.describe System::Providers::Proxmox::Client do
   subject(:client) do
-    described_class.new(endpoint_url: "https://dna.ipnode.net:8006",
+    described_class.new(endpoint_url: "https://pve.example.test:8006",
                         token_id: "user@pve!tok", token_secret: "s3cr3t", verify_ssl: false)
   rescue ArgumentError
     described_class.allocate

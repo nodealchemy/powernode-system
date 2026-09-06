@@ -270,7 +270,7 @@ module System
 
     # True when this platform serves a chain the stock image does not already
     # trust, so a claim-by-ID device needs the CA on its BOOT partition. ops-hub
-    # is self-signed (verified 2026-07-26: subject == issuer == CN=ops-hub.ipnode.us),
+    # is self-signed (verified 2026-07-26: subject == issuer == CN=ops-hub.example.test),
     # which is exactly the case that silently fails TLS if the CA is left out.
     def self.private_ca?
       ::SiteSetting.get(ENROLL_CA_SETTING).present?

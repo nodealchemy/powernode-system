@@ -18,7 +18,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
   end
 
   let(:params) do
-    { user_data: "ID=uuid\nKEY=tok\nSERVER=https://ops-hub.ipnode.us\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n",
+    { user_data: "ID=uuid\nKEY=tok\nSERVER=https://ops-hub.example.test\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n",
       meta_data: "-----BEGIN CERTIFICATE-----\nMIItest\n-----END CERTIFICATE-----\n" }
   end
 

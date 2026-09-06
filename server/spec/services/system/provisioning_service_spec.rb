@@ -588,11 +588,11 @@ RSpec.describe System::ProvisioningService do
       it "enrolls the FIRST peer on a hub-less network as the hub, endpointed at its address" do
         allow(adapter).to receive(:create_instance)
           .and_return(success: true, cloud_instance_id: "i-sdwan-hub", status: "running",
-                      private_ip_address: "10.125.7.31")
+                      private_ip_address: "192.0.2.31")
         result = provision
         peer = Sdwan::Peer.find_by(node_instance_id: result.data[:instance].id)
         expect(peer.publicly_reachable).to be(true)
-        expect(peer.endpoint_host).to eq("10.125.7.31")
+        expect(peer.endpoint_host).to eq("192.0.2.31")
         expect(peer.endpoint_port).to eq(51820)
       end
 
@@ -607,11 +607,11 @@ RSpec.describe System::ProvisioningService do
         hub_instance = create(:system_node_instance, node: node, status: "running")
         Sdwan::PeerEnroller.call(network: network, node_instance: hub_instance,
                                  publicly_reachable: true,
-                                 endpoint_host: "10.125.7.1", endpoint_port: 51820)
+                                 endpoint_host: "192.0.2.1", endpoint_port: 51820)
 
         allow(adapter).to receive(:create_instance)
           .and_return(success: true, cloud_instance_id: "i-sdwan-2", status: "running",
-                      private_ip_address: "10.125.7.32")
+                      private_ip_address: "192.0.2.32")
         result = provision
         peer = Sdwan::Peer.find_by(node_instance_id: result.data[:instance].id)
         expect(peer.publicly_reachable).to be(false)

@@ -347,7 +347,7 @@ func TestValidateStillRefusesTheRootsThemselves(t *testing.T) {
 
 func TestValidateAcceptsRealPeerAddresses(t *testing.T) {
 	task := legitExportsTask()
-	for _, addr := range []string{"fd00::abcd/128", "fd00::1", "10.125.0.227", "10.0.0.0/24"} {
+	for _, addr := range []string{"fd00::abcd/128", "fd00::1", "192.0.2.227", "10.0.0.0/24"} {
 		task.Entries[0].PeerIP = addr
 		if err := task.Validate(); err != nil {
 			t.Errorf("peer_ip %q was refused: %v", addr, err)

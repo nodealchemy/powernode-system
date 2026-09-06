@@ -69,7 +69,7 @@ RSpec.describe System::Providers::Proxmox::CidataIsoBuilder do
     nil
   end
 
-  let(:user_data) { "ID=uuid-1\nKEY=btok\nSERVER=https://ops-hub.ipnode.us\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n" }
+  let(:user_data) { "ID=uuid-1\nKEY=btok\nSERVER=https://ops-hub.example.test\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n" }
   let(:meta_data) { "-----BEGIN CERTIFICATE-----\nMIIfake\n-----END CERTIFICATE-----\n" }
   let(:iso) { described_class.build(files: { "user-data" => user_data, "meta-data" => meta_data }) }
 

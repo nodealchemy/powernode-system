@@ -634,25 +634,25 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
 
     it "extracts literal hosts from the allowlist (strips ports, drops wildcards + localhost family)" do
       allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(
-        trusted_hosts: [ "dev.ipnode.us", "api.example.com:8443", "*.wild.example", "localhost", "127.0.0.1", "::1", "10.0.0.5" ]
+        trusted_hosts: [ "dev.example.test", "api.example.com:8443", "*.wild.example", "localhost", "127.0.0.1", "::1", "10.0.0.5" ]
       )
-      expect(described_class.trusted_proxy_hosts).to contain_exactly("dev.ipnode.us", "api.example.com", "10.0.0.5")
+      expect(described_class.trusted_proxy_hosts).to contain_exactly("dev.example.test", "api.example.com", "10.0.0.5")
     end
 
     it "merges allowlist hosts into extra_hosts" do
-      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.ipnode.us" ])
-      expect(described_class.extra_hosts).to include("dev.ipnode.us")
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.example.test" ])
+      expect(described_class.extra_hosts).to include("dev.example.test")
     end
 
     it "routes an allowlisted host through the bundled proxy (Host OR-group includes it)" do
-      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.ipnode.us" ])
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.example.test" ])
       create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
                                                common_name: "ops.example.test")
       result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
       parsed = YAML.load_file(result[:output_path])
       frontend_rule = parsed["http"]["routers"].values
                         .find { |r| r["service"] == "powernode-frontend" }["rule"]
-      expect(frontend_rule).to include("Host(`dev.ipnode.us`)")
+      expect(frontend_rule).to include("Host(`dev.example.test`)")
       expect(frontend_rule).to include("Host(`ops.example.test`)")
     end
 

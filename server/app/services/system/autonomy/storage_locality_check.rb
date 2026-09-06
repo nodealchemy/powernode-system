@@ -9,7 +9,7 @@ module System
     # Ground truth (operator-locked decision, 2026-07-24; re-derived here
     # from the live Provider record rather than assumed from memory —
     # confirmed via the "IPNode-PVE" Provider's config, endpoint
-    # dna.ipnode.net:8006, default_node "dna", default_storage "dna-data",
+    # pve.example.test:8006, default_node "pve1", default_storage "pve1-data",
     # and ops-hub's own running instance cloud_instance_id "dna/qemu/104"):
     # dna-data is dna's own ZFS pool — a dna failure already took ops-hub
     # down once (the incident this whole campaign traces to). rna's

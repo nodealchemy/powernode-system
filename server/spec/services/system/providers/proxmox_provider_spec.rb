@@ -1008,7 +1008,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         "opt/com.powernode/instance_name"   => "uefi-pool-vm",
         "opt/com.powernode/bootstrap_token" => "plaintext-token-abc",
         "opt/com.powernode/ca_pem"          => "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----",
-        "opt/com.powernode/platform_url"    => "https://dev.ipnode.us"
+        "opt/com.powernode/platform_url"    => "https://dev.example.test"
       }
     end
     let(:params) do
@@ -1140,7 +1140,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     let(:cicustom_seed) do
       {
         user_data: "ID=#{node_instance.id}\nKEY=plaintext-cicustom-token\n" \
-                   "SERVER=https://dev.ipnode.us\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n",
+                   "SERVER=https://dev.example.test\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n",
         meta_data: "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"
       }
     end

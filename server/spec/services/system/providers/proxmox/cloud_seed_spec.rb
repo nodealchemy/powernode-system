@@ -5,7 +5,7 @@ require "rails_helper"
 RSpec.describe System::Providers::Proxmox::CloudSeed do
   let(:spawn_payload) do
     {
-      "parent_url"       => "https://ops.ipnode.us",
+      "parent_url"       => "https://ops.example.test",
       "acceptance_token" => "test-token",
       "spawn_mode"       => "managed_child",
       "parent_peer_id"   => "abc12345-1234-1234-1234-abcdef012345",
@@ -16,7 +16,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
   let(:rendered) do
     described_class.render(
       spawn_payload: spawn_payload,
-      hostname:      "ops2.ipnode.us",
+      hostname:      "ops2.example.test",
       ssh_authorized_keys: [ "ssh-ed25519 AAAA test@dev" ]
     )
   end
@@ -39,7 +39,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
     netplan = payload["write_files"].find { |f| f["path"] == "/etc/netplan/99-powernode-dhcp.yaml" }
     expect(netplan).to be_present
     expect(netplan["content"]).to include("send-hostname: true")
-    expect(netplan["content"]).to include("hostname: ops2.ipnode.us")
+    expect(netplan["content"]).to include("hostname: ops2.example.test")
     # NIC name is image-dependent (eth0 on biosdevname-disabled images,
     # enp0s18/ens18 on Ubuntu cloud images) — match by glob so netplan
     # apply doesn't silently no-op when eth0 is absent.
@@ -62,7 +62,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
   it "writes the federation-payload.json fallback for fw-cfg-less PVE token-auth spawns" do
     fed = payload["write_files"].find { |f| f["path"] == "/etc/powernode/federation-payload.json" }
     expect(fed).to be_present
-    expect(JSON.parse(fed["content"])).to include("parent_url" => "https://ops.ipnode.us")
+    expect(JSON.parse(fed["content"])).to include("parent_url" => "https://ops.example.test")
   end
 
   it "writes the pnadmin sudoers grant for break-glass access from first boot" do

@@ -32,11 +32,11 @@ var sysClassNet = "/sys/class/net"
 // that means the node's own A record is wrong or missing until the lease renews
 // — T1 on this fleet is an hour. Measured on ops-hub 2026-07-28:
 //
-//	04:10:32 localhost systemd-networkd[196]: DHCPv4 address 10.125.0.227 acquired
+//	04:10:32 localhost systemd-networkd[196]: DHCPv4 address 192.0.2.227 acquired
 //	04:10:43 ops-hub   systemd-networkd[561]: Configuring with 10-dhcp.network
 //
 // and for the rest of that window every agent call failed with
-// `lookup ops-hub.ipnode.us: no such host`. That window is exactly when the
+// `lookup ops-hub.example.test: no such host`. That window is exactly when the
 // agent must heartbeat to bless a boot slot, promote a pending composition and
 // sync operator SSH keys, so all three silently failed while the node looked
 // healthy.

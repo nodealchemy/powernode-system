@@ -79,7 +79,7 @@ done
 [[ -z "$PEER_ID" ]]   && { echo "ERROR: --peer-id required" >&2; usage; exit 1; }
 [[ ! -d "$FWCFG_DIR" ]] && { echo "ERROR: fw-cfg dir $FWCFG_DIR not present" >&2; exit 1; }
 
-PVE_HOST="admin@${PVE_NODE}.ipnode.net"
+PVE_HOST="admin@${PVE_NODE}.${PVE_DOMAIN:?set PVE_DOMAIN to the Proxmox hosts DNS domain}"
 REMOTE_FWCFG_DIR="/tmp/pn-smoke-fwcfg"
 SERIAL_LOG="/tmp/qemu-smoke-${PEER_ID}.log"
 

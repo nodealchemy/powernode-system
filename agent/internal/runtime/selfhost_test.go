@@ -30,9 +30,9 @@ func selfHostReconciler(t *testing.T, platformURL string) *Reconciler {
 }
 
 func TestSelfHosted_TrueWhenPlatformResolvesToALocalAddress(t *testing.T) {
-	withLookups(t, map[string][]string{"ops-hub.ipnode.us": {"10.125.0.227"}},
-		[]string{"127.0.0.1", "10.125.0.227"}, nil)
-	r := selfHostReconciler(t, "https://ops-hub.ipnode.us")
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.227"}},
+		[]string{"127.0.0.1", "192.0.2.227"}, nil)
+	r := selfHostReconciler(t, "https://ops-hub.example.test")
 
 	if !r.selfHosted() {
 		t.Error("a platform URL resolving to one of this node's own addresses is self-hosted")
@@ -40,9 +40,9 @@ func TestSelfHosted_TrueWhenPlatformResolvesToALocalAddress(t *testing.T) {
 }
 
 func TestSelfHosted_FalseForARemotePlatform(t *testing.T) {
-	withLookups(t, map[string][]string{"dev.ipnode.us": {"10.125.0.22"}},
-		[]string{"127.0.0.1", "10.125.0.99"}, nil)
-	r := selfHostReconciler(t, "https://dev.ipnode.us")
+	withLookups(t, map[string][]string{"dev.example.test": {"192.0.2.22"}},
+		[]string{"127.0.0.1", "192.0.2.99"}, nil)
+	r := selfHostReconciler(t, "https://dev.example.test")
 
 	if r.selfHosted() {
 		t.Error("a platform on another host must not be treated as self-hosted")
@@ -54,9 +54,9 @@ func TestSelfHosted_FalseForARemotePlatform(t *testing.T) {
 // self-hosted" would disarm the protection during the very incident it
 // exists for.
 func TestSelfHosted_IsStickyOnceEstablished(t *testing.T) {
-	withLookups(t, map[string][]string{"ops-hub.ipnode.us": {"10.125.0.227"}},
-		[]string{"10.125.0.227"}, nil)
-	r := selfHostReconciler(t, "https://ops-hub.ipnode.us")
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.227"}},
+		[]string{"192.0.2.227"}, nil)
+	r := selfHostReconciler(t, "https://ops-hub.example.test")
 	if !r.selfHosted() {
 		t.Fatal("precondition: should be self-hosted")
 	}
@@ -70,7 +70,7 @@ func TestSelfHosted_IsStickyOnceEstablished(t *testing.T) {
 }
 
 func TestSelfHosted_FalseWhenPlatformURLIsUnset(t *testing.T) {
-	withLookups(t, nil, []string{"10.125.0.227"}, nil)
+	withLookups(t, nil, []string{"192.0.2.227"}, nil)
 	r := selfHostReconciler(t, "")
 
 	if r.selfHosted() {
