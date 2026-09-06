@@ -17,7 +17,7 @@ module Api
         #   Body (optional): { account_id }  # scope the sweep to one account
         #   Response: { data: { accounts_swept, accounts_gated, gates,
         #                       advanced, released, flagged, errored,
-        #                       orphans_reaped } }
+        #                       orphans_reaped, readvanced, redispatched } }
         #
         # accounts_swept counts accounts the sweep actually RAN for; gated
         # (halted/standby) accounts are broken out with per-gate counts —
@@ -48,19 +48,33 @@ module Api
           def target_accounts
             return Array(::Account.find_by(id: params[:account_id])) if params[:account_id].present?
 
-            # Sweep accounts with active leases OR orphaned fleet-* runners: a
-            # recycled account can reach zero active leases while still carrying
-            # offline runner rows that need reaping, so scoping on leases alone
-            # would leave those orphans unreachable by the cron.
+            # Sweep accounts with active leases OR orphaned fleet-* runners OR a
+            # module build batch still in flight: a recycled account can reach
+            # zero active leases while still carrying offline runner rows that
+            # need reaping, and a native batch whose leases are all gone but
+            # whose members are queued (retry) or finished-but-unrecorded
+            # (2026-09-06 hub-frontend) is only ever re-driven by the sweep's
+            # batch-level backstops — which never run for an account this list
+            # omits. module_build leases register no Gitea runner, so on a
+            # native-only deployment the first two sources can both be empty.
             account_ids = (
               ::System::CiRunnerLease.active.distinct.pluck(:account_id) +
-              ::Devops::GitRunner.where("name LIKE 'fleet-%'").distinct.pluck(:account_id)
+              ::Devops::GitRunner.where("name LIKE 'fleet-%'").distinct.pluck(:account_id) +
+              in_flight_batch_account_ids
             ).compact.uniq
             ::Account.where(id: account_ids)
           end
 
+          def in_flight_batch_account_ids
+            return [] unless defined?(::System::ModuleBuildBatch)
+
+            ::System::ModuleBuildBatch
+              .where(status: %w[planning dispatched awaiting_signature publishing])
+              .distinct.pluck(:account_id)
+          end
+
           def aggregate(summaries)
-            %i[advanced released flagged errored orphans_reaped].index_with do |key|
+            %i[advanced released flagged errored orphans_reaped readvanced redispatched].index_with do |key|
               summaries.sum { |summary| summary[key].to_i }
             end
           end

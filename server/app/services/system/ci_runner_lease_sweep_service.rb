@@ -44,11 +44,8 @@ module System
     def initialize(account:)
       @account = account
       @svc = CiRunnerLeaseService.new(account: account)
-      @summary = { advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0, redispatched: 0 }
-      # Dedup within one sweep run: several active module_build leases can
-      # correlate to tasks in the SAME batch — advance the batch at most
-      # once per tick regardless of how many of its leases just finished.
-      @advanced_batch_ids = []
+      @summary = { advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0,
+                   readvanced: 0, redispatched: 0 }
     end
 
     def run!
@@ -63,6 +60,7 @@ module System
       end
 
       @summary[:orphans_reaped] = reap_orphans
+      @summary[:readvanced]     = readvance_stalled_batches!
       @summary[:redispatched]   = redispatch_queued_batches!
       @summary
     end
@@ -83,9 +81,7 @@ module System
       return 0 unless defined?(::System::ModuleBuildBatch) && defined?(::System::NativeModuleBuildOrchestrator)
 
       redispatched = 0
-      ::System::ModuleBuildBatch
-        .where(account_id: @account.id, status: %w[planning dispatched awaiting_signature publishing])
-        .find_each do |batch|
+      non_terminal_batches.find_each do |batch|
           mods = (batch.metadata || {})["modules"] || {}
           next unless mods.values.any? { |e| e.is_a?(::Hash) && e["state"] == "queued" }
 
@@ -95,6 +91,49 @@ module System
           Rails.logger.error("[CiRunnerLeaseSweep] re-dispatch batch ##{batch.id} failed: #{e.class}: #{e.message}")
         end
       redispatched
+    end
+
+    # LEASE-INDEPENDENT re-advance of a batch with a finished-but-unresolved
+    # member (2026-09-06, batch 01a07446 / hub-frontend): a module whose Task
+    # is terminal but whose entry is still "dispatched" was never signed or
+    # recorded, and once its lease is gone (released by the backstop in
+    # #advance_module_build, expired, released by hand, or the orchestrator's
+    # own advance raised after releasing it) NOTHING in the active-lease loop
+    # above ever touches its batch again — the batch parks in `publishing`
+    # with a built, pushed artifact that no NodeModuleVersion points at.
+    # NativeModuleBuildOrchestrator#advance! is idempotent for already-
+    # resolved entries, so re-advancing such a batch does exactly the missing
+    # sign + publish and nothing else.
+    def readvance_stalled_batches!
+      return 0 unless defined?(::System::ModuleBuildBatch) && defined?(::System::NativeModuleBuildOrchestrator)
+
+      readvanced = 0
+      non_terminal_batches.where(status: %w[dispatched awaiting_signature publishing]).find_each do |batch|
+        next unless stalled_member?(batch)
+
+        ::System::NativeModuleBuildOrchestrator.advance!(batch: batch)
+        readvanced += 1
+      rescue StandardError => e
+        Rails.logger.error("[CiRunnerLeaseSweep] re-advance batch ##{batch.id} failed: #{e.class}: #{e.message}")
+      end
+      readvanced
+    end
+
+    def non_terminal_batches
+      ::System::ModuleBuildBatch
+        .where(account_id: @account.id, status: %w[planning dispatched awaiting_signature publishing])
+    end
+
+    # A "dispatched" entry whose tracked Task has already finished.
+    def stalled_member?(batch)
+      task_ids = module_entries(batch).select { |e| e["state"] == "dispatched" }.filter_map { |e| e["task_id"] }
+      return false if task_ids.empty?
+
+      ::System::Task.where(id: task_ids).any?(&:finished?)
+    end
+
+    def module_entries(batch)
+      ((batch.metadata || {})["modules"] || {}).values.select { |e| e.is_a?(::Hash) }
     end
 
     def advance(lease)
@@ -142,16 +181,43 @@ module System
       expire_if_due(lease)
     end
 
+    # Several active module_build leases can correlate to tasks in the SAME
+    # batch, and one advance! resolves every member Task that was already
+    # terminal when it loaded the batch — so the dedupe here is keyed on THIS
+    # task's resolution in the batch's persisted state, never on "the batch
+    # was advanced this tick". The latter (the pre-2026-09-06 shape) skipped
+    # a sibling lease whose task finished DURING the first advance's ~100 s
+    # sign+publish: that advance had captured its terminal set before the
+    # task finished, the skip left the entry "dispatched", the backstop
+    # release below then dropped the lease, and no later tick ever advanced
+    # the batch again (hub-frontend built + pushed, never recorded).
     def trigger_orchestrator_advance(task)
       return unless defined?(::System::NativeModuleBuildOrchestrator)
 
       batch_id = ::System::NativeModuleBuildOrchestrator.task_batch_id(task)
-      return if batch_id.blank? || @advanced_batch_ids.include?(batch_id)
+      return if batch_id.blank?
+      return if task_resolved_in_batch?(batch_id, task)
 
-      @advanced_batch_ids << batch_id
       ::System::NativeModuleBuildOrchestrator.advance_for_task!(task)
     rescue StandardError => e
       Rails.logger.warn("[CiRunnerLeaseSweep] orchestrator advance for task ##{task.id} failed: #{e.message}")
+    end
+
+    # True when the batch's persisted state already carries this task's entry
+    # in a terminal module state (nothing left for advance! to do for it), or
+    # no longer tracks the task at all (a retry re-queued the module onto a
+    # fresh Task; this one's outcome has been consumed). An unknown batch
+    # is "unresolved" so advance_for_task! gets its normal not-found no-op.
+    def task_resolved_in_batch?(batch_id, task)
+      return false unless defined?(::System::ModuleBuildBatch)
+
+      batch = ::System::ModuleBuildBatch.find_by(id: batch_id)
+      return false unless batch
+
+      entry = module_entries(batch).find { |e| e["task_id"] == task.id }
+      return true if entry.nil?
+
+      ::System::NativeModuleBuildOrchestrator::TERMINAL_MODULE_STATES.include?(entry["state"])
     end
 
     # Try once to correlate to the GitRunner row; expiry is the backstop if the

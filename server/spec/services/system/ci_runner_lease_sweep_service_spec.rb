@@ -172,7 +172,8 @@ RSpec.describe System::CiRunnerLeaseSweepService do
   describe "summary shape" do
     it "returns the full counters hash even with nothing to do" do
       summary = described_class.run!(account: account)
-      expect(summary).to eq(advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0, redispatched: 0)
+      expect(summary).to eq(advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0,
+                            readvanced: 0, redispatched: 0)
     end
 
     it "isolates one lease's advance failure (fail!s it) from the rest of the sweep" do
@@ -271,22 +272,139 @@ RSpec.describe System::CiRunnerLeaseSweepService do
       expect(lease.reload).to be_registered
     end
 
-    it "deduplicates orchestrator advance calls within one tick for leases sharing the same batch" do
-      task_b = create(:system_task, account: account, operable: instance, command: "ci.module_build",
-                                     status: "complete", completed_at: Time.current,
-                                     options: { "module" => "mod-y", "sha" => "abc", "oci_ref" => "def5678", "batch_id" => "batch-1" })
-      task.update!(status: "complete", completed_at: Time.current)
-      build_module_build_lease(task: task, status: "busy")
-      build_module_build_lease(task: task_b, status: "busy")
-      allow(::System::NativeModuleBuildOrchestrator).to receive(:task_batch_id).and_return("batch-1")
-
-      expect(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!).once do |t|
-        System::CiRunnerLease.where(build_task_id: t.id).update_all(status: "released", released_at: Time.current)
+    # Two leases, one batch. The orchestrator's advance! resolves every member
+    # Task that is terminal when it LOADS the batch — so whether the second
+    # lease needs its own advance depends on what the first one resolved, not
+    # on "the batch was advanced this tick".
+    context "with two leases whose tasks belong to the same batch" do
+      let!(:task_b) do
+        create(:system_task, account: account, operable: instance, command: "ci.module_build",
+                             status: "complete", completed_at: Time.current,
+                             options: { "module" => "mod-y", "sha" => "abc", "oci_ref" => "def5678", "batch_id" => batch.id })
+      end
+      let(:batch) do
+        System::ModuleBuildBatch.create_for(account: account, trigger: "manual", base_sha: "base", head_sha: "head",
+                                            plan: [ { module: "mod-x", oci_ref: "abc1234" }, { module: "mod-y", oci_ref: "def5678" } ])
       end
 
-      described_class.run!(account: account)
+      def track!(states)
+        batch.update!(metadata: batch.metadata.merge("modules" => {
+          "mod-x" => { "module" => "mod-x", "tag" => "abc1234", "state" => states[:x], "attempts" => 1,
+                       "lease_id" => nil, "task_id" => task.id, "error" => nil },
+          "mod-y" => { "module" => "mod-y", "tag" => "def5678", "state" => states[:y], "attempts" => 1,
+                       "lease_id" => nil, "task_id" => task_b.id, "error" => nil }
+        }))
+      end
 
-      expect(System::CiRunnerLease.for_account(account).active.count).to eq(0)
+      before do
+        task.update!(status: "complete", completed_at: Time.current,
+                     options: task.options.merge("batch_id" => batch.id))
+        build_module_build_lease(task: task, status: "busy")
+        build_module_build_lease(task: task_b, status: "busy")
+        track!(x: "dispatched", y: "dispatched")
+      end
+
+      it "advances the batch once when the first advance resolved both tasks" do
+        expect(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!).once do |_t|
+          track!(x: "succeeded", y: "succeeded")
+          System::CiRunnerLease.where(build_task_id: [ task.id, task_b.id ]).update_all(status: "released", released_at: Time.current)
+        end
+
+        described_class.run!(account: account)
+
+        expect(System::CiRunnerLease.for_account(account).active.count).to eq(0)
+      end
+
+      # Regression — 2026-09-06 batch 01a07446: hub-backend's advance captured
+      # its terminal set at 01:23:02, hub-frontend's task finished at 01:23:41
+      # during that advance's sign + publish, the per-tick batch dedupe then
+      # skipped hub-frontend's lease, the backstop released it, and no later
+      # tick ever advanced the batch again. Built + pushed, never recorded.
+      it "advances the batch AGAIN for a sibling lease whose task the first advance did not resolve" do
+        calls = []
+        expect(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!).twice do |t|
+          calls << t.id
+          # First pass: only mod-x was terminal when the state was loaded.
+          # Second pass: mod-y is resolved now.
+          track!(x: "succeeded", y: calls.size == 1 ? "dispatched" : "succeeded")
+          System::CiRunnerLease.where(build_task_id: t.id).update_all(status: "released", released_at: Time.current)
+        end
+
+        summary = described_class.run!(account: account)
+
+        expect(calls).to eq([ task.id, task_b.id ])
+        expect(batch.reload.metadata["modules"]["mod-y"]["state"]).to eq("succeeded")
+        expect(System::CiRunnerLease.for_account(account).active.count).to eq(0)
+        expect(summary[:released]).to eq(0) # the orchestrator released both; the backstop never had to
+      end
+
+      it "skips the advance for a lease whose task the batch no longer tracks (retried onto a fresh task)" do
+        track!(x: "succeeded", y: "dispatched")
+        batch.update!(metadata: batch.metadata.deep_merge("modules" => { "mod-y" => { "task_id" => SecureRandom.uuid } }))
+        expect(::System::NativeModuleBuildOrchestrator).not_to receive(:advance_for_task!)
+
+        summary = described_class.run!(account: account)
+
+        expect(summary[:released]).to eq(2) # both leases still get the backstop release
+      end
+    end
+  end
+
+  # Lease-independent backstop: a finished-but-unresolved member whose lease
+  # is already gone is invisible to the per-lease loop; the batch must be
+  # re-advanced off its persisted state.
+  describe "readvance of stalled native batches" do
+    let(:batch) do
+      System::ModuleBuildBatch.create_for(account: account, trigger: "manual", base_sha: "base", head_sha: "head",
+                                          plan: [ { module: "mod-x", oci_ref: "abc1234" } ])
+    end
+    let!(:task) do
+      create(:system_task, account: account, operable: instance, command: "ci.module_build", status: "complete",
+                           completed_at: Time.current,
+                           options: { "module" => "mod-x", "sha" => "abc", "oci_ref" => "abc1234", "batch_id" => batch.id })
+    end
+
+    def park!(status:, state:, task_id: task.id)
+      batch.update!(metadata: batch.metadata.merge("modules" => {
+        "mod-x" => { "module" => "mod-x", "tag" => "abc1234", "state" => state, "attempts" => 1,
+                     "lease_id" => nil, "task_id" => task_id, "error" => nil }
+      }))
+      batch.update_columns(status: status)
+    end
+
+    it "re-advances a `publishing` batch whose dispatched member's task already finished and whose lease is released" do
+      build_lease(status: "released", purpose: "module_build", build_task_id: task.id, released_at: 1.minute.ago)
+      park!(status: "publishing", state: "dispatched")
+      expect(::System::NativeModuleBuildOrchestrator).to receive(:advance!).with(batch: batch).once
+        .and_return(System::NativeModuleBuildOrchestrator::Result.new(ok?: true))
+
+      summary = described_class.run!(account: account)
+
+      expect(summary[:readvanced]).to eq(1)
+    end
+
+    it "leaves a batch alone while its dispatched member's task is still running" do
+      task.update!(status: "running", started_at: Time.current, completed_at: nil)
+      park!(status: "dispatched", state: "dispatched")
+      expect(::System::NativeModuleBuildOrchestrator).not_to receive(:advance!)
+
+      summary = described_class.run!(account: account)
+
+      expect(summary[:readvanced]).to eq(0)
+    end
+
+    it "never re-advances a terminal batch, even one that still carries a dispatched entry" do
+      park!(status: "cancelled", state: "dispatched")
+      expect(::System::NativeModuleBuildOrchestrator).not_to receive(:advance!)
+
+      expect(described_class.run!(account: account)[:readvanced]).to eq(0)
+    end
+
+    it "does not count a batch whose members are all resolved" do
+      park!(status: "publishing", state: "succeeded")
+      expect(::System::NativeModuleBuildOrchestrator).not_to receive(:advance!)
+
+      expect(described_class.run!(account: account)[:readvanced]).to eq(0)
     end
   end
 
