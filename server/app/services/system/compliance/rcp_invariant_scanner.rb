@@ -43,6 +43,10 @@ module System
     # through the existing account-wide compliance-snapshot seam rather than
     # inventing a parallel report format).
     class RcpInvariantScanner
+      # Storage names an operator has confirmed as a hypervisor's LOCAL pool, so
+      # the static INV-6 scan does not re-flag them as unverified (comma-separated).
+      CONFIRMED_LOCAL_STORAGES_SETTING = "system.rcp.confirmed_local_storages"
+
       include ::System::Autonomy::SelfManagementFence
 
       Result = Struct.new(:inv1, :inv2, :inv6, :scanned_at, :live, keyword_init: true) do
@@ -144,17 +148,19 @@ module System
           # Tri-state: true = confirmed network-backed, false = confirmed
           # local, nil = undetermined. Undetermined is reported as an
           # unverified flag (never silently treated as "compliant") EXCEPT
-          # the one name this audit independently corroborated elsewhere
-          # (this deployment's own Provider record + ops-hub's own
-          # cloud_instance_id both resolve to dna/dna-data) as dna's own
-          # local ZFS — re-flagging "dna-data" as unverified on every static
-          # scan would just be noise.
+          # storage names the operator has independently corroborated as a
+          # hypervisor's own local pool (e.g. the control plane's own ZFS
+          # pool, confirmed via the Provider record + cloud_instance_id):
+          # re-flagging those as unverified on every static scan would just be
+          # noise. That set is deployment-local, so it lives in the
+          # CONFIRMED_LOCAL_STORAGES_SETTING SiteSetting (comma-separated),
+          # never as a name in source.
           network_backed =
             if live
               ::System::Autonomy::StorageLocalityCheck.network_backed_storage?(
                 provider_adapter: adapter, region_code: instance.provider_region&.name, storage_name: storage_name
               )
-            elsif storage_name == "dna-data"
+            elsif confirmed_local_storages.include?(storage_name)
               false
             end
 
@@ -192,6 +198,11 @@ module System
       # Mirrors ProxmoxProvider#pve_credential's precedence for this one key
       # (connection config, then the parent Provider's config) without
       # reaching into that private method.
+      def confirmed_local_storages
+        @confirmed_local_storages ||= ::SiteSetting.get(CONFIRMED_LOCAL_STORAGES_SETTING).to_s
+                                                   .split(",").map(&:strip).reject(&:empty?)
+      end
+
       def resolved_default_storage(adapter)
         connection = adapter.respond_to?(:connection) ? adapter.connection : nil
         return nil unless connection

@@ -127,13 +127,21 @@ RSpec.describe System::Compliance::RcpInvariantScanner do
     end
 
     describe "INV-6" do
-      it "does not flag the known-local dna-data storage backend" do
-        instance_on(connection_config: { "default_storage" => "dna-data" })
+      it "does not flag a storage backend the operator confirmed as local via the SiteSetting" do
+        SiteSetting.set(described_class::CONFIRMED_LOCAL_STORAGES_SETTING, "pve1-data, pve2-local")
+        instance_on(connection_config: { "default_storage" => "pve1-data" })
         result = described_class.scan(account: account)
         expect(result.inv6).to be_empty
       end
 
-      it "flags an unverified (non-dna-data) default_storage backend as needing confirmation, not a confirmed violation" do
+      it "flags that same storage as unverified when the SiteSetting does not list it (no name is confirmed in source)" do
+        instance_on(connection_config: { "default_storage" => "pve1-data" })
+        result = described_class.scan(account: account)
+        expect(result.inv6.size).to eq(1)
+        expect(result.inv6.first).to include(invariant: "INV-6", verified: false)
+      end
+
+      it "flags an unverified, unlisted default_storage backend as needing confirmation, not a confirmed violation" do
         instance = instance_on(connection_config: { "default_storage" => "some-other-storage" })
         result = described_class.scan(account: account)
         expect(result.inv6.size).to eq(1)
@@ -148,7 +156,8 @@ RSpec.describe System::Compliance::RcpInvariantScanner do
       end
 
       it "falls back to the parent Provider's default_storage when the connection doesn't set one (mirrors pve_credential)" do
-        instance_on(connection_config: {}, provider_config: { "default_storage" => "dna-data" })
+        SiteSetting.set(described_class::CONFIRMED_LOCAL_STORAGES_SETTING, "pve1-data")
+        instance_on(connection_config: {}, provider_config: { "default_storage" => "pve1-data" })
         result = described_class.scan(account: account)
         expect(result.inv6).to be_empty
       end
@@ -170,9 +179,9 @@ RSpec.describe System::Compliance::RcpInvariantScanner do
 
   describe "#scan (live: true)" do
     it "upgrades an INV-6 finding to a confirmed violation when the live adapter reports NFS" do
-      instance = instance_on(connection_config: { "default_storage" => "dsm-data" })
+      instance = instance_on(connection_config: { "default_storage" => "nas1-data" })
       allow_any_instance_of(System::Providers::ProxmoxProvider).to receive(:list_volume_types).and_return([
-        { cloud_id: "dsm-data", name: "dsm-data", plugin_type: "nfs", shared: true }
+        { cloud_id: "nas1-data", name: "nas1-data", plugin_type: "nfs", shared: true }
       ])
 
       result = described_class.scan(account: account, live: true)
