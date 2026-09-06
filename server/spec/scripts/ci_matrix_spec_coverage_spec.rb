@@ -3,94 +3,114 @@
 require "spec_helper"
 require "yaml"
 
-# IMP-07e191785866 — the rspec matrix in ci.yaml named six directories
-# (controllers, requests, services, models, lib, integration) while the spec
-# root carried fourteen with specs in them, and the step's own comment claimed
-# "total coverage stays at 100% across the matrix" — which is exactly what
-# stopped the next reader checking. db, decorators, docs, schema, scripts,
-# seeds, serializers and system were never run by any suite.
+# THE INVARIANT THIS FILE HAS ALWAYS PROTECTED, through three different
+# mechanisms: every spec-bearing directory is actually run by CI.
 #
-# The fix adds a `misc` sweep suite that runs every top-level spec directory
-# NOT explicitly claimed by a named suite, so a future directory is covered by
-# default. That leaves one machine-checkable invariant, pinned here: a
-# directory may be excluded from the sweep ONLY if a named suite runs it
-# explicitly (or it is a spec-less helper directory). If someone adds a new
-# name to the sweep's exclusion list without adding it to a suite, this spec
-# goes red — the silent-uncovered failure mode cannot come back unnoticed.
+# History, because the shape keeps changing and the reason must not be lost.
+# IMP-07e191785866: the rspec matrix named six directories while the spec root
+# had fourteen with specs in them, and the step's own comment claimed "total
+# coverage stays at 100% across the matrix" — which is precisely what stopped
+# the next reader checking. Eight directories were never run by any suite.
+# IMP-31a5ea65480d: the four matrix entries were collapsed into one job with a
+# `for suite in ...` shell loop, deleting the `strategy:` key this spec read.
 #
-# IMP-31a5ea65480d — the suite list originally lived in a GH-Actions
-# `strategy.matrix.suite` array. Commits 5aeec038/26752f8e later collapsed
-# the four suites into ONE job that iterates `for suite in ...; do` in a
-# shell loop (every matrix entry bound 0.0.0.0:5432, and neither a shared
-# concurrency group nor max-parallel staggered them). That refactor deleted
-# the `strategy:` key `rspec_matrix_suites` was reading, so "has a misc
-# sweep suite in the matrix" went red not because the sweep vanished — it's
-# still there, `case "$suite" in ... misc)` — but because the detector never
-# looked at the shell loop. Recognize both shapes.
-RSpec.describe "ci.yaml rspec matrix spec coverage" do
+# Design step 3 changed the mechanism again, and this time it removes the class
+# of bug rather than re-checking a list: shards are computed FROM THE FILE TREE
+# by scripts/ci-spec-shard.rb, so there is no directory list to drift. What is
+# left to pin is that the derivation cannot quietly narrow — the glob excludes
+# exactly the helper dirs, the matrix length matches what the shard script is
+# told, and the union gate exists.
+RSpec.describe "ci.yaml spec shard coverage" do
   let(:extension_root) { File.expand_path("../../..", __dir__) }
   let(:workflow_path)  { File.join(extension_root, ".gitea", "workflows", "ci.yaml") }
   let(:workflow_text)  { File.read(workflow_path) }
   let(:workflow_yaml)  { YAML.safe_load(workflow_text, aliases: true) }
   let(:spec_root)      { File.join(extension_root, "server", "spec") }
+  let(:rspec_job)      { workflow_yaml.fetch("jobs").fetch("rspec") }
 
-  # Directories rails_helper/spec_helper load as support code — they carry no
-  # *_spec.rb of their own, so no suite needs to run them.
+  # Loaded by rails_helper as support code; they carry no *_spec.rb, so no
+  # shard needs to run them. This is the ONE list, and the workflow's glob is
+  # asserted against it below.
   HELPER_DIRS = %w[factories fixtures support].freeze
 
-  def rspec_matrix_suites
-    jobs = workflow_yaml.fetch("jobs")
-    rspec_job = jobs.values.find { |j| j.to_s.include?("matrix") && j.to_s.include?("suite") }
-    expect(rspec_job).not_to be_nil, "no matrix-suite job found in ci.yaml"
-
-    from_strategy = rspec_job.dig("strategy", "matrix", "suite")
-    return from_strategy if from_strategy
-
-    # Sequential-job shape: `for suite in controllers services ...; do`
-    # inside a `run:` step, rather than a `strategy.matrix.suite` array.
-    m = workflow_text.match(/for suite in ([^;]+); do/)
-    m && m[1].split
-  end
-
-  # Every server/spec/<dir> the case block names via an explicit
-  # `.../server/spec/<dir>` path assignment.
-  def explicitly_run_dirs
-    workflow_text.scan(%r{extensions/system/server/spec/([a-z_]+)}).flatten.uniq.sort
-  end
-
-  # The sweep suite's exclusion list: claimed="controllers requests ..."
-  def sweep_exclusions
-    m = workflow_text.match(/claimed="([^"]+)"/)
-    expect(m).not_to be_nil,
-                     "ci.yaml has no `claimed=\"...\"` sweep exclusion list — the misc sweep suite is missing"
-    m[1].split.uniq.sort
-  end
-
   def spec_bearing_dirs
-    Dir.children(spec_root).select do |name|
-      path = File.join(spec_root, name)
-      File.directory?(path) && !Dir.glob(File.join(path, "**", "*_spec.rb")).empty?
-    end.sort
+    Dir.glob(File.join(spec_root, "*")).select { |p| File.directory?(p) }
+       .reject { |p| HELPER_DIRS.include?(File.basename(p)) }
+       .select { |p| Dir.glob(File.join(p, "**", "*_spec.rb")).any? }
+       .map { |p| File.basename(p) }
   end
 
-  it "has a misc sweep suite in the matrix" do
-    expect(rspec_matrix_suites).to include("misc"),
-      "matrix suites #{rspec_matrix_suites.inspect} lack the `misc` sweep — " \
-      "directories outside the named suites are never run"
+  it "shards the rspec job rather than running the suite in one container" do
+    shards = rspec_job.dig("strategy", "matrix", "shard")
+
+    expect(shards).to be_an(Array),
+      "the rspec job must be a shard matrix — one job cannot finish the suite: " \
+      "~217 minutes of work against a container ceiling of /bin/sleep 10800 = 180"
+    expect(shards.length).to be >= 2
+    expect(shards).to eq((0...shards.length).to_a),
+      "shard indices must be a dense 0..N-1 range; ci-spec-shard.rb refuses anything else"
   end
 
-  it "excludes a directory from the sweep only when a named suite runs it explicitly" do
-    unexplained = sweep_exclusions - explicitly_run_dirs - HELPER_DIRS
-    expect(unexplained).to be_empty,
-      "#{unexplained.inspect} are excluded from the misc sweep but no named suite " \
-      "runs them — they are silently uncovered"
+  it "tells the shard script the same N as the matrix length" do
+    declared = workflow_text.scan(/CI_RSPEC_SHARDS:\s*"(\d+)"/).flatten.map(&:to_i).uniq
+    matrix_n = rspec_job.dig("strategy", "matrix", "shard").length
+
+    expect(declared).not_to be_empty, "no CI_RSPEC_SHARDS declared in ci.yaml"
+    expect(declared).to all(eq(matrix_n)),
+      "CI_RSPEC_SHARDS #{declared.inspect} disagrees with the #{matrix_n}-entry matrix. " \
+      "A stale N silently drops whole shards' worth of files."
   end
 
-  it "leaves no spec-bearing directory both unnamed and excluded from the sweep" do
-    uncovered = spec_bearing_dirs.select do |dir|
-      sweep_exclusions.include?(dir) && !explicitly_run_dirs.include?(dir)
+  # The replacement for the old "claimed=" audit. A directory list cannot drift
+  # if there is no directory list — but the GLOB can, so pin its exclusions.
+  it "excludes exactly the helper dirs from the shard glob, and nothing else" do
+    excluded = workflow_text.scan(/^\s*(factories\|fixtures\|support)\)\s*;;\s*$/).flatten
+
+    expect(excluded).not_to be_empty,
+      "the shard step's directory glob no longer excludes helper dirs by the " \
+      "expected shape — re-read it and update this guard deliberately"
+    expect(excluded.first.split("|").sort).to eq(HELPER_DIRS.sort),
+      "the workflow excludes #{excluded.first} but this guard knows #{HELPER_DIRS.join('|')}. " \
+      "Excluding a real directory here is how eight of them went unrun in 2026-08."
+  end
+
+  it "finds spec-bearing directories, so this guard cannot pass vacuously" do
+    expect(spec_bearing_dirs.length).to be >= 8
+    expect(spec_bearing_dirs).to include("services", "models", "requests")
+  end
+
+  # Per-shard "ran == planned" catches a dropped file inside one shard; only a
+  # union check catches a file no shard claimed at all.
+  it "gates the union of the shards against the dry-run total" do
+    gate = workflow_yaml.fetch("jobs")["rspec-gate"]
+
+    expect(gate).not_to be_nil, "no rspec-gate job — nothing verifies the shards covered the suite"
+    expect(gate["needs"]).to eq("rspec").or(include("rspec"))
+
+    body = gate.fetch("steps").map { |s| s["run"].to_s }.join("\n")
+    expect(body).to include("ci-spec-shard.rb"),
+      "the gate must recompute the partition, not trust the shards' own word for it"
+    expect(body).to match(/DO NOT COVER|missing/i)
+    expect(body).to match(/OVERLAP|dupes/i)
+  end
+
+  it "keeps the gate mandatory — a skipped shard must not leave it green" do
+    gate = workflow_yaml.fetch("jobs").fetch("rspec-gate")
+
+    expect(gate["if"]).to be_nil,
+      "`if: always()` on the gate would let it pass while a shard failed or was " \
+      "cancelled; plain `needs:` makes a broken shard skip the gate and redden the run"
+  end
+
+  it "runs no spec job with continue-on-error" do
+    offenders = workflow_yaml.fetch("jobs").select do |name, job|
+      next false unless name.match?(/rspec|specs/)
+
+      job["continue-on-error"] ||
+        Array(job["steps"]).any? { |s| s["continue-on-error"] }
     end
-    expect(uncovered).to be_empty,
-      "#{uncovered.inspect} contain specs but are neither explicitly run nor swept by misc"
+
+    expect(offenders.keys).to be_empty,
+      "a spec job that cannot fail the run is not a gate: #{offenders.keys.join(', ')}"
   end
 end

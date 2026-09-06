@@ -26,12 +26,22 @@ RSpec.describe "CI zero-example gate" do
   let(:wrapper) { File.join(extension_root, "scripts/ci-rspec.sh") }
   let(:asserter) { File.join(extension_root, "scripts/ci-assert-examples-ran.sh") }
 
-  # A job runs specs if any step invokes rspec (directly or through the
-  # wrapper, whose own name contains "rspec") or the provider-gem harness.
+  # A job runs specs if any step EXECUTES examples. A `--dry-run` invocation is
+  # deliberately not one: it enumerates the suite and runs nothing, which is
+  # the whole point of the shard planner and the coverage gate. Counting those
+  # as spec jobs would demand a zero-example assertion on a job designed to
+  # execute zero examples, and fail every run.
+  #
+  # The shard job itself does BOTH — it plans with --dry-run and then runs for
+  # real — so the test is per-INVOCATION, not per-job.
+  def executing_rspec_runs(job)
+    Array(job["steps"]).flat_map { |s| s["run"].to_s.lines }
+                       .select { |line| line.match?(/rspec|test-provider-gems\.sh/) }
+                       .reject { |line| line.include?("--dry-run") }
+  end
+
   def spec_jobs
-    ci.fetch("jobs").select do |_name, job|
-      Array(job["steps"]).any? { |s| s["run"].to_s.match?(/rspec|test-provider-gems\.sh/) }
-    end
+    ci.fetch("jobs").select { |_name, job| executing_rspec_runs(job).any? }
   end
 
   it "finds the spec-running jobs" do
@@ -41,17 +51,24 @@ RSpec.describe "CI zero-example gate" do
   end
 
   it "routes every rspec invocation through the counting wrapper" do
-    bare = spec_jobs.flat_map do |name, job|
-      Array(job["steps"]).filter_map do |s|
-        run = s["run"].to_s
-        next unless run.match?(/bundle exec rspec/)
-        name
-      end
-    end.uniq
+    bare = spec_jobs.filter_map do |name, job|
+      name if executing_rspec_runs(job).any? { |line| line.match?(/bundle exec rspec/) }
+    end
     expect(bare).to be_empty,
       "these jobs call `bundle exec rspec` directly, so their example count is " \
       "never recorded and a zero-example run stays indistinguishable from a " \
       "test failure: #{bare.join(', ')}. Call scripts/ci-rspec.sh instead."
+  end
+
+  it "exempts a dry-run-only job, and ONLY because it executes nothing" do
+    gate = ci.fetch("jobs")["rspec-gate"]
+    skip "no rspec-gate job in this workflow" if gate.nil?
+
+    expect(spec_jobs.keys).not_to include("rspec-gate")
+    expect(gate.fetch("steps").map { |s| s["run"].to_s }.join).to include("--dry-run"),
+      "rspec-gate is exempt from the zero-example assertion purely because its " \
+      "rspec invocation is a dry run; if it ever executes examples the exemption " \
+      "must go with it"
   end
 
   it "asserts examples ran, unconditionally, in every spec-running job" do

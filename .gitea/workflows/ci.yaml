@@ -112,10 +112,33 @@ jobs:
 
   rspec:
     needs: ci-hygiene
-    # Runs the four spec suites (controllers/requests, services, models+lib+
-    # integration, and a sweep of the rest) SEQUENTIALLY inside one job. This
-    # was a 4-entry matrix; see the note below for why it could not stay one.
+    # SIX SHARDS, balanced by example count, each computing its own slice.
+    #
+    # This was one job running all four suites sequentially, and that job could
+    # not finish: the suite is ~217 minutes of work while the job container's
+    # own entrypoint is /bin/sleep 10800 = 180 minutes. No timeout-minutes
+    # value fixes that — past 180 the container dies instead of the step, which
+    # is strictly less legible. Run 1780 is the proof: controllers (2153) and
+    # services (8435) ran, the other two suites never started, and the job was
+    # killed at its ceiling with two suites unexecuted.
+    #
+    # The earlier 4-entry matrix failed for an unrelated reason — every entry
+    # published the same fixed 0.0.0.0:5432 — which step 2 removed by giving
+    # each job kernel-assigned sidecar ports. A matrix is safe again now.
+    #
+    # Shards are by FILE, not by directory: `services` alone is 56% of the
+    # suite, so any directory split needs a human to rebalance it as the suite
+    # grows, and a directory list as the coverage contract is what let eight
+    # directories go silently unrun in 2026-08. Measured balance at N=6 on the
+    # real suite: 2495/2495/2495/2495/2494/2494 across 956 files, max/mean
+    # 1.0001, union complete, zero duplicates.
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in step with CI_RSPEC_SHARDS below and with the rspec-gate job;
+        # ci-spec-shard.rb refuses an index outside the count.
+        shard: [0, 1, 2, 3, 4, 5]
     # Was: one job holding a FIXED host port, with four suites sequenced
     # inside it because a 4-entry matrix had every entry contend for
     # 0.0.0.0:5432. That made the suites run and converted the problem into a
@@ -133,7 +156,13 @@ jobs:
     #
     # timeout-minutes is honoured here (run 1776 P4: killed 113s into a 300s
     # sleep under a 2-minute cap), so this ceiling is real, not decoration.
-    timeout-minutes: 150
+    #
+    # Per SHARD now, not per suite. One sixth of ~217 minutes is ~36, plus
+    # setup and the dry run; 75 leaves headroom for the slowest shard while
+    # staying far below the container's own /bin/sleep 10800 = 180 minutes —
+    # which matters, because past that ceiling the container dies instead of
+    # the step and the failure stops being legible.
+    timeout-minutes: 75
     env:
       RAILS_ENV: test
     steps:
@@ -245,71 +274,63 @@ jobs:
         working-directory: powernode-platform/server
         run: bundle exec rails runner ../extensions/system/scripts/ci-assert-schema-materialised.rb
 
-      - name: Run system extension specs (all suites, sequential)
+      - name: Run this shard's specs
         working-directory: powernode-platform/server
-        # Each named suite runs a disjoint subset; `misc` sweeps every
-        # remaining top-level spec directory, so a NEW directory is covered by
-        # default without editing this file. Move a directory into a named
-        # bucket only when it needs its own lane — and then add its name to
-        # `claimed` below. spec/scripts/ci_matrix_spec_coverage_spec.rb fails
-        # if a claimed directory is not explicitly run by a named suite.
+        env:
+          CI_RSPEC_SHARDS: "6"
+          CI_RSPEC_INDEX: ${{ matrix.shard }}
         run: |
-          # One job, four suites, run one after another. The suites used to be
-          # matrix entries, but every entry publishes 0.0.0.0:5432 and this
-          # runner honours NEITHER of the mechanisms that would stagger them:
-          # a shared concurrency: group deadlocks (run 1675) and max-parallel
-          # is ignored (run 1676 — three entries still died on
-          # "port is already allocated" while the fourth held the port).
-          # Sequencing them inside a single job needs no scheduler feature at
-          # all, so it cannot be silently ignored.
-          overall=0
-          for suite in controllers services models-lib misc; do
-          case "$suite" in
-            controllers)
-              paths="../extensions/system/server/spec/controllers ../extensions/system/server/spec/requests"
-              ;;
-            services)
-              paths="../extensions/system/server/spec/services"
-              ;;
-            models-lib)
-              paths="../extensions/system/server/spec/models ../extensions/system/server/spec/lib ../extensions/system/server/spec/integration"
-              ;;
-            misc)
-              # Sweep: everything not claimed by a named suite above. The
-              # helper dirs (factories/fixtures/support) carry no *_spec.rb
-              # and are loaded by rails_helper, so they are claimed too.
-              claimed="controllers requests services models lib integration factories fixtures support"
-              paths=""
-              for d in ../extensions/system/server/spec/*/; do
-                name=$(basename "$d")
-                case " $claimed " in
-                  *" $name "*) ;;
-                  *) paths="$paths ${d%/}" ;;
-                esac
-              done
-              ;;
-            *)
-              echo "FATAL: unknown suite=$suite"
-              exit 1
-              ;;
-          esac
-          # No-op gracefully if a directory doesn't exist yet (e.g. before P0.1
-          # controller specs land).
-          existing=""
-          for p in $paths; do
-            [ -d "$p" ] && existing="$existing $p"
+          set -euo pipefail
+          EXT=../extensions/system/server/spec
+
+          # Directory list is DERIVED, never enumerated: a new top-level spec
+          # directory is covered automatically. The three helper dirs carry no
+          # *_spec.rb and are loaded by rails_helper.
+          dirs=""
+          for d in "$EXT"/*/; do
+            name=$(basename "$d")
+            case "$name" in
+              factories|fixtures|support) ;;
+              *) dirs="$dirs ${d%/}" ;;
+            esac
           done
-          if [ -z "$existing" ]; then
-            echo "no spec directories present for suite $suite — skipping"
-            continue
-          fi
-          echo "::group::rspec $suite"
-          # || overall=1 preserves the old fail-fast: false behaviour — every
-          # suite runs even after one fails, and the job still reports failure.
-          bash ../extensions/system/scripts/ci-rspec.sh $existing --format progress || overall=1
+          [ -n "$dirs" ] || { echo "no spec directories found under $EXT"; exit 1; }
+
+          # Every shard computes the SAME partition from the SAME commit, so no
+          # artifact, cache or job output crosses between them. That only holds
+          # because ci-spec-shard.rb is a pure function of this plan.
+          echo "::group::dry-run plan"
+          bundle exec rspec --dry-run --format json --out plan.json $dirs
           echo "::endgroup::"
-          done
-          exit $overall
+
+          ruby ../extensions/system/scripts/ci-spec-shard.rb \
+            plan.json --shards "$CI_RSPEC_SHARDS" --index "$CI_RSPEC_INDEX" > shard.txt
+
+          planned=$(ruby -rjson -e '
+            plan = JSON.parse(File.read("plan.json"))
+            want = File.readlines("shard.txt").map(&:strip).reject(&:empty?).to_set
+            puts plan["examples"].count { |e| want.include?(e["id"].to_s.split("[").first) }
+          ' 2>/dev/null || echo 0)
+          echo "shard $CI_RSPEC_INDEX: $(wc -l < shard.txt) files, $planned examples planned"
+          [ "$planned" -gt 0 ] || { echo "shard planned 0 examples — refusing to report a vacuous pass"; exit 1; }
+
+          # ci-rspec.sh records the executed count for the zero-example gate and
+          # exits with rspec's OWN status.
+          rc=0
+          bash ../extensions/system/scripts/ci-rspec.sh \
+            --format progress --format json --out result.json $(cat shard.txt) || rc=$?
+
+          # A file rspec silently skipped, or one dropped by a load error, is
+          # caught HERE rather than surfacing as a smaller green run.
+          ran=$(ruby -rjson -e 'puts JSON.parse(File.read("result.json"))["summary"]["example_count"]' 2>/dev/null || echo -1)
+          echo "shard $CI_RSPEC_INDEX: planned $planned, ran $ran"
+          if [ "$ran" != "$planned" ]; then
+            echo "SHARD COVERAGE MISMATCH: planned $planned examples but ran $ran."
+            echo "A spec file was skipped or failed to load. This is NOT an ordinary"
+            echo "test failure — the shard tested less than it claimed to."
+            exit 1
+          fi
+          exit $rc
 
       # Post-job sidecar cleanup. Runs on normal completion AND on most
       # cancellations (act-runner sends SIGTERM with a grace period
@@ -351,6 +372,136 @@ jobs:
   # green `rspec` job is misleading for provider code. This lane layers the
   # SDK gems onto the core bundle (via extensions/system/scripts/test-provider-gems.sh)
   # so those specs actually run and provider regressions are caught.
+  # Proves the six shards together covered the whole suite. A bug in the
+  # directory glob, in the LPT assignment, or a stale shard count fails HERE
+  # rather than showing up as a smaller-but-green run — the failure mode this
+  # whole design exists to prevent, and the one that let eight directories go
+  # silently unrun in 2026-08.
+  #
+  # `needs: rspec` WITHOUT `if: always()` is deliberate: a failed or cancelled
+  # shard skips this job and the run is red anyway, so no needs.<job>.result
+  # expression or matrix-output feature is required.
+  rspec-gate:
+    needs: rspec
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RAILS_ENV: test
+    steps:
+      - name: Start isolated sidecars on kernel-assigned ports
+        run: |
+          set -euo pipefail
+          GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+          GW=${GW:-172.17.0.1}
+          OWNER="${GITHUB_RUN_ID:-norun}-${GITHUB_JOB:-nojob}-$(date +%s)-$RANDOM"
+          DEADLINE=$(( $(date +%s) + 3600 ))
+          LABELS="--label powernode.ci=sidecar --label powernode.ci.owner=$OWNER --label powernode.ci.deadline=$DEADLINE"
+
+          PG=$(docker run -d $LABELS -p "$GW::5432" \
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                pgvector/pgvector:pg16 \
+                -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
+          RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
+
+          PGPORT=$(docker port "$PG" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          RDPORT=$(docker port "$RD" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          [ -n "$PGPORT" ] && [ -n "$RDPORT" ] || { echo "sidecar published no port"; exit 1; }
+
+          for _ in $(seq 1 60); do docker exec "$PG" pg_isready -U postgres -q && break; sleep 1; done
+          docker exec "$PG" pg_isready -U postgres
+
+          { echo "DATABASE_URL=postgres://postgres:postgres@$GW:$PGPORT/powernode_test"
+            echo "REDIS_URL=redis://$GW:$RDPORT/0"
+            echo "CI_SIDECAR_OWNER=$OWNER"; } >> "$GITHUB_ENV"
+
+      - name: Check out the system extension
+        uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - name: Check out the parent platform
+        uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+          submodules: recursive
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          mv extensions/system powernode-platform/extensions/system
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+          bundler-cache: true
+          working-directory: powernode-platform/server
+
+      - name: Prepare test database
+        working-directory: powernode-platform/server
+        run: |
+          bundle exec rails db:create
+          bundle exec rails db:schema:load
+          bundle exec rails runner ../extensions/system/scripts/ci-stamp-migration-versions.rb
+
+      - name: Assert the shards covered the whole suite
+        working-directory: powernode-platform/server
+        env:
+          CI_RSPEC_SHARDS: "6"
+        run: |
+          set -euo pipefail
+          EXT=../extensions/system/server/spec
+
+          dirs=""
+          for d in "$EXT"/*/; do
+            name=$(basename "$d")
+            case "$name" in
+              factories|fixtures|support) ;;
+              *) dirs="$dirs ${d%/}" ;;
+            esac
+          done
+
+          bundle exec rspec --dry-run --format json --out plan.json $dirs
+
+          for i in $(seq 0 $((CI_RSPEC_SHARDS - 1))); do
+            ruby ../extensions/system/scripts/ci-spec-shard.rb \
+              plan.json --shards "$CI_RSPEC_SHARDS" --index "$i" > "shard-$i.txt"
+          done
+
+          ruby -rjson -rset -e '
+            plan  = JSON.parse(File.read("plan.json"))
+            total = plan["examples"].length
+            all_files = plan["examples"].map { |e| e["id"].to_s.split("[").first }.reject(&:empty?).to_set
+
+            shards = Integer(ENV.fetch("CI_RSPEC_SHARDS"))
+            lists  = (0...shards).map { |i| File.readlines("shard-#{i}.txt").map(&:strip).reject(&:empty?) }
+            union  = lists.flatten
+
+            dupes = union.tally.select { |_, n| n > 1 }.keys
+            abort("SHARDS OVERLAP: #{dupes.first(5).join(", ")} — a file would run twice while another ran not at all") if dupes.any?
+
+            missing = all_files - union.to_set
+            abort("SHARDS DO NOT COVER THE SUITE: #{missing.size} file(s) unassigned, e.g. #{missing.first(5).join(", ")}") if missing.any?
+
+            extra = union.to_set - all_files
+            abort("SHARDS CLAIM UNKNOWN FILES: #{extra.first(5).join(", ")}") if extra.any?
+
+            planned = lists.map { |l| want = l.to_set; plan["examples"].count { |e| want.include?(e["id"].to_s.split("[").first) } }
+            abort("PLANNED SUM #{planned.sum} != DRY-RUN TOTAL #{total}") unless planned.sum == total
+
+            puts "coverage OK: #{shards} shards, #{all_files.size} files, #{total} examples"
+            puts "per-shard planned: #{planned.join(" / ")} (max/mean #{(planned.max.to_f / (total.to_f / shards)).round(3)})"
+          '
+
+      - name: Remove this job's sidecars
+        if: always()
+        run: |
+          set +e
+          docker ps -aq --filter "label=powernode.ci.owner=${CI_SIDECAR_OWNER:-none-set}" | xargs -r docker rm -f
+          exit 0
+
   provider-specs:
     # No longer chained behind rspec. That chain existed only to stop two jobs
     # contending for the same fixed host port; each job now gets its own
