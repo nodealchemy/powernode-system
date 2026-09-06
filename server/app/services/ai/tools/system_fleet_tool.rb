@@ -1103,7 +1103,7 @@ module Ai
               name: { type: "string", required: false, description: "New display name for the node" },
               description: { type: "string", required: false, description: "New free-text description for the node" },
               enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the node" },
-              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence` — live cloud_init instances get a sync_modules task, pivot-booted (direct_kernel/uefi_disk) instances are listed under `deferred` and need a reboot/rolling reprovision before the change takes effect." },
+              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence`, which has three buckets: `dispatched` (live cloud_init instances that got a sync_modules task), `deferred` (pivot-booted direct_kernel/uefi_disk instances, which compose their union at boot and need a reboot/rolling reprovision before the change takes effect), and `skipped` (instances in the retemplate's blast radius KNOWN to have no agent that will pull the task — errored, or running but silent/never-enrolled — each with a `reason`; no task is created for these, so they are NOT converged). Note `skipped` is evidence of death, not proof of life: an instance that is stopped, rebooting or still provisioning has no agent listening either, but is reported under `dispatched` because its queued task is pulled whenever the agent does come up." },
               worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
               public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
               allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
@@ -1220,7 +1220,7 @@ module Ai
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to unmark (account-scoped)" } }
           },
           "system_refresh_instance_modules" => {
-            description: "Queue a module reconcile on an instance. By DEFAULT this is an ordinary reconcile: it applies drift (a module assigned, removed, or pointed at a new version) and does nothing when the node already matches desired state. That is NOT sufficient to repair a root whose files were deleted underneath an UNCHANGED module version — the 2026-08-07 shape, where an empty artifact's hot-prune whiteout-deleted /usr/local/go and /usr/local/bin/gitleaks while the digest stayed the same. Nothing has drifted in that state, so a plain reconcile correctly concludes there is nothing to do. Pass force_resync: true to re-materialize a module's files regardless of drift; add module_id to narrow it to one module, or omit it to resync every module on the node. Recovery for that incident was a hand bind-mount over a root shell — force_resync is the supported, audited equivalent. Note it re-materializes from whatever version is CURRENT, so if the bad version is still current, roll it back first (system_rollback_module_version).",
+            description: "Queue a module reconcile on an instance. By DEFAULT this is an ordinary reconcile: it applies drift (a module assigned, removed, or pointed at a new version) and does nothing when the node already matches desired state. That is NOT sufficient to repair a root whose files were deleted underneath an UNCHANGED module version — the 2026-08-07 shape, where an empty artifact's hot-prune whiteout-deleted /usr/local/go and /usr/local/bin/gitleaks while the digest stayed the same. Nothing has drifted in that state, so a plain reconcile correctly concludes there is nothing to do. Pass force_resync: true to re-materialize a module's files regardless of drift; add module_id to narrow it to one module, or omit it to resync every module on the node. Recovery for that incident was a hand bind-mount over a root shell — force_resync is the supported, audited equivalent. Note it re-materializes from whatever version is CURRENT, so if the bad version is still current, roll it back first (system_rollback_module_version). An instance outside the live replica set is REFUSED rather than queued — the task would never be pulled. That includes `terminated` and also `error`, which is the status the fleet reaper writes for a node it has already presumed dead. Anything else is queued, but the reply carries a `warning` whenever no agent is currently listening — whether it went silent, never reported, or is simply stopped/rebooting/provisioning — because queueing the repair for a box you are about to bring back is legitimate. No `warning` key means an agent is expected to be listening right now.",
             parameters: {
               instance_id:  { type: "string",  required: true,  description: "UUID of the NodeInstance whose modules to reconcile" },
               force_resync: { type: "boolean", required: false, description: "Re-materialize module files even when nothing has drifted. Default false." },
@@ -3049,20 +3049,44 @@ module Ai
       #     reprovision instead.
       #
       # Scoped to live instances via TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE
-      # — the same blast-radius definition TemplateClosureDriftSensor reuses —
-      # so a terminated instance gets no task. Read inside the method rather
-      # than into a class-body constant so extension load order cannot bite.
+      # — the same blast-radius definition TemplateClosureDriftSensor reuses.
+      # Read inside the method rather than into a class-body constant so
+      # extension load order cannot bite.
+      #
+      # That scope excludes exactly ONE status, `terminated`. It deliberately
+      # keeps `error` and every transitional state, because it is the shared
+      # definition of what a retemplate AFFECTS, and narrowing it here would
+      # leave this verb disagreeing with the approval policy about the blast
+      # radius. So the scope is not the liveness gate, and until
+      # IMP-cdf18862a7c1 there wasn't one: an errored instance, or a `running`
+      # one whose agent has gone silent or never enrolled, was reported under
+      # `dispatched` with a task that no agent would ever pull — pending until
+      # the janitor cancels it 48 hours later.
+      #
+      # Those go to a third bucket, `skipped`, each entry carrying its own
+      # reason. The predicate is NodeInstance#on_node_dispatch_refusal, the
+      # same one Fleet::DecisionEngine#dispatch_reconcile_task consults, so the
+      # autonomous and operator dispatchers cannot drift on what "no agent will
+      # pull this" means. The pivot check stays FIRST: a pivot-booted node that
+      # is also silent is `deferred`, not `skipped` — the operator action is a
+      # reboot either way, and two buckets would double-count the fleet.
       def dispatch_retemplate_convergence!(node)
         live_statuses =
           ::System::Ai::Skills::TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE[:system_node_instances][:status]
 
         dispatched = []
         deferred   = []
+        skipped    = []
         task_ids   = []
 
         node.node_instances.where(status: live_statuses).find_each do |instance|
           if instance.pivot_boot?
             deferred << instance.id
+            next
+          end
+
+          if (refusal = instance.on_node_dispatch_refusal)
+            skipped << { instance_id: instance.id, reason: refusal }
             next
           end
 
@@ -3080,7 +3104,7 @@ module Ai
           task_ids << task.id
         end
 
-        result = { dispatched: dispatched, task_ids: task_ids, deferred: deferred }
+        result = { dispatched: dispatched, task_ids: task_ids, deferred: deferred, skipped: skipped }
         if deferred.any?
           result[:reason] =
             "pivot-booted instances compose their module union at boot — the assignments are updated, " \
@@ -3658,8 +3682,31 @@ module Ai
         error_result("FK blocks destroy: #{e.message}")
       end
 
+      # IMP-cdf18862a7c1 — the STATUS arm refuses, the silence arm warns.
+      #
+      # This resolved the instance with a bare find and queued unconditionally,
+      # so an operator could queue sync_modules against a terminated instance
+      # and get a success envelope with a task id for work nothing would ever
+      # do. That arm now refuses.
+      #
+      # The silence arm deliberately does NOT, which is where this parts
+      # company with Fleet::DecisionEngine#dispatch_reconcile_task. This is the
+      # operator-explicit repair path for the 2026-08-07 incident (see
+      # force_resync below), and an operator may legitimately queue a resync
+      # for a box they are about to bring back; refusing that would trade a
+      # visible stuck task for a REFUSED repair, the worse of the two failures.
+      # It is warned about instead, so the reply still says the agent is not
+      # currently listening.
+      #
+      # Both arms are read from the model (#offline_dispatch_refusal /
+      # #silence_verdict) rather than restated here — a second copy of "which
+      # statuses mean no agent" is the thing that drifts.
       def refresh_instance_modules(params)
         instance = account_instances.find(params[:instance_id])
+        if (offline = instance.offline_dispatch_refusal)
+          return error_result("cannot queue a module reconcile: #{offline}")
+        end
+
         force = params[:force_resync].to_s == "true" || params[:force_resync] == true
         module_id = params[:module_id].presence
 
@@ -3685,8 +3732,20 @@ module Ai
           initiated_by: @user,
           options: options
         )
-        success_result(refreshed: true, resync: force, module_id: module_id,
-                       instance_id: instance.id, task_id: task.id, task_status: task.status)
+        payload = { refreshed: true, resync: force, module_id: module_id,
+                    instance_id: instance.id, task_id: task.id, task_status: task.status }
+        # Two disclosure arms, not one. #on_node_dispatch_refusal can only be
+        # the SILENCE arm by this point (the status arm returned above), and
+        # covers `running`/`starting`. #dormant_agent_reason covers the live
+        # statuses where nothing is expected to be reporting at all —
+        # stopped/stopping/rebooting/pending/provisioning — which both refusal
+        # arms answer nil for. Warning on the first alone would have let a box
+        # powered down last week return a bare success, so the ABSENCE of this
+        # key would have meant "no evidence of death", not "an agent is
+        # listening". It now means the latter.
+        warning = instance.on_node_dispatch_refusal || instance.dormant_agent_reason
+        payload[:warning] = "task queued, but #{warning}" if warning
+        success_result(payload)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Failed to queue refresh task: #{e.message}")
       end

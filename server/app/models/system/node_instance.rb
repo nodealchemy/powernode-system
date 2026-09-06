@@ -921,9 +921,8 @@ module System
     # retemplate and refresh verbs are queued to follow), and both ingredients
     # are already here.
     def on_node_dispatch_refusal
-      unless LIVE_REPLICA_STATUSES.include?(status)
-        return "instance is #{status} — no agent will pull an on-node task"
-      end
+      offline = offline_dispatch_refusal
+      return offline if offline
 
       case silence_verdict
       when :never_reported
@@ -934,6 +933,49 @@ module System
         "instance is #{status} but its agent went silent at " \
           "#{last_heartbeat_at.iso8601} — an on-node task would wait indefinitely"
       end
+    end
+
+    # The STATUS arm of #on_node_dispatch_refusal, split out so a caller can
+    # take that arm ALONE. IMP-cdf18862a7c1's operator-explicit repair verb
+    # (system_refresh_instance_modules) must refuse a node with no agent
+    # process while still queueing for a silent-but-running one — an operator
+    # may be bringing that box back, and refusing the repair is a worse
+    # failure than the stuck task it would prevent. It reads this and
+    # #silence_verdict separately rather than restating either.
+    def offline_dispatch_refusal
+      return nil if LIVE_REPLICA_STATUSES.include?(status)
+
+      "instance is #{status} — no agent will pull an on-node task"
+    end
+
+    # The DISCLOSURE arm — neither of the two above, and the one an operator
+    # surface still has to say something about.
+    #
+    # `stopped`, `stopping`, `rebooting`, `pending` and `provisioning` are in
+    # LIVE_REPLICA_STATUSES (so #offline_dispatch_refusal is silent) and
+    # outside HEARTBEAT_EXPECTED_STATUSES (so #silence_verdict declines to
+    # judge them — nothing is expected to be reporting, and treating their nil
+    # heartbeat as evidence would refuse every node that is legitimately about
+    # to enrol). InstanceStatusSensor states the same premise: those statuses
+    # are live for CAPACITY purposes but are not running an agent that should
+    # be reporting.
+    #
+    # So both refusal arms answering nil does NOT mean "an agent is listening",
+    # only "we have no evidence it is dead". A queued on-node task is still the
+    # right thing — it is pulled when the agent comes up — but a caller that
+    # reports the absence of a warning as health is lying, which is what this
+    # exists to prevent. IMP-cdf18862a7c1's review caught exactly that: an
+    # operator resyncing a box powered down last week got a bare success.
+    #
+    # Whether a task queued for a long-stopped node should survive the janitor's
+    # 48h cancel at all is a separate, filed question (offer 01a07835-275f) —
+    # this method only stops the surface claiming health it cannot see.
+    def dormant_agent_reason
+      return nil unless LIVE_REPLICA_STATUSES.include?(status)
+      return nil if HEARTBEAT_EXPECTED_STATUSES.include?(status)
+
+      "instance is #{status} — no agent is running to pull an on-node task yet; " \
+        "it stays pending until one starts"
     end
 
     def silence_verdict

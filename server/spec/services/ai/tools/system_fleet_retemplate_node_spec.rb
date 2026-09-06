@@ -141,7 +141,8 @@ RSpec.describe Ai::Tools::SystemFleetTool, "re-templating a provisioned node" do
     end
 
     it "queues sync_modules for a live cloud_init instance" do
-      instance = create(:system_node_instance, :running, node: node, account: account, config: { "boot_mode" => "cloud_init" })
+      instance = create(:system_node_instance, :running, node: node, account: account,
+                        last_heartbeat_at: Time.current, config: { "boot_mode" => "cloud_init" })
 
       r = call("system_update_node", node_id: node.id, node_template_id: template_b.id)
 
@@ -167,6 +168,111 @@ RSpec.describe Ai::Tools::SystemFleetTool, "re-templating a provisioned node" do
       call("system_update_node", node_id: node.id, node_template_id: template_b.id)
 
       expect(sync_tasks_for(instance).count).to eq(0)
+    end
+  end
+
+  # IMP-cdf18862a7c1 — the convergence rung had TWO buckets, and an instance
+  # that could not converge fell into the dispatched one.
+  #
+  # The scope is TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE, which is the
+  # blast-radius definition this verb shares with the approval policy — so it
+  # deliberately keeps `error` (and every transitional status) in range, and
+  # the terminated case above is the only one the QUERY excludes. That left
+  # two shapes queueing a task no agent would ever pull: an errored instance,
+  # and a `running` one whose agent has gone silent or never enrolled at all.
+  # Both produced `dispatched: [id]` and a task that sits pending until the
+  # janitor cancels it 48 hours later.
+  #
+  # The scope stays as it is — narrowing it here would silently disagree with
+  # the policy about what the blast radius IS. The third bucket reports the
+  # ones that cannot converge instead, using the same
+  # NodeInstance#on_node_dispatch_refusal the Fleet::DecisionEngine consults,
+  # so the two dispatchers cannot drift on what "no agent will pull this" means.
+  describe "the convergence rung's third bucket (IMP-cdf18862a7c1)" do
+    def sync_tasks_for(instance)
+      ::System::Task.where(operable: instance, command: "sync_modules")
+    end
+
+    def convergence_for(instance)
+      r = call("system_update_node", node_id: node.id, node_template_id: template_b.id)
+      [ r.dig(:data, :template_applied, :convergence), sync_tasks_for(instance).count ]
+    end
+
+    it "skips an errored instance, naming it and why, instead of queueing a task it cannot pull" do
+      instance = create(:system_node_instance, node: node, account: account, status: "error",
+                        config: { "boot_mode" => "cloud_init" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(0)
+      expect(convergence[:dispatched]).not_to include(instance.id)
+      expect(convergence[:skipped]).to contain_exactly(
+        a_hash_including(instance_id: instance.id, reason: a_string_matching(/error/))
+      )
+    end
+
+    it "skips a running instance whose agent went silent" do
+      instance = create(:system_node_instance, :running, node: node, account: account,
+                        last_heartbeat_at: 30.minutes.ago, config: { "boot_mode" => "cloud_init" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(0)
+      expect(convergence[:skipped]).to contain_exactly(
+        a_hash_including(instance_id: instance.id, reason: a_string_matching(/went silent/))
+      )
+    end
+
+    # The never-enrolled VM: CloudSyncService writes `running` from provider
+    # state alone, so the status says live and no agent has ever existed.
+    it "skips a running instance whose agent has never reported" do
+      instance = create(:system_node_instance, :running, node: node, account: account,
+                        last_heartbeat_at: nil, config: { "boot_mode" => "cloud_init" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(0)
+      expect(convergence[:skipped]).to contain_exactly(
+        a_hash_including(instance_id: instance.id, reason: a_string_matching(/never reported/))
+      )
+    end
+
+    # A node still coming up is not a dead node — refusing it here would trade
+    # a visible stuck task for a node that never gets its modules.
+    it "still dispatches to a starting instance that has not reported yet" do
+      instance = create(:system_node_instance, node: node, account: account, status: "starting",
+                        last_heartbeat_at: nil, config: { "boot_mode" => "cloud_init" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(1)
+      expect(convergence[:dispatched]).to include(instance.id)
+      expect(convergence[:skipped]).to be_empty
+    end
+
+    # The pivot arm is checked FIRST and keeps its own bucket: a pivot-booted
+    # node that is also silent is deferred, not skipped — the operator action
+    # (reboot) is the same either way, and reporting it twice would double-count
+    # the fleet.
+    it "reports a silent pivot-booted instance as deferred, not skipped" do
+      instance = create(:system_node_instance, :running, node: node, account: account,
+                        last_heartbeat_at: 30.minutes.ago, config: { "boot_mode" => "direct_kernel" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(0)
+      expect(convergence[:deferred]).to include(instance.id)
+      expect(convergence[:skipped]).to be_empty
+    end
+
+    it "leaves skipped empty for a healthy fleet" do
+      instance = create(:system_node_instance, :running, node: node, account: account,
+                        last_heartbeat_at: Time.current, config: { "boot_mode" => "cloud_init" })
+
+      convergence, task_count = convergence_for(instance)
+
+      expect(task_count).to eq(1)
+      expect(convergence[:skipped]).to be_empty
     end
   end
 

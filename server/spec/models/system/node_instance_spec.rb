@@ -928,4 +928,89 @@ RSpec.describe System::NodeInstance, type: :model do
       end
     end
   end
+
+  # IMP-cdf18862a7c1 — the three arms enumerated over EVERY status, because
+  # #on_node_dispatch_refusal is now composed from #offline_dispatch_refusal
+  # and #silence_verdict, and two operator-facing MCP verbs
+  # (system_refresh_instance_modules, system_update_node's convergence rung)
+  # take those arms SEPARATELY rather than the composed answer.
+  #
+  # Without this, the split is asserted only by a comment: replacing the
+  # refresh verb's `instance.offline_dispatch_refusal` with an inline
+  # `status == "terminated"` check leaves every tool-level example green,
+  # because `error` — the status the reaper writes — was untested at both
+  # levels. Enumerating the statuses is what makes that mutation die.
+  describe 'the dispatch arms, per status (IMP-cdf18862a7c1)' do
+    def instance_with(status:, heartbeat: nil)
+      create(:system_node_instance, node: node, status: status, last_heartbeat_at: heartbeat)
+    end
+
+    # OFFLINE: outside LIVE_REPLICA_STATUSES. No agent process exists at all.
+    # `error` belongs here even though it is a silence-derived label —
+    # Fleet::DecisionEngine#reap_presumed_dead! is what writes it.
+    %w[terminated error].each do |dead|
+      it "answers #{dead} on the OFFLINE arm and nothing else" do
+        instance = instance_with(status: dead)
+
+        expect(instance.offline_dispatch_refusal).to include(dead)
+        expect(instance.silence_verdict).to be_nil
+        expect(instance.dormant_agent_reason).to be_nil
+        expect(instance.on_node_dispatch_refusal).to eq(instance.offline_dispatch_refusal)
+      end
+    end
+
+    # DORMANT: live for capacity, but nothing is expected to be reporting, so
+    # BOTH refusal arms are nil and neither says an agent is listening. A
+    # caller that reads "no refusal" as health is wrong for exactly these.
+    %w[pending provisioning stopping stopped rebooting].each do |dormant|
+      it "answers #{dormant} on the DORMANT arm, with neither refusal arm firing" do
+        instance = instance_with(status: dormant)
+
+        expect(instance.offline_dispatch_refusal).to be_nil
+        expect(instance.on_node_dispatch_refusal).to be_nil
+        expect(instance.silence_verdict).to be_nil
+        expect(instance.dormant_agent_reason).to include(dormant)
+      end
+    end
+
+    # EXPECTED-TO-REPORT: the only two statuses silence is evidence in.
+    it 'leaves a healthy running instance on no arm at all' do
+      instance = instance_with(status: 'running', heartbeat: Time.current)
+
+      expect(instance.offline_dispatch_refusal).to be_nil
+      expect(instance.dormant_agent_reason).to be_nil
+      expect(instance.silence_verdict).to be_nil
+      expect(instance.on_node_dispatch_refusal).to be_nil
+    end
+
+    it 'puts a silent running instance on the SILENCE arm, not the dormant one' do
+      instance = instance_with(status: 'running', heartbeat: 30.minutes.ago)
+
+      expect(instance.offline_dispatch_refusal).to be_nil
+      expect(instance.dormant_agent_reason).to be_nil
+      expect(instance.silence_verdict).to eq(:went_silent)
+    end
+
+    # `starting` is expected to report, so it is NOT dormant — a nil heartbeat
+    # there is "not yet", which is why silence_verdict declines to judge it.
+    it 'treats a not-yet-reported starting instance as neither dormant nor refused' do
+      instance = instance_with(status: 'starting', heartbeat: nil)
+
+      expect(instance.dormant_agent_reason).to be_nil
+      expect(instance.silence_verdict).to be_nil
+      expect(instance.on_node_dispatch_refusal).to be_nil
+    end
+
+    # The partition is the point: every status is on exactly one arm or none,
+    # and no status is on two. A status added to LIVE_REPLICA_STATUSES without
+    # a decision about HEARTBEAT_EXPECTED_STATUSES fails here.
+    it 'assigns every declared status to at most one arm' do
+      described_class::STATUSES.each do |status|
+        instance = instance_with(status: status, heartbeat: nil)
+        arms = [ instance.offline_dispatch_refusal, instance.dormant_agent_reason ].compact
+
+        expect(arms.length).to be <= 1, "#{status} landed on both the offline and dormant arms"
+      end
+    end
+  end
 end

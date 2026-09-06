@@ -4884,6 +4884,105 @@ end
       expect(queued_task.options["force_resync"]).to be(true)
       expect(queued_task.options).not_to have_key("module_id")
     end
+
+    # IMP-cdf18862a7c1 — this verb resolved the instance with a bare
+    # account_instances.find and queued unconditionally, so an operator could
+    # queue a sync_modules task against a TERMINATED instance and get a
+    # success envelope with a task id. It sits pending until the janitor
+    # cancels it 48 hours later.
+    #
+    # The answer here is deliberately NOT the autonomous one. This is the
+    # operator-explicit repair path for the 2026-08-07 incident, so only the
+    # STATUS arm refuses: a node with no agent process at all cannot be
+    # repaired by queueing work for it. A silent-but-running node is a
+    # different case — an operator may legitimately queue the resync for a box
+    # they are about to bring back, and refusing that would trade a visible
+    # stuck task for a REFUSED repair, which is the worse failure. That one is
+    # warned about and queued.
+    #
+    # The discriminator between the two arms is NodeInstance#silence_verdict,
+    # read from the model rather than restated here, so this verb and the
+    # Fleet::DecisionEngine cannot drift on which arm a status belongs to.
+    context "when the target instance has no agent (IMP-cdf18862a7c1)" do
+      it "refuses a terminated instance instead of queueing a task it will never pull" do
+        dead = create(:system_node_instance, node: node, status: "terminated")
+
+        result = nil
+        expect { result = call("system_refresh_instance_modules", instance_id: dead.id) }
+          .not_to change { ::System::Task.where(operable: dead).count }
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to match(/terminated/)
+      end
+
+      it "still queues for a silent running instance, with a warning naming the silence" do
+        silent = create(:system_node_instance, :running, node: node, last_heartbeat_at: 30.minutes.ago)
+
+        result = call("system_refresh_instance_modules", instance_id: silent.id, force_resync: true)
+
+        expect(result[:success]).to be(true)
+        expect(::System::Task.where(operable: silent, command: "sync_modules").count).to eq(1)
+        expect(result[:data][:warning]).to match(/went silent/)
+      end
+
+      it "queues a running instance that has never reported, with a warning" do
+        never = create(:system_node_instance, :running, node: node, last_heartbeat_at: nil)
+
+        result = call("system_refresh_instance_modules", instance_id: never.id)
+
+        expect(result[:success]).to be(true)
+        expect(::System::Task.where(operable: never, command: "sync_modules").count).to eq(1)
+        expect(result[:data][:warning]).to match(/never reported/)
+      end
+
+      # `error` is the status Fleet::DecisionEngine#reap_presumed_dead! writes
+      # for a node it has already presumed dead, so it is OUTSIDE the live
+      # replica set and takes the refusal arm — the same box would have been
+      # queued-with-a-warning minutes earlier, while it was still `running` and
+      # merely silent. That asymmetry is the operator's ruling, pinned here
+      # rather than left to inference: without this example, replacing
+      # #offline_dispatch_refusal with an inline `status == "terminated"` test
+      # leaves every other example in this context green.
+      it "refuses an instance the reaper has already marked error" do
+        reaped = create(:system_node_instance, node: node, status: "error")
+
+        result = nil
+        expect { result = call("system_refresh_instance_modules", instance_id: reaped.id) }
+          .not_to change { ::System::Task.where(operable: reaped).count }
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to match(/error/)
+      end
+
+      # The gap the independent review found: `stopped` is live for CAPACITY
+      # (it is in LIVE_REPLICA_STATUSES) but runs no agent, so BOTH refusal
+      # arms answer nil. Queueing is still right — the task is pulled when the
+      # box comes up — but a bare success would have told an operator that a
+      # machine powered down last week was healthy.
+      %w[stopped stopping rebooting provisioning].each do |dormant|
+        it "queues a #{dormant} instance but warns that no agent is listening yet" do
+          box = create(:system_node_instance, node: node, status: dormant)
+
+          result = call("system_refresh_instance_modules", instance_id: box.id, force_resync: true)
+
+          expect(result[:success]).to be(true)
+          expect(::System::Task.where(operable: box, command: "sync_modules").count).to eq(1)
+          expect(result[:data][:warning]).to match(/no agent is running/)
+        end
+      end
+
+      # The contract the absent key carries: not "we found no evidence of
+      # death", but "an agent is expected to be listening right now". The
+      # dormant examples above are what make that true.
+      it "carries no warning key for a healthy instance" do
+        healthy = create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current)
+
+        result = call("system_refresh_instance_modules", instance_id: healthy.id)
+
+        expect(result[:success]).to be(true)
+        expect(result[:data]).not_to have_key(:warning)
+      end
+    end
   end
 
   describe "system_rollback_module_version" do
