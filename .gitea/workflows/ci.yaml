@@ -7,7 +7,13 @@ name: ci
 
 on:
   push:
-    branches: [master, develop]
+    # ci-isolation/** exists so a change to THIS file can be validated by a
+    # real run before it reaches develop. There is no other way to test a
+    # workflow: it only executes when it triggers, and develop is the branch
+    # a broken one would break. Mirrors the ci-probe/** prefix on
+    # probe-ci-isolation.yaml. A push here runs the full suite, so use it for
+    # CI-mechanism changes, not as a general scratch branch.
+    branches: [master, develop, "ci-isolation/**"]
   pull_request:
     branches: [master, develop]
   workflow_dispatch: {}
@@ -54,6 +60,24 @@ jobs:
           CEILING_SECS=10800
           now=$(date +%s)
 
+          # Pass 1: OWN sidecars, which now carry their own expiry. A job
+          # labels each container with a deadline past its own timeout, so an
+          # expired label means the owning job cannot still be running — that
+          # is a stronger statement than age, and it reaps a crashed job's
+          # leftovers without waiting out the 3h ceiling. Unlabeled containers
+          # (older runs, the parent repo's bundle workflow) fall through to
+          # pass 2 unchanged.
+          for id in $(docker ps -aq --filter "label=powernode.ci=sidecar"); do
+            dl=$(docker inspect -f '{{index .Config.Labels "powernode.ci.deadline"}}' "$id" 2>/dev/null)
+            case "$dl" in ''|*[!0-9]*) continue ;; esac
+            if [ "$now" -gt "$dl" ]; then
+              echo "expired ($(( (now - dl) / 60 ))m past deadline): $id"
+              docker rm -f "$id" >/dev/null 2>&1
+            else
+              echo "LEAVING ($(( (dl - now) / 60 ))m before deadline): $id"
+            fi
+          done
+
           # Candidates: by published port (catches a test container on these
           # ports whatever its image) OR by image (catches one whose ps row
           # carries no port info — the case the old catch-all existed for).
@@ -92,128 +116,80 @@ jobs:
     # integration, and a sweep of the rest) SEQUENTIALLY inside one job. This
     # was a 4-entry matrix; see the note below for why it could not stay one.
     runs-on: ubuntu-24.04
-    # Serialize every job that publishes postgres/redis to a FIXED host port.
+    # Was: one job holding a FIXED host port, with four suites sequenced
+    # inside it because a 4-entry matrix had every entry contend for
+    # 0.0.0.0:5432. That made the suites run and converted the problem into a
+    # slower one — the job holds the port for its whole duration, so any run
+    # starting inside that window loses all three of its database jobs (run
+    # 1772 held it 02:17-03:28; run 1773's three died inside 23s). Sidecars now
+    # take a kernel-assigned port each, so nothing contends and the three jobs
+    # no longer need chaining.
     #
-    # The addressing design below (host ports + 172.17.0.1) is correct and its
-    # alternatives are already ruled out in the comment that follows — but it
-    # assumes ONE runner, as the ci-hygiene job says outright ("true for
-    # single-runner act-runner deployments"). The pve3 host now runs THREE.
-    # This matrix alone fans out four entries that each want 0.0.0.0:5432, so
-    # two or more collide on every run and die before a single spec executes:
+    # Two scheduler-level fixes were tried here and BOTH failed. Do not retry
+    # either without new evidence: a `concurrency:` group shared across these
+    # jobs deadlocked with everything waiting and nothing running (run 1675),
+    # and `strategy.max-parallel: 1` was silently ignored (run 1676). The
+    # mechanism below needs no scheduler feature at all, which is the point.
     #
-    #   failed to start container: ... Bind for 0.0.0.0:5432 failed:
-    #   port is already allocated
-    #
-    # Measured on run 1673 (develop 1233cb9e): rspec (misc/models-lib/services)
-    # all died on 5432 and provider-specs + worker-specs on 6379 — five of the
-    # seven red jobs, each with a ~1.5 KB log containing no rspec output at all.
-    # So the gate has not been failing on code; it has not been running.
-    #
-    # TWO scheduler-level fixes were tried here and BOTH failed. Do not retry
-    # either without new evidence:
-    #
-    #   1. `concurrency:` group shared across rspec + provider-specs +
-    #      worker-specs (run 1675, develop 1f01dfa8). Gitea accepts the key and
-    #      creates the jobs — but with one group spanning several jobs nothing
-    #      ever acquires it. Six jobs sat at status=waiting, zero running, 20+
-    #      minutes, run unable to finish. Strictly worse than the collision,
-    #      which at least failed fast, and it also caught rspec (controllers),
-    #      which had been passing.
-    #
-    #   2. `strategy.max-parallel: 1` on the matrix (run 1676, develop
-    #      f826b219). Silently IGNORED by this runner — all four entries started
-    #      together exactly as before, three died on "port is already allocated"
-    #      while the fourth held 5432. It degraded safely, but it did not work.
-    #
-    # So the suites are sequenced INSIDE one job instead (see the run step).
-    # That needs no scheduler feature at all, which is the point: it cannot be
-    # ignored or deadlocked by a runner that implements these keys differently.
-    # provider-specs and worker-specs chain off this job with needs:, which IS
-    # empirically honoured here (both correctly queued behind it on run 1676).
-    #
-    # Cost: wall-clock is now the sum of the four suites rather than the max.
-    # That is the deliberate trade — they were not running at all before.
-    # Parallelism can return via per-entry distinct ports, but that needs
-    # `${{ }}` expansion inside the services block, which fails UNSAFE if
-    # unsupported (the literal string becomes the port and every service dies),
-    # so confirm expression support there first — or fix it at the runner level
-    # (task #76), which is where this problem actually belongs.
-    # Service addressing: sidecars publish container ports to the host;
-    # the job container reaches them at the docker bridge gateway IP
-    # (172.17.0.1 on a default Linux docker setup), NOT localhost.
-    #
-    # Why not "localhost"? Tried on commit ${PRIOR-FIX-SHA-OMITTED} with
-    # `postgres://postgres:postgres@localhost:5432/...`. The job
-    # container's NetworkMode is "bridge" — its localhost is the JOB's
-    # OWN loopback, not the docker host's. Sidecars publishing to host
-    # 0.0.0.0:5432 ARE reachable from the job, but only via the bridge
-    # gateway (172.17.0.1). Result: postgres connection at 127.0.0.1
-    # / ::1 refused, every rspec/worker-specs job died:
-    #   PG::ConnectionBad: connection to server at "127.0.0.1",
-    #     port 5432 failed: Connection refused
-    #
-    # Why not service-name DNS ("postgres://postgres@postgres:5432/...")?
-    # Tried 2026-05-24 (commit 2cd80135). Default docker bridge has NO
-    # service-name DNS — every job died with
-    #   PG::ConnectionBad: could not translate host name "postgres"
-    #     to address: Name or service not known
-    # (Per-job custom network + DNS aliases is the canonical Gitea/GHA
-    # pattern, but THIS act runner doesn't create per-job networks.)
-    #
-    # The current "host-ports + 172.17.0.1" approach works because:
-    #   - Sidecars publish to host 0.0.0.0:{5432,6379} (host-routable)
-    #   - Job container on default bridge reaches host via gateway
-    #     (the bridge gateway IS the docker host's bridge interface)
-    #   - 172.17.0.1 is the well-known default bridge gateway for
-    #     unconfigured Linux docker daemons; hardcoded.
-    #
-    # Tried a runtime "Discover host gateway" step using `ip route` but
-    # the act-24.04 runner image doesn't have iproute2 (exit code 127).
-    # Could install it via apt-get but added latency outweighs the
-    # robustness of a near-universal default. If a runner with a
-    # non-default bridge gateway shows up, override per-job via a
-    # job-level `env: DATABASE_URL: ...` block.
-    #
-    # Port-collision risk: cancelled jobs leak sidecar containers that
-    # keep the host port bound. Manually mitigated 2026-05-24 by
-    # `docker rm -f` of orphan GITEA-ACTIONS-TASK containers on pve3.
-    # Runner-level systemd ExecStartPre hook is the proper fix (task
-    # #76); workflow-level changes can't reach that.
-    services:
-      postgres:
-        # pgvector/pgvector:pg16 = postgres 16 + pgvector extension
-        # baked in. The parent platform's schema uses `CREATE EXTENSION
-        # vector` for embedding storage; the standard postgres:16
-        # image rejects with `PG::FeatureNotSupported: extension "vector"
-        # is not available` during db:schema:load.
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: powernode_test
-        # Explicit 0.0.0.0 binding — act runner parses bare `5432:5432`
-        # as HostIP="invalid IP" (literal string), leaving the port not
-        # actually bound to the host's all-interfaces. Without this the
-        # job container can't reach 172.17.0.1:5432 even though the
-        # sidecar starts successfully. Verified via earlier run 572's
-        # docker create cmd: `PortBindings:[5432/tcp:[{HostIP:invalid
-        # IP HostPort:5432}]]`.
-        ports:
-          - 0.0.0.0:5432:5432
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 0.0.0.0:6379:6379
+    # timeout-minutes is honoured here (run 1776 P4: killed 113s into a 300s
+    # sleep under a 2-minute cap), so this ceiling is real, not decoration.
+    timeout-minutes: 150
     env:
       RAILS_ENV: test
-      # Default to the standard docker bridge gateway. Overridden at
-      # runtime by the "Discover host gateway" step below if the bridge
-      # uses a non-default IP.
-      DATABASE_URL: postgres://postgres:postgres@172.17.0.1:5432/powernode_test
-      REDIS_URL: redis://172.17.0.1:6379/0
     steps:
+      # Sidecars are started HERE, by hand, instead of in a `services:` block.
+      # A services: sidecar can only publish a FIXED host port, and a fixed
+      # port means one run at a time on a shared runner host: run 1772 held
+      # 5432 from 02:17 to 03:28 and run 1773's three database jobs each died
+      # inside 23 seconds on "Bind for 0.0.0.0:5432 failed: port is already
+      # allocated", with no rspec output at all. `-p <gw>::<port>` asks the
+      # kernel for a free port instead, atomically, per socket — so concurrent
+      # jobs cannot collide by construction. Proven on run 1776: two entries
+      # started together took 32768/32770 and 32769/32771 while run 1775 held
+      # the fixed 5432 on develop.
+      #
+      # The mapped port is read back with `docker port`, which needs nothing
+      # from the runner beyond the docker socket already mounted in job
+      # containers. That is why this is not an ephemeral `services:` port:
+      # reading one back there would need `${{ }}` inside the services block,
+      # which fails UNSAFE if unsupported (the literal string becomes the
+      # port), or the untried job.services context.
+      #
+      # Addressing is unchanged — the job container reaches the sidecar at the
+      # docker bridge gateway, not localhost and not by service name; see the
+      # git history of this file for the two runs that ruled those out. The
+      # gateway is now discovered rather than assumed, with the old hardcoded
+      # value as fallback (run 1776 confirmed they agree).
+      - name: Start isolated sidecars on kernel-assigned ports
+        run: |
+          set -euo pipefail
+          GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+          GW=${GW:-172.17.0.1}
+          OWNER="${GITHUB_RUN_ID:-norun}-${GITHUB_JOB:-nojob}-$(date +%s)-$RANDOM"
+          # Labels, not ports, are how ci-hygiene identifies a reapable orphan.
+          # The deadline is this job's own ceiling, so a sidecar is only ever
+          # reaped after the job that owns it could not still be running.
+          DEADLINE=$(( $(date +%s) + 9000 ))
+          LABELS="--label powernode.ci=sidecar --label powernode.ci.owner=$OWNER --label powernode.ci.deadline=$DEADLINE"
+
+          PG=$(docker run -d $LABELS -p "$GW::5432" \
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                pgvector/pgvector:pg16 \
+                -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
+          RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
+
+          PGPORT=$(docker port "$PG" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          RDPORT=$(docker port "$RD" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          [ -n "$PGPORT" ] && [ -n "$RDPORT" ] || { echo "sidecar published no port"; exit 1; }
+          echo "sidecars: postgres $GW:$PGPORT  redis $GW:$RDPORT  owner=$OWNER"
+
+          for _ in $(seq 1 60); do docker exec "$PG" pg_isready -U postgres -q && break; sleep 1; done
+          docker exec "$PG" pg_isready -U postgres
+
+          { echo "DATABASE_URL=postgres://postgres:postgres@$GW:$PGPORT/powernode_test"
+            echo "REDIS_URL=redis://$GW:$RDPORT/0"
+            echo "CI_SIDECAR_OWNER=$OWNER"; } >> "$GITHUB_ENV"
+
       - name: Check out the system extension
         uses: actions/checkout@v4
         with:
@@ -341,15 +317,14 @@ jobs:
       # Pairs with the ci-hygiene job which catches the SIGKILL case
       # before the NEXT run. Best-effort — empty `docker ps` or already-
       # gone containers should not fail the post-job step.
-      - name: Reap own sidecars
+      # Removes exactly this job's sidecars, by owner label. Nothing here
+      # matches on a port or an image, so it can never reach a concurrent
+      # job's containers — which is what the old port/image sweep did.
+      - name: Remove this job's sidecars
         if: always()
         run: |
           set +e
-          for port in 6379 5432; do
-            docker ps --format '{{.ID}} {{.Ports}}' \
-              | awk -v p=":$port->" 'index($0, p) {print $1}' \
-              | xargs -r docker rm -f
-          done
+          docker ps -aq --filter "label=powernode.ci.owner=${CI_SIDECAR_OWNER:-none-set}" | xargs -r docker rm -f
           exit 0
 
   # Cloud-provider adapter specs WITH their optional SDK gems bundled.
@@ -364,37 +339,70 @@ jobs:
   # SDK gems onto the core bundle (via extensions/system/scripts/test-provider-gems.sh)
   # so those specs actually run and provider regressions are caught.
   provider-specs:
-    # Chained after rspec (not merely after ci-hygiene) because this job
-    # publishes the same fixed host ports and would otherwise start alongside a
-    # matrix entry and lose the bind. if: always() keeps it running even when
-    # rspec fails — the dependency exists to sequence port usage, not to gate on
-    # rspec's result.
-    needs: [ci-hygiene, rspec]
+    # No longer chained behind rspec. That chain existed only to stop two jobs
+    # contending for the same fixed host port; each job now gets its own
+    # kernel-assigned ports, so this runs concurrently with rspec and
+    # worker-specs.
+    needs: ci-hygiene
     if: always()
     runs-on: ubuntu-24.04
-    # Same postgres/redis sidecars + docker-bridge-gateway addressing as the
-    # `rspec` job above — see the long comment there for why localhost and
-    # service-name DNS both fail on this act runner.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: powernode_test
-        ports:
-          - 0.0.0.0:5432:5432
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 0.0.0.0:6379:6379
+    timeout-minutes: 60
     env:
       RAILS_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@172.17.0.1:5432/powernode_test
-      REDIS_URL: redis://172.17.0.1:6379/0
     steps:
+      # Sidecars are started HERE, by hand, instead of in a `services:` block.
+      # A services: sidecar can only publish a FIXED host port, and a fixed
+      # port means one run at a time on a shared runner host: run 1772 held
+      # 5432 from 02:17 to 03:28 and run 1773's three database jobs each died
+      # inside 23 seconds on "Bind for 0.0.0.0:5432 failed: port is already
+      # allocated", with no rspec output at all. `-p <gw>::<port>` asks the
+      # kernel for a free port instead, atomically, per socket — so concurrent
+      # jobs cannot collide by construction. Proven on run 1776: two entries
+      # started together took 32768/32770 and 32769/32771 while run 1775 held
+      # the fixed 5432 on develop.
+      #
+      # The mapped port is read back with `docker port`, which needs nothing
+      # from the runner beyond the docker socket already mounted in job
+      # containers. That is why this is not an ephemeral `services:` port:
+      # reading one back there would need `${{ }}` inside the services block,
+      # which fails UNSAFE if unsupported (the literal string becomes the
+      # port), or the untried job.services context.
+      #
+      # Addressing is unchanged — the job container reaches the sidecar at the
+      # docker bridge gateway, not localhost and not by service name; see the
+      # git history of this file for the two runs that ruled those out. The
+      # gateway is now discovered rather than assumed, with the old hardcoded
+      # value as fallback (run 1776 confirmed they agree).
+      - name: Start isolated sidecars on kernel-assigned ports
+        run: |
+          set -euo pipefail
+          GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+          GW=${GW:-172.17.0.1}
+          OWNER="${GITHUB_RUN_ID:-norun}-${GITHUB_JOB:-nojob}-$(date +%s)-$RANDOM"
+          # Labels, not ports, are how ci-hygiene identifies a reapable orphan.
+          # The deadline is this job's own ceiling, so a sidecar is only ever
+          # reaped after the job that owns it could not still be running.
+          DEADLINE=$(( $(date +%s) + 9000 ))
+          LABELS="--label powernode.ci=sidecar --label powernode.ci.owner=$OWNER --label powernode.ci.deadline=$DEADLINE"
+
+          PG=$(docker run -d $LABELS -p "$GW::5432" \
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                pgvector/pgvector:pg16 \
+                -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
+          RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
+
+          PGPORT=$(docker port "$PG" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          RDPORT=$(docker port "$RD" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          [ -n "$PGPORT" ] && [ -n "$RDPORT" ] || { echo "sidecar published no port"; exit 1; }
+          echo "sidecars: postgres $GW:$PGPORT  redis $GW:$RDPORT  owner=$OWNER"
+
+          for _ in $(seq 1 60); do docker exec "$PG" pg_isready -U postgres -q && break; sleep 1; done
+          docker exec "$PG" pg_isready -U postgres
+
+          { echo "DATABASE_URL=postgres://postgres:postgres@$GW:$PGPORT/powernode_test"
+            echo "REDIS_URL=redis://$GW:$RDPORT/0"
+            echo "CI_SIDECAR_OWNER=$OWNER"; } >> "$GITHUB_ENV"
+
       - name: Check out the system extension
         uses: actions/checkout@v4
         with:
@@ -450,15 +458,14 @@ jobs:
         working-directory: powernode-platform
         run: bash extensions/system/scripts/test-provider-gems.sh
 
-      - name: Reap own sidecars
+      # Removes exactly this job's sidecars, by owner label. Nothing here
+      # matches on a port or an image, so it can never reach a concurrent
+      # job's containers — which is what the old port/image sweep did.
+      - name: Remove this job's sidecars
         if: always()
         run: |
           set +e
-          for port in 6379 5432; do
-            docker ps --format '{{.ID}} {{.Ports}}' \
-              | awk -v p=":$port->" 'index($0, p) {print $1}' \
-              | xargs -r docker rm -f
-          done
+          docker ps -aq --filter "label=powernode.ci.owner=${CI_SIDECAR_OWNER:-none-set}" | xargs -r docker rm -f
           exit 0
 
   frontend-typecheck:
@@ -678,35 +685,66 @@ jobs:
   # the extension's worker jobs are autoloaded by the parent worker app;
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
-    # Last link in the port-publishing chain — see provider-specs. always() so a
-    # red suite upstream does not skip this one; the chain sequences the shared
-    # 6379/5432 bindings, it is not a success gate.
-    needs: [ci-hygiene, provider-specs]
+    # No longer the last link in a port-publishing chain; that chain only
+    # existed to serialise the shared 6379/5432 bindings, which are gone.
+    needs: ci-hygiene
     if: always()
     runs-on: ubuntu-24.04
-    # Same docker-bridge-gateway addressing as the rspec matrix above —
-    # see the long comment up there for why localhost and service-name
-    # DNS both don't work on this Gitea Actions installation.
-    services:
-      redis:
-        image: redis:7
-        # Explicit 0.0.0.0 binding — see the long comment in the rspec
-        # services block. `6379:6379` alone leaves HostIP="invalid IP"
-        # in the act runner.
-        ports:
-          - 0.0.0.0:6379:6379
+    timeout-minutes: 30
     env:
-      REDIS_URL: redis://172.17.0.1:6379/0
       # Worker startup hard-requires these two env vars. Empty values
       # abort the process before spec loading even begins:
       #   ERROR [WORKER] Missing required environment variables: WORKER_ID, JWT_SECRET_KEY
-      #   ERROR [WORKER] Worker cannot start without these configurations
       # Both are only used inside the test process, so deterministic
       # non-secret strings are fine — production rotates these from
       # Vault. Don't reuse a known-rotated value here.
       WORKER_ID: ci-worker-ephemeral
       JWT_SECRET_KEY: ci-jwt-secret-not-for-prod
     steps:
+      # Sidecars are started HERE, by hand, instead of in a `services:` block.
+      # A services: sidecar can only publish a FIXED host port, and a fixed
+      # port means one run at a time on a shared runner host: run 1772 held
+      # 5432 from 02:17 to 03:28 and run 1773's three database jobs each died
+      # inside 23 seconds on "Bind for 0.0.0.0:5432 failed: port is already
+      # allocated", with no rspec output at all. `-p <gw>::<port>` asks the
+      # kernel for a free port instead, atomically, per socket — so concurrent
+      # jobs cannot collide by construction. Proven on run 1776: two entries
+      # started together took 32768/32770 and 32769/32771 while run 1775 held
+      # the fixed 5432 on develop.
+      #
+      # The mapped port is read back with `docker port`, which needs nothing
+      # from the runner beyond the docker socket already mounted in job
+      # containers. That is why this is not an ephemeral `services:` port:
+      # reading one back there would need `${{ }}` inside the services block,
+      # which fails UNSAFE if unsupported (the literal string becomes the
+      # port), or the untried job.services context.
+      #
+      # Addressing is unchanged — the job container reaches the sidecar at the
+      # docker bridge gateway, not localhost and not by service name; see the
+      # git history of this file for the two runs that ruled those out. The
+      # gateway is now discovered rather than assumed, with the old hardcoded
+      # value as fallback (run 1776 confirmed they agree).
+      - name: Start isolated sidecars on kernel-assigned ports
+        run: |
+          set -euo pipefail
+          GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+          GW=${GW:-172.17.0.1}
+          OWNER="${GITHUB_RUN_ID:-norun}-${GITHUB_JOB:-nojob}-$(date +%s)-$RANDOM"
+          # Labels, not ports, are how ci-hygiene identifies a reapable orphan.
+          # The deadline is this job's own ceiling, so a sidecar is only ever
+          # reaped after the job that owns it could not still be running.
+          DEADLINE=$(( $(date +%s) + 9000 ))
+          LABELS="--label powernode.ci=sidecar --label powernode.ci.owner=$OWNER --label powernode.ci.deadline=$DEADLINE"
+
+          RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
+
+          RDPORT=$(docker port "$RD" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          [ -n "$RDPORT" ] || { echo "sidecar published no port"; exit 1; }
+          echo "sidecar: redis $GW:$RDPORT  owner=$OWNER"
+
+          { echo "REDIS_URL=redis://$GW:$RDPORT/0"
+            echo "CI_SIDECAR_OWNER=$OWNER"; } >> "$GITHUB_ENV"
+
       - name: Check out the system extension
         uses: actions/checkout@v4
         with:
@@ -739,14 +777,12 @@ jobs:
           # (ai_*, mission_*, etc.) are out of this extension's scope.
           bundle exec rspec spec/jobs/system_*_spec.rb --format progress
 
-      # Post-job sidecar cleanup. Mirrors the rspec job's cleanup —
-      # catches normal completion + most cancellations; ci-hygiene
-      # handles the SIGKILL case before the next run.
-      - name: Reap own sidecars
+      # Removes exactly this job's sidecars, by owner label. Nothing here
+      # matches on a port or an image, so it can never reach a concurrent
+      # job's containers — which is what the old port/image sweep did.
+      - name: Remove this job's sidecars
         if: always()
         run: |
           set +e
-          docker ps --format '{{.ID}} {{.Ports}}' \
-            | awk 'index($0, ":6379->") {print $1}' \
-            | xargs -r docker rm -f
+          docker ps -aq --filter "label=powernode.ci.owner=${CI_SIDECAR_OWNER:-none-set}" | xargs -r docker rm -f
           exit 0
