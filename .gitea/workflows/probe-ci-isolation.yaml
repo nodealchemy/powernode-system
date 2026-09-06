@@ -44,8 +44,33 @@
 # created by this probe is never reaped by the age rule, so the test as written
 # could only ever pass vacuously.
 #
-# RESULTS — fill in from the run, the way ci.yaml records runs 1673-1676:
-#   run <id> (<sha>): P1 ? · P2 ? · P3 ? · P4 ? · P5 ? · P6 ?
+# RESULTS — run 1776 / #1142 (ci-probe/isolation-1, fa70f6ee), 2026-09-06.
+# ALL SIX PASS. https://git.powernode.org/powernode/powernode-system/actions/runs/1776
+#
+#   P1 PASS  Two matrix entries started together (04:05:39) on runner2 and
+#            runner3 and were handed four distinct ports — entry 0 postgres
+#            32768 / redis 32770, entry 1 postgres 32769 / redis 32771 — each
+#            reachable from its job container at the gateway. `docker network
+#            inspect bridge` resolved 172.17.0.1, which is the value ci.yaml
+#            hardcodes, so the discovery is confirmed rather than assumed
+#            (§10 listed it as never having been run in a job).
+#            Decisively: run 1775 was mid-suite on develop holding the fixed
+#            5432 throughout, and none of these four allocations collided with
+#            it. That is the whole premise of step 2, observed rather than
+#            argued.
+#   P2 PASS  A value written to $GITHUB_ENV was read back in a later step.
+#   P3 PASS  github.run_id and GITHUB_RUN_ID both populated.
+#   P4 PASS  timeout-minutes IS honoured. The job was killed 113s into a 300s
+#            sleep under `timeout-minutes: 2` ("context deadline exceeded",
+#            04:06:41 -> 04:08:34) and never reached the line that would have
+#            printed had it slept the full 300s.
+#   P5 PASS  `--network container:` joins a sidecar's netns, so the optional
+#            §3.5 path (no published port at all) is available.
+#   P6 PASS  needs.<job>.result was readable in an `if:` — the gated job ran.
+#
+# So design §1.4's four "unverified — probe first" entries (timeout-minutes,
+# $GITHUB_ENV, github.run_id, needs.<job>.result) are all usable, and nothing
+# in steps 2-3 rests on a feature this run did not exercise.
 #
 # Delete this file once the design's step 3 has landed and its verdicts are
 # recorded in §1.4.
