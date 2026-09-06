@@ -92,4 +92,6 @@ echo "==> Installing provider SDK gems (aws-sdk-ec2, fog-openstack) onto the cor
 bundle install --quiet
 
 echo "==> Running provider specs WITH SDK gems bundled (aws/openstack no longer skip)"
-bundle exec rspec --format progress "${SPECS[@]}"
+# Routed through ci-rspec.sh so provider-specs records its example count;
+# a run that executes nothing must not look like a test failure.
+bash "${SCRIPT_DIR}/ci-rspec.sh" --format progress "${SPECS[@]}"

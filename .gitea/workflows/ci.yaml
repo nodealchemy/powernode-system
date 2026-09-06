@@ -306,7 +306,7 @@ jobs:
           echo "::group::rspec $suite"
           # || overall=1 preserves the old fail-fast: false behaviour — every
           # suite runs even after one fails, and the job still reports failure.
-          bundle exec rspec $existing --format progress || overall=1
+          bash ../extensions/system/scripts/ci-rspec.sh $existing --format progress || overall=1
           echo "::endgroup::"
           done
           exit $overall
@@ -320,6 +320,19 @@ jobs:
       # Removes exactly this job's sidecars, by owner label. Nothing here
       # matches on a port or an image, so it can never reach a concurrent
       # job's containers — which is what the old port/image sweep did.
+      # A job that executed ZERO examples must not report a bare `failure`
+      # alongside genuine test failures — that is what made run 1773 unreadable.
+      # `if: always()` so it still speaks when an earlier step died, which is
+      # precisely the case worth naming.
+      - name: Assert this job actually ran examples
+        if: always()
+        run: |
+          # "Mount extension into parent" mv's the checkout, so resolve either
+          # location — this step runs even when that step never happened.
+          s=powernode-platform/extensions/system/scripts/ci-assert-examples-ran.sh
+          [ -f "$s" ] || s=extensions/system/scripts/ci-assert-examples-ran.sh
+          bash "$s" rspec
+
       - name: Remove this job's sidecars
         if: always()
         run: |
@@ -461,6 +474,19 @@ jobs:
       # Removes exactly this job's sidecars, by owner label. Nothing here
       # matches on a port or an image, so it can never reach a concurrent
       # job's containers — which is what the old port/image sweep did.
+      # A job that executed ZERO examples must not report a bare `failure`
+      # alongside genuine test failures — that is what made run 1773 unreadable.
+      # `if: always()` so it still speaks when an earlier step died, which is
+      # precisely the case worth naming.
+      - name: Assert this job actually ran examples
+        if: always()
+        run: |
+          # "Mount extension into parent" mv's the checkout, so resolve either
+          # location — this step runs even when that step never happened.
+          s=powernode-platform/extensions/system/scripts/ci-assert-examples-ran.sh
+          [ -f "$s" ] || s=extensions/system/scripts/ci-assert-examples-ran.sh
+          bash "$s" provider-specs
+
       - name: Remove this job's sidecars
         if: always()
         run: |
@@ -775,11 +801,24 @@ jobs:
         run: |
           # Run only the system_*_spec.rb files. Other parent-worker jobs
           # (ai_*, mission_*, etc.) are out of this extension's scope.
-          bundle exec rspec spec/jobs/system_*_spec.rb --format progress
+          bash ../extensions/system/scripts/ci-rspec.sh spec/jobs/system_*_spec.rb --format progress
 
       # Removes exactly this job's sidecars, by owner label. Nothing here
       # matches on a port or an image, so it can never reach a concurrent
       # job's containers — which is what the old port/image sweep did.
+      # A job that executed ZERO examples must not report a bare `failure`
+      # alongside genuine test failures — that is what made run 1773 unreadable.
+      # `if: always()` so it still speaks when an earlier step died, which is
+      # precisely the case worth naming.
+      - name: Assert this job actually ran examples
+        if: always()
+        run: |
+          # "Mount extension into parent" mv's the checkout, so resolve either
+          # location — this step runs even when that step never happened.
+          s=powernode-platform/extensions/system/scripts/ci-assert-examples-ran.sh
+          [ -f "$s" ] || s=extensions/system/scripts/ci-assert-examples-ran.sh
+          bash "$s" worker-specs
+
       - name: Remove this job's sidecars
         if: always()
         run: |
