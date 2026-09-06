@@ -171,7 +171,7 @@ module GateComposedTaskCategories
     },
     {
       file: "app/services/ai/tools/system_fleet_tool.rb",
-      line: 604,
+      line: 614,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —
