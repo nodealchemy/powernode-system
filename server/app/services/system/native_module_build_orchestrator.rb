@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "zlib"
+
 module System
   # Campaign 019f5885 inc9 Part B — the brain of native module builds. Turns a
   # System::ModuleBuildBatch (Part A's bookkeeping row) into per-module
@@ -74,7 +76,24 @@ module System
 
     TERMINAL_MODULE_STATES = %w[succeeded failed].freeze
 
-    Result = Struct.new(:ok?, :dispatched, :queued, :succeeded, :retried, :failed, keyword_init: true)
+    # PostgreSQL advisory-lock namespace for the per-batch mutual exclusion
+    # around #dispatch! / #advance! ("NMBO"). Both read the whole
+    # metadata["modules"] hash, work on it for as long as a sign + publish
+    # takes (~100 s per module on ops-hub), and write the WHOLE hash back —
+    # two of them interleaving on one batch is a lost update (the later save
+    # silently reverts the earlier one's resolutions) or a double
+    # sign + publish of the same artifact. The worker's 60 s reconcile tick
+    # re-POSTs a sweep whose previous request is still running (Faraday
+    # retries the POST on its 120 s timeout), and the sweep's per-lease path
+    # and its batch-level backstops can all reach the same batch, so this
+    # is not hypothetical. Session-level try-lock, never blocking: the loser
+    # returns a `busy` no-op result and the next tick re-drives the batch.
+    BATCH_LOCK_NAMESPACE = 0x4E4D424F
+
+    # `busy` is true only for the caller that found the batch's advisory lock
+    # already held (see #with_batch_lock) — it did nothing, and its zero
+    # counters must not be read as "nothing left to do".
+    Result = Struct.new(:ok?, :dispatched, :queued, :succeeded, :retried, :failed, :busy, keyword_init: true)
 
     class << self
       def dispatch!(batch:)
@@ -115,6 +134,21 @@ module System
     end
 
     def dispatch!
+      with_batch_lock { dispatch_locked! }
+    end
+
+    def advance!
+      with_batch_lock { advance_locked! }
+    end
+
+    # cancel! (below, public) deliberately takes NO batch lock: an operator
+    # stop must not queue behind a two-minute sign + publish, and its own
+    # guards (#try_dispatch_queued!/#attempt_retry! re-check
+    # @batch.cancelled?) keep a concurrent advance from resurrecting work.
+
+    private
+
+    def dispatch_locked!
       return vacuous_result if @batch.cancelled?
 
       modules = load_modules_state
@@ -153,6 +187,8 @@ module System
     # Returns a Result with ok?: false when the batch is already terminal —
     # cancelling a complete batch would rewrite the history of versions that
     # already published.
+    public
+
     def cancel!(reason: nil)
       unless @batch.may_cancel?
         return Result.new(ok?: false, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
@@ -178,7 +214,9 @@ module System
                  failed: count_state(modules, "failed"))
     end
 
-    def advance!
+    private
+
+    def advance_locked!
       return vacuous_result if @batch.cancelled?
 
       modules = load_modules_state
@@ -230,10 +268,48 @@ module System
                  succeeded: succeeded, retried: retried, failed: failed)
     end
 
-    private
-
     def vacuous_result
       Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
+    end
+
+    def busy_result
+      Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0, busy: true)
+    end
+
+    # Per-batch mutual exclusion for the read-modify-write of
+    # metadata["modules"] (see BATCH_LOCK_NAMESPACE). Session-level
+    # pg_try_advisory_lock on this thread's connection: it is held across the
+    # whole sign + publish (a transaction-scoped lock would mean a ~100 s open
+    # transaction), released in `ensure`, and dropped by PostgreSQL with the
+    # session if the process dies. Non-blocking by design — a sweep that
+    # finds the lock held must not queue up behind a two-minute publish; it
+    # reports `busy` and the batch is re-driven on the next tick (the sweep's
+    # readvance/redispatch backstops look at persisted state, not at who
+    # advanced last). The batch is RELOADED under the lock so the modules
+    # hash worked on is the one the previous holder saved, not the copy the
+    # caller loaded before waiting.
+    def with_batch_lock
+      conn = ::ActiveRecord::Base.connection
+      key = batch_lock_key
+      acquired = conn.select_value("SELECT pg_try_advisory_lock(#{BATCH_LOCK_NAMESPACE}, #{key})")
+      unless ActiveModel::Type::Boolean.new.cast(acquired)
+        Rails.logger.info("[NativeModuleBuildOrchestrator] batch #{@batch.id}: advisory lock held elsewhere — skipping this pass")
+        return busy_result
+      end
+
+      begin
+        @batch.reload
+        yield
+      ensure
+        conn.select_value("SELECT pg_advisory_unlock(#{BATCH_LOCK_NAMESPACE}, #{key})")
+      end
+    end
+
+    # Positive signed 32-bit key derived from the batch UUID; the namespace
+    # makes a cross-subsystem collision (same int, other purpose) a non-issue
+    # in practice since both halves must match.
+    def batch_lock_key
+      Zlib.crc32(@batch.id.to_s) & 0x7FFFFFFF
     end
 
     # A batch whose plan is empty (nothing needed rebuilding) has no member

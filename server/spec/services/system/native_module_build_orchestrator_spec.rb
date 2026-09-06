@@ -859,6 +859,90 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(batch.metadata["modules"]["mod-retry"]["state"]).to eq("failed")
     end
 
+    it "finalizes a finished member whose lease is already gone — resolution is lease-independent" do
+      seed_pool_member
+      mod = create_module("mod-orphaned-lease")
+      batch = dispatch_single(mod)
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      lease = System::CiRunnerLease.find_by(build_task_id: task.id)
+      complete_task!(task, result: { "oci_digest" => "sha256:abcd" })
+      # The sweep's backstop (or expiry, or an operator) released the lease
+      # before the batch was advanced — the 2026-09-06 hub-frontend shape.
+      lease.update!(status: "released", released_at: Time.current)
+
+      allow(System::ModuleSigningService).to receive(:sign!)
+        .and_return(System::ModuleSigningService::Result.new(ok?: true, digest: "sha256:abcd"))
+      expect(System::ModulePublicationProcessor).to receive(:process!)
+        .and_return(System::ModulePublicationProcessor::Result.new(ok?: true))
+
+      result = described_class.advance!(batch: batch)
+
+      expect(result.succeeded).to eq(1)
+      expect(batch.reload.status).to eq("complete")
+      expect(batch.metadata["modules"]["mod-orphaned-lease"]["state"]).to eq("succeeded")
+      expect(lease.reload).to be_released
+    end
+
+    it "works on the batch state another advance saved, not the copy it was handed (reloads under the lock)" do
+      seed_pool_member
+      mod = create_module("mod-stale-copy")
+      batch = dispatch_single(mod)
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      complete_task!(task, result: { "oci_digest" => "sha256:abcd" })
+      stale = System::ModuleBuildBatch.find(batch.id) # loaded before the resolution below
+      System::ModuleBuildBatch.find(batch.id).then do |fresh|
+        fresh.update!(metadata: fresh.metadata.deep_merge("modules" => { "mod-stale-copy" => { "state" => "succeeded" } }))
+      end
+      expect(System::ModuleSigningService).not_to receive(:sign!)
+
+      result = described_class.advance!(batch: stale)
+
+      expect(result.succeeded).to eq(0)
+      expect(batch.reload.metadata["modules"]["mod-stale-copy"]["state"]).to eq("succeeded")
+    end
+
+    it "returns busy and touches nothing when the batch's advisory lock is held by another session" do
+      seed_pool_member
+      mod = create_module("mod-locked")
+      batch = dispatch_single(mod)
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      complete_task!(task, result: { "oci_digest" => "sha256:abcd" })
+
+      ns = described_class::BATCH_LOCK_NAMESPACE
+      key = Zlib.crc32(batch.id.to_s) & 0x7FFFFFFF
+      # A genuinely separate PostgreSQL session: under transactional tests the
+      # pool hands every thread the SAME connection, on which the lock would
+      # simply be re-entrant.
+      cfg = ActiveRecord::Base.connection_db_config.configuration_hash
+      other = PG.connect(host: cfg[:host], port: cfg[:port], user: cfg[:username],
+                         password: cfg[:password], dbname: cfg[:database])
+      other.exec("SELECT pg_advisory_lock(#{ns}, #{key})")
+      sign_calls = 0
+      allow(System::ModuleSigningService).to receive(:sign!) do
+        sign_calls += 1
+        System::ModuleSigningService::Result.new(ok?: true, digest: "sha256:abcd")
+      end
+      allow(System::ModulePublicationProcessor).to receive(:process!)
+        .and_return(System::ModulePublicationProcessor::Result.new(ok?: true))
+
+      begin
+        result = described_class.advance!(batch: batch)
+      ensure
+        other.exec("SELECT pg_advisory_unlock(#{ns}, #{key})")
+        other.close
+      end
+
+      expect(result.busy).to be(true)
+      expect(result.succeeded).to eq(0)
+      expect(sign_calls).to eq(0)
+      expect(batch.reload.metadata["modules"]["mod-locked"]["state"]).to eq("dispatched")
+      expect(batch.status).to eq("dispatched")
+
+      # Lock gone → the same call now does the work.
+      expect(described_class.advance!(batch: batch).succeeded).to eq(1)
+      expect(sign_calls).to eq(1)
+    end
+
     it "is idempotent — a second call with nothing new to process is a no-op" do
       seed_pool_member
       mod = create_module("mod-idempotent")
