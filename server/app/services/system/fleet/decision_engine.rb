@@ -1330,11 +1330,114 @@ module System
       #
       # Carries the command and the status as well as the reason, because
       # "which instance, doing what" is what an operator needs to act on a
-      # refusal. The refusal has no event sink yet — that is offer
-      # 01a0779e-1436, deliberately a separate increment.
-      def dead_target_skip(instance, command, reason)
+      # refusal.
+      #
+      # IMP-ee681c537f76 — and it EMITS, because a refusal that only lives in a
+      # return value is invisible. emit_decision! writes decision.proceeded with
+      # no `applied` key, and executed_remediation? mints no RemediationOutcome
+      # for applied: false, so a lane that proceeded and then declined to act
+      # reads in the stream exactly like one that acted. That is why the
+      # orphaned dispatches of 2026-09-06 went unnoticed for 42 hours.
+      #
+      # A dedicated kind rather than a field on the decision event, per the
+      # operator's ruling: this one names an instance and a command an operator
+      # can act on. Making every lane's no-op legible is a separate, generic
+      # change and must not substitute for this one — the MCP producers
+      # (system_fleet_tool's retemplate and refresh verbs) refuse without ever
+      # reaching a decision event, and the four other `applied: false` branches
+      # in this file — disruption budget, foreign control plane, self-managed,
+      # in-flight — are still invisible. Both are filed as offer 01a07886-f2a5
+      # rather than left as an acknowledgement pointing at nothing.
+      #
+      # Named with a bang, unlike its two pure siblings foreign_control_plane_skip
+      # and self_managed_skip: this one writes a durable ledger row, and a
+      # `*_skip` result-builder that quietly emits is a trap for the next caller.
+      def refuse_dead_target!(instance, command, reason)
+        emit_dispatch_refused!(instance, command, reason)
+
         { applied: false, instance_id: instance.id, command: command,
           instance_status: instance.status, reason: reason }
+      end
+
+      # One event per instance+command+CLASS per window, not per tick.
+      #
+      # A refusal is a PERSISTENT condition — the node stays dead — while the
+      # drift signal that triggers it re-fires on the engine's decide cadence.
+      # Undeduped, six silent instances would write on the order of 800 rows a
+      # day, which is the exact shape escalate_blocked_adaptation! already had
+      # to fix once (~144/day for one mission). EventBroadcaster does no dedup
+      # of its own: it unconditionally create!s and never reads correlation_id
+      # for suppression.
+      #
+      # THE CLASS IS IN THE KEY, and getting that wrong was the review's
+      # finding. Keying on the reason STRING would re-announce on every hourly
+      # cloud-sync flap (running -> error -> running writes a new reason for an
+      # unchanged condition). But keying on instance+command ALONE is worse in
+      # the other direction: a target refused as `terminated` at 10:00 and, at
+      # 10:10, refused as `agent went silent` — a genuinely different diagnosis,
+      # reached through a different signal that legitimately passed the engine's
+      # own fingerprint dedup — would be suppressed, and the operator would act
+      # on the stale reason. #silence_verdict already draws exactly the
+      # distinction that matters and is stable across a flap within a class.
+      DISPATCH_REFUSED_ALARM_TTL_SECONDS =
+        (ENV["FLEET_DISPATCH_REFUSED_TTL_SECONDS"].presence&.to_i&.positive? || 60 * 60)
+
+      # :offline (outside the live replica set) | :went_silent | :never_reported
+      def refusal_class(instance)
+        instance.silence_verdict || :offline
+      end
+
+      def emit_dispatch_refused!(instance, command, reason)
+        return unless claim_dispatch_refused_alarm!(instance, command, refusal_class(instance))
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "fleet.dispatch_refused",
+          severity: :high,
+          payload: {
+            "instance_id" => instance.id,
+            "node_id" => instance.node_id,
+            "command" => command,
+            "instance_status" => instance.status,
+            "refusal_class" => refusal_class(instance).to_s,
+            # NOT compacted. nil here is the DIAGNOSIS for the :never_reported
+            # class — an instance the control plane marked running from provider
+            # state alone — so dropping the key would delete the field an
+            # operator uses to tell "never reported" from "went silent", in
+            # exactly the class where it matters most.
+            "last_heartbeat_at" => instance.last_heartbeat_at&.iso8601,
+            "reason" => reason
+          },
+          source: "decision_engine.dispatch_refused",
+          correlation_id: instance.id
+        )
+      rescue StandardError => e
+        # A missing fleet_events table is a deploy defect, not an observability
+        # hiccup, and System::DeployDefect exists so it reads as a FAILED tick
+        # rather than a healthy one. EventBroadcaster re-raises those
+        # deliberately; swallowing them here would restore the silence that
+        # module was written to break.
+        raise if ::System::DeployDefect.schema?(e)
+
+        # Anything else: observability must never break the refusal it observes.
+        # The task is already not being created; losing the event costs
+        # visibility, and raising would cost the fence.
+        Rails.logger.warn("[FleetDecisionEngine] dispatch-refused emit failed: #{e.message}")
+        nil
+      end
+
+      def claim_dispatch_refused_alarm!(instance, command, klass)
+        return true unless Rails.cache.respond_to?(:write)
+
+        key = "fleet:dispatch_refused:#{account.id}:#{instance.id}:#{command}:#{klass}"
+        # unless_exist is the ATOMIC form. exist?-then-write races two engine
+        # ticks into both claiming; harmless here (two rows instead of one) but
+        # free to close.
+        Rails.cache.write(key, Time.current.to_i.to_s,
+                          expires_in: DISPATCH_REFUSED_ALARM_TTL_SECONDS, unless_exist: true)
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] dispatch-refused dedup unavailable, suppressing: #{e.message}")
+        false
       end
 
       def recently_decided?(signal)
@@ -2895,7 +2998,7 @@ module System
         # answer, describing a transient condition where the real one is
         # permanent.
         if (refusal = instance.on_node_dispatch_refusal)
-          return dead_target_skip(instance, command, refusal)
+          return refuse_dead_target!(instance, command, refusal)
         end
 
         if ::System::Task.where(account: account, operable: instance,

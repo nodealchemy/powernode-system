@@ -575,9 +575,17 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
 
       def decide_drift(kind)
+        decide_drift_with(kind, "#{kind.split('.').last}:#{instance.id}")
+      end
+
+      # Same lane, EXPLICIT fingerprint. Needed because the engine dedups its
+      # own decisions by fingerprint for 600s before the dispatcher is ever
+      # reached, so two same-fingerprint decides cannot exercise anything
+      # downstream of that — see the dispatch_refused TTL example.
+      def decide_drift_with(kind, fingerprint)
         engine.decide(kind: kind, severity: :medium,
                       payload: { "instance_id" => instance.id },
-                      fingerprint: "#{kind.split('.').last}:#{instance.id}")
+                      fingerprint: fingerprint)
       end
 
       it "dispatches a sync_modules task when module drift proceeds" do
@@ -651,6 +659,147 @@ RSpec.describe System::Fleet::DecisionEngine do
 
           expect(d[:remediation][:reason]).to match(/terminated/)
           expect(d[:remediation][:reason]).not_to match(/in flight/)
+        end
+
+        # IMP-ee681c537f76 — a refusal with no event is why the orphaned
+        # dispatches went unnoticed for 42 hours. `applied: false` is returned
+        # into a decision hash that emit_decision! does not carry, and
+        # executed_remediation? mints no RemediationOutcome for it, so the
+        # stream showed an ordinary proceed and nothing scored the refusal.
+        describe "the fleet.dispatch_refused event" do
+          def refusal_events
+            System::FleetEvent.where(account: account, kind: "fleet.dispatch_refused")
+          end
+
+          it "emits one carrying the instance, command, status, heartbeat and reason" do
+            instance.update!(last_heartbeat_at: 10.minutes.ago)
+
+            expect { decide_drift("system.module_drift") }.to change { refusal_events.count }.by(1)
+
+            event = refusal_events.last
+            expect(event.node_instance_id).to eq(instance.id)
+            expect(event.payload).to include(
+              "instance_id" => instance.id,
+              "command" => "sync_modules",
+              "instance_status" => "running"
+            )
+            expect(event.payload["last_heartbeat_at"]).to be_present
+            expect(event.payload["reason"]).to match(/silent/)
+            expect(event.source).to eq("decision_engine.dispatch_refused")
+          end
+
+          # The direction's required oracle: without this, a mutant that emits
+          # unconditionally — on every dispatch, refused or not — survives.
+          it "emits NOTHING on the green path" do
+            expect { decide_drift("system.module_drift") }
+              .not_to change { refusal_events.count }
+          end
+
+          # The OTHER refusal class, and the one whose diagnosis lives in a
+          # NULL: an instance the control plane marked running from provider
+          # state alone, which has therefore never reported. The payload must
+          # not compact that key away — its absence is the finding.
+          it "emits for a never-reported instance, carrying the null heartbeat" do
+            instance.update!(status: "running", last_heartbeat_at: nil)
+
+            expect { decide_drift("system.module_drift") }.to change { refusal_events.count }.by(1)
+
+            event = refusal_events.last
+            expect(event.payload).to have_key("last_heartbeat_at")
+            expect(event.payload["last_heartbeat_at"]).to be_nil
+            expect(event.payload["refusal_class"]).to eq("never_reported")
+            expect(event.payload["reason"]).to match(/never reported/)
+          end
+
+          # Severity is what operator alert routing keys on (FleetEvent's
+          # high_or_critical scope). A silent downgrade to a filtered bucket
+          # reproduces the 42-hour blindness this event exists to end.
+          it "grades the event high and carries the node and correlation refs" do
+            instance.update!(status: "terminated")
+
+            decide_drift("system.module_drift")
+
+            event = refusal_events.last
+            expect(event.severity).to eq("high")
+            expect(event.node_id).to eq(instance.node_id)
+            expect(event.correlation_id).to eq(instance.id)
+          end
+
+          # A refusal is a PERSISTENT condition and the drift signal re-fires
+          # every tick, so an undeduped event is the ~144-rows-a-day shape
+          # escalate_blocked_adaptation! already had to fix once.
+          #
+          # THE FINGERPRINTS MUST DIFFER. The first version of this example
+          # called decide_drift twice with the same kind, and decide_drift
+          # derives the fingerprint FROM the kind — so the second call hit the
+          # engine's own 600s recently_decided? dedup at :1089, returned
+          # :deduped, and never reached the dispatcher at all. The count stayed
+          # 1 because nothing was emitted the second time, not because this
+          # claim suppressed it: deleting claim_dispatch_refused_alarm! outright
+          # left all five examples green. Two distinct fingerprints is the
+          # production shape anyway — two lanes refusing the same target.
+          it "does not re-emit for the same instance, command and class inside the TTL" do
+            instance.update!(status: "terminated")
+
+            expect {
+              decide_drift_with("system.module_drift", "closure:#{instance.id}")
+              decide_drift_with("system.module_drift", "drift:#{instance.id}")
+            }.to change { refusal_events.count }.by(1)
+          end
+
+          # ...but the dedup is per COMMAND, so a second lane refusing the same
+          # instance for different work is still visible.
+          it "still emits for a different command on the same instance" do
+            instance.update!(status: "terminated")
+            decide_drift("system.module_drift")
+
+            expect { decide_drift("system.config_drift") }
+              .to change { refusal_events.count }.by(1)
+          end
+
+          # ...and per CLASS, so a target whose DIAGNOSIS changes re-announces.
+          # Keying on instance+command alone would leave an operator acting on
+          # "terminated" for a box that is now running-but-silent.
+          it "re-emits when the refusal class changes inside the TTL" do
+            instance.update!(status: "terminated")
+            decide_drift_with("system.module_drift", "a:#{instance.id}")
+
+            instance.update!(status: "running", last_heartbeat_at: 10.minutes.ago)
+
+            expect { decide_drift_with("system.module_drift", "b:#{instance.id}") }
+              .to change { refusal_events.count }.by(1)
+            expect(refusal_events.last.payload["refusal_class"]).to eq("went_silent")
+          end
+
+          # The claim helper's own failure path: a cache that raises must
+          # suppress the event, never the refusal.
+          it "still refuses when the dedup claim itself raises" do
+            instance.update!(status: "terminated")
+            allow(Rails.cache).to receive(:write).and_raise(StandardError, "cache down")
+
+            d = nil
+            expect { d = decide_drift("system.module_drift") }
+              .not_to change { refusal_events.count }
+            expect(d[:remediation]).to include(applied: false)
+            expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
+          end
+
+          # Observability must never break the refusal it observes.
+          it "still refuses when the event cannot be written" do
+            instance.update!(status: "terminated")
+            # Scoped to THIS kind: stubbing every emission would break the
+            # decision event the engine writes on the same path, and the
+            # example would then pass for the wrong reason.
+            allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_call_original
+            allow(System::Fleet::EventBroadcaster)
+              .to receive(:emit!).with(hash_including(kind: "fleet.dispatch_refused"))
+              .and_raise(StandardError, "sink down")
+
+            d = decide_drift("system.module_drift")
+
+            expect(d[:remediation]).to include(applied: false)
+            expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
+          end
         end
 
         # The gate belongs to the dispatcher, not to one command.
