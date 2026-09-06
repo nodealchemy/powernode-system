@@ -842,4 +842,90 @@ RSpec.describe System::NodeInstance, type: :model do
       end
     end
   end
+  # IMP-fb05226e89cb — the liveness question a dispatcher must ask before
+  # queueing an on-node task. An on-node task (sync_modules / apply_config) is
+  # only ever executed by the agent polling pending rows, so a task created for
+  # an instance with no live agent sits at pending/progress 0 until the janitor
+  # cancels it 48h later.
+  describe '#on_node_dispatch_refusal' do
+    def instance_with(status:, heartbeat: nil)
+      create(:system_node_instance, node: node, status: status, last_heartbeat_at: heartbeat)
+    end
+
+    describe 'the status arm' do
+      it 'refuses a terminated instance, naming the status' do
+        refusal = instance_with(status: 'terminated').on_node_dispatch_refusal
+
+        expect(refusal).to be_present
+        expect(refusal).to include('terminated')
+      end
+
+      it 'refuses an errored instance, naming the status' do
+        refusal = instance_with(status: 'error').on_node_dispatch_refusal
+
+        expect(refusal).to be_present
+        expect(refusal).to include('instance is error')
+      end
+
+      # Fresh heartbeats throughout: this example is about the STATUS arm, and
+      # a nil heartbeat would drag the silence arm into it for `running`.
+      it 'admits every status the control plane still expects to serve' do
+        described_class::LIVE_REPLICA_STATUSES.each do |status|
+          expect(instance_with(status: status, heartbeat: 30.seconds.ago).on_node_dispatch_refusal)
+            .to be_nil, "expected #{status} to be dispatchable"
+        end
+      end
+    end
+
+    describe 'the silence arm' do
+      it 'refuses a running instance whose agent stopped reporting' do
+        refusal = instance_with(status: 'running', heartbeat: 10.minutes.ago).on_node_dispatch_refusal
+
+        expect(refusal).to be_present
+        expect(refusal).to include('silent')
+      end
+
+      it 'admits a running instance that reported recently' do
+        expect(instance_with(status: 'running', heartbeat: 30.seconds.ago).on_node_dispatch_refusal)
+          .to be_nil
+      end
+
+      # Scoped to the statuses where a heartbeat is EXPECTED. A stopped
+      # instance is not silent, it is stopped: the task waits for the agent,
+      # which is the existing semantics and correct.
+      it 'admits a stopped instance whose last heartbeat is ancient' do
+        expect(instance_with(status: 'stopped', heartbeat: 2.days.ago).on_node_dispatch_refusal)
+          .to be_nil
+      end
+    end
+
+    # THE TRAP. `stale_heartbeat?` answers "can this telemetry be trusted" and
+    # returns TRUE for nil — a row that has never reported. This predicate asks
+    # a different question: "was there an agent, and did it stop talking". nil
+    # means "not yet", not "dead". An instance that has never heartbeated is
+    # legitimately about to enrol, and the provisioning path queues sync_modules
+    # for exactly those rows, so refusing them would trade a visible stuck task
+    # for an invisibly never-provisioned node.
+    describe 'an instance that has never reported' do
+      %w[pending provisioning starting].each do |status|
+        it "admits a #{status} instance with no heartbeat at all" do
+          expect(instance_with(status: status, heartbeat: nil).on_node_dispatch_refusal)
+            .to be_nil, "a #{status} instance that has never reported must stay dispatchable"
+        end
+      end
+
+      # The inverse, and the case a naive "nil means not yet" rule gets wrong.
+      # The only legitimate route to `running` records the heartbeat BEFORE the
+      # transition, so a running row that never reported was marked running from
+      # PROVIDER state alone (CloudSyncService writes status with a bare
+      # update! from the hypervisor's view, which cannot see whether an agent
+      # enrolled). InstanceStatusSensor already counts that row as silent.
+      it 'refuses a running instance whose agent has never reported' do
+        refusal = instance_with(status: 'running', heartbeat: nil).on_node_dispatch_refusal
+
+        expect(refusal).to be_present
+        expect(refusal).to include('never reported')
+      end
+    end
+  end
 end

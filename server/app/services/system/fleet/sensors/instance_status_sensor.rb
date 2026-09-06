@@ -39,7 +39,10 @@ module System
         # (ProjectMetricsCollector#sample_availability_pct). Two copies of the
         # list would let the availability metric and the silence signals
         # disagree about which nodes were even supposed to answer.
-        HEARTBEAT_EXPECTED_STATUSES = %w[running starting].freeze
+        # Model vocabulary — defined next to NodeInstance::LIVE_REPLICA_STATUSES
+        # and aliased here so this sensor and NodeInstance#on_node_dispatch_refusal
+        # cannot drift on what "an agent is expected to be reporting" means.
+        HEARTBEAT_EXPECTED_STATUSES = ::System::NodeInstance::HEARTBEAT_EXPECTED_STATUSES
 
         # IMP-ca485128072e (APO-2e) — the operator-tunable surface.
         # Seconds, not minutes: every threshold on every sensor is stored in

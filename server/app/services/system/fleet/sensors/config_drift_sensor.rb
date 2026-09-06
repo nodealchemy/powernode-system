@@ -92,9 +92,13 @@ module System
                 # (DriftRemediateExecutor + apply_config reconcile task) from
                 # the payload's instance ids — without them every invocation
                 # ran with instance_id: nil. The engine's find_by(id:) carries
-                # NO status filter, so the `running` scope above is the only
-                # gate on which statuses can ever become an apply target —
-                # mirrored, not referenced, exactly like APPLY_COMMAND.
+                # no status filter of its own, so the `running` scope above was
+                # once the only gate on which statuses can become an apply
+                # target — mirrored, not referenced, exactly like APPLY_COMMAND.
+                # Since IMP-fb05226e89cb it is the FIRST of two: the engine also
+                # consults NodeInstance#on_node_dispatch_refusal, which refuses
+                # a running instance whose agent has gone silent or never
+                # reported at all.
                 instance_ids: instance_ids,
                 changed_at: asgn.updated_at.iso8601,
                 last_apply_at: last_apply&.iso8601

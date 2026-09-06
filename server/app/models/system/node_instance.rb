@@ -52,6 +52,12 @@ module System
     # count (invisible — the exact defect IMP-797a87dbd0bd fixed).
     LIVE_REPLICA_STATUSES = %w[pending provisioning starting running stopping stopped rebooting].freeze
 
+    # The statuses in which an agent is expected to be reporting, so silence is
+    # evidence rather than an absence of expectation. Model vocabulary — it is
+    # defined relative to LIVE_REPLICA_STATUSES above — and read by
+    # Fleet::Sensors::InstanceStatusSensor, which aliases it.
+    HEARTBEAT_EXPECTED_STATUSES = %w[running starting].freeze
+
     # The `active` scope's membership, named so consumers can report on its
     # COMPLEMENT rather than silently dropping it. drift_check
     # (PlatformMaintenanceExecutor#drift_summary_for) answers drift only for
@@ -898,6 +904,69 @@ module System
       return true if last_heartbeat_at.nil?
 
       last_heartbeat_at < HEARTBEAT_STALE_AFTER.ago
+    end
+
+    # IMP-fb05226e89cb — the question a dispatcher must ask BEFORE queueing an
+    # on-node task (sync_modules / apply_config). Returns the reason such a task
+    # would never be pulled, or nil when an agent can be expected to pull it.
+    #
+    # An on-node task is only ever executed by the agent polling pending rows,
+    # so one created for an instance with no live agent sits at pending /
+    # progress 0 until the worker janitor cancels it 48 hours later — and
+    # nothing in the event stream says why.
+    #
+    # Lives on the model rather than at the dispatch site because the other
+    # producers of on-node tasks can adopt it (today the sole caller is
+    # Fleet::DecisionEngine#dispatch_reconcile_task; System::Ai::Tools's
+    # retemplate and refresh verbs are queued to follow), and both ingredients
+    # are already here.
+    def on_node_dispatch_refusal
+      unless LIVE_REPLICA_STATUSES.include?(status)
+        return "instance is #{status} — no agent will pull an on-node task"
+      end
+
+      case silence_verdict
+      when :never_reported
+        "instance is #{status} but its agent has never reported — " \
+          "the control plane marked it #{status} from provider state alone, " \
+          "so an on-node task would wait indefinitely"
+      when :went_silent
+        "instance is #{status} but its agent went silent at " \
+          "#{last_heartbeat_at.iso8601} — an on-node task would wait indefinitely"
+      end
+    end
+
+    def silence_verdict
+      return nil unless HEARTBEAT_EXPECTED_STATUSES.include?(status)
+
+      # nil means two different things depending on the status, and conflating
+      # them is the whole risk of this predicate.
+      #
+      # For `starting`, nil is "not yet": the instance is mid-boot and its agent
+      # has not had a chance to report. For `running`, nil is "never": the only
+      # legitimate route to running records the heartbeat BEFORE the transition,
+      # so a running row that has never reported was marked running from
+      # PROVIDER state alone — System::CloudSyncService writes status with a
+      # bare update! from the hypervisor's view, which cannot see whether an
+      # agent enrolled. InstanceStatusSensor already counts exactly that row as
+      # silent (its query is `last_heartbeat_at < cutoff OR IS NULL`), and this
+      # predicate must not disagree with it.
+      #
+      # Getting this wrong in the other direction is the trap: `stale_heartbeat?`
+      # answers true for nil on EVERY status, so reusing it would refuse
+      # pending/provisioning/starting rows that are legitimately about to enrol
+      # and trade a visible stuck task for an invisibly never-provisioned node.
+      return status == "running" ? :never_reported : nil if last_heartbeat_at.nil?
+
+      # Threshold is the platform default HEARTBEAT_STALE_AFTER (3 min), NOT the
+      # account-tunable silent_threshold_seconds the sensor resolves per
+      # account. A deliberate divergence — a model should not do a SensorConfig
+      # lookup — but it means an operator who widens the sensor threshold does
+      # not widen this. Refusing during a transient blip is cheap: no task is
+      # created and the drift signal re-emits, though the next dispatch is
+      # bounded below by the engine's 600s dedup window rather than the next
+      # tick. Dispatching during one can cost 48 hours.
+      :went_silent if last_heartbeat_at < HEARTBEAT_STALE_AFTER.ago
     end
 
     # Records a heartbeat from the on-node powernode-agent. The :module_digests

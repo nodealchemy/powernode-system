@@ -1320,6 +1320,23 @@ module System
           reason: "instance is this control plane's own hosting node — skipped (INV-1 self-management fence)" }
       end
 
+      # IMP-fb05226e89cb — third fence: the target has no agent that can pull an
+      # on-node task. Same RESULT shape as the two above, but note it sits
+      # deeper than they do — the closure-drift caller runs TemplateApplyService
+      # before reaching the dispatcher, so a dead cloud_init target still gets
+      # its desired-state assignment rows created and only the task refused.
+      # That is deliberate (it matches what the pivot arm does for a node that
+      # cannot converge live), not an oversight.
+      #
+      # Carries the command and the status as well as the reason, because
+      # "which instance, doing what" is what an operator needs to act on a
+      # refusal. The refusal has no event sink yet — that is offer
+      # 01a0779e-1436, deliberately a separate increment.
+      def dead_target_skip(instance, command, reason)
+        { applied: false, instance_id: instance.id, command: command,
+          instance_status: instance.status, reason: reason }
+      end
+
       def recently_decided?(signal)
         return false unless Rails.cache.respond_to?(:exist?)
 
@@ -2871,6 +2888,15 @@ module System
         return { applied: false, reason: "instance not found" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
         return self_managed_skip(instance) if self_managed_target?(instance)
+
+        # IMP-fb05226e89cb — checked BEFORE the in-flight guard below on
+        # purpose. Liveness is the more fundamental fact: if the agent is gone,
+        # "a reconcile task is already in flight" is a true but misleading
+        # answer, describing a transient condition where the real one is
+        # permanent.
+        if (refusal = instance.on_node_dispatch_refusal)
+          return dead_target_skip(instance, command, refusal)
+        end
 
         if ::System::Task.where(account: account, operable: instance,
                                 command: command, status: OPEN_TASK_STATUSES).exists?

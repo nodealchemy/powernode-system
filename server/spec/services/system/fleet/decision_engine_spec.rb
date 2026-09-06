@@ -553,7 +553,12 @@ RSpec.describe System::Fleet::DecisionEngine do
       let(:platform) { create(:system_node_platform, account: account) }
       let(:template) { create(:system_node_template, account: account, node_platform: platform) }
       let(:node)     { create(:system_node, account: account, node_template: template) }
-      let!(:instance) { create(:system_node_instance, :running, node: node) }
+      # A live instance reports: the legitimate route to `running` records a
+      # heartbeat before the transition. Explicit here because the dispatcher
+      # now refuses a running row that has never reported (IMP-fb05226e89cb).
+      let!(:instance) do
+        create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current)
+      end
 
       let(:drift_plan) do
         { success: true,
@@ -592,6 +597,88 @@ RSpec.describe System::Fleet::DecisionEngine do
 
         expect(d[:remediation]).to include(applied: true, command: "apply_config")
         expect(System::Task.find_by(account: account, command: "apply_config", operable: instance)).to be_present
+      end
+
+      # IMP-fb05226e89cb — an on-node task is only ever executed by the agent
+      # polling pending rows, so dispatching one to an instance with no live
+      # agent creates a row that sits at pending/progress 0 until the janitor
+      # cancels it 48h later, with nothing in the event stream saying why.
+      context "when the target has no agent that can pull the task" do
+        it "refuses a terminated instance instead of queueing work it cannot run" do
+          instance.update!(status: "terminated")
+
+          d = decide_drift("system.module_drift")
+
+          expect(d[:remediation]).to include(applied: false)
+          expect(d[:remediation][:reason]).to match(/terminated/)
+          expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
+        end
+
+        # The case a status-only gate would MISS. These instances flap back to
+        # `running` hourly when cloud sync reflects the provider's "the VM is
+        # powered on" verdict, so status is not the discriminator — silence is.
+        it "refuses a running instance whose agent went silent" do
+          instance.update!(last_heartbeat_at: 10.minutes.ago)
+
+          d = decide_drift("system.module_drift")
+
+          expect(d[:remediation]).to include(applied: false)
+          expect(d[:remediation][:reason]).to match(/silent/)
+          expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
+        end
+
+        # THE REGRESSION THIS GATE COULD CAUSE. A never-heartbeated instance is
+        # about to enrol, not dead, and the provisioning path dispatches for
+        # exactly these rows.
+        it "still dispatches to a pending instance that has never reported" do
+          instance.update!(status: "pending", last_heartbeat_at: nil)
+
+          d = decide_drift("system.module_drift")
+
+          expect(d[:remediation]).to include(applied: true, command: "sync_modules")
+          expect(System::Task.find_by(account: account, command: "sync_modules", operable: instance)).to be_present
+        end
+
+        # Ordering: liveness is the more fundamental fact, so it must not be
+        # masked by "already in flight" — otherwise the operator reads a
+        # transient-looking reason for a permanent condition.
+        it "reports the liveness refusal ahead of the in-flight check" do
+          instance.update!(status: "terminated")
+          System::Task.create!(account: account, operable: instance,
+                               command: "sync_modules", status: "pending")
+
+          d = decide_drift("system.module_drift")
+
+          expect(d[:remediation][:reason]).to match(/terminated/)
+          expect(d[:remediation][:reason]).not_to match(/in flight/)
+        end
+
+        # The gate belongs to the dispatcher, not to one command.
+        it "gates apply_config on the same predicate" do
+          instance.update!(status: "terminated")
+
+          d = decide_drift("system.config_drift")
+
+          expect(d[:remediation]).to include(applied: false)
+          expect(d[:remediation][:reason]).to match(/terminated/)
+          expect(System::Task.where(account: account, command: "apply_config")).to be_empty
+        end
+
+        # The gate must also precede the two escalation arms below it. Both
+        # declare convergence_deferred, which the validator settles as
+        # INCONCLUSIVE — a deferral for a node that will never converge. A dead
+        # target has to read as a refusal instead, so this pins the ordering
+        # against a mutant that gates after those arms.
+        it "refuses rather than deferring when a reboot escalation is also due" do
+          instance.update!(status: "terminated")
+          System::Task.create!(account: account, operable: instance, command: "sync_modules",
+                               status: "failed", error_message: "module mod-1: reboot_pending")
+
+          d = decide_drift("system.module_drift")
+
+          expect(d[:remediation][:reason]).to match(/terminated/)
+          expect(d[:remediation]).not_to have_key(:convergence_deferred)
+        end
       end
 
       # IMP-f1c1e6d61104 part (c) — break the dispatch -> fail -> redispatch loop.
@@ -1091,7 +1178,7 @@ RSpec.describe System::Fleet::DecisionEngine do
       let(:platform) { create(:system_node_platform, account: account) }
       let(:template) { create(:system_node_template, account: account, node_platform: platform) }
       let(:node)     { create(:system_node, account: account, node_template: template) }
-      let!(:instance) { create(:system_node_instance, :running, node: node) }
+      let!(:instance) { create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current) }
 
       let(:sensor_payload) do
         { "node_id" => node.id, "module_id" => "mod-1", "assignment_id" => "asgn-1",
@@ -1227,7 +1314,7 @@ RSpec.describe System::Fleet::DecisionEngine do
       let(:platform)  { create(:system_node_platform, account: account) }
       let(:template)  { create(:system_node_template, account: account, node_platform: platform) }
       let(:node)      { create(:system_node, account: account, node_template: template) }
-      let!(:instance) { create(:system_node_instance, :running, node: node) }
+      let!(:instance) { create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current) }
       let(:module_a)  { create(:system_node_module, account: account, name: "closure-a-#{SecureRandom.hex(3)}") }
 
       before do
