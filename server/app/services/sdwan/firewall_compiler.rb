@@ -2,14 +2,18 @@
 
 # Compiles a network's Sdwan::FirewallRule rows into an `nft -f`-applicable
 # script. The script lives in `table inet powernode_sdwan` and uses one
-# chain per network (`sdwan_<8-char-net-id>`) — peer interfaces are scoped
-# via `iif "wg-sdwan-<8-char-net-id>"`.
+# chain per network (`sdwan_<net-handle>`) — peer interfaces are scoped via
+# `iif "<device>"`, where the device is resolved per HOST through
+# Sdwan::HostVrfAssignment.wg_iface_name_for and is therefore
+# "wg-sdwan-<short_id>" on any host with an assignment. The chain suffix and
+# the interface suffix are NOT the same string; do not derive one from the
+# other (IMP-54fdf40fbf9d).
 #
 # Output shape:
 #   {
 #     table: "powernode_sdwan",
 #     chain: "sdwan_019deffa",
-#     interface: "wg-sdwan-019deffa",
+#     interface: "wg-sdwan-7",     # or "wg-sdwan-019deffa" with no assignment
 #     policy: "accept" | "drop",
 #     rule_count: 5,
 #     ruleset: "<full nft script as text — agent applies via `nft -f`>",
@@ -45,19 +49,26 @@ module Sdwan
     DEFAULT_POLICY = "accept"
     HOOK_PRIORITY  = 0
 
-    # Convenience: compile one peer's view. The compiled output is per-
-    # network (not per-peer), but accepting a peer mirrors how
-    # TopologyCompiler is invoked, so callers don't need two shapes.
+    # The RULES are per-network; the `iif` DEVICE is per-host, because
+    # Sdwan::HostVrfAssignment allocates a short_id per host+network
+    # (IMP-54fdf40fbf9d). This used to discard the peer and answer
+    # network-scoped for everything, which is precisely why the emitted iif
+    # named a device that host never had. The peer is now threaded through so
+    # the interface can be resolved for the host the ruleset is FOR.
     def self.compile_for_peer(peer)
-      new(peer.network).compile
+      new(peer.network, peer: peer).compile
     end
 
+    # No peer: callers compiling a network's rules outside a host context
+    # (operator preview, multi-tenant composition). Falls back to the handle
+    # form, exactly as TopologyCompiler does for a static-only network.
     def self.compile_for_network(network)
       new(network).compile
     end
 
-    def initialize(network)
+    def initialize(network, peer: nil)
       @network = network
+      @peer    = peer
       @rules   = network.firewall_rules.enabled.ordered.to_a
     end
 
@@ -81,8 +92,19 @@ module Sdwan
       "sdwan_#{net_short_id}"
     end
 
+    # The DEVICE, resolved through the single source (the model that owns the
+    # name) rather than re-derived from the network handle here.
+    #
+    # MEMOIZED, and that is load-bearing rather than tidiness: iif_clause calls
+    # this once per emitted rule, and TopologyCompiler compiles once per peer on
+    # the agent heartbeat path. Unmemoized, a network with P peers and R rules
+    # costs P*(R+2) queries per heartbeat.
     def interface_name
-      "wg-sdwan-#{net_short_id}"
+      return @interface_name if defined?(@interface_name)
+
+      @interface_name = ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+        network: @network, node_instance: @peer&.node_instance
+      )
     end
 
     def default_policy

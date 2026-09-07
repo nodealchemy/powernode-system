@@ -144,7 +144,14 @@ module System
         return payload unless peer&.network
 
         payload.merge(
-          flannel_iface: "wg-sdwan-#{peer.network.network_handle}",
+          # Resolved through the single source, not re-derived: this call site
+          # carried its own "wg-sdwan-<handle>" copy and therefore named a
+          # device the host does not have whenever a HostVrfAssignment exists
+          # (IMP-54fdf40fbf9d). flannel binding to a missing interface is a
+          # silent cluster-networking failure, not a loud one.
+          flannel_iface: ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+            network: peer.network, node_instance: instance
+          ),
           flannel_backend: "host-gw",
           cluster_cidr: pod_cidr
         )

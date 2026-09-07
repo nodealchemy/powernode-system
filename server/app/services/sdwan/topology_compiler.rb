@@ -12,7 +12,8 @@
 # Output shape (per peer):
 #   {
 #     interface: {
-#       name: "wg-sdwan-<8>",
+#       name: "wg-sdwan-<short_id>",   # handle form only when the network
+#                                      # allocates no HostVrfAssignment
 #       address: "fd...:.../128",
 #       listen_port: 51820,
 #       mtu: 1420,
@@ -374,23 +375,25 @@ module Sdwan
       @hva_cache ||= {}
       cache_key = [ peer.node_instance_id, peer.sdwan_network_id ]
       return @hva_cache[cache_key] if @hva_cache.key?(cache_key)
-      @hva_cache[cache_key] = ::Sdwan::HostVrfAssignment.where(
+      @hva_cache[cache_key] = ::Sdwan::HostVrfAssignment.compilable.where(
         node_instance_id: peer.node_instance_id,
-        sdwan_network_id: peer.sdwan_network_id,
-        state: %w[active draining]
+        sdwan_network_id: peer.sdwan_network_id
       ).first
     end
 
+    # Delegates to the model that owns the name. This method USED to hold the
+    # HVA-or-handle logic itself, and three other producers each re-derived
+    # their own version of it — which is how they drifted (IMP-54fdf40fbf9d).
+    # The resolution now lives in one place and every producer calls it.
+    #
+    # Routed through host_vrf_assignment_for, NOT wg_iface_name_for: this runs
+    # once per peer on the agent heartbeat path, and the cache above is what
+    # keeps that from being a query per peer. Going to the model's own lookup
+    # would also load peer.node_instance, which nothing here needs.
     def interface_name(peer)
-      hva = host_vrf_assignment_for(peer)
-      # When a HostVrfAssignment exists (iBGP networks), derive the
-      # iface name from its short_id — single source of truth that's
-      # collision-free, IFNAMSIZ-safe, and stable across compiler runs.
-      return hva.wg_iface_name if hva
-
-      # Fallback for static-only networks where no HVA is allocated.
-      # Single network per host in this path means no collision risk.
-      "wg-sdwan-#{@network.network_handle}"
+      ::Sdwan::HostVrfAssignment.wg_iface_name_from(
+        assignment: host_vrf_assignment_for(peer), network: @network
+      )
     end
 
     # Slice 9b — VIP CIDRs that THIS peer should advertise locally. Static

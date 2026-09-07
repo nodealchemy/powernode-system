@@ -81,6 +81,47 @@ module Sdwan
       "wg-sdwan-#{short_id}"
     end
 
+    # THE SINGLE SOURCE for the WireGuard interface name on a given host+
+    # network, for every server-side producer.
+    #
+    # IMP-54fdf40fbf9d: this name had five producers and they disagreed. The
+    # agent creates whatever TopologyCompiler puts in the interface block
+    # (wg_applier.go: `ip link add <cfg.Name> type wireguard`), which is the
+    # HVA form above. The firewall compiler's `iif`, the k3s flannel_iface and
+    # the storage mount hint each re-derived "wg-sdwan-<network_handle>"
+    # independently, so all three named a device that never exists — and an
+    # nftables rule whose iif matches nothing fails OPEN.
+    #
+    # The fallback is NOT a bug and is kept: static-only networks allocate no
+    # HVA, and there is one network per host on that path, so the handle form
+    # is collision-free there. What matters is that every producer resolves it
+    # THE SAME WAY, which is why this lives on the model that owns the name
+    # rather than being re-derived per call site.
+    #
+    # The live set is `compilable` (see the scope below) — active AND draining.
+    # It is NOT respelled here: a second copy of that array is precisely the
+    # drift this method exists to remove, one level down. Widening the scope
+    # must widen the firewall's view with it.
+    def self.wg_iface_name_for(network:, node_instance:)
+      assignment =
+        if node_instance
+          compilable.where(node_instance_id: node_instance.id,
+                           sdwan_network_id: network.id).first
+        end
+
+      wg_iface_name_from(assignment: assignment, network: network)
+    end
+
+    # The same resolution for a caller that has ALREADY loaded the assignment.
+    # TopologyCompiler caches one HVA per (host, network) per compile and would
+    # otherwise re-query per peer and per firewall rule; this keeps the
+    # fallback string single-sourced without giving up that cache.
+    def self.wg_iface_name_from(assignment:, network:)
+      return assignment.wg_iface_name if assignment
+
+      "wg-sdwan-#{network.network_handle}"
+    end
+
     def dummy_iface_name
       "d-sdwan-#{short_id}"
     end
