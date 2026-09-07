@@ -612,6 +612,35 @@ module PowernodeSystem
                        "consensus group, never the node itself). Unset means 'not " \
                        "self-hosted' and leaves every consumer of the fence inert."
         )
+
+        # IMP-e840a570a371 — BootImageStalenessSensor's own enablement. The
+        # sensor has NO default repository (a guessed one would silently measure
+        # the wrong tree), so unset means it reports "not measured" rather than
+        # a healthy fleet — and without these registrations the only way to set
+        # it would be a direct DB write or a hub console. That is the gap the
+        # SiteSettingTool seam exists to close: a control reachable only through
+        # the emergency path is not enabled.
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_REPO_SETTING,
+          setting_type: "string",
+          description: "Devops::GitRepository 'owner/name' whose initramfs/ and " \
+                       "build-disk-image workflow decide boot-image contents. Read by " \
+                       "BootImageStalenessSensor to answer whether the ACTIVE image " \
+                       "predates the code it is supposed to carry. Unset = not measured."
+        )
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_BRANCH_SETTING,
+          setting_type: "string",
+          description: "Branch whose head defines 'current' for the boot-image staleness " \
+                       "check. Defaults to develop when unset."
+        )
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_PATHS_SETTING,
+          setting_type: "string",
+          description: "Comma-separated repo paths that decide boot-image contents, " \
+                       "overriding the defaults (initramfs, the build-disk-image workflow). " \
+                       "Widening this makes the sensor fire on more commits, not fewer."
+        )
       rescue ArgumentError
         # register_key raises this for a conflicting re-registration or a bad
         # setting_type — a real defect, and swallowing it would leave the key

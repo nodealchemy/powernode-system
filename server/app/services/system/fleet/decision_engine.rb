@@ -140,6 +140,36 @@ module System
           dry_run_supported: true,
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
+        # Boot-image STALENESS (BootImageStalenessSensor, IMP-e840a570a371):
+        # the newest published image for a platform was built from a commit
+        # older than the head of the paths that decide the image's contents.
+        # Distinct from system.boot_image_drift above, which compares a NODE to
+        # the promotion; this compares the PROMOTION to the source, and a fleet
+        # can be fully converged on an image that is itself three weeks stale.
+        #
+        # Observation-only PERMANENTLY, not as an increment-1 posture. The
+        # remediation for a stale image is cutting a build tag and promoting the
+        # result, which is the control plane re-imaging its own substrate —
+        # INV-1 forbids it and no executor is bound here. skill: nil +
+        # system.observation means the signal is surfaced (signal stream,
+        # drift report) and creates no RemediationOutcome, so a standing
+        # staleness cannot escalate to fleet.remediation_stuck.
+        "system.boot_image_stale" => {
+          skill: nil,
+          action_category: "system.observation"
+        },
+        # Its NOT-MEASURED counterpart, and the reason the sensor has one: the
+        # finding it was built for is that a question nobody asked read as a
+        # healthy fleet for nineteen days. A sensor that answers "I could not
+        # tell" with silence reproduces that one level over — an unset source
+        # repo, a revoked credential or a 404 on a renamed path would all look
+        # exactly like "the image is current". Same observation-only binding;
+        # the two kinds are separated so a reader can distinguish "behind" from
+        # "unknown", which is the whole point.
+        "system.boot_image_staleness_not_measured" => {
+          skill: nil,
+          action_category: "system.observation"
+        },
         # Provider-state drift (InstanceStateDriftSensor): the VM itself is
         # stopped/terminated while the model says running — distinct from
         # instance_silent (heartbeat staleness). Routes to the
