@@ -253,7 +253,11 @@ Each stage is a small, single-responsibility service. Stated as
   `network.settings["firewall_default_policy"]` (`accept` | `drop`).
 - **Output:** an `nft -f` script in `table inet powernode_sdwan`, one
   chain per network (`sdwan_<8-char-net-id>`) scoped by
-  `iif "wg-sdwan-<8-char-net-id>"`, applied atomically
+  `iif "<the host's wg device>"` — resolved per host via
+  `Sdwan::HostVrfAssignment.wg_iface_name_for`, so `wg-sdwan-<short_id>`
+  wherever an assignment exists and `wg-sdwan-<net-handle>` only on a
+  static-only network. Note the chain suffix is the network handle and the
+  interface suffix is not; they are different strings. Applied atomically
   (`add`/`flush chain`/`add rule`). The output is per-network even though
   the call signature accepts a peer (mirroring the other stages).
 - **Files:** `app/services/sdwan/firewall_compiler.rb` and

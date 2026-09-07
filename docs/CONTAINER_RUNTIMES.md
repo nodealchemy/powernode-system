@@ -337,7 +337,7 @@ If the operator-supplied `cni_plugin` is `ovn_kubernetes` and the bootstrap node
 
 **Pod-to-pod encryption posture:**
 
-- `flannel` (default for lightweight) — VXLAN over the host's primary NIC by default. **Optional encryption via SDWAN overlay**: when the cluster's `Sdwan::Network` has `pod_subnet_prefix` set, the provisioner stamps the cluster's bootstrap config with `--flannel-iface=wg-sdwan-<handle>`, `--flannel-backend=host-gw`, and `--cluster-cidr=<pod_subnet_prefix>` so flannel runs in host-gw mode bound to the SDWAN WireGuard interface. Pod traffic between nodes then flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No VXLAN encapsulation, no MTU computation, no nested-header fragmentation** — the kernel's per-node /24 routes (installed by flannel host-gw from the K8s API) point at the other node's overlay IP, which WG already routes correctly.
+- `flannel` (default for lightweight) — VXLAN over the host's primary NIC by default. **Optional encryption via SDWAN overlay**: when the cluster's `Sdwan::Network` has `pod_subnet_prefix` set, the provisioner stamps the cluster's bootstrap config with `--flannel-iface=<the host's wg device>` (`wg-sdwan-<short_id>`; handle form only when the network allocates no `HostVrfAssignment`), `--flannel-backend=host-gw`, and `--cluster-cidr=<pod_subnet_prefix>` so flannel runs in host-gw mode bound to the SDWAN WireGuard interface. Pod traffic between nodes then flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No VXLAN encapsulation, no MTU computation, no nested-header fragmentation** — the kernel's per-node /24 routes (installed by flannel host-gw from the K8s API) point at the other node's overlay IP, which WG already routes correctly.
 - `ovn_kubernetes` (default for heavyweight) — pod traffic flows over OVN tunnels with native encryption support; pairs cleanly with the SDWAN overlay for hub-to-hub paths. `pod_subnet_prefix` is ignored on ovn-K8s clusters (OVN owns its own pod-network layer); the provisioner emits a `system.cluster_bootstrap.pod_subnet_prefix_ignored` warning event when the field is set on an ovn-K8s path.
 
 #### Routing pod traffic over SDWAN (`pod_subnet_prefix` — shipped 2026-05-19)
@@ -357,7 +357,7 @@ Operator workflow:
 2. **Bootstrap the k3s cluster with `cni_plugin: "flannel"`** on a NodeInstance attached to the network. The provisioner detects the network's `pod_subnet_prefix`, stamps the cluster's `metadata["pod_cidr"]` + `metadata["sdwan_network_id"]`, and emits a `SubnetAdvertisement(source: "pod_subnet")` row.
 
 3. **The agent receives the new flannel args via the bootstrap_config endpoint** on its next heartbeat:
-   - `flannel_iface: "wg-sdwan-<handle>"`
+   - `flannel_iface: "wg-sdwan-<short_id>"` (resolved per host; handle form only with no `HostVrfAssignment`)
    - `flannel_backend: "host-gw"`
    - `cluster_cidr: "<pod_subnet_prefix>"`
 
