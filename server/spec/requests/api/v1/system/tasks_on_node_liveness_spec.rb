@@ -40,8 +40,16 @@ RSpec.describe "POST /api/v1/system/tasks on-node liveness", type: :request do
     allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
       { policy: "auto_approve", channels: [], conditions: {}, record: nil }
     )
-    allow(::System::WorkerDispatch).to receive(:enqueue_operation_execution)
   end
+
+  # The `allow(::System::WorkerDispatch).to receive(:enqueue_operation_execution)`
+  # stub that used to sit in the before block above is gone with the class.
+  # VERIFIED, not assumed: System::WorkerDispatch had exactly one caller in the
+  # tree — System::Task#enqueue_execution — and campaign 01a0790b increment 3
+  # deleted both, along with the after_commit that reached it. This spec's
+  # sibling stubs elsewhere were removed by that increment with the same note;
+  # this one survived only because it arrived on dev-loop/dev-improve and the
+  # two branches met at the merge.
 
   def create_task(command:, instance:)
     post "/api/v1/system/tasks",

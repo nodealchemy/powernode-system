@@ -181,7 +181,10 @@ module GateComposedTaskCategories
     },
     {
       file: "app/services/ai/tools/system_fleet_tool.rb",
-      line: 614,
+      # MOVED 614 -> 621 at the merge of campaign 01a0790b into develop.
+      # RE-AUDITED — still the literal category on the MCP
+      # system_terminate_instance arm, unchanged in shape.
+      line: 621,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —

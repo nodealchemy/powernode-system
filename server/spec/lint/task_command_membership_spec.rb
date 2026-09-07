@@ -108,17 +108,18 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # (IMP-498cd7db446d), the node_instance_spec one with 9b9323b1
       # (IMP-9cc83aa64bff). Neither was acknowledged there; both are here.
       #
-      # TWO sites in this file after the merge of campaign 01a0790b into
-      # develop, not one: the heredoc fixture above, and the scanner's own
-      # self-test — a HEREDOC of SYNTHETIC source handed to the scanner as a
-      # string, never evaluated, building no System::Task row, whose whole
-      # point is to prove the scanner SEES a variable-bound command. Requiring
-      # a listed literal at either would delete the shape under test. The two
-      # branches acknowledged one site each (campaign the fixture, dev-improve
-      # the self-test) and each spelled it as the sole entry for this key —
-      # keeping both spellings would have been a DUPLICATE HASH KEY, silently
-      # dropping whichever came first.
-      "lint/on_node_task_producer_census_spec.rb" => [ 415, 486 ],
+      # RE-PINNED 415/486 -> 498 at the merge of campaign 01a0790b into develop.
+      # The two branches acknowledged this site at different lines and
+      # DESCRIBED IT DIFFERENTLY — campaign as "a heredoc fixture the scanner
+      # parses as text", dev-improve as "the scanner's own self-test" — which
+      # read as two sites. It is ONE: the <<~RUBY block of the "FIRES on the
+      # variable shape a literal grep cannot see" example. Keeping both
+      # spellings would have been a duplicate hash key silently dropping one,
+      # and keeping both LINES failed this file's own staleness guard, which is
+      # what caught the error. RE-AUDITED — 498 is the
+      # `::System::Task.create!(` head inside that heredoc, still synthetic
+      # source handed to the scanner as a string, still constructing nothing.
+      "lint/on_node_task_producer_census_spec.rb" => [ 498 ],
       # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
       # here until increment 3 DELETED it, along with the
       # System::Runtime::ControlInstance class it covered and the server
@@ -137,11 +138,12 @@ RSpec.describe "System::Task command membership across the spec tree" do
       #
       # MOVED TWICE and RE-AUDITED at the merge of campaign 01a0790b into
       # develop: increment 3 corrected three comment blocks above it (243 ->
-      # 246) and the dev-improve line moved it independently (234). Both pins
-      # are stale against the merged tree; the line below is the merged one and
+      # 246), the dev-improve line moved it independently (234), and repinning
+      # that file's own system_fleet_tool gate site in this same merge added
+      # three comment lines above it (246 -> 249). RE-AUDITED — line 249 is
       # still `::System::Task.new(command: command, ...)` inside
       # #command_insertable?, which calls .new + .valid? and never persists.
-      "integration/gate_composed_task_categories_spec.rb" => [ 246 ]
+      "integration/gate_composed_task_categories_spec.rb" => [ 249 ]
     }
   end
 
