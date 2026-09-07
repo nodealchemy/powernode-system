@@ -84,8 +84,31 @@ module System
 
         if result.success?
           data = result.data
+          # Recorded OUTSIDE the `updated` branch: it is what the provider last
+          # reported, so a healthy row whose state did not change must still get
+          # a fresh observation. Inside the branch it would only ever be written
+          # for rows that changed — the opposite of the column's contract, and
+          # it would leave a refused row as the best-observed row on the fleet.
+          instance.record_provider_power_state!(data[:status])
+
           if data[:updated]
-            update_data = { status: data[:status], last_synced_at: Time.current }
+            update_data = { last_synced_at: Time.current }
+            # IMP-231f17d71dfa. This is a BARE update!, not an AASM event, so no
+            # may_X? guard on the model's transitions applies to it — and per the
+            # comment on the termination sweep below, this method is the path the
+            # scheduled hourly SystemCloudSyncJob actually takes. It was therefore
+            # the real producer of the observed flap: six instances, several
+            # silent for weeks, re-described as running once an hour because the
+            # hypervisor still had their VMs powered on.
+            #
+            # Omitting the key leaves the existing status untouched rather than
+            # writing something else, so a refusal here is inert, never a
+            # competing verdict. The IP and last_synced_at updates still land:
+            # declining to believe the power state says nothing about the address
+            # the provider reports.
+            if instance.provider_state_may_promote?(data[:status])
+              update_data[:status] = data[:status]
+            end
             update_data[:private_ip_address] = data[:private_ip_address] if data.key?(:private_ip_address)
             update_data[:public_ip_address]  = data[:public_ip_address]  if data.key?(:public_ip_address)
             instance.update!(update_data)
@@ -147,6 +170,10 @@ module System
 
       synced_count = 0
       updated_count = 0
+      # Rows whose provider-reported status was deliberately not applied — see
+      # the guard below. Reported alongside updated_count so "nothing changed"
+      # and "we refused to change it" are never the same number.
+      held_count = 0
       seen_cloud_instance_ids = Set.new
 
       cloud_instances.each do |cloud_data|
@@ -154,14 +181,47 @@ module System
         local_instance = local_instances[cloud_data[:cloud_instance_id]]
         next unless local_instance
 
+        local_instance.record_provider_power_state!(cloud_data[:status])
+
         if state_changed?(local_instance, cloud_data)
-          local_instance.update!(
-            status: cloud_data[:status],
+          # IMP-231f17d71dfa — THIS is the write the hourly SystemCloudSyncJob
+          # performs, and it is a bare update! with no AASM event, so none of the
+          # may_X? guards on the model's transitions are consulted. It was the
+          # real producer of the observed flap: six instances, several silent for
+          # weeks, re-described as running once an hour because their VMs were
+          # still powered on at the hypervisor. A guard on the controllers' AASM
+          # events alone would not have touched this line.
+          #
+          # Omitting the key leaves the existing status untouched rather than
+          # writing a competing one, so a refusal is inert AS A WRITE. The IPs and
+          # last_synced_at still land: declining to believe the power state says
+          # nothing about the address the provider reports.
+          #
+          # A refusal must not be inert as a FACT, though. state_changed? below
+          # compares status, so a refused row reports "changed" on every sweep
+          # forever — the disagreement between provider and platform is permanent
+          # by design, that being the point. Counted and logged separately so the
+          # hourly summary does not report a held row as an update that landed,
+          # and so a standing refusal is visible rather than inferred from a
+          # count that never falls.
+          attrs = {
             private_ip_address: cloud_data[:private_ip_address],
             public_ip_address: cloud_data[:public_ip_address],
             last_synced_at: Time.current
-          )
-          updated_count += 1
+          }
+          if local_instance.provider_state_may_promote?(cloud_data[:status])
+            attrs[:status] = cloud_data[:status]
+            updated_count += 1
+          else
+            held_count += 1
+            Rails.logger.info(
+              "[CloudSyncService] held provider status for instance=#{local_instance.id}: " \
+              "provider reports #{cloud_data[:status]}, platform holds #{local_instance.status} " \
+              "(presumed dead #{local_instance.presumed_dead_at&.iso8601}, " \
+              "last heartbeat #{local_instance.last_heartbeat_at&.iso8601})"
+            )
+          end
+          local_instance.update!(attrs)
         else
           local_instance.update!(last_synced_at: Time.current)
         end
@@ -200,6 +260,12 @@ module System
       Runtime::Result.ok(data: {
         synced_count: synced_count,
         updated_count: updated_count,
+        # IMP-231f17d71dfa: rows whose provider status was deliberately held.
+        # Reported so the hourly summary distinguishes "the platform agrees with
+        # the provider" from "the platform is refusing the provider's verdict";
+        # a non-zero, non-falling held_count is the signal that instances are
+        # sitting presumed-dead with their VMs still powered on.
+        held_count: held_count,
         terminated_count: terminated_count,
         cloud_count: cloud_instances.size,
         page_count: page_count,

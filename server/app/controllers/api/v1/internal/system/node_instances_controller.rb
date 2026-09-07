@@ -227,7 +227,16 @@ module Api
           # Map cloud-reported status to the matching AASM finalizer event.
           # `may_X?` guard makes the call a safe no-op when the instance is
           # already in a terminal state or already in the target state.
+          #
+          # IMP-231f17d71dfa: the twin of the worker_api controller's method of
+          # the same name, and it carried the same defect — a provider "powered
+          # on" report promoted a row a reap had marked :error from agent
+          # silence. Fixing one call site and not the other would have left a
+          # second route to the same wrong state, so both go through
+          # NodeInstance#provider_state_may_promote?.
           def finalize_state_from_cloud(instance, reported_status)
+            instance.record_provider_power_state!(reported_status)
+
             event = case reported_status
             when "running"    then :mark_running
             when "stopped"    then :mark_stopped
@@ -235,6 +244,8 @@ module Api
             when "error"      then :mark_errored
             end
             return unless event && instance.public_send("may_#{event}?")
+            return unless instance.provider_state_may_promote?(reported_status)
+
             instance.public_send("#{event}!")
           end
         end

@@ -261,7 +261,15 @@ module Api
           # `may_X?` guard makes the call a safe no-op if the instance is
           # already in a terminal state or was already moved by another
           # worker (same pattern as the internal API controller).
+          #
+          # IMP-231f17d71dfa: the provider's verdict is RECORDED FIRST and
+          # unconditionally, because it is a fact about the VM whether or not it
+          # earns a status transition. It used to exist only as this method's
+          # argument, so a sync that declined to promote left no trace that the
+          # hypervisor had reported the machine powered on.
           def finalize_state_from_cloud(reported_status)
+            @instance.record_provider_power_state!(reported_status)
+
             event = case reported_status
             when "running"    then :mark_running
             when "stopped"    then :mark_stopped
@@ -269,7 +277,28 @@ module Api
             when "error"      then :mark_errored
             end
             return unless event && @instance.public_send("may_#{event}?")
+            return if refuse_promotion_of_presumed_dead?(event)
+
             @instance.public_send("#{event}!")
+          end
+
+          # A powered-on VM is not a running agent.
+          #
+          # mark_running! is legal from :error by design (IMP-42cf03360656) so a
+          # genuinely recovering instance can self-heal, and that must stay true
+          # — blocking the transition outright would strand every instance that
+          # comes back. The discriminator is not the transition, it is whether
+          # the AGENT has spoken since a reap judged it dead.
+          #
+          # Without this, the hourly cycle was: system_cloud_sync at "17 * * * *"
+          # marks the instance running from hypervisor state, the :18 fleet tick
+          # re-reaps it, forever. Six instances were flapping this way on
+          # 2026-09-06, several silent for four weeks, each cycle re-arming every
+          # downstream lane that keys on `running`.
+          def refuse_promotion_of_presumed_dead?(event)
+            return false unless event == :mark_running
+
+            !@instance.provider_state_may_promote?("running")
           end
 
           def serialize_instance(instance)

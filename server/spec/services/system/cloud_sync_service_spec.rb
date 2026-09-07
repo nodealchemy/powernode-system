@@ -33,6 +33,127 @@ RSpec.describe System::CloudSyncService do
       expect(adapter).not_to have_received(:list_instances)
     end
 
+    # IMP-231f17d71dfa — THE PATH THAT ACTUALLY PRODUCED THE FLAP.
+    #
+    # The finding was filed against the worker_api controller's
+    # finalize_state_from_cloud, and that method really did map provider-alive
+    # onto mark_running!. But the hourly SystemCloudSyncJob reaches the fleet
+    # through THIS method, which writes `status:` with a bare update! — no AASM
+    # event, so no may_X? guard on the model's transitions is consulted at all.
+    # Guarding only the controllers would have turned the whole suite green while
+    # six instances kept flapping once an hour in production, which is why the
+    # decision lives in NodeInstance#provider_state_may_promote? and every
+    # reconciliation path asks it rather than each guarding its own mechanism.
+    #
+    # Both directions are required here or a wrong fix passes: refusing every
+    # stale-heartbeat row would strand instances that genuinely come back, and
+    # the direction is explicit that error -> running must stay legal.
+    context "when the provider reports a presumed-dead instance as powered on" do
+      before { allow(adapter).to receive(:supports?).with(:sync).and_return(true) }
+
+      # The IP keys are supplied and MATCH the row. Omitting them makes
+      # state_changed? true from an IP mismatch (nil vs the row's value), so the
+      # example would enter the update branch without the STATUS arm of
+      # state_changed? ever being the reason — and would then also write
+      # private_ip_address: nil over a real address. With them matching, status
+      # is the only thing that differs, which is what these examples are about.
+      def list_as_running!(instance)
+        allow(adapter).to receive(:list_instances).and_return(
+          success: true,
+          instances: [ { cloud_instance_id: instance.cloud_instance_id,
+                         status: "running",
+                         private_ip_address: instance.private_ip_address,
+                         public_ip_address: instance.public_ip_address } ],
+          page_count: 1, truncated: false
+        )
+      end
+
+      def presumed_dead_instance(last_heartbeat_at:, presumed_dead_at:)
+        inst = create(:system_node_instance, :running, provider_region: region,
+                      cloud_instance_id: "i-silent")
+        inst.update_columns(status: "error",
+                            last_heartbeat_at: last_heartbeat_at,
+                            presumed_dead_at: presumed_dead_at)
+        inst.reload
+      end
+
+      it "leaves a silent instance in error rather than re-describing it as running" do
+        instance = presumed_dead_instance(last_heartbeat_at: 3.days.ago,
+                                          presumed_dead_at: 1.hour.ago)
+        list_as_running!(instance)
+
+        expect { described_class.new.sync_region_instances(region: region, account: account) }
+          .not_to change { instance.reload.status }.from("error")
+      end
+
+      # A refusal must be inert, not a competing verdict: the sync still records
+      # what the provider said and still advances its own bookkeeping. Declining
+      # to believe the power state says nothing about the rest of the payload.
+      it "still records the provider's observation and the sync timestamp" do
+        instance = presumed_dead_instance(last_heartbeat_at: 3.days.ago,
+                                          presumed_dead_at: 1.hour.ago)
+        list_as_running!(instance)
+
+        described_class.new.sync_region_instances(region: region, account: account)
+
+        instance.reload
+        expect(instance.provider_power_state).to eq("running")
+        expect(instance.provider_power_state_at).to be_present
+        expect(instance.last_synced_at).to be_present
+      end
+
+      # A refusal that leaves no trace is indistinguishable from a sync that
+      # found nothing to do. held_count is what tells an operator that instances
+      # are sitting presumed-dead with their VMs still powered on, and it must
+      # not be folded into updated_count — the status was NOT updated.
+      it "counts the refusal separately from an update that landed" do
+        instance = presumed_dead_instance(last_heartbeat_at: 3.days.ago,
+                                          presumed_dead_at: 1.hour.ago)
+        list_as_running!(instance)
+
+        result = described_class.new.sync_region_instances(region: region, account: account)
+
+        expect(result.data[:held_count]).to eq(1)
+        expect(result.data[:updated_count]).to eq(0)
+      end
+
+      # The observation is what the provider LAST reported, so it must be
+      # recorded on every sweep — not only on the sweeps that changed something.
+      # Written inside the change branch it would be freshest on refused rows and
+      # stale on healthy ones, which inverts the column's meaning.
+      it "records the observation even when nothing about the row changed" do
+        healthy = create(:system_node_instance, :running, provider_region: region,
+                         cloud_instance_id: "i-healthy")
+        list_as_running!(healthy)
+
+        described_class.new.sync_region_instances(region: region, account: account)
+
+        expect(healthy.reload.provider_power_state).to eq("running")
+      end
+
+      it "promotes an instance whose agent has resumed heartbeating since the reap" do
+        instance = presumed_dead_instance(last_heartbeat_at: 30.seconds.ago,
+                                          presumed_dead_at: 10.minutes.ago)
+        list_as_running!(instance)
+
+        expect { described_class.new.sync_region_instances(region: region, account: account) }
+          .to change { instance.reload.status }.from("error").to("running")
+      end
+
+      # IMP-42cf03360656's stranded-row self-heal. No reap judged this row dead,
+      # so there is no verdict to protect and cloud state is the best evidence
+      # there is. Without this example the guard could be written as "never
+      # promote a stale-heartbeat row" and still pass everything above.
+      it "promotes a row errored for some other reason, even with an old heartbeat" do
+        instance = presumed_dead_instance(last_heartbeat_at: 3.days.ago,
+                                          presumed_dead_at: nil)
+        list_as_running!(instance)
+
+        expect { described_class.new.sync_region_instances(region: region, account: account) }
+          .to change { instance.reload.status }.from("error").to("running")
+      end
+    end
+
     # IMP-555e29eeb4ab: a VM deleted out-of-band never appears in
     # list_instances, and this method only iterated the cloud listing — the
     # row was never terminated by the scheduled path (SystemCloudSyncJob,
