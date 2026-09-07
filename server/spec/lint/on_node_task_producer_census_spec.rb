@@ -141,12 +141,14 @@ RSpec.describe "on-node task producer census" do
         why: "Queues the sync for an instance this flow just obtained. The FIRST-DRAFT reason " \
              "here said 'freshly provisioned, so it has not heartbeat yet by construction' — " \
              "an independent review falsified that: the pool fast path runs BEFORE " \
-             "fresh_provision, and InstancePoolService#acquire! selects the OLDEST ready " \
-             "member with no heartbeat check, so the target can be a member that has sat " \
-             "ready for days with a dead agent. It stays acknowledged because the operator " \
-             "ruled these two producers out of the gate, and because the fresh-provision " \
-             "branch really would be refused by a heartbeat gate; the liveness question has " \
-             "moved to acquire! and is filed."
+             "fresh_provision, and InstancePoolService#acquire! selected the OLDEST ready " \
+             "member with no heartbeat check, so the target could be a member that had sat " \
+             "ready for days with a dead agent. IMP-787c95be55a0 CLOSED that half at the " \
+             "source: acquire! now refuses a member whose #on_node_dispatch_refusal / " \
+             "#dormant_agent_reason answers, so the pool branch is handed a live member or " \
+             "nothing. It stays acknowledged rather than gated because the site itself still " \
+             "does not consult the predicate — and does not need to: its other branch is " \
+             "fresh_provision, which a heartbeat gate really would refuse by construction."
       },
       "app/services/system/ai/skills/module_smoke_verify_executor.rb#compose_pairing!" => {
         disposition: :acknowledged, sites: 1,
@@ -154,8 +156,10 @@ RSpec.describe "on-node task producer census" do
         why: "Same producer shape and the same falsified premise, more starkly: the standalone " \
              "path has NO fresh-provision branch at all, it is InstancePoolService.acquire! " \
              "and nothing else, so 'the target is one it just provisioned' was never true " \
-             "here. Acknowledged on the operator's ruling, with the liveness question filed " \
-             "against acquire! where every pool consumer shares it."
+             "here. That makes it the entry FULLY covered by IMP-787c95be55a0 — every member " \
+             "this path can reach now comes through the gated acquire!. Acknowledged rather " \
+             "than gated because the gate is at the allocator, one call frame up, where every " \
+             "pool consumer shares it, rather than restated at this site."
       },
       "app/services/system/native_module_build_orchestrator.rb#create_build_task" => {
         disposition: :out_of_scope, sites: 1,

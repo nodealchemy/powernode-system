@@ -3568,7 +3568,11 @@ end
                                        status: "running", provider_region: provider_region,
                                        provider_instance_type: instance_type,
                                        instance_pool_id: pool.id, pool_state: "ready",
-                                       pool_warming_started_at: 1.minute.ago)
+                                       pool_warming_started_at: 1.minute.ago,
+                                       # A ready member has always reported;
+                                       # #acquire! refuses a member with no
+                                       # reachable agent (IMP-787c95be55a0).
+                                       last_heartbeat_at: Time.current)
       end
 
       it "system_lease_ci_runner acquires a warm builder and correlates it to its self-registered runner" do
@@ -5826,6 +5830,9 @@ end
              instance_pool_id: pool.id,
              pool_state: "ready",
              pool_warming_started_at: 5.minutes.ago,
+             # A ready member has always reported; #acquire! refuses a member
+             # with no reachable agent (IMP-787c95be55a0).
+             last_heartbeat_at: Time.current,
              provider_region: provider_region,
              provider_instance_type: provider_instance_type)
     end

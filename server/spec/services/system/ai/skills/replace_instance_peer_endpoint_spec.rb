@@ -47,7 +47,11 @@ RSpec.describe "APO-4 replacement peer endpoint (IMP-4e49eb79c5e0)", type: :serv
            status: status, provider_region: provider_region,
            provider_instance_type: provider_instance_type,
            instance_pool_id: pool.id, pool_state: pool_state,
-           pool_warming_started_at: 5.minutes.ago, **attrs)
+           pool_warming_started_at: 5.minutes.ago,
+           # A ready member has always reported (NodeInstance#mark_pool_ready! is
+           # reached only from the agent heartbeat endpoint), and #acquire! refuses
+           # a member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current, **attrs)
   end
 
   let!(:failed) do

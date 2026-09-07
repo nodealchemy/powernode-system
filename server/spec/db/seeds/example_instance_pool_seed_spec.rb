@@ -90,7 +90,10 @@ RSpec.describe "example_instance_pool seed — demo claim" do
            variety: "cloud", status: "running",
            provider_region: region, provider_instance_type: instance_type,
            instance_pool_id: pool.id, pool_state: "ready",
-           pool_warming_started_at: 5.minutes.ago)
+           pool_warming_started_at: 5.minutes.ago,
+           # A ready member has always reported, and #acquire! now refuses a
+           # member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current)
   end
 
   def seed_path

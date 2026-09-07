@@ -44,7 +44,10 @@ RSpec.describe "SystemFleetTool instance cordon gating (IMP-0467eee9fc57)" do
     )
   end
   let!(:instance) do
+    # last_heartbeat_at: a ready member has always reported, and #acquire! now
+    # refuses a member with no reachable agent (IMP-787c95be55a0).
     create(:system_node_instance, :running, node: node, account: account,
+                                            last_heartbeat_at: Time.current,
                                             instance_pool_id: pool.id, pool_state: "ready",
                                             pool_warming_started_at: 1.minute.ago)
   end

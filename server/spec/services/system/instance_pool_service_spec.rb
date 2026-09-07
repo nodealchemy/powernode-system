@@ -30,7 +30,13 @@ RSpec.describe System::InstancePoolService, type: :service do
   # example wanting the identity-less shape (a member whose VM the provider
   # never created) seeds it with `cloud_instance_id: nil` — omitting the
   # attribute instead gets a backfilled id.
-  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil,
+  # last_heartbeat_at defaults to NOW for a ready member and nil otherwise: a
+  # ready member has always reported (NodeInstance#mark_pool_ready! is reached
+  # only from #promote_pool_ready!, whose sole caller is the agent heartbeat
+  # endpoint), and since IMP-787c95be55a0 #acquire! refuses a member whose
+  # agent is unreachable. An example that wants the silent shape passes it.
+  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil,
+                       last_heartbeat_at: (state == "ready" ? Time.current : nil),
                        **instance_attrs)
     node = create(:system_node, account: account, node_template: node_template)
     create(:system_node_instance,

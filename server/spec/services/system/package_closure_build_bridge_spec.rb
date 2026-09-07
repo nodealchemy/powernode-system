@@ -42,7 +42,11 @@ RSpec.describe System::PackageClosureBuildBridge do
     create(:system_node_instance,
            node: node, name: "member-#{SecureRandom.hex(3)}", variety: "cloud", status: "running",
            provider_region: provider_region, provider_instance_type: instance_type,
-           instance_pool_id: pool.id, pool_state: "ready", pool_warming_started_at: 1.minute.ago)
+           instance_pool_id: pool.id, pool_state: "ready", pool_warming_started_at: 1.minute.ago,
+           # A ready member has always reported (NodeInstance#mark_pool_ready! is
+           # reached only from the agent heartbeat endpoint), and #acquire! refuses
+           # a member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current)
   end
 
   # A materialized package module: a NodeModule + its PackageModuleLink, exactly

@@ -16,6 +16,15 @@ module System
     include ::System::DevCellDeployKeyRevocation
     class PoolError < StandardError; end
     class NoReadyMembersError < PoolError; end
+
+    # IMP-787c95be55a0 — every ready member failed the liveness gate in
+    # #acquire!. A SUBCLASS of NoReadyMembersError on purpose: all three callers
+    # that rescue that class (Ai::Tools::SystemFleetTool's acquire door,
+    # ModuleSmokeVerifyExecutor#compose_pairing!, and db/seeds/
+    # example_instance_pool.rb) want "the pool could not give me a usable
+    # member" and must keep catching this; a caller that wants to tell "empty"
+    # from "all dead" apart can rescue this one first.
+    class NoLiveReadyMembersError < NoReadyMembersError; end
     class PoolNotActiveError < PoolError; end
     class PoolAtMaxCapacityError < PoolError; end
     class InvalidPoolStateError < PoolError; end
@@ -144,15 +153,27 @@ module System
       raise PoolNotActiveError, "pool '#{pool.name}' is #{pool.status}" unless pool.active?
 
       ::ActiveRecord::Base.transaction do
-        member = pool.node_instances
-                     .where(pool_state: "ready")
-                     .order(Arel.sql("pool_warming_started_at NULLS LAST"))
-                     .lock("FOR UPDATE SKIP LOCKED")
-                     .first
+        member, refused = select_live_member(pool)
 
-        raise NoReadyMembersError, "no ready members in pool '#{pool.name}' " \
-                                   "(target=#{pool.target_size}, ready=#{pool.ready_count}, " \
-                                   "warming=#{pool.warming_count}). Reaper will replenish." unless member
+        # Two different refusals, and collapsing them would hide the one that
+        # needs an operator: an EMPTY pool replenishes itself, a pool whose
+        # every ready member is silent does not.
+        unless member
+          raise NoReadyMembersError, "no ready members in pool '#{pool.name}' " \
+                                     "(target=#{pool.target_size}, ready=#{pool.ready_count}, " \
+                                     "warming=#{pool.warming_count}). Reaper will replenish." if refused.empty?
+
+          # "every member this acquire could SEE", not "every ready member":
+          # SKIP LOCKED hides rows a concurrent acquirer holds, so the live
+          # members may simply be spoken for. Claiming the pool is dead when a
+          # peer is mid-claim would send an operator after a healthy pool.
+          raise NoLiveReadyMembersError,
+                "no acquirable ready member in pool '#{pool.name}': " \
+                "#{refused.size} of #{pool.ready_count} ready member(s) were reachable by " \
+                "this claim and every one failed the liveness gate " \
+                "(the rest, if any, are locked by a concurrent acquire): " +
+                refused.map { |m, why| "#{m.name} (#{m.id}): #{why}" }.join("; ")
+        end
 
         acquired_at = Time.current
         member.update!(
@@ -174,6 +195,95 @@ module System
 
         member
       end
+    end
+
+    # IMP-787c95be55a0 — the liveness gate. Walks the ready set OLDEST-FIRST,
+    # the same order the old single-row select used, and returns the first
+    # member no liveness predicate refuses, together with the ones it skipped
+    # and why.
+    #
+    # WHY ROW-AT-A-TIME rather than locking the whole ready set and filtering
+    # in Ruby: `FOR UPDATE SKIP LOCKED` is what makes concurrent acquires hand
+    # out DIFFERENT members. Locking the set would make a second concurrent
+    # acquirer skip every row and see an empty pool. Each pass excludes the ids
+    # already examined, so it makes strict progress over a finite set and
+    # terminates — the bound is the number of ready rows, NOT pool.max_size,
+    # which governs replenish! and is not consulted by the two writers that can
+    # re-mark a member ready (#release!'s reuse branch and
+    # InstanceCordonService#restore!).
+    #
+    # WHAT CLEARS A REFUSED MEMBER, stated because the cost of this walk is
+    # paid on EVERY acquire until something does. Only one of the three refusal
+    # arms is reaped by #recycle_stale_members!'s heartbeat arm: that arm is
+    # `last_heartbeat_at IS NOT NULL AND ... < threshold`, so it catches
+    # :went_silent and NOT :never_reported (null heartbeat) or the dormant arm
+    # (a fresh heartbeat on a stopped/rebooting row) — and a pool with
+    # metadata["reap_on_stale_heartbeat"]=false disables it entirely. Those
+    # rest until the ready TTL (DEFAULT_READY_TTL_SECONDS, 4h) recycles them.
+    # Until then a pool of N such members costs N locked rows and N warn lines
+    # per acquire. Whether the heartbeat arm should widen to cover them is a
+    # reaper question, not an allocator one, and is deliberately not decided
+    # here.
+    #
+    # Locks taken on skipped rows are held until the transaction commits, which
+    # is immediately after. That widens this transaction's lock set from one
+    # row to N, so #recycle_stale_members!'s own FOR UPDATE SKIP LOCKED walk
+    # skips more rows while an acquire is refusing — it retries next tick.
+    private def select_live_member(pool)
+      refused = []
+
+      loop do
+        candidate = pool.node_instances
+                        .where(pool_state: "ready")
+                        .where.not(id: refused.map { |m, _| m.id })
+                        .order(Arel.sql("pool_warming_started_at NULLS LAST"))
+                        .lock("FOR UPDATE SKIP LOCKED")
+                        .first
+        return [ nil, refused ] unless candidate
+
+        why = dispatch_liveness_refusal(candidate)
+        return [ candidate, refused ] unless why
+
+        Rails.logger.warn(
+          "[InstancePoolService] skipping ready pool member with no reachable agent " \
+          "pool_id=#{pool.id} member_id=#{candidate.id} reason=#{why.inspect}"
+        )
+        refused << [ candidate, why ]
+      end
+    end
+
+    # REUSES the predicates NodeInstance already ships (IMP-fb05226e89cb /
+    # IMP-cdf18862a7c1) rather than adding a fourth liveness rule, and
+    # introduces NO new threshold: #on_node_dispatch_refusal resolves silence
+    # against NodeInstance::HEARTBEAT_STALE_AFTER, the same constant
+    # #recycle_stale_members! already uses for its heartbeat arm.
+    #
+    # WHY THIS PREDICATE. Everything acquire! hands a member to goes on to
+    # queue on-node work for it — FulfillmentAdvanceOrchestrator
+    # #ensure_template_applied! and ModuleSmokeVerifyExecutor#compose_pairing!
+    # queue a sync_modules immediately — so "would an on-node task ever be
+    # pulled" IS the allocator's question, and it is exactly what
+    # #on_node_dispatch_refusal answers.
+    #
+    # WHY #dormant_agent_reason IS ALSO CONSULTED, unlike at a dispatch site.
+    # A `stopped` / `rebooting` member is inside LIVE_REPLICA_STATUSES and
+    # outside HEARTBEAT_EXPECTED_STATUSES, so both arms of
+    # #on_node_dispatch_refusal stay silent for it — correct for a dispatcher
+    # (the task is pulled when the agent comes up) and wrong for an allocator,
+    # whose caller is being handed a machine to use NOW.
+    #
+    # KNOWN DIVERGENCE, stated rather than papered over: a pool may widen the
+    # reaper's window with metadata["heartbeat_stale_after_seconds"] or opt out
+    # of it entirely with ["reap_on_stale_heartbeat"]=false. Neither is read
+    # here — those tune when a member is DESTROYED, and this decides whether it
+    # is HANDED OUT. The divergence errs toward refusing, and refusing costs a
+    # replenish cycle where handing out a dead member leaves the consumer's
+    # on-node task pending until the worker janitor cancels it — read
+    # SystemTaskReaperJob::UNRUNNABLE_THRESHOLD (in the WORKER app, so not
+    # loadable from here; ENV-tunable via SYSTEM_REAPER_UNRUNNABLE_MIN, 48h by
+    # default) rather than trusting a number restated in this sentence.
+    private def dispatch_liveness_refusal(member)
+      member.on_node_dispatch_refusal || member.dormant_agent_reason
     end
 
     # Release — give a claimed member back to its pool. F2-03: the default

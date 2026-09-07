@@ -42,6 +42,10 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
            provider_instance_type: instance_type,
            instance_pool_id: pool.id,
            pool_state: state,
+           # A ready member has always reported (NodeInstance#mark_pool_ready! is
+           # reached only from the agent heartbeat endpoint), and #acquire! refuses
+           # a member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: state == "ready" ? Time.current : nil,
            pool_warming_started_at: 1.minute.ago)
   end
 

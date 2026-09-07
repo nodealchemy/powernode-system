@@ -65,7 +65,10 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
            status: status, provider_region: provider_region,
            provider_instance_type: provider_instance_type,
            instance_pool_id: pool.id, pool_state: pool_state,
-           pool_warming_started_at: 5.minutes.ago)
+           pool_warming_started_at: 5.minutes.ago,
+           # A ready member has always reported, and #acquire! now refuses a
+           # member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current)
   end
 
   let!(:failed) { pool_member(pool_state: "claimed", status: "error") }

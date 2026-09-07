@@ -31,8 +31,12 @@ RSpec.describe System::InstanceCordonService do
     )
   end
 
-  def ready_member(status: "running")
+  # last_heartbeat_at: a ready member has always reported (mark_pool_ready! is
+  # reached only from the agent heartbeat endpoint), and #acquire! now refuses
+  # a member with no reachable agent (IMP-787c95be55a0).
+  def ready_member(status: "running", last_heartbeat_at: Time.current)
     create(:system_node_instance, node: node, account: account, status: status,
+                                  last_heartbeat_at: last_heartbeat_at,
                                   instance_pool_id: pool.id, pool_state: "ready",
                                   pool_warming_started_at: 1.minute.ago)
   end

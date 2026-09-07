@@ -75,7 +75,18 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # the "every named category resolves to an insertable command" example is
       # red exactly when one does. It calls .new + .valid? and never persists,
       # so an unlisted value reaches no database and no dispatch route.
-      "integration/gate_composed_task_categories_spec.rb" => [ 234 ]
+      "integration/gate_composed_task_categories_spec.rb" => [ 234 ],
+      # The census scanner's own self-test. The construction is inside a
+      # HEREDOC of SYNTHETIC source handed to the scanner as a string — it is
+      # never evaluated, no System::Task row is built, and the example exists
+      # precisely to prove the scanner SEES a variable-bound command. Requiring
+      # a listed literal here would delete the shape under test.
+      "lint/on_node_task_producer_census_spec.rb" => [ 409 ],
+      # `command` is a keyword param of the local #task_with helper defaulting
+      # to the listed literal "sync_modules"; its three overriding callers
+      # (:1076-1078) pass sync_modules / apply_config / upgrade_boot_image,
+      # all COMMANDS members.
+      "models/system/node_instance_spec.rb" => [ 956 ]
     }
   end
 

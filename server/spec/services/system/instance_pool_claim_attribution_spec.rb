@@ -58,6 +58,11 @@ RSpec.describe "pool claim attribution", type: :service do
            provider_instance_type: provider_instance_type,
            instance_pool_id: pool.id,
            pool_state: "ready",
+           # A ready member has ALWAYS reported: NodeInstance#mark_pool_ready! is
+           # reached only from #promote_pool_ready!, whose sole caller is the
+           # agent heartbeat endpoint. Stated because #acquire! now refuses a
+           # member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current,
            pool_warming_started_at: 5.minutes.ago)
   end
 

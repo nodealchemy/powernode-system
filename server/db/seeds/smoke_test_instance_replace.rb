@@ -85,8 +85,14 @@ def smoke_member!(account:, template:, region:, itype:, pool:, name:, pool_state
   )
   instance.cloud_instance_id = "mock-#{SecureRandom.hex(6)}"
   instance.save!
+  # last_heartbeat_at: a ready member has always reported in production
+  # (NodeInstance#mark_pool_ready! is reached only from the agent heartbeat
+  # endpoint), and since IMP-787c95be55a0 InstancePoolService#acquire! refuses
+  # a member with no reachable agent. Without it this fixture's warm spare is
+  # unacquirable and Test 2 aborts.
   instance.update!(instance_pool_id: pool.id, pool_state: pool_state,
-                   pool_warming_started_at: 5.minutes.ago)
+                   pool_warming_started_at: 5.minutes.ago,
+                   last_heartbeat_at: Time.current)
   instance
 end
 

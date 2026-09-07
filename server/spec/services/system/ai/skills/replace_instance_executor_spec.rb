@@ -41,7 +41,10 @@ RSpec.describe System::Ai::Skills::ReplaceInstanceExecutor, type: :service do
            status: status, provider_region: provider_region,
            provider_instance_type: provider_instance_type,
            instance_pool_id: pool.id, pool_state: pool_state,
-           pool_warming_started_at: 5.minutes.ago)
+           pool_warming_started_at: 5.minutes.ago,
+           # A ready member has always reported, and #acquire! now refuses a
+           # member with no reachable agent (IMP-787c95be55a0).
+           last_heartbeat_at: Time.current)
   end
 
   # The instance the sensor classified unrecoverable — a CLAIMED pool member
