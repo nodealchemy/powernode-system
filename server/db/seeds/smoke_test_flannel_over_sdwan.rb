@@ -131,8 +131,15 @@ payload = controller.send(:k3s_server_bootstrap_config, server_instance)
 
 assert.call(payload.is_a?(Hash), "payload is a hash")
 assert.call(payload[:cni_plugin] == "flannel", "payload[:cni_plugin] = #{payload[:cni_plugin]}")
-assert.call(payload[:flannel_iface] == "wg-sdwan-#{network.network_handle}",
-            "payload[:flannel_iface] = #{payload[:flannel_iface]}")
+# Resolved through the model that owns the name rather than re-derived: on a
+# host with a HostVrfAssignment the device is "wg-sdwan-<short_id>", and this
+# assertion used to pin the handle form the builder no longer emits
+# (IMP-54fdf40fbf9d).
+expected_iface = ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+  network: network, node_instance: server_instance
+)
+assert.call(payload[:flannel_iface] == expected_iface,
+            "payload[:flannel_iface] = #{payload[:flannel_iface]} (expected #{expected_iface})")
 assert.call(payload[:flannel_backend] == "host-gw", "payload[:flannel_backend] = #{payload[:flannel_backend]}")
 assert.call(payload[:cluster_cidr] == "10.42.0.0/16", "payload[:cluster_cidr] = #{payload[:cluster_cidr]}")
 
@@ -209,7 +216,9 @@ if h.tier_at_least?("site")
     account: account, instance: inst, network: smoke_network, cni_plugin: "flannel"
   )
 
-  iface = "wg-sdwan-#{smoke_network.network_handle}"
+  iface = ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+    network: smoke_network, node_instance: inst
+  )
   h.step("Capture tcpdump on #{iface} (10s, expect packets matching pod CIDR)")
 
   pod_cidr = smoke_network.pod_subnet_prefix
