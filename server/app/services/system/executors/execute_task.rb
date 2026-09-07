@@ -23,6 +23,38 @@ module System
 
         operable = resolve_operable(attrs.delete(:operable_type), attrs.delete(:operable_id))
 
+        # IMP-93d9f4a31627 — THE LIVENESS GATE, and the last of the six
+        # producers the on-node census found. `task_params` permits :command
+        # freely and System::Task::COMMANDS contains sync_modules and
+        # apply_config, so without this an authenticated caller could mint the
+        # exact row the liveness work exists to prevent.
+        #
+        # HERE rather than only at the controller, and this is the LOAD-BEARING
+        # copy: a deferred operation approved hours later replays straight into
+        # #perform with no controller in the path, so gating only where the
+        # request arrives would grandfather the replay. The controller's copy is
+        # the operator-facing refusal, not a substitute for this one.
+        #
+        # The seam it calls (System::Task.undeliverable_on_node_refusal) is what
+        # consults NodeInstance#on_node_dispatch_refusal, and it handles BOTH
+        # operable shapes — an instance, and a Node that SyncModules fans out
+        # across. An earlier draft of this gate tested
+        # `operable.respond_to?(:on_node_dispatch_refusal)` inline and therefore
+        # fell open on exactly the Node-operable shape this executor's own spec
+        # uses for nearly every happy path: a respond_to? guard fails SILENTLY
+        # when the receiver is the wrong type.
+        #
+        # #dormant_agent_reason is deliberately not consulted for the refusal:
+        # a stopped box is not evidence of a dead agent, the task IS pulled when
+        # one starts, and refusing an operator's explicit request would trade a
+        # visible pending task for a refused repair. The controller DISCLOSES it.
+        if (refusal = ::System::Task.undeliverable_on_node_refusal(
+          command: attrs[:command], operable: operable
+        ))
+          raise ::System::Task::UndeliverableOnNodeTask,
+                "#{attrs[:command]} cannot be delivered: #{refusal}"
+        end
+
         task = ::System::Task.new(attrs)
         task.account = account
         task.operable = operable if operable

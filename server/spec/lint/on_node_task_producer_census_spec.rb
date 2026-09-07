@@ -125,15 +125,34 @@ RSpec.describe "on-node task producer census" do
              "refused repair, which is the worse failure."
       },
       "app/services/system/executors/execute_task.rb#perform" => {
-        disposition: :gap, sites: 1,
-        offer: "01a07872-3679",
+        disposition: :gated, sites: 1,
+        evidence: "undeliverable_on_node_refusal",
         why: "POST /api/v1/system/tasks -> AutonomyGate -> ExecuteTask#perform builds the row " \
              "with Task.new(attrs) + save! from permitted params that include :command, and " \
-             "System::Task::COMMANDS contains sync_modules and apply_config. So an on-node " \
-             "task can be created for a silent instance with no liveness check anywhere on " \
-             "the path. Found by widening this scanner past System::Task.create!; it was " \
-             "absent from every prior enumeration of this defect. Whether the gate belongs " \
-             "here or at a shared seam is the filed question."
+             "System::Task::COMMANDS contains sync_modules and apply_config — so this was the " \
+             "SIXTH producer, ungated, absent from every prior enumeration until this scanner " \
+             "was widened past System::Task.create!. IMP-93d9f4a31627 closed it HERE rather " \
+             "than only at the controller: an approved deferred operation replays into " \
+             "#perform with no controller in the path, and NodeInstanceGating#gate_or_execute " \
+             "reaches this executor by another door, so gating only where the request arrives " \
+             "would grandfather the replay. TasksController#create carries the same check " \
+             "ahead of the gate, which is the operator-facing refusal (no DeferredOperation, " \
+             "no approval parked); this one is load-bearing. The evidence name is the SEAM, " \
+             "System::Task.undeliverable_on_node_refusal, not the predicate directly — it is " \
+             "what handles BOTH operable shapes (an instance, and a Node that " \
+             "Runtime::SyncModules fans out across `node.node_instances`), which an inline " \
+             "`operable.respond_to?(:on_node_dispatch_refusal)` test did not: that draft fell " \
+             "open on the Node shape this executor's own spec uses for nearly every happy " \
+             "path. The example below pins that the seam still consults the predicate, so the " \
+             "indirection cannot become a dangling citation. The other reason this gate lives " \
+             "in the executor rather than only at the controller is the DeferredOperation " \
+             "replay, which reaches #perform with no controller in the path — " \
+             "NodeInstanceGating#gate_or_execute also names this executor, but its events are " \
+             "the lifecycle verbs alone and can never carry an on-node command, so that door " \
+             "is not part of the argument. It refuses on " \
+             "#on_node_dispatch_refusal alone — the controller DISCLOSES " \
+             "#dormant_agent_reason rather than refusing, since a stopped box is not evidence " \
+             "of a dead agent and the task is pulled when one starts."
       },
       "app/services/system/fulfillment_advance_orchestrator.rb#ensure_template_applied!" => {
         disposition: :acknowledged, sites: 1,
@@ -305,6 +324,64 @@ RSpec.describe "on-node task producer census" do
       expect(entry[:why].to_s.length).to be > 80,
                                          "#{key}: an entry must explain itself, not just name itself"
     end
+  end
+
+  # The scanner's ON_NODE_COMMANDS is a deliberate DUPLICATE of
+  # System::Task::ON_NODE_RECONCILE_COMMANDS, which IMP-93d9f4a31627 added when
+  # it gated the sixth producer. The duplicate is not laziness: OnNodeTaskProducers
+  # takes (path, source) and this whole file requires spec_helper rather than
+  # rails_helper, so the model constant is NOT loadable here — reading it would
+  # cost the Rails boot this lint exists to avoid.
+  #
+  # So the sets are compared through the model's SOURCE, the same way every
+  # other assertion in this file reads code rather than running it. A duplicate
+  # nothing compares is a drift waiting to happen: a third on-node command added
+  # to the model and not to the scanner would leave its producers unclassified
+  # while every census equality below stayed green.
+  it "keeps the scanner's on-node command set in step with the model's" do
+    source = OnNodeTaskProducerCensus.read("app/models/system/task.rb")
+    literal = source[/ON_NODE_RECONCILE_COMMANDS\s*=\s*%w\[([^\]]*)\]/, 1]
+
+    # This arm REDDENS on a rename rather than passing quietly — the parse
+    # failure is the failure. It is here so the message names the cause instead
+    # of an empty-vs-populated mismatch a reader would misdiagnose.
+    expect(literal).not_to be_nil,
+                           "could not parse System::Task::ON_NODE_RECONCILE_COMMANDS out of " \
+                           "app/models/system/task.rb — the constant was renamed or reshaped " \
+                           "(a derived value, or %w() instead of %w[]); repoint this parse"
+    expect(literal.split).to match_array(OnNodeTaskProducers::ON_NODE_COMMANDS)
+  end
+
+  # The census's :gated evidence for ExecuteTask#perform is the SEAM name, not
+  # the predicate, because the seam is what handles the Node fan-out shape an
+  # inline respond_to? test fell open on. That indirection is only honest while
+  # the seam still consults the predicate — otherwise the census would pin a
+  # name that no longer reaches any liveness check at all, which is the
+  # dangling-citation failure IMP-a501f841ffce's guard exists to prevent.
+  it "proves the on-node seam still consults the liveness predicate it stands in for" do
+    source = OnNodeTaskProducerCensus.read("app/models/system/task.rb")
+    body = source[/def self\.on_node_liveness_answer.*?\n    end\n/m]
+
+    expect(body).not_to be_nil,
+                        "System::Task.on_node_liveness_answer is gone or reshaped — the census " \
+                        "entry for execute_task.rb#perform cites a seam that no longer exists"
+
+    # The predicate is called from the BLOCK the public entry point passes in,
+    # so that method's body is where the citation has to resolve — scoped to it,
+    # not to the file. A file-level include? is exactly what
+    # spec/support/on_node_task_producers.rb's guard_span docstring argues
+    # against: the name also appears in this file's prose, so the whole-file
+    # form would stay green on a seam that had stopped calling anything.
+    entry = source[/def self\.undeliverable_on_node_refusal.*?\n    end\n/m]
+
+    expect(entry).not_to be_nil,
+                         "the name the census declares as :gated evidence is not defined"
+    expect(entry).to include("on_node_dispatch_refusal"),
+                     "the seam no longer calls NodeInstance#on_node_dispatch_refusal, so the " \
+                     "census's :gated claim for execute_task.rb#perform is now vacuous"
+    expect(body).to include("node_instances"),
+                    "the seam no longer fans a Node operable out across its instances — the " \
+                    "shape execute_task_spec.rb drives for nearly every happy path"
   end
 
   it "requires a filed offer on every :gap entry" do

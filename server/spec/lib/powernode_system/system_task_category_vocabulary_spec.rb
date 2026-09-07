@@ -69,7 +69,7 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
     expect(missing).to be_empty,
                        "#{missing.size} executable command(s) have no registered action_category: " \
                        "#{missing.join(', ')}. The operator's POST /api/v1/system/tasks composes " \
-                       "\"system.task.\#{command}\" (tasks_controller.rb:55), so an unregistered " \
+                       "\"system.task.\#{command}\" in TasksController#create, so an unregistered " \
                        "command resolves through InterventionPolicyService#default_policy to " \
                        "require_approval — the request parks, and PATCH /api/v1/system/autonomy " \
                        "refuses to save a row that would change that. Add the command's default " \

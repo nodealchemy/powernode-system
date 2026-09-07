@@ -99,10 +99,138 @@ module System
       System::ProviderVolumeSnapshot
     ].freeze
 
+    # The two on-node reconcile commands: an agent polls its own pending rows
+    # (Api::V1::System::NodeApi::StatusController#pending_tasks) and runs them
+    # on the node, so a row minted for an instance with no live agent sits at
+    # pending / progress 0 until the worker janitor cancels it, with nothing in
+    # the event stream saying why. NodeInstance#on_node_dispatch_refusal carries
+    # the evidence; spec/lint/on_node_task_producer_census_spec.rb censuses
+    # everything that constructs one.
+    #
+    # THE HEDGE THAT CENSUS FILE KEEPS, kept here too rather than dropped:
+    # "no agent will pull this" is literally true of the AGENT_DELEGATED set and
+    # only EMPIRICALLY true of these two. ExecutionDispatcher::COMMAND_REGISTRY
+    # still maps both to server-side System::Runtime classes, and that arm is
+    # dead for a DATA reason (System::Node#worker_id is NULL fleet-wide, so
+    # WorkerApi::TasksController#execute's #worker_operations scope is empty and
+    # every lookup 404s) rather than a structural one. Stated as a DATA STATE
+    # deliberately, the way NodeInstance#on_node_dispatch_refusal states it:
+    # worker_id is a permitted attribute on the node create/update MCP verbs, so
+    # one call can falsify the sentence; what cannot change by a single call is
+    # that nothing in the tree assigns it. The challenge was RAISED as offer
+    # 01a07861-96d8 — whose title asserts the opposite, because it records the
+    # question — and resolved against it; read the resolution, not the title.
+    #
+    # DELIBERATELY NOT the same set as the agent-delegated commands
+    # (upgrade_boot_image, the storage.* verbs, ci.*, probe.module_smoke).
+    # Those are also agent-pulled, and whether the gate should extend to them
+    # is the same filed question, not an omission here.
+    ON_NODE_RECONCILE_COMMANDS = %w[sync_modules apply_config].freeze
+
+    # Raised when a producer is asked to mint an ON_NODE_RECONCILE_COMMANDS row
+    # for a target whose agent will never pull it. Carries the refusal
+    # NodeInstance#on_node_dispatch_refusal produced, verbatim, so the operator
+    # reads the reason rather than a generic failure.
+    UndeliverableOnNodeTask = Class.new(StandardError)
+
     # Raised instead of a bare CrossAccountError when the TYPE is refused
     # rather than the owner. It subclasses so existing rescues and log greps
     # keep working, while a genuine cross-tenant signal stays undiluted.
     BadOperableType = Class.new(::Ai::DeferredOperation::CrossAccountError)
+
+    # === The on-node liveness seam (IMP-93d9f4a31627) ===
+    #
+    # ONE implementation, consulted from two moments: Api::V1::System::
+    # TasksController#create refuses before the autonomy gate (so the operator
+    # gets the reason, and no DeferredOperation or approval is written for work
+    # that can never run), and System::Executors::ExecuteTask#perform refuses
+    # again immediately before constructing the row — which is the load-bearing
+    # one, because an approved operation replays straight into #perform with no
+    # controller in the path. Gating only where the request arrives would
+    # grandfather the replay, the defect an independent review found in a
+    # sibling guard whose mint paths were fixed and whose lifecycle verbs were
+    # not.
+    #
+    # Shared rather than written twice because the OPERABLE ANALYSIS below is
+    # the part that is easy to get wrong, and a second copy would have drifted
+    # the first time either arm changed.
+
+    # The reason an on-node reconcile aimed at `operable` would never be pulled,
+    # or nil. Nil for every command outside ON_NODE_RECONCILE_COMMANDS.
+    #
+    # TWO OPERABLE SHAPES, because both are real and only one was gated first:
+    #
+    #   NodeInstance — the agent polls its OWN pending rows, so the instance's
+    #     own predicate is the answer.
+    #   Node — System::Runtime::SyncModules fans a Node operable out across
+    #     `node.node_instances`, so the question is whether ANY of them could
+    #     act on it. Refused only when the node has instances and EVERY one is
+    #     refused: a node with one live instance and three dead ones still has
+    #     work to do, and refusing it would be worse than the stuck row.
+    #
+    # A nil operable, and every other OPERABLE_TYPES member, answer nil: there
+    # is no agent to ask about. That is NOT a claim such a row is deliverable —
+    # delivery is per-instance (StatusController#pending_tasks serves
+    # `current_instance.tasks`), so a Node-operable row reaches no agent at all
+    # whatever its instances' liveness. That is a different defect with a
+    # different fix, filed as offer 01a079f5-2322, and this predicate
+    # deliberately does not pretend to answer it.
+    ON_NODE_LIVENESS_OPERABLE_TYPES = %w[System::NodeInstance System::Node].freeze
+
+    def self.undeliverable_on_node_refusal(command:, operable:)
+      on_node_liveness_answer(command: command, operable: operable,
+                              summary: "unreachable") do |instance|
+        instance.on_node_dispatch_refusal
+      end
+    end
+
+    # The DISCLOSURE arm, same shape. NodeInstance#dormant_agent_reason covers
+    # the statuses that are live for capacity but are running no agent YET
+    # (stopped / rebooting / provisioning): the task is the right thing to queue
+    # and IS pulled when an agent starts, so this must never be used to refuse —
+    # only to stop a surface reporting a bare success it cannot justify.
+    def self.dormant_on_node_reason(command:, operable:)
+      on_node_liveness_answer(command: command, operable: operable,
+                              summary: "running no agent yet") do |instance|
+        instance.dormant_agent_reason
+      end
+    end
+
+    # `summary` is the caller's word for what its arm found, because the two
+    # arms mean OPPOSITE things: a refusal says the agents are gone, a
+    # disclosure says they have not started. One shared tail reading
+    # "unreachable" for both put refusal vocabulary on a 201 response.
+    #
+    # DISPATCHES ON CLASS, not on respond_to?. Duck typing was tried and is
+    # wrong in both directions here: an inline
+    # `respond_to?(:on_node_dispatch_refusal)` fell OPEN on a Node operable,
+    # and `respond_to?(:node_instances)` then fell BROAD — System::ProviderRegion
+    # is an OPERABLE_TYPES member that also declares `has_many :node_instances`,
+    # so a region operable would have been fanned out across every instance in
+    # the region on a request path, to answer a question no dispatcher acts on
+    # (Runtime::SyncModules handles NodeInstance and Node and errors on
+    # everything else). ON_NODE_LIVENESS_OPERABLE_TYPES is the one list, and
+    # TasksController consumes it rather than keeping a second copy.
+    def self.on_node_liveness_answer(command:, operable:, summary:)
+      return nil unless ON_NODE_RECONCILE_COMMANDS.include?(command.to_s)
+
+      case operable
+      when ::System::NodeInstance
+        yield(operable)
+      when ::System::Node
+        # The empty case answers nil rather than refusing: a node with no
+        # instances is not evidence of a dead agent.
+        instances = operable.node_instances.to_a
+        return nil if instances.empty?
+
+        answers = instances.map { |instance| [ instance, yield(instance) ] }
+        return nil unless answers.all? { |_, answer| answer.present? }
+
+        "every instance of #{operable.class.name}##{operable.id} is #{summary}: " +
+          answers.map { |instance, answer| "#{instance.name}: #{answer}" }.join("; ")
+      end
+    end
+    private_class_method :on_node_liveness_answer
 
     # === Associations ===
     belongs_to :account

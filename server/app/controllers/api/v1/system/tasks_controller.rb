@@ -52,6 +52,21 @@ module Api
           end
 
           attrs = task_params.to_h.merge(initiated_by_id: current_user.id)
+
+          # IMP-93d9f4a31627 — refuse an on-node reconcile aimed at an instance
+          # whose agent will never pull it, BEFORE the gate. System::Executors
+          # ::ExecuteTask carries the same check (it is the load-bearing one:
+          # an approved operation replays through it with no controller in the
+          # path), but a refusal that only happens there arrives as
+          # "Gate evaluation failed: ..." after a DeferredOperation has already
+          # been written and, under a require_approval policy, after an operator
+          # has been asked to approve work that can never run. Same shape as the
+          # restart-scope refusal: the operator gets the reason, and nothing is
+          # recorded.
+          if (refusal = undeliverable_on_node_refusal(attrs))
+            return render_error(refusal, status: :unprocessable_content)
+          end
+
           gate_result = ::Ai::AutonomyGate.evaluate(
             action_category: "system.task.#{attrs[:command]}",
             executor_class: "System::Executors::ExecuteTask",
@@ -78,7 +93,24 @@ module Api
             data = gate_result.result&.dig(:data) || {}
             task = current_account.system_tasks.find_by(id: data[:task_id])
             if task
-              render_success(task: ::System::TaskSerializer.new(task).as_json, status: :created)
+              # DISCLOSURE, not a refusal. NodeInstance#dormant_agent_reason
+              # covers the statuses that are live for capacity but are running
+              # no agent yet (stopped / rebooting / provisioning): the task is
+              # the right thing to queue and IS pulled when an agent starts, so
+              # refusing would be wrong — but reporting a bare success is what
+              # IMP-cdf18862a7c1's review caught on system_refresh_instance_
+              # modules, where an operator resyncing a box powered down last
+              # week was told nothing at all.
+              payload = { task: ::System::TaskSerializer.new(task).as_json }
+              # The key is present only when there is something to say. A
+              # `"dormant_agent_warning": null` on every create — including the
+              # start/stop/restart verbs, where it is unconditionally nil —
+              # would be noise on a hot response, and a consumer that tests for
+              # the key rather than its value would read it as a warning.
+              if (warning = dormant_on_node_warning(attrs))
+                payload[:dormant_agent_warning] = warning
+              end
+              render_success(**payload, status: :created)
             else
               render_error("Task creation succeeded but row not found", status: :internal_server_error)
             end
@@ -131,6 +163,50 @@ module Api
 
         def set_task
           @task = current_account.system_tasks.find(params[:id])
+        end
+
+        # The reason an on-node reconcile queued for this request's target would
+        # never be pulled, or nil. Both this and #dormant_on_node_warning defer
+        # the whole decision — which commands, which operable shapes, and the
+        # Node fan-out — to System::Task, so this copy and the executor's cannot
+        # answer differently.
+        def undeliverable_on_node_refusal(attrs)
+          ::System::Task.undeliverable_on_node_refusal(
+            command: attrs[:command], operable: on_node_target(attrs)
+          )
+        end
+
+        # The DISCLOSURE arm — see the render_success call in #create.
+        def dormant_on_node_warning(attrs)
+          ::System::Task.dormant_on_node_reason(
+            command: attrs[:command], operable: on_node_target(attrs)
+          )
+        end
+
+        # The record an on-node reconcile in this request would target, or nil.
+        #
+        # Nil for a target this account cannot see, DELIBERATELY: the not-found
+        # case belongs to ExecuteTask#resolve_operable, whose own comment
+        # explains why an id that exists elsewhere and an id that exists nowhere
+        # must be indistinguishable. Refusing differently here would rebuild the
+        # existence oracle that method exists to collapse — and the executor
+        # still refuses, so nothing is let through, only reported differently.
+        #
+        # The allowlist is System::Task's own — NOT a second copy. A local list
+        # is how the two arms diverge: the seam decides which operable shapes it
+        # can answer about, so a shape added there and not here would be refused
+        # by the executor and waved through by this pre-check, which is exactly
+        # the disagreement sharing the seam exists to prevent.
+        #
+        # It gates the constantize rather than following it, for the reason
+        # ExecuteTask#resolve_operable gives: constantizing a caller-supplied
+        # string to reach a validation is itself the thing to avoid.
+        def on_node_target(attrs)
+          return nil unless ::System::Task::ON_NODE_RECONCILE_COMMANDS.include?(attrs[:command].to_s)
+          return nil unless ::System::Task::ON_NODE_LIVENESS_OPERABLE_TYPES.include?(attrs[:operable_type])
+
+          attrs[:operable_type].constantize
+                               .find_by(id: attrs[:operable_id], account_id: current_account.id)
         end
 
         def task_params

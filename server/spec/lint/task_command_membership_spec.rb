@@ -81,7 +81,7 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # never evaluated, no System::Task row is built, and the example exists
       # precisely to prove the scanner SEES a variable-bound command. Requiring
       # a listed literal here would delete the shape under test.
-      "lint/on_node_task_producer_census_spec.rb" => [ 409 ],
+      "lint/on_node_task_producer_census_spec.rb" => [ 486 ],
       # `command` is a keyword param of the local #task_with helper defaulting
       # to the listed literal "sync_modules"; its three overriding callers
       # (:1076-1078) pass sync_modules / apply_config / upgrade_boot_image,

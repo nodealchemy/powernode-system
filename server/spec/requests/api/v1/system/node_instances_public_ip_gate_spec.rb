@@ -38,7 +38,7 @@ require "rails_helper"
 #       -> auto_approve => deferred.execute_now! runs it INLINE, in-request
 #          (autonomy_gate.rb:88). Nothing is "parked": parking is the
 #          require_approval branch, which these two categories do not take.
-#         -> System::Executors::ExecuteTask#perform task.save! (execute_task.rb:30)
+#         -> System::Executors::ExecuteTask#perform task.save!
 #           -> ActiveRecord::RecordInvalid, from
 #              `validates :command, inclusion: { in: COMMANDS }, ... if: :command_changed?`
 #              (task.rb) — on create the attribute goes nil -> value, which

@@ -95,7 +95,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 56,
+      line: 71,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -224,7 +224,7 @@ module GateComposedTaskCategories
   # constant BY VALUE at class-body load, so a test that reads the constant and
   # a request that hits the validator are two different questions. This asks the
   # validator, on the same attribute ExecuteTask#perform assigns before its
-  # `task.save!` (execute_task.rb:30).
+  # `task.save!` in System::Executors::ExecuteTask#perform.
   #
   # Scoped to errors on :command deliberately: `restart` reports its
   # scope-declaration failure on :options and the record has no :account, so a
