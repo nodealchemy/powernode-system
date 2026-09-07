@@ -176,15 +176,21 @@ RSpec.describe "on-node task producer census" do
         why: "Same as nfs_export_manager#dispatch_task — a storage.* verb passed as a method " \
              "parameter, agent-delegated rather than an on-node reconcile command."
       },
-      "app/controllers/concerns/system/node_instance_gating.rb#create_instance_operation" => {
-        disposition: :out_of_scope, sites: 1,
-        why: "The association form (`current_account.system_tasks.create(command: command, ...)`) " \
-             "— non-bang, no System::Task receiver, variable command, invisible three ways over, " \
-             "which is why the scanner matches construction rather than one spelling. Today it " \
-             "carries only the control verbs start/stop/reboot/terminate/restart; " \
-             "ExecutionDispatcher's own comment names it as a path that never meets the gate, " \
-             "so if it ever grows an on-node command the ratchet below reddens."
-      },
+      # REMOVED — #create_instance_operation no longer exists (campaign 01a0790b
+      # increment 1). It was the ungated association-form producer
+      # (`current_account.system_tasks.create(command: command, ...)`) behind the
+      # REST lifecycle arms. Those arms now actuate the provider plane directly
+      # through System::Executors::ControlInstance / TerminateInstance and mint
+      # NO System::Task, so the producer is gone rather than gated.
+      #
+      # CONSEQUENCE, stated plainly rather than glossed: node_instance_gating.rb
+      # now has NO coverage from this census at all. The scanner finds no
+      # construction site in it, and the :out_of_scope ratchet iterates CENSUS
+      # keys — so deleting the key removed the file from that too. That is
+      # correct (a census entry for a method that does not exist reds by
+      # design, and re-adding one would be a lie), but it means a FUTURE
+      # System::Task producer added to this file is caught by the uncensused-
+      # producer direction only, not by the ratchet.
       "app/controllers/api/v1/system/worker_api/tasks_controller.rb#create" => {
         disposition: :out_of_scope, sites: 1,
         why: "`operable.tasks.build(operation_params)` — the worker-authenticated creation " \

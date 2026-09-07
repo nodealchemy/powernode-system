@@ -177,11 +177,16 @@ RSpec.describe System::ExecutionDispatcher do
 
     # start/stop/reboot/terminate were in the list above and were RESTORED.
     # A lifetime row count of zero proves a verb is UNUSED; deleting it needs
-    # UNREACHABLE, and those are different claims. NodeInstanceGating
-    # #control_or_error passes the command as a VARIABLE
-    # (create_instance_operation(event.to_s)), so no literal grep could see the
-    # producer, and for a cloud provider the registry IS the execution path.
-    # Pinned so the mistake cannot be repeated by a future tidy-up.
+    # UNREACHABLE, and those are different claims. Pinned so the mistake cannot
+    # be repeated by a future tidy-up.
+    #
+    # THE PRODUCER CHANGED (campaign 01a0790b increment 1). It used to be
+    # NodeInstanceGating#control_or_error passing the command as a VARIABLE.
+    # That method is deleted and the REST lifecycle arms now create no
+    # System::Task. The surviving producer is POST /api/v1/system/tasks ->
+    # Executors::ExecuteTask with a caller-supplied command, which still
+    # dispatches through this registry. So these four stay registered — but for
+    # a different reason than the one this block used to give.
     HAS_LIVE_PRODUCER = %w[start stop reboot terminate].freeze
 
     it 'no longer registers any of the retired zero-caller provider verbs' do
@@ -199,9 +204,10 @@ RSpec.describe System::ExecutionDispatcher do
     it 'keeps every verb that still has a live producer' do
       HAS_LIVE_PRODUCER.each do |verb|
         expect(described_class::COMMAND_REGISTRY[verb]).to be_present,
-          "#{verb} is created by NodeInstanceGating#control_or_error and, on a " \
-          "cloud provider, dispatched through this registry — unregistering it " \
-          "breaks instance control for every non-local provider"
+          "#{verb} is still creatable through POST /api/v1/system/tasks " \
+          "(Executors::ExecuteTask, caller-supplied command) and dispatched " \
+          "through this registry — unregistering it makes that door fail as " \
+          "'Unsupported command' at execution time rather than at the model"
       end
     end
 

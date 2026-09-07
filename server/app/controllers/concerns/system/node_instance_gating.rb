@@ -4,12 +4,20 @@ module System
   # Lifecycle-control plumbing for NodeInstancesController, extracted to keep the
   # controller focused on action routing (start/stop/reboot/terminate +
   # public-IP association/disassociation). Drives every instance lifecycle
-  # action through the Ai::AutonomyGate for uniform audit + chain-of-custody,
-  # and runs the synchronous local-hypervisor (qemu/libvirt) provider calls
-  # inline so operators see immediate results.
+  # action through the Ai::AutonomyGate for uniform audit + chain-of-custody.
   #
-  # Behavior-preserving relocation: response shapes, status codes, gate
-  # semantics and AASM transitions are identical to the inline originals.
+  # The lifecycle arms actuate the PROVIDER PLANE and create no System::Task.
+  # Campaign 01a0790b increment 1 replaced the in-thread local-hypervisor
+  # provider call this header used to describe: it was gated on
+  # provider_type == "local_qemu", so on a Proxmox fleet it never fired and the
+  # arms left rows stranded in a transitional state with the machine untouched.
+  # Actuation now runs through System::InstanceControlService for EVERY
+  # provider — the same actuator the MCP verbs use.
+  #
+  # NOT behaviour-preserving, and deliberately so: the response's `task` key is
+  # now always nil (there is no Task to report), and the AASM transition is
+  # owned by InstanceControlService rather than fired here. The public-IP arms
+  # below are untouched.
   module NodeInstanceGating
     extend ActiveSupport::Concern
 
@@ -26,35 +34,78 @@ module System
         "the provider with a bridged network for routable LAN addressing."
     end
 
-    # Run an AASM transition with the platform-standard "may? then bang"
-    # pattern, then create an Operation that the worker runtime will
-    # execute. The state machine moves the instance into a transitional
-    # state ("starting", "stopping", etc.); the runtime finalizes via
-    # mark_running / mark_stopped / mark_terminated.
-    # Gate-aware wrapper around control_or_error. Consults the AutonomyGate
-    # for the policy on `system.task.<event>` and either proceeds inline
-    # (auto_approve / notify_and_proceed) or returns 202 + an approval
-    # request that, on approval, recreates the instance op via the
-    # ExecuteTask executor.
+    # Executor per lifecycle verb. All four are PROVIDER-plane operations, so
+    # none of them creates a System::Task: a Task is a message to the on-node
+    # agent, and the agent cannot power-cycle the machine it runs on.
+    #
+    # Campaign 01a0790b increment 1. These four arms previously routed through
+    # System::Executors::ExecuteTask, which minted a Task that nothing actuated
+    # correctly on this fleet — the server dispatch arm 404s for every task id
+    # (worker_operations is an empty scope), and the agent arm applies systemd
+    # UNIT verbs, so `stop` failed validateUnit and `terminate` ran
+    # `systemctl reboot` and brought the VM back. The in-thread provider call
+    # that masked this was gated on provider_type == "local_qemu" and this
+    # fleet is Proxmox, so it never fired. See System::Executors::ControlInstance.
+    # Each entry declares its own param shape, so adding a verb does not mean
+    # remembering a special case elsewhere. (An earlier draft encoded this as
+    # `unless event == :terminate`, which would have silently handed a spurious
+    # :action to any future no-action executor.)
+    LIFECYCLE_EXECUTORS = {
+      start: { executor: "System::Executors::ControlInstance", action_param: true },
+      stop: { executor: "System::Executors::ControlInstance", action_param: true },
+      reboot: { executor: "System::Executors::ControlInstance", action_param: true },
+      terminate: { executor: "System::Executors::TerminateInstance", action_param: false }
+    }.freeze
+
     def gate_or_execute(event)
-      # ONE label, shared by the task row, the gate description and the card's
-      # impact line — see System::Executors::ExecuteTask.gate_description.
-      # Each of these built its own raw "cmd Type#uuid" before
-      # IMP-1dd3ed2b5353, so an approver read two disagreeing labels for one
-      # decision while #create_instance_operation (the UNGATED path in this
-      # same file) had used the friendly name all along.
-      task_attributes = {
-        command: event.to_s,
-        operable_type: @instance.class.name,
-        operable_id: @instance.id,
-        initiated_by_id: current_user.id
-      }
-      label = ::System::Executors::ExecuteTask.gate_description(task_attributes)
+      spec = LIFECYCLE_EXECUTORS.fetch(event.to_sym)
+      executor_class = spec[:executor]
+      executor_params = { instance_id: @instance.id }
+      executor_params[:action] = event.to_s if spec[:action_param]
+
+      # PRE-GATE PRECONDITION, and it is not a duplicate of the service's
+      # #can_execute_action?. Without it an ordinary "you cannot stop a
+      # terminated instance" travels a punishing route: the executor RAISES,
+      # Ai::DeferredOperation#execute_now! marks the row `failed` and re-raises,
+      # and Ai::AutonomyGate's rescue returns decision :blocked with the message
+      # wrapped as "Gate evaluation failed: ...". The caller would get a
+      # policy-sounding error for a state problem, and every routine 422 would
+      # leave a failed DeferredOperation behind for the governance dashboard to
+      # count. Checking the read-only predicate first keeps the 422 clean and
+      # writes no row. The service still owns the authoritative check — this
+      # cannot replace it, because the approval branch executes LATER, when the
+      # state may have moved.
+      unless @instance.public_send("may_#{event}?")
+        return render_error(
+          "Cannot #{event} instance in #{@instance.status} state",
+          status: :unprocessable_content
+        )
+      end
+
+      # The IMPACT line, not the summary. IMP-1dd3ed2b5353 pins that an
+      # approver sees ONE label for one operation: the frozen `description`
+      # must equal the card's recomputed impact, or the approvals API serves
+      # two different descriptions of the same decision.
+      #
+      # Wrapped, mirroring ExecuteTask.gate_description's own rescue: a label
+      # must never fail a control-plane request. The fallback names the verb
+      # and the instance, which is what the impact line degrades to anyway.
+      label = begin
+        executor_class.constantize.preview(executor_params)[:impact].presence ||
+          "#{event} instance #{@instance.id}"
+      rescue StandardError => e
+        Rails.logger.warn("[NodeInstanceGating] label preview failed: #{e.class}: #{e.message}")
+        "#{event} instance #{@instance.id}"
+      end
 
       gate_result = ::Ai::AutonomyGate.evaluate(
+        # UNCHANGED category. One operator-tuned policy row governs the
+        # operation however it is reached; only the executor differs, because
+        # the mechanism differs. This is the same split
+        # System::Executors::TerminateInstance already made on the MCP side.
         action_category: "system.task.#{event}",
-        executor_class: "System::Executors::ExecuteTask",
-        params: { task_attributes: task_attributes.merge(description: label) },
+        executor_class: executor_class,
+        params: executor_params,
         account: current_account,
         requested_by: current_user,
         source_type: @instance.class.name,
@@ -64,20 +115,19 @@ module System
 
       case gate_result.decision
       when :proceed
-        # Mirrors original control_or_error behaviour for the inline path.
-        unless @instance.public_send("may_#{event}?")
-          return render_error(
-            "Cannot #{event} instance in #{@instance.status} state",
-            status: :unprocessable_content
-          )
-        end
-        @instance.public_send("#{event}!")
-        execute_local_provider_action_sync!(event) if local_hypervisor_instance?
-        data = gate_result.result&.dig(:data) || {}
-        task = data[:task_id] ? current_account.system_tasks.find_by(id: data[:task_id]) : nil
+        # NO failure branch here, and that is not an omission. Executors::Base
+        # either returns success:true or RAISES; DeferredOperation#execute_now!
+        # re-raises after failing the row; AutonomyGate's rescue turns that into
+        # decision :blocked. So on :proceed the executor has already succeeded,
+        # and an `if result[:success] == false` guard would be unreachable code
+        # asserting a contract the gate does not have.
+        #
+        # The AASM transition is NOT fired here: InstanceControlService owns it
+        # (#update_transitional_status), and ProvisioningService owns
+        # terminate's. Duplicating it is how the REST and MCP surfaces drifted.
         render_success(
           node_instance: serialize_instance(@instance.reload),
-          task: task ? ::System::TaskSerializer.new(task).as_json : nil
+          task: nil
         )
       when :pending
         render_pending_approval(gate_result.deferred_operation,
@@ -96,8 +146,9 @@ module System
       # impact line — see System::Executors::ExecuteTask.gate_description.
       # Each of these built its own raw "cmd Type#uuid" before
       # IMP-1dd3ed2b5353, so an approver read two disagreeing labels for one
-      # decision while #create_instance_operation (the UNGATED path in this
-      # same file) had used the friendly name all along.
+      # decision. (The comparison this note used to draw — against
+      # #create_instance_operation, "the UNGATED path in this same file" — is
+      # gone with that method; the lifecycle arms no longer insert a Task.)
       task_attributes = {
         command: event.to_s,
         operable_type: @instance.class.name,
@@ -134,79 +185,25 @@ module System
       end
     end
 
-    def control_or_error(event)
-      unless @instance.public_send("may_#{event}?")
-        return render_error(
-          "Cannot #{event} instance in #{@instance.status} state",
-          status: :unprocessable_content
-        )
-      end
-      @instance.public_send("#{event}!")
-      operation = create_instance_operation(event.to_s)
-
-      # Local hypervisor providers (qemu/libvirt) handle instance control
-      # synchronously — `virsh start`/`stop`/etc. is sub-100ms. The Task/
-      # Operation row stays as an audit record, but the actual provider
-      # call fires in this request thread so the user sees the result
-      # immediately. Cloud providers (AWS, GCP, etc.) keep the async
-      # path: they take seconds to minutes and rely on the worker queue.
-      execute_local_provider_action_sync!(event) if local_hypervisor_instance?
-
-      render_success(
-        node_instance: serialize_instance(@instance.reload),
-        task: operation ? ::System::TaskSerializer.new(operation).as_json : nil
-      )
-    end
-
-    def local_hypervisor_instance?
-      @instance.provider_region&.provider&.provider_type == "local_qemu"
-    end
-
-    # Map AASM event → provider verb + post-success status. The provider
-    # mutates the libvirt domain; we update the model status to match
-    # the now-known reality (running/stopped/etc.) without waiting for
-    # the next reconcile-on-read.
-    def execute_local_provider_action_sync!(event)
-      adapter = ::System::Providers::Registry.for_instance(@instance)
-      cloud_id = @instance.config["cloud_instance_id"]
-      return if cloud_id.blank?
-      result = case event.to_sym
-      when :start  then adapter.start_instance(cloud_id)
-      when :stop   then adapter.stop_instance(cloud_id)
-      when :reboot then adapter.respond_to?(:reboot_instance) ? adapter.reboot_instance(cloud_id) : nil
-      when :terminate then adapter.terminate_instance(cloud_id, expected_name: @instance.provider_guest_name)
-      end
-      return unless result&.dig(:success)
-
-      # Map provider's response status to NodeInstance.status. The provider
-      # returns intermediate states (e.g. "starting" while the kernel boots);
-      # we leave AASM-set status as-is for transitions and only overwrite
-      # to terminal states (running/stopped/terminated) when the provider
-      # confirms them.
-      new_status = result[:status]
-      if %w[running stopped terminated error].include?(new_status) && new_status != @instance.status
-        @instance.update_column(:status, new_status)
-      end
-      if result[:private_ip_address].present?
-        @instance.update_column(:private_ip_address, result[:private_ip_address])
-      end
-    rescue StandardError => e
-      Rails.logger.warn("[NodeInstancesController] sync provider call failed (#{event}): #{e.class}: #{e.message}")
-    end
-
-    def create_instance_operation(command)
-      return nil unless current_account.respond_to?(:system_tasks)
-
-      current_account.system_tasks.create(
-        command: command,
-        description: "#{command.capitalize} node instance: #{@instance.name}",
-        operable: @instance,
-        initiated_by: current_user,
-        status: "pending"
-      )
-    rescue StandardError => e
-      Rails.logger.error "Failed to create operation: #{e.message}"
-      nil
-    end
+    # REMOVED in campaign 01a0790b increment 1:
+    #
+    #   #control_or_error              — already had NO callers (all four
+    #                                    lifecycle actions route through
+    #                                    #gate_or_execute); its only reason to
+    #                                    exist was the Task row it minted.
+    #   #create_instance_operation     — the ungated System::Task producer.
+    #                                    Provider-plane operations do not
+    #                                    message the agent, so there is nothing
+    #                                    to enqueue.
+    #   #local_hypervisor_instance?    — gated on provider_type == "local_qemu";
+    #   #execute_local_provider_action_sync!
+    #                                    this fleet is Proxmox, so the in-thread
+    #                                    provider call NEVER fired here. Its
+    #                                    work now happens in
+    #                                    InstanceControlService for every
+    #                                    provider, not just local ones.
+    #
+    # #local_hypervisor_rejection_message above is a DIFFERENT predicate (it
+    # answers "does this provider have a public-IP concept") and is retained.
   end
 end

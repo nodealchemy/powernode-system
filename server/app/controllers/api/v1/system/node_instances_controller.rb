@@ -4,7 +4,7 @@ module Api
   module V1
     module System
       class NodeInstancesController < BaseController
-        # Lifecycle gating (gate_or_execute / gate_ip_action / control_or_error +
+        # Lifecycle gating (gate_or_execute / gate_ip_action +
         # local-hypervisor provider sync) and index-path provider reconciliation
         # are extracted into cohesive concerns to keep this controller focused on
         # action routing. See concerns/system/node_instance_*.rb.

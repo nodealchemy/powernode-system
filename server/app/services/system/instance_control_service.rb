@@ -7,6 +7,32 @@ module System
   # Returns System::Runtime::Result. The service is the platform-shaped
   # boundary; provider adapters below it still return hashes (cloud-shaped).
   class InstanceControlService
+    # INV-1, no self-management (IMP-8be9408b506f). This service is the single
+    # choke point for instance lifecycle — operator UI, MCP
+    # (system_start/stop/reboot_instance), fleet autonomy, the pool
+    # replenisher and rolling upgrades all land here — and until now it
+    # consulted NO self-management fence. On a self-hosted deployment that
+    # means `system_reboot_instance` against the control plane's own host
+    # succeeds and takes down the platform, the MCP server serving the call,
+    # and the kill switch with it.
+    #
+    # System::Executors::TerminateInstance's header already named this gap
+    # ("InstanceControlService includes no fence") while explaining why
+    # terminate routes around it. Closed here rather than at each call site,
+    # for the same reason the ops hold lives here: a guard the autonomous
+    # paths can miss is exactly the guard that fails when it matters.
+    #
+    # INERT UNTIL CONFIGURED. SelfManagementFence keys on the
+    # `self_hosting_node_id` SiteSetting and is a no-op while that is unset —
+    # which is the case on every plane today (System::Compliance::
+    # RcpInvariantScanner#scan_inv1 says so in as many words, and returns []
+    # for the same reason). This include therefore ARMS the control; it does
+    # not by itself protect this deployment. Setting self_hosting_node_id is
+    # an operator action and is what actually turns INV-1 on — here and in
+    # ProvisioningService, DecisionEngine and ReplicaReconciler, all of which
+    # are equally inert without it.
+    include ::System::Autonomy::SelfManagementFence
+
     class ControlError < StandardError; end
 
     def self.execute(instance:, action:, operation_id: nil, force: false)
@@ -30,6 +56,16 @@ module System
       # stubbornness, not for overriding a human who said "do not start this
       # while I have its disk mounted". Release is explicit, always.
       if (refusal = ops_hold_refusal(instance, action))
+        Rails.logger.warn("[InstanceControlService] #{action} refused — #{refusal}")
+        return Runtime::Result.err(error: refusal)
+      end
+
+      # INV-1. Checked BEFORE update_transitional_status so a refusal leaves
+      # the row untouched rather than stranded in a transitional state, and
+      # independently of the ops hold above — the two catch different hazards
+      # and neither implies the other. `force` does not bypass it, for the
+      # same reason it does not bypass the hold.
+      if (refusal = self_management_refusal(instance, action))
         Rails.logger.warn("[InstanceControlService] #{action} refused — #{refusal}")
         return Runtime::Result.err(error: refusal)
       end
@@ -100,6 +136,24 @@ module System
 
       "Refusing to #{action}: instance is under an operator ops hold (#{instance.ops_hold_summary}). " \
       "Release the hold explicitly before this action — it is not overridable with force."
+    end
+
+    # Actions refused against this deployment's own hosting node. `stop` is
+    # included here where the ops hold deliberately allows it: a hold means
+    # "this box should be DOWN", so stopping it serves the operator's intent,
+    # but INV-1 is about a plane acting on ITSELF — and stopping the machine
+    # you are running on is the purest form of that. `start` stays allowed:
+    # if the plane is up enough to serve this call its host is already
+    # running, so a start is a harmless no-op rather than self-management.
+    SELF_MANAGEMENT_BLOCKED_ACTIONS = %i[stop reboot terminate].freeze
+
+    def self_management_refusal(instance, action)
+      return nil unless SELF_MANAGEMENT_BLOCKED_ACTIONS.include?(action.to_sym)
+      return nil unless self_managed_target?(instance)
+
+      "Refusing to #{action}: instance #{instance.id} runs on node #{instance.node_id}, this " \
+      "control plane's own hosting node (INV-1: no self-management). Management authority must " \
+      "come from the consensus group, never the node itself."
     end
 
     def validate_instance!(instance)

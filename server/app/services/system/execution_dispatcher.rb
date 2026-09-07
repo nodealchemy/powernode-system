@@ -34,9 +34,9 @@ module System
     #   VARIABLE, which no literal `command: "..."` grep will ever surface.
     #   start/stop/reboot/terminate were retired on the strength of the row count
     #   alone and had to be restored (see below). The variable producers that
-    #   exist are NodeInstanceGating (#gate_or_execute and #create_instance_operation
-    #   for start/stop/reboot/terminate, AND #gate_ip_action for
-    #   associate_public_ip / disassociate_public_ip), ModuleBuildBatch
+    #   exist are NodeInstanceGating#gate_ip_action (associate_public_ip /
+    #   disassociate_public_ip — its lifecycle sibling #gate_or_execute STOPPED
+    #   being a Task producer in campaign 01a0790b increment 1), ModuleBuildBatch
     #   #member_task_command (ci.module_build / ci.package_build), DecisionEngine
     #   (sync_modules / apply_config) and the storage managers (storage.*).
     #
@@ -79,21 +79,35 @@ module System
     # dispatch-spine investigation in the first place.
     #
     # RESTORED, same day, after they were wrongly retired:
-    # start/stop/reboot/terminate. Api::V1::System::NodeInstanceGating
-    # #control_or_error calls create_instance_operation(event.to_s), so the
-    # command is a VARIABLE — invisible to a literal grep, which is how the
-    # first pass concluded they had no producer.
-    # (Accuracy note, IMP-8d944d656c0b: #control_or_error itself has NO callers
-    # today — all four lifecycle actions route through #gate_or_execute, which
-    # composes the same four commands — so it is a DORMANT producer, and the
-    # live justification for keeping these four registered is #gate_or_execute
-    # plus the cloud-provider execution path described below.)
+    # start/stop/reboot/terminate. The lesson stands and is why they are still
+    # here — a lifetime row count of zero proves UNUSED, and deleting needs
+    # UNREACHABLE — but BOTH of the reasons originally given are now false, so
+    # they are corrected rather than left to rot (campaign 01a0790b inc 1):
     #
-    # For a CLOUD provider this registry IS their execution path: that concern
-    # fires the provider call in-thread only for local_qemu and explicitly
-    # leaves everything else to the worker queue. Retiring them broke instance
-    # control for every non-local provider — invisible on this fleet, which is
-    # all local_qemu, and precisely the kind of latent break that only surfaces
+    #   WAS: "NodeInstanceGating#control_or_error passes the command as a
+    #   VARIABLE, invisible to a literal grep." That method and
+    #   #create_instance_operation are DELETED. The REST lifecycle arms create
+    #   no System::Task at all; they actuate through
+    #   System::Executors::ControlInstance / TerminateInstance ->
+    #   System::InstanceControlService.
+    #
+    #   WAS: "For a CLOUD provider this registry IS their execution path — the
+    #   concern fires the provider call in-thread only for local_qemu." Also
+    #   false twice over: that in-thread call is deleted, and this fleet was
+    #   never "all local_qemu" (it is Proxmox), so the in-thread path had never
+    #   fired here in the first place.
+    #
+    # THE REMAINING PRODUCER, and the only live justification for these four
+    # registry entries, is POST /api/v1/system/tasks -> Executors::ExecuteTask
+    # with a CALLER-SUPPLIED command. That door still reaches
+    # Runtime::ControlInstance -> InstanceControlService. For `terminate` it is
+    # the lane System::Executors::TerminateInstance documents as dropping four
+    # safety controls (SDWAN peer detach, deploy-key revocation, the terminate
+    # meter event, F4-02 idempotency) — now the ONLY Task-lane route to it,
+    # since the REST arm no longer takes it. Campaign 01a0790b increment 2
+    # rules on whether `terminate` should leave Task::COMMANDS entirely.
+    #
+    # The original warning still applies to any future tidy-up: an unreachable
     # on someone else's deployment.
     #
     # (Known, pre-existing, filed separately: on local_qemu the task is created

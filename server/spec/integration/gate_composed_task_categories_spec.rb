@@ -113,17 +113,30 @@ module GateComposedTaskCategories
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 55,
+      line: 106,
       source: 'action_category: "system.task.#{event}"',
-      executor: "System::Executors::ExecuteTask",
+      # TWO executors behind one category now (campaign 01a0790b increment 1):
+      # NodeInstanceGating::LIFECYCLE_EXECUTORS routes start/stop/reboot to
+      # ControlInstance and terminate to TerminateInstance. The CATEGORY is
+      # deliberately unchanged so one operator-tuned policy row still governs
+      # the operation however it is reached — only the mechanism differs.
+      executor: "System::Executors::ControlInstance",
       domain: "#gate_or_execute(event). Callers, all in " \
-              "Api::V1::System::NodeInstancesController: :start (205), :stop (211), " \
-              ":reboot (217), :terminate (230).",
+              "Api::V1::System::NodeInstancesController: :start (223), :stop (229), " \
+              ":reboot (235), :terminate (248). terminate resolves to " \
+              "System::Executors::TerminateInstance via LIFECYCLE_EXECUTORS. " \
+              "NOTE (campaign 01a0790b increment 1): this site INSERTS NOTHING " \
+              "any more — both executors actuate the provider plane. The four " \
+              "verbs are still listed because the CATEGORY vocabulary is what " \
+              "this spec governs (a category must still name a real command so " \
+              "the policy row, the engine registration and the seed agree), but " \
+              "the insertability assertion is now vestigial FOR THIS SITE and " \
+              "is carried by tasks_controller#create, which does still insert.",
       commands: -> { %w[start stop reboot terminate] }
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 110,
+      line: 161,
       source: 'action_category: "system.task.#{event}"',
       executor: "System::Executors::ExecuteTask",
       domain: "#gate_ip_action(event). Callers, both in " \
@@ -132,22 +145,18 @@ module GateComposedTaskCategories
               "is about.",
       commands: -> { %w[associate_public_ip disassociate_public_ip] }
     },
-    {
-      file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 197,
-      source: "def create_instance_operation(command)",
-      executor: nil,
-      domain: "The second variable producer in the same concern — it inserts a " \
-              "System::Task directly, ungated, from #control_or_error(event) " \
-              "(line 145, `create_instance_operation(event.to_s)`). It composes " \
-              "no action_category, so neither backstop scan can see it, and it " \
-              "is enumerated by hand for exactly that reason. NOTE: " \
-              "#control_or_error currently has NO callers — the four lifecycle " \
-              "actions all route through #gate_or_execute — so this producer is " \
-              "dormant, not dead: restoring a caller must not silently " \
-              "reintroduce an uninsertable command.",
-      commands: -> { %w[start stop reboot terminate] }
-    },
+    # REMOVED (campaign 01a0790b increment 1) — the entry that stood here
+    # enumerated #create_instance_operation, the ungated System::Task producer
+    # reached from #control_or_error. BOTH methods are deleted, along with
+    # #execute_local_provider_action_sync! and #local_hypervisor_instance?.
+    #
+    # It was enumerated by hand because it composed no action_category and
+    # neither backstop scan could see it, and it was described as "dormant, not
+    # dead" on the grounds that #control_or_error had no callers. That is now
+    # resolved in the deleting direction: the REST lifecycle arms actuate the
+    # provider plane through System::Executors::ControlInstance /
+    # TerminateInstance and create no System::Task at all, so there is no
+    # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
       line: 253,
@@ -265,7 +274,8 @@ module GateComposedTaskCategories
   # The enumerated sites a scan COULD see, counted per file. Derived from each
   # entry's own :source, so an entry is expected to be discoverable exactly when
   # the code it quotes matches a discovery pattern — no second list to keep in
-  # step. (#create_instance_operation composes nothing and is correctly absent.)
+  # step. (The former #create_instance_operation composed nothing and was
+  # correctly absent; campaign 01a0790b increment 1 deleted the method itself.)
   def discoverable_enumeration
     GATE_SITES.each_with_object(Hash.new(0)) do |site, counts|
       next unless DISCOVERY_PATTERNS.any? { |pattern| site[:source].match?(pattern) }
