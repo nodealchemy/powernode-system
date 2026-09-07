@@ -22,37 +22,48 @@
 #
 # The old design's only remedy for a stuck :pending task was to re-enqueue
 # SystemExecuteTaskJob. For an AGENT-DELEGATED command that is a no-op by
-# construction: ExecutionDispatcher deliberately leaves those rows :pending for
-# the node agent to poll, so re-enqueuing one changes nothing. If the agent is
-# gone — instance terminated, node retired — no amount of re-enqueuing will ever
-# move it, and the row waits forever. Since apply_config / ci.module_build /
+# construction: the dispatcher deliberately left those rows :pending for the
+# node agent to poll, so re-enqueuing one changed nothing. If the agent is gone
+# — instance terminated, node retired — no amount of re-enqueuing will ever move
+# it, and the row waits forever. Since apply_config / ci.module_build /
 # sync_modules (agent-delegated) are ~95% of the 30-day task mix, "re-enqueue
 # and hope" was never a terminal policy for the common case.
 #
-# So there are now three lanes, and the third is the one that actually drains:
+# CAMPAIGN 01a0790b INCREMENT 3 FINISHED THAT ARGUMENT. Every command is now
+# agent-executed, so the re-enqueue lane was a no-op for ALL of them, not ~95%
+# — and the job it fired, along with the server dispatch arm that job called,
+# is deleted. LANE 1 WENT WITH THEM. The numbering below is kept as-is rather
+# than closed up, because lanes 2 and 3 are named after it in this file and in
+# the server-side reap endpoint:
 #
-#   1. stuck :pending/:scheduled, server-dispatchable -> re-enqueue (unchanged)
+#   1. stuck :pending/:scheduled -> re-enqueue          [RETIRED, increment 3]
 #   2. stuck :running                                 -> reap (fail)
 #   3. stuck beyond UNRUNNABLE_THRESHOLD              -> reap (cancel)
 #
-# Lane 3 fires only well past the point where lane 1 has demonstrably not
-# worked, and the server picks fail-vs-cancel from the row's own state (cancel
-# for a task that never started — calling it "failed" would assert an execution
-# that never happened).
+# Lane 3 is now the ONLY closer for a stuck :pending row, which is what lane 1's
+# own comment already said it was for the agent-delegated majority. It fires
+# well past the point where the agent has demonstrably not picked the row up,
+# and the server picks fail-vs-cancel from the row's own state (cancel for a
+# task that never started — calling it "failed" would assert an execution that
+# never happened).
 #
 # THRESHOLDS
-#   STUCK_PENDING    5 min  — a missed enqueue; re-issue.
+#   (STUCK_PENDING, 5 min, was lane 1's window. Deleted with the lane — an
+#    unused threshold constant is exactly the kind of inert-but-plausible
+#    artefact that made the dispatch spine look alive for as long as it did.)
 #   STUCK_RUNNING   60 min  — generous, so a slow real provisioning is not
 #                             false-positively killed.
-#   UNRUNNABLE      48 hrs  — a pending task this old has survived ~48 re-enqueue
-#                             attempts. Nothing is coming for it. Set far above
-#                             the longest legitimate agent absence (a node down
-#                             for a working day) so an offline-but-returning
-#                             agent still finds its work waiting.
+#   UNRUNNABLE      48 hrs  — nothing is coming for a pending task this old. Set
+#                             far above the longest legitimate agent absence (a
+#                             node down for a working day) so an offline-but-
+#                             returning agent still finds its work waiting.
+#                             (This used to read "has survived ~48 re-enqueue
+#                             attempts" — there are no re-enqueue attempts any
+#                             more, and the number was always a lane-1 artefact
+#                             rather than a reason for the threshold.)
 class SystemTaskReaperJob < BaseJob
   sidekiq_options queue: "system", retry: 0
 
-  STUCK_PENDING_THRESHOLD    = (ENV.fetch("SYSTEM_REAPER_STUCK_PENDING_MIN", "5").to_i * 60).freeze
   STUCK_RUNNING_THRESHOLD    = (ENV.fetch("SYSTEM_REAPER_STUCK_RUNNING_MIN", "60").to_i * 60).freeze
   UNRUNNABLE_THRESHOLD       = (ENV.fetch("SYSTEM_REAPER_UNRUNNABLE_MIN", "2880").to_i * 60).freeze
 
@@ -61,55 +72,38 @@ class SystemTaskReaperJob < BaseJob
   def execute(*_args)
     log_info("[SystemReaper] Starting reap cycle")
 
-    re_enqueued = reap_stuck_pending
-    failed      = reap_stuck_running
-    cancelled   = reap_unrunnable
+    failed    = reap_stuck_running
+    cancelled = reap_unrunnable
 
     log_info(
       "[SystemReaper] Reap cycle complete",
-      stuck_pending_re_enqueued: re_enqueued,
       stuck_running_failed: failed,
       unrunnable_cancelled: cancelled
     )
 
-    { reaped_pending: re_enqueued, reaped_running: failed, reaped_unrunnable: cancelled }
+    # `reaped_pending` is kept in the return shape, always 0, because lane 1 is
+    # gone (see below) and a caller reading the old key should see "re-dispatched
+    # nothing" rather than a NoMethodError on a missing key.
+    { reaped_pending: 0, reaped_running: failed, reaped_unrunnable: cancelled }
   end
 
   private
 
-  # Lane 1 — pending/scheduled whose enqueue was missed. Re-issue the regular
-  # execute job; idempotency comes from the server's atomic claim (start!),
-  # which 409s if the task is no longer claimable.
+  # LANE 1 IS RETIRED (campaign 01a0790b increment 3). It re-issued a
+  # SystemExecuteTaskJob for a stuck pending task, skipping agent-delegated
+  # commands because "the dispatcher leaves them pending on purpose, so the job
+  # would run, decline, and change nothing".
   #
-  # Agent-delegated commands are SKIPPED here rather than re-enqueued: the
-  # dispatcher leaves them pending on purpose, so the job would run, decline,
-  # and change nothing. Skipping them keeps this count honest — it now means
-  # "tasks actually re-dispatched", not "jobs fired into a no-op". Lane 3 is
-  # what eventually closes them.
-  def reap_stuck_pending
-    tasks = janitor_tasks(
-      status: %w[pending scheduled],
-      older_than_seconds: STUCK_PENDING_THRESHOLD
-    )
-
-    re_enqueued = 0
-    tasks.each do |task|
-      next if task["agent_delegated"]
-      next if unrunnable?(task)
-
-      log_warn(
-        "[SystemReaper] Re-enqueuing stuck pending task",
-        task_id: task["id"], command: task["command"], created_at: task["created_at"]
-      )
-      SystemExecuteTaskJob.perform_async(task["id"])
-      re_enqueued += 1
-    end
-
-    re_enqueued
-  rescue BackendApiClient::ApiError => e
-    log_error("[SystemReaper] Failed to fetch pending tasks", e)
-    0
-  end
+  # That is now true of EVERY command. The server dispatch arm the job called
+  # (worker_api/tasks/:id/execute -> ExecutionDispatcher) is deleted, the job
+  # itself is deleted, and the janitor listing no longer carries the
+  # `agent_delegated` flag the skip read — because it would be a constant true.
+  # Re-dispatch is not a thing the platform does any more: the agent polls for
+  # its own work.
+  #
+  # A stuck pending row is still reaped, by lane 3 (#reap_unrunnable), which is
+  # what the retired lane's own comment already named as the closer for
+  # agent-delegated rows.
 
   # Lane 2 — running tasks whose holding worker died. We cannot ping the
   # specific holder, so this is a time-since-STARTED heuristic; the server
@@ -136,10 +130,18 @@ class SystemTaskReaperJob < BaseJob
     0
   end
 
-  # Lane 3 — the terminal policy. A pending/scheduled task older than
-  # UNRUNNABLE_THRESHOLD is closed, because nothing in the system will ever move
-  # it: either its agent is gone, or ~48 hourly re-enqueues have already failed
-  # to claim it. Without this lane the queue only ever grows.
+  # Lane 3 — the terminal policy, and since increment 3 the ONLY closer for a
+  # pending row. A pending/scheduled task older than UNRUNNABLE_THRESHOLD is
+  # closed because nothing will ever move it: its agent is gone, or the row
+  # names an operable no agent polls for (delivery is
+  # NodeApi::StatusController#pending_tasks -> current_instance.tasks, so a row
+  # against a Node or a Provider* is offered to nothing). Without this lane the
+  # queue only ever grows.
+  #
+  # The clause "or ~48 hourly re-enqueues have already failed to claim it" was
+  # removed with lane 1: there are no re-enqueues, and there never were any that
+  # reached a task — the job they fired POSTed to an endpoint that 404'd for
+  # every id.
   def reap_unrunnable
     tasks = janitor_tasks(
       status: %w[pending scheduled],
@@ -151,7 +153,7 @@ class SystemTaskReaperJob < BaseJob
       log_warn(
         "[SystemReaper] Cancelling unrunnable task",
         task_id: task["id"], command: task["command"],
-        created_at: task["created_at"], agent_delegated: task["agent_delegated"]
+        created_at: task["created_at"]
       )
       next unless reap!(
         task,
@@ -194,10 +196,6 @@ class SystemTaskReaperJob < BaseJob
     query[:older_than_seconds] = older_than_seconds if older_than_seconds
     response = api_client.get(JANITOR_TASKS_PATH, query)
     response.dig("data", "tasks") || []
-  end
-
-  def unrunnable?(task)
-    stuck?(task["created_at"], UNRUNNABLE_THRESHOLD)
   end
 
   def stuck?(timestamp_string, threshold_seconds)

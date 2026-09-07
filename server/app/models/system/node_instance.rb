@@ -34,7 +34,8 @@ module System
     # of them are authoritative about the instance, not merely about our view
     # of it: ProvisioningService#mark_instance_errored (the provision failed —
     # there is no VM), the two `finalize_state_from_cloud` controller paths and
-    # NodeInstanceGating#execute_local_provider_action_sync! (the PROVIDER
+    # System::InstanceControlService, reached from NodeInstanceGating via
+    # System::Executors::ControlInstance (the PROVIDER
     # itself reports error), and the `revert_termination` event below (a
     # terminate stamp whose provider call then failed — a provably unknown
     # state nothing may size against). The fifth,

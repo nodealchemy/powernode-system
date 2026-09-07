@@ -17,8 +17,11 @@ import (
 
 // The lifecycle handler takes task.Options["unit"] into `systemctl <verb>`
 // as root. The node API serves EVERY pending task on the instance to the
-// agent (NodeApi::StatusController#pending_tasks has no agent_delegated?
-// filter) and TasksController#create permits options: {} as free-form JSONB,
+// agent (NodeApi::StatusController#pending_tasks filters on status alone —
+// it never had a command filter, and the agent_delegated? predicate that
+// once named the distinction was deleted with the server dispatch arm in
+// campaign 01a0790b increment 3) and TasksController#create permits
+// options: {} as free-form JSONB,
 // so the unit name is attacker-choosable by any principal holding
 // system.infra_tasks.create — including an AI agent, because the
 // system.task.* rows are seeded with ai_agent_id nil and

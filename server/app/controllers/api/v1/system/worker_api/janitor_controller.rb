@@ -26,8 +26,13 @@ module Api
         # fix of populating `node.worker_id` to make that scope true: it would
         # revive a dispatch chain that has never run in production and race the
         # agent on the four colliding command names, on a live self-hosted
-        # control plane. The reaper is re-homed instead. TasksController is left
-        # untouched — it is vestigial and retires under step 3 of that decision.
+        # control plane. The reaper is re-homed instead. TasksController was
+        # left untouched as vestigial, to retire under step 3 of that decision —
+        # and step 3 has since landed: campaign 01a0790b increment 3 deleted
+        # #execute, its route, and the whole dispatch chain behind it. The
+        # controller's nine remaining actions are dead too (no caller anywhere,
+        # and all unreachable through the same empty scope); removing them is
+        # filed separately.
         #
         # THE TENANCY ANCHOR IS THE PRINCIPAL, NEVER A PARAMETER
         #
@@ -169,8 +174,14 @@ module Api
               created_at: task.created_at&.iso8601,
               started_at: task.started_at&.iso8601,
               operable_type: task.operable_type,
-              operable_id: task.operable_id,
-              agent_delegated: ::System::ExecutionDispatcher.agent_delegated?(task.command, task.options)
+              operable_id: task.operable_id
+              # `agent_delegated:` was here until campaign 01a0790b increment 3.
+              # It fed SystemTaskReaperJob's lane 1, which re-enqueued a
+              # SystemExecuteTaskJob for any stuck pending task that was NOT
+              # agent-delegated. Both sides of that are gone: the job and the
+              # server dispatch arm it called are deleted, and every command is
+              # now agent-executed, so the field would be a constant `true` and
+              # the lane it gated would skip every row it saw.
             }
           end
         end

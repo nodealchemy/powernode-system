@@ -40,16 +40,20 @@ require "pathname"
 #
 # ══ WHAT THIS DOES NOT COVER, SO A GREEN RUN IS NOT OVER-READ ═════════════
 #
-# COMMANDS. Scope is the two commands ExecutionDispatcher routes to the on-node
-# reconcile runtimes: sync_modules and apply_config. That is NARROWER than
-# ExecutionDispatcher::AGENT_DELEGATED_COMMANDS — upgrade_boot_image, the
+# COMMANDS. Scope is two commands: sync_modules and apply_config. That is
+# NARROWER than the rest of System::Task::COMMANDS — upgrade_boot_image, the
 # storage.* verbs, ci.module_build, ci.package_build, probe.module_smoke — and
-# the difference is an open question recorded rather than silently resolved:
-# sync_modules and apply_config are in COMMAND_REGISTRY, i.e. the SERVER
-# executes them, while the AGENT_DELEGATED set is what the agent actually polls
-# for. So "no agent will pull this" is literally true of the delegated set and
-# only empirically true of these two. Offer 01a07861-96d8 carries that, with the
-# evidence that the recorded stall mechanism is itself unproven.
+# the narrowing is now the only thing left of a distinction that has been
+# dissolved.
+#
+# THE OLD RATIONALE IS DEAD. It read: "sync_modules and apply_config are in
+# COMMAND_REGISTRY, i.e. the SERVER executes them, while the AGENT_DELEGATED
+# set is what the agent actually polls for." Campaign 01a0790b increment 3
+# deleted ExecutionDispatcher, COMMAND_REGISTRY and AGENT_DELEGATED_COMMANDS:
+# the agent polls for every command, so "no agent will pull this" is now
+# equally (un)true of all of them. The two-command scope is retained as a
+# deliberate census boundary, not as a claim about who executes what.
+# Offer 01a07861-96d8 carries the residual question.
 #
 # Note the practical consequence for this file's own coverage: the tree contains
 # no literal `command: "apply_config"` producer at all — apply_config reaches
@@ -201,15 +205,21 @@ RSpec.describe "on-node task producer census" do
         why: "Same as nfs_export_manager#dispatch_task — a storage.* verb passed as a method " \
              "parameter, agent-delegated rather than an on-node reconcile command."
       },
-      "app/controllers/concerns/system/node_instance_gating.rb#create_instance_operation" => {
-        disposition: :out_of_scope, sites: 1,
-        why: "The association form (`current_account.system_tasks.create(command: command, ...)`) " \
-             "— non-bang, no System::Task receiver, variable command, invisible three ways over, " \
-             "which is why the scanner matches construction rather than one spelling. Today it " \
-             "carries only the control verbs start/stop/reboot/terminate/restart; " \
-             "ExecutionDispatcher's own comment names it as a path that never meets the gate, " \
-             "so if it ever grows an on-node command the ratchet below reddens."
-      },
+      # REMOVED — #create_instance_operation no longer exists (campaign 01a0790b
+      # increment 1). It was the ungated association-form producer
+      # (`current_account.system_tasks.create(command: command, ...)`) behind the
+      # REST lifecycle arms. Those arms now actuate the provider plane directly
+      # through System::Executors::ControlInstance / TerminateInstance and mint
+      # NO System::Task, so the producer is gone rather than gated.
+      #
+      # CONSEQUENCE, stated plainly rather than glossed: node_instance_gating.rb
+      # now has NO coverage from this census at all. The scanner finds no
+      # construction site in it, and the :out_of_scope ratchet iterates CENSUS
+      # keys — so deleting the key removed the file from that too. That is
+      # correct (a census entry for a method that does not exist reds by
+      # design, and re-adding one would be a lie), but it means a FUTURE
+      # System::Task producer added to this file is caught by the uncensused-
+      # producer direction only, not by the ratchet.
       "app/controllers/api/v1/system/worker_api/tasks_controller.rb#create" => {
         disposition: :out_of_scope, sites: 1,
         why: "`operable.tasks.build(operation_params)` — the worker-authenticated creation " \

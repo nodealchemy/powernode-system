@@ -13,8 +13,9 @@ require "rails_helper"
 #
 #   58702a16 "retire the thirteen zero-caller dispatch verbs" removed
 #   "associate_public_ip" => System::Runtime::ManagePublicIp (and its sibling)
-#   from ExecutionDispatcher::COMMAND_REGISTRY, and deleted the
-#   System::Runtime::ManagePublicIp class outright. It left
+#   from ExecutionDispatcher::COMMAND_REGISTRY — a registry since deleted
+#   wholesale, with the dispatcher, in campaign 01a0790b increment 3 — and
+#   deleted the System::Runtime::ManagePublicIp class outright. It left
 #   System::Task::COMMANDS alone. In this window the Task INSERTED normally and
 #   then failed LATER, in the worker, as "Unsupported command:
 #   associate_public_ip" — a different signature, at a different time, seen by a
@@ -45,7 +46,7 @@ require "rails_helper"
 #   * literal   — `action_category: "system.task.`, which a composed-only scan
 #                 would miss entirely. A new literal site naming a verb outside
 #                 COMMANDS (say "system.task.provision", still absent from both
-#                 COMMANDS and COMMAND_REGISTRY) fails closed in exactly this
+#                 COMMANDS and, when it existed, COMMAND_REGISTRY) fails closed in exactly this
 #                 offer's shape, so leaving it undiscoverable would reproduce
 #                 the very gap this spec exists to close.
 # Either scan can only ever find SITES, never their value sets, which is why
@@ -95,7 +96,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 71,
+      line: 98,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -113,17 +114,30 @@ module GateComposedTaskCategories
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 55,
+      line: 106,
       source: 'action_category: "system.task.#{event}"',
-      executor: "System::Executors::ExecuteTask",
+      # TWO executors behind one category now (campaign 01a0790b increment 1):
+      # NodeInstanceGating::LIFECYCLE_EXECUTORS routes start/stop/reboot to
+      # ControlInstance and terminate to TerminateInstance. The CATEGORY is
+      # deliberately unchanged so one operator-tuned policy row still governs
+      # the operation however it is reached — only the mechanism differs.
+      executor: "System::Executors::ControlInstance",
       domain: "#gate_or_execute(event). Callers, all in " \
-              "Api::V1::System::NodeInstancesController: :start (205), :stop (211), " \
-              ":reboot (217), :terminate (230).",
+              "Api::V1::System::NodeInstancesController: :start (223), :stop (229), " \
+              ":reboot (235), :terminate (248). terminate resolves to " \
+              "System::Executors::TerminateInstance via LIFECYCLE_EXECUTORS. " \
+              "NOTE (campaign 01a0790b increment 1): this site INSERTS NOTHING " \
+              "any more — both executors actuate the provider plane. The four " \
+              "verbs are still listed because the CATEGORY vocabulary is what " \
+              "this spec governs (a category must still name a real command so " \
+              "the policy row, the engine registration and the seed agree), but " \
+              "the insertability assertion is now vestigial FOR THIS SITE and " \
+              "is carried by tasks_controller#create, which does still insert.",
       commands: -> { %w[start stop reboot terminate] }
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 110,
+      line: 161,
       source: 'action_category: "system.task.#{event}"',
       executor: "System::Executors::ExecuteTask",
       domain: "#gate_ip_action(event). Callers, both in " \
@@ -132,25 +146,21 @@ module GateComposedTaskCategories
               "is about.",
       commands: -> { %w[associate_public_ip disassociate_public_ip] }
     },
-    {
-      file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 197,
-      source: "def create_instance_operation(command)",
-      executor: nil,
-      domain: "The second variable producer in the same concern — it inserts a " \
-              "System::Task directly, ungated, from #control_or_error(event) " \
-              "(line 145, `create_instance_operation(event.to_s)`). It composes " \
-              "no action_category, so neither backstop scan can see it, and it " \
-              "is enumerated by hand for exactly that reason. NOTE: " \
-              "#control_or_error currently has NO callers — the four lifecycle " \
-              "actions all route through #gate_or_execute — so this producer is " \
-              "dormant, not dead: restoring a caller must not silently " \
-              "reintroduce an uninsertable command.",
-      commands: -> { %w[start stop reboot terminate] }
-    },
+    # REMOVED (campaign 01a0790b increment 1) — the entry that stood here
+    # enumerated #create_instance_operation, the ungated System::Task producer
+    # reached from #control_or_error. BOTH methods are deleted, along with
+    # #execute_local_provider_action_sync! and #local_hypervisor_instance?.
+    #
+    # It was enumerated by hand because it composed no action_category and
+    # neither backstop scan could see it, and it was described as "dormant, not
+    # dead" on the grounds that #control_or_error had no callers. That is now
+    # resolved in the deleting direction: the REST lifecycle arms actuate the
+    # provider plane through System::Executors::ControlInstance /
+    # TerminateInstance and create no System::Task at all, so there is no
+    # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 253,
+      line: 297,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -194,10 +204,12 @@ module GateComposedTaskCategories
   # (gate_ip_action, above) and System::Task refuses to insert them, so both
   # public-IP endpoints fail closed on every request. The DISPOSITION IS PARKED
   # WITH THE OPERATOR — restore the two commands to System::Task::COMMANDS (plus
-  # a dispatch route: neither is in ExecutionDispatcher::COMMAND_REGISTRY or
-  # AGENT_DELEGATED_COMMANDS either, so a restored task would insert and then be
-  # failed in the worker as "Unsupported command" — the pre-04be5e5b failure
-  # mode described in the header, not a fix), or delete the two endpoints,
+  # an EXECUTOR: since increment 3 that means a handler in the Go agent, because
+  # the agent is the sole actuator and there is no server-side registry to add
+  # to any more. Without one, a restored task inserts and then sits pending
+  # until the reaper cancels it at 48h — a worse failure than the
+  # "Unsupported command" the worker used to raise, because it is silent), or
+  # delete the two endpoints,
   # gate_ip_action, the two registered categories and the two seeded policy rows.
   #
   # SCOPE, because this list is GLOBAL and not per-site: an entry here excuses
@@ -239,9 +251,10 @@ module GateComposedTaskCategories
   # Scan a tree for gate-site shapes, returning "path" => count.
   #
   # Comment lines are excluded: both patterns appear inside prose that
-  # DOCUMENTS these sites (ExecutionDispatcher's header names gate_ip_action's
-  # expression verbatim; system_fleet_tool's declaration comment names its own
-  # literal category), and a doc reference is not a producer. Code only.
+  # DOCUMENTS these sites (system_fleet_tool's declaration comment names its own
+  # literal category; ExecutionDispatcher's header used to name gate_ip_action's
+  # expression verbatim before that file was deleted), and a doc reference is
+  # not a producer. Code only.
   #
   # COUNT PER FILE, not file:line. The line-number drift check is the
   # "still contains" example's job, and it reports drift with the right
@@ -265,7 +278,8 @@ module GateComposedTaskCategories
   # The enumerated sites a scan COULD see, counted per file. Derived from each
   # entry's own :source, so an entry is expected to be discoverable exactly when
   # the code it quotes matches a discovery pattern — no second list to keep in
-  # step. (#create_instance_operation composes nothing and is correctly absent.)
+  # step. (The former #create_instance_operation composed nothing and was
+  # correctly absent; campaign 01a0790b increment 1 deleted the method itself.)
   def discoverable_enumeration
     GATE_SITES.each_with_object(Hash.new(0)) do |site, counts|
       next unless DISCOVERY_PATTERNS.any? { |pattern| site[:source].match?(pattern) }
@@ -301,8 +315,43 @@ RSpec.describe "gate-composed system.task action categories", type: :model do
     end
   end
 
-  describe "every named category resolves to an insertable command" do
-    sites.each do |site|
+  # INSERTABILITY IS AN ExecuteTask PROPERTY, not a property of every gate site
+  # (campaign 01a0790b increment 2). The failure this example exists to catch is
+  # specific and mechanical: ExecuteTask#perform calls save!, so a category whose
+  # command System::Task refuses produces a RecordInvalid that surfaces to the
+  # caller as a policy-shaped 422. A site whose executor never inserts cannot
+  # produce that failure at all.
+  #
+  # Both lifecycle sites are now such a site. NodeInstanceGating routes
+  # start/stop/reboot to Executors::ControlInstance and terminate to
+  # Executors::TerminateInstance, and both actuate the provider plane directly.
+  # `terminate` has accordingly LEFT System::Task::COMMANDS — asserting it is
+  # still insertable would now be asserting the defect.
+  #
+  # The MCP terminate entry used to justify its own insertability assertion as
+  # "the category is shared with the REST twin, and one operator-tuned policy
+  # row governs both". The second clause is still true and is why the entry
+  # stays enumerated; the first no longer implies insertability, because the
+  # twin does not insert either.
+  describe "every named category on an INSERTING site resolves to an insertable command" do
+    # VACUITY GUARD ON THE SELECTION ITSELF. The selection below keys on
+    # :executor — a field this file's own header says is "recorded rather than
+    # asserted, because the binding is a string passed at the call site". A
+    # rename or a typo there would silently select ZERO sites and evaporate the
+    # whole guard, which is exactly the failure this file is careful about
+    # everywhere else. So the count is pinned.
+    it "still selects the inserting sites it is meant to check" do
+      inserting = sites.select { |s| s[:executor] == "System::Executors::ExecuteTask" }
+
+      expect(inserting.size).to be >= 2,
+                                "only #{inserting.size} gate site(s) matched " \
+                                "System::Executors::ExecuteTask. Either the executor was renamed " \
+                                "and this selection silently stopped checking anything, or an " \
+                                "enumerated site's :executor is wrong. Both are the vacuity this " \
+                                "guard exists to refuse."
+    end
+
+    sites.select { |s| s[:executor] == "System::Executors::ExecuteTask" }.each do |site|
       it "#{site[:file]}:#{site[:line]} — #{site[:domain].truncate(80)}" do
         commands = site[:commands].call
         expect(commands).not_to be_empty, "a gate site with an empty value set is an enumeration bug"

@@ -192,8 +192,8 @@ module Sdwan
                                            .to_set
     end
 
-    # ENABLED assignments only. System::Runtime::SyncModules commits
-    # `node_module_assignments.where(enabled: true)`, so a disabled row
+    # ENABLED assignments only. node_api/modules_controller.rb serves the agent
+    # `node_module_assignments.where(enabled: true)` (:272-278), so a disabled row
     # delivers nothing to the host — counting it as deployed would report a
     # host an operator deliberately switched off as `stalled` ("deployed and
     # dead") instead of `undeployed`, which is the same false-actuation claim

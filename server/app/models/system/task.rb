@@ -10,11 +10,22 @@ module System
     # Every command the platform can actually execute, and now a VALIDATION
     # rather than documentation.
     #
-    # It is exactly ExecutionDispatcher::COMMAND_REGISTRY.keys (server-dispatched)
-    # UNION ExecutionDispatcher::AGENT_DELEGATED_COMMANDS (node-executed). That
-    # equality is asserted by spec rather than derived in code — deriving it here
-    # would make a model load a service at class-body evaluation time, and the
-    # spec catches drift just as well without the load-order coupling.
+    # Every one of these COMMANDS is executed by the ON-NODE AGENT and by nothing
+    # else. (Per command, not per row — see the delivery qualifier below.)
+    # Campaign 01a0790b increment 3 retired the server dispatch arm and with it
+    # System::ExecutionDispatcher, so the split this list used to be defined by
+    # — COMMAND_REGISTRY.keys (server-dispatched) UNION AGENT_DELEGATED_COMMANDS
+    # (node-executed) — no longer exists. There is one lane.
+    #
+    # THE ORACLE MOVED, AND GOT STRONGER. That old equality compared two Ruby
+    # constants in this repo, so a single edit could shuffle a command between
+    # the lists and keep them agreeing while the platform's ability to EXECUTE
+    # it changed — a control that describes itself. The replacement,
+    # spec/lint/agent_handles_every_task_command_spec.rb, reads the AGENT'S OWN
+    # handler registry out of the Go source and asserts this list is a SUBSET of
+    # it. Subset, not equality: the agent registers verbs the platform never
+    # mints (terminate, provision, deprovision, sync, custom), and an extra
+    # handler is inert while a missing one is a row that can never complete.
     #
     # It used to be neither. It carried volumes, snapshots, networks,
     # backup/restore and `custom` — none of which had a dispatcher or a producer
@@ -36,8 +47,19 @@ module System
     # Verified safe before the guard was added: 476 System::Task rows have ever
     # existed on the live control plane, across six distinct commands, every one
     # of them in this list.
+    # `terminate` LEFT this list in campaign 01a0790b increment 2. The platform
+    # means "destroy the instance"; the agent — now the sole actuator of a Task
+    # — registers it to RebootHandler and runs `systemctl reboot`
+    # (tasks/handlers/lifecycle.go:121-124: "The agent treats it as reboot"), so
+    # the machine came back and the row stuck in `terminating`. Destroying an
+    # instance is System::Executors::TerminateInstance's job, which both the
+    # REST and MCP surfaces now use and which carries the four controls this
+    # lane dropped. Removed from ExecutionDispatcher::COMMAND_REGISTRY in the
+    # same commit; that registry has since been deleted outright (increment 3),
+    # and the agent still registers `terminate` — harmlessly, since nothing can
+    # mint one. The ledger example in the lint spec above records it.
     COMMANDS = %w[
-      start stop restart terminate reboot
+      start stop restart reboot
       sync_modules apply_config
       ssh_command
       upgrade_boot_image
@@ -55,10 +77,12 @@ module System
     #   unit     — restart ONE systemd unit on the node. Only the agent can do
     #              this (tasks/handlers/lifecycle.go LifecycleHandler shells out
     #              to `systemctl restart options["unit"]`).
-    #   instance — REBOOT THE WHOLE VM. ExecutionDispatcher::COMMAND_REGISTRY
-    #              routes it to Runtime::ControlInstance, whose
-    #              ACTION_FOR_COMMAND maps "restart" to the "reboot" action and
-    #              calls the provider adapter.
+    #   instance — REBOOT THE WHOLE VM. This reading is GONE twice over: the
+    #              scope left RESTART_SCOPES in increment 2, and increment 3
+    #              deleted the route that gave it meaning (COMMAND_REGISTRY ->
+    #              Runtime::ControlInstance -> the provider adapter). It is
+    #              described here because the hazard below is why the scope must
+    #              still be DECLARED, not because either half survives.
     #
     # On a self-hosted control plane that second reading takes down the platform
     # issuing the command.
@@ -71,8 +95,16 @@ module System
     # DECLARES its scope and an undeclared restart is refused at the model, which
     # is the only chokepoint every producer passes through (the HTTP create path,
     # the worker API, the MCP tools and ~15 in-process callers all reach save).
+    # NARROWED to `unit` in campaign 01a0790b increment 2. The `instance`
+    # reading — reboot the whole VM through the provider — was dead on BOTH
+    # sides: the server dispatch arm 404s for every task id, and the agent's
+    # LifecycleHandler refuses a restart with no options["unit"] at
+    # validateUnit. No producer in the tree ever declared it (the only restart
+    # producer is System::RestartAfterUpdate, scope "unit"), so nothing is
+    # taken away. A caller who wants the VM power-cycled has `reboot` — which
+    # is what the refusal message below already told them to use.
     RESTART_SCOPE_KEY = "scope"
-    RESTART_SCOPES = %w[unit instance].freeze
+    RESTART_SCOPES = %w[unit].freeze
 
     # Records that may legitimately carry a task.
     #
@@ -83,12 +115,24 @@ module System
     #
     # The enumeration is the UNION of two sources, and neither alone is
     # complete: the models declaring the inverse `has_many :tasks, as: :operable`,
-    # plus the types the runtime dispatchers historically accepted —
-    # the retired System::Runtime::SyncCloudState handled a ProviderRegion,
-    # which declares no inverse at all, and that is why the type is listed here
-    # with no corresponding association. Adding a type here without a dispatch
-    # arm buys nothing; adding a dispatch arm without listing it here fails
-    # closed at validation.
+    # plus the types the retired server-side runtime dispatchers accepted —
+    # System::Runtime::SyncCloudState handled a ProviderRegion, which declares
+    # no inverse at all, and that is why the type is listed here with no
+    # corresponding association.
+    #
+    # THE SECOND SOURCE IS NOW HISTORY, AND THAT MATTERS. This comment used to
+    # end "adding a dispatch arm without listing it here fails closed at
+    # validation". There are no dispatch arms: campaign 01a0790b increment 3
+    # deleted the last of them. Delivery is `current_instance.tasks`
+    # (NodeApi::StatusController#pending_tasks), so of the seven types below
+    # exactly ONE — System::NodeInstance — can carry a row that reaches an
+    # executor. The other six are accepted by this validation and served to
+    # nothing.
+    #
+    # Left as-is rather than narrowed in increment 3: narrowing OPERABLE_TYPES
+    # is a contract change on POST /api/v1/system/tasks that needs its own
+    # red-first test and its own decision about pre-existing rows, not a rider
+    # on a deletion. Filed separately.
     OPERABLE_TYPES = %w[
       System::Node
       System::NodeInstance
@@ -260,8 +304,31 @@ module System
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 
-    # === Event-driven dispatch ===
-    after_commit :enqueue_execution, on: :create
+    # === Dispatch: NONE. ===
+    # This model used to carry `after_commit :enqueue_execution, on: :create`,
+    # which LPUSHed a SystemExecuteTaskJob so the worker could call
+    # worker_api/tasks/:id/execute. Campaign 01a0790b increment 3 retired that
+    # whole arm: it 404'd for every task id (its controller scoped through
+    # System::Node.where(worker: current_worker) and no node has ever had a
+    # worker), and the on-node agent — which is offered every pending row by
+    # NodeApi::StatusController#pending_tasks, with no command filter — was
+    # already the only thing executing these.
+    #
+    # A Task is now a MESSAGE TO THE AGENT ON ITS INSTANCE. It is created and
+    # left `pending`; that instance's agent polls, runs it, and reports its own
+    # completion. Nothing server-side claims it. See spec/lint/
+    # agent_handles_every_task_command_spec.rb, which pins that the agent has a
+    # handler for every command this model can mint.
+    #
+    # THE QUALIFIER IS LOAD-BEARING. Delivery is
+    # NodeApi::StatusController#pending_tasks, which reads
+    # `current_instance.tasks` — so only a row whose `operable` IS the
+    # NodeInstance is ever offered to anything. OPERABLE_TYPES below still
+    # admits System::Node and five Provider* types; a row against one of those
+    # reaches no agent and no server, and waits for the reaper to cancel it.
+    # Every in-app producer targets an instance, so this is a latent shape
+    # rather than a live defect — but "a Task is a message to the agent" is
+    # true of the COMMAND SET, not of every row this model will accept.
 
     # === Live updates to subscribed clients ===
     after_commit :broadcast_update, on: :update, if: :should_broadcast?
@@ -469,18 +536,6 @@ module System
       }
       self.events = (events || []) + [ new_event ]
       new_event
-    end
-
-    def enqueue_execution
-      return unless status == "pending"
-
-      # Direct Redis push (Sidekiq client gem is intentionally not bundled
-      # server-side — see System::WorkerDispatch for the rationale).
-      System::WorkerDispatch.enqueue_operation_execution(id)
-    rescue StandardError => e
-      # Redis blip, etc. — the hourly SystemTaskReaperJob picks up any
-      # operation still in "pending" state past its grace window.
-      Rails.logger.warn("[Operation##{id}] Failed to enqueue execution: #{e.message}")
     end
 
     def should_broadcast?

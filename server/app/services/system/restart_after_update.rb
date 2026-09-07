@@ -52,15 +52,20 @@ module System
   #
   # The agent dispatches on the LITERAL command string (tasks.Registry#Lookup),
   # and only "restart" reaches LifecycleHandler -> systemctl restart
-  # options["unit"]. But "restart" is ALSO in ExecutionDispatcher::
-  # COMMAND_REGISTRY, where Runtime::ControlInstance maps it to the "reboot"
-  # action and reboots the WHOLE VM through the provider adapter. Since
-  # System::Task's after_commit enqueues server-side execution on create, a
-  # naive restart task would reboot the VM *and* restart the unit. The
-  # discriminator is DECLARED: options["scope"] is "unit" (agent) or
-  # "instance" (provider), System::Task refuses a restart that declares
-  # neither, and ExecutionDispatcher.restart_scope reads the declaration.
-  # This producer is unit-scoped and says so.
+  # options["unit"]. "restart" USED to be claimed by a second actuator as well:
+  # ExecutionDispatcher::COMMAND_REGISTRY mapped it to Runtime::ControlInstance,
+  # which rebooted the WHOLE VM through the provider adapter, and System::Task's
+  # after_commit enqueued that server-side execution on create — so a naive
+  # restart task would reboot the VM *and* restart the unit.
+  #
+  # Both halves of that collision are gone. Campaign 01a0790b increment 2
+  # narrowed System::Task::RESTART_SCOPES to %w[unit], and increment 3 deleted
+  # the server dispatch arm outright, so the agent is the only actuator.
+  # options["scope"] remains DECLARED rather than inferred — System::Task
+  # refuses a restart that declares nothing — because a declaration is what
+  # stopped the destructive reading being the silent default, and re-opening
+  # inference is how it would come back. This producer is unit-scoped and says
+  # so.
   class RestartAfterUpdate
     # Manifest key, mirrored onto NodeModule#config by ManifestImportService.
     DECLARATION_KEY = "restart_after_update"
@@ -358,11 +363,12 @@ module System
         description:     "restart_after_update: #{entry[:target].name}/#{entry[:service]} " \
                          "after #{triggers.size} module update(s)",
         options: {
-          # DECLARED, never inferred. "unit" scopes this to one systemd unit on
-          # the node; without the declaration ExecutionDispatcher would be left
-          # guessing between that and rebooting the whole VM through the
-          # provider. options["unit"] is what the agent's LifecycleHandler
-          # actually reads.
+          # DECLARED, never inferred. "unit" scopes this to one systemd unit
+          # on the node. The declaration outlived the ambiguity it was added to
+          # settle (see the class header): System::Task now accepts no other
+          # scope, so this is the vocabulary saying what it means rather than a
+          # discriminator between two live actuators. options["unit"] is what
+          # the agent's LifecycleHandler actually reads.
           ::System::Task::RESTART_SCOPE_KEY => "unit",
           "unit" => unit,
           DECLARATION_KEY => {

@@ -53,6 +53,33 @@ module Api
 
           attrs = task_params.to_h.merge(initiated_by_id: current_user.id)
 
+          # REFUSE AN UNINSERTABLE COMMAND BEFORE GATING, not after approval.
+          #
+          # This arm composes its category from CALLER-SUPPLIED free text and
+          # its executor (ExecuteTask) ends in save!. Without this guard a
+          # command the model refuses still resolves a policy — and for
+          # `terminate` that policy is a seeded require_approval, because the
+          # category outlives the command on purpose (PolicyDeclarations::
+          # GATED_NON_COMMAND_OPERATIONS: both lifecycle surfaces still gate the
+          # destroy there). So the request would PARK an approval request, an
+          # operator would approve it, and only then would ExecuteTask#perform
+          # raise RecordInvalid and mark the operation failed.
+          #
+          # An approval an operator can grant but the platform can never honour
+          # is worse than a refusal, and it is the shape
+          # spec/integration/gate_composed_task_categories_spec.rb exists to
+          # keep out of the gate. 422 here, before any row or approval exists.
+          unless ::System::Task::COMMANDS.include?(attrs[:command].to_s)
+            return render_error(
+              "Unsupported command: #{attrs[:command]}. This endpoint creates a System::Task, " \
+              "and the platform executes only #{::System::Task::COMMANDS.size} commands. " \
+              "To destroy an instance use DELETE /api/v1/system/nodes/:node_id/node_instances/:id " \
+              "or the system_terminate_instance MCP verb, which route to " \
+              "System::Executors::TerminateInstance.",
+              status: :unprocessable_content
+            )
+          end
+
           # IMP-93d9f4a31627 — refuse an on-node reconcile aimed at an instance
           # whose agent will never pull it, BEFORE the gate. System::Executors
           # ::ExecuteTask carries the same check (it is the load-bearing one:

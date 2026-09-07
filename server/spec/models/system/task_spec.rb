@@ -17,12 +17,25 @@ RSpec.describe System::Task, type: :model do
     # previously advertised volumes, snapshots, networks, backup/restore and
     # `custom` (no dispatcher, no producer) while OMITTING every storage.*
     # command and ci.package_build, which are real verbs in daily use.
-    it 'is exactly what the dispatcher can route, server-side or to the agent' do
-      derived = (System::ExecutionDispatcher::COMMAND_REGISTRY.keys +
-                 System::ExecutionDispatcher::AGENT_DELEGATED_COMMANDS).uniq
-
-      expect(described_class::COMMANDS).to match_array(derived)
-    end
+    # THE ORACLE MOVED, IN THE SAME CHANGE THAT MADE IT NECESSARY. This example
+    # used to read:
+    #
+    #   derived = (ExecutionDispatcher::COMMAND_REGISTRY.keys +
+    #              ExecutionDispatcher::AGENT_DELEGATED_COMMANDS).uniq
+    #   expect(COMMANDS).to match_array(derived)
+    #
+    # Campaign 01a0790b increment 3 deleted both constants with the server
+    # dispatch arm, so it could not survive as written. It should not have
+    # survived anyway: comparing this list to two other Ruby lists in the same
+    # repo is a control that describes itself — one edit moves a command between
+    # them and all three keep agreeing while the platform's ability to EXECUTE
+    # it changes.
+    #
+    # The replacement crosses the language boundary and lives at
+    # spec/lint/agent_handles_every_task_command_spec.rb: it parses the Go
+    # agent's own handler registry and asserts COMMANDS is a subset of it. That
+    # is the invariant that actually matters now that the agent is the sole
+    # actuator — every command the platform can mint, the agent can run.
 
     it 'lists the agent-delegated storage verbs it used to omit' do
       expect(described_class::COMMANDS).to include(
@@ -35,6 +48,68 @@ RSpec.describe System::Task, type: :model do
         'provision', 'deprovision', 'create_volume', 'create_snapshot',
         'create_network', 'backup', 'restore', 'custom', 'sync'
       )
+    end
+
+    # Campaign 01a0790b increment 2 — THE TWO VERBS WHOSE NAME MEANS ONE THING
+    # TO THE PLATFORM AND ANOTHER TO THE ONLY ACTUATOR THAT RUNS THEM.
+    #
+    # Increment 1 made the agent the sole actuator of a System::Task: the REST
+    # lifecycle arms now actuate the provider plane directly and mint no Task,
+    # and the server dispatch arm has never executed one (worker_operations is
+    # an empty scope). So a Task's command must mean what the AGENT does with
+    # it, and for these two it did not:
+    #
+    #   terminate — the platform means "destroy this instance". The agent
+    #               registers it to RebootHandler and runs `systemctl reboot`
+    #               (tasks/handlers/lifecycle.go:121-124, comment: "The agent
+    #               treats it as reboot"). A terminate Task therefore REBOOTS
+    #               the machine and the row sticks in `terminating`. Destroying
+    #               an instance is System::Executors::TerminateInstance's job —
+    #               it carries the four controls (INV-1, SDWAN peer detach,
+    #               deploy-key revocation, terminate meter event) this lane
+    #               drops — and both the REST and MCP surfaces already use it.
+    #
+    #   restart scope "instance" — meant REBOOT THE WHOLE VM through the
+    #               provider. Dead on BOTH sides: the server arm 404s, and the
+    #               agent's LifecycleHandler refuses it at validateUnit for
+    #               want of options["unit"]. Nothing in the tree produces one
+    #               (the only restart producer is RestartAfterUpdate, scope
+    #               "unit"), and the model's own error text already directs
+    #               callers to `reboot`.
+    it 'no longer lets a Task ask for a terminate the agent would answer with a reboot' do
+      expect(described_class::COMMANDS).not_to include('terminate')
+    end
+
+    it 'restricts restart to the one scope an actuator can honour' do
+      expect(described_class::RESTART_SCOPES).to eq(%w[unit])
+    end
+
+    describe 'the retired vocabulary at the model boundary' do
+      let(:account) { create(:account) }
+      let(:node)    { create(:system_node, account: account) }
+
+      it 'refuses to create a terminate task' do
+        task = build(:system_task, account: account, operable: node, command: 'terminate')
+
+        expect(task).not_to be_valid
+        expect(task.errors[:command]).to be_present
+      end
+
+      it 'refuses a restart that declares the instance scope' do
+        task = build(:system_task, account: account, operable: node,
+                                   command: 'restart', options: { 'scope' => 'instance' })
+
+        expect(task).not_to be_valid
+        expect(task.errors[:options]).to be_present
+      end
+
+      it 'still accepts a unit-scoped restart, which is what the agent runs' do
+        task = build(:system_task, account: account, operable: node,
+                                   command: 'restart',
+                                   options: { 'scope' => 'unit', 'unit' => 'powernode-example.service' })
+
+        expect(task).to be_valid, task.errors.full_messages.join('; ')
+      end
     end
 
     describe 'the validation' do
@@ -51,8 +126,10 @@ RSpec.describe System::Task, type: :model do
       it 'accepts every listed command' do
         described_class::COMMANDS.each do |cmd|
           # `restart` is the one command that must also declare its blast
-          # radius — see the RESTART_SCOPES block below.
-          options = cmd == 'restart' ? { 'scope' => 'instance' } : {}
+          # radius — see the RESTART_SCOPES block below. Since campaign
+          # 01a0790b increment 2 the only legal scope is "unit", which the
+          # model additionally requires to name its systemd unit.
+          options = cmd == 'restart' ? { 'scope' => 'unit', 'unit' => 'powernode-example.service' } : {}
           task = build(:system_task, account: account, operable: node, command: cmd, options: options)
           expect(task).to be_valid, "#{cmd} is listed but rejected: #{task.errors.full_messages.join('; ')}"
         end
@@ -95,9 +172,9 @@ RSpec.describe System::Task, type: :model do
       build(:system_task, account: account, operable: node, command: 'restart', options: options)
     end
 
-    it 'exposes the two scopes it accepts' do
+    it 'exposes the one scope it accepts' do
       expect(described_class::RESTART_SCOPE_KEY).to eq('scope')
-      expect(described_class::RESTART_SCOPES).to eq(%w[unit instance])
+      expect(described_class::RESTART_SCOPES).to eq(%w[unit])
     end
 
     it 'refuses a restart that declares no scope' do
@@ -131,17 +208,28 @@ RSpec.describe System::Task, type: :model do
       expect(task.errors[:options].join).to include('unit')
     end
 
-    it 'accepts an instance-scoped restart' do
-      expect(restart({ 'scope' => 'instance' })).to be_valid
+    # WAS 'accepts an instance-scoped restart'. Campaign 01a0790b increment 2
+    # retired that scope: it meant "reboot the whole VM through the provider"
+    # and was dead on both sides (the server arm 404s, the agent refuses a
+    # restart with no unit at validateUnit). `reboot` is the surviving verb.
+    it 'refuses an instance-scoped restart, the retired blast radius' do
+      task = restart({ 'scope' => 'instance' })
+
+      expect(task).not_to be_valid
+      expect(task.errors[:options].join).to include('scope')
     end
 
-    # Contradiction, not a harmless extra key: the VM reboots and the named
-    # unit is never restarted, so the caller's stated intent is not what runs.
+    # Still refused, but now for the plain reason that 'instance' is not a
+    # scope at all — no longer for the subtler contradiction it used to be
+    # (VM reboots, named unit never restarted).
     it 'refuses an instance-scoped restart that also names a unit' do
       task = restart({ 'scope' => 'instance', 'unit' => 'powernode-abc-rails.service' })
 
       expect(task).not_to be_valid
-      expect(task.errors[:options].join).to include('unit')
+      # The SCOPE is what refuses it now, not the old unit contradiction —
+      # asserted so this example still discriminates from the one above rather
+      # than becoming a duplicate distinguishable only by its title.
+      expect(task.errors[:options].join).to include('scope')
     end
 
     # Guarded on the CHANGE, same as command and operable_type: restart rows

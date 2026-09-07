@@ -754,7 +754,14 @@ Rails.application.routes.draw do
               get :pending
             end
             member do
-              post :execute
+              # `post :execute` was here until campaign 01a0790b increment 3.
+              # It resolved the task through #worker_operations, which scopes
+              # on System::Node.where(worker: current_worker) — and no node has
+              # ever had a worker — so it 404'd for every task id ever minted.
+              # The on-node agent, served every pending row ON ITS OWN
+              # INSTANCE by NodeApi::StatusController#pending_tasks (which
+              # reads current_instance.tasks, with no command filter), was the
+              # real actuator all along.
               post :start
               put :progress
               post :complete

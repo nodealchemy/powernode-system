@@ -40,7 +40,10 @@ RSpec.describe "System::Task command membership across the spec tree" do
   # rejects them. Keyed by path relative to server/spec/.
   let(:intentional_invalids) do
     {
-      "models/system/task_spec.rb" => %w[not_a_real_command]
+      # `terminate` joined this list in campaign 01a0790b increment 2: the spec
+      # asserts the model now REFUSES it, so the literal is deliberate and its
+      # absence from COMMANDS is the property under test.
+      "models/system/task_spec.rb" => %w[not_a_real_command terminate]
     }
   end
 
@@ -57,15 +60,71 @@ RSpec.describe "System::Task command membership across the spec tree" do
     {
       # `cmd` ranges over described_class::COMMANDS itself — the example IS
       # the membership check.
-      "models/system/task_spec.rb" => [ 56 ],
+      # RE-ACKNOWLEDGED TWICE. Increment 2 inserted examples above this site
+      # (56 -> 120); increment 3 replaced the COMMAND_REGISTRY equality example
+      # with the comment explaining where that oracle went (120 -> 133). The
+      # re-audit is the point of keying on the line — `command: cmd` still
+      # ranges over System::Task::COMMANDS itself, so every value the binding
+      # can carry is a member by construction.
+      "models/system/task_spec.rb" => [ 133 ],
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
       "models/system/preserves_task_history_spec.rb" => [ 28 ],
       "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 27 ],
       "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
-      # `command` ranges over a hardcoded
-      # %w[start stop restart reboot terminate] list in the enclosing .each.
-      "services/system/runtime/control_instance_spec.rb" => [ 38 ],
+      # `command` is a keyword param of the local #task_with helper (:955),
+      # defaulting to "sync_modules". AUDITED by grepping every `task_with`
+      # call in the file — 22 of them. Only THREE pass `command:` at all:
+      # :1076 "sync_modules", :1077 "apply_config", :1078 "upgrade_boot_image".
+      # The other 19 take the default. So the binding carries three distinct
+      # values, all three COMMANDS members.
+      #
+      # (An earlier draft of this note listed eight line numbers as "every
+      # caller" and said four values. Both were wrong — it had enumerated the
+      # calls that pass ANY keyword, not the calls that pass `command:`.)
+      #
+      # THIS SITE WAS RED ON develop, not introduced by campaign 01a0790b: it
+      # arrived with the IMP-9cc83aa64bff terminate-cleanup examples and was
+      # merged without this lint being run. Acknowledged here rather than left
+      # for a later increment to trip over.
+      #
+      # MOVED 956 -> 957 in increment 3: the `before { allow(WorkerDispatch)... }`
+      # line above it went with System::Task's dispatch after_commit, and the
+      # comment replacing it is longer. Re-audited — the call sites are
+      # unchanged, still three distinct values.
+      "models/system/node_instance_spec.rb" => [ 957 ],
+      # `command: command` inside a HEREDOC FIXTURE (<<~RUBY) that the census
+      # scanner parses as text — it is source code under test, never executed,
+      # and constructs no System::Task. The scanner's own "FIRES on the variable
+      # shape a literal grep cannot see" example is the whole point of it.
+      # MOVED 411 -> 415 in increment 3: this spec's own COMMANDS boundary
+      # comment was rewritten (it named the deleted COMMAND_REGISTRY /
+      # AGENT_DELEGATED_COMMANDS split), which is four lines longer. RE-AUDITED
+      # — line 415 is still `::System::Task.create!(` inside the <<~RUBY
+      # heredoc fixture, still parsed as text, still constructing nothing.
+      #
+      # Red on develop for the same REASON as the entry above but from a
+      # different commit — this site arrived with dbb26a93
+      # (IMP-498cd7db446d), the node_instance_spec one with 9b9323b1
+      # (IMP-9cc83aa64bff). Neither was acknowledged there; both are here.
+      #
+      # TWO sites in this file after the merge of campaign 01a0790b into
+      # develop, not one: the heredoc fixture above, and the scanner's own
+      # self-test — a HEREDOC of SYNTHETIC source handed to the scanner as a
+      # string, never evaluated, building no System::Task row, whose whole
+      # point is to prove the scanner SEES a variable-bound command. Requiring
+      # a listed literal at either would delete the shape under test. The two
+      # branches acknowledged one site each (campaign the fixture, dev-improve
+      # the self-test) and each spelled it as the sole entry for this key —
+      # keeping both spellings would have been a DUPLICATE HASH KEY, silently
+      # dropping whichever came first.
+      "lint/on_node_task_producer_census_spec.rb" => [ 415, 486 ],
+      # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
+      # here until increment 3 DELETED it, along with the
+      # System::Runtime::ControlInstance class it covered and the server
+      # dispatch arm that reached it. Removed rather than left pointing at a
+      # file that no longer exists — see the staleness guard below, which now
+      # makes that mistake impossible to leave in place.)
       # `command_insertable?` is an INSERTABILITY PROBE, not a fixture. It is
       # reached from two call sites (:310, :332) whose values are the command
       # names DECLARED BY GATE SITES plus KNOWN_BROKEN_COMMANDS — precisely the
@@ -75,18 +134,14 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # the "every named category resolves to an insertable command" example is
       # red exactly when one does. It calls .new + .valid? and never persists,
       # so an unlisted value reaches no database and no dispatch route.
-      "integration/gate_composed_task_categories_spec.rb" => [ 234 ],
-      # The census scanner's own self-test. The construction is inside a
-      # HEREDOC of SYNTHETIC source handed to the scanner as a string — it is
-      # never evaluated, no System::Task row is built, and the example exists
-      # precisely to prove the scanner SEES a variable-bound command. Requiring
-      # a listed literal here would delete the shape under test.
-      "lint/on_node_task_producer_census_spec.rb" => [ 486 ],
-      # `command` is a keyword param of the local #task_with helper defaulting
-      # to the listed literal "sync_modules"; its three overriding callers
-      # (:1076-1078) pass sync_modules / apply_config / upgrade_boot_image,
-      # all COMMANDS members.
-      "models/system/node_instance_spec.rb" => [ 956 ]
+      #
+      # MOVED TWICE and RE-AUDITED at the merge of campaign 01a0790b into
+      # develop: increment 3 corrected three comment blocks above it (243 ->
+      # 246) and the dev-improve line moved it independently (234). Both pins
+      # are stale against the merged tree; the line below is the merged one and
+      # still `::System::Task.new(command: command, ...)` inside
+      # #command_insertable?, which calls .new + .valid? and never persists.
+      "integration/gate_composed_task_categories_spec.rb" => [ 246 ]
     }
   end
 
@@ -165,6 +220,73 @@ RSpec.describe "System::Task command membership across the spec tree" do
       assignments << classify_command_value(args[val_start..])
     end
     assignments
+  end
+
+  # THE ACKNOWLEDGMENT LIST MUST NOT OUTLIVE WHAT IT ACKNOWLEDGES.
+  #
+  # Each entry above suppresses a violation at one file:line. Nothing made an
+  # entry decay when its file was deleted or its site stopped being reported —
+  # so a stale entry sat there suppressing nothing while reading as a
+  # deliberate, audited exemption. Increment 3 hit exactly that case: it
+  # deleted control_instance_spec.rb, whose acknowledgment would otherwise
+  # still be listed.
+  #
+  # THE PREDICATE IS THE SCANNER ITSELF, and two earlier drafts of this guard
+  # got that wrong by trying to re-derive it. The first looked for "command:" on
+  # the pinned line; the second, for a `construction_head` match on it. BOTH
+  # rest on "the pin is the line the construction call starts on", which THIS
+  # FILE ASSERTED AND WHICH IS FALSE: the line is computed from the match offset,
+  # so for a heredoc fixture (on_node_task_producer_census_spec.rb) or a
+  # multi-line helper (gate_composed_task_categories_spec.rb) it lands on an
+  # `it` block or a comment. Asking `unchecked_sites` — the same scan the
+  # membership example runs — is exact by construction and cannot drift from it.
+  it "acknowledges only sites the scanner still reports" do
+    live = unchecked_sites
+
+    stale = acknowledged_unchecked_sites.filter_map do |rel, lines|
+      next "#{rel} (file no longer exists)" unless File.exist?(File.join(spec_root, rel))
+
+      orphaned = Array(lines) - live[rel]
+      "#{rel} lines #{orphaned.inspect} are no longer reported as unchecked" if orphaned.any?
+    end
+
+    expect(stale).to be_empty, <<~MSG
+      acknowledged_unchecked_sites names sites that are gone or no longer flagged:
+
+      #{stale.join("\n")}
+
+      An acknowledgment that suppresses nothing is worse than no acknowledgment:
+      it reads as an audited exemption. Delete the entry if the site is gone; if
+      it moved, re-audit the values the binding can carry and re-pin it to the
+      line the scanner now reports (the failure message of the membership
+      example prints it).
+    MSG
+  end
+
+  # Every (relative path, line) at which the scanner currently finds an
+  # UNCHECKED `command:` binding — precisely the set `acknowledged_unchecked_sites`
+  # exists to suppress. Both the membership example and the staleness guard read
+  # it, so neither can drift from the other's idea of what a site is.
+  def unchecked_sites
+    sites = Hash.new { |h, k| h[k] = [] }
+
+    Dir.glob(File.join(spec_root, "**", "*_spec.rb")).sort.each do |path|
+      rel = path.delete_prefix("#{spec_root}/")
+      next if rel == "lint/task_command_membership_spec.rb"
+
+      src = File.read(path)
+      src.to_enum(:scan, construction_head).each do
+        match_begin = Regexp.last_match.begin(0)
+        open_idx = src.index("(", match_begin)
+        next unless open_idx
+
+        args = call_args(src, open_idx)
+        line = src[0, match_begin].count("\n") + 1
+        sites[rel] << line if command_assignments(args).any? { |a| a[:kind] == :unchecked }
+      end
+    end
+
+    sites
   end
 
   it "every command: value at a System::Task construction site is a checked COMMANDS member" do

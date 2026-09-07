@@ -168,11 +168,22 @@ RSpec.describe "system node instance public-IP endpoints (gate outcome)", type: 
     end
   end
 
-  # The sibling lifecycle verb through the SAME concern, same gate, same
-  # executor — it differs only in that `stop` IS in System::Task::COMMANDS.
+  # The sibling lifecycle verb through the SAME concern and the SAME gate.
   # Without this arm a future breakage of the whole gate surface would leave
   # the two expectations above still green and still reading as a public-IP
   # finding.
+  #
+  # WHAT CHANGED HERE (campaign 01a0790b increment 1), because the original
+  # phrasing of this control is now false: `stop` no longer runs through
+  # System::Executors::ExecuteTask and no longer inserts a System::Task. It
+  # routes to System::Executors::ControlInstance, which actuates the provider
+  # directly — a Task is a message to the on-node agent, and the agent cannot
+  # power off the machine it runs on. So the discriminator is no longer "a row
+  # appears"; it is "the gate ran the executor to completion".
+  #
+  # That still does the control's job. If the gate surface broke wholesale the
+  # deferred operation would not reach `completed`, and the two public-IP
+  # expectations above would no longer be readable as a public-IP finding.
   describe "the control arm (proves the gate surface itself works)" do
     before do
       ::Ai::InterventionPolicy.create!(
@@ -184,11 +195,16 @@ RSpec.describe "system node instance public-IP endpoints (gate outcome)", type: 
       )
     end
 
-    it "inserts a task for a listed command through the same executor" do
+    it "runs a listed command's executor to completion, creating no task row" do
+      # Stubbed at the service: this arm is about the GATE reaching the
+      # executor, not about the aws adapter.
+      allow(::System::InstanceControlService).to receive(:execute)
+        .and_return(::System::Runtime::Result.ok(data: {}))
+
       post "/api/v1/system/nodes/#{node.id}/node_instances/#{instance.id}/stop",
            headers: auth_headers_for(user)
 
-      expect(::System::Task.where(command: "stop").count).to eq(1)
+      expect(::System::Task.where(command: "stop").count).to eq(0)
       expect(::Ai::DeferredOperation.find_by(action_category: "system.task.stop").status)
         .to eq("completed")
     end

@@ -947,10 +947,11 @@ RSpec.describe System::NodeInstance, type: :model do
   describe "cancelling unrunnable tasks on termination (IMP-9cc83aa64bff)" do
     let(:instance) { create(:system_node_instance, node: node, status: "running") }
 
-    # System::Task's after_commit on: :create pushes straight to Redis, which is
-    # shared across every lane running specs. Stubbed the way
-    # spec/requests/api/v1/system/tasks_restart_scope_spec.rb does.
-    before { allow(::System::WorkerDispatch).to receive(:enqueue_operation_execution) }
+    # No Redis stub is needed here any more: System::Task's
+    # `after_commit :enqueue_execution, on: :create` — which pushed straight to
+    # the Redis instance shared across every spec lane — was deleted with the
+    # server dispatch arm in campaign 01a0790b increment 3. Creating a Task now
+    # touches nothing but the database.
 
     def task_with(status: "pending", command: "sync_modules", target: instance)
       create(:system_task, account: target.account, operable: target, command: command, status: status)

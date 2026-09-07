@@ -2977,8 +2977,8 @@ module Ai
       # System::TemplateApplyService, and every caller of it was
       # provisioning-time or the REST twin
       # (nodes_controller#apply_template). System::Node has no callback on a
-      # node_template_id change, and System::Runtime::SyncModules reconciles
-      # `node.node_module_assignments` — never the template — so even the
+      # node_template_id change, and the agent's `sync_modules` handler
+      # reconciles `node.node_module_assignments` — never the template — so even the
       # agent's own refresh re-applied the OLD module set. The operator got a
       # success and the node kept running the previous template's modules.
       #
@@ -3042,8 +3042,8 @@ module Ai
       end
 
       # The actuation rung for a re-template. Right assignments are not a
-      # converged node — System::Runtime::SyncModules is what commits them onto
-      # the box — and the rung is not the same for every instance:
+      # converged node — a `sync_modules` Task, executed by the agent, is what
+      # commits them onto the box — and the rung differs per instance:
       #
       #   - cloud_init: the on-node reconcile loop can remount the union live,
       #     so a sync_modules Task converges it now (the same path

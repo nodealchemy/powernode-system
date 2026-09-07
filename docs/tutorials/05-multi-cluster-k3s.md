@@ -32,7 +32,8 @@
 > template to an already-provisioned node**, and `System::Node` has no callback
 > on a `node_template_id` change.
 > `system_refresh_instance_modules` does not close the gap: it queues a
-> `sync_modules` task, and `System::Runtime::SyncModules` reads
+> `sync_modules` task, and the module list the agent is served
+> (`node_api/modules_controller.rb`) comes from
 > `node.node_module_assignments` — not the template — so it reconciles the
 > *old* module set. (Apply is also additive by default: `purge_stale` is
 > `false`, so the outgoing template's modules stay assigned.)

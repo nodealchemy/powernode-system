@@ -60,12 +60,13 @@ require "pathname"
 # and been dropped — turning the fail-closed case into a silent pass. The
 # extent is now the construction call's own parentheses.
 module OnNodeTaskProducers
-  # The two commands ExecutionDispatcher routes to the on-node reconcile
-  # runtimes. NOTE the deliberate boundary: NOT the same set as
-  # ExecutionDispatcher::AGENT_DELEGATED_COMMANDS (upgrade_boot_image, the
-  # storage.* verbs, ci.module_build, ci.package_build, probe.module_smoke),
-  # which is larger and which this census does not cover — see the census
-  # spec's boundary section.
+  # The two on-node reconcile commands. NOTE the deliberate boundary: this is
+  # NOT all of System::Task::COMMANDS (upgrade_boot_image, the storage.* verbs,
+  # ci.module_build, ci.package_build, probe.module_smoke are outside it), and
+  # the census does not cover those — see the census spec's boundary section.
+  # (This used to name ExecutionDispatcher::AGENT_DELEGATED_COMMANDS as the
+  # wider set; that constant was deleted with the dispatcher in campaign
+  # 01a0790b increment 3.)
   ON_NODE_COMMANDS = %w[sync_modules apply_config].freeze
 
   # Construction of a System::Task, in every spelling this tree uses or could

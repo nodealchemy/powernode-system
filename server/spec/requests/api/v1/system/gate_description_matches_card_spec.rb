@@ -26,7 +26,18 @@ RSpec.describe "gate description matches the approval card", type: :request do
   end
   let(:account)  { user.account }
   let(:node)     { create(:system_node, account: account) }
-  let!(:instance) { create(:system_node_instance, node: node, name: "web-1") }
+  # status is EXPLICIT and load-bearing. The factory defaults to "pending",
+  # where may_stop? is false — and since campaign 01a0790b increment 1
+  # NodeInstanceGating#gate_or_execute checks that predicate BEFORE calling the
+  # gate, so a pending instance now 422s at the request and parks no deferred
+  # operation for this spec to compare labels against.
+  #
+  # That early rejection is the intended behaviour (previously this surface
+  # parked an approval for a stop that could never have executed, and left a
+  # `failed` DeferredOperation behind when it was eventually run). This spec is
+  # about the two LABELS agreeing, so it needs a request that actually reaches
+  # the gate: a running instance, which may_stop?.
+  let!(:instance) { create(:system_node_instance, node: node, name: "web-1", status: "running") }
 
   # A fresh spec account has no InterventionPolicy rows, so the service falls
   # through to its require_approval default — which is the branch that parks a

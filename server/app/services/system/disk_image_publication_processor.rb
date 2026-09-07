@@ -95,7 +95,8 @@ module System
     # NodePlatform at a brand-new FileObject that no publication row
     # references (breaks the rollback substrate + #active?, and leaks
     # untracked storage). Checked with may_start_verifying? (the platform's
-    # standard AASM pre-flight predicate, see ExecutionDispatcher) BEFORE
+    # standard AASM pre-flight predicate — see the "may? then bang" pattern
+    # in Api::V1::System::TasksController#transition_or_error) BEFORE
     # any side effect runs, not after.
     def conflict!(publication)
       Rails.logger.warn "[DiskImagePublicationProcessor] ignoring re-entry for " \
