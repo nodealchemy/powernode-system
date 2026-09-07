@@ -83,7 +83,11 @@ module System
       # note that notify_and_proceed PROCEEDS: it is a widening too, not a
       # softer form of approval.
       MANUAL_OPERATION_DEFAULT_VERBS = {
-        # --- Instance lifecycle (server-dispatched, ExecutionDispatcher::COMMAND_REGISTRY)
+        # --- Instance lifecycle. These were the "server-dispatched" half
+        # (ExecutionDispatcher::COMMAND_REGISTRY) until campaign 01a0790b
+        # increment 3 retired the server dispatch arm. There is no such half
+        # any more: every command below is executed by the on-node agent, and
+        # the split this comment and the next one drew is historical.
         "start" => "auto_approve",
         "stop" => "auto_approve",
         "restart" => "require_approval",        # unit-scoped: agent takes options["unit"] into systemctl as root; gate sites only, RestartAfterUpdate never meets the gate (IMP-0c1a7dca5781)
@@ -93,7 +97,11 @@ module System
         "apply_config" => "notify_and_proceed",
         "ssh_command" => "require_approval",       # arbitrary code execution
 
-        # --- Agent-delegated (ExecutionDispatcher::AGENT_DELEGATED_COMMANDS)
+        # --- Formerly the agent-delegated half
+        # (ExecutionDispatcher::AGENT_DELEGATED_COMMANDS). Kept as a grouping
+        # because the verbs below differ in KIND from the lifecycle ones above,
+        # not because they differ in who runs them — since increment 3, nothing
+        # differs in who runs them.
         #
         # Writes the target UKI to the ESP and runs `systemctl reboot`
         # (agent/internal/runtime/tasks/handlers/upgrade_boot_image.go). Not

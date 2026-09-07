@@ -17,11 +17,10 @@ RSpec.describe System::Ai::Skills::FederationAcceptanceExecutor, type: :service 
 
   subject(:executor) { described_class.new(account: account, user: user) }
 
-  # The accept→enrolled transition fires the FederationPeer after_commit
-  # post-accept enqueue; keep the executor specs off Redis.
-  before do
-    allow(::System::WorkerDispatch).to receive(:enqueue).and_return("jid-stub")
-  end
+  # The `allow(::System::WorkerDispatch).to receive(:enqueue)` stub that used to
+  # live here is gone with the class. VERIFIED, not assumed: System::WorkerDispatch
+  # had exactly one caller in the tree — System::Task#enqueue_execution — and
+  # campaign 01a0790b increment 3 deleted both. This spec passes without it.
 
   describe ".descriptor" do
     it "exposes approval-gated federation metadata" do

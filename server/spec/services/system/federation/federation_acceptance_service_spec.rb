@@ -32,13 +32,10 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
     }
   end
 
-  # The accept→enrolled transition fires FederationPeer's after_commit
-  # post-accept enqueue. Stub the worker dispatch so the service specs
-  # don't reach Redis (the async topology reconciliation is covered by the
-  # model spec + worker-side spec).
-  before do
-    allow(::System::WorkerDispatch).to receive(:enqueue).and_return("jid-stub")
-  end
+  # The `allow(::System::WorkerDispatch).to receive(:enqueue)` stub that used to
+  # live here is gone with the class. VERIFIED, not assumed: System::WorkerDispatch
+  # had exactly one caller in the tree — System::Task#enqueue_execution — and
+  # campaign 01a0790b increment 3 deleted both. This spec passes without it.
 
   describe ".call — happy path (platform peer)" do
     before { plaintext_token }

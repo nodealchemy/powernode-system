@@ -135,8 +135,9 @@ module Sdwan
     def attach!(node_module, node_id)
       existing = ::System::NodeModuleAssignment.find_by(node_id: node_id, node_module_id: node_module.id)
 
-      # A DISABLED row delivers nothing — System::Runtime::SyncModules commits
-      # only `enabled` assignments. Reporting it as deployed would claim an
+      # A DISABLED row delivers nothing — node_api/modules serves the agent only
+      # `enabled` assignments (modules_controller.rb:272-278), so the agent never
+      # sees it. Reporting it as deployed would claim an
       # actuation that will never happen. It is also not ours to silently
       # re-enable: an operator disabled it deliberately, and a create-collector
       # call is not consent to undo that. So it is left alone and reported as

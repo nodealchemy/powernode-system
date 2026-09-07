@@ -40,16 +40,20 @@ require "pathname"
 #
 # ══ WHAT THIS DOES NOT COVER, SO A GREEN RUN IS NOT OVER-READ ═════════════
 #
-# COMMANDS. Scope is the two commands ExecutionDispatcher routes to the on-node
-# reconcile runtimes: sync_modules and apply_config. That is NARROWER than
-# ExecutionDispatcher::AGENT_DELEGATED_COMMANDS — upgrade_boot_image, the
+# COMMANDS. Scope is two commands: sync_modules and apply_config. That is
+# NARROWER than the rest of System::Task::COMMANDS — upgrade_boot_image, the
 # storage.* verbs, ci.module_build, ci.package_build, probe.module_smoke — and
-# the difference is an open question recorded rather than silently resolved:
-# sync_modules and apply_config are in COMMAND_REGISTRY, i.e. the SERVER
-# executes them, while the AGENT_DELEGATED set is what the agent actually polls
-# for. So "no agent will pull this" is literally true of the delegated set and
-# only empirically true of these two. Offer 01a07861-96d8 carries that, with the
-# evidence that the recorded stall mechanism is itself unproven.
+# the narrowing is now the only thing left of a distinction that has been
+# dissolved.
+#
+# THE OLD RATIONALE IS DEAD. It read: "sync_modules and apply_config are in
+# COMMAND_REGISTRY, i.e. the SERVER executes them, while the AGENT_DELEGATED
+# set is what the agent actually polls for." Campaign 01a0790b increment 3
+# deleted ExecutionDispatcher, COMMAND_REGISTRY and AGENT_DELEGATED_COMMANDS:
+# the agent polls for every command, so "no agent will pull this" is now
+# equally (un)true of all of them. The two-command scope is retained as a
+# deliberate census boundary, not as a claim about who executes what.
+# Offer 01a07861-96d8 carries the residual question.
 #
 # Note the practical consequence for this file's own coverage: the tree contains
 # no literal `command: "apply_config"` producer at all — apply_config reaches

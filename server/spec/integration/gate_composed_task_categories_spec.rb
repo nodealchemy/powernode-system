@@ -13,8 +13,9 @@ require "rails_helper"
 #
 #   58702a16 "retire the thirteen zero-caller dispatch verbs" removed
 #   "associate_public_ip" => System::Runtime::ManagePublicIp (and its sibling)
-#   from ExecutionDispatcher::COMMAND_REGISTRY, and deleted the
-#   System::Runtime::ManagePublicIp class outright. It left
+#   from ExecutionDispatcher::COMMAND_REGISTRY — a registry since deleted
+#   wholesale, with the dispatcher, in campaign 01a0790b increment 3 — and
+#   deleted the System::Runtime::ManagePublicIp class outright. It left
 #   System::Task::COMMANDS alone. In this window the Task INSERTED normally and
 #   then failed LATER, in the worker, as "Unsupported command:
 #   associate_public_ip" — a different signature, at a different time, seen by a
@@ -45,7 +46,7 @@ require "rails_helper"
 #   * literal   — `action_category: "system.task.`, which a composed-only scan
 #                 would miss entirely. A new literal site naming a verb outside
 #                 COMMANDS (say "system.task.provision", still absent from both
-#                 COMMANDS and COMMAND_REGISTRY) fails closed in exactly this
+#                 COMMANDS and, when it existed, COMMAND_REGISTRY) fails closed in exactly this
 #                 offer's shape, so leaving it undiscoverable would reproduce
 #                 the very gap this spec exists to close.
 # Either scan can only ever find SITES, never their value sets, which is why
@@ -159,7 +160,7 @@ module GateComposedTaskCategories
     # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 289,
+      line: 297,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -203,10 +204,12 @@ module GateComposedTaskCategories
   # (gate_ip_action, above) and System::Task refuses to insert them, so both
   # public-IP endpoints fail closed on every request. The DISPOSITION IS PARKED
   # WITH THE OPERATOR — restore the two commands to System::Task::COMMANDS (plus
-  # a dispatch route: neither is in ExecutionDispatcher::COMMAND_REGISTRY or
-  # AGENT_DELEGATED_COMMANDS either, so a restored task would insert and then be
-  # failed in the worker as "Unsupported command" — the pre-04be5e5b failure
-  # mode described in the header, not a fix), or delete the two endpoints,
+  # an EXECUTOR: since increment 3 that means a handler in the Go agent, because
+  # the agent is the sole actuator and there is no server-side registry to add
+  # to any more. Without one, a restored task inserts and then sits pending
+  # until the reaper cancels it at 48h — a worse failure than the
+  # "Unsupported command" the worker used to raise, because it is silent), or
+  # delete the two endpoints,
   # gate_ip_action, the two registered categories and the two seeded policy rows.
   #
   # SCOPE, because this list is GLOBAL and not per-site: an entry here excuses
@@ -248,9 +251,10 @@ module GateComposedTaskCategories
   # Scan a tree for gate-site shapes, returning "path" => count.
   #
   # Comment lines are excluded: both patterns appear inside prose that
-  # DOCUMENTS these sites (ExecutionDispatcher's header names gate_ip_action's
-  # expression verbatim; system_fleet_tool's declaration comment names its own
-  # literal category), and a doc reference is not a producer. Code only.
+  # DOCUMENTS these sites (system_fleet_tool's declaration comment names its own
+  # literal category; ExecutionDispatcher's header used to name gate_ip_action's
+  # expression verbatim before that file was deleted), and a doc reference is
+  # not a producer. Code only.
   #
   # COUNT PER FILE, not file:line. The line-number drift check is the
   # "still contains" example's job, and it reports drift with the right

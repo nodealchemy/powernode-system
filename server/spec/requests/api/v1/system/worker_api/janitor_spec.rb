@@ -101,23 +101,29 @@ RSpec.describe "Api::V1::System::WorkerApi::Janitor", type: :request do
       expect(response).to have_http_status(:ok)
     end
 
-    # NOTE which commands are agent-delegated, because it is counter-intuitive:
-    # `apply_config` and `sync_modules` are NOT, despite the node agent having
-    # handlers by those exact names. They are the naming collision the
-    # dispatch-spine decision records — the server-side halves are control-plane
-    # operations (compute and record what the node should run) that happen to
-    # share a word with the agent's data-plane halves (make the node run it).
-    # ExecutionDispatcher routes them server-side, so the reaper may legitimately
-    # re-enqueue them. ci.module_build is genuinely agent-only.
-    it "reports whether each task is agent-delegated" do
-      agent_task  = stuck_task(command: "ci.module_build")
-      server_task = stuck_task(command: "ssh_command")
+    # THE `agent_delegated` FIELD IS GONE (campaign 01a0790b increment 3), and
+    # with it the example that asserted `ci.module_build` reported true while
+    # `ssh_command` reported false.
+    #
+    # That distinction described a real split at the time: ExecutionDispatcher
+    # routed ssh_command (and apply_config, and sync_modules) server-side, so
+    # the reaper's lane 1 could legitimately re-enqueue them, while
+    # ci.module_build was agent-only and re-enqueuing it did nothing. Increment
+    # 3 retired the server arm, so every command is agent-executed, the field
+    # would be a constant true, and the reaper lane that read it is deleted.
+    #
+    # Asserted as an ABSENCE rather than just dropped: a serializer that
+    # silently regrew the key would be re-establishing a distinction the
+    # platform no longer makes.
+    it "no longer reports an agent-delegated flag, because every command is" do
+      stuck_task(command: "ci.module_build")
+      stuck_task(command: "ssh_command")
 
       get "/api/v1/system/worker_api/janitor/tasks", headers: headers
 
-      by_id = JSON.parse(response.body).dig("data", "tasks").index_by { |t| t["id"] }
-      expect(by_id[agent_task.id]["agent_delegated"]).to be true
-      expect(by_id[server_task.id]["agent_delegated"]).to be false
+      tasks = JSON.parse(response.body).dig("data", "tasks")
+      expect(tasks.size).to eq(2)
+      expect(tasks).to all(satisfy { |t| !t.key?("agent_delegated") })
     end
   end
 

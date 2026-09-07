@@ -20,9 +20,10 @@ and, only once all pass, creates a `System::Task` (`command:
 "upgrade_boot_image"`) carrying everything the node needs to verify and
 install the image itself: the target `git_sha`, the UKI's OCI ref + sha256,
 the platform's cosign public key, and the base64 cosign bundle. That command
-is one of a small set the server-side `ExecutionDispatcher` never claims or
-runs — it is left `pending` for the `powernode-agent` to poll over
-`node_api`. The agent downloads the UKI by digest, cosign-verifies it against
+is left `pending` for the `powernode-agent` to poll over `node_api` — as is
+every command now. (It used to be one of a small set the server-side
+`ExecutionDispatcher` deliberately never claimed; campaign 01a0790b increment 3
+retired that dispatcher, so there is no server-side claimant to opt out of.) The agent downloads the UKI by digest, cosign-verifies it against
 the inline public key, atomically replaces the ESP's removable-boot binary,
 and reboots — reusing the existing `/persist`-backed certificate, no
 re-enrollment. Because the reboot tears the node down mid-flight, the agent's
@@ -47,9 +48,8 @@ flowchart TD
         TASK["System::Task<br/>command: upgrade_boot_image, status: pending<br/>options: target_git_sha, uki_oci_ref, uki_sha256,<br/>cosign_public_key, cosign_bundle_b64, download_path"]
     end
 
-    subgraph Dispatch["Task delivery (ExecutionDispatcher)"]
-        AD{"AGENT_DELEGATED_COMMANDS?<br/>(execution_dispatcher.rb)"}
-        LEFT["left pending —<br/>NOT claimed/run/failed by the dispatcher"]
+    subgraph Dispatch["Task delivery"]
+        LEFT["left pending —<br/>nothing server-side claims a Task;<br/>the agent polls node_api for it"]
     end
 
     subgraph CI["CI (build-disk-image.yaml, amd64 UEFI job)"]
@@ -185,11 +185,14 @@ task = ::System::Task.create!(
 )
 ```
 
-### 2. Task delivery — agent-delegated dispatch
+### 2. Task delivery
 
-`extensions/system/server/app/services/system/execution_dispatcher.rb`
-defines `AGENT_DELEGATED_COMMANDS`, which includes `upgrade_boot_image`
-alongside `a2a_call` and the `storage.*` node-side commands:
+`upgrade_boot_image` is left `pending` for the agent, like every command.
+It used to need saying, because `execution_dispatcher.rb` defined an
+`AGENT_DELEGATED_COMMANDS` opt-out list that `upgrade_boot_image` had to be on
+to escape server-side claiming. That file was deleted with the server dispatch
+arm in campaign 01a0790b increment 3. The list is reproduced below only to
+explain the historical shape:
 
 ```ruby
 AGENT_DELEGATED_COMMANDS = %w[
@@ -200,20 +203,27 @@ AGENT_DELEGATED_COMMANDS = %w[
 ].freeze
 ```
 
-**Why this matters:** `System::Task` has an `after_commit :enqueue_execution`
-callback that fires a worker job **immediately** on creation, which calls
-`ExecutionDispatcher.run`. For any command with a `COMMAND_REGISTRY` entry
-the dispatcher claims it via `may_start?`/`start!` and runs the mapped
-runtime service inline. `upgrade_boot_image` has **no** `COMMAND_REGISTRY`
-entry — its "runtime" is the on-node agent, not a server-side service class.
-Without the `AGENT_DELEGATED_COMMANDS` check, the dispatcher would treat it
-as `"Unsupported command: upgrade_boot_image"`, force it through `start!`,
-and `fail!` it — all within milliseconds of creation, long before the agent's
-next poll ever sees it. The guard makes the dispatcher a no-op for these
-commands instead: it logs `dispatch_delegated_to_agent` and returns
-`Outcome.new(claimed: false, ...)`, leaving the task `pending` for the
-`powernode-agent`'s own task-poll loop (`GET
-/api/v1/system/node_api/status/operations`) to pick up.
+**Why this mattered, and why the guard is gone:** `System::Task` used to carry
+an `after_commit :enqueue_execution` callback that fired a worker job
+**immediately** on creation, which called `ExecutionDispatcher.run`. For any
+command with a `COMMAND_REGISTRY` entry the dispatcher claimed it via
+`may_start?`/`start!` and ran the mapped runtime service inline.
+`upgrade_boot_image` had **no** `COMMAND_REGISTRY` entry — its "runtime" is the
+on-node agent, not a server-side service class — so without the
+`AGENT_DELEGATED_COMMANDS` check the dispatcher would have treated it as
+`"Unsupported command: upgrade_boot_image"`, forced it through `start!`, and
+`fail!`ed it within milliseconds of creation, long before the agent's next poll.
+
+Campaign 01a0790b increment 3 removed the callback, the dispatcher and the
+registry together, so the hazard the guard existed for cannot occur: nothing
+server-side claims a Task at all. The list below is kept as history — it
+explains why these commands were once enumerated, not a check that still runs.
+The guard made the dispatcher a no-op for these commands instead: it logged
+`dispatch_delegated_to_agent` and returned `Outcome.new(claimed: false, ...)`,
+leaving the task `pending`. Today nothing claims a task in the first place, and
+the `powernode-agent`'s own task-poll loop picks it up from `GET
+/api/v1/system/node_api/status/tasks` (agent `internal/.../client.go`; the
+`/status/operations` path this doc used to name does not exist).
 
 ### 3. UKI artifact — CI publish
 
@@ -485,7 +495,7 @@ back. Each refusal names its own remedy:
 
 **Platform (Rails):**
 - `extensions/system/server/app/services/ai/tools/system_fleet_tool.rb` (`upgrade_boot_image`, `platform_cosign_public_key`)
-- `extensions/system/server/app/services/system/execution_dispatcher.rb` (`AGENT_DELEGATED_COMMANDS`)
+- `extensions/system/server/spec/lint/agent_handles_every_task_command_spec.rb` (pins that the agent has a handler for every `System::Task::COMMANDS` entry; replaced `execution_dispatcher.rb`, deleted in campaign 01a0790b increment 3)
 - `extensions/system/server/app/controllers/api/v1/system/node_api/boot_image_controller.rb`
 - `extensions/system/server/app/controllers/api/v1/system/node_api/status_controller.rb` (`heartbeat`, `complete_task`)
 - `extensions/system/server/app/services/system/boot_image/upgrade_reconciler.rb`

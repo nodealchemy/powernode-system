@@ -1942,8 +1942,12 @@ module System
       # consumed, and every RemediationOutcome scored ineffective. Kinds
       # without an applier record applied: false on the decision (and the
       # decision event) so a proceed lane is never a SILENT no-op.
-      # The reconcile task is the canonical apply path: ExecutionDispatcher
-      # routes sync_modules / apply_config to the on-node runtime.
+      # The reconcile task is the canonical apply path: a sync_modules /
+      # apply_config Task is minted and the ON-NODE AGENT executes it, having
+      # polled it from node_api. (This used to say ExecutionDispatcher routes
+      # them to the on-node runtime; that server-side dispatcher was retired in
+      # campaign 01a0790b increment 3, and it had never actually executed a
+      # task — its controller's scope was empty on every node.)
       REMEDIATION_APPLIERS = {
         "system.module_drift" => { command: "sync_modules" },
         "system.config_drift" => { command: "apply_config" },

@@ -961,6 +961,10 @@ case "$MODULE" in
     # and the seven scheduled reconcilers) were never loaded: every
     # worker-dispatched system task died with `uninitialized constant
     # SystemExecuteTaskJob`, and the sidekiq_system.yml schedule never ran.
+    # (SystemExecuteTaskJob and WorkerDispatch no longer exist — campaign
+    # 01a0790b increment 3 retired the task-dispatch spine. The account above
+    # is why this arm ships the worker tree, and that reason still holds for
+    # SystemTaskReaperJob and the scheduled reconcilers.)
     # Ship it here (this module already owns everything under
     # /opt/powernode/extensions/system/**, so its file_spec carves it with
     # no manifest change, and the worker component lands with the same

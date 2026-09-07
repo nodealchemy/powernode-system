@@ -1,40 +1,44 @@
 # System extension scheduled jobs.
 #
-# This file deliberately holds ONE recurring job: the hourly reaper. The
-# primary operation-dispatch path is event-driven (Operation#after_commit
-# enqueues SystemExecuteTaskJob immediately on creation), so no
-# 30-second cron polling exists.
+# This file deliberately holds ONE recurring job: the hourly reaper.
 #
-# The reaper is a low-frequency safety net for missed enqueues (Redis
-# blips during operation creation) and dead-worker recovery (a worker
-# crashed while holding the /execute HTTP connection mid-operation).
+# It used to say the primary dispatch path was event-driven — System::Task's
+# after_commit enqueuing a SystemExecuteTaskJob on creation. Campaign 01a0790b
+# increment 3 retired that whole arm (the callback, the job, the
+# worker_api/tasks/:id/execute endpoint it POSTed to, and the
+# ExecutionDispatcher behind it). It had never executed a task: the endpoint
+# scoped through System::Node.where(worker: current_worker) and no node has
+# ever had a worker.
+#
+# THE WORKER NO LONGER DISPATCHES TASKS AT ALL. A System::Task is a message to
+# the agent ON THE INSTANCE THE ROW NAMES — delivery is
+# NodeApi::StatusController#pending_tasks, which reads current_instance.tasks,
+# so a row whose operable is not that NodeInstance reaches no agent at all. The
+# reaper is what remains here, and it is now purely a CLOSER for rows nothing
+# completed — not a re-dispatcher (its lane 1, which re-enqueued, went with the
+# job it fired).
 #
 # === Long-running operation guardrails ===
 #
 # Sidekiq does NOT provide per-queue timeouts (see worker/config/sidekiq.yml
-# header). The system queue runs operations that may take many minutes
-# (e.g., cloud provisioning, module build+commit). Three safeguards apply:
+# header). The system queue still runs jobs that take many minutes. What
+# survives of the original three safeguards:
 #
-#   1. SystemExecuteTaskJob declares `retry: 0`. The Operation AASM
-#      state machine is the source of truth — Sidekiq retries would corrupt
-#      it. Failures terminate the job and surface to the reaper.
+#   1. (SystemExecuteTaskJob's `retry: 0` — gone with the job.)
 #   2. BackendApiClient's per-call timeout caps the worker→server HTTP wait.
-#      If a runtime service exceeds this, the worker job raises and the op
-#      stays in `:running`. The reaper picks it up after STUCK_RUNNING_THRESHOLD
-#      (default 60 min) and transitions it to `:failed` with execution_lost.
 #   3. Operator-tunable: SYSTEM_REAPER_STUCK_RUNNING_MIN env var raises the
 #      reaper's "stuck" threshold for slow workloads (e.g., minute 90 for
 #      AMI builds).
 #
-# A future P2 architecture change would move long ops to async runtime
-# execution (worker calls /execute, server returns 202, worker polls/subscribes
-# for completion) so the HTTP connection isn't held for the full op duration.
+# The "future P2 async runtime execution" note that used to close this header
+# described an evolution of the dispatch arm. There is no dispatch arm to
+# evolve; the agent already owns execution end to end.
 :schedule:
   system_task_reaper:
     cron: "0 */1 * * *"            # every hour at :00
     class: "SystemTaskReaperJob"
     queue: system
-    description: "System: re-enqueue stuck pending ops and fail abandoned running ops"
+    description: "System: fail abandoned running tasks and cancel unrunnable ones"
 
   # Fleet autonomy reconciliation tick (Golden Eclipse M7).
   # Runs every minute. Hits POST /api/v1/system/worker_api/fleet/reconcile

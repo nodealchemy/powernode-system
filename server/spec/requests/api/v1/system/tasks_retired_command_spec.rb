@@ -87,7 +87,6 @@ RSpec.describe "POST /api/v1/system/tasks retired command", type: :request do
       allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
         { policy: "auto_approve", channels: [], conditions: {}, record: nil }
       )
-      allow(::System::WorkerDispatch).to receive(:enqueue_operation_execution)
     end
 
     it "reaches the gate and creates the task" do

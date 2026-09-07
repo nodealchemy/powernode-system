@@ -12,11 +12,14 @@ module System
     # perform inline, no more and no less.
     #
     # Why not System::Executors::ExecuteTask, which the REST twin uses:
-    # ExecuteTask inserts a System::Task("terminate"), which reaches the
-    # instance through ExecutionDispatcher -> System::Runtime::ControlInstance
-    # -> System::InstanceControlService. That lane looks equivalent — both end
-    # at provider_adapter.terminate_instance — but it drops four controls that
-    # live in ProvisioningService and nowhere else:
+    # ExecuteTask inserted a System::Task("terminate"), which was supposed to
+    # reach the instance through ExecutionDispatcher -> Runtime::ControlInstance
+    # -> InstanceControlService. That lane LOOKED equivalent — both end at
+    # provider_adapter.terminate_instance — but it dropped four controls that
+    # live in ProvisioningService and nowhere else. It is doubly gone now:
+    # `terminate` left System::Task::COMMANDS in campaign 01a0790b increment 2,
+    # and increment 3 deleted the dispatcher and the runtime class. The four
+    # controls are still the reason this executor exists:
     #
     #   1. INV-1. ProvisioningService includes
     #      System::Autonomy::SelfManagementFence and calls

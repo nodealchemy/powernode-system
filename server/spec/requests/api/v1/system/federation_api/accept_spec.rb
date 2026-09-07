@@ -13,13 +13,12 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
   let(:plaintext_token) { peer.generate_acceptance_token!(ttl_seconds: 1.hour.to_i) }
   let(:path) { "/api/v1/system/federation_api/accept" }
 
-  # Phase 3a — the accept→enrolled transition fires FederationPeer's
-  # after_commit post-accept enqueue. Stub the worker dispatch so request
-  # specs don't reach Redis (async topology reconciliation is covered by
-  # the model + worker-side specs).
-  before do
-    allow(::System::WorkerDispatch).to receive(:enqueue).and_return("jid-stub")
-  end
+  # The `allow(::System::WorkerDispatch).to receive(:enqueue)` stub that used to
+  # live here is gone with the class. VERIFIED, not assumed: System::WorkerDispatch
+  # had exactly one caller in the tree — System::Task#enqueue_execution — and
+  # campaign 01a0790b increment 3 deleted both. This spec passes without the stub.
+  # (No claim is made here about what else this flow enqueues; only that this
+  # stub was stubbing a method nothing on this path called.)
 
   let(:valid_payload) do
     {

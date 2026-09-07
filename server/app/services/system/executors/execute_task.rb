@@ -4,8 +4,11 @@ module System
   module Executors
     # Executor wired into AutonomyGate when System::Task#before_create gates
     # the dispatch. After approval (or auto-approval) lands, this executor
-    # actually inserts the task and lets the existing
-    # `System::Task#enqueue_execution` after_commit hook push the job.
+    # actually inserts the task. Insertion is the whole job: the row is left
+    # `pending` for the agent on its instance to poll. (This used to end "and
+    # lets the existing System::Task#enqueue_execution after_commit hook push
+    # the job" — that hook, and the server-side dispatch arm it fed, were
+    # deleted in campaign 01a0790b increment 3.)
     #
     # Why an executor instead of inline create? It keeps every gated
     # operation symmetrical — the audit row, the status flow, and the

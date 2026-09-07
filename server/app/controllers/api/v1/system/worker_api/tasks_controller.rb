@@ -7,7 +7,7 @@ module Api
         # Operation tracking and management for infrastructure workers
         # Handles operation lifecycle: create, start, progress, complete, fail
         class TasksController < BaseController
-          before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :events, :execute ]
+          before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :events ]
 
           # GET /api/v1/system/worker_api/tasks
           # List operations for resources managed by this worker
@@ -150,36 +150,28 @@ module Api
             render_success(task: serialize_task(@operation))
           end
 
-          # POST /api/v1/system/worker_api/tasks/:id/execute
+          # RETIRED in campaign 01a0790b increment 3: #execute.
           #
-          # Atomically claims the operation, runs the matching runtime service,
-          # and transitions to complete/failed before responding. Holds the HTTP
-          # connection for the duration of the operation (typically <2 min for
-          # provisioning).
+          # It was the server-side task-dispatch spine's only entry point —
+          # System::Task after_commit -> WorkerDispatch LPUSH ->
+          # SystemExecuteTaskJob -> POST here -> ExecutionDispatcher.run -> a
+          # System::Runtime::* class. Every link is gone.
           #
-          # Triggered by SystemExecuteTaskJob in the worker, which itself
-          # is enqueued by an after_commit callback on Operation creation. The
-          # full dispatch chain has zero polling.
-          def execute
-            authorize_worker_permission!("system.tasks.execute")
-
-            outcome = ::System::ExecutionDispatcher.run(@operation, worker: current_worker)
-
-            if outcome.claimed || outcome.status_code == :accepted
-              # claimed: server ran it. :accepted (not claimed): an
-              # agent-delegated command left pending for the node agent to poll —
-              # NOT an error, so render success and let the worker job exit
-              # cleanly (the task stays pending for the agent).
-              render_success(
-                task: serialize_operation_full(@operation.reload),
-                runtime_result: outcome.result.to_h
-              )
-            else
-              # Already-claimed or non-claimable operation — respond 409 Conflict
-              # so the worker logs and exits without retrying.
-              render_error(outcome.result.error, status: outcome.status_code)
-            end
-          end
+          # It had never executed a task. #set_operation resolves through
+          # #worker_operations below, which scopes on
+          # System::Node.where(worker: current_worker); worker_id is NULL on
+          # every node, so the scope is empty and the lookup 404'd for every id.
+          # Meanwhile NodeApi::StatusController#pending_tasks serves the agent
+          # every pending row on its instance with NO command filter, and the
+          # agent registers a handler for every command System::Task can mint —
+          # so the agent was the sole actuator throughout.
+          #
+          # Worse than dead: the two arms DISAGREED. For `start` and `stop` the
+          # agent runs a systemd UNIT verb while COMMAND_REGISTRY mapped the
+          # same names to a provider VM power operation. Setting worker_id on
+          # one node — one MCP call — would have armed both claimants on the
+          # same row. The `unit_scoped_restart?` split existed to stop exactly
+          # that for `restart`; start/stop never had one.
 
           # POST /api/v1/system/worker_api/tasks/:id/events
           # Add event to operation log.

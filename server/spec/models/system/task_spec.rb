@@ -17,12 +17,25 @@ RSpec.describe System::Task, type: :model do
     # previously advertised volumes, snapshots, networks, backup/restore and
     # `custom` (no dispatcher, no producer) while OMITTING every storage.*
     # command and ci.package_build, which are real verbs in daily use.
-    it 'is exactly what the dispatcher can route, server-side or to the agent' do
-      derived = (System::ExecutionDispatcher::COMMAND_REGISTRY.keys +
-                 System::ExecutionDispatcher::AGENT_DELEGATED_COMMANDS).uniq
-
-      expect(described_class::COMMANDS).to match_array(derived)
-    end
+    # THE ORACLE MOVED, IN THE SAME CHANGE THAT MADE IT NECESSARY. This example
+    # used to read:
+    #
+    #   derived = (ExecutionDispatcher::COMMAND_REGISTRY.keys +
+    #              ExecutionDispatcher::AGENT_DELEGATED_COMMANDS).uniq
+    #   expect(COMMANDS).to match_array(derived)
+    #
+    # Campaign 01a0790b increment 3 deleted both constants with the server
+    # dispatch arm, so it could not survive as written. It should not have
+    # survived anyway: comparing this list to two other Ruby lists in the same
+    # repo is a control that describes itself — one edit moves a command between
+    # them and all three keep agreeing while the platform's ability to EXECUTE
+    # it changes.
+    #
+    # The replacement crosses the language boundary and lives at
+    # spec/lint/agent_handles_every_task_command_spec.rb: it parses the Go
+    # agent's own handler registry and asserts COMMANDS is a subset of it. That
+    # is the invariant that actually matters now that the agent is the sole
+    # actuator — every command the platform can mint, the agent can run.
 
     it 'lists the agent-delegated storage verbs it used to omit' do
       expect(described_class::COMMANDS).to include(

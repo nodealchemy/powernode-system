@@ -102,10 +102,11 @@ RSpec.describe System::RestartAfterUpdate do
 
       task = instance.tasks.where(command: "restart").last
       expect(task.options["unit"]).to eq("powernode-#{backend.id}-rails.service")
-      # DECLARED, not inferred: without this the dispatcher would be left
-      # choosing between one systemd unit and a whole-VM reboot.
+      # DECLARED, not inferred. The dispatcher this declaration used to steer
+      # (server arm vs agent) was deleted in campaign 01a0790b increment 3, and
+      # RESTART_SCOPES accepts nothing else, so the assertion now pins that the
+      # producer still SAYS what it means rather than that a router reads it.
       expect(task.options["scope"]).to eq("unit")
-      expect(::System::ExecutionDispatcher.agent_delegated?(task.command, task.options)).to be true
       expect(task.status).to eq("pending")
     end
 

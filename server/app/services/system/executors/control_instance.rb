@@ -16,9 +16,10 @@ module System
     # dispatched two ways and actuated correctly by NEITHER on this fleet:
     #
     #   1. The SERVER arm (SystemExecuteTaskJob -> worker_api/tasks/:id/execute
-    #      -> ExecutionDispatcher) is unreachable. That controller scopes every
-    #      action through `System::Node.where(worker: current_worker)` and
-    #      `node.worker_id` is NULL on every node, so /execute 404s for every
+    #      -> ExecutionDispatcher) was unreachable, and campaign 01a0790b
+    #      increment 3 has since DELETED it entirely. It scoped every action
+    #      through `System::Node.where(worker: current_worker)` and
+    #      `node.worker_id` is NULL on every node, so /execute 404'd for every
     #      task id (the measurement is recorded in
     #      Api::V1::System::WorkerApi::JanitorController's header).
     #   2. The AGENT arm does pull the row — node_api/status_controller serves
