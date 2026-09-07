@@ -305,6 +305,14 @@ module System
         # disk_image_git_sha). Campaign 019f505f increment 1 — observation-only
         # (no remediation outcome); increment 4 routes it to the rollout executor.
         ::System::Fleet::Sensors::BootImageDriftSensor,
+        # IMP-e840a570a371 — the other half of the boot-image question. The
+        # sensor above asks "does this NODE match the promoted image"; this one
+        # asks "is the PROMOTED IMAGE current with the code that decides its
+        # contents". Nothing asked the second question, so a three-week-old
+        # promotion sat green while every node matched it exactly. Also
+        # observation-only, and permanently so: an image roll is an operator
+        # action, not a fleet-autonomy one (INV-1).
+        ::System::Fleet::Sensors::BootImageStalenessSensor,
         ::System::Fleet::Sensors::CertificateExpirySensor,
         # Platform ACME (Traefik-terminated) cert expiry — distinct store +
         # remediation path from CertificateExpirySensor (node identity certs).

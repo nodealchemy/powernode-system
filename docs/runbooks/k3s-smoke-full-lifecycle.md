@@ -194,13 +194,14 @@ SMOKE_K3S_LEVEL=db SMOKE_K3S_SITE=a bundle exec rails runner \
 
 **db tier:** validates the `runtime_controller#k3s_server_bootstrap_config`
 payload (the agent's contract for installing k3s with the right flannel
-flags). Asserts `flannel_iface = wg-sdwan-<network_handle>`,
+flags). Asserts `flannel_iface` equals the device the agent creates, resolved
+through `Sdwan::HostVrfAssignment.wg_iface_name_for`,
 `flannel_backend = host-gw`, `cluster_cidr = <pod_subnet_prefix>`.
 
 **site+ tier:** also deploys a 2-replica nginx Deployment with
 podAntiAffinity (so the replicas land on different nodes), waits for both
 replicas Ready, and (manually, per runbook) verifies pod-to-pod traffic
-across nodes flows through `wg-sdwan-<handle>`. See the **Live pod-plane
+across nodes flows through the host's wg device (`wg-sdwan-<short_id>`). See the **Live pod-plane
 verification** section below.
 
 #### Phase 5 — Federation
@@ -277,7 +278,7 @@ then reprovisions a replacement agent and re-joins it. Asserts
 
 The headline operator claim is "pod traffic flows over the encrypted
 SDWAN overlay." At site+ tier phase 4 deploys the nginx test workload;
-verifying actual traffic on `wg-sdwan-<handle>` is a manual sudo step.
+verifying actual traffic on the host's wg device is a manual sudo step.
 
 The kubeconfig phase 4 fetches lands in a per-run private directory, not a
 fixed path (IMP-0ca5fbe5c532 — a constant `/tmp` name left a live cluster's

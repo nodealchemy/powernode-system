@@ -83,7 +83,14 @@ payload = controller.send(:k3s_server_bootstrap_config, instance)
 
 h.assert(payload.is_a?(Hash), "bootstrap_config returns a hash")
 h.assert(payload[:cni_plugin] == "flannel", "bootstrap_config[:cni_plugin] == flannel (got #{payload[:cni_plugin]})")
-expected_iface = "wg-sdwan-#{network.network_handle}"
+# Resolved, never re-derived: the device is "wg-sdwan-<short_id>" on any host
+# with a HostVrfAssignment and only falls back to the handle form on a
+# static-only network. Re-deriving the handle form here is what made this
+# smoke test assert against — and sniff — a device that does not exist
+# (IMP-54fdf40fbf9d).
+expected_iface = ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+  network: network, node_instance: instance
+)
 h.assert(payload[:flannel_iface] == expected_iface,
          "bootstrap_config[:flannel_iface] == #{expected_iface} (got #{payload[:flannel_iface]})")
 h.assert(payload[:flannel_backend] == "host-gw",
@@ -154,7 +161,7 @@ if h.tier_at_least?("site")
   # Start tcpdump on wg-sdwan-<handle> in the background, capturing
   # only packets between the two pod IPs. Then trigger traffic from
   # pod A → pod B. Cleanup: stop tcpdump and count packets.
-  iface = "wg-sdwan-#{network.network_handle}"
+  iface = expected_iface
   filter = "host #{pod_a[:ip]} and host #{pod_b[:ip]}"
   h.step("Start tcpdump on #{iface} filtering #{filter}")
   pid, log_path = h.tcpdump_in_background!(iface: iface, packet_count: 30, filter: filter)
@@ -185,5 +192,5 @@ else
 end
 
 puts "\n  ✅ Phase 4 (Site #{site.upcase} pod plane) complete"
-puts "  flannel_iface=wg-sdwan-#{network.network_handle} flannel_backend=host-gw cluster_cidr=#{pod_cidr_expected}"
+puts "  flannel_iface=#{expected_iface} flannel_backend=host-gw cluster_cidr=#{pod_cidr_expected}"
 puts "  Next: SMOKE_K3S_SITE=b for Site B, or smoke_test_k3s_federation.rb"

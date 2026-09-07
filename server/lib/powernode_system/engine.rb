@@ -579,6 +579,79 @@ module PowernodeSystem
       end
     end
 
+    # IMP-7723206bc137 — declare this extension's operator-configurable
+    # SiteSetting keys on core's MCP settings verb. Core owns the verb and the
+    # allowlist mechanism; it must not know this extension's configuration
+    # vocabulary, so the key is declared here instead (core-purity: an
+    # extension names itself to core through a registration seam, never the
+    # other way round).
+    #
+    # The key comes from the constant the FENCE itself reads, not a literal, so
+    # a rename cannot leave the verb writing a key nothing consults. This is
+    # the single knob that takes System::Autonomy::SelfManagementFence from
+    # inert to live (INV-1: no self-management), and until this verb existed it
+    # could only be written by a direct DB write or a hub console.
+    # to_prepare, NOT after_initialize: SiteSettingTool is a reloadable core
+    # class, so a registry held in a class-level ivar is wiped on every reload
+    # and an after_initialize registration would not run again — leaving the
+    # key silently absent and the fence unreachable, which is the very bug this
+    # task exists to fix. Three sibling registries in this file were moved to
+    # to_prepare for exactly this reason (IMP-8d444c6437a3). Latent today only
+    # because enable_reloading is false in every environment here; relying on
+    # that is not a design.
+    config.to_prepare do
+      begin
+        next unless defined?(::Ai::Tools::SiteSettingTool) &&
+                    ::Ai::Tools::SiteSettingTool.respond_to?(:register_key)
+
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY,
+          setting_type: "string",
+          description: "System::Node id this control plane is hosted on. Arms the " \
+                       "self-management fence (INV-1: management authority comes from the " \
+                       "consensus group, never the node itself). Unset means 'not " \
+                       "self-hosted' and leaves every consumer of the fence inert."
+        )
+
+        # IMP-e840a570a371 — BootImageStalenessSensor's own enablement. The
+        # sensor has NO default repository (a guessed one would silently measure
+        # the wrong tree), so unset means it reports "not measured" rather than
+        # a healthy fleet — and without these registrations the only way to set
+        # it would be a direct DB write or a hub console. That is the gap the
+        # SiteSettingTool seam exists to close: a control reachable only through
+        # the emergency path is not enabled.
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_REPO_SETTING,
+          setting_type: "string",
+          description: "Devops::GitRepository 'owner/name' whose initramfs/ and " \
+                       "build-disk-image workflow decide boot-image contents. Read by " \
+                       "BootImageStalenessSensor to answer whether the ACTIVE image " \
+                       "predates the code it is supposed to carry. Unset = not measured."
+        )
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_BRANCH_SETTING,
+          setting_type: "string",
+          description: "Branch whose head defines 'current' for the boot-image staleness " \
+                       "check. Defaults to develop when unset."
+        )
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_PATHS_SETTING,
+          setting_type: "string",
+          description: "Comma-separated repo paths that decide boot-image contents, " \
+                       "overriding the defaults (initramfs, the build-disk-image workflow). " \
+                       "Widening this makes the sensor fire on more commits, not fewer."
+        )
+      rescue ArgumentError
+        # register_key raises this for a conflicting re-registration or a bad
+        # setting_type — a real defect, and swallowing it would leave the key
+        # ABSENT while boot reported success. That failure is indistinguishable
+        # from the original bug, so it must be loud.
+        raise
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register site setting keys: #{e.message}"
+      end
+    end
+
     # Register this extension's skill-routing domain with the parent's
     # ConciergeRouter. Used as the fallback when a skill's metadata
     # doesn't explicitly declare `domain`, and as the affinity signal

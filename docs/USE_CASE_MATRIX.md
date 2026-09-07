@@ -296,7 +296,7 @@ Worker NodeInstances (N varies):
 
 ### Use Case 9 — Encrypted pod-to-pod via SDWAN ✅ (opt-in)
 
-**Reality**: K3s' default flannel CNI uses VXLAN over the host's primary NIC. **Opt-in encryption via SDWAN overlay** (shipped 2026-05-19): set `pod_subnet_prefix` on the `Sdwan::Network`; the platform then stamps the cluster's bootstrap config with `--flannel-iface=wg-sdwan-<handle>`, `--flannel-backend=host-gw`, `--cluster-cidr=<pod_subnet_prefix>` at install time so pod-to-pod traffic flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No double-encapsulation** (host-gw mode injects direct kernel routes; the WG tunnels do the encryption work). ovn-Kubernetes ignores `pod_subnet_prefix` and uses its own pod-network layer.
+**Reality**: K3s' default flannel CNI uses VXLAN over the host's primary NIC. **Opt-in encryption via SDWAN overlay** (shipped 2026-05-19): set `pod_subnet_prefix` on the `Sdwan::Network`; the platform then stamps the cluster's bootstrap config with `--flannel-iface=<the host's wg device>`, `--flannel-backend=host-gw`, `--cluster-cidr=<pod_subnet_prefix>` at install time so pod-to-pod traffic flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No double-encapsulation** (host-gw mode injects direct kernel routes; the WG tunnels do the encryption work). ovn-Kubernetes ignores `pod_subnet_prefix` and uses its own pod-network layer.
 
 **Default posture**: when `pod_subnet_prefix` is null (default), flannel falls back to VXLAN on host primary NIC — same as pre-2026-05-19 behavior. Operators must explicitly set the field per network to opt in.
 

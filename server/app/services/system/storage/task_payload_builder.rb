@@ -163,11 +163,31 @@ module System
         "#{MOUNT_UNIT_PREFIX}#{sanitized}.mount"
       end
 
+      # Resolved through the single source. This used to inline its OWN
+      # re-derivation of the network handle (network_id minus dashes, first
+      # six) — a third independent spelling of a name the agent derives from
+      # the HostVrfAssignment's short_id (IMP-54fdf40fbf9d).
+      #
+      # SCOPE, stated because the obvious reading is wrong: this converges the
+      # STRING, and that is all it does. The agent consumes the hint as a
+      # systemd UNIT name — renderMountUnit emits `Requires=<hint>.service`
+      # (agent/internal/storage/systemd.go) — and nothing anywhere creates a
+      # wg-sdwan-*.service unit; the interface is made with `ip link add`.
+      # So the dependency was unsatisfiable before this change and remains
+      # unsatisfiable after it. Do not read this method as having fixed the
+      # storage mount ordering; that is a separate, still-open defect.
+      #
+      # Also note the nil below is a behaviour change: the old inline form
+      # returned a string whenever sdwan_network_id was set, this returns nil
+      # when the association fails to load (hard-deleted network), which drops
+      # the Requires= line entirely rather than emitting a dangling one.
       def wg_interface_hint
-        network_id = @assignment.sdwan_network_id&.to_s
-        return nil unless network_id
+        network = @assignment.sdwan_network
+        return nil unless network
 
-        "wg-sdwan-#{network_id.delete('-').first(6)}"
+        ::Sdwan::HostVrfAssignment.wg_iface_name_for(
+          network: network, node_instance: @assignment.node_instance
+        )
       end
 
       def requires_wg?(recipe)

@@ -396,7 +396,7 @@ platform.system_sdwan_create_network({
 **Bootstrap the cluster with `cni_plugin: "flannel"`** on a NodeInstance
 peered to this network. The provisioner stamps the cluster's metadata
 with `pod_cidr` + `sdwan_network_id`; the agent then receives extra
-flannel args (`--flannel-iface=wg-sdwan-<handle>`,
+flannel args (`--flannel-iface=<the host's wg device>`,
 `--flannel-backend=host-gw`, `--cluster-cidr=10.42.0.0/16`) at install
 time. K3s starts flannel in host-gw mode, which installs per-node /24
 routes pointing at each node's overlay IP. The kernel routes those
@@ -407,7 +407,9 @@ overlay IPs through the existing WG tunnels via the SDWAN AllowedIPs.
 ```bash
 # On node A (kubectl gives you the WG iface name from --flannel-iface output)
 kubectl get pods -A -o wide                          # find pods on node A + node B
-tcpdump -i wg-sdwan-<handle> 'host <pod-IP-node-B>'  # should show traffic during pod-to-pod test
+# the device is per host: read it from the runtime bootstrap_config's
+# flannel_iface, or `ip -o link | grep wg-sdwan-` on the node itself.
+tcpdump -i <the host's wg device> 'host <pod-IP-node-B>'  # should show traffic during pod-to-pod test
 ```
 
 **Migration of an existing flannel cluster**: setting `pod_subnet_prefix`
