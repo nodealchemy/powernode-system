@@ -35,6 +35,19 @@ module System
       # until self_hosting_node_id is configured.
       include ::System::Autonomy::SelfManagementFence
 
+      # IMP-b8cab7f951c7 — the ONE emit path for "this lane declined to act".
+      # It was a private method here while it had one caller. Four NEW refusal
+      # branches below now emit through it, alongside the original dead-target
+      # one, and two more in Ai::Tools::SystemFleetTool which never reach a
+      # decision event at all. See the module for why the throttle exists and
+      # why the refusal CLASS is in its key.
+      include ::System::Fleet::DispatchRefusalReporter
+
+      # The producer name on every fleet.dispatch_refused row this class writes.
+      # Unchanged from IMP-ee681c537f76 on purpose: it is an operator-facing
+      # field on rows that already exist, so the extraction must not rewrite it.
+      DISPATCH_REFUSED_SOURCE = "decision_engine.dispatch_refused"
+
       # Maps a CVE signal payload to CveResponseExecutor inputs — a
       # side-effect-free triage whose plan lands in approval request
       # metadata for operator review. The CveResponderService handles the
@@ -1306,18 +1319,52 @@ module System
         binding[:advisory] == true
       end
 
-      # Control-plane fence skip result — uniform applied:false for an actuate
-      # path asked to act on an instance owned by another control plane.
-      def foreign_control_plane_skip(instance)
-        { applied: false, instance_id: instance.id,
-          reason: "instance owned by another control plane — skipped (control-plane fence)" }
+      def find_account_instance(id)
+        return nil if id.blank?
+
+        ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
       end
 
-      # RCP v2 INV-1 counterpart to foreign_control_plane_skip above — same
+      # Control-plane fence refusal — uniform applied:false for an actuate
+      # path asked to act on an instance owned by another control plane.
+      #
+      # IMP-b8cab7f951c7 renamed both of these from `*_skip` to a BANG, because
+      # they now write a durable ledger row. That is the convention
+      # #refuse_dead_target!'s own comment set when it became the first emitting
+      # one: a `*_skip` result-builder that quietly emits is a trap for the next
+      # caller. Five call sites each, and every one of them is a lane that
+      # silently declined to act until now.
+      #
+      # `command` is REQUIRED, and the absence of a default is the point. Four
+      # of the five callers of each fence are not dispatching a System::Task at
+      # all (silent-instance reboot, instance-state convergence, honeypot
+      # quarantine, template-closure apply), so the field names the ACTION
+      # REFUSED rather than a task command — and a shared default would have
+      # been worse than no field: the dedup key is
+      # account+instance+command+class, so four lanes sharing one literal would
+      # collapse into ONE hourly slot per instance. A honeypot quarantine
+      # refusal — a security lane — would then be silently suppressed by an
+      # earlier mundane reboot refusal on the same instance, which is the exact
+      # invisibility this work exists to end. Making it required means a new
+      # caller has to name its lane rather than inherit a collision.
+      def refuse_foreign_control_plane!(instance, command:)
+        reason = "instance owned by another control plane — skipped (control-plane fence)"
+        emit_dispatch_refused!(account: account, instance: instance, command: command,
+                               reason: reason, refusal_class: :foreign_control_plane,
+                               source: DISPATCH_REFUSED_SOURCE)
+
+        { applied: false, instance_id: instance.id, reason: reason }
+      end
+
+      # RCP v2 INV-1 counterpart to refuse_foreign_control_plane! above — same
       # shape, distinct reason, distinct fence (SelfManagementFence).
-      def self_managed_skip(instance)
-        { applied: false, instance_id: instance.id,
-          reason: "instance is this control plane's own hosting node — skipped (INV-1 self-management fence)" }
+      def refuse_self_managed!(instance, command:)
+        reason = "instance is this control plane's own hosting node — skipped (INV-1 self-management fence)"
+        emit_dispatch_refused!(account: account, instance: instance, command: command,
+                               reason: reason, refusal_class: :self_managed,
+                               source: DISPATCH_REFUSED_SOURCE)
+
+        { applied: false, instance_id: instance.id, reason: reason }
       end
 
       # IMP-fb05226e89cb — third fence: the target has no agent that can pull an
@@ -1349,95 +1396,16 @@ module System
       # in-flight — are still invisible. Both are filed as offer 01a07886-f2a5
       # rather than left as an acknowledgement pointing at nothing.
       #
-      # Named with a bang, unlike its two pure siblings foreign_control_plane_skip
-      # and self_managed_skip: this one writes a durable ledger row, and a
-      # `*_skip` result-builder that quietly emits is a trap for the next caller.
+      # Named with a bang, and IMP-b8cab7f951c7 renamed its two siblings to match
+      # once they started emitting too: a `*_skip` result-builder that quietly
+      # writes a durable ledger row is a trap for the next caller.
       def refuse_dead_target!(instance, command, reason)
-        emit_dispatch_refused!(instance, command, reason)
+        emit_dispatch_refused!(account: account, instance: instance, command: command,
+                               reason: reason, refusal_class: liveness_refusal_class(instance),
+                               source: DISPATCH_REFUSED_SOURCE)
 
         { applied: false, instance_id: instance.id, command: command,
           instance_status: instance.status, reason: reason }
-      end
-
-      # One event per instance+command+CLASS per window, not per tick.
-      #
-      # A refusal is a PERSISTENT condition — the node stays dead — while the
-      # drift signal that triggers it re-fires on the engine's decide cadence.
-      # Undeduped, six silent instances would write on the order of 800 rows a
-      # day, which is the exact shape escalate_blocked_adaptation! already had
-      # to fix once (~144/day for one mission). EventBroadcaster does no dedup
-      # of its own: it unconditionally create!s and never reads correlation_id
-      # for suppression.
-      #
-      # THE CLASS IS IN THE KEY, and getting that wrong was the review's
-      # finding. Keying on the reason STRING would re-announce on every hourly
-      # cloud-sync flap (running -> error -> running writes a new reason for an
-      # unchanged condition). But keying on instance+command ALONE is worse in
-      # the other direction: a target refused as `terminated` at 10:00 and, at
-      # 10:10, refused as `agent went silent` — a genuinely different diagnosis,
-      # reached through a different signal that legitimately passed the engine's
-      # own fingerprint dedup — would be suppressed, and the operator would act
-      # on the stale reason. #silence_verdict already draws exactly the
-      # distinction that matters and is stable across a flap within a class.
-      DISPATCH_REFUSED_ALARM_TTL_SECONDS =
-        (ENV["FLEET_DISPATCH_REFUSED_TTL_SECONDS"].presence&.to_i&.positive? || 60 * 60)
-
-      # :offline (outside the live replica set) | :went_silent | :never_reported
-      def refusal_class(instance)
-        instance.silence_verdict || :offline
-      end
-
-      def emit_dispatch_refused!(instance, command, reason)
-        return unless claim_dispatch_refused_alarm!(instance, command, refusal_class(instance))
-
-        ::System::Fleet::EventBroadcaster.emit!(
-          account: account,
-          kind: "fleet.dispatch_refused",
-          severity: :high,
-          payload: {
-            "instance_id" => instance.id,
-            "node_id" => instance.node_id,
-            "command" => command,
-            "instance_status" => instance.status,
-            "refusal_class" => refusal_class(instance).to_s,
-            # NOT compacted. nil here is the DIAGNOSIS for the :never_reported
-            # class — an instance the control plane marked running from provider
-            # state alone — so dropping the key would delete the field an
-            # operator uses to tell "never reported" from "went silent", in
-            # exactly the class where it matters most.
-            "last_heartbeat_at" => instance.last_heartbeat_at&.iso8601,
-            "reason" => reason
-          },
-          source: "decision_engine.dispatch_refused",
-          correlation_id: instance.id
-        )
-      rescue StandardError => e
-        # A missing fleet_events table is a deploy defect, not an observability
-        # hiccup, and System::DeployDefect exists so it reads as a FAILED tick
-        # rather than a healthy one. EventBroadcaster re-raises those
-        # deliberately; swallowing them here would restore the silence that
-        # module was written to break.
-        raise if ::System::DeployDefect.schema?(e)
-
-        # Anything else: observability must never break the refusal it observes.
-        # The task is already not being created; losing the event costs
-        # visibility, and raising would cost the fence.
-        Rails.logger.warn("[FleetDecisionEngine] dispatch-refused emit failed: #{e.message}")
-        nil
-      end
-
-      def claim_dispatch_refused_alarm!(instance, command, klass)
-        return true unless Rails.cache.respond_to?(:write)
-
-        key = "fleet:dispatch_refused:#{account.id}:#{instance.id}:#{command}:#{klass}"
-        # unless_exist is the ATOMIC form. exist?-then-write races two engine
-        # ticks into both claiming; harmless here (two rows instead of one) but
-        # free to close.
-        Rails.cache.write(key, Time.current.to_i.to_s,
-                          expires_in: DISPATCH_REFUSED_ALARM_TTL_SECONDS, unless_exist: true)
-      rescue StandardError => e
-        Rails.logger.warn("[FleetDecisionEngine] dispatch-refused dedup unavailable, suppressing: #{e.message}")
-        false
       end
 
       def recently_decided?(signal)
@@ -2290,8 +2258,8 @@ module System
         id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
-        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
-        return self_managed_skip(instance) if self_managed_target?(instance)
+        return refuse_foreign_control_plane!(instance, command: "instance_reboot") unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: "instance_reboot") if self_managed_target?(instance)
 
         action = if instance.may_reboot?
                    "reboot"
@@ -2342,8 +2310,8 @@ module System
         id = payload["instance_id"] || payload[:instance_id]
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
-        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
-        return self_managed_skip(instance) if self_managed_target?(instance)
+        return refuse_foreign_control_plane!(instance, command: "instance_state_converge") unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: "instance_state_converge") if self_managed_target?(instance)
 
         actual_status = (payload["actual_status"] || payload[:actual_status]).to_s
         event = CONVERGENCE_EVENT_FOR_ACTUAL_STATUS[actual_status]
@@ -2421,8 +2389,8 @@ module System
 
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
-        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
-        return self_managed_skip(instance) if self_managed_target?(instance)
+        return refuse_foreign_control_plane!(instance, command: "honeypot_quarantine") unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: "honeypot_quarantine") if self_managed_target?(instance)
 
         result = ::System::InstanceControlService.execute(instance: instance, action: "terminate")
         if result.respond_to?(:success?)
@@ -2934,8 +2902,8 @@ module System
         instance_id = payload["instance_id"] || payload[:instance_id]
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
         return { applied: false, reason: "instance not found: #{instance_id.inspect}" } unless instance
-        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
-        return self_managed_skip(instance) if self_managed_target?(instance)
+        return refuse_foreign_control_plane!(instance, command: "template_closure_apply") unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: "template_closure_apply") if self_managed_target?(instance)
 
         node = instance.node
         return { applied: false, reason: "instance has no node" } unless node
@@ -2979,18 +2947,39 @@ module System
       def dispatch_reconcile_task(signal, skill_result, command:)
         plan = skill_result.is_a?(Hash) ? skill_result[:data] : nil
         plan = plan.respond_to?(:with_indifferent_access) ? plan.with_indifferent_access : {}
-        # The executor's disruption budget still gates auto-apply even when
-        # the policy proceeds — a >max_disruption_pct plan needs an operator.
-        return { applied: false, reason: "plan disruption exceeds auto-apply budget" } if plan[:requires_approval]
 
         # F3-09: config_drift payloads carry instance_ids (per-node running
         # set) rather than a single instance_id — accept either shape.
+        #
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         target_id = payload["instance_id"] || Array(payload["instance_ids"]).first
-        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: target_id)
+
+        # The executor's disruption budget still gates auto-apply even when
+        # the policy proceeds — a >max_disruption_pct plan needs an operator.
+        # The most operator-actionable refusal of the four: a plan too large to
+        # auto-apply is precisely the one somebody should look at, and until
+        # this emitted, nothing in the stream said it had happened.
+        #
+        # STILL THE FIRST RETURN, so which refusal wins is unchanged: a >budget
+        # plan whose target also fails to resolve reports the budget, not
+        # "instance not found". The target lookup is done INSIDE this branch
+        # rather than hoisted above it — an earlier draft hoisted it, which put
+        # a DB round-trip on every over-budget tick to feed an emit that is
+        # throttled to once an hour, and on solid_cache the claim itself is a
+        # SELECT ... FOR UPDATE. The lookup belongs where its result is used.
+        if plan[:requires_approval]
+          reason = "plan disruption exceeds auto-apply budget"
+          emit_dispatch_refused!(account: account, command: command,
+                                 instance: find_account_instance(target_id),
+                                 reason: reason, refusal_class: :disruption_budget,
+                                 source: DISPATCH_REFUSED_SOURCE)
+          return { applied: false, reason: reason }
+        end
+
+        instance = find_account_instance(target_id)
         return { applied: false, reason: "instance not found" } unless instance
-        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
-        return self_managed_skip(instance) if self_managed_target?(instance)
+        return refuse_foreign_control_plane!(instance, command: command) unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: command) if self_managed_target?(instance)
 
         # IMP-fb05226e89cb — checked BEFORE the in-flight guard below on
         # purpose. Liveness is the more fundamental fact: if the agent is gone,
@@ -3003,7 +2992,16 @@ module System
 
         if ::System::Task.where(account: account, operable: instance,
                                 command: command, status: OPEN_TASK_STATUSES).exists?
-          return { applied: false, reason: "reconcile task already in flight" }
+          # Benign in isolation — and that is exactly why it needs a row. It is
+          # the reason a GENUINELY STUCK task looks like an ordinary skip
+          # forever: every tick re-decides, sees the same open row, and returns
+          # the same silent applied:false. The hourly throttle keeps that from
+          # becoming a storm while still making the condition findable.
+          reason = "reconcile task already in flight"
+          emit_dispatch_refused!(account: account, instance: instance, command: command,
+                                 reason: reason, refusal_class: :task_in_flight,
+                                 source: DISPATCH_REFUSED_SOURCE)
+          return { applied: false, reason: reason }
         end
 
         # IMP-f1c1e6d61104 (c) — break the dispatch -> fail -> redispatch loop.

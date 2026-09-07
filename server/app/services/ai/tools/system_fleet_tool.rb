@@ -9,6 +9,13 @@ module Ai
     # Mirrors trading_*_tool.rb in shape so the operator approval UI + agent
     # invocation paths work uniformly.
     class SystemFleetTool < BaseTool
+      # IMP-b8cab7f951c7 — this tool holds two of the six on-node refusal
+      # producers, and they are the two that never reach a decision event at
+      # all, so the generic "decision events should carry remediation_applied"
+      # change cannot reach them. Same emitter and same throttle as
+      # System::Fleet::DecisionEngine's four, rather than a second pattern.
+      include ::System::Fleet::DispatchRefusalReporter
+
       # Floor permission: every caller needs at least system.nodes.read to use
       # the tool at all. Per-action permissions in ACTION_PERMISSIONS gate
       # mutating actions to higher levels.
@@ -3087,6 +3094,16 @@ module Ai
 
           if (refusal = instance.on_node_dispatch_refusal)
             skipped << { instance_id: instance.id, reason: refusal }
+            # IMP-b8cab7f951c7 — the `skipped` bucket is returned synchronously
+            # to the caller who asked, so an operator sees it immediately. What
+            # it lacks is a DURABLE record: nothing survives the reply, so a
+            # refusal that mattered cannot be found later and the fleet-wide
+            # "how often are we refusing, and for what" question cannot be
+            # answered from the ledger. Same emitter, same throttle as the
+            # autonomous lanes.
+            emit_dispatch_refused!(account: @account, instance: instance, command: "sync_modules",
+                                   reason: refusal, refusal_class: liveness_refusal_class(instance),
+                                   source: "mcp.retemplate_node.dispatch_refused")
             next
           end
 
@@ -3704,6 +3721,13 @@ module Ai
       def refresh_instance_modules(params)
         instance = account_instances.find(params[:instance_id])
         if (offline = instance.offline_dispatch_refusal)
+          # Emitted for the REFUSAL arm only. The `warning` arm further down
+          # QUEUES the task — a dispatch_refused row for work that was in fact
+          # dispatched would be a lie in the ledger, and the operator already
+          # has the warning in their own reply.
+          emit_dispatch_refused!(account: @account, instance: instance, command: "sync_modules",
+                                 reason: offline, refusal_class: :offline,
+                                 source: "mcp.refresh_instance_modules.dispatch_refused")
           return error_result("cannot queue a module reconcile: #{offline}")
         end
 
