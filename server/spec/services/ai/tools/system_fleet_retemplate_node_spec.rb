@@ -157,7 +157,9 @@ RSpec.describe Ai::Tools::SystemFleetTool, "re-templating a provisioned node" do
 
       expect(sync_tasks_for(instance).count).to eq(0)
       convergence = r.dig(:data, :template_applied, :convergence)
-      expect(convergence[:deferred]).to include(instance.id)
+      # {instance_id, reason} since IMP-0da2d48b5c1f — a bare id discarded the
+      # liveness fact for a pivot node that was also dead.
+      expect(convergence[:deferred].map { |e| e[:instance_id] }).to include(instance.id)
       expect(convergence[:reason].to_s).to match(/reboot|reprovision/i)
     end
 
@@ -261,8 +263,114 @@ RSpec.describe Ai::Tools::SystemFleetTool, "re-templating a provisioned node" do
       convergence, task_count = convergence_for(instance)
 
       expect(task_count).to eq(0)
-      expect(convergence[:deferred]).to include(instance.id)
+      expect(convergence[:deferred].map { |e| e[:instance_id] }).to include(instance.id)
       expect(convergence[:skipped]).to be_empty
+    end
+
+    # IMP-0da2d48b5c1f — two reporting defects, both about the payload telling
+    # the caller something FALSE.
+    #
+    # 1. The pivot arm is checked first (correctly — the operator action for a
+    #    silent-but-alive pivot node is a reboot either way, and two buckets
+    #    would double-count the fleet), but `deferred` carried BARE IDS while
+    #    `skipped` carried {instance_id, reason}. So a pivot node that was
+    #    errored, silent or never-enrolled arrived with NO liveness information
+    #    and the shared "just reboot it" reason attached — true for a
+    #    silent-but-alive node, FALSE for a presumed-dead one, where the action
+    #    is investigate/reprovision.
+    #
+    # 2. A DORMANT instance (stopped/rebooting/provisioning) was reported
+    #    `dispatched`. The task really is created and really is pulled when an
+    #    agent starts — but nothing is listening now, and the janitor's 48h
+    #    cancel may reach the row first, so `dispatched` overstates it.
+    describe "the payload does not overstate what it knows (IMP-0da2d48b5c1f)" do
+      def deferred_entry(convergence, instance)
+        convergence[:deferred].find { |e| e[:instance_id] == instance.id }
+      end
+
+      it "carries the LIVENESS reason for a pivot node that is presumed dead" do
+        instance = create(:system_node_instance, :running, node: node, account: account,
+                          last_heartbeat_at: 30.minutes.ago, config: { "boot_mode" => "direct_kernel" })
+
+        convergence, task_count = convergence_for(instance)
+
+        expect(task_count).to eq(0)
+        entry = deferred_entry(convergence, instance)
+        expect(entry).to be_present
+        expect(entry[:reason]).to match(/went silent/)
+      end
+
+      it "carries the liveness reason for a pivot node reaped to error" do
+        instance = create(:system_node_instance, node: node, account: account, status: "error",
+                          last_heartbeat_at: 30.minutes.ago, config: { "boot_mode" => "direct_kernel" })
+
+        convergence, = convergence_for(instance)
+
+        entry = deferred_entry(convergence, instance)
+        expect(entry).to be_present
+        expect(entry[:reason]).to match(/no agent will pull/)
+      end
+
+      it "still says 'reboot' for a pivot node whose agent is fine" do
+        instance = create(:system_node_instance, :running, node: node, account: account,
+                          last_heartbeat_at: Time.current, config: { "boot_mode" => "direct_kernel" })
+
+        convergence, = convergence_for(instance)
+
+        entry = deferred_entry(convergence, instance)
+        expect(entry).to be_present
+        expect(entry[:reason]).to match(/reboot|reprovision/i)
+        expect(entry[:reason]).not_to match(/went silent|never reported|no agent will pull/)
+      end
+
+      it "reports a dormant instance in its own bucket rather than as dispatched" do
+        instance = create(:system_node_instance, node: node, account: account, status: "stopped",
+                          last_heartbeat_at: Time.current, config: { "boot_mode" => "cloud_init" })
+
+        convergence, task_count = convergence_for(instance)
+
+        # The task IS created — that is the fact the old `dispatched` bucket
+        # was right about, and it must not be lost.
+        expect(task_count).to eq(1)
+        expect(convergence[:dispatched]).not_to include(instance.id)
+        expect(convergence[:skipped]).to be_empty
+
+        entry = convergence[:dormant].find { |e| e[:instance_id] == instance.id }
+        expect(entry).to be_present
+        expect(entry[:reason]).to match(/no agent is running/)
+        expect(entry[:task_id]).to be_present
+      end
+
+      # THE CASE THAT CAUGHT THE DESCRIPTION OUT. A `starting` instance with no
+      # heartbeat has no agent listening — but a missing heartbeat during boot
+      # is deliberately NOT evidence of death (#silence_verdict returns nil for
+      # `starting`, and #dormant_agent_reason declines to judge a status where
+      # a heartbeat IS expected), so it is neither refused nor dormant and it
+      # lands in `dispatched`. That is the right BEHAVIOUR — refusing it would
+      # trade a visible stuck task for a node that never gets its modules — and
+      # it is why `dispatched` cannot claim an agent is listening. An earlier
+      # draft of the tool description said exactly that and was false here.
+      it "puts a not-yet-reported starting instance in dispatched, which therefore proves nothing" do
+        instance = create(:system_node_instance, node: node, account: account, status: "starting",
+                          last_heartbeat_at: nil, config: { "boot_mode" => "cloud_init" })
+
+        convergence, task_count = convergence_for(instance)
+
+        expect(task_count).to eq(1)
+        expect(convergence[:dispatched]).to include(instance.id)
+        expect(convergence[:dormant]).to be_empty
+        expect(convergence[:skipped]).to be_empty
+      end
+
+      it "leaves dormant empty and dispatched populated for a live agent" do
+        instance = create(:system_node_instance, :running, node: node, account: account,
+                          last_heartbeat_at: Time.current, config: { "boot_mode" => "cloud_init" })
+
+        convergence, = convergence_for(instance)
+
+        expect(convergence[:dispatched]).to include(instance.id)
+        expect(convergence[:dormant]).to be_empty
+      end
     end
 
     it "leaves skipped empty for a healthy fleet" do

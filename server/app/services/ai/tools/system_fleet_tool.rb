@@ -1110,7 +1110,7 @@ module Ai
               name: { type: "string", required: false, description: "New display name for the node" },
               description: { type: "string", required: false, description: "New free-text description for the node" },
               enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the node" },
-              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence`, which has three buckets: `dispatched` (live cloud_init instances that got a sync_modules task), `deferred` (pivot-booted direct_kernel/uefi_disk instances, which compose their union at boot and need a reboot/rolling reprovision before the change takes effect), and `skipped` (instances in the retemplate's blast radius KNOWN to have no agent that will pull the task — errored, or running but silent/never-enrolled — each with a `reason`; no task is created for these, so they are NOT converged). Note `skipped` is evidence of death, not proof of life: an instance that is stopped, rebooting or still provisioning has no agent listening either, but is reported under `dispatched` because its queued task is pulled whenever the agent does come up." },
+              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence`, which has FOUR buckets. `dispatched` — ids of cloud_init instances that got a sync_modules task and against which NO liveness objection is known. That is weaker than `an agent is listening`, and the difference matters: a `starting` instance that has never reported lands here, because a missing heartbeat during boot is not evidence of death (an agent enrolling normally has not reported yet) — nothing is listening for it either. NO bucket asserts an agent IS listening; `dispatched` asserts only the absence of evidence against. `dormant` — {instance_id, task_id, reason}: a task WAS created and will be pulled whenever an agent starts, but the instance is stopped/stopping/rebooting/pending/provisioning, so nothing is listening now and the worker janitor's unrunnable sweep may cancel the row at 48h first; not converged yet and may never be. `deferred` — {instance_id, reason}: pivot-booted direct_kernel/uefi_disk instances, which compose their union at boot; the reason is the reboot/rolling-reprovision instruction, EXCEPT for a pivot instance that is errored, silent or never-enrolled, where it is that liveness fact instead because the action is investigate/reprovision rather than reboot — read the ENTRY reason, not the bucket-level one, when they differ. Known gap (offer 01a07b3c-6e02): a pivot instance that is merely DORMANT gets the reboot instruction with no mention of the dormancy, which is wrong in verb for a stopped one and premature for one still provisioning. `skipped` — {instance_id, reason}: instances KNOWN to have no agent that will pull the task (errored, or running/starting but silent or never-enrolled); no task is created for these, so they are definitively NOT converged. `task_ids` spans `dispatched` PLUS `dormant` and is NOT positionally aligned with either — take a dormant instance's id from its own entry." },
               worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
               public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
               allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
@@ -3077,18 +3077,49 @@ module Ai
       # pull this" means. The pivot check stays FIRST: a pivot-booted node that
       # is also silent is `deferred`, not `skipped` — the operator action is a
       # reboot either way, and two buckets would double-count the fleet.
+      # Named once because it is now BOTH the top-level bucket reason and the
+      # per-entry default, and a second copy would drift the first time one of
+      # them was reworded.
+      PIVOT_DEFERRAL_REASON =
+        "pivot-booted instances compose their module union at boot — the assignments are updated, " \
+        "but a reboot (rolling reprovision) is required for them to take effect"
+
       def dispatch_retemplate_convergence!(node)
         live_statuses =
           ::System::Ai::Skills::TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE[:system_node_instances][:status]
 
         dispatched = []
         deferred   = []
+        dormant    = []
         skipped    = []
         task_ids   = []
 
         node.node_instances.where(status: live_statuses).find_each do |instance|
           if instance.pivot_boot?
-            deferred << instance.id
+            # IMP-0da2d48b5c1f — the pivot arm stays FIRST (the operator action
+            # for a silent-but-alive pivot node is a reboot either way, and two
+            # buckets would double-count the fleet), but the entry now carries a
+            # per-instance reason instead of a bare id.
+            #
+            # The bare-id shape discarded the liveness fact entirely, so a pivot
+            # node that was errored, silent or never-enrolled arrived with the
+            # shared "just reboot it" reason and nothing else — an instruction
+            # that is TRUE for a silent-but-alive node and FALSE for a presumed
+            # dead one, where the action is investigate/reprovision. The failure
+            # it produced: five direct_kernel instances, two of them reaped to
+            # `error`; the operator rolls a reboot, three converge, two never
+            # come back, and nothing in the reply ever said they were dead.
+            # KNOWN RESIDUAL, named rather than hidden: a pivot instance that
+            # is merely DORMANT (stopped / provisioning) falls to the reboot
+            # instruction, which is wrong in verb for a stopped one and
+            # premature for one that has not booted yet. #dormant_agent_reason
+            # is deliberately NOT OR-ed in here — its text says the task "stays
+            # pending until one starts", and no task exists for a deferred
+            # pivot instance, so it would replace one wrong instruction with a
+            # reason referencing a row that was never created. The fix is a
+            # COMPOSED reason and is filed as offer 01a07b3c-6e02.
+            deferred << { instance_id: instance.id,
+                          reason: instance.on_node_dispatch_refusal || PIVOT_DEFERRAL_REASON }
             next
           end
 
@@ -3117,15 +3148,42 @@ module Ai
               "triggered_at" => Time.current.iso8601
             }
           )
-          dispatched << instance.id
           task_ids << task.id
+
+          # IMP-0da2d48b5c1f — a FOURTH bucket, because `dispatched` overstated
+          # this one. NodeInstance#dormant_agent_reason covers the statuses that
+          # are live for capacity but are running no agent yet — stopped,
+          # stopping, rebooting, pending, provisioning. Both refusal arms answer
+          # nil for them, so they fell through to `dispatched`.
+          #
+          # That was right as a FACT and wrong as a REPORT: the task really is
+          # created and really is pulled once an agent starts (StatusController
+          # #pending_tasks serves every pending row of an instance), which is why
+          # this is not a refusal and the task is NOT withheld. But nothing is
+          # listening now, and the worker janitor's unrunnable sweep may cancel
+          # the row before any agent starts — so telling the caller it was
+          # "dispatched" claims a convergence that may never happen. The task_id
+          # rides along so the caller can follow the row it was actually given.
+          if (dormancy = instance.dormant_agent_reason)
+            dormant << { instance_id: instance.id, task_id: task.id, reason: dormancy }
+          else
+            dispatched << instance.id
+          end
         end
 
-        result = { dispatched: dispatched, task_ids: task_ids, deferred: deferred, skipped: skipped }
+        # `task_ids` spans dispatched + dormant. It USED to be incidentally
+        # index-aligned with `dispatched` (every create! pushed to both), and a
+        # caller zipping them would now silently misassign ids — so the tool
+        # description says outright that it is not aligned, and a dormant
+        # entry carries its own task_id.
+        result = { dispatched: dispatched, task_ids: task_ids, deferred: deferred,
+                   dormant: dormant, skipped: skipped }
         if deferred.any?
-          result[:reason] =
-            "pivot-booted instances compose their module union at boot — the assignments are updated, " \
-            "but a reboot (rolling reprovision) is required for them to take effect"
+          # The TOP-LEVEL reason still names the action for the bucket as a
+          # whole, because a reboot is what most deferrals need. Each entry's
+          # own `reason` is the authority for that instance — read the entry,
+          # not this line, when they disagree.
+          result[:reason] = PIVOT_DEFERRAL_REASON
         end
         result
       end

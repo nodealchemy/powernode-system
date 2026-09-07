@@ -112,9 +112,11 @@ RSpec.describe "on-node task producer census" do
       "app/services/ai/tools/system_fleet_tool.rb#dispatch_retemplate_convergence!" => {
         disposition: :gated, sites: 1,
         evidence: "on_node_dispatch_refusal",
-        why: "system_update_node's convergence rung. Reports refusals in a third `skipped` " \
-             "bucket rather than narrowing its LIVE_INSTANCE_SCOPE query, which is the " \
-             "blast-radius definition it shares with TemplateApprovalPolicy."
+        why: "system_update_node's convergence rung. Reports refusals in a `skipped` bucket " \
+             "rather than narrowing its LIVE_INSTANCE_SCOPE query, which is the blast-radius " \
+             "definition it shares with TemplateApprovalPolicy. IMP-0da2d48b5c1f took the rung " \
+             "to FOUR buckets (dispatched / dormant / deferred / skipped) — the gate itself is " \
+             "unchanged, only what the reply discloses about the instances it did not refuse."
       },
       "app/services/ai/tools/system_fleet_tool.rb#refresh_instance_modules" => {
         disposition: :gated, sites: 1,
