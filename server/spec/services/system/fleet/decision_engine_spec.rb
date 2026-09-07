@@ -411,6 +411,46 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(instance.reload.status).to eq("error")
       end
 
+      # IMP-231f17d71dfa — the PRODUCER half of the presumed-dead verdict.
+      #
+      # System::NodeInstance#agent_recovered_since_presumed_dead? decides whether
+      # a provider "powered on" report may overrule this row, and it reads
+      # presumed_dead_at. The request spec that exercises that guard sets the
+      # column by hand, so without this example a mutant that dropped the stamp
+      # from the reap would leave every liveness example green while the live
+      # flap continued exactly as before — the guard would read nil, conclude "no
+      # verdict to protect", and promote.
+      #
+      # Asserting `status == "error"` alone does not cover it: the status write
+      # and the stamp are two fields of one update! and only one of them carries
+      # the REASON.
+      it "stamps when the verdict was reached, not only its effect" do
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 45.minutes.ago)
+
+        freeze_time do
+          engine.decide(silent_signal(instance))
+          expect(instance.reload.presumed_dead_at).to eq(Time.current)
+        end
+      end
+
+      # The other direction: a row reaped for agent silence must become
+      # promotable again the moment its agent speaks, or the guard converts a
+      # transient outage into a permanent one. Clearing on heartbeat is what
+      # keeps presumed_dead_at meaning an OPEN verdict rather than a historical
+      # note a reader would have to date-compare to interpret.
+      it "retires the verdict when the agent speaks again" do
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 45.minutes.ago)
+        engine.decide(silent_signal(instance))
+        expect(instance.reload.presumed_dead_at).to be_present
+
+        instance.record_heartbeat!(agent_version: "1.0.0", boot_id: "boot-abc")
+
+        expect(instance.reload.presumed_dead_at).to be_nil
+        expect(instance.agent_recovered_since_presumed_dead?).to be true
+      end
+
       it "emits the escalation INSTEAD of the per-tick raw signal event" do
         instance = create(:system_node_instance, :running, node: node,
                           last_heartbeat_at: 45.minutes.ago)

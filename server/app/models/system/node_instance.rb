@@ -137,6 +137,23 @@ module System
     has_many :provider_volumes, class_name: "System::ProviderVolume"
 
     before_validation :inherit_account_from_node
+
+    # IMP-231f17d71dfa — a presumed-dead verdict is scoped to ONE error episode.
+    #
+    # Clearing it only in #record_heartbeat! leaves it set on every other way out
+    # of :error, and a stale verdict then refuses a LATER, unrelated error. The
+    # sequence that does it: reaped for silence (stamp written) -> operator
+    # `start` -> :running with the stamp still set -> provider reports "error" ->
+    # a bare update! writes :error -> provider reports "running" -> refused,
+    # even though this error episode was provider-reported, not silence. That is
+    # exactly the "errored for other reasons keep the self-heal" case the nil
+    # semantics promise, broken by a leftover.
+    #
+    # A before_save on the column rather than AASM hooks, deliberately: the
+    # hottest writer here (System::CloudSyncService#sync_region_instances) writes
+    # `status` with a bare update! and fires no AASM event at all, so `after`
+    # hooks on the transitions would miss precisely the path that matters.
+    before_save :retire_presumed_dead_verdict_on_leaving_error
     validate :account_matches_node
 
     # Validations
@@ -1175,6 +1192,103 @@ module System
       :went_silent if last_heartbeat_at < HEARTBEAT_STALE_AFTER.ago
     end
 
+    # IMP-231f17d71dfa — the provider's view of an instance, recorded as an
+    # OBSERVATION rather than consumed by a status transition.
+    #
+    # A hypervisor can only report whether a VM is powered on. It cannot see
+    # whether an agent enrolled, whether that agent is still alive, or whether
+    # the machine is doing anything at all. Before this, the observation existed
+    # only as the argument to an AASM event: if the event did not fire, the fact
+    # that the provider had said "running" was thrown away, so "powered on but
+    # we did not promote it" — the state an operator most needs to see — had
+    # nowhere to live.
+    #
+    # update_columns deliberately: this is a sync-path write of two derived
+    # observation columns, it must not touch updated_at (which would make every
+    # hourly sync look like a modification to every consumer that watches it),
+    # and it must not fire validations or callbacks on a row another process may
+    # be transitioning concurrently.
+    def record_provider_power_state!(state)
+      return if state.blank?
+
+      update_columns(provider_power_state: state.to_s,
+                     provider_power_state_at: Time.current)
+    end
+
+    # Has the agent spoken since a reap judged this instance dead?
+    #
+    # This is the discriminator for whether a provider "powered on" verdict may
+    # overrule an `error` written from agent silence, and it deliberately names
+    # no duration. The subsystem has three disagreeing silence thresholds —
+    # HEARTBEAT_STALE_AFTER (3 min, this model), PRESUMED_DEAD_SILENCE_SECONDS
+    # (30 min, the reaper), and the sensor's account-tunable
+    # silent_threshold_seconds — so any threshold chosen here would be both
+    # arbitrary and a new coupling from whoever asks to whichever component owns
+    # the constant. Comparing against WHEN THE REAP HAPPENED is exact instead:
+    # an agent that reported after being presumed dead is back, and one that has
+    # not is not, whatever any threshold says.
+    #
+    # nil presumed_dead_at answers TRUE, and that is load-bearing, not a
+    # convenience default: it means no reap ever judged this row dead, so there
+    # is no verdict to protect. Rows errored for other reasons therefore keep the
+    # IMP-42cf03360656 stranded-row self-heal, where provider state genuinely is
+    # the best evidence available. Answering false there would strand exactly the
+    # instances that self-heal was written to rescue.
+    #
+    # A SECOND DISCRIMINATOR ALREADY EXISTS, and they are not interchangeable.
+    # System::Fleet::Sensors::InstanceUnrecoverableSensor derives "was reaped for
+    # silence" from system_fleet_events rows of kind
+    # "system.instance_presumed_dead". That is the HISTORY — every reap ever, and
+    # it never retires. This column is the CURRENT verdict and clears the moment
+    # an agent speaks. Anything asking "has this instance ever been presumed
+    # dead" wants the events; anything asking "is it presumed dead right now"
+    # wants this column. Reaching for the wrong one gives an answer that looks
+    # right on a fresh row and diverges the first time an instance recovers.
+    #
+    # NOT reusable for this: #silence_verdict, which looks like the right
+    # predicate and is not. It returns nil unless the status is in
+    # HEARTBEAT_EXPECTED_STATUSES = %w[running starting]; :error is absent, so it
+    # answers "no evidence of silence" for precisely the rows this guards.
+    def agent_recovered_since_presumed_dead?
+      return true if presumed_dead_at.nil?
+      return false if last_heartbeat_at.nil?
+
+      last_heartbeat_at > presumed_dead_at
+    end
+
+    # Any exit from :error ends the episode the verdict belonged to. Guarded on
+    # presumed_dead_at being present so an ordinary save never writes the column.
+    def retire_presumed_dead_verdict_on_leaving_error
+      return unless presumed_dead_at.present?
+      return unless status_changed?
+      return unless status_was.to_s == "error"
+      return if status.to_s == "error"
+
+      self.presumed_dead_at = nil
+    end
+
+    # The single decision point for "may a provider-reported state overwrite this
+    # row's status?", shared by every path that reconciles against a hypervisor.
+    #
+    # THREE call sites reconcile cloud state and they do not agree on mechanism:
+    # the worker_api and internal-API controllers both fire AASM events, while
+    # System::CloudSyncService#sync_region_instances — the path the hourly
+    # SystemCloudSyncJob actually takes — writes `status:` with a bare update!
+    # that bypasses AASM and therefore every may_X? guard on it. A guard placed
+    # on the AASM events alone would leave the scheduled sweep, i.e. the one
+    # producing the observed hourly flap, completely uncovered while looking
+    # fixed. Hence a model predicate rather than a guard on the transition.
+    #
+    # Returns false ONLY for the one contested case: promotion to running, from
+    # :error, on a row a reap presumed dead whose agent has not spoken since.
+    # Everything else is someone else's decision to make.
+    def provider_state_may_promote?(reported_status)
+      return true unless reported_status.to_s == "running"
+      return true unless status == "error"
+
+      agent_recovered_since_presumed_dead?
+    end
+
     # Records a heartbeat from the on-node powernode-agent. The :module_digests
     # parameter is a hash of { module_id => oci_digest } captured by the agent.
     # :booted_image_git_sha is the git_sha baked into the disk image the node
@@ -1197,6 +1311,13 @@ module System
         module_first_seen_running_at: next_first_seen_running_at(reported, boot_id)
       }
       attrs[:architecture] = architecture if architecture.present?
+      # IMP-231f17d71dfa: a heartbeat retires any presumed-dead verdict. The
+      # verdict was "the agent has stopped speaking"; the agent is speaking, so
+      # the verdict is spent. Clearing it here rather than leaving it for the
+      # promotion guard to out-reason keeps the column meaning exactly one thing
+      # — an OPEN verdict — so a reader never has to know to compare it against
+      # last_heartbeat_at to find out whether it is still in force.
+      attrs[:presumed_dead_at] = nil if presumed_dead_at.present?
       # Boot-image sha (campaign 019f505f): a reported sha always wins. A heartbeat
       # that reports NO sha on a *new* boot (boot_id changed) means the node booted
       # an image that can't self-identify (a pre-campaign image, or a rollback) —

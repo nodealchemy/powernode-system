@@ -1495,7 +1495,14 @@ module System
 
         previous_status = instance.status
         silent_seconds = (Time.current - heartbeat).round
-        instance.update!(status: "error")
+        # IMP-231f17d71dfa: stamp WHEN this verdict was reached, not just its
+        # effect. `status: "error"` says the instance is broken; it does not say
+        # the reason was agent silence, and other paths write :error for other
+        # reasons. Cloud sync needs to tell those apart before deciding whether a
+        # provider "powered on" report may overrule this row — see
+        # NodeInstance#agent_recovered_since_presumed_dead?. A heartbeat clears
+        # the stamp, so it always reads as an OPEN verdict.
+        instance.update!(status: "error", presumed_dead_at: Time.current)
 
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,

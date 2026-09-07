@@ -58,6 +58,12 @@ module Api
 
             synced_total = 0
             updated_total = 0
+            # IMP-231f17d71dfa: instances whose provider-reported status the
+            # platform deliberately declined to apply. Aggregated alongside
+            # updated_total because this is the layer the hourly SystemCloudSyncJob
+            # actually reads — a held_count that stops at the service is a signal
+            # nobody receives.
+            held_total = 0
             errors = []
 
             regions.find_each do |region|
@@ -65,6 +71,7 @@ module Api
               if result.success?
                 synced_total += result.data[:synced_count].to_i
                 updated_total += result.data[:updated_count].to_i
+                held_total += result.data[:held_count].to_i
               else
                 errors << { region_id: region.id, error: result.error }
               end
@@ -79,6 +86,7 @@ module Api
               region_count: regions.count,
               synced_count: synced_total,
               updated_count: updated_total,
+              held_count: held_total,
               errors: errors
             }
           end
