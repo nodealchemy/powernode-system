@@ -1026,6 +1026,58 @@ module System
     # progress 0 until the worker janitor cancels it 48 hours later — and
     # nothing in the event stream says why.
     #
+    # THE EVIDENCE, because this claim was disputed and the dispute cost two
+    # independent reviews (IMP-a501f841ffce). Three facts, each checkable:
+    #
+    #   1. DELIVERY. Api::V1::System::NodeApi::StatusController#pending_tasks
+    #      serves an agent `current_instance.tasks` in status pending /
+    #      acknowledged / running, wrapped in System::RestartAfterUpdate
+    #      .offerable. That wrapper IS command-conditioned, so "no command
+    #      filter" would be wrong — but it excludes exactly one thing: a
+    #      RUNNING `restart` carrying options["unit"] that the platform itself
+    #      fired. It can never withhold a sync_modules or apply_config, and it
+    #      cannot withhold a PENDING row of any command. So every pending row on
+    #      an instance is offered to that instance's agent, and to nothing else.
+    #   2. CAPABILITY. The agent registers a handler for every command
+    #      System::Task can mint (agent/internal/runtime/tasks/handlers/:
+    #      config.go binds sync_modules and apply_config, lifecycle.go the
+    #      lifecycle verbs, ssh.go ssh_command, storage.go all seven storage.*
+    #      through a loop variable a literal grep does not see).
+    #   3. THE SERVER ARM HAS NEVER RUN. Api::V1::System::WorkerApi::
+    #      TasksController#execute resolves a task through #worker_operations,
+    #      which scopes through System::Node.where(worker: current_worker).
+    #      `node.worker_id` is NULL on every node that has ever existed and
+    #      nothing assigns it, so that scope is the empty set and the lookup
+    #      404s for EVERY task id. Api::V1::System::WorkerApi::
+    #      JanitorController's header carries the measurement and the recorded
+    #      ruling (knowledge 01a031f2) that rejects the tempting minimal fix of
+    #      populating worker_id — read that rather than re-deriving this.
+    #
+    #      Stated as a DATA STATE, deliberately, because that is what it is:
+    #      worker_id is a permitted attribute on the node create and update MCP
+    #      verbs, so one call can falsify the sentence. What cannot change by a
+    #      single call is that nothing in the tree assigns it.
+    #
+    #      Why the reaper still reaches these rows when the worker arm cannot:
+    #      it reads the ACCOUNT-scoped janitor seam
+    #      (JanitorController, System::Task.where(account_id: ...)), not
+    #      #worker_operations. The two facts are not in tension.
+    #
+    # WHAT MADE IT LOOK FALSE: ExecutionDispatcher::COMMAND_REGISTRY maps
+    # sync_modules and apply_config to server-side System::Runtime classes, so
+    # the code READS as though these two complete server-side. Fact 3 is why
+    # that mapping is paperwork — the arm it describes cannot reach a row.
+    #
+    # Campaign 01a0790b increment 3 deletes that dispatcher and its registry
+    # outright and adds a lint pinning fact 2 as an invariant. That work is on
+    # campaign/01a0790b-614f and NOT on this branch, so the paragraph above
+    # still describes code you will find here; when the campaign merges, the
+    # ambiguity it describes is gone rather than merely inert.
+    #
+    # The 48 hours is SystemTaskReaperJob::UNRUNNABLE_THRESHOLD, ENV-tunable via
+    # SYSTEM_REAPER_UNRUNNABLE_MIN — read the constant rather than trusting the
+    # number in this sentence.
+    #
     # Lives on the model rather than at the dispatch site because the other
     # producers of on-node tasks can adopt it (today the sole caller is
     # Fleet::DecisionEngine#dispatch_reconcile_task; System::Ai::Tools's
