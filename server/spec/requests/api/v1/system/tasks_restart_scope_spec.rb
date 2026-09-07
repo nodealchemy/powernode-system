@@ -86,16 +86,22 @@ RSpec.describe "POST /api/v1/system/tasks restart scope", type: :request do
     end
   end
 
+  # THE OPERATOR GESTURE THIS BLOCK DOCUMENTED IS GONE (campaign 01a0790b
+  # increment 2), and that is a real capability removal, not a no-op: POST with
+  # {"scope":"instance"} used to create a whole-VM reboot and now 422s.
+  #
+  # It was removed because the scope was dead on both actuators — the server
+  # dispatch arm 404s for every task id, and the agent's LifecycleHandler
+  # refuses a restart with no options["unit"] at validateUnit — so the gesture
+  # was advertising a reboot that no longer happened. `reboot` is the
+  # replacement, and the model's own refusal message says so.
   context "when the request declares scope instance" do
-    it "creates the whole-VM reboot the operator explicitly asked for" do
+    it "refuses the retired whole-VM scope instead of creating a task" do
       expect { create_task({ "scope" => "instance" }) }
-        .to change { account.system_tasks.count }.by(1)
+        .not_to change { account.system_tasks.count }
 
-      expect(response).to have_http_status(:created)
-      task = created_task
-      expect(::System::ExecutionDispatcher.agent_delegated?(task.command, task.options)).to be false
-      expect(::System::ExecutionDispatcher::COMMAND_REGISTRY[task.command])
-        .to eq(::System::Runtime::ControlInstance)
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to include("scope")
     end
 
     # A declared VM reboot that also names a unit is a contradiction, not a

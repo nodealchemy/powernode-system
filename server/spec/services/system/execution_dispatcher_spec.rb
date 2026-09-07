@@ -167,13 +167,15 @@ RSpec.describe System::ExecutionDispatcher do
     # would reintroduce an unreachable branch that LOOKS reachable, which is the
     # exact shape that produced the dispatch-spine investigation. Re-adding one
     # must fail here and be argued for.
-    RETIRED_VERBS = %w[
-      provision deprovision
-      associate_public_ip disassociate_public_ip
-      attach_volume detach_volume
-      build_module commit_module
-      sync
-    ].freeze
+    # `terminate` JOINED this list in campaign 01a0790b increment 2 — retired on
+    # the UNREACHABLE half of the test, not the row-count half: the agent (the
+    # sole Task actuator) answers it with `systemctl reboot`, so a terminate
+    # Task rebooted the VM instead of destroying it. Destroying is
+    # System::Executors::TerminateInstance's job, and the category outlives the
+    # command via PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.
+    RETIRED_VERBS = %w[provision deprovision associate_public_ip disassociate_public_ip
+                       attach_volume detach_volume build_module commit_module sync
+                       terminate].freeze
 
     # start/stop/reboot/terminate were in the list above and were RESTORED.
     # A lifetime row count of zero proves a verb is UNUSED; deleting it needs
@@ -187,7 +189,11 @@ RSpec.describe System::ExecutionDispatcher do
     # Executors::ExecuteTask with a caller-supplied command, which still
     # dispatches through this registry. So these four stay registered — but for
     # a different reason than the one this block used to give.
-    HAS_LIVE_PRODUCER = %w[start stop reboot terminate].freeze
+    # `terminate` LEFT this list in campaign 01a0790b increment 2 — it is gone
+    # from System::Task::COMMANDS and COMMAND_REGISTRY, because the agent (the
+    # sole Task actuator) answers it with `systemctl reboot`. Destroying an
+    # instance is System::Executors::TerminateInstance's job.
+    HAS_LIVE_PRODUCER = %w[start stop reboot].freeze
 
     it 'no longer registers any of the retired zero-caller provider verbs' do
       expect(described_class::COMMAND_REGISTRY.keys & RETIRED_VERBS).to be_empty
@@ -213,7 +219,7 @@ RSpec.describe System::ExecutionDispatcher do
 
     it 'registers exactly the commands the server dispatches' do
       expect(described_class::COMMAND_REGISTRY.keys).to contain_exactly(
-        'start', 'stop', 'reboot', 'terminate', 'restart',
+        'start', 'stop', 'reboot', 'restart',
         'sync_modules', 'apply_config', 'ssh_command'
       )
     end
@@ -231,6 +237,11 @@ RSpec.describe System::ExecutionDispatcher do
   # System::Task's after_commit enqueues server-side execution on create, so
   # without this split a unit restart would ALSO reboot the VM.
   describe '.restart_scope' do
+    # Since campaign 01a0790b increment 2, "instance" is NOT a declarable scope
+    # (System::Task::RESTART_SCOPES is %w[unit]), so this method no longer
+    # HONOURS it as a declaration — a row carrying it falls through to the
+    # legacy inference below. A bare one still infers "instance", which is what
+    # keeps a pre-declaration row routing the way it always did.
     it 'reads the declared scope' do
       expect(described_class.restart_scope({ 'scope' => 'unit', 'unit' => 'x.service' })).to eq('unit')
       expect(described_class.restart_scope({ 'scope' => 'instance' })).to eq('instance')
@@ -256,8 +267,14 @@ RSpec.describe System::ExecutionDispatcher do
     # reads the declaration at all. System::Task refuses to CREATE either row
     # below (they contradict themselves), but the contract of this method is
     # that the declaration WINS, and only a disagreement can prove it.
-    it 'lets the declaration win over the incidental key it replaced' do
-      expect(described_class.restart_scope({ 'scope' => 'instance', 'unit' => 'x.service' })).to eq('instance')
+    # DIRECTION REVERSED by campaign 01a0790b increment 2, deliberately and in
+    # the safe direction. "instance" is no longer in RESTART_SCOPES, so it is
+    # no longer a valid declaration to win with; a legacy row carrying it AND a
+    # unit now infers "unit" and routes to the agent, instead of rebooting the
+    # whole VM. The declaration still wins where it is a LEGAL one — the
+    # unit-side assertion below is what pins that half.
+    it 'no longer honours the retired instance declaration, and falls to the safer inference' do
+      expect(described_class.restart_scope({ 'scope' => 'instance', 'unit' => 'x.service' })).to eq('unit')
       expect(described_class.restart_scope({ 'scope' => 'unit' })).to eq('unit')
     end
 
@@ -279,11 +296,17 @@ RSpec.describe System::ExecutionDispatcher do
       expect(described_class.agent_delegated?('restart', { 'scope' => 'instance' })).to be false
     end
 
-    # The routing decision itself, on the one input where the declaration and
-    # the old inference disagree. Without this the whole block is satisfied by
-    # the inference it replaced.
-    it 'routes on the declaration, not on the key it replaced' do
-      expect(described_class.agent_delegated?('restart', { 'scope' => 'instance', 'unit' => 'x.service' })).to be false
+    # The routing decision itself, on the inputs where a declaration and the old
+    # inference disagree. Without these the whole block is satisfied by the
+    # inference it replaced.
+    #
+    # The first assertion FLIPPED in campaign 01a0790b increment 2, in the safe
+    # direction: "instance" is no longer a declarable scope, so a legacy row
+    # carrying it AND a unit is no longer honoured as an instance restart — it
+    # falls to the inference, sees the named unit, and goes to the AGENT rather
+    # than rebooting the whole VM.
+    it 'routes on the declaration where one is legal, and no longer honours the retired one' do
+      expect(described_class.agent_delegated?('restart', { 'scope' => 'instance', 'unit' => 'x.service' })).to be true
       expect(described_class.agent_delegated?('restart', { 'scope' => 'unit' })).to be true
     end
 

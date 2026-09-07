@@ -5,8 +5,11 @@ module System
     # Executes lifecycle actions on a System::NodeInstance via
     # System::InstanceControlService. The operation.command maps to the
     # action InstanceControlService actually understands: "restart" and
-    # "reboot" both drive the "reboot" action; "deprovision" is an alias
-    # for "terminate" (see ExecutionDispatcher::COMMAND_REGISTRY).
+    # "reboot" both drive the "reboot" action. "deprovision" and "terminate"
+    # were both mapped here once and BOTH are retired — deprovision with the
+    # thirteen zero-caller verbs, terminate in campaign 01a0790b increment 2
+    # (the agent answers it with `systemctl reboot`, so destroying an instance
+    # belongs to System::Executors::TerminateInstance).
     #
     # Operation.operable must be a System::NodeInstance.
     class ControlInstance
@@ -15,12 +18,32 @@ module System
       # literal or variable, and zero rows in the table's lifetime), and
       # System::Task now VALIDATES command against COMMANDS — so no task can
       # carry it and this arm was unreachable.
+      # "terminate" LEFT this map in campaign 01a0790b increment 2, with the
+      # command itself: it is gone from System::Task::COMMANDS and from
+      # COMMAND_REGISTRY, so no Task the model will now create can name it.
+      # An in-flight legacy terminate row still transitions (the COMMANDS
+      # validation is guarded on command_changed?), but it has no server-side
+      # runtime to reach and the agent answers it with `systemctl reboot`.
+      #
+      # "restart" is kept, and it is NOT unreachable — an earlier draft of this
+      # comment said "unreachable by construction" and was wrong.
+      # ExecutionDispatcher.restart_scope falls THROUGH to inference when the
+      # declared scope is not in RESTART_SCOPES, and a bare `{}` / nil / a
+      # legacy `{"scope"=>"instance"}` all infer "instance" — so
+      # agent_delegated? is false and this class still reboots the VM through
+      # the provider.
+      #
+      # What actually stops a NEW row taking that path is the MODEL validation
+      # (System::Task#restart_scope_declared), and that is guarded on
+      # will_save_change_to_command?/options?, so legacy rows, update_columns
+      # and save(validate: false) all bypass it. restart_scope's own header
+      # says pre-declaration rows are still in flight. Campaign increment 3
+      # retires this dispatch path, which is what finally closes it.
       ACTION_FOR_COMMAND = {
         "start" => "start",
         "stop" => "stop",
         "restart" => "reboot",
-        "reboot" => "reboot",
-        "terminate" => "terminate"
+        "reboot" => "reboot"
       }.freeze
 
       def self.call(operation:)

@@ -79,7 +79,9 @@ module System
     # dispatch-spine investigation in the first place.
     #
     # RESTORED, same day, after they were wrongly retired:
-    # start/stop/reboot/terminate. The lesson stands and is why they are still
+    # start/stop/reboot/terminate — of which `terminate` has since been retired
+    # again, deliberately and on the UNREACHABLE half of the test, in campaign
+    # 01a0790b increment 2. The lesson stands and is why they are still
     # here — a lifetime row count of zero proves UNUSED, and deleting needs
     # UNREACHABLE — but BOTH of the reasons originally given are now false, so
     # they are corrected rather than left to rot (campaign 01a0790b inc 1):
@@ -97,15 +99,17 @@ module System
     #   never "all local_qemu" (it is Proxmox), so the in-thread path had never
     #   fired here in the first place.
     #
-    # THE REMAINING PRODUCER, and the only live justification for these four
-    # registry entries, is POST /api/v1/system/tasks -> Executors::ExecuteTask
-    # with a CALLER-SUPPLIED command. That door still reaches
-    # Runtime::ControlInstance -> InstanceControlService. For `terminate` it is
-    # the lane System::Executors::TerminateInstance documents as dropping four
-    # safety controls (SDWAN peer detach, deploy-key revocation, the terminate
-    # meter event, F4-02 idempotency) — now the ONLY Task-lane route to it,
-    # since the REST arm no longer takes it. Campaign 01a0790b increment 2
-    # rules on whether `terminate` should leave Task::COMMANDS entirely.
+    # THE REMAINING PRODUCER, and the only live justification for the three
+    # surviving lifecycle entries, is POST /api/v1/system/tasks ->
+    # Executors::ExecuteTask with a CALLER-SUPPLIED command. That door still
+    # reaches Runtime::ControlInstance -> InstanceControlService.
+    #
+    # `terminate` USED to travel it too, and that was the lane
+    # System::Executors::TerminateInstance documents as dropping four safety
+    # controls (SDWAN peer detach, deploy-key revocation, the terminate meter
+    # event, F4-02 idempotency). Increment 2 closed it: terminate left
+    # System::Task::COMMANDS and this registry, and tasks_controller#create now
+    # refuses an uninsertable command before gating.
     #
     # The original warning still applies to any future tidy-up: an unreachable
     # on someone else's deployment.
@@ -123,7 +127,6 @@ module System
       "start"          => System::Runtime::ControlInstance,
       "stop"           => System::Runtime::ControlInstance,
       "reboot"         => System::Runtime::ControlInstance,
-      "terminate"      => System::Runtime::ControlInstance,
       "restart"        => System::Runtime::ControlInstance,
       "sync_modules"   => System::Runtime::SyncModules,
       "apply_config"   => System::Runtime::ApplyConfig,
@@ -193,8 +196,9 @@ module System
     # enqueues server-side execution on create, without this split a
     # unit-scoped restart would reboot the VM *and* restart the unit.
     #
-    # Deliberately NOT extended to reboot/terminate — those have no
-    # unit-scoped meaning, and RebootHandler ignores options entirely.
+    # Deliberately NOT extended to `reboot` — it has no unit-scoped meaning and
+    # RebootHandler ignores options entirely. (`terminate` was named here too
+    # until campaign 01a0790b increment 2 retired the command.)
     def self.unit_scoped_restart?(command, options)
       command == "restart" && restart_scope(options) == "unit"
     end

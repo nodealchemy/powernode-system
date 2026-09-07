@@ -36,8 +36,17 @@ module System
     # Verified safe before the guard was added: 476 System::Task rows have ever
     # existed on the live control plane, across six distinct commands, every one
     # of them in this list.
+    # `terminate` LEFT this list in campaign 01a0790b increment 2. The platform
+    # means "destroy the instance"; the agent — now the sole actuator of a Task
+    # — registers it to RebootHandler and runs `systemctl reboot`
+    # (tasks/handlers/lifecycle.go:121-124: "The agent treats it as reboot"), so
+    # the machine came back and the row stuck in `terminating`. Destroying an
+    # instance is System::Executors::TerminateInstance's job, which both the
+    # REST and MCP surfaces now use and which carries the four controls this
+    # lane dropped. Removed from ExecutionDispatcher::COMMAND_REGISTRY in the
+    # same commit — the equality asserted above is what keeps the two honest.
     COMMANDS = %w[
-      start stop restart terminate reboot
+      start stop restart reboot
       sync_modules apply_config
       ssh_command
       upgrade_boot_image
@@ -71,8 +80,16 @@ module System
     # DECLARES its scope and an undeclared restart is refused at the model, which
     # is the only chokepoint every producer passes through (the HTTP create path,
     # the worker API, the MCP tools and ~15 in-process callers all reach save).
+    # NARROWED to `unit` in campaign 01a0790b increment 2. The `instance`
+    # reading — reboot the whole VM through the provider — was dead on BOTH
+    # sides: the server dispatch arm 404s for every task id, and the agent's
+    # LifecycleHandler refuses a restart with no options["unit"] at
+    # validateUnit. No producer in the tree ever declared it (the only restart
+    # producer is System::RestartAfterUpdate, scope "unit"), so nothing is
+    # taken away. A caller who wants the VM power-cycled has `reboot` — which
+    # is what the refusal message below already told them to use.
     RESTART_SCOPE_KEY = "scope"
-    RESTART_SCOPES = %w[unit instance].freeze
+    RESTART_SCOPES = %w[unit].freeze
 
     # Records that may legitimately carry a task.
     #

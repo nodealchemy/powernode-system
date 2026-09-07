@@ -309,7 +309,17 @@ RSpec.describe System::Governance::PolicyReconciler do
     # would silently change how much it widens.
     it "declares 20 rows in a 5/5/10 split" do
       expect(declared.size).to eq(20)
-      expect(declared.size).to eq(System::Task::COMMANDS.size)
+      # NO LONGER == COMMANDS.size. Campaign 01a0790b increment 2 decoupled the
+      # gated-operation vocabulary from the Task command vocabulary: `terminate`
+      # left COMMANDS (the agent answers it with `systemctl reboot`) but both
+      # lifecycle surfaces still gate the destroy on system.task.terminate, so
+      # the category is carried by
+      # PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS instead. 19 commands +
+      # 1 gated non-command = the same 20 rows.
+      expect(declared.size).to eq(
+        System::Task::COMMANDS.size +
+        System::Governance::PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.size
+      )
       expect(declared.values.tally).to eq(
         "auto_approve" => 5,
         "notify_and_proceed" => 5,

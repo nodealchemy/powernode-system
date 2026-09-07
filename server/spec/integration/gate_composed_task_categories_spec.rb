@@ -95,7 +95,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 56,
+      line: 84,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -159,7 +159,7 @@ module GateComposedTaskCategories
     # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 253,
+      line: 289,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -311,8 +311,43 @@ RSpec.describe "gate-composed system.task action categories", type: :model do
     end
   end
 
-  describe "every named category resolves to an insertable command" do
-    sites.each do |site|
+  # INSERTABILITY IS AN ExecuteTask PROPERTY, not a property of every gate site
+  # (campaign 01a0790b increment 2). The failure this example exists to catch is
+  # specific and mechanical: ExecuteTask#perform calls save!, so a category whose
+  # command System::Task refuses produces a RecordInvalid that surfaces to the
+  # caller as a policy-shaped 422. A site whose executor never inserts cannot
+  # produce that failure at all.
+  #
+  # Both lifecycle sites are now such a site. NodeInstanceGating routes
+  # start/stop/reboot to Executors::ControlInstance and terminate to
+  # Executors::TerminateInstance, and both actuate the provider plane directly.
+  # `terminate` has accordingly LEFT System::Task::COMMANDS — asserting it is
+  # still insertable would now be asserting the defect.
+  #
+  # The MCP terminate entry used to justify its own insertability assertion as
+  # "the category is shared with the REST twin, and one operator-tuned policy
+  # row governs both". The second clause is still true and is why the entry
+  # stays enumerated; the first no longer implies insertability, because the
+  # twin does not insert either.
+  describe "every named category on an INSERTING site resolves to an insertable command" do
+    # VACUITY GUARD ON THE SELECTION ITSELF. The selection below keys on
+    # :executor — a field this file's own header says is "recorded rather than
+    # asserted, because the binding is a string passed at the call site". A
+    # rename or a typo there would silently select ZERO sites and evaporate the
+    # whole guard, which is exactly the failure this file is careful about
+    # everywhere else. So the count is pinned.
+    it "still selects the inserting sites it is meant to check" do
+      inserting = sites.select { |s| s[:executor] == "System::Executors::ExecuteTask" }
+
+      expect(inserting.size).to be >= 2,
+                                "only #{inserting.size} gate site(s) matched " \
+                                "System::Executors::ExecuteTask. Either the executor was renamed " \
+                                "and this selection silently stopped checking anything, or an " \
+                                "enumerated site's :executor is wrong. Both are the vacuity this " \
+                                "guard exists to refuse."
+    end
+
+    sites.select { |s| s[:executor] == "System::Executors::ExecuteTask" }.each do |site|
       it "#{site[:file]}:#{site[:line]} — #{site[:domain].truncate(80)}" do
         commands = site[:commands].call
         expect(commands).not_to be_empty, "a gate site with an empty value set is an enumeration bug"

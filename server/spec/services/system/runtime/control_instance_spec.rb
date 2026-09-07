@@ -32,20 +32,41 @@ RSpec.describe System::Runtime::ControlInstance do
       end
     end
 
-    %w[start stop restart reboot terminate].each do |command|
+    # `terminate` LEFT this loop in campaign 01a0790b increment 2 — the command
+    # is gone from System::Task::COMMANDS, so create(...) would now raise
+    # RecordInvalid. Destroying an instance is System::Executors::TerminateInstance's
+    # job; the agent answers a terminate Task with `systemctl reboot`.
+    %w[start stop restart reboot].each do |command|
       context "when command is '#{command}'" do
         let(:operation) do
           create(:system_task,
             account: account,
             operable: instance,
             command: command,
-            # This class IS the instance-scoped actuator, so a `restart` that
-            # reaches it declares the whole-VM scope. See
-            # System::Task::RESTART_SCOPES.
-            options: command == 'restart' ? { 'scope' => 'instance' } : {},
+            # A restart reaches this class ONLY as an undeclared row now.
+            # Increment 2 narrowed System::Task::RESTART_SCOPES to %w[unit], and
+            # the model separately refuses a restart that declares no scope at
+            # all — so neither {"scope"=>"instance"} nor {} can be CREATED
+            # today. The row is therefore created valid and then stripped with
+            # update_column below, reaching the shape that WAS creatable before
+            # the declaration validation existed (System::Task's own note at the
+            # validation says so). Whether any such row is still in flight on
+            # this fleet is NOT claimed here and is not what the fixture rests
+            # on — the point is only that ExecutionDispatcher.restart_scope maps
+            # {} to "instance", which is the branch this class serves.
+            #
+            # ROUTING IS NOT EXERCISED BY THIS FILE. ControlInstance maps by
+            # command alone and reads options only for `force`, so the pre-strip
+            # scope/unit cannot leak into any assertion below. That {} routes
+            # here rather than to the agent is pinned in
+            # spec/services/system/execution_dispatcher_spec.rb.
+            options: command == 'restart' ? { 'scope' => 'unit', 'unit' => 'x.service' } : {},
             status: 'running',
             progress: 0
-          )
+          ).tap do |t|
+            # See the options comment above: become the legacy undeclared row.
+            t.update_column(:options, {}) if command == 'restart'
+          end
         end
 
         let(:expected_action) do
@@ -53,8 +74,7 @@ RSpec.describe System::Runtime::ControlInstance do
             'start' => 'start',
             'stop' => 'stop',
             'restart' => 'reboot',
-            'reboot' => 'reboot',
-            'terminate' => 'terminate'
+            'reboot' => 'reboot'
           }.fetch(command)
         end
 

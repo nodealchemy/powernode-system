@@ -249,9 +249,44 @@ module System
       # spec/lib/powernode_system/system_task_category_vocabulary_spec.rb
       # ("has real inputs on both sides") is what catches that state: an empty
       # registry fails it rather than passing both set-difference examples.
-      MANUAL_OPERATION_POLICIES = ::System::Task::COMMANDS.to_h { |command|
-        [ "system.task.#{command}",
-          MANUAL_OPERATION_DEFAULT_VERBS.fetch(command, MANUAL_OPERATION_FALLBACK_VERB) ]
+      # GATED OPERATIONS THAT ARE NO LONGER TASK COMMANDS (campaign 01a0790b
+      # increment 2). Deriving the policy vocabulary from System::Task::COMMANDS
+      # was exactly right while every gated operation actuated through a Task.
+      # Increment 1 broke that identity: the REST and MCP lifecycle arms now
+      # actuate the provider plane through System::Executors::ControlInstance /
+      # TerminateInstance and insert no Task, so an operation can be GATED
+      # without being a COMMAND.
+      #
+      # `terminate` is the case in point. It left COMMANDS because the agent —
+      # the sole actuator of a Task — answers it with `systemctl reboot`. But
+      # both surfaces still gate the destroy on `system.task.terminate`, and
+      # dropping the category with the command would have silently removed the
+      # tunable policy row for the most destructive verb the platform has,
+      # unregistered it (engine.rb derives registration from this constant), and
+      # orphaned the seeded row an operator may already have tuned. Resolution
+      # would fall through to the require_approval default — safe by luck, not
+      # by declaration, and invisible in the Autonomy modal.
+      #
+      # The category name keeps its `system.task.` prefix deliberately: it is
+      # the key an operator has already tuned and the one both surfaces pass to
+      # Ai::AutonomyGate. Renaming it would orphan that row for no gain.
+      # The VERB here is authoritative for these keys — read via fetch below,
+      # not merely decorative. An earlier draft looked up every key in
+      # MANUAL_OPERATION_DEFAULT_VERBS, which happened to carry the same string
+      # for "terminate", so this value could have been changed to anything with
+      # no effect and no failing test. That is dead configuration wearing the
+      # costume of live configuration.
+      GATED_NON_COMMAND_OPERATIONS = {
+        "terminate" => "require_approval"
+      }.freeze
+
+      MANUAL_OPERATION_POLICIES = (
+        ::System::Task::COMMANDS + GATED_NON_COMMAND_OPERATIONS.keys
+      ).uniq.to_h { |command|
+        verb = GATED_NON_COMMAND_OPERATIONS.fetch(command) do
+          MANUAL_OPERATION_DEFAULT_VERBS.fetch(command, MANUAL_OPERATION_FALLBACK_VERB)
+        end
+        [ "system.task.#{command}", verb ]
       }.freeze
 
       # The row SHAPE these declarations resolve at. Load-bearing: an

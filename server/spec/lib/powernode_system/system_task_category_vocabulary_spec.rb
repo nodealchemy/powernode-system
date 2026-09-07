@@ -44,7 +44,38 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
   # on Object, which is the recorded duplicate-constant clobber class here.
   let(:commands) { ::System::Task::COMMANDS }
 
-  let(:expected_categories) { commands.map { |command| "system.task.#{command}" }.sort }
+  # THE AUTHORITY IS NO LONGER COMMANDS ALONE (campaign 01a0790b increment 2).
+  # A gated OPERATION and a Task COMMAND used to be the same set, because every
+  # gated operation actuated through a Task. Increment 1 ended that: the REST
+  # and MCP lifecycle arms actuate the provider plane through
+  # Executors::ControlInstance / TerminateInstance and insert nothing.
+  #
+  # `terminate` is the one such operation today. It left COMMANDS because the
+  # agent — the sole Task actuator — answers it with `systemctl reboot`, but
+  # both surfaces still gate the destroy on system.task.terminate, so the
+  # category must keep existing or the most destructive verb the platform has
+  # loses its tunable row and its registration.
+  #
+  # THIS IS A LOOSENING, and pretending otherwise is how it would rot. An
+  # earlier draft of this comment claimed the phantom example below still
+  # catches a bogus entry. It does NOT: that example compares the registry to
+  # the declaration, and the declaration is what CREATES the registration, so a
+  # garbage key added to GATED_NON_COMMAND_OPERATIONS would be declared,
+  # registered, seeded and tunable with all three examples green.
+  #
+  # COMMANDS does not have that problem because it carries two independent
+  # oracles — equality against the dispatcher sets (task_spec.rb) and the model
+  # validator. The exception set needs its own, and it is the example
+  # "every gated non-command names a real gated operation" below: each key must
+  # be claimed by an executor's ACTION_CATEGORY. That is the property that
+  # keeps this narrow.
+  let(:gated_non_commands) do
+    ::System::Governance::PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.keys
+  end
+
+  let(:expected_categories) do
+    (commands + gated_non_commands).uniq.map { |command| "system.task.#{command}" }.sort
+  end
 
   # Process-global by construction (Ai::InterventionPolicy.@category_registry),
   # so this selects every `system.task.` name ANY loaded engine registered.
@@ -94,14 +125,30 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
     expect(declared_categories).to eq(expected_categories)
   end
 
-  it "declares a default verb for every command and for nothing else" do
-    expect(declared_verbs.keys.sort).to eq(commands.sort),
+  it "declares a default verb for every gated operation and for nothing else" do
+    expect(declared_verbs.keys.sort).to eq((commands + gated_non_commands).uniq.sort),
                                         "MANUAL_OPERATION_DEFAULT_VERBS and System::Task::COMMANDS " \
                                         "disagree. A command missing here still gets a row — the " \
                                         "MANUAL_OPERATION_FALLBACK_VERB fail-safe keeps boot working " \
                                         "and matches what absence already resolved to — but its verb " \
                                         "is then an accident rather than a decision. A key here that " \
                                         "is not a command is dead."
+  end
+
+  # THE ORACLE FOR THE EXCEPTION SET. Without it GATED_NON_COMMAND_OPERATIONS
+  # is an unchecked back door into the registered vocabulary — see the comment
+  # on `gated_non_commands` above. An executor that declares ACTION_CATEGORY is
+  # what makes a category a REAL gated operation rather than a name: it is the
+  # class the gate replays on approval.
+  it "declares no gated non-command that no executor actually gates" do
+    claimed = [ ::System::Executors::TerminateInstance ]
+              .select { |k| k.const_defined?(:ACTION_CATEGORY) }
+              .map { |k| k::ACTION_CATEGORY }
+
+    unclaimed = gated_non_commands.map { |c| "system.task.#{c}" } - claimed
+
+    expect(unclaimed).to be_empty,
+                         "#{unclaimed.join(', ')} is declared in "                          "PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS but no executor names "                          "it as its ACTION_CATEGORY. The set exists for operations that are GATED "                          "without being System::Task commands; a key nothing gates is a policy row "                          "over nothing — registered, seeded and tunable, governing no code path. "                          "Add the executor that gates it, or remove the key."
   end
 
   it "declares only verbs Ai::InterventionPolicy accepts" do
@@ -113,8 +160,10 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
   # unloaded, to_prepare removed) or a renamed COMMANDS would produce. The
   # pinned names predate this spec, so nothing added here can satisfy it.
   it "has real inputs on both sides" do
-    expect(commands.size).to be >= 20
+    # 19 commands + 1 gated non-command (terminate) since increment 2.
+    expect(commands.size).to be >= 19
     expect(registered_categories.size).to be >= 20
+    expect(gated_non_commands).to include("terminate")
     expect(registered_categories).to include("system.task.terminate", "system.task.ssh_command")
     expect(declared_verbs.fetch("upgrade_boot_image")).to eq("require_approval")
   end

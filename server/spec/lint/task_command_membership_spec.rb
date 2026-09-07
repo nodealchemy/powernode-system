@@ -40,7 +40,10 @@ RSpec.describe "System::Task command membership across the spec tree" do
   # rejects them. Keyed by path relative to server/spec/.
   let(:intentional_invalids) do
     {
-      "models/system/task_spec.rb" => %w[not_a_real_command]
+      # `terminate` joined this list in campaign 01a0790b increment 2: the spec
+      # asserts the model now REFUSES it, so the literal is deliberate and its
+      # absence from COMMANDS is the property under test.
+      "models/system/task_spec.rb" => %w[not_a_real_command terminate]
     }
   end
 
@@ -57,15 +60,46 @@ RSpec.describe "System::Task command membership across the spec tree" do
     {
       # `cmd` ranges over described_class::COMMANDS itself — the example IS
       # the membership check.
-      "models/system/task_spec.rb" => [ 56 ],
+      # RE-ACKNOWLEDGED: increment 2 inserted examples above this site and moved
+      # it from 56 to 120. The re-audit is the point of keying on the line —
+      # `command: cmd` still ranges over System::Task::COMMANDS itself, so every
+      # value the binding can carry is a member by construction.
+      "models/system/task_spec.rb" => [ 120 ],
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
       "models/system/preserves_task_history_spec.rb" => [ 28 ],
       "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 27 ],
       "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
-      # `command` ranges over a hardcoded
-      # %w[start stop restart reboot terminate] list in the enclosing .each.
-      "services/system/runtime/control_instance_spec.rb" => [ 38 ],
+      # `command` is a keyword param of the local #task_with helper (:955),
+      # defaulting to "sync_modules". AUDITED by grepping every `task_with`
+      # call in the file — 22 of them. Only THREE pass `command:` at all:
+      # :1076 "sync_modules", :1077 "apply_config", :1078 "upgrade_boot_image".
+      # The other 19 take the default. So the binding carries three distinct
+      # values, all three COMMANDS members.
+      #
+      # (An earlier draft of this note listed eight line numbers as "every
+      # caller" and said four values. Both were wrong — it had enumerated the
+      # calls that pass ANY keyword, not the calls that pass `command:`.)
+      #
+      # THIS SITE WAS RED ON develop, not introduced by campaign 01a0790b: it
+      # arrived with the IMP-9cc83aa64bff terminate-cleanup examples and was
+      # merged without this lint being run. Acknowledged here rather than left
+      # for a later increment to trip over.
+      "models/system/node_instance_spec.rb" => [ 956 ],
+      # `command: command` inside a HEREDOC FIXTURE (<<~RUBY) that the census
+      # scanner parses as text — it is source code under test, never executed,
+      # and constructs no System::Task. The scanner's own "FIRES on the variable
+      # shape a literal grep cannot see" example is the whole point of it.
+      # Red on develop for the same REASON as the entry above but from a
+      # different commit — this site arrived with dbb26a93
+      # (IMP-498cd7db446d), the node_instance_spec one with 9b9323b1
+      # (IMP-9cc83aa64bff). Neither was acknowledged there; both are here.
+      "lint/on_node_task_producer_census_spec.rb" => [ 411 ],
+      # `command` ranges over a hardcoded %w[start stop restart reboot] list in
+      # the enclosing .each — every member a COMMANDS entry. RE-AUDITED in
+      # campaign 01a0790b increment 2, which removed `terminate` from that list
+      # with the command itself and shifted the site from 38 to 42.
+      "services/system/runtime/control_instance_spec.rb" => [ 42 ],
       # `command_insertable?` is an INSERTABILITY PROBE, not a fixture. It is
       # reached from two call sites (:310, :332) whose values are the command
       # names DECLARED BY GATE SITES plus KNOWN_BROKEN_COMMANDS — precisely the
@@ -75,7 +109,7 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # the "every named category resolves to an insertable command" example is
       # red exactly when one does. It calls .new + .valid? and never persists,
       # so an unlisted value reaches no database and no dispatch route.
-      "integration/gate_composed_task_categories_spec.rb" => [ 234 ]
+      "integration/gate_composed_task_categories_spec.rb" => [ 243 ]
     }
   end
 
