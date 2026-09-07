@@ -17,6 +17,23 @@ module System
       # platform failed (a canary that didn't come back on the new image), the
       # rollout stops planning new batches until an operator intervenes.
       class BootImageDriftRolloutExecutor < BaseSkillExecutor
+        # INV-1 (no self-management). Every batch this planner emits becomes a
+        # REBOOT, so a drifted instance on this control plane's own hosting node
+        # would have the plane order its own restart mid-rollout — the
+        # self-detach class System::Compliance::RcpInvariantScanner reports as
+        # "blocked at the actuator".
+        #
+        # It was NOT blocked, because nothing downstream of here carries a
+        # fence: UpgradeDispatcher.dispatch! has none, the System::Task it
+        # writes has none, and ExecutionDispatcher has none — the whole path
+        # from this planner to the on-node handler is unfenced. (The fences
+        # that do exist — ProvisioningService, PlatformResilienceExecutor,
+        # DecisionEngine's own reboot/converge lanes, ReplicaReconciler — sit on
+        # OTHER paths this rollout never enters.) Plan time is therefore the
+        # only seam where INV-1 can be enforced for a boot-image rollout.
+        # Inert until an operator configures SiteSetting `self_hosting_node_id`.
+        include ::System::Autonomy::SelfManagementFence
+
         DEFAULT_BATCH_PCT             = 10
         DEFAULT_MAX_CONSECUTIVE_FAILS = 1 # canary-first: halt on the first failed batch
         ETA_PER_INSTANCE_SEC          = 180 # a boot-image upgrade reboots the node
@@ -38,11 +55,17 @@ module System
             dry_run: { type: "boolean", required: false, default: false,
                        description: "Plan only — no tasks created (the require_approval gate path)" }
           },
+          # `total_drifted` counts the instances this rollout MAY reboot — the
+          # drifted set after the INV-1 exclusion, so it always agrees with the
+          # batch math. Instances withheld by the fence are counted separately
+          # in `self_managed_excluded`; a drift report elsewhere still counts
+          # them as drifted, because they are.
           outputs: {
             platform_id: :string, target_git_sha: :string, total_drifted: :integer,
             batch_size: :integer, batch_count: :integer, halted: :boolean, halt_reason: :string,
             circuit_breaker: :object, batches: [ :object ],
-            dispatched_task_ids: [ :string ], dispatch_errors: [ :object ]
+            dispatched_task_ids: [ :string ], dispatch_errors: [ :object ],
+            self_managed_excluded: [ :string ]
           },
           requires_approval: true,
           # System::Fleet::DecisionEngine already gates this executor's tick-loop
@@ -70,7 +93,7 @@ module System
           return failure("instance has no resolvable platform") if platform.nil?
           target = platform.disk_image_git_sha
 
-          drifted = drifted_instances(platform)
+          drifted, self_managed = partition_self_managed(drifted_instances(platform))
           fails    = recent_failures(platform)
           inflight = in_flight_count(platform)
           threshold = max_consecutive_failures.to_i
@@ -85,6 +108,16 @@ module System
             if blocker.present?             then blocker
             elsif fails >= threshold        then "recent upgrade failure on platform (#{fails})"
             elsif inflight.positive?        then "upgrade in flight — waiting for the current batch (#{inflight})"
+            elsif drifted.empty? && self_managed.any?
+              # The steady state this fence creates: every sibling has
+              # converged and the only thing still drifted is the node hosting
+              # this plane, which INV-1 forbids us to reboot. Say so, rather
+              # than return an inscrutable zero-batch plan — the drift sensor
+              # keeps firing for that node, so an operator WILL see this and
+              # needs to know it is waiting on an out-of-band upgrade from the
+              # consensus group, not on a batch that never comes.
+              "only this control plane's own hosting node is still drifted — " \
+              "INV-1 forbids self-management; upgrade it from the consensus group"
             end
           halted = halt_reason.present?
 
@@ -131,6 +164,7 @@ module System
             batches: batches,
             dispatched_task_ids: dispatched,
             dispatch_errors: errors,
+            self_managed_excluded: self_managed.map(&:id),
             requires_approval: true
           )
         end
@@ -150,6 +184,17 @@ module System
             .order(:id)
             .includes(node: { node_template: :node_platform })
             .select { |i| i.node&.node_platform&.id == platform.id && i.boot_image_drifted? }
+        end
+
+        # INV-1: split the drifted set into the instances this rollout may reboot
+        # and the one(s) hosting this control plane. Excluded at PLAN time, not
+        # at dispatch — a batch that lists the plane's own node has already told
+        # the operator it will be rebooted. Reported in `self_managed_excluded`
+        # rather than dropped silently, so an operator can see why the
+        # self-hosted node never converges (it needs an out-of-band upgrade from
+        # the consensus group, which is exactly INV-1's point).
+        def partition_self_managed(instances)
+          instances.partition { |instance| !self_managed_target?(instance) }
         end
 
         # All of this platform's instance ids (memoized — used by both the failure

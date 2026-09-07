@@ -512,6 +512,137 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
       end
     end
 
+    # IMP-6c0a98c849b5 — INV-1 (no self-management). The rollout schedules a
+    # REBOOT of every drifted instance on the platform; if this control plane's
+    # own hosting node is one of them, promoting an image reboots the plane
+    # issuing the order. NOTHING on this path consults
+    # System::Autonomy::SelfManagementFence — UpgradeDispatcher, the
+    # System::Task it writes and ExecutionDispatcher are all unfenced — which
+    # is exactly why the planner has to.
+    #
+    # The oracle is the ABSENCE OF A SCHEDULED REBOOT TASK for that specific
+    # node, not the absence of an error: an unfenced executor that happens not
+    # to fire because nothing is currently drifted is not a fenced executor. So
+    # each example seeds a genuinely drifted self-hosting instance ALONGSIDE a
+    # drifted sibling that must still be upgraded, and the fence is ARMED
+    # (SiteSetting self_hosting_node_id) — unset, the fence is inert by design
+    # and a green run would be vacuous.
+    describe "INV-1 self-management fence" do
+      def arm_fence!(node)
+        ::SiteSetting.set(
+          ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY,
+          node.id
+        )
+      end
+
+      let(:target_sha) { "target-sha" }
+
+      # A drifted instance ON the node this deployment is hosted by, plus a
+      # drifted peer on a different node. Both are running, both lag `target`.
+      def seed_self_hosted_pair!
+        setup_platform(target_sha: target_sha)
+        self_hosted = create_drifted_instance(booted_sha: "old-sha-self", name: "self-host")
+        sibling     = create_drifted_instance(booted_sha: "old-sha-peer", name: "peer")
+        [ self_hosted, sibling ]
+      end
+
+      it "schedules no boot-image upgrade for this plane's own hosting node while still upgrading the sibling" do
+        self_hosted, sibling = seed_self_hosted_pair!
+        arm_fence!(self_hosted.node)
+
+        r = executor.execute(instance_id: sibling.id, batch_pct: 100, dry_run: false)
+
+        expect(r[:success]).to be true
+        upgrades = System::Task.where(command: "upgrade_boot_image")
+        expect(upgrades.where(operable_id: self_hosted.id).count).to eq(0)
+        expect(upgrades.where(operable_id: sibling.id).count).to eq(1)
+      end
+
+      it "excludes the self-managed instance from the PLAN, not merely from dispatch" do
+        self_hosted, sibling = seed_self_hosted_pair!
+        arm_fence!(self_hosted.node)
+
+        r = executor.execute(instance_id: sibling.id, batch_pct: 100, dry_run: true)
+
+        d = r[:data]
+        expect(d[:total_drifted]).to eq(1)
+        planned_ids = d[:batches].flat_map { |b| b[:instance_ids] }
+        expect(planned_ids).to include(sibling.id)
+        expect(planned_ids).not_to include(self_hosted.id)
+      end
+
+      it "reports the exclusion rather than dropping the node silently" do
+        self_hosted, sibling = seed_self_hosted_pair!
+        arm_fence!(self_hosted.node)
+
+        r = executor.execute(instance_id: sibling.id, batch_pct: 100, dry_run: true)
+
+        expect(r[:data][:self_managed_excluded]).to eq([ self_hosted.id ])
+      end
+
+      # The seed instance itself being the self-hosting one must not become a
+      # back door: resolving the platform through it is fine, rebooting it is
+      # not.
+      it "refuses to schedule its own reboot even when it is the seed instance" do
+        self_hosted, sibling = seed_self_hosted_pair!
+        arm_fence!(self_hosted.node)
+
+        r = executor.execute(instance_id: self_hosted.id, batch_pct: 100, dry_run: false)
+
+        expect(r[:success]).to be true
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: self_hosted.id).count).to eq(0)
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: sibling.id).count).to eq(1)
+      end
+
+      # Control: the exclusion must come from the FENCE, not from some unrelated
+      # property of the fixture. Unarmed, the same instance is upgraded.
+      it "upgrades that same instance when no self_hosting_node_id is configured" do
+        self_hosted, sibling = seed_self_hosted_pair!
+
+        r = executor.execute(instance_id: sibling.id, batch_pct: 100, dry_run: false)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:self_managed_excluded]).to be_empty
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: self_hosted.id).count).to eq(1)
+      end
+
+      # The steady state the fence creates: siblings converge, the plane's own
+      # host stays drifted forever (the sensor keeps firing for it). The plan
+      # must SAY so rather than come back as a green zero-batch rollout an
+      # operator cannot interpret.
+      it "halts with an INV-1 reason when the self-hosting node is the only drifted instance" do
+        setup_platform(target_sha: target_sha)
+        self_hosted = create_drifted_instance(booted_sha: "old-sha-self", name: "self-host")
+        arm_fence!(self_hosted.node)
+
+        r = executor.execute(instance_id: self_hosted.id, batch_pct: 100, dry_run: false)
+
+        expect(r[:success]).to be true
+        d = r[:data]
+        expect(d[:total_drifted]).to eq(0)
+        expect(d[:batches]).to be_empty
+        expect(d[:halted]).to be true
+        expect(d[:halt_reason]).to match(/INV-1/)
+        expect(d[:self_managed_excluded]).to eq([ self_hosted.id ])
+        expect(System::Task.where(command: "upgrade_boot_image").count).to eq(0)
+      end
+
+      # A DIFFERENT node being the self-hosting one must not fence this platform
+      # wholesale — the fence is per-node, not a global kill switch.
+      it "does not fence instances on other nodes" do
+        self_hosted, sibling = seed_self_hosted_pair!
+        unrelated = create_drifted_instance(booted_sha: "old-sha-unrelated", name: "unrelated")
+        arm_fence!(unrelated.node)
+
+        r = executor.execute(instance_id: sibling.id, batch_pct: 100, dry_run: false)
+
+        expect(r[:success]).to be true
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: unrelated.id).count).to eq(0)
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: self_hosted.id).count).to eq(1)
+        expect(System::Task.where(command: "upgrade_boot_image", operable_id: sibling.id).count).to eq(1)
+      end
+    end
+
     describe "only drifted instances are included" do
       it "includes drifted instances and excludes current-on-target instances" do
         target_sha = "target-sha"
