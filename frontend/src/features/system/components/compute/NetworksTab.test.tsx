@@ -129,11 +129,12 @@ const renderTab = (props: Partial<React.ComponentProps<typeof NetworksTab>> = {}
   );
 
 // Click the modal form's submit button. The NetworkList empty-state also renders
-// a button with the same label — we scope the search to the modal overlay (the
-// fixed-position z-50 container) to avoid ambiguity.
+// a button with the same label — we scope the search to the open dialog to
+// avoid ambiguity. The form modals render through the shared
+// `@/shared/components/ui/Modal`, which portals a role="dialog" element to
+// document.body rather than nesting a z-50 overlay in the tab's own tree.
 function clickModalSubmit(labelPattern: RegExp) {
-  // The form modal renders inside a `div.fixed.inset-0.z-50`
-  const overlay = document.querySelector('[class*="fixed"][class*="z-50"]');
+  const overlay = document.querySelector('[role="dialog"]');
   if (!overlay) throw new Error('Modal overlay not found');
   const allBtns = Array.from(overlay.querySelectorAll('button')) as HTMLButtonElement[];
   const submitBtn = allBtns.find(

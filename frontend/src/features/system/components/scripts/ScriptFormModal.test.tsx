@@ -379,12 +379,13 @@ describe('ScriptFormModal', () => {
     it('calls onClose when clicking the backdrop overlay', () => {
       const onClose = jest.fn();
       const { container } = renderModal({ onClose });
-      // The fixed overlay has bg-black/50
-      const backdrop = container.querySelector('.bg-black\\/50') as HTMLElement;
-      if (backdrop) {
-        fireEvent.click(backdrop);
-        expect(onClose).toHaveBeenCalled();
-      }
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      void container;
+      const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
+      expect(backdrop).not.toBeNull();
+      fireEvent.click(backdrop);
+      expect(onClose).toHaveBeenCalled();
     });
 
     it('shows loading state ("Creating...") while submitting', async () => {

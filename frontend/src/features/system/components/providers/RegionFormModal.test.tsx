@@ -828,11 +828,12 @@ describe('RegionFormModal', () => {
     it('calls onClose when the backdrop is clicked', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
-      const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50');
-      if (backdrop) {
-        fireEvent.click(backdrop);
-        expect(onClose).toHaveBeenCalled();
-      }
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      const backdrop = document.querySelector('[class*="justify-center"]');
+      expect(backdrop).not.toBeNull();
+      fireEvent.click(backdrop!);
+      expect(onClose).toHaveBeenCalled();
     });
 
     it('calls onClose when the X button is clicked', () => {
@@ -848,9 +849,10 @@ describe('RegionFormModal', () => {
       if (xButton && xButton !== screen.getByRole('button', { name: /cancel/i })) {
         fireEvent.click(xButton);
       } else {
-        // Fallback: click the backdrop
-        const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50');
-        if (backdrop) fireEvent.click(backdrop);
+        // Fallback: click the core Modal's positioning container
+        const backdrop = document.querySelector('[class*="justify-center"]');
+        expect(backdrop).not.toBeNull();
+        fireEvent.click(backdrop!);
       }
       expect(onClose).toHaveBeenCalled();
     });

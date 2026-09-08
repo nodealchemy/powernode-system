@@ -649,8 +649,8 @@ describe('ConnectionFormModal', () => {
         fireEvent.click(xButton);
         expect(onClose).toHaveBeenCalled();
       } else {
-        // Fallback: click the overlay backdrop
-        fireEvent.click(document.querySelector('.fixed.inset-0.bg-black\\/50')!);
+        // Fallback: click the core Modal's positioning container
+        fireEvent.click(document.querySelector('[class*="justify-center"]')!);
         expect(onClose).toHaveBeenCalled();
       }
     });
@@ -665,11 +665,12 @@ describe('ConnectionFormModal', () => {
     it('calls onClose when the backdrop is clicked', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
-      const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50');
-      if (backdrop) {
-        fireEvent.click(backdrop);
-        expect(onClose).toHaveBeenCalled();
-      }
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      const backdrop = document.querySelector('[class*="justify-center"]');
+      expect(backdrop).not.toBeNull();
+      fireEvent.click(backdrop!);
+      expect(onClose).toHaveBeenCalled();
     });
   });
 
