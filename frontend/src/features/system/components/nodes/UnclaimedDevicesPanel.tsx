@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Hash, Trash2, Cpu, RefreshCw, CheckCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -224,9 +225,27 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
 
       {/* Claim picker modal */}
       {pickerOpenFor && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-lg p-6">
-            <h3 className="text-lg font-semibold mb-2">Claim device</h3>
+        <Modal
+          isOpen
+          onClose={() => { setPickerOpenFor(null); setPickerSelected(''); }}
+          title="Claim device"
+          icon={<CheckCircle className="w-6 h-6" />}
+          maxWidth="lg"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => { setPickerOpenFor(null); setPickerSelected(''); }}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleClaim}
+                disabled={!pickerSelected || claimingId === pickerOpenFor.id}
+              >
+                Confirm claim
+              </Button>
+            </>
+          }
+        >
             <p className="text-sm text-theme-secondary mb-4">
               Bind device <code className="font-mono">{pickerOpenFor.discovered_mac}</code>
               {pickerOpenFor.discovered_hostname ? <> ({pickerOpenFor.discovered_hostname})</> : null}
@@ -250,20 +269,7 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
                 No claimable instances. Create a variety=physical NodeInstance first.
               </p>
             )}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => { setPickerOpenFor(null); setPickerSelected(''); }}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                onClick={handleClaim}
-                disabled={!pickerSelected || claimingId === pickerOpenFor.id}
-              >
-                Confirm claim
-              </Button>
-            </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </section>
   );

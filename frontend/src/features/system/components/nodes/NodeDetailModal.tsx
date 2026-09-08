@@ -778,13 +778,14 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
 
       {/* Delete Instance Confirmation */}
       {deleteInstanceConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-theme-surface rounded-lg p-6 max-w-md mx-4 border border-theme shadow-xl">
-            <h3 className="text-lg font-semibold text-theme-primary mb-2">Delete Instance</h3>
-            <p className="text-theme-secondary mb-4">
-              Are you sure you want to delete <strong>{deleteInstanceConfirm.name}</strong>? This action cannot be undone.
-            </p>
-            <div className="flex justify-end gap-3">
+        <Modal
+          isOpen
+          onClose={() => setDeleteInstanceConfirm(null)}
+          title="Delete Instance"
+          icon={<Trash2 className="w-6 h-6" />}
+          maxWidth="md"
+          footer={
+            <>
               <Button
                 variant="ghost"
                 onClick={() => setDeleteInstanceConfirm(null)}
@@ -799,9 +800,13 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
               >
                 {deletingInstance ? 'Deleting...' : 'Delete'}
               </Button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+        >
+          <p className="text-theme-secondary">
+            Are you sure you want to delete <strong>{deleteInstanceConfirm.name}</strong>? This action cannot be undone.
+          </p>
+        </Modal>
       )}
     </div>
   );
@@ -1177,7 +1182,16 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         subtitle={node?.node_template_name ? `Template: ${node.node_template_name}` : undefined}
         icon={<Server className="w-6 h-6" />}
         size="4xl"
-        closeOnEscape={!showApplyTemplateModal}
+        // Every nested dialog is a core Modal listening for Escape on document.
+        // The guard has to name ALL of them: one that is missing means a single
+        // keypress closes the child AND this dialog underneath it.
+        closeOnEscape={
+          !showApplyTemplateModal &&
+          !showEditModal &&
+          !showCreateInstanceModal &&
+          !editInstance &&
+          deleteInstanceConfirm === null
+        }
         footer={
           <div className="flex items-center gap-3">
             {canUpdateNode && node && (

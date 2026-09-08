@@ -46,11 +46,11 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   // Inline confirm sheets rendered by a panel rather than standalone dialogs.
   'platform/MigrationChainsPanel.tsx',
   'platform/MigrationsPanel.tsx',
+  // Not a dialog at all: a full-viewport click-catcher that dismisses an
+  // absolutely-positioned dropdown menu.
+  'nodes/NodeInstanceControls.tsx',
 
   // --- Still to migrate. Shrink this list; never grow it. ---
-  'nodes/NodeDetailModal.tsx',
-  'nodes/NodeInstanceControls.tsx',
-  'nodes/UnclaimedDevicesPanel.tsx',
   'operations/AgentPeersTab.tsx',
   'operations/BatchDetailModal.tsx',
   'operations/CiWebhooksTab.tsx',
