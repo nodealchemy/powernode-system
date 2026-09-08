@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ChevronDown,
 } from 'lucide-react';
+import { formatFileSize } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -131,13 +132,6 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
     }
   }, [platform.id, addNotification, refresh]);
 
-  const formatBytes = (n: number): string => {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  };
-
   return (
     <section className="bg-theme-surface rounded-lg border border-theme">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
@@ -190,7 +184,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
                       </div>
                       <div className="mt-1 text-xs text-theme-tertiary flex items-center gap-3 flex-wrap">
                         <code className="font-mono">sha:{p.sha256_short}…</code>
-                        <span>{formatBytes(p.size_bytes)}</span>
+                        <span>{formatFileSize(p.size_bytes)}</span>
                         {p.published_at && (
                           <span>published {new Date(p.published_at).toLocaleString()}</span>
                         )}
@@ -235,7 +229,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Size</label>
-                        <p className="text-theme-primary">{formatBytes(p.size_bytes)}</p>
+                        <p className="text-theme-primary">{formatFileSize(p.size_bytes)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Firmware ref</label>

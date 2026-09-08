@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ChevronDown,
 } from 'lucide-react';
+import { formatTimestamp } from '@/shared/utils/formatters';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { StatusBadge } from '../shared/StatusBadge';
@@ -32,9 +33,6 @@ type VolumeWithAttachment = SystemProviderVolume & {
   node_id?: string;
   instance_name?: string;
 };
-
-const formatTimestamp = (value?: string): string =>
-  value ? new Date(value).toLocaleString() : '—';
 
 interface VolumeListProps {
   onView?: (volume: SystemProviderVolume) => void;

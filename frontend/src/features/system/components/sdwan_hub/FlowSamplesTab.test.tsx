@@ -270,6 +270,8 @@ describe('FlowSamplesTab', () => {
     await waitFor(() => expect(screen.getByText('2.0 KB')).toBeInTheDocument());
   });
 
+  // One decimal, not two — see the note in DiskImageHistoryTab.test.tsx. Core's
+  // formatFileSize now owns this ladder (IMP-c11d5ad755b8).
   it('shows GB formatting for very large byte counts', async () => {
     const sample = makeSample('gb-sample', { octet_count: 2 * 1024 * 1024 * 1024 }); // 2 GB
     mockGetIpfixCollectors.mockResolvedValue([COLLECTOR_A]);
@@ -277,7 +279,7 @@ describe('FlowSamplesTab', () => {
 
     renderTab();
 
-    await waitFor(() => expect(screen.getByText('2.00 GB')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('2.0 GB')).toBeInTheDocument());
   });
 
   it('shows raw B formatting for bytes under 1 KB', async () => {
