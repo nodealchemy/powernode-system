@@ -798,7 +798,7 @@ describe('VirtualIpCreateModal', () => {
   // Peer fetch failure — graceful degradation
   // ---------------------------------------------------------------------------
 
-  it('gracefully handles a failed getPeers call (renders empty lists)', async () => {
+  it('renders the modal and an empty peer list when getPeers fails', async () => {
     mockGetPeers.mockRejectedValue(new Error('network error'));
 
     renderModal();
@@ -813,6 +813,70 @@ describe('VirtualIpCreateModal', () => {
     expect(screen.getByRole('option', { name: /select a peer/i })).toBeInTheDocument();
     // No real peer options
     expect(screen.queryByRole('option', { name: /hub|spoke/i })).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Peer fetch failure must be VISIBLE and must block submit (IMP-c35831fd32d3)
+  //
+  // The peer list is the only source of holder options. When it fails to load
+  // the selects are simply empty, and the anycast branch then rejects the submit
+  // with "Anycast VIPs require at least 2 holder peers" — telling the operator to
+  // satisfy a requirement the modal itself has silently made impossible.
+  // ---------------------------------------------------------------------------
+
+  describe('peer option-load failure', () => {
+    beforeEach(() => {
+      mockGetPeers.mockRejectedValue(new Error('network error'));
+    });
+
+    it('shows an inline error naming the failed peer load', async () => {
+      renderModal();
+      expect(await screen.findByText(/could not load the peers for this network/i)).toBeInTheDocument();
+    });
+
+    it('raises an error notification', async () => {
+      renderModal();
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            message: expect.stringMatching(/could not load the peers for this network/i),
+          }),
+        ),
+      );
+    });
+
+    it('disables the submit button', async () => {
+      renderModal();
+      await screen.findByText(/could not load the peers for this network/i);
+      expect(screen.getByRole('button', { name: /create virtual ip/i })).toBeDisabled();
+    });
+
+    it('does NOT reach createVirtualIp on submit, and does not blame the operator for missing holders', async () => {
+      renderModal();
+      await screen.findByText(/could not load the peers for this network/i);
+
+      fireEvent.change(screen.getByPlaceholderText('e.g. webapp-vip'), { target: { value: 'webapp-vip' } });
+      fireEvent.change(screen.getByPlaceholderText('192.0.2.42/32 or fdXX::/128'), { target: { value: '192.0.2.42/32' } });
+      // Anycast is the branch that produces the unsatisfiable validation message.
+      fireEvent.click(screen.getByRole('checkbox', { name: /anycast mode/i }));
+      fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /create virtual ip/i })).toBeDisabled();
+      });
+      expect(mockCreateVirtualIp).not.toHaveBeenCalled();
+      expect(mockAddNotification).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringMatching(/require at least 2 holder peers/i) }),
+      );
+    });
+  });
+
+  it('does NOT show the option-load error or block submit when the peers load fine', async () => {
+    renderModal();
+    await waitFor(() => expect(mockGetPeers).toHaveBeenCalled());
+    expect(screen.queryByText(/could not load the peers for this network/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create virtual ip/i })).toBeEnabled();
   });
 
   // ---------------------------------------------------------------------------

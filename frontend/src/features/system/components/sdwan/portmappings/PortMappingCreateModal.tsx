@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowRightLeft } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { isPendingApproval } from '../../../services/api/helpers';
@@ -44,17 +45,61 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
   const [enabled, setEnabled] = useState(mapping?.enabled ?? true);
   const [peers, setPeers] = useState<SdwanPeer[]>([]);
   const [vips, setVips] = useState<SdwanVirtualIp[]>([]);
+  const [peersError, setPeersError] = useState<string | null>(null);
+  const [vipsError, setVipsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Peers and VIPs are the only sources of hub/target options. Swallowing a
+  // failed load into an empty list renders as "No hubs available" — indistinguishable
+  // from a network that genuinely has none — and the submit then blames the operator
+  // for not selecting an option that was never offered.
   useEffect(() => {
-    sdwanApi.getPeers(networkId).then((r) => setPeers(r.peers)).catch(() => setPeers([]));
-    sdwanApi.listVirtualIps(networkId).then((r) => setVips(r.virtual_ips)).catch(() => setVips([]));
-  }, [networkId]);
+    let cancelled = false;
+    setPeersError(null);
+    setVipsError(null);
+
+    sdwanApi.getPeers(networkId).then((r) => {
+      if (cancelled) return;
+      setPeers(r.peers);
+    }).catch((err) => {
+      if (cancelled) return;
+      const message = `Could not load the peers for this network: ${err instanceof Error ? err.message : 'request failed'}. Hub and target selection is unavailable, so saving is blocked until this succeeds.`;
+      setPeers([]);
+      setPeersError(message);
+      addNotification({ type: 'error', message });
+    });
+
+    sdwanApi.listVirtualIps(networkId).then((r) => {
+      if (cancelled) return;
+      setVips(r.virtual_ips);
+    }).catch((err) => {
+      if (cancelled) return;
+      const message = `Could not load the virtual IPs for this network: ${err instanceof Error ? err.message : 'request failed'}. VIP targets are unavailable, so saving is blocked until this succeeds.`;
+      setVips([]);
+      setVipsError(message);
+      addNotification({ type: 'error', message });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [networkId, addNotification]);
 
   const hubPeers = peers.filter((p) => p.publicly_reachable);
 
+  // A failed peer load is always disqualifying — every mapping needs a hub peer.
+  // A failed VIP load only is when the payload actually carries a VIP: a
+  // peer-targeted mapping never reads the VIP list and does not even render its
+  // select, so blocking that operator would help nobody.
+  //
+  // The disabled button is not the whole guard: fireEvent.submit and a submit
+  // fired in the same tick as mount both bypass it, so the refusal also lives in
+  // the handler.
+  const optionsUnavailable = !!peersError || (targetType === 'virtual_ip' && !!vipsError);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (optionsUnavailable) return;
     setSubmitting(true);
     try {
       if (!hubPeerId) throw new Error('Select a hub peer (publicly reachable).');
@@ -107,6 +152,8 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
       size="lg"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
+        {peersError && <ErrorAlert message={peersError} />}
+        {vipsError && <ErrorAlert message={vipsError} />}
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
           <input
@@ -145,7 +192,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
               </option>
             ))}
           </select>
-          {hubPeers.length === 0 && (
+          {!peersError && hubPeers.length === 0 && (
             <div className="text-xs text-theme-warning-fg mt-1">
               No hubs available. Mark a peer as <code className="font-mono">publicly_reachable: true</code> first.
             </div>
@@ -248,7 +295,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
                 </option>
               ))}
             </select>
-            {vips.length === 0 && (
+            {!vipsError && vips.length === 0 && (
               <div className="text-xs text-theme-warning-fg mt-1">
                 No VIPs in this network. Create one in the Virtual IPs tab first.
               </div>
@@ -272,7 +319,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
           <Button variant="secondary" onClick={onClose} type="button">
             Cancel
           </Button>
-          <Button variant="primary" type="submit" disabled={submitting}>
+          <Button variant="primary" type="submit" disabled={submitting || optionsUnavailable}>
             {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create mapping'}
           </Button>
         </div>
