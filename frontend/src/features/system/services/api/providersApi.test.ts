@@ -491,6 +491,30 @@ describe('providersApi', () => {
     });
   });
 
+  describe('syncProviderConnectionCatalog', () => {
+    it('calls POST /system/provider_connections/:id/sync_catalog and returns the catalog summary', async () => {
+      mockPost.mockResolvedValue(
+        envelope({
+          provider_connection: CONNECTION_A,
+          catalog: {
+            regions: { created: 1, updated: 2, total: 3 },
+            availability_zones: { created: 0, updated: 0, total: 0 },
+            instance_types: { created: 4, updated: 0, total: 4 },
+            volume_types: { created: 0, updated: 0, total: 0 },
+          },
+        }),
+      );
+
+      const result = await providersApi.syncProviderConnectionCatalog('conn-1');
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/provider_connections/conn-1/sync_catalog',
+      );
+      expect(result.catalog.regions.total).toBe(3);
+      expect(result.connection.id).toBe('conn-1');
+    });
+  });
+
   // ===========================================================================
   // Provider Instance Types
   // ===========================================================================

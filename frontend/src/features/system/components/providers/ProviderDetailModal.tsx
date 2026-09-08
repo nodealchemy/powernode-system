@@ -12,7 +12,8 @@ import {
   Plus,
   Edit2,
   Trash2,
-  RefreshCw
+  RefreshCw,
+  DownloadCloud
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -24,6 +25,7 @@ import { systemApi } from '@system/features/system/services/systemApi';
 import { RegionFormModal } from './RegionFormModal';
 import { ConnectionFormModal } from './ConnectionFormModal';
 import type { SystemProvider, SystemProviderRegion, SystemProviderConnection } from '@system/features/system/types/system.types';
+import type { ProviderCatalogSummary } from '@system/features/system/services/api/providersApi';
 
 interface ProviderDetailModalProps {
   providerId: string | null;
@@ -43,6 +45,33 @@ const providerTypeLabels: Record<string, string> = {
   custom: 'Custom Provider'
 };
 
+const CATALOG_RESOURCE_LABELS: Array<[keyof ProviderCatalogSummary, string]> = [
+  ['regions', 'regions'],
+  ['availability_zones', 'availability zones'],
+  ['instance_types', 'instance types'],
+  ['volume_types', 'volume types']
+];
+
+/**
+ * One-line summary of a catalog sync. Reports the total per resource and, when
+ * anything was created, how many of those are new — an operator running this to
+ * pick up a newly released instance type wants that number, and "0 new" on a
+ * repeat sync is the signal that nothing changed upstream.
+ *
+ * `total` is absent on the availability-zone phase (synced per region, so the
+ * service reports only created/updated); derive it rather than printing NaN.
+ */
+function summariseCatalog(catalog: ProviderCatalogSummary): string {
+  return CATALOG_RESOURCE_LABELS.map(([key, label]) => {
+    const counts = catalog?.[key];
+    if (!counts) return `${label} 0`;
+    const total = counts.total ?? counts.created + counts.updated;
+    return counts.created > 0
+      ? `${label} ${total} (${counts.created} new)`
+      : `${label} ${total}`;
+  }).join(', ');
+}
+
 /**
  * ProviderDetailModal - Modal for viewing provider details with tabs
  */
@@ -61,6 +90,9 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
   const canManageConnections = hasPermission('system.connections.create');
   const canDeleteConnections = hasPermission('system.connections.delete');
   const canTestConnections = hasPermission('system.connections.test');
+  // ProviderConnectionsController#sync_catalog gates on connections.update, the
+  // same permission as edit — not .test, which only probes credentials.
+  const canSyncCatalog = hasPermission('system.connections.update');
 
   const [provider, setProvider] = useState<SystemProvider | null>(null);
   const [regions, setRegions] = useState<SystemProviderRegion[]>([]);
@@ -80,6 +112,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
   const [connectionToDelete, setConnectionToDelete] = useState<SystemProviderConnection | null>(null);
   const [deletingConnection, setDeletingConnection] = useState(false);
   const [testingConnection, setTestingConnection] = useState<string | null>(null);
+  const [syncingCatalog, setSyncingCatalog] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen && providerId) {
@@ -218,6 +251,25 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
       });
     } finally {
       setTestingConnection(null);
+    }
+  }, [addNotification]);
+
+  const handleSyncCatalog = useCallback(async (connection: SystemProviderConnection) => {
+    setSyncingCatalog(connection.id);
+    try {
+      const { catalog } = await systemApi.syncProviderConnectionCatalog(connection.id);
+      addNotification({
+        type: 'success',
+        message: `Catalog synced for "${connection.name}": ${summariseCatalog(catalog)}`
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
+      addNotification({
+        type: 'error',
+        message: `Catalog sync failed: ${errorMessage}`
+      });
+    } finally {
+      setSyncingCatalog(null);
     }
   }, [addNotification]);
 
@@ -456,6 +508,19 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                       ) : (
                         <RefreshCw className="w-4 h-4" />
                       )}
+                    </Button>
+                  )}
+                  {canSyncCatalog && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleSyncCatalog(connection)}
+                      disabled={syncingCatalog === connection.id}
+                      title="Sync catalog"
+                    >
+                      <DownloadCloud
+                        className={`w-4 h-4 ${syncingCatalog === connection.id ? 'animate-pulse' : ''}`}
+                      />
                     </Button>
                   )}
                   {canManageConnections && (

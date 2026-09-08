@@ -1,9 +1,10 @@
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import { Database, RefreshCw, Trash2 } from 'lucide-react';
+import { Database, Link2Off, RefreshCw, Trash2 } from 'lucide-react';
 import {
   packageRepositoriesApi,
   type PackageRepositoryKind,
   type PackageRepositoryVisibility,
+  type StaleLinksReport,
   type SystemPackageRepository,
 } from '@system/features/system/services/api/packageRepositoriesApi';
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
@@ -16,6 +17,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 
 type ActionsAPI = { openCreate: () => void };
 interface Props {
@@ -46,6 +48,11 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   const canSync = hasPermission('system.package_repositories.sync');
   const canDelete = hasPermission('system.package_repositories.delete');
   const canCreateModule = hasPermission('system.package_modules.create');
+  const canViewRepos = hasPermission('system.package_repositories.view');
+  // clean_stale_links branches its gate on the repo's visibility exactly the
+  // way destroy does: a shared repo is reachable from every account, so it
+  // takes manage_shared rather than a plain delete.
+  const canManageShared = hasPermission('system.package_repositories.manage_shared');
 
   const [editingRepo, setEditingRepo] = useState<SystemPackageRepository | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -56,6 +63,9 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   } | null>(null);
   const [armedDelete, setArmedDelete] = useState<string | null>(null);
   const [architectureOptions, setArchitectureOptions] = useState<MultiSelectOption[]>([]);
+  const [staleLinks, setStaleLinks] = useState<StaleLinksReport | null>(null);
+  const [staleLinksLoading, setStaleLinksLoading] = useState(false);
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
 
   const list = useResourceList<SystemPackageRepository, RepoFilters>({
     fetcher: () => packageRepositoriesApi.list(),
@@ -171,6 +181,79 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
     },
     [armedDelete, canDelete, selectedRepoId, list, showNotification]
   );
+
+  // The preview and any confirmation raised from it are scoped to ONE
+  // repository. Selecting another (or deselecting) must drop both, or the
+  // panel shows the previous repo's stale links under the new repo's name and
+  // the confirmation's onConfirm still points at the old id.
+  useEffect(() => {
+    setStaleLinks(null);
+    setStaleLinksLoading(false);
+    closeConfirmation();
+  }, [selectedRepoId, closeConfirmation]);
+
+  const handlePreviewStaleLinks = useCallback(async () => {
+    if (!selectedRepo) return;
+    setStaleLinksLoading(true);
+    try {
+      const report = await packageRepositoriesApi.staleLinks(selectedRepo.id);
+      setStaleLinks(report);
+    } catch (e) {
+      logger.error('[PackageRepositoriesTab] stale link audit failed', e);
+      showNotification(`Failed to audit stale links for ${selectedRepo.name}`, 'error');
+    } finally {
+      setStaleLinksLoading(false);
+    }
+  }, [selectedRepo, showNotification]);
+
+  const handleCleanStaleLinks = useCallback(() => {
+    if (!selectedRepo || !staleLinks || staleLinks.stale_count === 0) return;
+    const repo = selectedRepo;
+    const count = staleLinks.stale_count;
+    confirm({
+      title: 'Clean stale links',
+      message: `This permanently destroys ${count} stale link${
+        count === 1 ? '' : 's'
+      } from "${repo.name}" and the auto-generated modules behind them, including their versions and artifacts. Links whose module is still referenced are kept.`,
+      confirmLabel: `Clean ${count} stale link${count === 1 ? '' : 's'}`,
+      variant: 'danger',
+      // useConfirmation's handleConfirm awaits this and does not catch, so a
+      // rejection escaping here would leave the dialog open on an unhandled
+      // promise. Report inside instead.
+      onConfirm: async () => {
+        try {
+          // force: true is REQUIRED. PackageRepositoryStaleLinkService.clean!
+          // silently degrades to a dry run without it and still answers ok —
+          // the operator would confirm a destructive action, be told it
+          // succeeded, and nothing would be destroyed. The danger confirmation
+          // above IS the deliberate act that guard asks for.
+          const result = await packageRepositoriesApi.cleanStaleLinks(repo.id, {
+            force: true,
+          });
+          if (result.dry_run) {
+            // Belt and braces: if the server ever answers dry_run to a forced
+            // clean, say so rather than reporting a destroy that never happened.
+            showNotification(
+              `No stale links were destroyed in ${repo.name} — the server treated the request as a dry run`,
+              'warning',
+            );
+          } else {
+            showNotification(
+              `Cleaned ${result.destroyed} stale link${
+                result.destroyed === 1 ? '' : 's'
+              } from ${repo.name} (${result.kept} kept)`,
+              'success',
+            );
+          }
+          const refreshed = await packageRepositoriesApi.staleLinks(repo.id);
+          setStaleLinks(refreshed);
+        } catch (e) {
+          logger.error('[PackageRepositoriesTab] stale link clean failed', e);
+          showNotification(`Failed to clean stale links from ${repo.name}`, 'error');
+        }
+      },
+    });
+  }, [selectedRepo, staleLinks, confirm, showNotification]);
 
   const renderActions = (r: SystemPackageRepository) => (
     <div className="flex gap-2 justify-end">
@@ -394,6 +477,83 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
         </ResponsiveListContainer>
       </section>
 
+      {selectedRepo && canViewRepos && (
+        <section className="rounded border border-theme bg-theme-surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div>
+              <h3 className="text-sm font-medium text-theme-primary flex items-center gap-2">
+                <Link2Off size={14} />
+                Stale links
+              </h3>
+              <p className="text-xs text-theme-secondary mt-0.5">
+                Auto-generated links whose module no longer belongs to any template
+                or assignment. Cleaning them destroys those modules.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handlePreviewStaleLinks}
+                disabled={staleLinksLoading}
+                className="px-2 py-1 text-xs rounded border border-theme text-theme-secondary hover:text-theme-primary disabled:opacity-50"
+                data-testid="package-repo-stale-links-preview"
+              >
+                {staleLinksLoading ? 'Checking…' : 'Check stale links'}
+              </button>
+              {/* Preview-gated on purpose: the count in the confirm has to come
+                  from a real audit, never a guess. */}
+              {staleLinks &&
+                staleLinks.stale_count > 0 &&
+                (selectedRepo.shared ? canManageShared : canDelete) && (
+                  <button
+                    type="button"
+                    onClick={handleCleanStaleLinks}
+                    className="px-2 py-1 text-xs rounded border border-theme text-theme-danger-fg hover:bg-theme-background-secondary"
+                    data-testid="package-repo-stale-links-clean"
+                  >
+                    Clean {staleLinks.stale_count} stale link
+                    {staleLinks.stale_count === 1 ? '' : 's'}
+                  </button>
+                )}
+            </div>
+          </div>
+
+          {staleLinks && (
+            <div className="text-xs text-theme-secondary">
+              <p className="mb-2">
+                <span
+                  className="font-medium text-theme-primary"
+                  data-testid="package-repo-stale-links-count"
+                >
+                  {staleLinks.stale_count}
+                </span>{' '}
+                stale link{staleLinks.stale_count === 1 ? '' : 's'}
+              </p>
+              {staleLinks.stale_links.length > 0 && (
+                <ul className="space-y-1">
+                  {staleLinks.stale_links.map((link) => (
+                    <li
+                      key={link.id}
+                      className="flex flex-wrap items-center gap-2"
+                      data-testid={`package-repo-stale-link-${link.id}`}
+                    >
+                      <span className="text-theme-primary">{link.package_name}</span>
+                      {link.package_version && <span>{link.package_version}</span>}
+                      {link.architecture && (
+                        <span className="px-1.5 py-0.5 rounded bg-theme-background-secondary">
+                          {link.architecture}
+                        </span>
+                      )}
+                      {link.node_module_name && <span>→ {link.node_module_name}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {selectedRepo && (
         <PackageBrowser
           repository={selectedRepo}
@@ -411,6 +571,8 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
         onClose={() => setFormOpen(false)}
         onSaved={() => list.refresh()}
       />
+
+      {ConfirmationDialog}
 
       {packageToCreate && (
         <CreateModuleFromPackageModal

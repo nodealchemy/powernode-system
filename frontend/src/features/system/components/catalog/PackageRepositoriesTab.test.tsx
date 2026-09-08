@@ -728,6 +728,254 @@ describe('PackageRepositoriesTab', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Stale links: preview then destructive clean (IMP-2b5042555504)
+  // ---------------------------------------------------------------------------
+
+  it('previews stale links for the selected repository', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/system/package_repositories/repo-1/stale_links') {
+        return Promise.resolve(
+          envelope({
+            package_repository_id: 'repo-1',
+            stale_count: 2,
+            stale_links: [
+              {
+                id: 'link-1',
+                package_name: 'libfoo',
+                package_version: '1.2.3',
+                architecture: 'amd64',
+                node_module_id: 'mod-1',
+                node_module_name: 'pkg-libfoo',
+                last_synced_at: '2026-05-01T00:00:00Z',
+              },
+              {
+                id: 'link-2',
+                package_name: 'libbar',
+                package_version: '4.5',
+                architecture: 'amd64',
+                node_module_id: 'mod-2',
+                node_module_name: 'pkg-libbar',
+                last_synced_at: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === '/system/package_repositories')
+        return Promise.resolve(reposResponse([REPO_APT, REPO_RPM]));
+      return Promise.resolve(archsResponse([ARCH_AMD64]));
+    });
+
+    renderTab();
+
+    const row = await waitFor(() => screen.getByTestId('package-repo-row-repo-1'));
+    fireEvent.click(row);
+
+    const previewBtn = await waitFor(() =>
+      screen.getByTestId('package-repo-stale-links-preview'),
+    );
+    fireEvent.click(previewBtn);
+
+    await waitFor(() =>
+      expect(mockGet).toHaveBeenCalledWith(
+        '/system/package_repositories/repo-1/stale_links',
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('package-repo-stale-links-count')).toHaveTextContent(
+        '2',
+      ),
+    );
+    expect(screen.getByText('libfoo')).toBeInTheDocument();
+    expect(screen.getByText('libbar')).toBeInTheDocument();
+  });
+
+  it('offers no clean action until the preview has run', async () => {
+    renderTab();
+
+    const row = await waitFor(() => screen.getByTestId('package-repo-row-repo-1'));
+    fireEvent.click(row);
+
+    await waitFor(() => screen.getByTestId('package-repo-stale-links-preview'));
+    expect(
+      screen.queryByTestId('package-repo-stale-links-clean'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('offers no clean action when the preview reports zero stale links', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/system/package_repositories/repo-1/stale_links') {
+        return Promise.resolve(
+          envelope({ package_repository_id: 'repo-1', stale_count: 0, stale_links: [] }),
+        );
+      }
+      if (url === '/system/package_repositories')
+        return Promise.resolve(reposResponse([REPO_APT, REPO_RPM]));
+      return Promise.resolve(archsResponse([ARCH_AMD64]));
+    });
+
+    renderTab();
+
+    const row = await waitFor(() => screen.getByTestId('package-repo-row-repo-1'));
+    fireEvent.click(row);
+
+    fireEvent.click(await waitFor(() => screen.getByTestId('package-repo-stale-links-preview')));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('package-repo-stale-links-count')).toHaveTextContent('0'),
+    );
+    expect(
+      screen.queryByTestId('package-repo-stale-links-clean'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('cleans stale links only after the destructive confirmation is accepted', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/system/package_repositories/repo-1/stale_links') {
+        return Promise.resolve(
+          envelope({
+            package_repository_id: 'repo-1',
+            stale_count: 2,
+            stale_links: [
+              {
+                id: 'link-1',
+                package_name: 'libfoo',
+                package_version: '1.2.3',
+                architecture: 'amd64',
+                node_module_id: 'mod-1',
+                node_module_name: 'pkg-libfoo',
+                last_synced_at: null,
+              },
+              {
+                id: 'link-2',
+                package_name: 'libbar',
+                package_version: '4.5',
+                architecture: 'amd64',
+                node_module_id: 'mod-2',
+                node_module_name: 'pkg-libbar',
+                last_synced_at: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === '/system/package_repositories')
+        return Promise.resolve(reposResponse([REPO_APT, REPO_RPM]));
+      return Promise.resolve(archsResponse([ARCH_AMD64]));
+    });
+    mockPost.mockResolvedValue(
+      envelope({
+        package_repository_id: 'repo-1',
+        destroyed: 2,
+        kept: 0,
+        dry_run: false,
+      }),
+    );
+
+    renderTab();
+
+    const row = await waitFor(() => screen.getByTestId('package-repo-row-repo-1'));
+    fireEvent.click(row);
+    fireEvent.click(await waitFor(() => screen.getByTestId('package-repo-stale-links-preview')));
+
+    const cleanBtn = await waitFor(() =>
+      screen.getByTestId('package-repo-stale-links-clean'),
+    );
+    expect(cleanBtn).toHaveTextContent('Clean 2 stale links');
+
+    fireEvent.click(cleanBtn);
+
+    // Confirmation is up; nothing destroyed yet.
+    await waitFor(() => screen.getByText('Clean stale links'));
+    expect(mockPost).not.toHaveBeenCalledWith(
+      '/system/package_repositories/repo-1/clean_stale_links',
+      expect.anything(),
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clean 2 stale links' }));
+
+    await waitFor(() =>
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/package_repositories/repo-1/clean_stale_links',
+        { force: true },
+      ),
+    );
+    await waitFor(() =>
+      expect(mockShowNotification).toHaveBeenCalledWith(
+        'Cleaned 2 stale links from ubuntu-noble (0 kept)',
+        'success',
+      ),
+    );
+  });
+
+  it('warns instead of claiming a destroy when the clean comes back as a dry run', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/system/package_repositories/repo-1/stale_links') {
+        return Promise.resolve(
+          envelope({
+            package_repository_id: 'repo-1',
+            stale_count: 2,
+            stale_links: [
+              {
+                id: 'link-1',
+                package_name: 'libfoo',
+                package_version: '1.2.3',
+                architecture: 'amd64',
+                node_module_id: 'mod-1',
+                node_module_name: 'pkg-libfoo',
+                last_synced_at: null,
+              },
+              {
+                id: 'link-2',
+                package_name: 'libbar',
+                package_version: '4.5',
+                architecture: 'amd64',
+                node_module_id: 'mod-2',
+                node_module_name: 'pkg-libbar',
+                last_synced_at: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === '/system/package_repositories')
+        return Promise.resolve(reposResponse([REPO_APT, REPO_RPM]));
+      return Promise.resolve(archsResponse([ARCH_AMD64]));
+    });
+    // The shape the service returns when `force` never reaches it.
+    mockPost.mockResolvedValue(
+      envelope({
+        package_repository_id: 'repo-1',
+        destroyed: 0,
+        kept: 2,
+        dry_run: true,
+      }),
+    );
+
+    renderTab();
+
+    const row = await waitFor(() => screen.getByTestId('package-repo-row-repo-1'));
+    fireEvent.click(row);
+    fireEvent.click(await waitFor(() => screen.getByTestId('package-repo-stale-links-preview')));
+    fireEvent.click(await waitFor(() => screen.getByTestId('package-repo-stale-links-clean')));
+
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clean 2 stale links' }));
+
+    await waitFor(() =>
+      expect(mockShowNotification).toHaveBeenCalledWith(
+        'No stale links were destroyed in ubuntu-noble — the server treated the request as a dry run',
+        'warning',
+      ),
+    );
+    expect(mockShowNotification).not.toHaveBeenCalledWith(
+      expect.stringContaining('Cleaned'),
+      'success',
+    );
+  });
+
+  // ---------------------------------------------------------------------------
   // Action buttons are not rendered outside the actions cell (stopPropagation)
   // ---------------------------------------------------------------------------
 

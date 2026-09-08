@@ -14,6 +14,7 @@ const mockGetProviderConnections = jest.fn();
 const mockDeleteProviderRegion = jest.fn();
 const mockDeleteProviderConnection = jest.fn();
 const mockTestProviderConnection = jest.fn();
+const mockSyncProviderConnectionCatalog = jest.fn();
 
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
@@ -23,6 +24,8 @@ jest.mock('@system/features/system/services/systemApi', () => ({
     deleteProviderRegion: (...args: unknown[]) => mockDeleteProviderRegion(...args),
     deleteProviderConnection: (...args: unknown[]) => mockDeleteProviderConnection(...args),
     testProviderConnection: (...args: unknown[]) => mockTestProviderConnection(...args),
+    syncProviderConnectionCatalog: (...args: unknown[]) =>
+      mockSyncProviderConnectionCatalog(...args),
   },
 }));
 
@@ -271,6 +274,7 @@ describe('ProviderDetailModal', () => {
     mockDeleteProviderRegion.mockReset();
     mockDeleteProviderConnection.mockReset();
     mockTestProviderConnection.mockReset();
+    mockSyncProviderConnectionCatalog.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission = jest.fn(() => true);
   });
@@ -1011,6 +1015,86 @@ describe('ProviderDetailModal', () => {
         message: 'Connection test successful',
       }),
     );
+  });
+
+  it('syncs the provider catalog for a connection when Sync catalog is clicked', async () => {
+    setupHappyPath();
+    mockSyncProviderConnectionCatalog.mockResolvedValue({
+      connection: CONNECTION_A,
+      catalog: {
+        regions: { created: 1, updated: 2, total: 3 },
+        availability_zones: { created: 0, updated: 0 },
+        instance_types: { created: 4, updated: 0, total: 4 },
+        volume_types: { created: 0, updated: 0, total: 0 },
+      },
+    });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Connections'));
+    fireEvent.click(screen.getByTitle('Sync catalog'));
+
+    await waitFor(() =>
+      expect(mockSyncProviderConnectionCatalog).toHaveBeenCalledWith('conn-a'),
+    );
+  });
+
+  it('summarises the synced catalog counts in the success notification', async () => {
+    setupHappyPath();
+    mockSyncProviderConnectionCatalog.mockResolvedValue({
+      connection: CONNECTION_A,
+      catalog: {
+        regions: { created: 1, updated: 2, total: 3 },
+        availability_zones: { created: 0, updated: 0 },
+        instance_types: { created: 4, updated: 0, total: 4 },
+        volume_types: { created: 0, updated: 0, total: 0 },
+      },
+    });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Connections'));
+    fireEvent.click(screen.getByTitle('Sync catalog'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message:
+          'Catalog synced for "prod-creds": regions 3 (1 new), availability zones 0, instance types 4 (4 new), volume types 0',
+      }),
+    );
+  });
+
+  it('shows an error notification when the catalog sync fails', async () => {
+    setupHappyPath();
+    mockSyncProviderConnectionCatalog.mockRejectedValue(new Error('adapter refused'));
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Connections'));
+    fireEvent.click(screen.getByTitle('Sync catalog'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Catalog sync failed: adapter refused',
+      }),
+    );
+  });
+
+  it('hides Sync catalog without the connections update permission', async () => {
+    setupHappyPath();
+    mockHasPermission = jest.fn((p: string) => p !== 'system.connections.update');
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Connections'));
+
+    expect(screen.queryByTitle('Sync catalog')).not.toBeInTheDocument();
   });
 
   it('shows error notification when connection test returns success:false', async () => {

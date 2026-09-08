@@ -154,6 +154,30 @@ export interface CreateModuleResult {
   warnings: string[];
 }
 
+/** One auto-generated link the stale-link audit flagged. */
+export interface StaleLink {
+  id: string;
+  package_name: string;
+  package_version: string | null;
+  architecture: string | null;
+  node_module_id: string | null;
+  node_module_name: string | null;
+  last_synced_at: string | null;
+}
+
+export interface StaleLinksReport {
+  package_repository_id: string;
+  stale_count: number;
+  stale_links: StaleLink[];
+}
+
+export interface CleanStaleLinksResult {
+  package_repository_id: string;
+  destroyed: number;
+  kept: number;
+  dry_run: boolean;
+}
+
 export const packageRepositoriesApi = {
   list: async (params?: {
     kind?: PackageRepositoryKind;
@@ -191,6 +215,33 @@ export const packageRepositoriesApi = {
 
   delete: async (id: string): Promise<void> => {
     await apiClient.delete(`/system/package_repositories/${id}`);
+  },
+
+  // Read-only audit of auto-generated transitive links whose NodeModule no
+  // longer belongs to any template or assignment. Safe to call at will; it is
+  // the preview half of the destructive clean below.
+  staleLinks: async (id: string): Promise<StaleLinksReport> => {
+    const response = await apiClient.get<ApiEnvelope<StaleLinksReport>>(
+      `/system/package_repositories/${id}/stale_links`,
+    );
+    return extractData(response);
+  },
+
+  // DESTRUCTIVE: destroys each stale link AND its auto-generated NodeModule
+  // (cascading to versions + artifacts). Callers must show the preview first
+  // so the operator confirms against a real count, never a guess.
+  cleanStaleLinks: async (
+    id: string,
+    opts: { force?: boolean; dryRun?: boolean } = {},
+  ): Promise<CleanStaleLinksResult> => {
+    const body: Record<string, boolean> = {};
+    if (opts.force) body.force = true;
+    if (opts.dryRun) body.dry_run = true;
+    const response = await apiClient.post<ApiEnvelope<CleanStaleLinksResult>>(
+      `/system/package_repositories/${id}/clean_stale_links`,
+      body,
+    );
+    return extractData(response);
   },
 
   // Async: returns as soon as the sync is QUEUED (status "syncing"); the
