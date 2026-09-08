@@ -436,6 +436,80 @@ describe('tasksApi', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // abortTask — IMP-0ea71d15f980
+  // ---------------------------------------------------------------------------
+
+  describe('abortTask', () => {
+    it('POSTs to /system/tasks/:id/abort with the reason', async () => {
+      const abortedTask: SystemTask = { ...TASK_A, status: 'aborted' };
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+
+      const result = await tasksApi.abortTask('task-a', 'Wedged for an hour');
+
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-a/abort', {
+        reason: 'Wedged for an hour',
+      });
+      expect(result.status).toBe('aborted');
+    });
+
+    it('uses the provided id in the abort URL path', async () => {
+      const abortedTask: SystemTask = { ...TASK_B, status: 'aborted' };
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+
+      await tasksApi.abortTask('task-b', 'Node went away');
+
+      expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-b/abort', {
+        reason: 'Node went away',
+      });
+    });
+
+    it('sends undefined reason when none is provided', async () => {
+      const abortedTask: SystemTask = { ...TASK_A, status: 'aborted' };
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+
+      await tasksApi.abortTask('task-a');
+
+      expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-a/abort', {
+        reason: undefined,
+      });
+    });
+
+    it('returns the aborted task from the response envelope', async () => {
+      const abortedTask: SystemTask = { ...TASK_FAILED, status: 'aborted' };
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+
+      const result = await tasksApi.abortTask('task-c', 'Superseded');
+
+      expect(result).toEqual(abortedTask);
+      expect(result.status).toBe('aborted');
+    });
+
+    it('surfaces the error when the API rejects the transition', async () => {
+      mockPost.mockRejectedValue(new Error('Cannot abort task in complete state'));
+
+      await expect(tasksApi.abortTask('task-b', 'Too late')).rejects.toThrow(
+        'Cannot abort task in complete state',
+      );
+    });
+
+    it('targets the abort endpoint, never the cancel one', async () => {
+      const abortedTask: SystemTask = { ...TASK_A, status: 'aborted' };
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+
+      await tasksApi.abortTask('task-a', 'reason');
+
+      expect(mockPost).not.toHaveBeenCalledWith(
+        '/system/tasks/task-a/cancel',
+        expect.anything(),
+      );
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockDelete).not.toHaveBeenCalled();
+      expect(mockPut).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Envelope integrity (cross-cutting)
   // ---------------------------------------------------------------------------
 

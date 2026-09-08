@@ -49,9 +49,24 @@ export const tasksApi = {
     return extractData(response).task;
   },
 
+  // Legal only from pending/scheduled — the AASM `cancel` event refuses any
+  // other state with a 422. Use abortTask for a running task.
   cancelTask: async (id: string, reason?: string): Promise<SystemTask> => {
     const response = await apiClient.post<ApiEnvelope<{ task: SystemTask }>>(
       `/system/tasks/${id}/cancel`,
+      { reason }
+    );
+    return extractData(response).task;
+  },
+
+  // Legal only from running — the operator's recourse for a wedged task that
+  // `cancel` cannot touch. The AASM `abort` event transitions running ->
+  // aborted; the endpoint is
+  // extensions/system/server/app/controllers/api/v1/system/tasks_controller.rb:170,
+  // behind the same `system.infra_tasks.control` permission as cancel.
+  abortTask: async (id: string, reason?: string): Promise<SystemTask> => {
+    const response = await apiClient.post<ApiEnvelope<{ task: SystemTask }>>(
+      `/system/tasks/${id}/abort`,
       { reason }
     );
     return extractData(response).task;

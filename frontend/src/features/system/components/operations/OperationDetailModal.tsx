@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Activity,
@@ -9,11 +9,14 @@ import {
   User,
   Server,
   Calendar,
-  Ban
+  Ban,
+  StopCircle
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { FormField } from '@/shared/components/ui/FormField';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { resolveOperableType } from '@system/features/system/entityRegistry';
@@ -51,6 +54,44 @@ const statusColors: Record<string, 'info' | 'success' | 'warning' | 'danger' | '
 };
 
 /**
+ * The body of the stop-an-operation confirmation: a sentence plus an optional
+ * free-text reason that is forwarded to the AASM event and lands in the task's
+ * error_message + event timeline.
+ *
+ * It owns its own state and reports upward through `onReasonChange` on purpose.
+ * `useConfirmation` snapshots the `message` element when `confirm()` is called
+ * and re-renders that same element for the life of the dialog, so a *controlled*
+ * field driven by OperationDetailModal state would never show what was typed —
+ * the snapshot still holds the original props. Keeping the value here and
+ * pushing it into a ref is what makes the field work at all.
+ */
+const StopReasonPrompt: React.FC<{
+  prompt: string;
+  onReasonChange: (reason: string) => void;
+}> = ({ prompt, onReasonChange }) => {
+  const [reason, setReason] = useState('');
+
+  return (
+    <div className="space-y-4">
+      <p>{prompt}</p>
+      <FormField
+        label="Reason (optional)"
+        type="textarea"
+        rows={2}
+        size="sm"
+        value={reason}
+        onChange={(value) => {
+          setReason(value);
+          onReasonChange(value);
+        }}
+        placeholder="Why are you stopping this operation?"
+        helpText="Recorded on the operation's timeline for whoever looks at it next."
+      />
+    </div>
+  );
+};
+
+/**
  * OperationDetailModal - Modal for viewing operation details with event timeline
  */
 export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
@@ -61,6 +102,16 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
+  // Written by StopReasonPrompt while the confirmation dialog is open; read
+  // once on confirm. A ref (not state) because the dialog body is a snapshotted
+  // element — see StopReasonPrompt.
+  const reasonRef = useRef('');
+  // The operation currently on screen. `onConfirm` is a closure captured when
+  // the dialog opened, so reading the `operationId` prop from inside it yields
+  // the value from THAT render, not the current one — a ref is what makes the
+  // stale-target check in runStopAction actually compare two different things.
+  const currentOperationIdRef = useRef(operationId);
   const [operation, setOperation] = useState<SystemTask | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('info');
@@ -68,6 +119,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 
   // Permission checks
   const canControlOperations = hasPermission('system.infra_tasks.control');
+
+  useEffect(() => {
+    currentOperationIdRef.current = operationId;
+  }, [operationId]);
 
   useEffect(() => {
     if (isOpen && operationId) {
@@ -97,19 +152,64 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
     }
   };
 
-  const handleCancel = async () => {
-    if (!operation) return;
-    setActionLoading('cancel');
+  // Cancel (pending/scheduled) and Abort (running) are the two AASM events an
+  // operator may drive from here; they differ only in which state they are
+  // legal from, so they share one confirm-with-reason path.
+  const runStopAction = async (action: 'cancel' | 'abort', targetId: string) => {
+    // `targetId` is the operation the dialog was opened against. The dialog's
+    // state lives in useConfirmation, which outlives this modal's `isOpen`
+    // flag, so a confirmation left pending while the operator moves to another
+    // operation must not fire at whatever is on screen now.
+    if (targetId !== currentOperationIdRef.current) return;
+    const reason = reasonRef.current.trim() || undefined;
+    const pastTense = action === 'cancel' ? 'cancelled' : 'aborted';
+
+    setActionLoading(action);
     try {
-      await systemApi.cancelTask(operation.id, 'Cancelled by user');
-      addNotification({ type: 'success', message: 'Operation cancelled successfully' });
+      if (action === 'cancel') {
+        await systemApi.cancelTask(targetId, reason);
+      } else {
+        await systemApi.abortTask(targetId, reason);
+      }
+      addNotification({ type: 'success', message: `Operation ${pastTense} successfully` });
       await refreshOperation();
       onOperationUpdated?.();
     } catch {
-      addNotification({ type: 'error', message: 'Failed to cancel operation' });
+      addNotification({ type: 'error', message: `Failed to ${action} operation` });
     } finally {
       setActionLoading(null);
     }
+  };
+
+  const confirmStopAction = (action: 'cancel' | 'abort') => {
+    if (!operation) return;
+    // Reset first: the ref outlives a dialog the operator dismissed, and a
+    // reason typed into that one must not ride along on the next attempt.
+    reasonRef.current = '';
+
+    const isCancel = action === 'cancel';
+    const targetId = operation.id;
+    confirm({
+      title: isCancel ? 'Cancel Operation' : 'Abort Operation',
+      message: (
+        <StopReasonPrompt
+          prompt={
+            isCancel
+              ? `Cancel "${operation.command}" before it starts? It will not run.`
+              : `Abort "${operation.command}" while it is running? Work already done is not rolled back.`
+          }
+          onReasonChange={(reason) => {
+            reasonRef.current = reason;
+          }}
+        />
+      ),
+      confirmLabel: isCancel ? 'Cancel Operation' : 'Abort Operation',
+      // The dismiss button must not read as a second way to say "yes" on a
+      // dialog whose subject is cancelling; the shared default is "Cancel".
+      cancelLabel: isCancel ? 'Keep Operation' : 'Keep Running',
+      variant: isCancel ? 'warning' : 'danger',
+      onConfirm: () => runStopAction(action, targetId)
+    });
   };
 
   if (!isOpen) return null;
@@ -422,7 +522,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={handleCancel}
+                      onClick={() => confirmStopAction('cancel')}
                       disabled={actionLoading !== null}
                       className="text-theme-warning-fg border-theme-warning-border hover:bg-theme-warning-bg"
                     >
@@ -435,6 +535,24 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
                     </Button>
                   )}
 
+                  {/* Abort for running operations — `cancel` is illegal from
+                      :running, so without this a wedged task has no recourse */}
+                  {operation.status === 'running' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => confirmStopAction('abort')}
+                      disabled={actionLoading !== null}
+                      className="text-theme-danger-fg border-theme-danger-border hover:bg-theme-danger-bg"
+                    >
+                      {actionLoading === 'abort' ? (
+                        <LoadingSpinner size="sm" className="mr-2" />
+                      ) : (
+                        <StopCircle className="w-4 h-4 mr-2" />
+                      )}
+                      Abort
+                    </Button>
+                  )}
                 </>
               )}
             </div>
@@ -444,6 +562,8 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {ConfirmationDialog}
     </div>
   );
 };

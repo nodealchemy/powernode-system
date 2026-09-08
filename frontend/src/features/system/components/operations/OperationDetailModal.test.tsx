@@ -494,7 +494,14 @@ describe('OperationDetailModal', () => {
     expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
   });
 
-  it('calls cancelTask POST with the task id and reason on Cancel click', async () => {
+  // Since IMP-0ea71d15f980 the footer Cancel button opens the shared
+  // confirmation dialog; the POST fires from its "Cancel Operation" button.
+  function confirmCancel() {
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Operation' }));
+  }
+
+  it('calls cancelTask POST with the task id on Cancel click', async () => {
     const cancelledTask = { ...BASE_TASK, status: 'cancelled' as const };
     mockGet
       .mockResolvedValueOnce(envelope({ task: { ...BASE_TASK, status: 'pending' as const } }))
@@ -504,12 +511,12 @@ describe('OperationDetailModal', () => {
     renderModal();
 
     await waitForCommand();
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    confirmCancel();
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
         '/system/tasks/task-123/cancel',
-        { reason: 'Cancelled by user' },
+        { reason: undefined },
       ),
     );
   });
@@ -524,7 +531,7 @@ describe('OperationDetailModal', () => {
     renderModal();
 
     await waitForCommand();
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    confirmCancel();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -545,7 +552,7 @@ describe('OperationDetailModal', () => {
     renderModal({ onOperationUpdated });
 
     await waitForCommand();
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    confirmCancel();
 
     await waitFor(() => expect(onOperationUpdated).toHaveBeenCalled());
   });
@@ -559,7 +566,7 @@ describe('OperationDetailModal', () => {
     renderModal();
 
     await waitForCommand();
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    confirmCancel();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -651,5 +658,271 @@ describe('OperationDetailModal', () => {
     await waitFor(() =>
       expect(screen.getByText(/\d+ seconds/)).toBeInTheDocument(),
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Footer — Abort action (running status) — IMP-0ea71d15f980
+  // ---------------------------------------------------------------------------
+
+  describe('Abort action', () => {
+    const runningTask = { ...BASE_TASK, status: 'running' as const };
+    const abortedTask = { ...BASE_TASK, status: 'aborted' as const };
+
+    function openAbortDialog() {
+      fireEvent.click(screen.getByRole('button', { name: 'Abort' }));
+    }
+
+    it('shows Abort button for running operations when user has permission', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      expect(screen.getByRole('button', { name: 'Abort' })).toBeInTheDocument();
+    });
+
+    it.each([
+      ['pending' as const],
+      ['scheduled' as const],
+      ['complete' as const],
+      ['failed' as const],
+      ['aborted' as const],
+      ['cancelled' as const],
+    ])('does NOT show Abort button for %s operations', async (status) => {
+      mockGet.mockResolvedValue(envelope({ task: { ...BASE_TASK, status } }));
+      renderModal();
+
+      await waitForCommand();
+      expect(screen.queryByRole('button', { name: 'Abort' })).not.toBeInTheDocument();
+    });
+
+    it('hides Abort button when user lacks system.infra_tasks.control permission', async () => {
+      mockHasPermission.mockReturnValue(false);
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      expect(screen.queryByRole('button', { name: 'Abort' })).not.toBeInTheDocument();
+    });
+
+    it('does not POST until the abort confirmation is confirmed', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+
+      expect(screen.getByRole('button', { name: 'Abort Operation' })).toBeInTheDocument();
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('POSTs to the abort endpoint with the operator-supplied reason', async () => {
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(envelope({ task: abortedTask }));
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+      fireEvent.change(screen.getByPlaceholderText(/why are you stopping/i), {
+        target: { value: 'wedged for an hour' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-123/abort', {
+          reason: 'wedged for an hour',
+        }),
+      );
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the reason when the operator leaves the field blank', async () => {
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(envelope({ task: abortedTask }));
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-123/abort', {
+          reason: undefined,
+        }),
+      );
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('trims whitespace-only reasons down to no reason at all', async () => {
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(envelope({ task: abortedTask }));
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+      fireEvent.change(screen.getByPlaceholderText(/why are you stopping/i), {
+        target: { value: '   ' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-123/abort', {
+          reason: undefined,
+        }),
+      );
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('notifies and calls onOperationUpdated after a successful abort', async () => {
+      const onOperationUpdated = jest.fn();
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(envelope({ task: abortedTask }));
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+      renderModal({ onOperationUpdated });
+
+      await waitForCommand();
+      openAbortDialog();
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith({
+          type: 'success',
+          message: 'Operation aborted successfully',
+        }),
+      );
+      expect(onOperationUpdated).toHaveBeenCalled();
+    });
+
+    it('shows an error notification when the abort request fails', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      mockPost.mockRejectedValue(new Error('server error'));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Failed to abort operation',
+        }),
+      );
+    });
+
+    it('does not carry a reason over from a dismissed dialog into the next one', async () => {
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(envelope({ task: abortedTask }));
+      mockPost.mockResolvedValue(envelope({ task: abortedTask }));
+      renderModal();
+
+      await waitForCommand();
+
+      // Type a reason, then dismiss the dialog without confirming
+      openAbortDialog();
+      fireEvent.change(screen.getByPlaceholderText(/why are you stopping/i), {
+        target: { value: 'first attempt' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Keep Running' }));
+
+      // Re-open and confirm without typing anything
+      openAbortDialog();
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-123/abort', {
+          reason: undefined,
+        }),
+      );
+      // A dismissed dialog must not have fired anything of its own.
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire a pending confirmation at a different operation', async () => {
+      // useConfirmation's dialog state outlives this modal's operationId prop,
+      // so a confirmation opened against task-123 must not abort task-456.
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      const { rerender } = renderModal({ operationId: 'task-123' });
+
+      await waitForCommand();
+      openAbortDialog();
+
+      mockGet.mockResolvedValue(
+        envelope({ task: { ...runningTask, id: 'task-456', command: 'destroy_node' } }),
+      );
+      rerender(
+        <BrowserRouter>
+          <OperationDetailModal operationId="task-456" isOpen={true} onClose={jest.fn()} />
+        </BrowserRouter>,
+      );
+      await waitForCommand('destroy_node');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Abort Operation' }));
+
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Abort Operation' })).not.toBeInTheDocument(),
+      );
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('labels the dismiss button so it cannot be read as a second confirm', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      openAbortDialog();
+
+      expect(screen.getByRole('button', { name: 'Keep Running' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Footer — Cancel now routes through the same confirmation + reason dialog
+  // ---------------------------------------------------------------------------
+
+  describe('Cancel confirmation', () => {
+    const pendingTask = { ...BASE_TASK, status: 'pending' as const };
+    const cancelledTask = { ...BASE_TASK, status: 'cancelled' as const };
+
+    it('does not POST until the cancel confirmation is confirmed', async () => {
+      mockGet.mockResolvedValue(envelope({ task: pendingTask }));
+      renderModal();
+
+      await waitForCommand();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      expect(screen.getByRole('button', { name: 'Cancel Operation' })).toBeInTheDocument();
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('POSTs the operator-supplied reason instead of a hardcoded string', async () => {
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: pendingTask }))
+        .mockResolvedValue(envelope({ task: cancelledTask }));
+      mockPost.mockResolvedValue(envelope({ task: cancelledTask }));
+      renderModal();
+
+      await waitForCommand();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.change(screen.getByPlaceholderText(/why are you stopping/i), {
+        target: { value: 'superseded by a newer run' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel Operation' }));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/tasks/task-123/cancel', {
+          reason: 'superseded by a newer run',
+        }),
+      );
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
   });
 });
