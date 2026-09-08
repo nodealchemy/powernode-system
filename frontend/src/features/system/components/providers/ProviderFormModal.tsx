@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Cloud, AlertCircle, KeyRound, CheckCircle2 } from 'lucide-react';
+import { Cloud, KeyRound, CheckCircle2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -229,12 +230,10 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     }
   }, [isOpen, editProvider]);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => {
-    const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+  // FormField reports a value, the checkboxes still report an event; both land
+  // here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -242,6 +241,13 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         return next;
       });
     }
+  };
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const { name, value, type } = e.target;
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
   };
 
   const validateJson = (value: string, fieldName: string): boolean => {
@@ -583,88 +589,58 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
             <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
               {/* Name and Type */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    id="name"
-                    name="name"
-                    value={formData.name}
-                    onChange={handleChange}
-                    placeholder="e.g., Production AWS"
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                  />
-                  {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.name}
-                    </p>
-                  )}
-                </div>
+                <FormField
+                  label="Name"
+                  id="name"
+                  required
+                  value={formData.name}
+                  onChange={(v) => setField('name', v)}
+                  placeholder="e.g., Production AWS"
+                  error={errors.name}
+                />
 
-                <div>
-                  <label htmlFor="provider_type" className="block text-sm font-medium text-theme-primary mb-1">
-                    Provider Type <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <select
-                    id="provider_type"
-                    name="provider_type"
-                    value={formData.provider_type}
-                    onChange={handleChange}
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.provider_type ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                  >
-                    {providerTypes.map(type => (
-                      <option key={type.value} value={type.value}>
-                        {type.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <FormField
+                  label="Provider Type"
+                  id="provider_type"
+                  type="select"
+                  required
+                  value={formData.provider_type}
+                  onChange={(v) => setField('provider_type', v)}
+                  error={errors.provider_type}
+                  options={providerTypes.map(type => ({ value: type.value, label: type.label }))}
+                />
               </div>
 
               {/* Description */}
-              <div>
-                <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Provider description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Provider description"
+              />
 
               {/* local_qemu networking — convenience fields that merge into Configuration JSON below */}
               {formData.provider_type === 'local_qemu' && (
                 <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
                   <div>
-                    <label htmlFor="network_mode" className="block text-sm font-medium text-theme-primary mb-1">
-                      Network Mode
-                    </label>
-                    <select
+                    <FormField
+                      label="Network Mode"
                       id="network_mode"
-                      name="network_mode"
+                      type="select"
                       value={formData.network_mode}
-                      onChange={handleChange}
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                      onChange={(v) => setField('network_mode', v)}
                       data-testid="provider-form-network-mode"
-                    >
-                      <option value="">(default — derived from URI)</option>
-                      <option value="user">user — QEMU SLIRP, NAT-to-host</option>
-                      <option value="network">network — libvirt-managed virbr0 with NAT</option>
-                      <option value="bridge">bridge — joins LAN as a peer (real DHCP lease)</option>
-                      <option value="routed">routed — host-routed via pwnvbr0 (no NAT, SDWAN underlay)</option>
-                    </select>
+                      options={[
+                        { value: '', label: '(default — derived from URI)' },
+                        { value: 'user', label: 'user — QEMU SLIRP, NAT-to-host' },
+                        { value: 'network', label: 'network — libvirt-managed virbr0 with NAT' },
+                        { value: 'bridge', label: 'bridge — joins LAN as a peer (real DHCP lease)' },
+                        { value: 'routed', label: 'routed — host-routed via pwnvbr0 (no NAT, SDWAN underlay)' },
+                      ]}
+                    />
                     <p className="mt-1 text-xs text-theme-tertiary">
                       Bridge mode requires a host bridge plus <code>/etc/qemu/bridge.conf</code> allowing it
                       and <code>cap_net_admin</code> on <code>qemu-bridge-helper</code>.
@@ -672,17 +648,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </div>
                   {(formData.network_mode === 'bridge' || formData.network_mode === 'routed') && (
                     <div>
-                      <label htmlFor="bridge_name" className="block text-sm font-medium text-theme-primary mb-1">
-                        Bridge Name
-                      </label>
-                      <input
+                      <FormField
+                        label="Bridge Name"
                         id="bridge_name"
-                        type="text"
-                        name="bridge_name"
                         value={formData.bridge_name}
-                        onChange={handleChange}
+                        onChange={(v) => setField('bridge_name', v)}
                         placeholder={formData.network_mode === 'routed' ? 'pwnvbr0' : 'br0'}
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
                         data-testid="provider-form-bridge-name"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
@@ -708,48 +679,32 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   <div>
-                    <label htmlFor="proxmox_endpoint" className="block text-sm font-medium text-theme-primary mb-1">
-                      PVE API Endpoint <span className="text-theme-error-fg">*</span>
-                    </label>
-                    <input
+                    <FormField
+                      label="PVE API Endpoint"
                       id="proxmox_endpoint"
-                      type="text"
-                      name="proxmox_endpoint"
+                      required
                       value={formData.proxmox_endpoint}
-                      onChange={handleChange}
+                      onChange={(v) => setField('proxmox_endpoint', v)}
                       placeholder="https://pve.example.com:8006"
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.proxmox_endpoint ? 'border-theme-error-border' : 'border-theme'
-                      }`}
+                      error={errors.proxmox_endpoint}
+                      helpText="Base URL of the Proxmox VE REST API. Include scheme and port (8006 by default)."
                       data-testid="provider-form-proxmox-endpoint"
                     />
-                    {errors.proxmox_endpoint ? (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.proxmox_endpoint}
-                      </p>
-                    ) : (
-                      <p className="mt-1 text-xs text-theme-tertiary">
-                        Base URL of the Proxmox VE REST API. Include scheme and port (8006 by default).
-                      </p>
-                    )}
                   </div>
 
                   <div>
-                    <label htmlFor="proxmox_verify_ssl" className="block text-sm font-medium text-theme-primary mb-1">
-                      TLS certificate verification
-                    </label>
-                    <select
+                    <FormField
+                      label="TLS certificate verification"
                       id="proxmox_verify_ssl"
-                      name="proxmox_verify_ssl"
+                      type="select"
                       value={formData.proxmox_verify_ssl}
-                      onChange={handleChange}
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                      onChange={(v) => setField('proxmox_verify_ssl', v)}
                       data-testid="provider-form-proxmox-verify-ssl"
-                    >
-                      <option value="true">Verify certificate (default — publicly-trusted cert)</option>
-                      <option value="false">Skip verification (self-signed PVE cert)</option>
-                    </select>
+                      options={[
+                        { value: 'true', label: 'Verify certificate (default — publicly-trusted cert)' },
+                        { value: 'false', label: 'Skip verification (self-signed PVE cert)' },
+                      ]}
+                    />
                     <p className="mt-1 text-xs text-theme-tertiary">
                       Most homelab PVE installs ship a self-signed cert — set to "Skip verification" for those.
                     </p>
@@ -757,51 +712,36 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
-                      <label htmlFor="proxmox_default_node" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default node
-                      </label>
-                      <input
+                      <FormField
+                        label="Default node"
                         id="proxmox_default_node"
-                        type="text"
-                        name="proxmox_default_node"
                         value={formData.proxmox_default_node}
-                        onChange={handleChange}
+                        onChange={(v) => setField('proxmox_default_node', v)}
                         placeholder="(auto)"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         PVE node to provision VMs/LXCs on by default.
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="proxmox_default_storage" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default storage
-                      </label>
-                      <input
+                      <FormField
+                        label="Default storage"
                         id="proxmox_default_storage"
-                        type="text"
-                        name="proxmox_default_storage"
                         value={formData.proxmox_default_storage}
-                        onChange={handleChange}
+                        onChange={(v) => setField('proxmox_default_storage', v)}
                         placeholder="(auto)"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Storage pool for new disks (e.g. <code>local-lvm</code>).
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="proxmox_default_bridge" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default bridge
-                      </label>
-                      <input
+                      <FormField
+                        label="Default bridge"
                         id="proxmox_default_bridge"
-                        type="text"
-                        name="proxmox_default_bridge"
                         value={formData.proxmox_default_bridge}
-                        onChange={handleChange}
+                        onChange={(v) => setField('proxmox_default_bridge', v)}
                         placeholder="vmbr0"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Network bridge (Linux or OVS).
@@ -827,51 +767,36 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
-                      <label htmlFor="aws_default_region" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default region
-                      </label>
-                      <input
+                      <FormField
+                        label="Default region"
                         id="aws_default_region"
-                        type="text"
-                        name="aws_default_region"
                         value={formData.aws_default_region}
-                        onChange={handleChange}
+                        onChange={(v) => setField('aws_default_region', v)}
                         placeholder="us-east-1"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         AWS region code (e.g. <code>us-east-1</code>, <code>us-west-2</code>).
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="aws_default_vpc_id" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default VPC
-                      </label>
-                      <input
+                      <FormField
+                        label="Default VPC"
                         id="aws_default_vpc_id"
-                        type="text"
-                        name="aws_default_vpc_id"
                         value={formData.aws_default_vpc_id}
-                        onChange={handleChange}
+                        onChange={(v) => setField('aws_default_vpc_id', v)}
                         placeholder="(auto)"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         VPC ID (<code>vpc-...</code>) — defaults to account default-VPC.
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="aws_default_subnet_id" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default subnet
-                      </label>
-                      <input
+                      <FormField
+                        label="Default subnet"
                         id="aws_default_subnet_id"
-                        type="text"
-                        name="aws_default_subnet_id"
                         value={formData.aws_default_subnet_id}
-                        onChange={handleChange}
+                        onChange={(v) => setField('aws_default_subnet_id', v)}
                         placeholder="(auto)"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Subnet ID (<code>subnet-...</code>) for new instances.
@@ -896,62 +821,38 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   <div>
-                    <label htmlFor="gcp_project_id" className="block text-sm font-medium text-theme-primary mb-1">
-                      Project ID <span className="text-theme-error-fg">*</span>
-                    </label>
-                    <input
+                    <FormField
+                      label="Project ID"
                       id="gcp_project_id"
-                      type="text"
-                      name="gcp_project_id"
+                      required
                       value={formData.gcp_project_id}
-                      onChange={handleChange}
+                      onChange={(v) => setField('gcp_project_id', v)}
                       placeholder="my-gcp-project-12345"
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.gcp_project_id ? 'border-theme-error-border' : 'border-theme'
-                      }`}
+                      error={errors.gcp_project_id}
+                      helpText="GCP project ID where instances will be created."
                     />
-                    {errors.gcp_project_id ? (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.gcp_project_id}
-                      </p>
-                    ) : (
-                      <p className="mt-1 text-xs text-theme-tertiary">
-                        GCP project ID where instances will be created.
-                      </p>
-                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="gcp_default_region" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default region
-                      </label>
-                      <input
+                      <FormField
+                        label="Default region"
                         id="gcp_default_region"
-                        type="text"
-                        name="gcp_default_region"
                         value={formData.gcp_default_region}
-                        onChange={handleChange}
+                        onChange={(v) => setField('gcp_default_region', v)}
                         placeholder="us-central1"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         GCP region (e.g. <code>us-central1</code>).
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="gcp_default_zone" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default zone
-                      </label>
-                      <input
+                      <FormField
+                        label="Default zone"
                         id="gcp_default_zone"
-                        type="text"
-                        name="gcp_default_zone"
                         value={formData.gcp_default_zone}
-                        onChange={handleChange}
+                        onChange={(v) => setField('gcp_default_zone', v)}
                         placeholder="(auto)"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Zone within the region (e.g. <code>us-central1-a</code>).
@@ -977,34 +878,24 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="azure_subscription_id" className="block text-sm font-medium text-theme-primary mb-1">
-                        Subscription ID
-                      </label>
-                      <input
+                      <FormField
+                        label="Subscription ID"
                         id="azure_subscription_id"
-                        type="text"
-                        name="azure_subscription_id"
                         value={formData.azure_subscription_id}
-                        onChange={handleChange}
+                        onChange={(v) => setField('azure_subscription_id', v)}
                         placeholder="00000000-0000-0000-0000-000000000000"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Azure subscription UUID for resource creation.
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="azure_default_location" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default location
-                      </label>
-                      <input
+                      <FormField
+                        label="Default location"
                         id="azure_default_location"
-                        type="text"
-                        name="azure_default_location"
                         value={formData.azure_default_location}
-                        onChange={handleChange}
+                        onChange={(v) => setField('azure_default_location', v)}
                         placeholder="eastus"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Azure region (e.g. <code>eastus</code>, <code>westus2</code>).
@@ -1029,26 +920,18 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   <div>
-                    <label htmlFor="openstack_auth_url" className="block text-sm font-medium text-theme-primary mb-1">
-                      Keystone auth URL <span className="text-theme-error-fg">*</span>
-                    </label>
-                    <input
+                    <FormField
+                      label="Keystone auth URL"
                       id="openstack_auth_url"
-                      type="text"
-                      name="openstack_auth_url"
+                      required
                       value={formData.openstack_auth_url}
-                      onChange={handleChange}
+                      onChange={(v) => setField('openstack_auth_url', v)}
                       placeholder="https://keystone.example.com:5000/v3"
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.openstack_auth_url ? 'border-theme-error-border' : 'border-theme'
-                      }`}
+                      error={errors.openstack_auth_url}
                     />
-                    {errors.openstack_auth_url ? (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.openstack_auth_url}
-                      </p>
-                    ) : (
+                    {/* Not helpText: that prop is a string, and this hint marks
+                        up the path it is telling the operator not to omit. */}
+                    {!errors.openstack_auth_url && (
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Keystone v3 endpoint URL — include the <code>/v3</code> suffix.
                       </p>
@@ -1057,34 +940,24 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="openstack_default_project" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default project
-                      </label>
-                      <input
+                      <FormField
+                        label="Default project"
                         id="openstack_default_project"
-                        type="text"
-                        name="openstack_default_project"
                         value={formData.openstack_default_project}
-                        onChange={handleChange}
+                        onChange={(v) => setField('openstack_default_project', v)}
                         placeholder="admin"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Project (tenant) name to scope deployments to.
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="openstack_default_region" className="block text-sm font-medium text-theme-primary mb-1">
-                        Default region
-                      </label>
-                      <input
+                      <FormField
+                        label="Default region"
                         id="openstack_default_region"
-                        type="text"
-                        name="openstack_default_region"
                         value={formData.openstack_default_region}
-                        onChange={handleChange}
+                        onChange={(v) => setField('openstack_default_region', v)}
                         placeholder="RegionOne"
-                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                       />
                       <p className="mt-1 text-xs text-theme-tertiary">
                         Keystone region (often <code>RegionOne</code>).
@@ -1108,17 +981,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   <div>
-                    <label htmlFor="digitalocean_default_region" className="block text-sm font-medium text-theme-primary mb-1">
-                      Default region
-                    </label>
-                    <input
+                    <FormField
+                      label="Default region"
                       id="digitalocean_default_region"
-                      type="text"
-                      name="digitalocean_default_region"
                       value={formData.digitalocean_default_region}
-                      onChange={handleChange}
+                      onChange={(v) => setField('digitalocean_default_region', v)}
                       placeholder="nyc3"
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                     />
                     <p className="mt-1 text-xs text-theme-tertiary">
                       DigitalOcean region slug (e.g. <code>nyc3</code>, <code>sfo3</code>, <code>ams3</code>).
@@ -1141,17 +1009,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   <div>
-                    <label htmlFor="vultr_default_region" className="block text-sm font-medium text-theme-primary mb-1">
-                      Default region
-                    </label>
-                    <input
+                    <FormField
+                      label="Default region"
                       id="vultr_default_region"
-                      type="text"
-                      name="vultr_default_region"
                       value={formData.vultr_default_region}
-                      onChange={handleChange}
+                      onChange={(v) => setField('vultr_default_region', v)}
                       placeholder="ewr"
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
                     />
                     <p className="mt-1 text-xs text-theme-tertiary">
                       Vultr region code (e.g. <code>sea</code> Seattle, <code>ewr</code> New Jersey, <code>lax</code>).
@@ -1183,52 +1046,30 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </p>
 
                   {/* Configuration */}
-                  <div>
-                    <label htmlFor="config" className="block text-sm font-medium text-theme-primary mb-1">
-                      Configuration <span className="text-xs font-normal text-theme-tertiary">(stored as JSON in <code>System::Provider#config</code>)</span>
-                    </label>
-                    <textarea
-                      id="config"
-                      name="config"
-                      value={formData.config}
-                      onChange={handleChange}
-                      rows={4}
-                      placeholder='{}'
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                        errors.config ? 'border-theme-error-border' : 'border-theme'
-                      }`}
-                    />
-                    {errors.config && (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.config}
-                      </p>
-                    )}
-                  </div>
+                  <FormField
+                    label={<>Configuration <span className="text-xs font-normal text-theme-tertiary">(stored as JSON in <code>System::Provider#config</code>)</span></>}
+                    id="config"
+                    type="textarea"
+                    rows={4}
+                    value={formData.config}
+                    onChange={(v) => setField('config', v)}
+                    placeholder='{}'
+                    className="font-mono text-sm"
+                    error={errors.config}
+                  />
 
                   {/* Capabilities */}
-                  <div>
-                    <label htmlFor="capabilities" className="block text-sm font-medium text-theme-primary mb-1">
-                      Capabilities <span className="text-xs font-normal text-theme-tertiary">(usually <code>{'{"supports": [...]}'}</code>; informational metadata)</span>
-                    </label>
-                    <textarea
-                      id="capabilities"
-                      name="capabilities"
-                      value={formData.capabilities}
-                      onChange={handleChange}
-                      rows={4}
-                      placeholder='{}'
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                        errors.capabilities ? 'border-theme-error-border' : 'border-theme'
-                      }`}
-                    />
-                    {errors.capabilities && (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.capabilities}
-                      </p>
-                    )}
-                  </div>
+                  <FormField
+                    label={<>Capabilities <span className="text-xs font-normal text-theme-tertiary">(usually <code>{'{"supports": [...]}'}</code>; informational metadata)</span></>}
+                    id="capabilities"
+                    type="textarea"
+                    rows={4}
+                    value={formData.capabilities}
+                    onChange={(v) => setField('capabilities', v)}
+                    placeholder='{}'
+                    className="font-mono text-sm"
+                    error={errors.capabilities}
+                  />
                 </div>
               </details>
 

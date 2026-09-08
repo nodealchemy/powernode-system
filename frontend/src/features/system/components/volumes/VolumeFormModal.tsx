@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { HardDrive, AlertCircle } from 'lucide-react';
+import { HardDrive } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -235,166 +236,111 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
           <form onSubmit={handleSubmit}>
             <div className="space-y-4">
               {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter volume name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                required
+                disabled={submitting}
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter volume name"
+                error={errors.name}
+              />
 
               {/* Description */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => handleChange('description', e.target.value)}
-                  placeholder="Optional description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Description"
+                type="textarea"
+                rows={2}
+                disabled={submitting}
+                value={formData.description}
+                onChange={(v) => handleChange('description', v)}
+                placeholder="Optional description"
+              />
 
               {/* Region */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Region <span className="text-theme-error-fg">*</span>
-                </label>
-                {loadingRegions ? (
+              {loadingRegions ? (
+                <div>
+                  <label className="block text-sm font-medium text-theme-primary mb-1">
+                    Region <span className="text-theme-error-fg">*</span>
+                  </label>
                   <div className="flex items-center justify-center py-2">
                     <LoadingSpinner size="sm" />
                   </div>
-                ) : (
-                  <select
-                    value={formData.provider_region_id}
-                    onChange={(e) => handleChange('provider_region_id', e.target.value)}
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.provider_region_id ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                    disabled={submitting || isEditMode}
-                  >
-                    <option value="">Select a region</option>
-                    {regions.map((region) => (
-                      <option key={region.id} value={region.id}>
-                        {(region as SystemProviderRegion & { provider_name?: string }).provider_name
-                          ? `${(region as SystemProviderRegion & { provider_name?: string }).provider_name} - `
-                          : ''
-                        }
-                        {region.name} ({region.region_code})
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {errors.provider_region_id && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.provider_region_id}
-                  </p>
-                )}
-              </div>
+                </div>
+              ) : (
+                <FormField
+                  label="Region"
+                  type="select"
+                  required
+                  disabled={submitting || isEditMode}
+                  value={formData.provider_region_id}
+                  onChange={(v) => handleChange('provider_region_id', v)}
+                  error={errors.provider_region_id}
+                  options={[
+                    { value: '', label: 'Select a region' },
+                    ...regions.map((region) => {
+                      const providerName = (region as SystemProviderRegion & { provider_name?: string })
+                        .provider_name;
+                      return {
+                        value: region.id,
+                        label: `${providerName ? `${providerName} - ` : ''}${region.name} (${region.region_code})`,
+                      };
+                    }),
+                  ]}
+                />
+              )}
 
               {/* Volume Type */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Volume Type
-                </label>
-                <select
-                  value={formData.volume_type}
-                  onChange={(e) => handleChange('volume_type', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                  disabled={submitting || isEditMode}
-                >
-                  {volumeTypes.map((type) => (
-                    <option key={type.value} value={type.value}>
-                      {type.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <FormField
+                label="Volume Type"
+                type="select"
+                disabled={submitting || isEditMode}
+                value={formData.volume_type}
+                onChange={(v) => handleChange('volume_type', v)}
+                options={volumeTypes.map((type) => ({ value: type.value, label: type.label }))}
+              />
 
               {/* Size */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Size (GB) <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="number"
-                  value={formData.size_gb}
-                  onChange={(e) => handleChange('size_gb', parseInt(e.target.value) || 0)}
-                  min={1}
-                  max={16384}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                    errors.size_gb ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.size_gb && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.size_gb}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Size (GB)"
+                type="number"
+                required
+                min={1}
+                max={16384}
+                disabled={submitting}
+                value={String(formData.size_gb)}
+                onChange={(v) => handleChange('size_gb', parseInt(v) || 0)}
+                error={errors.size_gb}
+              />
 
               {/* IOPS (if supported) */}
               {selectedType?.supportsIops && (
-                <div>
-                  <label className="block text-sm font-medium text-theme-primary mb-1">
-                    IOPS (optional)
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.iops || ''}
-                    onChange={(e) => handleChange('iops', e.target.value ? parseInt(e.target.value) : null)}
-                    min={100}
-                    max={64000}
-                    placeholder="e.g., 3000"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                    disabled={submitting}
-                  />
-                  <p className="mt-1 text-xs text-theme-tertiary">
-                    Provisioned IOPS (100-64000)
-                  </p>
-                </div>
+                <FormField
+                  label="IOPS (optional)"
+                  type="number"
+                  min={100}
+                  max={64000}
+                  disabled={submitting}
+                  value={formData.iops ? String(formData.iops) : ''}
+                  onChange={(v) => handleChange('iops', v ? parseInt(v) : null)}
+                  placeholder="e.g., 3000"
+                  helpText="Provisioned IOPS (100-64000)"
+                />
               )}
 
               {/* Throughput (if supported) */}
               {selectedType?.supportsThroughput && (
-                <div>
-                  <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Throughput (MB/s) (optional)
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.throughput || ''}
-                    onChange={(e) => handleChange('throughput', e.target.value ? parseInt(e.target.value) : null)}
-                    min={125}
-                    max={1000}
-                    placeholder="e.g., 125"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                    disabled={submitting}
-                  />
-                  <p className="mt-1 text-xs text-theme-tertiary">
-                    Throughput in MB/s (125-1000)
-                  </p>
-                </div>
+                <FormField
+                  label="Throughput (MB/s) (optional)"
+                  type="number"
+                  min={125}
+                  max={1000}
+                  disabled={submitting}
+                  value={formData.throughput ? String(formData.throughput) : ''}
+                  onChange={(v) => handleChange('throughput', v ? parseInt(v) : null)}
+                  placeholder="e.g., 125"
+                  helpText="Throughput in MB/s (125-1000)"
+                />
               )}
 
               {/* Encrypted */}

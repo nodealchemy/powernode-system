@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, AlertCircle } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -163,68 +164,38 @@ export const AvailabilityZoneFormModal: React.FC<AvailabilityZoneFormModalProps>
                 </p>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="zone-name">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="zone-name"
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter zone name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                id="zone-name"
+                required
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter zone name"
+                error={errors.name}
+                disabled={submitting}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="zone-code">
-                  Zone Code <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="zone-code"
-                  type="text"
-                  value={formData.zone_code}
-                  onChange={(e) => handleChange('zone_code', e.target.value)}
-                  placeholder="e.g., us-east-1a"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.zone_code ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.zone_code && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.zone_code}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Zone Code"
+                id="zone-code"
+                required
+                value={formData.zone_code}
+                onChange={(v) => handleChange('zone_code', v)}
+                placeholder="e.g., us-east-1a"
+                className="font-mono"
+                error={errors.zone_code}
+                disabled={submitting}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="zone-status">
-                  Status
-                </label>
-                <select
-                  id="zone-status"
-                  value={formData.status}
-                  onChange={(e) => handleChange('status', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                  disabled={submitting}
-                >
-                  {STATUS_OPTIONS.map(option => (
-                    <option key={option} value={option}>{option}</option>
-                  ))}
-                </select>
-              </div>
+              <FormField
+                label="Status"
+                id="zone-status"
+                type="select"
+                value={formData.status}
+                onChange={(v) => handleChange('status', v)}
+                disabled={submitting}
+                options={STATUS_OPTIONS.map(option => ({ value: option, label: option }))}
+              />
 
               <label className="flex items-center gap-2 text-sm text-theme-primary">
                 <input

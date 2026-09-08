@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { UserPlus, Plus, Smartphone, Trash2, Ban, Tag } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Modal } from '@/shared/components/ui/Modal';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -298,16 +299,12 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
               change what the user can reach.
             </p>
             <div>
-              <label htmlFor="grant-tags" className="block text-sm font-medium text-theme-primary mb-1">
-                Tags (comma separated)
-              </label>
-              <input
+              <FormField
+                label="Tags (comma separated)"
                 id="grant-tags"
-                type="text"
                 value={tagDraft}
-                onChange={(e) => setTagDraft(e.target.value)}
+                onChange={setTagDraft}
                 placeholder="e.g. contractor, vpn-pilot"
-                className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
               />
             </div>
             <div className="flex justify-end gap-2">

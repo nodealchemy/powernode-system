@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, AlertCircle } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -126,9 +127,13 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
+  };
 
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+  // FormField reports a value, the checkboxes still report an event; both land
+  // here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
 
     // Clear error when field is modified
     if (errors[name]) {
@@ -218,115 +223,64 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
           <form onSubmit={handleSubmit}>
             <div className="space-y-4">
               {/* Name */}
-              <div>
-                <label
-                  htmlFor="name"
-                  className="block text-sm font-medium text-theme-primary mb-1"
-                >
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="name"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleChange}
-                  placeholder="Enter template name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                id="name"
+                required
+                value={formData.name}
+                onChange={(v) => setField('name', v)}
+                placeholder="Enter template name"
+                error={errors.name}
+              />
 
               {/* Description */}
-              <div>
-                <label
-                  htmlFor="description"
-                  className="block text-sm font-medium text-theme-primary mb-1"
-                >
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Enter template description"
-                  rows={3}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none ${
-                    errors.description ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.description && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.description}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={3}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Enter template description"
+                error={errors.description}
+              />
 
               {/* Platform */}
-              <div>
-                <label
-                  htmlFor="node_platform_id"
-                  className="block text-sm font-medium text-theme-primary mb-1"
-                >
-                  Platform
-                </label>
-                {loadingPlatforms ? (
+              {loadingPlatforms ? (
+                <div>
+                  <label className="block text-sm font-medium text-theme-primary mb-1">
+                    Platform
+                  </label>
                   <div className="flex items-center justify-center py-2">
                     <LoadingSpinner size="sm" />
                   </div>
-                ) : (
-                  <select
-                    id="node_platform_id"
-                    name="node_platform_id"
-                    value={formData.node_platform_id}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                  >
-                    <option value="">Select a platform (optional)</option>
-                    {platforms.map((platform) => (
-                      <option key={platform.id} value={platform.id}>
-                        {platform.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
+                </div>
+              ) : (
+                <FormField
+                  label="Platform"
+                  id="node_platform_id"
+                  type="select"
+                  value={formData.node_platform_id}
+                  onChange={(v) => setField('node_platform_id', v)}
+                  options={[
+                    { value: '', label: 'Select a platform (optional)' },
+                    ...platforms.map((platform) => ({
+                      value: platform.id,
+                      label: platform.name,
+                    })),
+                  ]}
+                />
+              )}
 
               {/* Admin User */}
-              <div>
-                <label
-                  htmlFor="admin_user"
-                  className="block text-sm font-medium text-theme-primary mb-1"
-                >
-                  Admin User
-                </label>
-                <input
-                  type="text"
-                  id="admin_user"
-                  name="admin_user"
-                  value={formData.admin_user}
-                  onChange={handleChange}
-                  placeholder="e.g., root"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.admin_user ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.admin_user && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.admin_user}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Admin User"
+                id="admin_user"
+                value={formData.admin_user}
+                onChange={(v) => setField('admin_user', v)}
+                placeholder="e.g., root"
+                error={errors.admin_user}
+              />
 
               {/* Checkboxes */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">

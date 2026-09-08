@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -56,17 +57,15 @@ export const UserDeviceIssueModal: React.FC<UserDeviceIssueModalProps> = ({
     <Modal isOpen={isOpen} onClose={handleClose} title="Issue VPN device" icon={<User className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Device label</label>
-          <input
-            type="text" value={label} onChange={(e) => setLabel(e.target.value)}
+          <FormField
+            label="Device label"
+            value={label}
+            onChange={setLabel}
             placeholder="e.g. macbook, phone, work-laptop"
-            autoFocus disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+            autoFocus
+            disabled={submitting}
+            helpText="The keypair is generated server-side; the private key is stored in Vault. You'll get a single-use URL on the next screen — copy and send it to the user immediately."
           />
-          <p className="text-xs text-theme-secondary mt-1">
-            The keypair is generated server-side; the private key is stored in Vault. You'll get a
-            single-use URL on the next screen — copy and send it to the user immediately.
-          </p>
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={handleClose} disabled={submitting}>Cancel</Button>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Route, Play } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -245,82 +246,74 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
-            <input
-              type="text"
+            <FormField
+              label="Name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
+              onChange={setName}
+              nativeRequired
               maxLength={64}
               placeholder="e.g. prefer-internal-routes"
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Direction</label>
-            <select
+            <FormField
+              label="Direction"
+              type="select"
               value={direction}
-              onChange={(e) => setDirection(e.target.value as SdwanRoutePolicyDirection)}
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            >
-              <option value="import">Import (inbound from neighbors)</option>
-              <option value="export">Export (outbound to neighbors)</option>
-            </select>
+              onChange={(v) => setDirection(v as SdwanRoutePolicyDirection)}
+              options={[
+                { value: 'import', label: 'Import (inbound from neighbors)' },
+                { value: 'export', label: 'Export (outbound to neighbors)' },
+              ]}
+            />
           </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Description</label>
-          <input
-            type="text"
+          <FormField
+            label="Description"
             value={description ?? ''}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
+            onChange={setDescription}
           />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Scope</label>
-            <select
+            <FormField
+              label="Scope"
+              type="select"
               value={scope}
-              onChange={(e) => setScope(e.target.value as SdwanRoutePolicyScope)}
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            >
-              <option value="account">Account (every iBGP neighbor)</option>
-              <option value="network">Network (one network's neighbors)</option>
-              <option value="peer">Peer (one peer's neighbors)</option>
-            </select>
+              onChange={(v) => setScope(v as SdwanRoutePolicyScope)}
+              options={[
+                { value: 'account', label: 'Account (every iBGP neighbor)' },
+                { value: 'network', label: "Network (one network's neighbors)" },
+                { value: 'peer', label: "Peer (one peer's neighbors)" },
+              ]}
+            />
           </div>
           {scope !== 'account' && (
-            <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                {scope === 'network' ? 'Network ID' : 'Peer ID'}
-              </label>
-              <input
-                type="text"
-                value={scopeResourceId ?? ''}
-                onChange={(e) => setScopeResourceId(e.target.value)}
-                required
-                placeholder="UUID"
-                className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary font-mono"
-              />
-            </div>
+            <FormField
+              label={scope === 'network' ? 'Network ID' : 'Peer ID'}
+              value={scopeResourceId ?? ''}
+              onChange={setScopeResourceId}
+              nativeRequired
+              placeholder="UUID"
+              className="font-mono"
+            />
           )}
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">
-            Statements (ordered JSON array)
-          </label>
-          <textarea
+          <FormField
+            label="Statements (ordered JSON array)"
+            type="textarea"
             value={statementsJson}
-            onChange={(e) => setStatementsJson(e.target.value)}
-            required
+            onChange={setStatementsJson}
+            nativeRequired
             rows={14}
             disabled={statementsUnavailable}
             placeholder={statementsLoading ? 'Loading current statements…' : undefined}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary font-mono text-xs disabled:opacity-60"
+            className="font-mono text-xs"
             spellCheck={false}
           />
           {statementsLoading && (
@@ -378,48 +371,36 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
               <>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label
-                  htmlFor="compile-network"
-                  className="block text-sm font-medium text-theme-primary mb-1"
-                >
-                  Compile for network
-                </label>
-                <select
+                <FormField
+                  label="Compile for network"
                   id="compile-network"
+                  type="select"
                   value={previewNetworkId}
-                  onChange={(e) => setPreviewNetworkId(e.target.value)}
-                  className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-                >
-                  <option value="">Select a network…</option>
-                  {previewNetworks.map((n) => (
-                    <option key={n.id} value={n.id}>
-                      {n.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setPreviewNetworkId}
+                  options={[
+                    { value: '', label: 'Select a network…' },
+                    ...previewNetworks.map((n) => ({ value: n.id, label: n.name })),
+                  ]}
+                />
               </div>
               {previewNetworkId && (
                 <div>
-                  <label
-                    htmlFor="compile-peer"
-                    className="block text-sm font-medium text-theme-primary mb-1"
-                  >
-                    Compile for peer
-                  </label>
-                  <select
+                  <FormField
+                    label="Compile for peer"
                     id="compile-peer"
+                    type="select"
                     value={previewPeerId}
-                    onChange={(e) => selectPreviewPeer(e.target.value)}
-                    className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-                  >
-                    <option value="">Select a peer…</option>
-                    {previewPeers.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.node_instance_id?.slice(0, 8) ?? p.id.slice(0, 8)} (
-                        {p.publicly_reachable ? 'hub' : 'spoke'})
-                      </option>
-                    ))}
-                  </select>
+                    onChange={selectPreviewPeer}
+                    options={[
+                      { value: '', label: 'Select a peer…' },
+                      ...previewPeers.map((p) => ({
+                        value: p.id,
+                        label: `${p.node_instance_id?.slice(0, 8) ?? p.id.slice(0, 8)} (${
+                          p.publicly_reachable ? 'hub' : 'spoke'
+                        })`,
+                      })),
+                    ]}
+                  />
                 </div>
               )}
             </div>

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -61,22 +62,24 @@ export const AccessGrantCreateModal: React.FC<AccessGrantCreateModalProps> = ({
     <Modal isOpen={isOpen} onClose={handleClose} icon={<ShieldCheck className="w-6 h-6" />} title="Grant network access to user">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">User ID (UUID)</label>
-          <input
-            type="text" value={userId} onChange={(e) => setUserId(e.target.value)}
-            placeholder="019d…" autoFocus disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
+          <FormField
+            label="User ID (UUID)"
+            value={userId}
+            onChange={setUserId}
+            placeholder="019d…"
+            className="font-mono text-sm"
+            autoFocus
+            disabled={submitting}
+            helpText="Find user IDs in the Users panel or via the platform Users API."
           />
-          <p className="text-xs text-theme-secondary mt-1">
-            Find user IDs in the Users panel or via the platform Users API.
-          </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Tags (comma-separated, optional)</label>
-          <input
-            type="text" value={tagsInput} onChange={(e) => setTagsInput(e.target.value)}
-            placeholder="vpn-pilot, contractor" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+          <FormField
+            label="Tags (comma-separated, optional)"
+            value={tagsInput}
+            onChange={setTagsInput}
+            placeholder="vpn-pilot, contractor"
+            disabled={submitting}
           />
         </div>
         <div className="flex justify-end gap-2 pt-2">

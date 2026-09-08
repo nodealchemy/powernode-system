@@ -304,17 +304,9 @@ describe('VolumeFormModal', () => {
 
     await waitFor(() => expect(mockGetProviders).toHaveBeenCalled());
 
-    const regionSelect = screen.getByRole('combobox', {
-      name: (name) => !name || name.toLowerCase().includes('region'),
-    });
-    // In edit mode the region select is disabled
-    // We check disability by looking at its attributes in DOM
-    const selects = screen.getAllByRole('combobox');
-    // Region is the first select rendered after regions load
-    const hasDisabledRegionSelect = selects.some(
-      (s) => (s as HTMLSelectElement).disabled
-    );
-    expect(hasDisabledRegionSelect).toBe(true);
+    // The field is labelled, so this names the region select specifically
+    // rather than asserting that SOME select on the form is disabled.
+    expect(await screen.findByLabelText(/region/i)).toBeDisabled();
   });
 
   it('disables volume type select in edit mode', async () => {
@@ -323,11 +315,7 @@ describe('VolumeFormModal', () => {
 
     await waitFor(() => expect(mockGetProviders).toHaveBeenCalled());
 
-    const selects = screen.getAllByRole('combobox') as HTMLSelectElement[];
-    const volumeTypeSelect = selects.find((s) =>
-      Array.from(s.options).some((o) => o.value === 'io2')
-    );
-    expect(volumeTypeSelect?.disabled).toBe(true);
+    expect(await screen.findByLabelText(/volume type/i)).toBeDisabled();
   });
 
   it('disables encrypted checkbox in edit mode', async () => {

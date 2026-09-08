@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Cpu, AlertCircle } from 'lucide-react';
+import { Cpu } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -198,34 +199,24 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
     }
   };
 
+  // Typed as text with a decimal keypad rather than type="number", so a
+  // half-entered value is not discarded while the operator is still typing.
   const numericField = (
     field: 'vcpus' | 'memory_mb' | 'storage_gb' | 'hourly_price',
     label: string,
     placeholder: string
   ) => (
-    <div>
-      <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor={`instance-type-${field}`}>
-        {label}
-      </label>
-      <input
-        id={`instance-type-${field}`}
-        type="text"
-        inputMode="decimal"
-        value={formData[field]}
-        onChange={(e) => handleChange(field, e.target.value)}
-        placeholder={placeholder}
-        className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-          errors[field] ? 'border-theme-error-border' : 'border-theme'
-        }`}
-        disabled={submitting}
-      />
-      {errors[field] && (
-        <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-          <AlertCircle className="w-4 h-4" />
-          {errors[field]}
-        </p>
-      )}
-    </div>
+    <FormField
+      label={label}
+      id={`instance-type-${field}`}
+      inputMode="decimal"
+      value={formData[field]}
+      onChange={(v) => handleChange(field, v)}
+      placeholder={placeholder}
+      className="font-mono"
+      error={errors[field]}
+      disabled={submitting}
+    />
   );
 
   return (
@@ -254,51 +245,28 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
                 </p>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="instance-type-name">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="instance-type-name"
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter instance type name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                id="instance-type-name"
+                required
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter instance type name"
+                error={errors.name}
+                disabled={submitting}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="instance-type-code">
-                  Instance Type Code <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="instance-type-code"
-                  type="text"
-                  value={formData.instance_type_code}
-                  onChange={(e) => handleChange('instance_type_code', e.target.value)}
-                  placeholder="e.g., m5.large"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.instance_type_code ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.instance_type_code && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.instance_type_code}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Instance Type Code"
+                id="instance-type-code"
+                required
+                value={formData.instance_type_code}
+                onChange={(v) => handleChange('instance_type_code', v)}
+                placeholder="e.g., m5.large"
+                className="font-mono"
+                error={errors.instance_type_code}
+                disabled={submitting}
+              />
 
               <div className="grid grid-cols-2 gap-4">
                 {numericField('vcpus', 'vCPUs', '4')}
@@ -307,20 +275,16 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
                 {numericField('hourly_price', 'Hourly Price', '0.096')}
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="instance-type-description">
-                  Description
-                </label>
-                <textarea
-                  id="instance-type-description"
-                  value={formData.description}
-                  onChange={(e) => handleChange('description', e.target.value)}
-                  placeholder="Optional description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="instance-type-description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => handleChange('description', v)}
+                placeholder="Optional description"
+                disabled={submitting}
+              />
 
               <label className="flex items-center gap-2 text-sm text-theme-primary">
                 <input

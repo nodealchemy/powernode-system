@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
@@ -113,40 +114,29 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
       <form onSubmit={handleSubmit} className="space-y-4">
         {peersError && <ErrorAlert message={peersError} />}
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              maxLength={64}
-              placeholder="e.g. webapp-vip"
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">CIDR</label>
-            <input
-              type="text"
-              value={cidr}
-              onChange={(e) => setCidr(e.target.value)}
-              required
-              placeholder="192.0.2.42/32 or fdXX::/128"
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary font-mono"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Description</label>
-          <input
-            type="text"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
+          <FormField
+            label="Name"
+            value={name}
+            onChange={setName}
+            nativeRequired
+            maxLength={64}
+            placeholder="e.g. webapp-vip"
+          />
+          <FormField
+            label="CIDR"
+            value={cidr}
+            onChange={setCidr}
+            nativeRequired
+            placeholder="192.0.2.42/32 or fdXX::/128"
+            className="font-mono"
           />
         </div>
+
+        <FormField
+          label="Description"
+          value={description}
+          onChange={setDescription}
+        />
 
         <div className="flex items-center gap-2 p-3 bg-theme-background-secondary rounded">
           <input
@@ -180,22 +170,17 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
           </div>
         ) : (
           <>
-            <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">Primary holder</label>
-              <select
-                value={primaryHolderId}
-                onChange={(e) => setPrimaryHolderId(e.target.value)}
-                required
-                className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-              >
-                <option value="">Select a peer…</option>
-                {peers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {peerOption(p).label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <FormField
+              label="Primary holder"
+              type="select"
+              value={primaryHolderId}
+              onChange={setPrimaryHolderId}
+              nativeRequired
+              options={[
+                { value: '', label: 'Select a peer…' },
+                ...peers.map((p) => ({ value: p.id, label: peerOption(p).label })),
+              ]}
+            />
 
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-2">

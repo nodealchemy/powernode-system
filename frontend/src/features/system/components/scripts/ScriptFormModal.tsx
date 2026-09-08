@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { FileCode, AlertCircle } from 'lucide-react';
+import { FileCode } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -63,12 +64,10 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
     }
   }, [isOpen, editScript]);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => {
-    const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+  // FormField reports a value, the checkboxes still report an event; both land
+  // here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -76,6 +75,13 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
         return next;
       });
     }
+  };
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const { name, value, type } = e.target;
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
   };
 
   const validateForm = (): boolean => {
@@ -146,87 +152,55 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
             <div className="space-y-4">
               {/* Name and Type Row */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    id="name"
-                    name="name"
-                    value={formData.name}
-                    onChange={handleChange}
-                    placeholder="e.g., Install Dependencies"
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                  />
-                  {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.name}
-                    </p>
-                  )}
-                </div>
+                <FormField
+                  label="Name"
+                  id="name"
+                  required
+                  value={formData.name}
+                  onChange={(v) => setField('name', v)}
+                  placeholder="e.g., Install Dependencies"
+                  error={errors.name}
+                />
 
-                <div>
-                  <label htmlFor="variety" className="block text-sm font-medium text-theme-primary mb-1">
-                    Type <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <select
-                    id="variety"
-                    name="variety"
-                    value={formData.variety}
-                    onChange={handleChange}
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.variety ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                  >
-                    <option value="build">Build Script</option>
-                    <option value="init">Init Script</option>
-                    <option value="sync">Sync Script</option>
-                    <option value="custom">Custom Script</option>
-                  </select>
-                  {errors.variety && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.variety}
-                    </p>
-                  )}
-                </div>
+                <FormField
+                  label="Type"
+                  id="variety"
+                  type="select"
+                  required
+                  value={formData.variety}
+                  onChange={(v) => setField('variety', v)}
+                  error={errors.variety}
+                  options={[
+                    { value: 'build', label: 'Build Script' },
+                    { value: 'init', label: 'Init Script' },
+                    { value: 'sync', label: 'Sync Script' },
+                    { value: 'custom', label: 'Custom Script' },
+                  ]}
+                />
               </div>
 
               {/* Description */}
-              <div>
-                <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Script description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Script description"
+              />
 
               {/* Script Content */}
-              <div>
-                <label htmlFor="data" className="block text-sm font-medium text-theme-primary mb-1">
-                  Script Content
-                </label>
-                <textarea
-                  id="data"
-                  name="data"
-                  value={formData.data}
-                  onChange={handleChange}
-                  placeholder="#!/bin/bash&#10;&#10;# Your script here..."
-                  rows={15}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm"
-                />
-              </div>
+              <FormField
+                label="Script Content"
+                id="data"
+                type="textarea"
+                rows={15}
+                className="font-mono text-sm"
+                value={formData.data}
+                onChange={(v) => setField('data', v)}
+                placeholder="#!/bin/bash&#10;&#10;# Your script here..."
+              />
 
               {/* Checkboxes */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">

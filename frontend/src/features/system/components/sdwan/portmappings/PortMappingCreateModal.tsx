@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowRightLeft } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
@@ -154,44 +155,36 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
       <form onSubmit={handleSubmit} className="space-y-4">
         {peersError && <ErrorAlert message={peersError} />}
         {vipsError && <ErrorAlert message={vipsError} />}
-        <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            maxLength={64}
-            placeholder="e.g. db-public"
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-          />
-        </div>
+        <FormField
+          label="Name"
+          value={name}
+          onChange={setName}
+          nativeRequired
+          maxLength={64}
+          placeholder="e.g. db-public"
+        />
+
+        <FormField
+          label="Description"
+          value={description ?? ''}
+          onChange={setDescription}
+        />
 
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Description</label>
-          <input
-            type="text"
-            value={description ?? ''}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Hub peer</label>
-          <select
+          <FormField
+            label="Hub peer"
+            type="select"
             value={hubPeerId}
-            onChange={(e) => setHubPeerId(e.target.value)}
-            required
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-          >
-            <option value="">Select a hub (publicly reachable)…</option>
-            {hubPeers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.id.slice(0, 8)} ({p.assigned_address})
-              </option>
-            ))}
-          </select>
+            onChange={setHubPeerId}
+            nativeRequired
+            options={[
+              { value: '', label: 'Select a hub (publicly reachable)…' },
+              ...hubPeers.map((p) => ({
+                value: p.id,
+                label: `${p.id.slice(0, 8)} (${p.assigned_address})`,
+              })),
+            ]}
+          />
           {!peersError && hubPeers.length === 0 && (
             <div className="text-xs text-theme-warning-fg mt-1">
               No hubs available. Mark a peer as <code className="font-mono">publicly_reachable: true</code> first.
@@ -200,44 +193,35 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Protocol</label>
-            <select
-              value={protocol}
-              onChange={(e) => setProtocol(e.target.value as SdwanPortMappingProtocol)}
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            >
-              <option value="tcp">TCP</option>
-              <option value="udp">UDP</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Listen port</label>
-            <input
-              type="number"
-              value={listenPort || ''}
-              onChange={(e) => setListenPort(parseInt(e.target.value, 10) || 0)}
-              required
-              min={1}
-              max={65535}
-              placeholder="5432"
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">
-              Target port <span className="text-theme-secondary text-xs">(optional)</span>
-            </label>
-            <input
-              type="number"
-              value={targetPort}
-              onChange={(e) => setTargetPort(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
-              min={1}
-              max={65535}
-              placeholder="defaults to listen port"
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            />
-          </div>
+          <FormField
+            label="Protocol"
+            type="select"
+            value={protocol}
+            onChange={(v) => setProtocol(v as SdwanPortMappingProtocol)}
+            options={[
+              { value: 'tcp', label: 'TCP' },
+              { value: 'udp', label: 'UDP' },
+            ]}
+          />
+          <FormField
+            label="Listen port"
+            type="number"
+            value={listenPort ? String(listenPort) : ''}
+            onChange={(v) => setListenPort(parseInt(v, 10) || 0)}
+            nativeRequired
+            min={1}
+            max={65535}
+            placeholder="5432"
+          />
+          <FormField
+            label={<>Target port <span className="text-theme-secondary text-xs">(optional)</span></>}
+            type="number"
+            value={String(targetPort)}
+            onChange={(v) => setTargetPort(v === '' ? '' : parseInt(v, 10))}
+            min={1}
+            max={65535}
+            placeholder="defaults to listen port"
+          />
         </div>
 
         <div>
@@ -263,38 +247,38 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
         </div>
 
         {targetType === 'peer' ? (
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Target peer</label>
-            <select
-              value={targetPeerId ?? ''}
-              onChange={(e) => setTargetPeerId(e.target.value)}
-              required
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            >
-              <option value="">Select a target peer…</option>
-              {peers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.id.slice(0, 8)} ({p.assigned_address}) {p.publicly_reachable ? '· hub' : '· spoke'}
-                </option>
-              ))}
-            </select>
-          </div>
+          <FormField
+            label="Target peer"
+            type="select"
+            value={targetPeerId ?? ''}
+            onChange={setTargetPeerId}
+            nativeRequired
+            options={[
+              { value: '', label: 'Select a target peer…' },
+              ...peers.map((p) => ({
+                value: p.id,
+                label: `${p.id.slice(0, 8)} (${p.assigned_address}) ${
+                  p.publicly_reachable ? '· hub' : '· spoke'
+                }`,
+              })),
+            ]}
+          />
         ) : (
           <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Target virtual IP</label>
-            <select
+            <FormField
+              label="Target virtual IP"
+              type="select"
               value={targetVipId ?? ''}
-              onChange={(e) => setTargetVipId(e.target.value)}
-              required
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            >
-              <option value="">Select a VIP…</option>
-              {vips.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name} ({v.cidr}) {v.anycast ? '· anycast' : '· active/passive'}
-                </option>
-              ))}
-            </select>
+              onChange={setTargetVipId}
+              nativeRequired
+              options={[
+                { value: '', label: 'Select a VIP…' },
+                ...vips.map((v) => ({
+                  value: v.id,
+                  label: `${v.name} (${v.cidr}) ${v.anycast ? '· anycast' : '· active/passive'}`,
+                })),
+              ]}
+            />
             {!vipsError && vips.length === 0 && (
               <div className="text-xs text-theme-warning-fg mt-1">
                 No VIPs in this network. Create one in the Virtual IPs tab first.

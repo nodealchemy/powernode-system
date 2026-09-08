@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FolderTree } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -185,67 +186,46 @@ export const ModuleCategoryFormModal: React.FC<ModuleCategoryFormModalProps> = (
     >
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Name Field */}
-        <div>
-          <label htmlFor="category-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger-fg">*</span>
-          </label>
-          <input
-            id="category-name"
-            type="text"
-            value={formData.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="e.g., Networking, Security, Database"
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
-            `}
-            disabled={submitting}
-          />
-          {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
-          )}
-        </div>
+        <FormField
+          label="Name"
+          id="category-name"
+          required
+          disabled={submitting}
+          value={formData.name}
+          onChange={(v) => handleChange('name', v)}
+          placeholder="e.g., Networking, Security, Database"
+          error={errors.name}
+        />
 
         {/* Description Field */}
-        <div>
-          <label htmlFor="category-description" className="block text-sm font-medium text-theme-primary mb-1">
-            Description
-          </label>
-          <textarea
-            id="category-description"
-            value={formData.description}
-            onChange={(e) => handleChange('description', e.target.value)}
-            placeholder="Optional description for this category"
-            rows={3}
-            className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary resize-none"
-            disabled={submitting}
-          />
-        </div>
+        <FormField
+          label="Description"
+          id="category-description"
+          type="textarea"
+          rows={3}
+          disabled={submitting}
+          value={formData.description}
+          onChange={(v) => handleChange('description', v)}
+          placeholder="Optional description for this category"
+        />
 
         {/* Parent Category */}
-        <div>
-          <label htmlFor="category-parent" className="block text-sm font-medium text-theme-primary mb-1">
-            Parent Category
-          </label>
-          <select
-            id="category-parent"
-            value={formData.parent_id}
-            onChange={(e) => handleChange('parent_id', e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-            disabled={submitting}
-          >
-            <option value="">No parent (Top level)</option>
-            {availableParents.map(cat => (
-              <option key={cat.id} value={cat.id}>
-                {cat.depth > 0 ? '— '.repeat(cat.depth) : ''}{cat.name}
-              </option>
-            ))}
-          </select>
-          <p className="mt-1 text-xs text-theme-secondary">
-            Select a parent to create a nested category hierarchy
-          </p>
-        </div>
+        <FormField
+          label="Parent Category"
+          id="category-parent"
+          type="select"
+          disabled={submitting}
+          value={formData.parent_id}
+          onChange={(v) => handleChange('parent_id', v)}
+          helpText="Select a parent to create a nested category hierarchy"
+          options={[
+            { value: '', label: 'No parent (Top level)' },
+            ...availableParents.map((cat) => ({
+              value: cat.id,
+              label: `${cat.depth > 0 ? '— '.repeat(cat.depth) : ''}${cat.name}`,
+            })),
+          ]}
+        />
 
         {/* Preview */}
         {formData.name && (

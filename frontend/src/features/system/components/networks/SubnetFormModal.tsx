@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Network, AlertCircle } from 'lucide-react';
+import { Network } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -179,83 +180,49 @@ export const SubnetFormModal: React.FC<SubnetFormModalProps> = ({
                 </p>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="subnet-name">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="subnet-name"
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter subnet name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                id="subnet-name"
+                required
+                disabled={submitting}
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter subnet name"
+                error={errors.name}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="subnet-cidr">
-                  CIDR Block <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  id="subnet-cidr"
-                  type="text"
-                  value={formData.cidr_block}
-                  onChange={(e) => handleChange('cidr_block', e.target.value)}
-                  placeholder="e.g., 10.0.1.0/24"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.cidr_block ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.cidr_block && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.cidr_block}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="CIDR Block"
+                id="subnet-cidr"
+                required
+                className="font-mono"
+                disabled={submitting}
+                value={formData.cidr_block}
+                onChange={(v) => handleChange('cidr_block', v)}
+                placeholder="e.g., 10.0.1.0/24"
+                error={errors.cidr_block}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="subnet-status">
-                  Status
-                </label>
-                <select
-                  id="subnet-status"
-                  value={formData.status}
-                  onChange={(e) => handleChange('status', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                  disabled={submitting}
-                >
-                  {STATUS_OPTIONS.map(option => (
-                    <option key={option} value={option}>{option}</option>
-                  ))}
-                </select>
-              </div>
+              <FormField
+                label="Status"
+                id="subnet-status"
+                type="select"
+                disabled={submitting}
+                value={formData.status}
+                onChange={(v) => handleChange('status', v)}
+                options={STATUS_OPTIONS.map((option) => ({ value: option, label: option }))}
+              />
 
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1" htmlFor="subnet-description">
-                  Description
-                </label>
-                <textarea
-                  id="subnet-description"
-                  value={formData.description}
-                  onChange={(e) => handleChange('description', e.target.value)}
-                  placeholder="Optional description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="subnet-description"
+                type="textarea"
+                rows={2}
+                disabled={submitting}
+                value={formData.description}
+                onChange={(v) => handleChange('description', v)}
+                placeholder="Optional description"
+              />
 
               <label className="flex items-center gap-2 text-sm text-theme-primary">
                 <input

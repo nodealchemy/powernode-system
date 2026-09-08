@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, AlertCircle } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
@@ -110,8 +111,13 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
+  };
+
+  // FormField reports a value, the remaining controls still report an event;
+  // both land here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -187,82 +193,63 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
           <form onSubmit={handleSubmit}>
             <div className="space-y-4">
               {/* Name */}
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="name"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleChange}
-                  placeholder="e.g., Ubuntu 22.04 LTS"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                id="name"
+                required
+                value={formData.name}
+                onChange={(v) => setField('name', v)}
+                placeholder="e.g., Ubuntu 22.04 LTS"
+                error={errors.name}
+              />
 
               {/* Description */}
-              <div>
-                <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Platform description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Platform description"
+              />
 
               {/* Architecture */}
-              <div>
-                <label htmlFor="node_architecture_id" className="block text-sm font-medium text-theme-primary mb-1">
-                  Architecture
-                </label>
-                {loadingArchitectures ? (
+              {loadingArchitectures ? (
+                <div>
+                  <label className="block text-sm font-medium text-theme-primary mb-1">
+                    Architecture
+                  </label>
                   <div className="flex items-center justify-center py-2">
                     <LoadingSpinner size="sm" />
                   </div>
-                ) : (
-                  <select
-                    id="node_architecture_id"
-                    name="node_architecture_id"
-                    value={formData.node_architecture_id}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                  >
-                    <option value="">Select architecture (optional)</option>
-                    {architectures.map((arch) => (
-                      <option key={arch.id} value={arch.id}>{arch.name}</option>
-                    ))}
-                  </select>
-                )}
-                {formData.node_architecture_id && (
-                  <p className="mt-1 text-xs text-theme-tertiary">
-                    Selected:{' '}
-                    <EntityLink
-                      type="node_architecture"
-                      id={formData.node_architecture_id}
-                      label={
-                        architectures.find((a) => a.id === formData.node_architecture_id)?.name ||
-                        formData.node_architecture_id
-                      }
-                    />
-                  </p>
-                )}
-              </div>
+                </div>
+              ) : (
+                <FormField
+                  label="Architecture"
+                  id="node_architecture_id"
+                  type="select"
+                  value={formData.node_architecture_id}
+                  onChange={(v) => setField('node_architecture_id', v)}
+                  options={[
+                    { value: '', label: 'Select architecture (optional)' },
+                    ...architectures.map((arch) => ({ value: arch.id, label: arch.name })),
+                  ]}
+                />
+              )}
+              {formData.node_architecture_id && (
+                <p className="mt-1 text-xs text-theme-tertiary">
+                  Selected:{' '}
+                  <EntityLink
+                    type="node_architecture"
+                    id={formData.node_architecture_id}
+                    label={
+                      architectures.find((a) => a.id === formData.node_architecture_id)?.name ||
+                      formData.node_architecture_id
+                    }
+                  />
+                </p>
+              )}
 
               {/* Scripts */}
               <div className="space-y-4">

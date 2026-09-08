@@ -12,6 +12,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { StatusBadge } from '../shared/StatusBadge';
@@ -754,32 +755,22 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
           }
         >
             <div className="space-y-4">
-              <div>
-                <label htmlFor="snapshot-name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Snapshot Name
-                </label>
-                <input
-                  id="snapshot-name"
-                  type="text"
-                  value={snapshotName}
-                  onChange={(e) => setSnapshotName(e.target.value)}
-                  placeholder={`${volume?.name}-snapshot`}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                />
-              </div>
-              <div>
-                <label htmlFor="snapshot-description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description (optional)
-                </label>
-                <textarea
-                  id="snapshot-description"
-                  value={snapshotDescription}
-                  onChange={(e) => setSnapshotDescription(e.target.value)}
-                  placeholder="Snapshot description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                />
-              </div>
+              <FormField
+                label="Snapshot Name"
+                id="snapshot-name"
+                value={snapshotName}
+                onChange={setSnapshotName}
+                placeholder={`${volume?.name}-snapshot`}
+              />
+              <FormField
+                label="Description (optional)"
+                id="snapshot-description"
+                type="textarea"
+                rows={2}
+                value={snapshotDescription}
+                onChange={setSnapshotDescription}
+                placeholder="Snapshot description"
+              />
             </div>
         </Modal>
       )}

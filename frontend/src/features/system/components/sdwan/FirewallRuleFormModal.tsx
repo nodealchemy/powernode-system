@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Pencil, Shield } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -189,28 +190,23 @@ export const FirewallRuleFormModal: React.FC<FirewallRuleFormModalProps> = ({
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">
-            <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
-            <input
-              type="text"
+            <FormField
+              label="Name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+              onChange={setName}
               placeholder="e.g. allow-ssh"
               autoFocus
               disabled={submitting}
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Priority</label>
-            <input
-              type="number"
-              value={priority}
-              onChange={(e) => setPriority(Number(e.target.value))}
-              className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-              min={0}
-              disabled={submitting}
-            />
-          </div>
+          <FormField
+            label="Priority"
+            type="number"
+            value={String(priority)}
+            onChange={(v) => setPriority(Number(v))}
+            min={0}
+            disabled={submitting}
+          />
         </div>
 
         <div className="grid grid-cols-3 gap-3">
@@ -229,20 +225,24 @@ export const FirewallRuleFormModal: React.FC<FirewallRuleFormModalProps> = ({
 
         {['tcp', 'udp'].includes(protocol) && (
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                {isEditMode ? 'Port from' : 'Port from (optional)'}
-              </label>
-              <input type="number" value={portFrom} onChange={(e) => setPortFrom(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-                     disabled={submitting} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">Port to</label>
-              <input type="number" value={portTo} onChange={(e) => setPortTo(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-                     disabled={submitting} />
-            </div>
+            <FormField
+              label={isEditMode ? 'Port from' : 'Port from (optional)'}
+              type="number"
+              value={portFrom}
+              onChange={setPortFrom}
+              min={1}
+              max={65535}
+              disabled={submitting}
+            />
+            <FormField
+              label="Port to"
+              type="number"
+              value={portTo}
+              onChange={setPortTo}
+              min={1}
+              max={65535}
+              disabled={submitting}
+            />
           </div>
         )}
 
@@ -276,13 +276,14 @@ const SelectField: React.FC<{
   options: string[];
   disabled?: boolean;
 }> = ({ label, value, onChange, options, disabled }) => (
-  <div>
-    <label className="block text-sm font-medium text-theme-primary mb-1">{label}</label>
-    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary">
-      {options.map((o) => <option key={o} value={o}>{o}</option>)}
-    </select>
-  </div>
+  <FormField
+    label={label}
+    type="select"
+    value={value}
+    onChange={onChange}
+    disabled={disabled}
+    options={options.map((o) => ({ value: o, label: o }))}
+  />
 );
 
 const SelectorField: React.FC<{
