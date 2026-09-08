@@ -37,6 +37,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
 
   const [grants, setGrants] = useState<SdwanAccessGrant[]>([]);
   const [devicesByGrant, setDevicesByGrant] = useState<Record<string, SdwanUserDevice[]>>({});
+  const [deviceErrorsByGrant, setDeviceErrorsByGrant] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,18 +57,25 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
       const { grants: list } = await sdwanApi.getAccessGrants(networkId);
       setGrants(list);
 
+      // A per-grant failure must not sink into the outer error state — one bad
+      // grant should not blank the whole audit — but it must not read as an
+      // empty device list either. This is the surface devices are revoked from,
+      // so "no devices" and "we could not ask" have to look different.
       const deviceMap: Record<string, SdwanUserDevice[]> = {};
+      const deviceErrors: Record<string, string> = {};
       await Promise.all(
         list.map(async (g) => {
           try {
             const r = await sdwanApi.getUserDevices(networkId, g.id);
             deviceMap[g.id] = r.devices;
-          } catch {
-            deviceMap[g.id] = [];
+          } catch (deviceErr) {
+            deviceErrors[g.id] =
+              deviceErr instanceof Error ? deviceErr.message : 'request failed';
           }
         })
       );
       setDevicesByGrant(deviceMap);
+      setDeviceErrorsByGrant(deviceErrors);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load access state');
     } finally {
@@ -76,6 +84,8 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
   }, [networkId]);
 
   useEffect(() => { load(); }, [load, refreshKey, localRefreshKey]);
+
+  const uncountedGrants = Object.keys(deviceErrorsByGrant).length;
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading access state…</div>;
   if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
@@ -86,6 +96,11 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
         <div className="text-sm text-theme-secondary">
           {grants.length} grant{grants.length === 1 ? '' : 's'} ·{' '}
           {Object.values(devicesByGrant).flat().length} device{Object.values(devicesByGrant).flat().length === 1 ? '' : 's'} total
+          {uncountedGrants > 0 && (
+            <span className="text-theme-warning-fg">
+              {' '}· {uncountedGrants} grant{uncountedGrants === 1 ? '' : 's'} of {grants.length} could not be counted
+            </span>
+          )}
         </div>
         {canManage && (
           <Button variant="primary" onClick={() => setShowGrantCreate(true)}>
@@ -107,6 +122,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
         <div className="space-y-3">
           {grants.map((g) => {
             const devices = devicesByGrant[g.id] ?? [];
+            const deviceError = deviceErrorsByGrant[g.id];
             const isRevoked = g.status === 'revoked';
             return (
               <div key={g.id} className="border border-theme rounded">
@@ -135,7 +151,13 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
                     )}
                   </div>
                 </div>
-                {devices.length > 0 ? (
+                {deviceError ? (
+                  <div className="p-4 text-sm text-theme-warning-fg text-center">
+                    Devices unavailable — this grant&apos;s device list failed to load ({deviceError}).
+                    Any issued devices are NOT shown here and cannot be revoked from this view until
+                    it loads. Reload before treating this grant as clear.
+                  </div>
+                ) : devices.length > 0 ? (
                   <table className="w-full text-sm">
                     <thead className="bg-theme-surface text-theme-secondary text-xs">
                       <tr>
