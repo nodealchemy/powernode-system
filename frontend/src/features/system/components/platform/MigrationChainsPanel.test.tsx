@@ -280,7 +280,7 @@ describe('MigrationChainsPanel', () => {
 
     renderPanel();
 
-    expect(await screen.findByText('No migration chains yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No migration chains yet')).toBeInTheDocument();
   });
 
   it('surfaces the server sentence when the list fails', async () => {

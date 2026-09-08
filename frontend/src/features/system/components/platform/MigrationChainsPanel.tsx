@@ -15,6 +15,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { apiErrorMessage } from '../../services/api/helpers';
 import { platformMigrationChainsApi } from '../../services/api/platformMigrationChainsApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { MIGRATION_STATUS_STYLE, OperationBadge, StatusPill } from './MigrationsPanel';
 import type {
   MigrationChainAuditEntry,
@@ -97,18 +98,24 @@ export const MigrationChainsPanel: React.FC = () => {
         </div>
       )}
 
-      {!loading && chains.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm space-y-2">
-          <div>No migration chains yet.</div>
-          <div className="text-xs text-theme-tertiary max-w-2xl mx-auto">
-            A chain moves one resource across several peers in order, one hop at a time.
-            The worker advances active chains on its own every 60 seconds; the controls
-            here are for a chain that has stalled.
-          </div>
-        </div>
-      )}
-
-      {chains.length > 0 && (
+      {/* The header (count + refresh) stays OUTSIDE the container, and the
+          container itself is skipped entirely while an error is showing —
+          that preserves the existing precedence, where a failed load
+          suppresses the empty state rather than reporting "none yet". */}
+      {!error && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={chains.length}
+        filteredCount={chains.length}
+        emptyState={{
+          icon: Link2,
+          title: 'No migration chains yet',
+          description: 'A chain moves one resource across several peers in order, one hop at a time. The worker advances active chains on its own every 60 seconds; the controls here are for a chain that has stalled.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -154,6 +161,8 @@ export const MigrationChainsPanel: React.FC = () => {
             ))}
           </tbody>
         </table>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
 
       <ChainDetailDrawer
