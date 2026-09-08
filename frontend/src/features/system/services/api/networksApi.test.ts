@@ -625,6 +625,74 @@ describe('networksApi', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Subnet writes — manual catalog population for providers with no sync
+  // ---------------------------------------------------------------------------
+
+  describe('getNetworkSubnetsPage', () => {
+    it('asks for the server maximum and returns the total', async () => {
+      mockGet.mockResolvedValueOnce(
+        envelope({ subnets: [SUBNET_A], meta: { total_count: 61 } }),
+      );
+
+      const result = await networksApi.getNetworkSubnetsPage('net-1');
+
+      expect(mockGet).toHaveBeenCalledWith(
+        '/system/provider_networks/net-1/provider_network_subnets',
+        { params: { per_page: 100 } },
+      );
+      expect(result.subnets).toHaveLength(1);
+      expect(result.total).toBe(61);
+    });
+
+    it('falls back to the row count when the server sends no meta', async () => {
+      mockGet.mockResolvedValueOnce(envelope({ subnets: [SUBNET_A] }));
+
+      const result = await networksApi.getNetworkSubnetsPage('net-1');
+
+      expect(result.total).toBe(1);
+    });
+  });
+
+  describe('network subnet writes', () => {
+    it('createNetworkSubnet POSTs under the network', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ subnet: SUBNET_A }));
+
+      await networksApi.createNetworkSubnet('net-1', {
+        name: 'app-a',
+        cidr_block: '10.0.1.0/24',
+      });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/provider_networks/net-1/provider_network_subnets',
+        { subnet: { name: 'app-a', cidr_block: '10.0.1.0/24' } },
+      );
+    });
+
+    it('updateNetworkSubnet PUTs to the member route', async () => {
+      mockPut.mockResolvedValueOnce(envelope({ subnet: SUBNET_A }));
+
+      await networksApi.updateNetworkSubnet('net-1', 'subnet-1', { is_public: true });
+
+      expect(mockPut).toHaveBeenCalledWith(
+        '/system/provider_networks/net-1/provider_network_subnets/subnet-1',
+        { subnet: { is_public: true } },
+      );
+    });
+
+    it('deleteNetworkSubnet DELETEs the member route', async () => {
+      mockDelete.mockResolvedValueOnce({ data: { success: true } });
+
+      await expect(
+        networksApi.deleteNetworkSubnet('net-1', 'subnet-1'),
+      ).resolves.toBeUndefined();
+
+      expect(mockDelete).toHaveBeenCalledWith(
+        '/system/provider_networks/net-1/provider_network_subnets/subnet-1',
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Envelope unwrapping — shared contract
   // ---------------------------------------------------------------------------
 

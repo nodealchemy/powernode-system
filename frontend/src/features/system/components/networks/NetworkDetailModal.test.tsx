@@ -9,10 +9,33 @@ import type { SystemProviderNetwork } from '@system/features/system/types/system
 // =============================================================================
 
 const mockGetNetwork = jest.fn();
+const mockGetNetworkSubnets = jest.fn();
+const mockDeleteNetworkSubnet = jest.fn();
+const mockGetProviderConnections = jest.fn();
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
     getNetwork: (...args: unknown[]) => mockGetNetwork(...args),
+    getNetworkSubnetsPage: (...args: unknown[]) => mockGetNetworkSubnets(...args),
+    deleteNetworkSubnet: (...args: unknown[]) => mockDeleteNetworkSubnet(...args),
+    getProviderConnections: (...args: unknown[]) => mockGetProviderConnections(...args),
   },
+}));
+
+jest.mock('./SubnetFormModal', () => ({
+  SubnetFormModal: ({ isOpen, onClose, onSaved, subnet, manualOverride }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onSaved?: () => void;
+    subnet: { id: string; name: string } | null;
+    manualOverride?: boolean;
+  }) =>
+    isOpen ? (
+      <div data-testid="subnet-form-modal" data-manual-override={String(!!manualOverride)}>
+        <span data-testid="subnet-form-subject">{subnet?.name ?? 'new'}</span>
+        <button onClick={onClose}>Close Subnet Form</button>
+        <button onClick={onSaved}>Save Subnet</button>
+      </div>
+    ) : null,
 }));
 
 jest.mock('@/shared/hooks/usePermissions', () => ({
@@ -120,7 +143,160 @@ function renderModal({
 describe('NetworkDetailModal', () => {
   beforeEach(() => {
     mockGetNetwork.mockReset();
+    mockGetNetworkSubnets.mockReset();
+    mockGetNetworkSubnets.mockResolvedValue({ subnets: [], total: 0 });
+    mockDeleteNetworkSubnet.mockReset();
+    mockGetProviderConnections.mockReset();
+    mockGetProviderConnections.mockResolvedValue([]);
     mockAddNotification.mockReset();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Subnets (IMP-353211667af8)
+  // ---------------------------------------------------------------------------
+
+  const SUBNET = {
+    id: 'subnet-1',
+    name: 'app-a',
+    cidr_block: '10.0.1.0/24',
+    status: 'available',
+    is_public: false,
+    enabled: true,
+    config: {},
+    provider_network_id: 'net-aaa',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+
+  describe('subnet management', () => {
+    it('lists the subnets belonging to the network', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+      mockGetNetworkSubnets.mockResolvedValue({ subnets: [SUBNET], total: 1 });
+
+      renderModal();
+
+      await waitFor(() => expect(mockGetNetworkSubnets).toHaveBeenCalledWith('net-aaa'));
+      expect(await screen.findByTestId('network-subnet-subnet-1')).toBeInTheDocument();
+      expect(screen.getByText('10.0.1.0/24')).toBeInTheDocument();
+    });
+
+    it('opens the subnet form in create mode from Add Subnet', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+
+      renderModal();
+
+      fireEvent.click(await screen.findByText('Add Subnet'));
+
+      expect(screen.getByTestId('subnet-form-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('subnet-form-subject')).toHaveTextContent('new');
+    });
+
+    it('opens the subnet form pre-filled from a row', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+      mockGetNetworkSubnets.mockResolvedValue({ subnets: [SUBNET], total: 1 });
+
+      renderModal();
+
+      fireEvent.click(await screen.findByTitle('Edit subnet'));
+
+      expect(screen.getByTestId('subnet-form-subject')).toHaveTextContent('app-a');
+    });
+
+    it('deletes a subnet and reloads the list', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+      mockGetNetworkSubnets.mockResolvedValue({ subnets: [SUBNET], total: 1 });
+      mockDeleteNetworkSubnet.mockResolvedValue(undefined);
+
+      renderModal();
+
+      fireEvent.click(await screen.findByTitle('Delete subnet'));
+
+      await waitFor(() =>
+        expect(mockDeleteNetworkSubnet).toHaveBeenCalledWith('net-aaa', 'subnet-1'),
+      );
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith({
+          type: 'success',
+          message: 'Subnet "app-a" deleted successfully',
+        }),
+      );
+    });
+
+    it('refetches the network after a subnet delete so the header count agrees with the list', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+      mockGetNetworkSubnets.mockResolvedValue({ subnets: [SUBNET], total: 1 });
+      mockDeleteNetworkSubnet.mockResolvedValue(undefined);
+
+      renderModal();
+
+      await screen.findByTestId('network-subnet-subnet-1');
+      const networkFetchesBefore = mockGetNetwork.mock.calls.length;
+
+      fireEvent.click(screen.getByTitle('Delete subnet'));
+
+      await waitFor(() => expect(mockDeleteNetworkSubnet).toHaveBeenCalled());
+      // The header count comes from the network payload, not the list.
+      await waitFor(() =>
+        expect(mockGetNetwork.mock.calls.length).toBeGreaterThan(networkFetchesBefore),
+      );
+    });
+
+    it('says so when the subnet list is truncated by the page cap', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+      mockGetNetworkSubnets.mockResolvedValue({ subnets: [SUBNET], total: 61 });
+
+      renderModal();
+
+      expect(await screen.findByText(/Showing 1 of 61 subnets/)).toBeInTheDocument();
+    });
+
+    it('labels subnet writes a manual override when the provider has a connection', async () => {
+      mockGetNetwork.mockResolvedValue({ ...NETWORK_A, provider_id: 'prov-1' });
+      mockGetProviderConnections.mockResolvedValue([
+        { id: 'conn-a', name: 'prod', provider_id: 'prov-1', config: {},
+          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      ]);
+
+      renderModal();
+
+      fireEvent.click(await screen.findByText('Add Subnet'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('subnet-form-modal')).toHaveAttribute(
+          'data-manual-override',
+          'true',
+        ),
+      );
+    });
+
+    it('claims no override when the network payload carries no provider', async () => {
+      mockGetNetwork.mockResolvedValue(NETWORK_A);
+
+      renderModal();
+
+      fireEvent.click(await screen.findByText('Add Subnet'));
+
+      expect(screen.getByTestId('subnet-form-modal')).toHaveAttribute(
+        'data-manual-override',
+        'false',
+      );
+      expect(mockGetProviderConnections).not.toHaveBeenCalled();
+    });
+
+    it('claims no override when the provider connection lookup fails', async () => {
+      mockGetNetwork.mockResolvedValue({ ...NETWORK_A, provider_id: 'prov-1' });
+      mockGetProviderConnections.mockRejectedValue(new Error('403'));
+
+      renderModal();
+
+      fireEvent.click(await screen.findByText('Add Subnet'));
+
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      expect(screen.getByTestId('subnet-form-modal')).toHaveAttribute(
+        'data-manual-override',
+        'false',
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -238,12 +414,19 @@ describe('NetworkDetailModal', () => {
     expect(screen.getByText('Subnets:')).toBeInTheDocument();
   });
 
-  it('does not render the subnet section when subnet_count is undefined', async () => {
+  // The subnet section used to be hidden when subnet_count was absent. It is
+  // now the subnet MANAGEMENT surface, so it renders either way and falls back
+  // to the length of the list it loaded — a network with no count must still
+  // offer Add Subnet.
+  it('renders the subnet section with a fallback count when subnet_count is undefined', async () => {
     mockGetNetwork.mockResolvedValue(PENDING_NETWORK);
+    mockGetNetworkSubnets.mockResolvedValue({ subnets: [], total: 0 });
     renderModal({ networkId: 'net-ccc' });
 
     await waitFor(() => expect(screen.getByText('staging-vpc')).toBeInTheDocument());
-    expect(screen.queryByText('Subnets:')).not.toBeInTheDocument();
+    expect(screen.getByText('Subnets:')).toBeInTheDocument();
+    expect(screen.getByText('No subnets in this network')).toBeInTheDocument();
+    expect(screen.getByText('Add Subnet')).toBeInTheDocument();
   });
 
   it('renders the created/updated timestamps', async () => {

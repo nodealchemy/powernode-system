@@ -671,6 +671,11 @@ export interface SystemProviderNetwork {
   dns_support?: boolean;
   dns_hostnames?: boolean;
   config: Record<string, unknown>;
+  /** Owning provider — ProviderNetworkSerializer sends it; used to tell whether
+   *  this network's provider has a cloud connection (subnet writes are then a
+   *  manual override of a synced catalog). */
+  provider_id?: string;
+  provider_name?: string;
   provider_region_id?: string;
   provider_region_name?: string;
   region_name?: string;
