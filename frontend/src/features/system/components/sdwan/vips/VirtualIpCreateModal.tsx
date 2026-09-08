@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { isPendingApproval } from '../../../services/api/helpers';
@@ -30,11 +31,34 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
   const [advertisedMed, setAdvertisedMed] = useState<number>(0);
   const [advertisedLocalPref, setAdvertisedLocalPref] = useState<number>(100);
   const [peers, setPeers] = useState<SdwanPeer[]>([]);
+  const [peersError, setPeersError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // The peer list is the ONLY source of holder options. Swallowing a failed load
+  // into an empty list leaves the anycast branch telling the operator to pick two
+  // holders the modal never offered, with no clue the request failed.
   useEffect(() => {
-    sdwanApi.getPeers(networkId).then((r) => setPeers(r.peers)).catch(() => setPeers([]));
-  }, [networkId]);
+    let cancelled = false;
+    setPeersError(null);
+    sdwanApi.getPeers(networkId).then((r) => {
+      if (cancelled) return;
+      setPeers(r.peers);
+    }).catch((err) => {
+      if (cancelled) return;
+      const message = `Could not load the peers for this network: ${err instanceof Error ? err.message : 'request failed'}. Holder selection is unavailable, so creating a VIP is blocked until this succeeds.`;
+      setPeers([]);
+      setPeersError(message);
+      addNotification({ type: 'error', message });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [networkId, addNotification]);
+
+  // The disabled button is not the whole guard: fireEvent.submit and a submit
+  // fired in the same tick as mount both bypass it, so the refusal also lives in
+  // the handler.
+  const optionsUnavailable = !!peersError;
 
   const peerOption = (p: SdwanPeer) => ({
     value: p.id,
@@ -51,6 +75,7 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (optionsUnavailable) return;
     setSubmitting(true);
     try {
       const holders = anycast ? anycastHolderIds : primaryHolderId ? [primaryHolderId] : [];
@@ -86,6 +111,7 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
   return (
     <Modal isOpen onClose={onClose} title="Create Virtual IP" icon={<Globe className="w-6 h-6" />} size="lg">
       <form onSubmit={handleSubmit} className="space-y-4">
+        {peersError && <ErrorAlert message={peersError} />}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
@@ -221,7 +247,7 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
           <Button variant="secondary" onClick={onClose} type="button">
             Cancel
           </Button>
-          <Button variant="primary" type="submit" disabled={submitting}>
+          <Button variant="primary" type="submit" disabled={submitting || optionsUnavailable}>
             {submitting ? 'Creating…' : 'Create Virtual IP'}
           </Button>
         </div>

@@ -304,25 +304,143 @@ describe('PortMappingCreateModal', () => {
     });
   });
 
-  it('handles peer fetch failure gracefully (empty list)', async () => {
+  it('does NOT blame the data when the peer fetch fails — the hint would be false advice', async () => {
     mockGetPeers.mockReturnValue(Promise.reject(new Error('network error')));
+    renderModal();
+    await screen.findByText(/could not load the peers for this network/i);
+    // "Mark a peer publicly_reachable" is remediation for an empty network, not
+    // for a failed request; showing it here sends the operator somewhere useless.
+    expect(screen.queryByText(/No hubs available/)).not.toBeInTheDocument();
+  });
+
+  it('still shows the "No hubs available" hint when the peer list genuinely loads empty', async () => {
+    mockGetPeers.mockReturnValue(Promise.resolve({ peers: [] }));
     renderModal();
     await waitFor(() =>
       expect(screen.getByText(/No hubs available/)).toBeInTheDocument(),
     );
   });
 
-  it('handles VIP fetch failure gracefully (empty list)', async () => {
+  it('does NOT blame the data when the VIP fetch fails', async () => {
     mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
     renderModal();
 
-    // Switch to VIP target type
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
-    fireEvent.click(vipRadio);
+    fireEvent.click(screen.getByLabelText(/virtual ip/i));
+
+    await screen.findByText(/could not load the virtual ips for this network/i);
+    expect(screen.queryByText(/No VIPs in this network/)).not.toBeInTheDocument();
+  });
+
+  it('still shows the "No VIPs in this network" hint when the VIP list genuinely loads empty', async () => {
+    mockListVirtualIps.mockReturnValue(Promise.resolve({ virtual_ips: [], count: 0 }));
+    renderModal();
+
+    fireEvent.click(screen.getByLabelText(/virtual ip/i));
 
     await waitFor(() =>
       expect(screen.getByText(/No VIPs in this network/)).toBeInTheDocument(),
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Option-load failures must be VISIBLE and must block submit (IMP-c35831fd32d3)
+  //
+  // Peers and VIPs are the only sources of hub/target options. Swallowing a
+  // failed load into an empty list leaves the operator staring at "No hubs
+  // available" with no clue the request failed, and the submit then blames them
+  // for not selecting an option the modal never offered.
+  // ---------------------------------------------------------------------------
+
+  describe('option-load failures', () => {
+    it('shows an inline error and notifies when the peer load fails', async () => {
+      mockGetPeers.mockReturnValue(Promise.reject(new Error('network error')));
+      renderModal();
+
+      expect(await screen.findByText(/could not load the peers for this network/i)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            message: expect.stringMatching(/could not load the peers for this network/i),
+          }),
+        ),
+      );
+    });
+
+    it('shows an inline error and notifies when the VIP load fails', async () => {
+      mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
+      renderModal();
+
+      expect(await screen.findByText(/could not load the virtual ips for this network/i)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            message: expect.stringMatching(/could not load the virtual ips for this network/i),
+          }),
+        ),
+      );
+    });
+
+    it('reports BOTH failures rather than only the first', async () => {
+      mockGetPeers.mockReturnValue(Promise.reject(new Error('network error')));
+      mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
+      renderModal();
+
+      expect(await screen.findByText(/could not load the peers for this network/i)).toBeInTheDocument();
+      expect(screen.getByText(/could not load the virtual ips for this network/i)).toBeInTheDocument();
+    });
+
+    it('disables submit and never issues the create after a peer-load failure', async () => {
+      mockGetPeers.mockReturnValue(Promise.reject(new Error('network error')));
+      renderModal();
+
+      await screen.findByText(/could not load the peers for this network/i);
+      expect(screen.getByRole('button', { name: /create mapping/i })).toBeDisabled();
+
+      fireEvent.submit(screen.getByRole('button', { name: /create mapping/i }).closest('form')!);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /create mapping/i })).toBeDisabled();
+      });
+      expect(mockCreatePortMapping).not.toHaveBeenCalled();
+    });
+
+    it('disables submit and never issues the create after a VIP-load failure when the target IS a VIP', async () => {
+      mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
+      renderModal();
+
+      await screen.findByText(/could not load the virtual ips for this network/i);
+      fireEvent.click(screen.getByLabelText(/virtual ip/i));
+
+      expect(screen.getByRole('button', { name: /create mapping/i })).toBeDisabled();
+
+      fireEvent.submit(screen.getByRole('button', { name: /create mapping/i }).closest('form')!);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /create mapping/i })).toBeDisabled();
+      });
+      expect(mockCreatePortMapping).not.toHaveBeenCalled();
+    });
+
+    it('does NOT block a PEER-targeted mapping when only the VIP load failed', async () => {
+      mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
+      mockCreatePortMapping.mockReturnValue(Promise.resolve(SAVED_MAPPING));
+      renderModal();
+
+      // The failure is still reported…
+      await screen.findByText(/could not load the virtual ips for this network/i);
+      // …but the VIP list contributes nothing to a peer-targeted payload, and its
+      // select is not even rendered, so locking this operator out helps nobody.
+      expect(screen.getByRole('button', { name: /create mapping/i })).toBeEnabled();
+    });
+
+    it('shows no option-load error and leaves submit enabled when both loads succeed', async () => {
+      renderModal();
+      await waitFor(() => expect(mockListVirtualIps).toHaveBeenCalled());
+      expect(screen.queryByText(/could not load the/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /create mapping/i })).toBeEnabled();
+    });
   });
 
   // ---------------------------------------------------------------------------
