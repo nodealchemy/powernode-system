@@ -16,6 +16,7 @@ import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { EntityLink } from '@/shared/components/entity';
 import { apiClient } from '@/shared/services/apiClient';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -1378,170 +1379,97 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
       }
     >
       <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label
-            htmlFor="pool-name"
-            className="block text-sm font-medium text-theme-primary mb-1"
-          >
-            Name <span className="text-theme-danger-fg">*</span>
-          </label>
-          <input
-            id="pool-name"
-            type="text"
-            value={form.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="web-warm-pool"
-            disabled={submitting}
-            className={`w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary ${
-              errors.name ? 'border-theme-danger-border' : 'border-theme'
-            }`}
-          />
-          {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
-          )}
-        </div>
+        <FormField
+          label="Name"
+          id="pool-name"
+          required
+          value={form.name}
+          onChange={(v) => handleChange('name', v)}
+          placeholder="web-warm-pool"
+          disabled={submitting}
+          error={errors.name}
+        />
 
-        <div>
-          <label
-            htmlFor="pool-description"
-            className="block text-sm font-medium text-theme-primary mb-1"
-          >
-            Description
-          </label>
-          <textarea
-            id="pool-description"
-            value={form.description}
-            onChange={(e) => handleChange('description', e.target.value)}
-            placeholder="Optional — what's this pool for?"
-            rows={2}
-            disabled={submitting}
-            className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary resize-none"
-          />
-        </div>
+        <FormField
+          label="Description"
+          id="pool-description"
+          type="textarea"
+          rows={2}
+          value={form.description}
+          onChange={(v) => handleChange('description', v)}
+          placeholder="Optional — what's this pool for?"
+          disabled={submitting}
+        />
 
-        <div>
-          <label
-            htmlFor="pool-template"
-            className="block text-sm font-medium text-theme-primary mb-1"
-          >
-            Node template <span className="text-theme-danger-fg">*</span>
-          </label>
-          <select
-            id="pool-template"
-            value={form.node_template_id}
-            onChange={(e) =>
-              handleChange('node_template_id', e.target.value)
-            }
-            disabled={submitting || loadingTemplates}
-            className={`w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary ${
-              errors.node_template_id ? 'border-theme-danger-border' : 'border-theme'
-            }`}
-          >
-            <option value="">
-              {loadingTemplates ? 'Loading templates...' : 'Select a template'}
-            </option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-                {t.node_platform_name ? ` (${t.node_platform_name})` : ''}
-              </option>
-            ))}
-          </select>
-          {errors.node_template_id && (
-            <p className="mt-1 text-sm text-theme-danger-fg">
-              {errors.node_template_id}
-            </p>
-          )}
-        </div>
+        <FormField
+          label="Node template"
+          id="pool-template"
+          type="select"
+          required
+          value={form.node_template_id}
+          onChange={(v) => handleChange('node_template_id', v)}
+          disabled={submitting || loadingTemplates}
+          error={errors.node_template_id}
+          options={[
+            {
+              value: '',
+              label: loadingTemplates ? 'Loading templates...' : 'Select a template',
+            },
+            ...templates.map((t) => ({
+              value: t.id,
+              label: t.node_platform_name
+                ? `${t.name} (${t.node_platform_name})`
+                : t.name,
+            })),
+          ]}
+        />
 
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label
-              htmlFor="pool-min"
-              className="block text-sm font-medium text-theme-primary mb-1"
-            >
-              Min size
-            </label>
-            <input
-              id="pool-min"
-              type="number"
-              min={0}
-              value={form.min_size}
-              onChange={(e) =>
-                handleChange('min_size', Number(e.target.value))
-              }
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="pool-target"
-              className="block text-sm font-medium text-theme-primary mb-1"
-            >
-              Target size <span className="text-theme-danger-fg">*</span>
-            </label>
-            <input
-              id="pool-target"
-              type="number"
-              min={0}
-              value={form.target_size}
-              onChange={(e) =>
-                handleChange('target_size', Number(e.target.value))
-              }
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="pool-max"
-              className="block text-sm font-medium text-theme-primary mb-1"
-            >
-              Max size
-            </label>
-            <input
-              id="pool-max"
-              type="number"
-              min={0}
-              value={form.max_size}
-              onChange={(e) =>
-                handleChange('max_size', Number(e.target.value))
-              }
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-            />
-          </div>
+          <FormField
+            label="Min size"
+            id="pool-min"
+            type="number"
+            min={0}
+            value={String(form.min_size)}
+            onChange={(v) => handleChange('min_size', Number(v))}
+            disabled={submitting}
+          />
+          <FormField
+            label="Target size"
+            id="pool-target"
+            type="number"
+            required
+            min={0}
+            value={String(form.target_size)}
+            onChange={(v) => handleChange('target_size', Number(v))}
+            disabled={submitting}
+          />
+          <FormField
+            label="Max size"
+            id="pool-max"
+            type="number"
+            min={0}
+            value={String(form.max_size)}
+            onChange={(v) => handleChange('max_size', Number(v))}
+            disabled={submitting}
+          />
         </div>
         {errors.sizing && (
           <p className="text-sm text-theme-danger-fg">{errors.sizing}</p>
         )}
 
-        <div>
-          <label
-            htmlFor="pool-lifecycle"
-            className="block text-sm font-medium text-theme-primary mb-1"
-          >
-            Lifecycle class
-          </label>
-          <select
-            id="pool-lifecycle"
-            value={form.lifecycle_class}
-            onChange={(e) =>
-              handleChange(
-                'lifecycle_class',
-                e.target.value as 'ephemeral' | 'spot',
-              )
-            }
-            disabled={submitting}
-            className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-          >
-            <option value="ephemeral">
-              ephemeral — short-lived, predictable cost
-            </option>
-            <option value="spot">spot — interruptible, cost-optimized</option>
-          </select>
-        </div>
+        <FormField
+          label="Lifecycle class"
+          id="pool-lifecycle"
+          type="select"
+          value={form.lifecycle_class}
+          onChange={(v) => handleChange('lifecycle_class', v as 'ephemeral' | 'spot')}
+          disabled={submitting}
+          options={[
+            { value: 'ephemeral', label: 'ephemeral — short-lived, predictable cost' },
+            { value: 'spot', label: 'spot — interruptible, cost-optimized' },
+          ]}
+        />
       </form>
     </Modal>
   );
@@ -1720,112 +1648,65 @@ const EditPoolModal: React.FC<EditPoolModalProps> = ({
             </div>
           </div>
 
-          <div>
-            <label
-              htmlFor="edit-pool-description"
-              className="block text-sm font-medium text-theme-primary mb-1"
-            >
-              Description
-            </label>
-            <textarea
-              id="edit-pool-description"
-              value={form.description}
-              onChange={(e) => handleChange('description', e.target.value)}
-              placeholder="Optional — what's this pool for?"
-              rows={2}
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary resize-none"
-            />
-          </div>
+          <FormField
+            label="Description"
+            id="edit-pool-description"
+            type="textarea"
+            rows={2}
+            value={form.description}
+            onChange={(v) => handleChange('description', v)}
+            placeholder="Optional — what's this pool for?"
+            disabled={submitting}
+          />
 
           <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label
-                htmlFor="edit-pool-min"
-                className="block text-sm font-medium text-theme-primary mb-1"
-              >
-                Min size
-              </label>
-              <input
-                id="edit-pool-min"
-                type="number"
-                min={0}
-                value={form.min_size}
-                onChange={(e) =>
-                  handleChange('min_size', Number(e.target.value))
-                }
-                disabled={submitting}
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="edit-pool-target"
-                className="block text-sm font-medium text-theme-primary mb-1"
-              >
-                Target size <span className="text-theme-danger-fg">*</span>
-              </label>
-              <input
-                id="edit-pool-target"
-                type="number"
-                min={0}
-                value={form.target_size}
-                onChange={(e) =>
-                  handleChange('target_size', Number(e.target.value))
-                }
-                disabled={submitting}
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="edit-pool-max"
-                className="block text-sm font-medium text-theme-primary mb-1"
-              >
-                Max size
-              </label>
-              <input
-                id="edit-pool-max"
-                type="number"
-                min={0}
-                value={form.max_size}
-                onChange={(e) =>
-                  handleChange('max_size', Number(e.target.value))
-                }
-                disabled={submitting}
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-              />
-            </div>
+            <FormField
+              label="Min size"
+              id="edit-pool-min"
+              type="number"
+              min={0}
+              value={String(form.min_size)}
+              onChange={(v) => handleChange('min_size', Number(v))}
+              disabled={submitting}
+            />
+            <FormField
+              label="Target size"
+              id="edit-pool-target"
+              type="number"
+              required
+              min={0}
+              value={String(form.target_size)}
+              onChange={(v) => handleChange('target_size', Number(v))}
+              disabled={submitting}
+            />
+            <FormField
+              label="Max size"
+              id="edit-pool-max"
+              type="number"
+              min={0}
+              value={String(form.max_size)}
+              onChange={(v) => handleChange('max_size', Number(v))}
+              disabled={submitting}
+            />
           </div>
           {errors.sizing && (
             <p className="text-sm text-theme-danger-fg">{errors.sizing}</p>
           )}
 
-          <div>
-            <label
-              htmlFor="edit-pool-status"
-              className="block text-sm font-medium text-theme-primary mb-1"
-            >
-              Status
-            </label>
-            <select
-              id="edit-pool-status"
-              value={form.status}
-              onChange={(e) =>
-                handleChange(
-                  'status',
-                  e.target.value as InstancePoolSummary['status'],
-                )
-              }
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-            >
-              <option value="active">active</option>
-              <option value="paused">paused</option>
-              <option value="draining">draining</option>
-              <option value="archived">archived</option>
-            </select>
-          </div>
+          <FormField
+            label="Status"
+            id="edit-pool-status"
+            type="select"
+            value={form.status}
+            onChange={(v) => handleChange('status', v as InstancePoolSummary['status'])}
+            disabled={submitting}
+            options={[
+              { value: 'active', label: 'active' },
+              { value: 'paused', label: 'paused' },
+              { value: 'draining', label: 'draining' },
+              { value: 'archived', label: 'archived' },
+            ]}
+          />
         </form>
       )}
     </Modal>

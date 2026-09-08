@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, Server, AlertCircle } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
@@ -131,36 +132,44 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
 
             {/* Instance Selection */}
             <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                Select Instance <span className="text-theme-error-fg">*</span>
-              </label>
               {loading ? (
-                <div className="flex items-center justify-center py-4">
-                  <LoadingSpinner size="sm" />
-                </div>
+                <>
+                  <label className="block text-sm font-medium text-theme-primary mb-1">
+                    Select Instance <span className="text-theme-error-fg">*</span>
+                  </label>
+                  <div className="flex items-center justify-center py-4">
+                    <LoadingSpinner size="sm" />
+                  </div>
+                </>
               ) : instances.length === 0 ? (
-                <div className="text-center py-4">
-                  <Server className="w-8 h-8 text-theme-tertiary mx-auto mb-2" />
-                  <p className="text-sm text-theme-secondary">No running instances available</p>
-                </div>
+                <>
+                  <label className="block text-sm font-medium text-theme-primary mb-1">
+                    Select Instance <span className="text-theme-error-fg">*</span>
+                  </label>
+                  <div className="text-center py-4">
+                    <Server className="w-8 h-8 text-theme-tertiary mx-auto mb-2" />
+                    <p className="text-sm text-theme-secondary">No running instances available</p>
+                  </div>
+                </>
               ) : (
-                <select
-                  value={selectedInstanceId}
-                  onChange={(e) => setSelectedInstanceId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                <FormField
+                  label="Select Instance"
+                  type="select"
+                  required
                   disabled={submitting}
-                >
-                  <option value="">Select an instance</option>
-                  {instances.map((instance) => (
-                    <option key={instance.id} value={instance.id}>
-                      {(instance as SystemNodeInstance & { node_name?: string }).node_name
-                        ? `${(instance as SystemNodeInstance & { node_name?: string }).node_name} / `
-                        : ''
-                      }
-                      {instance.name} ({instance.status})
-                    </option>
-                  ))}
-                </select>
+                  value={selectedInstanceId}
+                  onChange={setSelectedInstanceId}
+                  options={[
+                    { value: '', label: 'Select an instance' },
+                    ...instances.map((instance) => {
+                      const nodeName = (instance as SystemNodeInstance & { node_name?: string }).node_name;
+                      return {
+                        value: instance.id,
+                        label: `${nodeName ? `${nodeName} / ` : ''}${instance.name} (${instance.status})`,
+                      };
+                    }),
+                  ]}
+                />
               )}
               {/* View the selected instance's detail surface (node_instance uses a
                   composite "nodeId:instanceId" id; the fetched instance carries
@@ -181,22 +190,14 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
             </div>
 
             {/* Device Name */}
-            <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                Device Name (optional)
-              </label>
-              <input
-                type="text"
-                value={deviceName}
-                onChange={(e) => setDeviceName(e.target.value)}
-                placeholder="e.g., /dev/sdf"
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                disabled={submitting}
-              />
-              <p className="mt-1 text-xs text-theme-tertiary">
-                Leave empty for auto-assignment
-              </p>
-            </div>
+            <FormField
+              label="Device Name (optional)"
+              disabled={submitting}
+              value={deviceName}
+              onChange={setDeviceName}
+              placeholder="e.g., /dev/sdf"
+              helpText="Leave empty for auto-assignment"
+            />
 
             {/* Error */}
             {error && (

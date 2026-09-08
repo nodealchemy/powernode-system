@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Package, AlertCircle, FileUp, Lock, Power } from 'lucide-react';
+import { Package, FileUp, Lock, Power } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -171,12 +172,10 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
     }
   }, [isOpen, editModule]);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => {
-    const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+  // FormField reports a value, the remaining controls still report an event;
+  // both land here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -184,6 +183,13 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
         return next;
       });
     }
+  };
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const { name, value, type } = e.target;
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
   };
 
   const validateForm = (): boolean => {
@@ -370,63 +376,41 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
               <div className="space-y-4">
                 <h3 className="text-sm font-medium text-theme-primary">Basic Information</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                      Name <span className="text-theme-error-fg">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      id="name"
-                      name="name"
-                      value={formData.name}
-                      onChange={handleChange}
-                      placeholder="e.g., nginx-config"
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.name ? 'border-theme-error-border' : 'border-theme'
-                      }`}
-                    />
-                    {errors.name && (
-                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        {errors.name}
-                      </p>
-                    )}
-                  </div>
+                  <FormField
+                    label="Name"
+                    id="name"
+                    required
+                    value={formData.name}
+                    onChange={(v) => setField('name', v)}
+                    placeholder="e.g., nginx-config"
+                    error={errors.name}
+                  />
 
-                  <div>
-                    <label htmlFor="variety" className="block text-sm font-medium text-theme-primary mb-1">
-                      Type <span className="text-theme-error-fg">*</span>
-                    </label>
-                    <select
-                      id="variety"
-                      name="variety"
-                      value={formData.variety}
-                      onChange={handleChange}
-                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                        errors.variety ? 'border-theme-error-border' : 'border-theme'
-                      }`}
-                    >
-                      <option value="config">Config</option>
-                      <option value="instance">Instance</option>
-                      <option value="subscription">Subscription</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                    Description
-                  </label>
-                  <textarea
-                    id="description"
-                    name="description"
-                    value={formData.description}
-                    onChange={handleChange}
-                    placeholder="Module description"
-                    rows={2}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
+                  <FormField
+                    label="Type"
+                    id="variety"
+                    type="select"
+                    required
+                    value={formData.variety}
+                    onChange={(v) => setField('variety', v)}
+                    error={errors.variety}
+                    options={[
+                      { value: 'config', label: 'Config' },
+                      { value: 'instance', label: 'Instance' },
+                      { value: 'subscription', label: 'Subscription' },
+                    ]}
                   />
                 </div>
+
+                <FormField
+                  label="Description"
+                  id="description"
+                  type="textarea"
+                  rows={2}
+                  value={formData.description}
+                  onChange={(v) => setField('description', v)}
+                  placeholder="Module description"
+                />
               </div>
 
               {/* Classification */}
@@ -483,20 +467,14 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                     )}
                   </div>
 
-                  <div>
-                    <label htmlFor="priority" className="block text-sm font-medium text-theme-primary mb-1">
-                      Priority
-                    </label>
-                    <input
-                      type="number"
-                      id="priority"
-                      name="priority"
-                      value={formData.priority}
-                      onChange={handleChange}
-                      min={0}
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
-                    />
-                  </div>
+                  <FormField
+                    label="Priority"
+                    id="priority"
+                    type="number"
+                    min={0}
+                    value={String(formData.priority)}
+                    onChange={(v) => setField('priority', v)}
+                  />
                 </div>
               </div>
 

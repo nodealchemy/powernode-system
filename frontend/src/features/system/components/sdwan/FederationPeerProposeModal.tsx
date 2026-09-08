@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -72,40 +73,51 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           will flag prefix overlaps with this install's address space.
         </div>
         <div>
-          <label htmlFor="fp-remote-instance-url" className="block text-sm font-medium text-theme-primary mb-1">Remote instance URL *</label>
-          <input
+          {/* `required` marks the label; `nativeRequired` sets the attribute a
+              spec in this file asserts. FormField splits the two. */}
+          <FormField
+            label="Remote instance URL"
             id="fp-remote-instance-url"
-            type="url" value={remoteInstanceUrl} onChange={(e) => setRemoteInstanceUrl(e.target.value)}
-            placeholder="https://other.powernode.example.org" required
+            type="url"
+            required
+            nativeRequired
+            value={remoteInstanceUrl}
+            onChange={setRemoteInstanceUrl}
+            placeholder="https://other.powernode.example.org"
+            className="font-mono text-sm"
             disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
-          <label htmlFor="fp-remote-instance-id" className="block text-sm font-medium text-theme-primary mb-1">Remote instance ID (UUID, optional)</label>
-          <input
+          <FormField
+            label="Remote instance ID (UUID, optional)"
             id="fp-remote-instance-id"
-            type="text" value={remoteInstanceId} onChange={(e) => setRemoteInstanceId(e.target.value)}
-            placeholder="019d…" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
-          />
-        </div>
-        <div>
-          <label htmlFor="fp-remote-account-id" className="block text-sm font-medium text-theme-primary mb-1">Remote account ID (UUID, optional)</label>
-          <input
-            id="fp-remote-account-id"
-            type="text" value={remoteAccountId} onChange={(e) => setRemoteAccountId(e.target.value)}
+            value={remoteInstanceId}
+            onChange={setRemoteInstanceId}
+            placeholder="019d…"
+            className="font-mono text-sm"
             disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
-          <label htmlFor="fp-remote-prefix" className="block text-sm font-medium text-theme-primary mb-1">Remote prefix advertisement (optional)</label>
-          <input
+          <FormField
+            label="Remote account ID (UUID, optional)"
+            id="fp-remote-account-id"
+            value={remoteAccountId}
+            onChange={setRemoteAccountId}
+            className="font-mono text-sm"
+            disabled={submitting}
+          />
+        </div>
+        <div>
+          <FormField
+            label="Remote prefix advertisement (optional)"
             id="fp-remote-prefix"
-            type="text" value={remotePrefix} onChange={(e) => setRemotePrefix(e.target.value)}
-            placeholder="fdab:cdef:1234::/48" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
+            value={remotePrefix}
+            onChange={setRemotePrefix}
+            placeholder="fdab:cdef:1234::/48"
+            className="font-mono text-sm"
+            disabled={submitting}
           />
           <p className="text-xs text-theme-secondary mt-1">/48, /56, or /64 ULA prefix the remote claims to own.</p>
         </div>

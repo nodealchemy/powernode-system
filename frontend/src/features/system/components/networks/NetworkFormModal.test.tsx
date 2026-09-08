@@ -373,6 +373,12 @@ describe('NetworkFormModal', () => {
         screen.getByText('Invalid CIDR format (e.g., 10.0.0.0/16)'),
       ).toBeInTheDocument(),
     );
+
+    // The format hint is what tells the operator what a valid value looks
+    // like, so it has to survive the error rather than be replaced by it.
+    expect(
+      screen.getByText('IPv4 network range in CIDR notation'),
+    ).toBeInTheDocument();
   });
 
   it('accepts a valid CIDR format without error', async () => {

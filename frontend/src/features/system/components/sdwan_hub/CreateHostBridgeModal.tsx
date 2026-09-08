@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Network as NetworkIcon } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { apiErrorMessage, isPendingApproval } from '@system/features/system/services/api/helpers';
@@ -139,26 +140,18 @@ export const CreateHostBridgeModal: React.FC<CreateHostBridgeModalProps> = ({
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label
-            className="block text-sm font-medium text-theme-primary mb-1"
-            htmlFor="host-bridge-node-instance"
-          >
-            Host
-          </label>
-          <select
+          <FormField
+            label="Host"
             id="host-bridge-node-instance"
+            type="select"
             value={nodeInstanceId}
-            onChange={(e) => setNodeInstanceId(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+            onChange={setNodeInstanceId}
             disabled={submitting || loadingInstances}
-          >
-            <option value="">{loadingInstances ? 'Loading…' : 'Select a host'}</option>
-            {instances.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} ({i.status})
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: '', label: loadingInstances ? 'Loading…' : 'Select a host' },
+              ...instances.map((i) => ({ value: i.id, label: `${i.name} (${i.status})` })),
+            ]}
+          />
           {/* The host's network_profile decides the default kind, but
               SystemNodeInstance does not carry it (the field is on the bridge
               payload, not the instance one), so it is not shown here rather
@@ -172,23 +165,19 @@ export const CreateHostBridgeModal: React.FC<CreateHostBridgeModalProps> = ({
         </div>
 
         <div>
-          <label
-            className="block text-sm font-medium text-theme-primary mb-1"
-            htmlFor="host-bridge-kind"
-          >
-            Kind <span className="text-xs text-theme-secondary">(optional)</span>
-          </label>
-          <select
+          <FormField
+            label={<>Kind <span className="text-xs text-theme-secondary">(optional)</span></>}
             id="host-bridge-kind"
+            type="select"
             value={kind}
-            onChange={(e) => setKind(e.target.value as SdwanHostBridgeKind | '')}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+            onChange={(v) => setKind(v as SdwanHostBridgeKind | '')}
             disabled={submitting}
-          >
-            <option value="">Let the allocator decide (from the host&apos;s profile)</option>
-            <option value="linux">linux</option>
-            <option value="ovs">ovs</option>
-          </select>
+            options={[
+              { value: '', label: "Let the allocator decide (from the host's profile)" },
+              { value: 'linux', label: 'linux' },
+              { value: 'ovs', label: 'ovs' },
+            ]}
+          />
           <p className="text-xs text-theme-secondary mt-1">
             Left alone, the allocator picks from the host&apos;s network profile: heavyweight
             gets OVS, lightweight gets a Linux bridge. Override only to disagree with it.

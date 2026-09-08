@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Globe2, Trash2, Ban, ChevronRight, ChevronDown, ShieldCheck, ShieldX } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -251,18 +252,17 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               Re-proposing the same remote instance creates a fresh row.
             </p>
             <div>
-              <label htmlFor="fp-revoke-reason" className="block text-sm font-medium text-theme-primary mb-1">
-                Reason (optional)
-              </label>
-              <textarea
+              <FormField
+                label="Reason (optional)"
                 id="fp-revoke-reason"
-                value={revokeReason}
-                onChange={(e) => setRevokeReason(e.target.value)}
-                placeholder="e.g. remote signing key compromised"
+                type="textarea"
                 rows={2}
-                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary text-sm"
+                value={revokeReason}
+                onChange={setRevokeReason}
+                placeholder="e.g. remote signing key compromised"
+                className="text-sm"
+                helpText="Recorded on the peer for audit; shown here once revoked."
               />
-              <p className="text-xs text-theme-secondary mt-1">Recorded on the peer for audit; shown here once revoked.</p>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={closeRevoke}>Cancel</Button>
