@@ -135,7 +135,9 @@ describe('RoutePoliciesList', () => {
     // never resolve so loading state is stable
     mockListRoutePolicies.mockImplementation(() => new Promise(() => {}));
     renderList();
-    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -166,7 +168,7 @@ describe('RoutePoliciesList', () => {
     mockListRoutePolicies.mockResolvedValue({ route_policies: [], count: 0 });
     renderList();
     await waitFor(() =>
-      expect(screen.getByText('No route policies yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No route policies yet')).toBeInTheDocument(),
     );
     expect(
       screen.getByText(/Route policies control which prefixes/),

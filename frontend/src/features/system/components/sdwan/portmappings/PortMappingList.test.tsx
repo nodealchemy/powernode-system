@@ -136,7 +136,9 @@ describe('PortMappingList', () => {
 
     renderList();
 
-    expect(screen.getByText(/loading port mappings/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -177,7 +179,7 @@ describe('PortMappingList', () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText('No port mappings in this network.'),
+        screen.getByText('No port mappings in this network'),
       ).toBeInTheDocument(),
     );
     expect(screen.getByText(/Port mappings publish overlay services/i)).toBeInTheDocument();
@@ -619,7 +621,7 @@ describe('PortMappingList', () => {
     renderList({ networkId: 'net-xyz' });
 
     await waitFor(() =>
-      expect(screen.getByText('No port mappings in this network.')).toBeInTheDocument(),
+      expect(screen.getByText('No port mappings in this network')).toBeInTheDocument(),
     );
 
     expect(mockListPortMappings).toHaveBeenCalledWith('net-xyz');
@@ -632,7 +634,7 @@ describe('PortMappingList', () => {
 
     const { rerender } = renderList({ refreshKey: 0 });
     await waitFor(() =>
-      expect(screen.getByText('No port mappings in this network.')).toBeInTheDocument(),
+      expect(screen.getByText('No port mappings in this network')).toBeInTheDocument(),
     );
     expect(mockListPortMappings).toHaveBeenCalledTimes(1);
 

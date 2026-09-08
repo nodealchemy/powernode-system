@@ -89,7 +89,9 @@ describe('BgpSessionsTable', () => {
   it('shows a loading indicator while the API call is in flight', () => {
     mockGetBgpSessions.mockReturnValue(new Promise(() => {})); // never resolves
     renderTable();
-    expect(screen.getByText('Loading sessions…')).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ── Error state ────────────────────────────────────────────────────────────
@@ -116,7 +118,7 @@ describe('BgpSessionsTable', () => {
     mockGetBgpSessions.mockResolvedValue({ sessions: [], count: 0 });
     renderTable();
     await waitFor(() =>
-      expect(screen.getByText('No BGP sessions reported yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No BGP sessions reported yet')).toBeInTheDocument(),
     );
     // Session counter shows "0 sessions"
     expect(screen.getByText('0 sessions')).toBeInTheDocument();

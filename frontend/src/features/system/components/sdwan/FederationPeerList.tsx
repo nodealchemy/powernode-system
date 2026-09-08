@@ -5,6 +5,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { isPendingApproval } from '../../services/api/helpers';
 import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
@@ -69,23 +70,24 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
 
   useEffect(() => { load(); }, [load, refreshKey, localKey]);
 
-  if (loading) return <div className="p-4 text-theme-secondary">Loading federation peers…</div>;
   if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
-  if (peers.length === 0) {
-    return (
-      <div className="p-12 text-center">
-        <Globe2 className="mx-auto mb-4 text-theme-secondary" size={48} />
-        <h3 className="text-lg font-medium text-theme-primary mb-1">No federation peers</h3>
-        <p className="text-sm text-theme-secondary">
-          Propose a federation peer to register a cross-Powernode-instance overlay intent.
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <div className="overflow-x-auto">
+    <>
+    <ResponsiveListContainer
+      loading={loading}
+      totalCount={peers.length}
+      filteredCount={peers.length}
+      emptyState={{
+        icon: Globe2,
+        title: 'No federation peers',
+        description: 'Propose a federation peer to register a cross-Powernode-instance overlay intent.',
+      }}
+    >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
+        <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
@@ -233,6 +235,9 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
           })}
         </tbody>
       </table>
+        </div>
+      </ResponsiveListContainer.Body>
+    </ResponsiveListContainer>
 
       <Modal isOpen={revokeConfirm !== null} onClose={closeRevoke} icon={<Ban className="w-6 h-6" />} title="Revoke federation peer">
         {revokeConfirm && (
@@ -310,7 +315,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
           </div>
         )}
       </Modal>
-    </div>
+    </>
   );
 };
 

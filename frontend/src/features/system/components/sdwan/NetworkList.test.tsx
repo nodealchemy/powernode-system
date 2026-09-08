@@ -130,7 +130,11 @@ describe('NetworkList', () => {
     // Never resolve so we stay in loading state.
     mockGetNetworks.mockReturnValue(new Promise(() => {}));
     renderList();
-    expect(screen.getByText(/loading networks/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    // Assert the spinner element itself, not just "a surface exists" — the
+    // surface card is present in the loaded state too.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
