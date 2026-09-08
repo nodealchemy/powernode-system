@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { CreateInstanceModal } from './CreateInstanceModal';
 import type { SystemNode, SystemNodeInstance } from '@system/features/system/types/system.types';
@@ -34,6 +34,16 @@ jest.mock('@/shared/hooks/usePermissions', () => ({
   usePermissions: () => ({
     hasPermission: () => true,
   }),
+}));
+
+const mockLoggerWarn = jest.fn();
+jest.mock('@/shared/utils/logger', () => ({
+  logger: {
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: jest.fn(),
+    info: jest.fn(),
+    debug: jest.fn(),
+  },
 }));
 
 const mockAddNotification = jest.fn();
@@ -1053,5 +1063,258 @@ describe('CreateInstanceModal', () => {
     expect(payload.config.provider_availability_zone_id).toBeUndefined();
     expect(payload.config.provider_network_id).toBeUndefined();
     expect(payload.config.provider_network_subnet_id).toBeUndefined();
+  });
+
+  // ===========================================================================
+  // Catalog load failures
+  //
+  // Every cascading select used to end in `.catch(() => setX([]))`, so a dead
+  // provider connection, a 403 or a network blip rendered exactly like an
+  // empty catalog: the operator saw "no regions", could not provision, and had
+  // nothing to go on.
+  // ===========================================================================
+
+  describe('Catalog load failures', () => {
+    const selectConnection = async () => {
+      mockGetProviderConnections.mockResolvedValue([CONNECTION]);
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+    };
+
+    it('says so inline when the provider connections cannot be loaded', async () => {
+      mockGetProviderConnections.mockRejectedValue(new Error('403 Forbidden'));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load provider connections/i)).toBeInTheDocument(),
+      );
+    });
+
+    it('does not claim a load failed when the catalog is merely empty', async () => {
+      mockGetProviderConnections.mockResolvedValue([]);
+      renderModal();
+
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      expect(screen.queryByText(/Could not load/i)).not.toBeInTheDocument();
+    });
+
+    it('notifies once, not once per failed catalog', async () => {
+      mockGetProviderConnections.mockResolvedValue([CONNECTION]);
+      mockGetProviderRegions.mockResolvedValue([REGION]);
+      // The region change fires three loads at once; a toast each would be three.
+      mockGetProviderInstanceTypes.mockRejectedValue(new Error('boom'));
+      mockGetProviderAvailabilityZones.mockRejectedValue(new Error('boom'));
+      mockGetNetworks.mockRejectedValue(new Error('boom'));
+
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+      await waitFor(() => expect(mockGetProviderRegions).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Region/), { target: { value: REGION.id } });
+
+      await waitFor(() => expect(mockGetNetworks).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(
+          mockAddNotification.mock.calls.filter(([n]) => n.type === 'error'),
+        ).toHaveLength(1),
+      );
+    });
+
+    it('logs every failure through the shared logger, naming the catalog', async () => {
+      mockGetProviderConnections.mockResolvedValue([CONNECTION]);
+      mockGetProviderRegions.mockRejectedValue(new Error('403 Forbidden'));
+      mockGetProviderInstanceTypes.mockRejectedValue(new Error('403 Forbidden'));
+
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      const messages = mockLoggerWarn.mock.calls.map(([m]) => String(m));
+      expect(messages.some((m) => /regions/i.test(m))).toBe(true);
+    });
+
+    // logger.warn JSON.stringifies its context, and an AxiosError's own
+    // enumerable properties include the request headers.
+    it('logs the message string, never the error object', async () => {
+      const err = Object.assign(new Error('Request failed with status code 403'), {
+        config: { headers: { Authorization: 'Bearer super-secret-token' } },
+      });
+      mockGetProviderConnections.mockRejectedValue(err);
+      renderModal();
+
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      expect(JSON.stringify(mockLoggerWarn.mock.calls)).not.toContain('super-secret-token');
+      expect(JSON.stringify(mockLoggerWarn.mock.calls)).toContain(
+        'Request failed with status code 403',
+      );
+    });
+
+    it('retries just the failed catalog and clears the hint on success', async () => {
+      mockGetProviderConnections
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue([CONNECTION]);
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load provider connections/i)).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /retry loading provider connections/i }));
+
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.queryByText(/Could not load provider connections/i)).not.toBeInTheDocument(),
+      );
+    });
+
+    it('reports a failed region load against the region field', async () => {
+      mockGetProviderRegions.mockRejectedValue(new Error('connection is dead'));
+      await selectConnection();
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load regions/i)).toBeInTheDocument(),
+      );
+    });
+
+    // The retry used to be a nonce in the cascading effect's dep array, which
+    // re-ran the whole effect: it blanked the operator's other selections and
+    // re-fired all three loads instead of the one they clicked.
+    it('retries only the catalog it names, leaving sibling loads and selections alone', async () => {
+      mockGetProviderConnections.mockResolvedValue([CONNECTION]);
+      mockGetProviderRegions.mockResolvedValue([REGION]);
+      mockGetProviderAvailabilityZones.mockResolvedValue([ZONE]);
+      mockGetNetworks.mockResolvedValue({
+        networks: [NETWORK],
+        meta: { current_page: 1, per_page: 200, total_count: 1, total_pages: 1, next_page: null, prev_page: null },
+      });
+      mockGetProviderInstanceTypes
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue([INSTANCE_TYPE]);
+
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+      await waitFor(() => expect(mockGetProviderRegions).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Region/), { target: { value: REGION.id } });
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load instance sizes/i)).toBeInTheDocument(),
+      );
+
+      // The two that succeeded are selectable; pick both.
+      fireEvent.change(screen.getByLabelText(/Availability Zone/i), { target: { value: ZONE.id } });
+      fireEvent.change(screen.getByLabelText(/^Network/i), { target: { value: NETWORK.id } });
+      const zoneCalls = mockGetProviderAvailabilityZones.mock.calls.length;
+      const networkCalls = mockGetNetworks.mock.calls.length;
+
+      fireEvent.click(screen.getByRole('button', { name: /retry loading instance sizes/i }));
+
+      await waitFor(() => expect(mockGetProviderInstanceTypes).toHaveBeenCalledTimes(2));
+      // Only that one re-ran...
+      expect(mockGetProviderAvailabilityZones).toHaveBeenCalledTimes(zoneCalls);
+      expect(mockGetNetworks).toHaveBeenCalledTimes(networkCalls);
+      // ...and the operator's other choices survived.
+      expect((screen.getByLabelText(/Availability Zone/i) as HTMLSelectElement).value).toBe(ZONE.id);
+      expect((screen.getByLabelText(/^Network/i) as HTMLSelectElement).value).toBe(NETWORK.id);
+    });
+
+    it('shows the hint again when a retry fails a second time', async () => {
+      mockGetProviderConnections.mockRejectedValue(new Error('still down'));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load provider connections/i)).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /retry loading provider connections/i }));
+
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load provider connections/i)).toBeInTheDocument(),
+      );
+    });
+
+    // Without a per-catalog fetch token an earlier attempt's late rejection
+    // lands after a later one succeeded, empties the list it filled and puts
+    // the hint back with nothing in flight. Switching connections while the
+    // first regions request is still open is the natural way to produce it.
+    it('lets the newest attempt win when an older one rejects afterwards', async () => {
+      const OTHER_CONNECTION = { ...CONNECTION, id: 'conn-2', name: 'AWS Staging', provider_id: 'prov-aws-2' };
+      mockGetProviderConnections.mockResolvedValue([CONNECTION, OTHER_CONNECTION]);
+
+      let rejectSlow: (reason: Error) => void = () => {};
+      mockGetProviderRegions
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSlow = reject; }))
+        .mockResolvedValue([REGION]);
+
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+      await waitFor(() => expect(mockGetProviderRegions).toHaveBeenCalledTimes(1));
+
+      // The operator moves on before the first request settles.
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: OTHER_CONNECTION.id },
+      });
+      await waitFor(() => expect(mockGetProviderRegions).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: /us-east-1/i })).toBeInTheDocument(),
+      );
+
+      // Only now does the abandoned first request fail.
+      await act(async () => { rejectSlow(new Error('too late')); });
+
+      expect(screen.queryByText(/Could not load regions/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /us-east-1/i })).toBeInTheDocument();
+    });
+
+    // The hint must not outlive the selection that made the load possible, or
+    // it renders a Retry that can never fire.
+    it('drops a stale hint when the parent selection is cleared', async () => {
+      mockGetProviderConnections.mockResolvedValue([CONNECTION]);
+      mockGetProviderRegions.mockRejectedValue(new Error('boom'));
+
+      renderModal();
+      await waitFor(() => expect(mockGetProviderConnections).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), {
+        target: { value: CONNECTION.id },
+      });
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load regions/i)).toBeInTheDocument(),
+      );
+
+      fireEvent.change(screen.getByLabelText(/Provider Connection/), { target: { value: '' } });
+
+      await waitFor(() =>
+        expect(screen.queryByText(/Could not load regions/i)).not.toBeInTheDocument(),
+      );
+    });
+
+    it('reports a failed platform load on the physical branch', async () => {
+      mockGetPlatforms.mockRejectedValue(new Error('boom'));
+      renderModal();
+
+      // The variety picker is a row of buttons, not a select.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /physical/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /physical/i }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/Could not load platforms/i)).toBeInTheDocument(),
+      );
+    });
   });
 });

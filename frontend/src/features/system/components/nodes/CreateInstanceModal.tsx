@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Cpu, Cloud, Server, Zap, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Cpu, Cloud, Server, Zap, Loader2, RefreshCw } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { logger } from '@/shared/utils/logger';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type {
   SystemNode,
@@ -47,6 +48,32 @@ interface FormData {
   node_platform_id: string;
   mac_address: string;            // optional pre-binding for known devices
 }
+
+/**
+ * The catalogs this form loads. Each one is a cascading select, and each used
+ * to end in `.catch(() => setX([]))` — so a dead provider connection, a 403 or
+ * a network blip rendered exactly like an empty catalog and the operator was
+ * left with "no regions" and no diagnosis (IMP-a78aa727d1d8).
+ */
+type CatalogField =
+  | 'platforms'
+  | 'connections'
+  | 'regions'
+  | 'instanceTypes'
+  | 'zones'
+  | 'networks'
+  | 'subnets';
+
+/** What the inline hint calls each one. */
+const CATALOG_LABELS: Record<CatalogField, string> = {
+  platforms: 'platforms',
+  connections: 'provider connections',
+  regions: 'regions',
+  instanceTypes: 'instance sizes',
+  zones: 'availability zones',
+  networks: 'networks',
+  subnets: 'subnets'
+};
 
 interface FormErrors {
   name?: string;
@@ -112,6 +139,96 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   const [loadingNetworks, setLoadingNetworks] = useState(false);
   const [loadingSubnets, setLoadingSubnets] = useState(false);
 
+  // Which catalogs failed to load.
+  const [loadErrors, setLoadErrors] = useState<Partial<Record<CatalogField, true>>>({});
+  // The last fetch each catalog ran, so Retry can re-run exactly that one.
+  //
+  // Deliberately NOT a nonce in the effects' dependency arrays: three of these
+  // effects also blank the dependent form fields as a side effect, so retrying
+  // "instance sizes" through the effect would wipe the availability zone,
+  // network and subnet the operator had already chosen and re-fire all three
+  // loads instead of the one they asked for. The thunk is re-registered every
+  // time the effect runs, so it can never close over a stale connection.
+  const lastLoad = useRef<Partial<Record<CatalogField, () => void>>>({});
+  // Per-catalog fetch token. A retry makes concurrent requests for one field
+  // routine, and without this a slow rejection from the attempt BEFORE the
+  // retry lands afterwards, empties the list the retry just filled and puts the
+  // error hint back with nothing in flight.
+  const catalogSeq = useRef<Partial<Record<CatalogField, number>>>({});
+  // One notification per episode, not one per catalog: selecting a region
+  // fires three loads at once, and a provider outage fails all three.
+  const notifiedLoadFailure = useRef(false);
+
+  const clearLoadError = useCallback((...fields: CatalogField[]) => {
+    setLoadErrors(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const field of fields) {
+        if (next[field]) {
+          delete next[field];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  /**
+   * Runs one catalog fetch with the three things the bare `.catch(() => setX([]))`
+   * left out: an inline per-field hint, a logger line, and one notification.
+   *
+   * The logger gets the message STRING, never the error object: logger.warn
+   * JSON.stringifies its context, and an AxiosError's own enumerable properties
+   * carry the request config — including the Authorization header.
+   */
+  const loadCatalog = useCallback(
+    <T,>(
+      field: CatalogField,
+      fetcher: () => Promise<T>,
+      onSuccess: (value: T) => void,
+      onFailure: () => void,
+      setBusy: (busy: boolean) => void
+    ) => {
+      const run = () => {
+        const token = (catalogSeq.current[field] = (catalogSeq.current[field] ?? 0) + 1);
+        const isCurrent = () => catalogSeq.current[field] === token;
+
+        setBusy(true);
+        clearLoadError(field);
+
+        fetcher()
+          .then(value => { if (isCurrent()) onSuccess(value); })
+          .catch((error: unknown) => {
+            if (!isCurrent()) return;
+            onFailure();
+            setLoadErrors(prev => ({ ...prev, [field]: true }));
+            logger.warn(`CreateInstanceModal: failed to load ${CATALOG_LABELS[field]}`, {
+              message: error instanceof Error ? error.message : String(error)
+            });
+            if (!notifiedLoadFailure.current) {
+              notifiedLoadFailure.current = true;
+              addNotification({
+                type: 'error',
+                message: 'Some provisioning options could not be loaded. Retry them below.'
+              });
+            }
+          })
+          .finally(() => { if (isCurrent()) setBusy(false); });
+      };
+
+      lastLoad.current[field] = run;
+      run();
+    },
+    [addNotification, clearLoadError]
+  );
+
+  const retryCatalog = useCallback((field: CatalogField) => {
+    // A retry is a deliberate operator action, so a second failure is worth
+    // acknowledging rather than swallowing under the first episode's toast.
+    notifiedLoadFailure.current = false;
+    lastLoad.current[field]?.();
+  }, []);
+
   // Reset form when modal opens
   useEffect(() => {
     if (isOpen && node) {
@@ -137,44 +254,50 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
       setAvailabilityZones([]);
       setNetworks([]);
       setSubnets([]);
+      setLoadErrors({});
     }
   }, [isOpen, node]);
+
+  // Separate from the form reset above, which is gated on `node`: the
+  // connections load only checks `isOpen`, so it can fail — and notify — on a
+  // modal opened without one.
+  useEffect(() => {
+    if (isOpen) {
+      notifiedLoadFailure.current = false;
+      setLoadErrors({});
+    }
+  }, [isOpen]);
 
   // Load platforms when the operator switches to the physical branch.
   useEffect(() => {
     if (isOpen && formData.variety === 'physical' && platforms.length === 0) {
-      setLoadingPlatforms(true);
-      systemApi.getPlatforms()
-        .then(setPlatforms)
-        .catch(() => setPlatforms([]))
-        .finally(() => setLoadingPlatforms(false));
+      loadCatalog('platforms', () => systemApi.getPlatforms(), setPlatforms,
+        () => setPlatforms([]), setLoadingPlatforms);
     }
-  }, [isOpen, formData.variety, platforms.length]);
+  }, [isOpen, formData.variety, platforms.length, loadCatalog]);
 
   // Load provider connections on modal open
   useEffect(() => {
     if (isOpen && formData.variety === 'cloud') {
-      setLoadingConnections(true);
-      systemApi.getProviderConnections()
-        .then(setConnections)
-        .catch(() => setConnections([]))
-        .finally(() => setLoadingConnections(false));
+      loadCatalog('connections', () => systemApi.getProviderConnections(), setConnections,
+        () => setConnections([]), setLoadingConnections);
     }
-  }, [isOpen, formData.variety]);
+  }, [isOpen, formData.variety, loadCatalog]);
 
   // Load regions when connection changes
   useEffect(() => {
     if (formData.provider_connection_id) {
       const connection = connections.find(c => c.id === formData.provider_connection_id);
-      if (connection?.provider_id) {
-        setLoadingRegions(true);
-        systemApi.getProviderRegions(connection.provider_id)
-          .then(setRegions)
-          .catch(() => setRegions([]))
-          .finally(() => setLoadingRegions(false));
+      const providerId = connection?.provider_id;
+      if (providerId) {
+        loadCatalog('regions', () => systemApi.getProviderRegions(providerId),
+          setRegions, () => setRegions([]), setLoadingRegions);
       }
     } else {
       setRegions([]);
+      // No connection means no pending regions load, so a hint left over from
+      // the previous one would render a Retry that can never fire.
+      clearLoadError('regions');
     }
     // Clear dependent fields
     setFormData(prev => ({
@@ -189,38 +312,34 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
     setAvailabilityZones([]);
     setNetworks([]);
     setSubnets([]);
-  }, [formData.provider_connection_id, connections]);
+  }, [formData.provider_connection_id, connections, loadCatalog, clearLoadError]);
 
   // Load instance types, zones, and networks when region changes
   useEffect(() => {
     if (formData.provider_region_id) {
       const connection = connections.find(c => c.id === formData.provider_connection_id);
-      if (connection?.provider_id) {
+      const providerId = connection?.provider_id;
+      if (providerId) {
         // Load instance types for provider
-        setLoadingInstanceTypes(true);
-        systemApi.getProviderInstanceTypes(connection.provider_id)
-          .then(setInstanceTypes)
-          .catch(() => setInstanceTypes([]))
-          .finally(() => setLoadingInstanceTypes(false));
+        loadCatalog('instanceTypes',
+          () => systemApi.getProviderInstanceTypes(providerId),
+          setInstanceTypes, () => setInstanceTypes([]), setLoadingInstanceTypes);
 
         // Load availability zones for region
-        setLoadingZones(true);
-        systemApi.getProviderAvailabilityZones(connection.provider_id, formData.provider_region_id)
-          .then(setAvailabilityZones)
-          .catch(() => setAvailabilityZones([]))
-          .finally(() => setLoadingZones(false));
+        loadCatalog('zones',
+          () => systemApi.getProviderAvailabilityZones(providerId, formData.provider_region_id),
+          setAvailabilityZones, () => setAvailabilityZones([]), setLoadingZones);
 
         // Load networks for region
-        setLoadingNetworks(true);
-        systemApi.getNetworks({ provider_region_id: formData.provider_region_id })
-          .then(result => setNetworks(result.networks))
-          .catch(() => setNetworks([]))
-          .finally(() => setLoadingNetworks(false));
+        loadCatalog('networks',
+          () => systemApi.getNetworks({ provider_region_id: formData.provider_region_id }),
+          (result) => setNetworks(result.networks), () => setNetworks([]), setLoadingNetworks);
       }
     } else {
       setInstanceTypes([]);
       setAvailabilityZones([]);
       setNetworks([]);
+      clearLoadError('instanceTypes', 'zones', 'networks');
     }
     // Clear dependent fields
     setFormData(prev => ({
@@ -231,21 +350,45 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
       provider_network_subnet_id: ''
     }));
     setSubnets([]);
-  }, [formData.provider_region_id, formData.provider_connection_id, connections]);
+  }, [formData.provider_region_id, formData.provider_connection_id, connections,
+      loadCatalog, clearLoadError]);
 
   // Load subnets when network or zone changes
   useEffect(() => {
     if (formData.provider_network_id) {
-      setLoadingSubnets(true);
-      systemApi.getNetworkSubnets(formData.provider_network_id, formData.provider_availability_zone_id || undefined)
-        .then(setSubnets)
-        .catch(() => setSubnets([]))
-        .finally(() => setLoadingSubnets(false));
+      loadCatalog('subnets',
+        () => systemApi.getNetworkSubnets(formData.provider_network_id, formData.provider_availability_zone_id || undefined),
+        setSubnets, () => setSubnets([]), setLoadingSubnets);
     } else {
       setSubnets([]);
+      clearLoadError('subnets');
     }
     setFormData(prev => ({ ...prev, provider_network_subnet_id: '' }));
-  }, [formData.provider_network_id, formData.provider_availability_zone_id]);
+  }, [formData.provider_network_id, formData.provider_availability_zone_id,
+      loadCatalog, clearLoadError]);
+
+  /**
+   * The inline per-field hint. Rendered only on a real failure, so an EMPTY
+   * catalog still reads as empty rather than broken — telling those two apart
+   * is the whole point of the change.
+   */
+  const renderLoadError = (field: CatalogField) => {
+    if (!loadErrors[field]) return null;
+    return (
+      <p className="mt-1 text-sm text-theme-danger-fg flex items-center gap-2">
+        <span>Could not load {CATALOG_LABELS[field]}.</span>
+        <button
+          type="button"
+          onClick={() => retryCatalog(field)}
+          aria-label={`Retry loading ${CATALOG_LABELS[field]}`}
+          className="inline-flex items-center gap-1 underline hover:no-underline"
+        >
+          <RefreshCw className="w-3 h-3" />
+          Retry
+        </button>
+      </p>
+    );
+  };
 
   // Form validation
   const validate = useCallback((): boolean => {
@@ -468,6 +611,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('connections')}
               {errors.provider_connection_id && (
                 <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_connection_id}</p>
               )}
@@ -501,6 +645,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('regions')}
               {errors.provider_region_id && (
                 <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_region_id}</p>
               )}
@@ -534,6 +679,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('instanceTypes')}
               {errors.provider_instance_type_id && (
                 <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_instance_type_id}</p>
               )}
@@ -563,6 +709,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('zones')}
             </div>
 
             {/* Network */}
@@ -589,6 +736,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('networks')}
             </div>
 
             {/* Subnet */}
@@ -616,6 +764,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                     <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                   )}
                 </div>
+                {renderLoadError('subnets')}
               </div>
             )}
           </div>
@@ -660,6 +809,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {renderLoadError('platforms')}
               {formData.node_platform_id && (
                 <div className="mt-1">
                   <EntityLink
