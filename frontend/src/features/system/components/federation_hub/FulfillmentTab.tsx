@@ -1,14 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ClipboardCheck,
-  AlertTriangle,
-  X,
   RefreshCw,
   CheckCircle2,
   Clock,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -261,17 +260,8 @@ export const FulfillmentTab: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            className="p-1"
-            aria-label="Dismiss error"
-          >
-            <X className="w-3 h-3" />
-          </button>
+        <div className="px-4 pt-4">
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         </div>
       )}
 
