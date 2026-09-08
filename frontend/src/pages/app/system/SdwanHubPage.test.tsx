@@ -224,7 +224,7 @@ describe('SdwanHubPage', () => {
   it('applies active styling to the Networks link when at /sdwan/networks', () => {
     renderPage('/networks');
     const networksLink = screen.getByRole('link', { name: 'Networks' });
-    expect(networksLink.className).toContain('border-theme-focus');
+    expect(networksLink.className).toContain('border-theme-info-border');
     expect(networksLink.className).toContain('text-theme-primary');
   });
 
@@ -238,13 +238,13 @@ describe('SdwanHubPage', () => {
   it('applies active styling to the Topology link at /sdwan/topology', () => {
     renderPage('/topology');
     const topologyLink = screen.getByRole('link', { name: 'Topology' });
-    expect(topologyLink.className).toContain('border-theme-focus');
+    expect(topologyLink.className).toContain('border-theme-info-border');
   });
 
   it('applies active styling to Routing link when at /sdwan/routing', () => {
     renderPage('/routing');
     const routingLink = screen.getByRole('link', { name: 'Routing' });
-    expect(routingLink.className).toContain('border-theme-focus');
+    expect(routingLink.className).toContain('border-theme-info-border');
   });
 
   // ---------------------------------------------------------------------------
@@ -483,5 +483,33 @@ describe('SdwanHubPage', () => {
     renderPage('/networks');
     expect(screen.getByRole('link', { name: 'IPFIX' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Flows' })).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', () => {
+    renderPage('/networks');
+
+    const active = screen.getByRole('link', { name: 'Networks' });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
   });
 });

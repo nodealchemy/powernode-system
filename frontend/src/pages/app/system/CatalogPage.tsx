@@ -1,8 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { FileText, Package, FileCode, Cpu, Layers, FolderTree, Database } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  activeTabKeyFromPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import {
   TemplatesTab,
@@ -30,7 +36,7 @@ type TabKey =
   | 'platforms'
   | 'marketplace';
 
-const TABS: { key: TabKey; label: string; permission: string }[] = [
+const TABS: PathTabSpec<TabKey>[] = [
   { key: 'templates', label: 'Templates', permission: 'system.templates.read' },
   { key: 'modules', label: 'Modules', permission: 'system.modules.read' },
   { key: 'package-repositories', label: 'Package Repositories', permission: 'system.package_repositories.view' },
@@ -46,17 +52,18 @@ const BASE_PATH = '/app/system/catalog';
 const CatalogPage: React.FC = () => {
   const { hasPermission } = usePermissions();
   const location = useLocation();
+  const firstPath = firstAccessibleTabPath(TABS, BASE_PATH, hasPermission);
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => hasPermission(t.permission)),
-    [hasPermission]
+  // Drives the page actions below. Uses PathTabs' own derivation so the
+  // strip and the actions can never disagree. Falls back to the first
+  // visible tab on the bare hub path, which the index route below is
+  // about to redirect anyway.
+  const activeTabKey = useMemo<TabKey>(
+    () =>
+      activeTabKeyFromPath(TABS, BASE_PATH, location.pathname) ??
+      ((TABS.find((t) => hasPermission(t.permission))?.key ?? 'templates') as TabKey),
+    [location.pathname, hasPermission],
   );
-
-  const activeTabKey = useMemo<TabKey>(() => {
-    const match = TABS.find((t) => location.pathname.endsWith(`/${t.key}`));
-    if (match) return match.key;
-    return (visibleTabs[0]?.key ?? 'templates') as TabKey;
-  }, [location.pathname, visibleTabs]);
 
   const [templatesActions, setTemplatesActions] = useState<{ openCreate: () => void } | null>(null);
   const [modulesActions, setModulesActions] = useState<
@@ -94,7 +101,7 @@ const CatalogPage: React.FC = () => {
     pageActions.push({ label: 'Create Platform', onClick: platformsActions.openCreate, variant: 'primary', icon: Layers });
   }
 
-  if (visibleTabs.length === 0) {
+  if (!firstPath) {
     return (
       <PageContainer title="Catalog">
         <div className="p-6 text-sm text-theme-secondary">
@@ -103,8 +110,6 @@ const CatalogPage: React.FC = () => {
       </PageContainer>
     );
   }
-
-  const defaultTabKey = visibleTabs[0].key;
 
   return (
     <PageContainer
@@ -116,40 +121,20 @@ const CatalogPage: React.FC = () => {
       ]}
       actions={pageActions}
     >
-      <div className="border-b border-theme mb-4">
-        <nav className="flex gap-2 flex-wrap">
-          {visibleTabs.map((t) => {
-            const active = activeTabKey === t.key;
-            return (
-              <Link
-                key={t.key}
-                to={`${BASE_PATH}/${t.key}`}
-                className={
-                  'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
-                  (active
-                    ? 'border-theme-focus text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary')
-                }
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-
-      <Routes>
-        <Route index element={<Navigate to={defaultTabKey} replace />} />
-        <Route path="templates" element={<TemplatesTab onActionsReady={setTemplatesActions} />} />
-        <Route path="modules" element={<ModulesTab onActionsReady={setModulesActions} />} />
-        <Route path="package-repositories" element={<PackageRepositoriesTab onActionsReady={setPackageRepoActions} />} />
-        <Route path="puppet-modules" element={<PuppetModulesTab onActionsReady={setPuppetActions} />} />
-        <Route path="scripts" element={<ScriptsTab onActionsReady={setScriptsActions} />} />
-        <Route path="architectures" element={<ArchitecturesTab onActionsReady={setArchitecturesActions} />} />
-        <Route path="platforms" element={<PlatformsTab onActionsReady={setPlatformsActions} />} />
-        <Route path="marketplace" element={<MarketplaceTab />} />
-        <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
-      </Routes>
+      <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+        <Routes>
+          <Route index element={<Navigate to={firstPath} replace />} />
+          <Route path="templates" element={<TemplatesTab onActionsReady={setTemplatesActions} />} />
+          <Route path="modules" element={<ModulesTab onActionsReady={setModulesActions} />} />
+          <Route path="package-repositories" element={<PackageRepositoriesTab onActionsReady={setPackageRepoActions} />} />
+          <Route path="puppet-modules" element={<PuppetModulesTab onActionsReady={setPuppetActions} />} />
+          <Route path="scripts" element={<ScriptsTab onActionsReady={setScriptsActions} />} />
+          <Route path="architectures" element={<ArchitecturesTab onActionsReady={setArchitecturesActions} />} />
+          <Route path="platforms" element={<PlatformsTab onActionsReady={setPlatformsActions} />} />
+          <Route path="marketplace" element={<MarketplaceTab />} />
+          <Route path="*" element={<Navigate to={firstPath} replace />} />
+        </Routes>
+      </PathTabs>
     </PageContainer>
   );
 };

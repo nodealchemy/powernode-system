@@ -251,46 +251,46 @@ describe('OperationsHubPage', () => {
   // Active tab detection
   // ---------------------------------------------------------------------------
 
-  it('marks the Fleet tab link as active (border-theme-focus class) on /fleet', () => {
+  it('marks the Fleet tab link as active (border-theme-info-border class) on /fleet', () => {
     renderPage('/app/system/operations/fleet');
     const fleetLink = screen.getByRole('link', { name: 'Fleet' });
-    expect(fleetLink.className).toContain('border-theme-focus');
+    expect(fleetLink.className).toContain('border-theme-info-border');
   });
 
   it('marks the Tasks tab link as active on /tasks', () => {
     renderPage('/app/system/operations/tasks');
     const tasksLink = screen.getByRole('link', { name: 'Tasks' });
-    expect(tasksLink.className).toContain('border-theme-focus');
+    expect(tasksLink.className).toContain('border-theme-info-border');
   });
 
   it('marks the GitOps tab link as active on /gitops', () => {
     renderPage('/app/system/operations/gitops');
     const gitopsLink = screen.getByRole('link', { name: 'GitOps' });
-    expect(gitopsLink.className).toContain('border-theme-focus');
+    expect(gitopsLink.className).toContain('border-theme-info-border');
   });
 
   it('marks the CVE tab link as active on /cve', () => {
     renderPage('/app/system/operations/cve');
     const cveLink = screen.getByRole('link', { name: 'CVE' });
-    expect(cveLink.className).toContain('border-theme-focus');
+    expect(cveLink.className).toContain('border-theme-info-border');
   });
 
   it('marks the CI Workers tab link as active on /ci-workers', () => {
     renderPage('/app/system/operations/ci-workers');
     const link = screen.getByRole('link', { name: 'CI Workers' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the CI Webhooks tab link as active on /ci-webhooks', () => {
     renderPage('/app/system/operations/ci-webhooks');
     const link = screen.getByRole('link', { name: 'CI Webhooks' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Module Builds tab link as active on /module-builds', () => {
     renderPage('/app/system/operations/module-builds');
     const link = screen.getByRole('link', { name: 'Module Builds' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('inactive tab links have border-transparent class', () => {
@@ -645,5 +645,33 @@ describe('OperationsHubPage', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('settings-panel')).not.toBeInTheDocument(),
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', () => {
+    renderPage('/app/system/operations/fleet');
+
+    const active = screen.getByRole('link', { name: 'Fleet' });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
   });
 });

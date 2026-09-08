@@ -1,10 +1,16 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Plus, Trash2 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  activeTabKeyFromPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
@@ -23,10 +29,13 @@ import { RoutePolicyEditModal } from '@system/features/system/components/sdwan/r
 
 type TabKey = 'overview' | 'sessions' | 'policies';
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'sessions', label: 'BGP Sessions' },
-  { key: 'policies', label: 'Route Policies' },
+// All three tabs sit behind the page-level `system.sdwan.routing.read`
+// gate below, so they share it — the page returns a permission-denied
+// panel before the strip renders when the operator lacks it.
+const TABS: PathTabSpec<TabKey>[] = [
+  { key: 'overview', label: 'Overview', permission: 'system.sdwan.routing.read' },
+  { key: 'sessions', label: 'BGP Sessions', permission: 'system.sdwan.routing.read' },
+  { key: 'policies', label: 'Route Policies', permission: 'system.sdwan.routing.read' },
 ];
 
 const BASE_PATH = '/app/system/sdwan/routing';
@@ -54,10 +63,17 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
   const [policyToEdit, setPolicyToEdit] = useState<SdwanRoutePolicy | null | undefined>(undefined);
   const [policyToDelete, setPolicyToDelete] = useState<SdwanRoutePolicy | null>(null);
 
-  const activeTab = useMemo<TabKey>(() => {
-    const match = TABS.find((t) => location.pathname.endsWith(`/${t.key}`));
-    return match?.key ?? 'overview';
-  }, [location.pathname]);
+  // Drives the page actions and the embedded "New policy" button. Uses
+  // PathTabs' own derivation so the strip and the actions can never disagree.
+  const activeTab = useMemo<TabKey>(
+    () => activeTabKeyFromPath(TABS, BASE_PATH, location.pathname) ?? 'overview',
+    [location.pathname],
+  );
+
+  // `canRead` gates every tab, so this is non-null past that guard; the
+  // fallback only satisfies the type.
+  const firstTabPath =
+    firstAccessibleTabPath(TABS, BASE_PATH, hasPermission) ?? `${BASE_PATH}/overview`;
 
   const load = useCallback(async () => {
     try {
@@ -154,43 +170,25 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
               onAllocated={() => setRefreshKey((k) => k + 1)}
             />
 
-            <div className="border-b border-theme flex gap-2">
-              {TABS.map((t) => {
-                const active = activeTab === t.key;
-                return (
-                  <Link
-                    key={t.key}
-                    to={`${BASE_PATH}/${t.key}`}
-                    className={
-                      'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
-                      (active
-                        ? 'border-theme-focus text-theme-primary'
-                        : 'border-transparent text-theme-secondary hover:text-theme-primary')
-                    }
-                  >
-                    {t.label}
-                  </Link>
-                );
-              })}
-            </div>
-
-            <Routes>
-              <Route index element={<Navigate to="overview" replace />} />
-              <Route path="overview" element={<RoutingOverviewPanel data={data} />} />
-              <Route path="sessions" element={<BgpSessionsTable refreshKey={refreshKey} />} />
-              <Route
-                path="policies"
-                element={
-                  <RoutePoliciesList
-                    refreshKey={refreshKey}
-                    onEdit={canManagePolicies ? (p) => setPolicyToEdit(p) : undefined}
-                    onDelete={canManagePolicies ? (p) => setPolicyToDelete(p) : undefined}
-                    onToggle={canManagePolicies ? handleTogglePolicy : undefined}
-                  />
-                }
-              />
-              <Route path="*" element={<Navigate to="overview" replace />} />
-            </Routes>
+            <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+              <Routes>
+                <Route index element={<Navigate to={firstTabPath} replace />} />
+                <Route path="overview" element={<RoutingOverviewPanel data={data} />} />
+                <Route path="sessions" element={<BgpSessionsTable refreshKey={refreshKey} />} />
+                <Route
+                  path="policies"
+                  element={
+                    <RoutePoliciesList
+                      refreshKey={refreshKey}
+                      onEdit={canManagePolicies ? (p) => setPolicyToEdit(p) : undefined}
+                      onDelete={canManagePolicies ? (p) => setPolicyToDelete(p) : undefined}
+                      onToggle={canManagePolicies ? handleTogglePolicy : undefined}
+                    />
+                  }
+                />
+                <Route path="*" element={<Navigate to={firstTabPath} replace />} />
+              </Routes>
+            </PathTabs>
 
             {policyToEdit !== undefined && (
               <RoutePolicyEditModal

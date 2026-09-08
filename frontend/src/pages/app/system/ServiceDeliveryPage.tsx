@@ -1,7 +1,12 @@
-import React, { useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import React from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { Server, Network as NetworkIcon, Globe2, Share2 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { OfferingsTab } from '@system/features/system/components/federation_hub/OfferingsTab';
 import { SubscriptionsTab } from '@system/features/system/components/federation_hub/SubscriptionsTab';
@@ -16,16 +21,11 @@ import { ChildrenTab } from '@system/features/system/components/federation_hub/C
 //
 // Plan reference: Decentralized Federation §L.7 + P4.6.8 + §H + P6.
 
+const BASE_PATH = '/app/system/service-delivery';
+
 type TabKey = 'offerings' | 'subscriptions' | 'catalog' | 'children';
 
-interface TabSpec {
-  key: TabKey;
-  label: string;
-  permission: string;
-  icon: React.ReactNode;
-}
-
-const TABS: TabSpec[] = [
+const TABS: PathTabSpec<TabKey>[] = [
   {
     key: 'offerings',
     label: 'Offerings',
@@ -53,20 +53,10 @@ const TABS: TabSpec[] = [
 ];
 
 export const ServiceDeliveryPage: React.FC = () => {
-  const location = useLocation();
   const { hasPermission } = usePermissions();
+  const firstPath = firstAccessibleTabPath(TABS, BASE_PATH, hasPermission);
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => hasPermission(t.permission)),
-    [hasPermission],
-  );
-
-  const activeTab: TabKey = useMemo(() => {
-    const m = location.pathname.match(/\/service-delivery\/(offerings|subscriptions|catalog|children)/);
-    return (m?.[1] as TabKey) ?? visibleTabs[0]?.key ?? 'offerings';
-  }, [location.pathname, visibleTabs]);
-
-  if (visibleTabs.length === 0) {
+  if (!firstPath) {
     return (
       <PageContainer title="Service Delivery" description="Federated service delivery">
         <div className="p-12 text-center text-theme-secondary text-sm">
@@ -81,31 +71,16 @@ export const ServiceDeliveryPage: React.FC = () => {
       title="Service Delivery"
       description="Publish offerings + manage subscriptions across federated peers"
     >
-      <nav className="border-b border-theme flex items-center gap-1 mb-4">
-        {visibleTabs.map((tab) => (
-          <Link
-            key={tab.key}
-            to={`/app/system/service-delivery/${tab.key}`}
-            className={`px-3 py-2 text-sm border-b-2 inline-flex items-center gap-2 -mb-px ${
-              activeTab === tab.key
-                ? 'border-theme-info-border text-theme-info-fg font-medium'
-                : 'border-transparent text-theme-secondary hover:text-theme-primary'
-            }`}
-          >
-            {tab.icon}
-            {tab.label}
-          </Link>
-        ))}
-      </nav>
-
-      <Routes>
-        <Route index element={<Navigate to={visibleTabs[0].key} replace />} />
-        <Route path="offerings" element={<OfferingsTab />} />
-        <Route path="subscriptions" element={<SubscriptionsTab />} />
-        <Route path="catalog" element={<CatalogBrowserTab />} />
-        <Route path="children" element={<ChildrenTab />} />
-        <Route path="*" element={<Navigate to={visibleTabs[0].key} replace />} />
-      </Routes>
+      <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+        <Routes>
+          <Route index element={<Navigate to={firstPath} replace />} />
+          <Route path="offerings" element={<OfferingsTab />} />
+          <Route path="subscriptions" element={<SubscriptionsTab />} />
+          <Route path="catalog" element={<CatalogBrowserTab />} />
+          <Route path="children" element={<ChildrenTab />} />
+          <Route path="*" element={<Navigate to={firstPath} replace />} />
+        </Routes>
+      </PathTabs>
     </PageContainer>
   );
 };

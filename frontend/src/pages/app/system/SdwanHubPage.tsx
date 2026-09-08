@@ -1,8 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Network as NetworkIcon, Globe2 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  activeTabKeyFromPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import {
   NetworksTab,
@@ -27,7 +33,7 @@ import SdwanRoutingPage from './SdwanRoutingPage';
 
 type TabKey = 'topology' | 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix' | 'flows';
 
-const TABS: { key: TabKey; label: string; permission: string }[] = [
+const TABS: PathTabSpec<TabKey>[] = [
   // P4.5.8 — system-wide federation + SDWAN graph. Lands first because
   // it's the operator's at-a-glance view; deeper drill-down lives in
   // the kind-specific tabs that follow.
@@ -46,26 +52,20 @@ const BASE_PATH = '/app/system/sdwan';
 const SdwanHubPage: React.FC = () => {
   const { hasPermission } = usePermissions();
   const location = useLocation();
+  const firstPath = firstAccessibleTabPath(TABS, BASE_PATH, hasPermission);
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => hasPermission(t.permission)),
-    [hasPermission]
+  // Drives the page actions below. Uses PathTabs' own derivation so the
+  // strip and the actions can never disagree — which matters here because
+  // the Routing tab owns nested sub-routes (`/sdwan/routing/policies` must
+  // resolve to `routing`, not to the trailing `policies` segment). Falls
+  // back to the first visible tab on the bare /sdwan path, which the index
+  // route below is about to redirect anyway.
+  const activeTabKey = useMemo<TabKey>(
+    () =>
+      activeTabKeyFromPath(TABS, BASE_PATH, location.pathname) ??
+      ((TABS.find((t) => hasPermission(t.permission))?.key ?? 'networks') as TabKey),
+    [location.pathname, hasPermission],
   );
-
-  // Active tab matches the URL segment that follows /sdwan/. The
-  // routing tab matches when the URL contains /sdwan/routing/anything.
-  const activeTabKey = useMemo<TabKey>(() => {
-    const path = location.pathname;
-    if (path.includes('/sdwan/topology')) return 'topology';
-    if (path.includes('/sdwan/routing')) return 'routing';
-    if (path.includes('/sdwan/federation')) return 'federation';
-    if (path.includes('/sdwan/host_bridges')) return 'host_bridges';
-    if (path.includes('/sdwan/flows')) return 'flows';
-    if (path.includes('/sdwan/ovn')) return 'ovn';
-    if (path.includes('/sdwan/ipfix')) return 'ipfix';
-    if (path.includes('/sdwan/networks')) return 'networks';
-    return (visibleTabs[0]?.key ?? 'networks') as TabKey;
-  }, [location.pathname, visibleTabs]);
 
   const [networksActions, setNetworksActions] = useState<{ openCreate: () => void } | null>(null);
   const [federationActions, setFederationActions] = useState<{ openPropose: () => void } | null>(null);
@@ -82,7 +82,7 @@ const SdwanHubPage: React.FC = () => {
   // Routing tab's "New policy" button is rendered inline by the
   // embedded SdwanRoutingPage (it knows when it's on the policies tab).
 
-  if (visibleTabs.length === 0) {
+  if (!firstPath) {
     return (
       <PageContainer title="SDWAN">
         <div className="p-6 text-sm text-theme-secondary">
@@ -91,8 +91,6 @@ const SdwanHubPage: React.FC = () => {
       </PageContainer>
     );
   }
-
-  const defaultTabKey = visibleTabs[0].key;
 
   return (
     <PageContainer
@@ -104,40 +102,20 @@ const SdwanHubPage: React.FC = () => {
       ]}
       actions={pageActions}
     >
-      <div className="border-b border-theme mb-4">
-        <nav className="flex gap-2 flex-wrap">
-          {visibleTabs.map((t) => {
-            const active = activeTabKey === t.key;
-            return (
-              <Link
-                key={t.key}
-                to={`${BASE_PATH}/${t.key}`}
-                className={
-                  'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
-                  (active
-                    ? 'border-theme-focus text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary')
-                }
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-
-      <Routes>
-        <Route index element={<Navigate to={defaultTabKey} replace />} />
-        <Route path="topology" element={<TopologyTab />} />
-        <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
-        <Route path="routing/*" element={<SdwanRoutingPage embedded />} />
-        <Route path="federation" element={<FederationTab onActionsReady={setFederationActions} />} />
-        <Route path="host_bridges" element={<HostBridgesTab />} />
-        <Route path="ovn" element={<OvnDeploymentsTab />} />
-        <Route path="ipfix" element={<IpfixCollectorsTab />} />
-        <Route path="flows" element={<FlowSamplesTab />} />
-        <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
-      </Routes>
+      <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+        <Routes>
+          <Route index element={<Navigate to={firstPath} replace />} />
+          <Route path="topology" element={<TopologyTab />} />
+          <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
+          <Route path="routing/*" element={<SdwanRoutingPage embedded />} />
+          <Route path="federation" element={<FederationTab onActionsReady={setFederationActions} />} />
+          <Route path="host_bridges" element={<HostBridgesTab />} />
+          <Route path="ovn" element={<OvnDeploymentsTab />} />
+          <Route path="ipfix" element={<IpfixCollectorsTab />} />
+          <Route path="flows" element={<FlowSamplesTab />} />
+          <Route path="*" element={<Navigate to={firstPath} replace />} />
+        </Routes>
+      </PathTabs>
     </PageContainer>
   );
 };

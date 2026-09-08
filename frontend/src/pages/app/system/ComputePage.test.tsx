@@ -227,43 +227,43 @@ describe('ComputePage', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Active tab detection (border-theme-focus class)
+  // Active tab detection (border-theme-info-border class)
   // ---------------------------------------------------------------------------
 
-  it('marks the Nodes tab as active (border-theme-focus) on /nodes', () => {
+  it('marks the Nodes tab as active (border-theme-info-border) on /nodes', () => {
     renderAt('/app/system/compute/nodes');
     const link = screen.getByRole('link', { name: 'Nodes' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Volumes tab as active on /volumes', () => {
     renderAt('/app/system/compute/volumes');
     const link = screen.getByRole('link', { name: 'Volumes' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Providers tab as active on /providers', () => {
     renderAt('/app/system/compute/providers');
     const link = screen.getByRole('link', { name: 'Providers' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Networks tab as active on /networks', () => {
     renderAt('/app/system/compute/networks');
     const link = screen.getByRole('link', { name: 'Networks' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Platform tab as active on /platform', () => {
     renderAt('/app/system/compute/platform');
     const link = screen.getByRole('link', { name: 'Platform' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Platform tab as active on a nested /platform/services path', () => {
     renderAt('/app/system/compute/platform/services');
     const link = screen.getByRole('link', { name: 'Platform' });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('inactive tab links carry border-transparent class', () => {
@@ -585,5 +585,33 @@ describe('ComputePage', () => {
     renderAt('/app/system/compute/nodes');
     // Volumes create button should not appear when nodes tab is active
     expect(screen.queryByRole('button', { name: /create volume/i })).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', () => {
+    renderAt('/app/system/compute/nodes');
+
+    const active = screen.getByRole('link', { name: 'Nodes' });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
   });
 });

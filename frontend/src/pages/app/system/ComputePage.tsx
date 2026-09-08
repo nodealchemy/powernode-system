@@ -1,8 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Server, HardDrive, Cloud, Network as NetworkIcon } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  activeTabKeyFromPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import {
   NodesTab,
@@ -21,7 +27,7 @@ import { PlatformInfraTab } from '@system/features/system/components/platform/Pl
 
 type TabKey = 'nodes' | 'unclaimed-devices' | 'volumes' | 'providers' | 'networks' | 'platform';
 
-const TABS: { key: TabKey; label: string; permission: string }[] = [
+const TABS: PathTabSpec<TabKey>[] = [
   { key: 'nodes', label: 'Nodes', permission: 'system.nodes.read' },
   { key: 'unclaimed-devices', label: 'Unclaimed Devices', permission: 'system.unclaimed_devices.read' },
   { key: 'volumes', label: 'Volumes', permission: 'system.volumes.read' },
@@ -37,26 +43,20 @@ const BASE_PATH = '/app/system/compute';
 const ComputePage: React.FC = () => {
   const { hasPermission } = usePermissions();
   const location = useLocation();
+  const firstPath = firstAccessibleTabPath(TABS, BASE_PATH, hasPermission);
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => hasPermission(t.permission)),
-    [hasPermission]
+  // Drives the page actions below. Uses PathTabs' own derivation so the
+  // strip and the actions can never disagree — which matters here because
+  // the Platform tab owns nested sub-routes (`/compute/platform/services`
+  // must resolve to `platform`, not to the trailing `services` segment).
+  // Falls back to the first visible tab on the bare /compute path, which
+  // the index route below is about to redirect anyway.
+  const activeTabKey = useMemo<TabKey>(
+    () =>
+      activeTabKeyFromPath(TABS, BASE_PATH, location.pathname) ??
+      ((TABS.find((t) => hasPermission(t.permission))?.key ?? 'nodes') as TabKey),
+    [location.pathname, hasPermission],
   );
-
-  // Active tab derived from URL path. Falls back to first visible tab
-  // when on the bare /compute path (the inner <Route path="/"> below
-  // also redirects to that fallback).
-  const activeTabKey = useMemo<TabKey>(() => {
-    // Match any path segment to a tab key — handles both flat tabs
-    // (`/compute/nodes` → nodes) and tabs that own their own nested
-    // sub-routes (`/compute/platform/services` → platform).
-    const segments = location.pathname.split('/').filter(Boolean);
-    for (const seg of segments) {
-      const match = TABS.find((t) => t.key === seg);
-      if (match) return match.key;
-    }
-    return (visibleTabs[0]?.key ?? 'nodes') as TabKey;
-  }, [location.pathname, visibleTabs]);
 
   // Per-tab action handles published by orchestrators on mount.
   const [nodesActions, setNodesActions] = useState<{ openCreate: () => void } | null>(null);
@@ -80,7 +80,7 @@ const ComputePage: React.FC = () => {
     pageActions.push({ label: 'Create Network', onClick: networksActions.openCreate, variant: 'primary', icon: NetworkIcon });
   }
 
-  if (visibleTabs.length === 0) {
+  if (!firstPath) {
     return (
       <PageContainer title="Compute">
         <div className="p-6 text-sm text-theme-secondary">
@@ -89,8 +89,6 @@ const ComputePage: React.FC = () => {
       </PageContainer>
     );
   }
-
-  const defaultTabKey = visibleTabs[0].key;
 
   return (
     <PageContainer
@@ -102,42 +100,22 @@ const ComputePage: React.FC = () => {
       ]}
       actions={pageActions}
     >
-      <div className="border-b border-theme mb-4">
-        <nav className="flex gap-2 flex-wrap">
-          {visibleTabs.map((t) => {
-            const active = activeTabKey === t.key;
-            return (
-              <Link
-                key={t.key}
-                to={`${BASE_PATH}/${t.key}`}
-                className={
-                  'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
-                  (active
-                    ? 'border-theme-focus text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary')
-                }
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-
-      <Routes>
-        <Route index element={<Navigate to={defaultTabKey} replace />} />
-        <Route path="nodes" element={<NodesTab onActionsReady={setNodesActions} />} />
-        <Route path="unclaimed-devices" element={<UnclaimedDevicesTab />} />
-        <Route path="volumes" element={<VolumesTab onActionsReady={setVolumesActions} />} />
-        <Route path="providers" element={<ProvidersTab onActionsReady={setProvidersActions} />} />
-        <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
-        {/* P7: platform tab owns its own nested sub-routes (services /
-            peers / children / migrations / scaling / health). The `/*`
-            suffix delegates further path matching to PlatformInfraTab's
-            inner <Routes>. */}
-        <Route path="platform/*" element={<PlatformInfraTab />} />
-        <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
-      </Routes>
+      <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+        <Routes>
+          <Route index element={<Navigate to={firstPath} replace />} />
+          <Route path="nodes" element={<NodesTab onActionsReady={setNodesActions} />} />
+          <Route path="unclaimed-devices" element={<UnclaimedDevicesTab />} />
+          <Route path="volumes" element={<VolumesTab onActionsReady={setVolumesActions} />} />
+          <Route path="providers" element={<ProvidersTab onActionsReady={setProvidersActions} />} />
+          <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
+          {/* P7: platform tab owns its own nested sub-routes (services /
+              peers / children / migrations / scaling / health). The `/*`
+              suffix delegates further path matching to PlatformInfraTab's
+              inner <Routes>. */}
+          <Route path="platform/*" element={<PlatformInfraTab />} />
+          <Route path="*" element={<Navigate to={firstPath} replace />} />
+        </Routes>
+      </PathTabs>
     </PageContainer>
   );
 };

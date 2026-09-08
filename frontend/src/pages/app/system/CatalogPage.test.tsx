@@ -194,22 +194,22 @@ describe('CatalogPage', () => {
     renderPage('/app/system/catalog/templates');
 
     const link = screen.getByRole('link', { name: /^templates$/i });
-    // Active tabs get a focus border class; inactive get transparent border
-    expect(link.className).toContain('border-theme-focus');
+    // Active tabs get PathTabs' accent border; inactive get a transparent one
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the modules tab link as active when the URL ends in /modules', () => {
     renderPage('/app/system/catalog/modules');
 
     const link = screen.getByRole('link', { name: /^modules$/i });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the architectures tab link as active when the URL ends in /architectures', () => {
     renderPage('/app/system/catalog/architectures');
 
     const link = screen.getByRole('link', { name: /^architectures$/i });
-    expect(link.className).toContain('border-theme-focus');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks inactive tab links with a transparent border class', () => {
@@ -576,5 +576,33 @@ describe('CatalogPage', () => {
     fireActionsReady(capturedTemplatesReady, null);
 
     expect(screen.queryByRole('button', { name: /create template/i })).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', () => {
+    renderPage('/app/system/catalog/templates');
+
+    const active = screen.getByRole('link', { name: /^templates$/i });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
   });
 });
