@@ -65,9 +65,6 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   'providers/ProviderDetailModal.tsx',
   'providers/ProviderFormModal.tsx',
   'providers/RegionFormModal.tsx',
-  'volumes/VolumeAttachModal.tsx',
-  'volumes/VolumeDetailModal.tsx',
-  'volumes/VolumeFormModal.tsx',
 ];
 
 function findSources(dir: string, out: string[] = []): string[] {

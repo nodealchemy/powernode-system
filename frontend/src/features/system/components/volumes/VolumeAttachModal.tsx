@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Link, Server, AlertCircle } from 'lucide-react';
+import { Link, Server, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
@@ -107,29 +108,18 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
     }
   };
 
-  if (!isOpen || !volume) return null;
+  if (!volume) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Link className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                Attach Volume
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Attach Volume"
+      icon={<Link className="w-6 h-6" />}
+      maxWidth="md"
+    >
           {/* Content */}
-          <div className="p-4 space-y-4">
+          <div className="space-y-4">
             {/* Volume Info */}
             <div className="bg-theme-background rounded-lg p-3 border border-theme">
               <p className="text-sm text-theme-secondary">Attaching volume:</p>
@@ -240,9 +230,7 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
               )}
             </Button>
           </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

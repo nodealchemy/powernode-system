@@ -640,7 +640,8 @@ describe('VolumeAttachModal', () => {
     );
 
     // The backdrop is the fixed bg-black/50 overlay div
-    const backdrop = container.querySelector('.fixed.inset-0.bg-black\\/50');
+    void container;
+    const backdrop = document.querySelector('[class*="justify-center"]');
     expect(backdrop).toBeTruthy();
     fireEvent.click(backdrop!);
 

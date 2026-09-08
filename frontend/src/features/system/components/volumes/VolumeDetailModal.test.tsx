@@ -140,6 +140,21 @@ function renderModal(opts: RenderOpts = {}) {
 // Tests
 // =============================================================================
 
+// The detail modal is itself a core `Modal` now, so role="dialog" matches both
+// it and any nested dialog. The nested one portals last, so it is the final
+// match; `noNestedDialog` asserts we are back to just the detail modal.
+async function findNestedDialog() {
+  return waitFor(() => {
+    const dialogs = screen.getAllByRole('dialog');
+    if (dialogs.length < 2) throw new Error('nested dialog not open');
+    return dialogs[dialogs.length - 1];
+  });
+}
+
+async function expectNoNestedDialog() {
+  await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(1));
+}
+
 describe('VolumeDetailModal', () => {
   beforeEach(() => {
     mockGetVolume.mockReset();
@@ -508,7 +523,7 @@ describe('VolumeDetailModal', () => {
         screen.getByRole('button', { name: /detach volume/i })
       );
       fireEvent.click(detachBtn);
-      return screen.findByRole('dialog');
+      return findNestedDialog();
     }
 
     async function confirmDetach() {
@@ -533,7 +548,7 @@ describe('VolumeDetailModal', () => {
       const dialog = await openDetachDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Keep Attached' }));
 
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await expectNoNestedDialog();
       expect(mockDetachVolume).not.toHaveBeenCalled();
     });
 
@@ -561,7 +576,7 @@ describe('VolumeDetailModal', () => {
 
       fireEvent.click(within(dialog).getByRole('button', { name: 'Detach Volume' }));
 
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await expectNoNestedDialog();
       expect(mockDetachVolume).not.toHaveBeenCalled();
     });
 
@@ -882,8 +897,9 @@ describe('VolumeDetailModal', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
 
-      // The first fixed backdrop overlay handles close
-      const backdrops = document.querySelectorAll('.fixed.inset-0.bg-black\\/50');
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      const backdrops = document.querySelectorAll('[class*="justify-center"]');
       if (backdrops.length > 0) fireEvent.click(backdrops[0] as HTMLElement);
 
       expect(onClose).toHaveBeenCalled();
@@ -1084,7 +1100,7 @@ describe('VolumeDetailModal', () => {
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
 
-      await screen.findByRole('dialog');
+      await findNestedDialog();
       expect(mockRestoreVolumeSnapshot).not.toHaveBeenCalled();
     });
 
@@ -1094,7 +1110,7 @@ describe('VolumeDetailModal', () => {
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
 
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       // The copy path is the one that surprises operators: the data lands in a
       // different disk and this volume is untouched.
       expect(
@@ -1116,7 +1132,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
       await waitFor(() =>
@@ -1138,7 +1154,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByLabelText(/swap/i));
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
@@ -1159,11 +1175,11 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
       // The operator must not be told "restored" when this volume is unchanged.
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await expectNoNestedDialog();
       const panel = await screen.findByText(/This volume is unchanged/i);
       expect(panel).toHaveTextContent(/new volume/i);
       expect(panel).toHaveTextContent(/restored-copy/);
@@ -1182,7 +1198,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
       await waitFor(() => expect(screen.getByText(/rolled back/i)).toBeInTheDocument());
@@ -1200,7 +1216,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByLabelText(/swap/i));
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
@@ -1223,7 +1239,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByLabelText(/swap/i));
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
@@ -1236,7 +1252,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
       await waitFor(() =>
@@ -1262,7 +1278,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByLabelText(/swap/i));
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
 
@@ -1315,7 +1331,7 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
-      const dialog = await screen.findByRole('dialog');
+      const dialog = await findNestedDialog();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
       await waitFor(() => expect(screen.getByText(/rolled back/i)).toBeInTheDocument());
 

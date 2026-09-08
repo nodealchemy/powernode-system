@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, HardDrive, AlertCircle } from 'lucide-react';
+import { HardDrive, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -222,30 +223,17 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <HardDrive className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Volume' : 'Create Volume'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? 'Edit Volume' : 'Create Volume'}
+      icon={<HardDrive className="w-6 h-6" />}
+      maxWidth="lg"
+    >
           {/* Form */}
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+            <div className="space-y-4">
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
@@ -444,9 +432,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
               </Button>
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
