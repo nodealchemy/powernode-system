@@ -89,7 +89,6 @@ const KNOWN_HAND_WRITTEN: readonly string[] = [
   'sdwan/routing/RoutePolicyEditModal.tsx',
   'sdwan/vips/VirtualIpCreateModal.tsx',
   'sdwan/vips/VirtualIpEditModal.tsx',
-  'sdwan_hub/CreateHostBridgeModal.tsx',
 ];
 
 const sources = findSources(componentsRoot).map((f) => ({
