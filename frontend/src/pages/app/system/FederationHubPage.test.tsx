@@ -44,6 +44,9 @@ jest.mock('@system/features/system/components/federation/ServiceOfferingsPanel',
 jest.mock('@system/features/system/components/federation/ServiceOfferingEditorModal', () => ({
   ServiceOfferingEditorModal: () => <div data-testid="offering-editor" />,
 }));
+jest.mock('@system/features/system/components/federation_hub/OfferingsTab', () => ({
+  OfferingsTab: () => <div data-testid="offerings-tab">offerings tab</div>,
+}));
 jest.mock('@system/features/system/components/federation_hub/CatalogBrowserTab', () => ({
   CatalogBrowserTab: () => <div data-testid="catalog-tab">catalog</div>,
 }));
@@ -114,6 +117,29 @@ describe('FederationHubPage', () => {
     // The Control tab body renders (peer control panel sentinel).
     expect(screen.getByTestId('federation-control-tab')).toBeInTheDocument();
     expect(screen.getByTestId('peer-control-panel')).toBeInTheDocument();
+  });
+
+  it('composes the shared OfferingsTab rather than re-wiring its editor inline', () => {
+    // OfferingsTab already owns the editorOpen / editingOffering / refreshKey
+    // state machine and the panel-plus-modal wiring (IMP-350b40c2f26f). A second
+    // copy here means every change to the offerings flow has to be made twice.
+    renderAt('/app/system/federation/control');
+
+    expect(screen.getByTestId('offerings-tab')).toBeInTheDocument();
+    // The panel and the modal reach the page THROUGH OfferingsTab, so the hub
+    // must not mount them itself.
+    expect(screen.queryByTestId('offerings-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('offering-editor')).not.toBeInTheDocument();
+  });
+
+  it('hides the offerings section without system.service_offerings.read', () => {
+    mockHasPermission.mockImplementation(
+      (perm: string) => perm !== 'system.service_offerings.read',
+    );
+    renderAt('/app/system/federation/control');
+
+    expect(screen.getByTestId('federation-control-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('offerings-tab')).not.toBeInTheDocument();
   });
 
   it('renders the Monitor tab body with its composed read-only surfaces', () => {
