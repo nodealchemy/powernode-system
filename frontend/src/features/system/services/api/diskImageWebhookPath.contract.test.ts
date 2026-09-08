@@ -16,9 +16,13 @@ import { join, relative } from 'path';
 // server has never produced, and the route-parity lint skips *.test.tsx by
 // design because a call in a spec is not a UI caller.
 //
-// A third producer exists in CORE, not this extension: the disk-image operator
-// MCP tool builds the same URL. EXT_ROOT-rooted reads cannot see it, and it is
-// covered by core's own specs, so it is named here rather than guarded here.
+// The path now has ONE home, System::DiskImageWebhook#webhook_url_path, and the
+// serializer, the controller and the deferred-path executor delegate to it.
+// The second assertion below is what keeps that true.
+//
+// A further producer exists in CORE, not this extension: the disk-image
+// operator MCP tool builds the same URL. EXT_ROOT-rooted reads cannot see it,
+// and it is covered by core's own specs, so it is named here, not guarded.
 //
 // This lives in its own contract spec rather than inline in one of the two
 // specs, as IMP-e27e26fbf2d9 did, because the two consumers sit in unrelated
@@ -56,37 +60,56 @@ function soleMatch(file: string, pattern: RegExp, what: string): string {
   return hits[0][1];
 }
 
-/** Every .ts/.tsx under a directory. */
-function walk(dir: string, out: string[] = []): string[] {
+/** Every file with one of the given extensions under a directory. */
+function walk(dir: string, out: string[] = [], ext?: string): string[] {
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules') continue;
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (entry.endsWith('.ts') || entry.endsWith('.tsx')) out.push(full);
+    if (statSync(full).isDirectory()) walk(full, out, ext);
+    else if (ext ? entry.endsWith(ext) : entry.endsWith('.ts') || entry.endsWith('.tsx')) {
+      out.push(full);
+    }
   }
   return out;
 }
 
 describe('disk-image webhook path contract', () => {
-  it('pins the path prefix the serializer emits', () => {
+  it('pins the path prefix the model emits', () => {
     const emitted = soleMatch(
-      join(EXT_ROOT, 'server', 'app', 'serializers', 'system', 'disk_image_webhook_serializer.rb'),
-      /"(\/api\/v\d+\/[^"]*disk_image\/built\/)#\{@webhook\.id\}"/g,
+      join(EXT_ROOT, 'server', 'app', 'models', 'system', 'disk_image_webhook.rb'),
+      /"(\/api\/v\d+\/[^"]*disk_image\/built\/)#\{id\}"/g,
       'webhook_url_path literal',
     );
     expect(WEBHOOK_PATH_PREFIX).toBe(emitted);
   });
 
-  it('pins the same suffix in the absolute URL the controller hands back', () => {
-    // build_webhook_url prefixes POWERNODE_PUBLIC_URL onto the same path. If
-    // the two ever disagree, the UI shows one thing and the create response
-    // returns another, and only one of them reaches the CI provider.
-    const emitted = soleMatch(
-      join(EXT_ROOT, 'server', 'app', 'controllers', 'api', 'v1', 'system', 'disk_image_webhooks_controller.rb'),
-      /"#\{\w+\}(\/api\/v\d+\/[^"]*disk_image\/built\/)#\{webhook\.id\}"/g,
-      'absolute webhook URL literal',
-    );
-    expect(WEBHOOK_PATH_PREFIX).toBe(emitted);
+  it('keeps the model as the ONLY server-side home for that path', () => {
+    // The serializer, the controller and the deferred-path executor all emit
+    // this URL. They used to build it independently, and the executor's copy
+    // was missing entirely — an operator whose rotation was approved
+    // asynchronously got a secret with no URL beside it. They now delegate to
+    // the model, and this is what stops a fourth emitter re-introducing a
+    // private copy that can drift from the other three.
+    //
+    // Comment lines are skipped: the receiving controller documents the route
+    // it implements in a header comment, which is not a second emitter.
+    const serverApp = join(EXT_ROOT, 'server', 'app');
+    const owner = join(serverApp, 'models', 'system', 'disk_image_webhook.rb');
+    const offenders: string[] = [];
+
+    for (const file of walk(serverApp, [], '.rb')) {
+      if (file === owner) continue;
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (/^\s*#/.test(line)) return;
+          if (line.includes('/webhooks/disk_image/built/')) {
+            offenders.push(`${relative(EXT_ROOT, file)}:${i + 1}`);
+          }
+        });
+    }
+
+    expect(offenders).toEqual([]);
   });
 
   it('has no disk-image webhook DELIVERY path in the frontend with a different prefix', () => {

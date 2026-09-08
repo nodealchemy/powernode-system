@@ -59,6 +59,22 @@ module System
       [ record, secret ]
     end
 
+    # SINGLE SOURCE OF TRUTH for the delivery path. Three surfaces emit this
+    # URL — the serializer (list/show), the controller (create + rotate_secret
+    # inline branch) and Executors::DiskImage::TriggerWebhook (the deferred
+    # branch) — and they must not be able to disagree. The operator copies this
+    # into a CI provider; a path that differs between two of them means one of
+    # them silently never fires.
+    def webhook_url_path
+      "/api/v1/system/webhooks/disk_image/built/#{id}"
+    end
+
+    # Absolute form, for responses that hand the operator something to paste.
+    def webhook_url(base = nil)
+      base ||= ENV.fetch("POWERNODE_PUBLIC_URL", "http://localhost:3000")
+      "#{base.chomp('/')}#{webhook_url_path}"
+    end
+
     # Rotates the secret. Returns the new plaintext exactly once.
     # Stamps last_rotated_at for the operator UI to surface.
     def rotate_secret!

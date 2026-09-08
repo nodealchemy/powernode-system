@@ -78,16 +78,12 @@ const ROTATED_RESPONSE: SystemDiskImageWebhookCreatedResponse = {
     updated_at: '2026-06-05T12:00:00Z',
   },
   secret_plaintext: 'rotated_plaintext_secret_value789',
-  // FABRICATED, and deliberately left visible. rotate_secret renders only
-  // disk_image_webhook + secret_plaintext + note — it does NOT send
-  // webhook_url (disk_image_webhooks_controller.rb, rotate_secret's
-  // on_proceed), even though the shared response type marks it required and
-  // CiWebhooksTab renders `Webhook URL: ${createdSecret.webhook_url}` for the
-  // rotate result too. In production that line reads "Webhook URL: undefined"
-  // after a rotation. Reported separately rather than fixed here: the repair
-  // is a server-side render change, outside this task. The path shape below
-  // is canonical so the contract guard still means something; the FIELD's
-  // presence is what is not server-backed.
+  // rotate_secret renders webhook_url through the same builder as create
+  // (IMP-b5b9544fc993). Two guards, and they cover different things:
+  // disk_image_webhooks_rotate_secret_spec.rb pins the field's PRESENCE on both
+  // gate branches, and diskImageWebhookPath.contract.test.ts pins the literal
+  // PREFIX against the model. It is the SAME url as the create response above,
+  // because rotating changes the secret, not the path.
   webhook_url: 'https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-aaa',
   note: 'Old secret revoked. Update the CI secret store before the next webhook fires.',
 };
@@ -375,10 +371,17 @@ describe('diskImageWebhooksApi', () => {
       expect(webhook.webhook_url_path).toMatch(new RegExp(`/${webhook.id}$`));
     });
 
-    it('builds the created-response absolute URL from the same path', () => {
-      expect(
-        CREATED_RESPONSE.webhook_url.endsWith(CREATED_RESPONSE.disk_image_webhook.webhook_url_path),
-      ).toBe(true);
+    it.each([
+      ['CREATED_RESPONSE', CREATED_RESPONSE],
+      ['ROTATED_RESPONSE', ROTATED_RESPONSE],
+    ])('%s builds its absolute URL from its own webhook_url_path', (_name, res) => {
+      // Both, not just the created one. Rotating changes the secret, not the
+      // path, so the rotated response must carry the same URL — and until
+      // IMP-b5b9544fc993 it carried a fabricated one, which is exactly the
+      // value an untied fixture will drift back to.
+      expect(res.webhook_url).toMatch(
+        new RegExp(`${res.disk_image_webhook.webhook_url_path}$`),
+      );
     });
   });
 });

@@ -86,6 +86,12 @@ module Api
               render_success(
                 disk_image_webhook: ::System::DiskImageWebhookSerializer.new(@webhook).as_json,
                 secret_plaintext: new_secret,
+                # Same builder as #create. Both responses are consumed by one
+                # frontend type with webhook_url required, and the operator's
+                # one-time modal prints it for whichever action produced it —
+                # so omitting it here rendered "Webhook URL: undefined" in the
+                # panel telling them to update their CI configuration.
+                webhook_url: build_webhook_url(@webhook),
                 note: "Save this secret now — old secret is revoked. Update CI immediately."
               )
             }
@@ -101,8 +107,9 @@ module Api
         end
 
         def build_webhook_url(webhook)
-          base = ENV.fetch("POWERNODE_PUBLIC_URL", "http://localhost:3000")
-          "#{base}/api/v1/system/webhooks/disk_image/built/#{webhook.id}"
+          # Path comes from the model, which is the single home for it. Kept as
+          # a method rather than inlined so both render sites read the same.
+          webhook.webhook_url
         end
 
         def emit_rotated_event(webhook)
