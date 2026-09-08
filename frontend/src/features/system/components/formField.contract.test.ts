@@ -76,7 +76,6 @@ function migratableFieldCount(source: string): number {
  * never grow it.
  */
 const KNOWN_HAND_WRITTEN: readonly string[] = [
-  'architectures/ArchitectureFormModal.tsx',
   'modules/ModuleCategoryFormModal.tsx',
   'modules/ModuleFormModal.tsx',
   'networks/NetworkFormModal.tsx',

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Cpu, AlertCircle, Lock } from 'lucide-react';
+import { Cpu, Lock } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -105,8 +106,13 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData((prev) => ({ ...prev, [name]: newValue }));
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
+  };
+
+  // FormField reports a value, the checkboxes still report an event; both land
+  // here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData((prev) => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors((prev) => {
         const next = { ...prev };
@@ -210,148 +216,94 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
 
           <form onSubmit={handleSubmit}>
             <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="name"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleChange}
-                  placeholder="e.g., loongarch64"
+              <FormField
+                label="Name"
+                id="name"
+                required
+                disabled={isReadOnly}
+                value={formData.name}
+                onChange={(v) => setField('name', v)}
+                placeholder="e.g., loongarch64"
+                error={errors.name}
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <FormField
+                  label="Family"
+                  id="family"
+                  type="select"
+                  required
                   disabled={isReadOnly}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus disabled:opacity-60 ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
+                  value={formData.family}
+                  onChange={(v) => setField('family', v)}
+                  error={errors.family}
+                  options={FAMILY_CHOICES.map((c) => ({ value: c.value, label: c.label }))}
                 />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
+
+                <FormField
+                  label="Display name"
+                  id="display_name"
+                  disabled={isReadOnly}
+                  value={formData.display_name}
+                  onChange={(v) => setField('display_name', v)}
+                  placeholder="Human-friendly label"
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="family" className="block text-sm font-medium text-theme-primary mb-1">
-                    Family <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <select
-                    id="family"
-                    name="family"
-                    value={formData.family}
-                    onChange={handleChange}
-                    disabled={isReadOnly}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus disabled:opacity-60"
-                  >
-                    {FAMILY_CHOICES.map((c) => (
-                      <option key={c.value} value={c.value}>{c.label}</option>
-                    ))}
-                  </select>
-                  {errors.family && (
-                    <p className="mt-1 text-sm text-theme-error-fg">{errors.family}</p>
-                  )}
-                </div>
-
-                <div>
-                  <label htmlFor="display_name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Display name
-                  </label>
-                  <input
-                    type="text"
-                    id="display_name"
-                    name="display_name"
-                    value={formData.display_name}
-                    onChange={handleChange}
-                    placeholder="Human-friendly label"
-                    disabled={isReadOnly}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus disabled:opacity-60"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="apt_name" className="block text-sm font-medium text-theme-primary mb-1">
-                    apt name
-                  </label>
-                  <input
-                    type="text"
-                    id="apt_name"
-                    name="apt_name"
-                    value={formData.apt_name}
-                    onChange={handleChange}
-                    placeholder="e.g., amd64"
-                    disabled={isReadOnly}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary font-mono text-sm focus:outline-none focus:border-theme-focus disabled:opacity-60"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="rpm_name" className="block text-sm font-medium text-theme-primary mb-1">
-                    rpm name
-                  </label>
-                  <input
-                    type="text"
-                    id="rpm_name"
-                    name="rpm_name"
-                    value={formData.rpm_name}
-                    onChange={handleChange}
-                    placeholder="e.g., x86_64"
-                    disabled={isReadOnly}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary font-mono text-sm focus:outline-none focus:border-theme-focus disabled:opacity-60"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Architecture description"
-                  rows={3}
+                <FormField
+                  label="apt name"
+                  id="apt_name"
+                  className="font-mono text-sm"
                   disabled={isReadOnly}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none disabled:opacity-60"
+                  value={formData.apt_name}
+                  onChange={(v) => setField('apt_name', v)}
+                  placeholder="e.g., amd64"
+                />
+                <FormField
+                  label="rpm name"
+                  id="rpm_name"
+                  className="font-mono text-sm"
+                  disabled={isReadOnly}
+                  value={formData.rpm_name}
+                  onChange={(v) => setField('rpm_name', v)}
+                  placeholder="e.g., x86_64"
                 />
               </div>
 
-              <div>
-                <label htmlFor="kernel_options" className="block text-sm font-medium text-theme-primary mb-1">
-                  Kernel Options
-                </label>
-                <input
-                  type="text"
-                  id="kernel_options"
-                  name="kernel_options"
-                  value={formData.kernel_options}
-                  onChange={handleChange}
-                  placeholder="e.g., console=tty0 console=ttyS0,115200"
-                  disabled={isReadOnly}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm disabled:opacity-60"
-                />
-                <p className="mt-1 text-xs text-theme-secondary">Optional kernel command line parameters</p>
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={3}
+                disabled={isReadOnly}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Architecture description"
+              />
+
+              <FormField
+                label="Kernel Options"
+                id="kernel_options"
+                className="font-mono text-sm"
+                disabled={isReadOnly}
+                value={formData.kernel_options}
+                onChange={(v) => setField('kernel_options', v)}
+                placeholder="e.g., console=tty0 console=ttyS0,115200"
+                helpText="Optional kernel command line parameters"
+              />
 
               <div>
-                <label htmlFor="aliases_text" className="block text-sm font-medium text-theme-primary mb-1">
-                  Aliases
-                </label>
-                <textarea
+                <FormField
+                  label="Aliases"
                   id="aliases_text"
-                  name="aliases_text"
-                  value={formData.aliases_text}
-                  onChange={handleChange}
-                  placeholder={`amd64-graviton\nx86_64-v3\naarch64-pacbti`}
+                  type="textarea"
                   rows={3}
+                  className="font-mono text-sm"
                   disabled={isReadOnly}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm resize-none disabled:opacity-60"
+                  value={formData.aliases_text}
+                  onChange={(v) => setField('aliases_text', v)}
+                  placeholder={`amd64-graviton\nx86_64-v3\naarch64-pacbti`}
                 />
                 <p className="mt-1 text-xs text-theme-secondary">
                   One alias per line (or comma-separated). Vendor-specific tags that should resolve to this architecture — e.g. <code>amd64-graviton</code>, <code>x86_64-v3</code>. Saved lowercased and deduplicated.
