@@ -74,6 +74,47 @@ RSpec.describe "fleet rows carry an environment" do
       foreign = create(:account).environments.find_by!(slug: "dev")
       bad = build(:system_node, account: account, node_template: template, environment: foreign)
       expect(bad).not_to be_valid
+      expect(bad.errors[:environment]).to include("must belong to the node's account")
+    end
+
+    it "refuses a pool on another account's template and an instance in another account's environment" do
+      foreign_account = create(:account)
+      foreign_template = create(:system_node_template, account: foreign_account)
+      pool = System::InstancePool.new(account: account, node_template: foreign_template, name: "x",
+                                      lifecycle_class: "ephemeral", status: "active",
+                                      target_size: 0, min_size: 0, max_size: 1)
+      expect(pool).not_to be_valid
+      expect(pool.errors[:node_template]).to include("must belong to the pool's account")
+
+      node = create(:system_node, account: account, node_template: template)
+      instance = build(:system_node_instance, node: node, environment: foreign_account.environments.find_by!(slug: "dev"))
+      expect(instance).not_to be_valid
+      expect(instance.errors[:environment]).to include("must belong to the instance's account")
+    end
+
+    it "falls back to the account default for a node built on an UNSAVED template" do
+      unsaved = build(:system_node_template, account: account, node_platform: platform)
+      node = build(:system_node, account: account, node_template: unsaved)
+      expect(node).to be_valid
+      expect(node.environment).to eq(env("dev"))
+    end
+
+    it "refuses, rather than silently saving, when the account has no default environment to fall back to" do
+      allow(Ai::Environment).to receive(:default_for).and_return(nil)
+      template = build(:system_node_template, account: account, node_platform: platform)
+      expect(template).not_to be_valid
+      expect(template.errors[:environment]).to include("must exist")
+    end
+  end
+
+  describe "account bootstrap ordering" do
+    it "creates the default environments BEFORE the extension bootstrap composes templates, so every seeded template is placed" do
+      fresh = create(:account)
+      expect(fresh.environments.count).to eq(5)
+      templates = fresh.system_node_templates
+      expect(templates).to exist
+      expect(templates.where(environment_id: nil)).to be_empty
+      expect(templates.map { |t| t.environment.slug }.uniq).to eq(%w[dev])
     end
   end
 
