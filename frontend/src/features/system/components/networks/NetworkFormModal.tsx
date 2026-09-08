@@ -275,17 +275,25 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
               )}
 
               {/* CIDR Block */}
-              <FormField
-                label="CIDR Block"
-                required
-                className="font-mono"
-                disabled={submitting || isEditMode}
-                value={formData.cidr_block}
-                onChange={(v) => handleChange('cidr_block', v)}
-                placeholder="e.g., 10.0.0.0/16"
-                error={errors.cidr_block}
-                helpText="IPv4 network range in CIDR notation"
-              />
+              <div>
+                <FormField
+                  label="CIDR Block"
+                  required
+                  className="font-mono"
+                  disabled={submitting || isEditMode}
+                  value={formData.cidr_block}
+                  onChange={(v) => handleChange('cidr_block', v)}
+                  placeholder="e.g., 10.0.0.0/16"
+                  error={errors.cidr_block}
+                />
+                {/* Not helpText: FormField hides that whenever the field has an
+                    error, and the error here IS "Invalid CIDR format" — the
+                    moment the operator most needs to be told what the field
+                    wants. This form showed both, so it still does. */}
+                <p className="mt-1 text-xs text-theme-tertiary">
+                  IPv4 network range in CIDR notation
+                </p>
+              </div>
 
               {/* Options */}
               <div className="space-y-3 pt-2">
