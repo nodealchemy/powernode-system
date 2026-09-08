@@ -336,22 +336,20 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
 
           {showManifestImport && (
             <div className="p-4 mb-4 rounded-lg border border-theme bg-theme-background-elevated">
-              <label htmlFor="manifest_yaml" className="block text-sm font-medium text-theme-primary mb-1">
-                Paste manifest.yaml
-              </label>
-              <p className="text-xs text-theme-secondary mb-2">
-                The server validates schema_version + name match, parses the spec fields,
-                resolves dependencies by gitea_repo_full_name or plain name, and writes
-                everything onto this module. The form below will repopulate from the
-                imported values; you can adjust before saving.
-              </p>
-              <textarea
+              {/* The explanatory copy was above the box and is now below it, as
+                  helpText: FormField renders its label and control together, so
+                  nothing can sit between them. It is safe here — this field has
+                  no error to suppress it. */}
+              <FormField
+                label="Paste manifest.yaml"
                 id="manifest_yaml"
-                value={manifestYaml}
-                onChange={(e) => setManifestYaml(e.target.value)}
+                type="textarea"
                 rows={10}
+                value={manifestYaml}
+                onChange={setManifestYaml}
                 placeholder={`schema_version: 1\nname: ${editModule?.name ?? 'my-module'}\nfile_spec:\n  - "/etc/foo/**"\nprotected_spec:\n  - "/etc/foo/secret"\n...`}
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary font-mono text-sm placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                className="font-mono text-sm"
+                helpText="The server validates schema_version + name match, parses the spec fields, resolves dependencies by gitea_repo_full_name or plain name, and writes everything onto this module. The form below will repopulate from the imported values; you can adjust before saving."
               />
               <div className="flex justify-end gap-2 mt-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => setShowManifestImport(false)}>
