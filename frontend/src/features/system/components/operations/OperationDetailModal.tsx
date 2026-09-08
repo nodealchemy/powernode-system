@@ -16,6 +16,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -51,16 +52,6 @@ const ACTIVE_STATUSES = [ 'pending', 'scheduled', 'running' ];
 
 // Fallback refresh cadence, used only while the SystemChannel socket is down.
 const POLL_INTERVAL_MS = 5000;
-
-const statusColors: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'secondary' | 'primary'> = {
-  pending: 'warning',
-  scheduled: 'info',
-  running: 'primary',
-  complete: 'success',
-  failed: 'danger',
-  aborted: 'secondary',
-  cancelled: 'secondary'
-};
 
 /**
  * OperationDetailModal - Modal for viewing operation details with event timeline
@@ -277,9 +268,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
         <div className="bg-theme-background rounded-lg p-4 border border-theme">
           <div className="flex items-center justify-between mb-4">
             <h4 className="font-medium text-theme-primary">Status</h4>
-            <Badge variant={statusColors[operation.status]}>
-              {statusLabels[operation.status] || operation.status}
-            </Badge>
+            <StatusBadge
+              status={operation.status}
+              label={statusLabels[operation.status] || operation.status}
+            />
           </div>
 
           {operation.status === 'running' && (

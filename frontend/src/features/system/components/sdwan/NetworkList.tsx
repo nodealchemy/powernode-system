@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Network as NetworkIcon, Trash2, ChevronRight, ChevronDown, Eye, Waypoints } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import { SdwanTopology } from './SdwanTopology';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
@@ -129,7 +130,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                     <div className="text-xs text-theme-secondary">{n.slug}</div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={statusBadgeClass(n.status)}>{n.status}</span>
+                    <StatusBadge status={n.status} size="xs" />
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-theme-secondary">{n.cidr_64}</td>
                   <td className="px-4 py-3 text-theme-primary">{n.peer_count}</td>
@@ -256,21 +257,3 @@ const DetailField: React.FC<DetailFieldProps> = ({ label, value, mono, className
     <dd className={'text-theme-primary mt-1 ' + (mono ? 'font-mono text-xs' : '')}>{value}</dd>
   </div>
 );
-
-function statusBadgeClass(status: string): string {
-  // Pill-style badges: translucent fill at /20 opacity + full-color text.
-  // Same color for both bg and text would render the text invisible.
-  const base = 'px-2 py-0.5 rounded text-xs font-medium';
-  switch (status) {
-    case 'active':
-      return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'registered':
-      return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'suspended':
-      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
-    case 'archived':
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-    default:
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}

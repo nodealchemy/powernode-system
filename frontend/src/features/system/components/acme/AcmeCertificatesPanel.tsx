@@ -23,6 +23,7 @@ import type {
   AcmeCertificateStatus,
 } from '../../types/acme.types';
 import { RequestCertificateModal } from './RequestCertificateModal';
+import { StatusBadge } from '../shared/StatusBadge';
 
 /**
  * Operator-facing list of ACME-issued certificates. Inline actions:
@@ -522,54 +523,18 @@ const CertRow: React.FC<CertRowProps> = ({
   );
 };
 
-const StatusPill: React.FC<{ status: AcmeCertificateStatus }> = ({ status }) => {
-  const config: Record<
-    AcmeCertificateStatus,
-    { className: string; icon: React.ReactNode; label: string }
-  > = {
-    pending: {
-      className: 'bg-theme-background-tertiary text-theme-secondary',
-      icon: <Clock className="w-3 h-3" />,
-      label: 'pending',
-    },
-    issuing: {
-      className: 'bg-theme-info-bg text-theme-info-fg',
-      icon: <RefreshCw className="w-3 h-3 animate-spin" />,
-      label: 'issuing',
-    },
-    valid: {
-      className: 'bg-theme-success-bg text-theme-success-fg',
-      icon: <CheckCircle2 className="w-3 h-3" />,
-      label: 'valid',
-    },
-    renewing: {
-      className: 'bg-theme-info-bg text-theme-info-fg',
-      icon: <RefreshCw className="w-3 h-3 animate-spin" />,
-      label: 'renewing',
-    },
-    expired: {
-      className: 'bg-theme-warning-bg text-theme-warning-fg',
-      icon: <AlertTriangle className="w-3 h-3" />,
-      label: 'expired',
-    },
-    revoked: {
-      className: 'bg-theme-danger-bg text-theme-danger-fg',
-      icon: <ShieldAlert className="w-3 h-3" />,
-      label: 'revoked',
-    },
-    failed: {
-      className: 'bg-theme-danger-bg text-theme-danger-fg',
-      icon: <AlertTriangle className="w-3 h-3" />,
-      label: 'failed',
-    },
-  };
-  const c = config[status];
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${c.className}`}
-    >
-      {c.icon}
-      {c.label}
-    </span>
-  );
+// Colour comes from the shared StatusBadge table; only the per-status ICON is
+// domain knowledge worth keeping here.
+const ICON_BY_STATUS: Record<AcmeCertificateStatus, React.ReactNode> = {
+  pending: <Clock className="w-3 h-3" />,
+  issuing: <RefreshCw className="w-3 h-3 animate-spin" />,
+  valid: <CheckCircle2 className="w-3 h-3" />,
+  renewing: <RefreshCw className="w-3 h-3 animate-spin" />,
+  expired: <AlertTriangle className="w-3 h-3" />,
+  revoked: <ShieldAlert className="w-3 h-3" />,
+  failed: <AlertTriangle className="w-3 h-3" />,
 };
+
+const StatusPill: React.FC<{ status: AcmeCertificateStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" icon={ICON_BY_STATUS[status]} />
+);

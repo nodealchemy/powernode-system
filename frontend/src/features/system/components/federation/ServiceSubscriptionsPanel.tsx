@@ -12,6 +12,7 @@ import { EntityLink } from '@/shared/components/entity';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   ServiceSubscription,
   SubscriptionStatus,
@@ -416,21 +417,9 @@ const StatusFilterBar: React.FC<{
   </div>
 );
 
-const StatusPill: React.FC<{ status: SubscriptionStatus }> = ({ status }) => {
-  const styleByStatus: Record<SubscriptionStatus, string> = {
-    pending: 'bg-theme-background-tertiary text-theme-secondary',
-    active: 'bg-theme-success-bg text-theme-success-fg',
-    suspended: 'bg-theme-warning-bg text-theme-warning-fg',
-    cancelled: 'bg-theme-danger-bg text-theme-danger-fg',
-  };
-  return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}
-    >
-      {status}
-    </span>
-  );
-};
+const StatusPill: React.FC<{ status: SubscriptionStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" />
+);
 
 function protocolIcon(protocol: ServiceProtocol): React.ReactNode {
   switch (protocol) {

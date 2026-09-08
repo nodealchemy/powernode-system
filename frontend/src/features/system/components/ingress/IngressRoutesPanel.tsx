@@ -17,6 +17,7 @@ import { ingressApi } from '../../services/api/ingressApi';
 import type { IngressRoute, IngressRouteStatus } from '../../services/api/ingressApi';
 import { InfiniteScrollSentinel } from '../shared/InfiniteScrollSentinel';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 
 /**
  * Routes tab — read-only monitor list of the ingress routes the platform
@@ -276,46 +277,18 @@ const RouteRow: React.FC<RouteRowProps> = ({ route }) => {
   );
 };
 
-const StatusPill: React.FC<{ status: IngressRouteStatus }> = ({ status }) => {
-  const config: Record<
-    IngressRouteStatus,
-    { className: string; icon: React.ReactNode; label: string }
-  > = {
-    valid: {
-      className: 'bg-theme-success-bg text-theme-success-fg',
-      icon: <CheckCircle2 className="w-3 h-3" />,
-      label: 'valid',
-    },
-    pending: {
-      className: 'bg-theme-warning-bg text-theme-warning-fg',
-      icon: <Clock className="w-3 h-3" />,
-      label: 'pending',
-    },
-    issuing: {
-      className: 'bg-theme-warning-bg text-theme-warning-fg',
-      icon: <RefreshCw className="w-3 h-3 animate-spin" />,
-      label: 'issuing',
-    },
-    renewing: {
-      className: 'bg-theme-warning-bg text-theme-warning-fg',
-      icon: <RefreshCw className="w-3 h-3 animate-spin" />,
-      label: 'renewing',
-    },
-    revoked: {
-      className: 'bg-theme-danger-bg text-theme-danger-fg',
-      icon: <ShieldAlert className="w-3 h-3" />,
-      label: 'revoked',
-    },
-  };
-  const c = config[status];
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${c.className}`}
-    >
-      {c.icon}
-      {c.label}
-    </span>
-  );
+// Colour comes from the shared StatusBadge table; only the per-status ICON is
+// domain knowledge worth keeping here.
+const ICON_BY_STATUS: Record<IngressRouteStatus, React.ReactNode> = {
+  valid: <CheckCircle2 className="w-3 h-3" />,
+  pending: <Clock className="w-3 h-3" />,
+  issuing: <RefreshCw className="w-3 h-3 animate-spin" />,
+  renewing: <RefreshCw className="w-3 h-3 animate-spin" />,
+  revoked: <ShieldAlert className="w-3 h-3" />,
 };
+
+const StatusPill: React.FC<{ status: IngressRouteStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" icon={ICON_BY_STATUS[status]} />
+);
 
 export default IngressRoutesPanel;

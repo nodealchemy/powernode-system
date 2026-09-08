@@ -215,9 +215,10 @@ describe('NetworkList', () => {
     await waitFor(() =>
       expect(screen.getByTestId('network-row-net-aaa')).toBeInTheDocument(),
     );
-    const badge = screen.getByText('active');
-    expect(badge.className).toContain('bg-theme-success-bg');
-    expect(badge.className).toContain('text-theme-success-fg');
+    const badge = screen.getByText('active').closest('.badge-theme')!;
+    // Colour now comes from the shared StatusBadge's variant, not raw
+    // theme classes — the whole point of the consolidation.
+    expect(badge.className).toContain('badge-theme-success');
   });
 
   it('applies the info badge class for registered networks', async () => {
@@ -226,9 +227,8 @@ describe('NetworkList', () => {
     await waitFor(() =>
       expect(screen.getByTestId('network-row-net-bbb')).toBeInTheDocument(),
     );
-    const badge = screen.getByText('registered');
-    expect(badge.className).toContain('bg-theme-info-bg');
-    expect(badge.className).toContain('text-theme-info-fg');
+    const badge = screen.getByText('registered').closest('.badge-theme')!;
+    expect(badge.className).toContain('badge-theme-info');
   });
 
   it('applies the warning badge class for suspended networks', async () => {
@@ -237,9 +237,8 @@ describe('NetworkList', () => {
     await waitFor(() =>
       expect(screen.getByTestId('network-row-net-ccc')).toBeInTheDocument(),
     );
-    const badge = screen.getByText('suspended');
-    expect(badge.className).toContain('bg-theme-warning-bg');
-    expect(badge.className).toContain('text-theme-warning-fg');
+    const badge = screen.getByText('suspended').closest('.badge-theme')!;
+    expect(badge.className).toContain('badge-theme-warning');
   });
 
   it('applies the muted badge class for archived networks', async () => {
@@ -248,9 +247,8 @@ describe('NetworkList', () => {
     await waitFor(() =>
       expect(screen.getByTestId('network-row-net-ddd')).toBeInTheDocument(),
     );
-    const badge = screen.getByText('archived');
-    expect(badge.className).toContain('bg-theme-background-secondary');
-    expect(badge.className).toContain('text-theme-secondary');
+    const badge = screen.getByText('archived').closest('.badge-theme')!;
+    expect(badge.className).toContain('badge-theme-secondary');
   });
 
   // ---------------------------------------------------------------------------

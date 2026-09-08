@@ -13,6 +13,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -36,14 +37,6 @@ interface NetworkDetailModalProps {
   /** Callback to edit the network */
   onEdit?: (network: SystemProviderNetwork) => void;
 }
-
-const statusVariants: Record<string, 'success' | 'warning' | 'danger' | 'secondary'> = {
-  available: 'success',
-  pending: 'warning',
-  deleting: 'warning',
-  deleted: 'secondary',
-  error: 'danger'
-};
 
 /**
  * NetworkDetailModal - Modal showing network details
@@ -226,14 +219,12 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
       subtitle={
         network ? (
           <div className="flex items-center gap-2">
-            <Badge
-              variant={statusVariants[network.status] || 'secondary'}
+            <StatusBadge
+              status={network.status}
               size="sm"
               dot
               pulse={network.status === 'pending'}
-            >
-              {network.status}
-            </Badge>
+            />
             {network.is_default && (
               <Badge variant="info" size="sm">Default</Badge>
             )}

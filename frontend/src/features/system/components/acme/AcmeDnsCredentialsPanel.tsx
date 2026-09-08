@@ -19,6 +19,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   AcmeDnsCredentialSummary,
   AcmeDnsCredentialStatus,
@@ -489,34 +490,15 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
   </React.Fragment>
 );
 
-const StatusPill: React.FC<{ status: AcmeDnsCredentialStatus }> = ({ status }) => {
-  const config: Record<AcmeDnsCredentialStatus, { className: string; icon: React.ReactNode; label: string }> = {
-    untested: {
-      className: 'bg-theme-background-tertiary text-theme-secondary',
-      icon: <Clock className="w-3 h-3" />,
-      label: 'untested',
-    },
-    valid: {
-      className: 'bg-theme-success-bg text-theme-success-fg',
-      icon: <ShieldCheck className="w-3 h-3" />,
-      label: 'valid',
-    },
-    invalid: {
-      className: 'bg-theme-danger-bg text-theme-danger-fg',
-      icon: <ShieldAlert className="w-3 h-3" />,
-      label: 'invalid',
-    },
-    expired: {
-      className: 'bg-theme-warning-bg text-theme-warning-fg',
-      icon: <AlertTriangle className="w-3 h-3" />,
-      label: 'expired',
-    },
-  };
-  const c = config[status];
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${c.className}`}>
-      {c.icon}
-      {c.label}
-    </span>
-  );
+// Colour comes from the shared StatusBadge table; only the per-status ICON is
+// domain knowledge worth keeping here.
+const ICON_BY_STATUS: Record<AcmeDnsCredentialStatus, React.ReactNode> = {
+  untested: <Clock className="w-3 h-3" />,
+  valid: <ShieldCheck className="w-3 h-3" />,
+  invalid: <ShieldAlert className="w-3 h-3" />,
+  expired: <AlertTriangle className="w-3 h-3" />,
 };
+
+const StatusPill: React.FC<{ status: AcmeDnsCredentialStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" icon={ICON_BY_STATUS[status]} />
+);

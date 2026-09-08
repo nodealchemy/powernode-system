@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Globe, Pencil, Trash2, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
+import { StatusBadge } from '../../shared/StatusBadge';
 import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
 
 interface VirtualIpListProps {
@@ -11,23 +12,6 @@ interface VirtualIpListProps {
   onFailover?: (vip: SdwanVirtualIp) => void;
   onDelete?: (vip: SdwanVirtualIp) => void;
 }
-
-const stateColor = (state: string) => {
-  switch (state) {
-    case 'active':
-      return 'text-theme-success-fg';
-    case 'pending':
-      return 'text-theme-warning-fg';
-    case 'failing_over':
-      return 'text-theme-warning-fg';
-    case 'unassigned':
-      return 'text-theme-secondary';
-    case 'error':
-      return 'text-theme-danger-fg';
-    default:
-      return 'text-theme-secondary';
-  }
-};
 
 export const VirtualIpList: React.FC<VirtualIpListProps> = ({
   networkId,
@@ -142,7 +126,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
               )}
             </td>
             <td className="px-3 py-2">
-              <span className={`text-xs font-medium ${stateColor(v.state)}`}>{v.state}</span>
+              <StatusBadge status={v.state} size="xs" />
             </td>
             <td className="px-3 py-2 text-xs">
               {v.anycast
@@ -200,7 +184,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">State</label>
-                    <p className={`font-medium ${stateColor(v.state)}`}>{v.state}</p>
+                    <StatusBadge status={v.state} size="xs" />
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">CIDR</label>
