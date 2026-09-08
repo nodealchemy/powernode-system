@@ -236,6 +236,20 @@ const renderPanel = () =>
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app cancel confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmCancel(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /cancel migration/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
+
 describe('StorageMigrationsPanel', () => {
   beforeEach(() => {
     mockGet.mockReset();
@@ -458,7 +472,7 @@ describe('StorageMigrationsPanel', () => {
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /Approve/i })).not.toBeInTheDocument();
   });
 
@@ -483,7 +497,7 @@ describe('StorageMigrationsPanel', () => {
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /Approve/i })).not.toBeInTheDocument();
   });
 
@@ -611,17 +625,15 @@ describe('StorageMigrationsPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('calls the cancel endpoint with the correct URL when Cancel is clicked', async () => {
-    // Suppress the window.prompt — return null (no reason)
-    jest.spyOn(window, 'prompt').mockReturnValueOnce(null);
-
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockResolvedValueOnce(approveEnvelope({ ...MIG_PLANNED, status: 'cancelled' }));
     mockGet.mockResolvedValueOnce(listResponse([{ ...MIG_PLANNED, status: 'cancelled', terminal: true }]));
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel();
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -631,17 +643,16 @@ describe('StorageMigrationsPanel', () => {
     );
   });
 
-  it('passes the prompt reason to the cancel endpoint when a reason is entered', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValueOnce('operator shutdown');
-
+  it('passes the typed reason to the cancel endpoint', async () => {
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockResolvedValueOnce(approveEnvelope({ ...MIG_PLANNED, status: 'cancelled' }));
     mockGet.mockResolvedValueOnce(listResponse([{ ...MIG_PLANNED, status: 'cancelled', terminal: true }]));
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel('operator shutdown');
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -652,16 +663,15 @@ describe('StorageMigrationsPanel', () => {
   });
 
   it('shows a success notification after cancel succeeds', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValueOnce(null);
-
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockResolvedValueOnce(approveEnvelope({ ...MIG_PLANNED, status: 'cancelled' }));
     mockGet.mockResolvedValueOnce(listResponse([{ ...MIG_PLANNED, status: 'cancelled', terminal: true }]));
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -672,15 +682,14 @@ describe('StorageMigrationsPanel', () => {
   });
 
   it('shows an error notification when cancel fails', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValueOnce(null);
-
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockRejectedValue(new Error('Cannot cancel after syncing started'));
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -691,15 +700,14 @@ describe('StorageMigrationsPanel', () => {
   });
 
   it('shows a generic error notification when cancel fails with a non-Error', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValueOnce(null);
-
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockRejectedValue(42);
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -709,17 +717,45 @@ describe('StorageMigrationsPanel', () => {
     );
   });
 
-  it('re-fetches the list after a successful cancel', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValueOnce(null);
+  it('never uses window.prompt for the cancel reason', async () => {
+    const promptSpy = jest.spyOn(window, 'prompt');
+    mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
 
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+
+    await screen.findByRole('button', { name: /cancel migration/i });
+    expect(promptSpy).not.toHaveBeenCalled();
+    expect(mockPost).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it('does not cancel when the operator keeps the migration', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /keep migration/i }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('re-fetches the list after a successful cancel', async () => {
     mockGet.mockResolvedValueOnce(listResponse([MIG_PLANNED]));
     mockPost.mockResolvedValueOnce(approveEnvelope({ ...MIG_PLANNED, status: 'cancelled' }));
     mockGet.mockResolvedValueOnce(listResponse([{ ...MIG_PLANNED, status: 'cancelled', terminal: true }]));
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Cancel$/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await confirmCancel();
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
   });

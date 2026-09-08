@@ -27,18 +27,23 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
 }));
 
 jest.mock('@/shared/components/ui/Modal', () => ({
+  // `closeOnEscape` is surfaced as an attribute because the real Modal registers
+  // its Escape handler on `document`, so two open Modals both fire on one press.
+  // The grants Modal has to opt out while a confirmation is stacked on it.
   Modal: ({
     isOpen,
     children,
     footer,
+    closeOnEscape,
   }: {
     isOpen: boolean;
     children: React.ReactNode;
     footer?: React.ReactNode;
+    closeOnEscape?: boolean;
   }) => {
     if (!isOpen) return null;
     return (
-      <div data-testid="modal">
+      <div data-testid="modal" data-close-on-escape={String(closeOnEscape ?? true)}>
         {children}
         {footer}
       </div>
@@ -153,13 +158,25 @@ const renderModal = ({
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app revoke confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmRevoke(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /revoke this grant/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
+
 describe('GrantsManagementModal', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockAddNotification.mockReset();
-    // Suppress window.prompt — will be mocked per-test where needed
-    jest.spyOn(window, 'prompt').mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -459,8 +476,6 @@ describe('GrantsManagementModal', () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
     mockPost.mockResolvedValue(envelope({ grant: { ...GRANT_ACTIVE, lifecycle: 'revoked' } }));
 
-    jest.spyOn(window, 'prompt').mockReturnValue('test revoke reason');
-
     const onChanged = jest.fn();
     renderModal({ onChanged });
 
@@ -469,6 +484,7 @@ describe('GrantsManagementModal', () => {
     );
 
     fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke('test revoke reason');
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -478,16 +494,15 @@ describe('GrantsManagementModal', () => {
     );
   });
 
-  it('calls peerGrantsApi.revoke with no reason when prompt returns empty string', async () => {
+  it('calls peerGrantsApi.revoke with no reason when none is typed', async () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
     mockPost.mockResolvedValue(envelope({ grant: { ...GRANT_ACTIVE, lifecycle: 'revoked' } }));
-
-    jest.spyOn(window, 'prompt').mockReturnValue('');
 
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke();
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -497,31 +512,79 @@ describe('GrantsManagementModal', () => {
     );
   });
 
-  it('does not call revoke when user cancels the prompt', async () => {
+  it('does not call revoke when the operator cancels the confirmation', async () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
-
-    jest.spyOn(window, 'prompt').mockReturnValue(null);
 
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     // Give async ops time to settle
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
     expect(mockPost).not.toHaveBeenCalled();
   });
 
-  it('shows a success notification after a successful revoke', async () => {
+  it('stops handling Escape itself while a revoke confirmation is stacked on it', async () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
-    mockPost.mockResolvedValue(envelope({ grant: { ...GRANT_ACTIVE, lifecycle: 'revoked' } }));
 
-    jest.spyOn(window, 'prompt').mockReturnValue('reason');
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+    // Before: the grants modal owns Escape.
+    expect(screen.getByTestId('modal')).toHaveAttribute('data-close-on-escape', 'true');
+
+    fireEvent.click(screen.getByText('Revoke'));
+    await screen.findByRole('button', { name: /revoke this grant/i });
+
+    // The confirmation is itself a Modal, so two now carry the testid; the
+    // grants modal is the outer one, rendered first.
+    const grantsModal = screen.getAllByTestId('modal')[0];
+    // The real Modal listens on `document`, so if both stayed armed a single
+    // Escape would dismiss the confirmation AND dump the operator out of the
+    // grants panel.
+    expect(grantsModal).toHaveAttribute('data-close-on-escape', 'false');
+  });
+
+  it('takes Escape back once the confirmation is dismissed', async () => {
+    mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
 
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-close-on-escape', 'true'),
+    );
+  });
+
+  it('never uses window.prompt for the revoke reason', async () => {
+    const promptSpy = jest.spyOn(window, 'prompt');
+    mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
+
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Revoke'));
+
+    await screen.findByRole('button', { name: /revoke this grant/i });
+    expect(promptSpy).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it('shows a success notification after a successful revoke', async () => {
+    mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
+    mockPost.mockResolvedValue(envelope({ grant: { ...GRANT_ACTIVE, lifecycle: 'revoked' } }));
+
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke('reason');
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -535,13 +598,12 @@ describe('GrantsManagementModal', () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
     mockPost.mockResolvedValue(envelope({ grant: { ...GRANT_ACTIVE, lifecycle: 'revoked' } }));
 
-    jest.spyOn(window, 'prompt').mockReturnValue('reason');
-
     const onChanged = jest.fn();
     renderModal({ onChanged });
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke('reason');
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
@@ -550,12 +612,11 @@ describe('GrantsManagementModal', () => {
     mockGet.mockResolvedValue(grantsEnvelope([GRANT_ACTIVE]));
     mockPost.mockRejectedValue(new Error('Revoke request failed'));
 
-    jest.spyOn(window, 'prompt').mockReturnValue('reason');
-
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke('reason');
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -571,12 +632,11 @@ describe('GrantsManagementModal', () => {
     let resolveRevoke: (v: unknown) => void = () => {};
     mockPost.mockReturnValue(new Promise((r) => { resolveRevoke = r; }));
 
-    jest.spyOn(window, 'prompt').mockReturnValue('reason');
-
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Revoke')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Revoke'));
+    await confirmRevoke('reason');
 
     await waitFor(() =>
       expect(screen.getByText('Revoking…')).toBeInTheDocument(),

@@ -275,14 +275,28 @@ const renderPanel = (props: { refreshKey?: number } = {}) =>
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app revoke confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmRevoke(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /revoke certificate now/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
+
 describe('AcmeCertificatesPanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     // Default DNS creds for modal tests
     mockDnsCredsList.mockResolvedValue(DNS_CREDS_RESPONSE);
-    // Restore window.confirm / prompt
+    // handleDelete still uses window.confirm; the revoke REASON now comes from
+    // an in-app confirmation dialog (IMP-e5cba23c32fd).
     jest.spyOn(window, 'confirm').mockReturnValue(true);
-    jest.spyOn(window, 'prompt').mockReturnValue('');
   });
 
   afterEach(() => {
@@ -670,13 +684,13 @@ describe('AcmeCertificatesPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('calls acmeCertificatesApi.revoke with cert id and reason on Revoke click', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValue('security breach');
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
     mockRevoke.mockResolvedValue(makeActionResponse({ ...VALID_CERT, status: 'revoked' }));
 
     renderPanel();
     const revokeBtn = await waitFor(() => screen.getByTitle('Revoke certificate'));
     fireEvent.click(revokeBtn);
+    await confirmRevoke('security breach');
 
     await waitFor(() =>
       expect(mockRevoke).toHaveBeenCalledWith('cert-valid-1', 'security breach'),
@@ -684,40 +698,53 @@ describe('AcmeCertificatesPanel', () => {
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
   });
 
-  it('calls revoke without reason when prompt returns empty string', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValue('');
+  it('calls revoke without a reason when none is typed', async () => {
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
     mockRevoke.mockResolvedValue(makeActionResponse(VALID_CERT));
 
     renderPanel();
     const revokeBtn = await waitFor(() => screen.getByTitle('Revoke certificate'));
     fireEvent.click(revokeBtn);
+    await confirmRevoke();
 
     await waitFor(() =>
       expect(mockRevoke).toHaveBeenCalledWith('cert-valid-1', undefined),
     );
   });
 
-  it('does NOT call revoke if user cancels the prompt (null)', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValue(null);
+  it('does NOT call revoke if the operator cancels the confirmation', async () => {
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
 
     renderPanel();
     const revokeBtn = await waitFor(() => screen.getByTitle('Revoke certificate'));
     fireEvent.click(revokeBtn);
 
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     expect(mockRevoke).not.toHaveBeenCalled();
   });
 
+  it('never uses window.prompt for the revoke reason', async () => {
+    const promptSpy = jest.spyOn(window, 'prompt');
+    mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
+
+    renderPanel();
+    fireEvent.click(await waitFor(() => screen.getByTitle('Revoke certificate')));
+
+    await screen.findByRole('button', { name: /revoke certificate now/i });
+    expect(promptSpy).not.toHaveBeenCalled();
+    expect(mockRevoke).not.toHaveBeenCalled();
+  });
+
   it('shows error notification when revoke fails', async () => {
-    jest.spyOn(window, 'prompt').mockReturnValue('test');
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
     mockRevoke.mockRejectedValue(new Error('Revoke failed upstream'));
 
     renderPanel();
     const revokeBtn = await waitFor(() => screen.getByTitle('Revoke certificate'));
     fireEvent.click(revokeBtn);
+    await confirmRevoke('test');
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({

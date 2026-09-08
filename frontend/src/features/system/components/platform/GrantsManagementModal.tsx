@@ -11,6 +11,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { peerGrantsApi } from '../../services/api/peerGrantsApi';
 import type {
   FederationGrant,
@@ -59,6 +60,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
   onChanged,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [grants, setGrants] = useState<FederationGrant[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,28 +92,30 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
     }
   }, [isOpen, fetchGrants]);
 
-  const handleRevoke = async (grant: FederationGrant) => {
+  const handleRevoke = (grant: FederationGrant) => {
     if (!peerId) return;
-    const reason = window.prompt(
-      `Revoke grant for "${grant.remote_subject}" on ${grant.resource_kind}?\n\n` +
-        'This soft-deletes the grant. It is retained for 90d then auto-archived. Optional reason:',
-      '',
-    );
-    if (reason === null) return;
-    setRevokingId(grant.id);
-    try {
-      await peerGrantsApi.revoke(peerId, grant.id, reason || undefined);
-      addNotification({ type: 'success', message: `Grant for '${grant.remote_subject}' revoked.` });
-      await fetchGrants();
-      onChanged?.();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Revoke failed',
-      });
-    } finally {
-      setRevokingId(null);
-    }
+    confirmWithReason({
+      title: 'Revoke grant',
+      message: `Revoke grant for "${grant.remote_subject}" on ${grant.resource_kind}? This soft-deletes the grant. It is retained for 90d then auto-archived.`,
+      confirmLabel: 'Revoke this grant',
+      reasonPlaceholder: 'Why is this grant being revoked?',
+      onConfirm: async (reason) => {
+        setRevokingId(grant.id);
+        try {
+          await peerGrantsApi.revoke(peerId, grant.id, reason);
+          addNotification({ type: 'success', message: `Grant for '${grant.remote_subject}' revoked.` });
+          await fetchGrants();
+          onChanged?.();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Revoke failed',
+          });
+        } finally {
+          setRevokingId(null);
+        }
+      },
+    });
   };
 
   const handleIssued = () => {
@@ -123,9 +127,16 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
   if (!peerId) return null;
 
   return (
+    <>
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      // The shared Modal registers its Escape handler on `document`, so while a
+      // revoke confirmation is stacked on this one a single Escape press would
+      // fire BOTH onClose handlers — dismissing the confirmation and dumping the
+      // operator out of the grants panel. Hand Escape to the confirmation while
+      // it is open.
+      closeOnEscape={!ConfirmationDialog}
       icon={<ShieldCheck className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
@@ -209,6 +220,9 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
         )}
       </div>
     </Modal>
+    {/* Rendered outside the grants Modal so the confirmation stacks above it. */}
+    {ConfirmationDialog}
+    </>
   );
 };
 
