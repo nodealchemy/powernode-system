@@ -28,14 +28,24 @@ const repoRoot = path.resolve(hooksDir, '../../../../../../..');
 const EXT_SYSTEM_SRC = path.join(repoRoot, 'extensions/system/frontend/src');
 const CORE_SRC = path.join(repoRoot, 'frontend/src');
 
-const SOURCE_ROOTS = [
-  EXT_SYSTEM_SRC,
-  CORE_SRC,
-  path.join(repoRoot, 'extensions/marketing/frontend/src'),
-  path.join(repoRoot, 'extensions/supply-chain/frontend/src'),
-  path.join(repoRoot, 'extensions/private/business/frontend/src'),
-  path.join(repoRoot, 'extensions/private/trading/frontend/src'),
-];
+// Every sibling extension's frontend is a potential importer. The roots are
+// DERIVED from the filesystem rather than named, because the core-purity gate
+// forbids an extension's source from naming another extension (public or
+// private), and a hardcoded list would also rot as extensions come and go.
+function siblingExtensionSrcRoots(): string[] {
+  const roots: string[] = [];
+  for (const parent of [path.join(repoRoot, 'extensions'), path.join(repoRoot, 'extensions', 'private')]) {
+    if (!existsSync(parent)) continue;
+    for (const entry of readdirSync(parent)) {
+      if (entry === 'private') continue;
+      const src = path.join(parent, entry, 'frontend', 'src');
+      if (src !== EXT_SYSTEM_SRC && existsSync(src) && statSync(src).isDirectory()) roots.push(src);
+    }
+  }
+  return roots;
+}
+
+const SOURCE_ROOTS = [EXT_SYSTEM_SRC, CORE_SRC, ...siblingExtensionSrcRoots()];
 
 const isSourceFile = (f: string) => /\.tsx?$/.test(f);
 const isSpecFile = (f: string) => /\.(test|spec)\.tsx?$/.test(f);
