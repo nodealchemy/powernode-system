@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 
 // =============================================================================
@@ -7,6 +7,7 @@ import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 // =============================================================================
 
 const mockPost = jest.fn();
+const mockLoggerWarn = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
   apiClient: {
@@ -16,6 +17,23 @@ jest.mock('@/shared/services/apiClient', () => ({
     delete: jest.fn(),
   },
 }));
+
+// Mirrors the real logger's full surface (logger.ts) — a partial mock turns a
+// later logger.apiError(...) anywhere in this module graph into a confusing
+// "not a function" instead of an obvious mock gap.
+jest.mock('@/shared/utils/logger', () => {
+  const stub = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: jest.fn(),
+    apiStart: jest.fn(),
+    apiComplete: jest.fn(),
+    apiError: jest.fn(),
+    child: jest.fn(() => stub),
+  };
+  return { ...jest.requireActual('@/shared/utils/logger'), logger: stub };
+});
 
 // =============================================================================
 // Helpers
@@ -73,6 +91,7 @@ const EVENT_OLDER_THAN_7D = makeEvent('evt-4', EIGHT_DAYS_AGO);
 describe('HoneypotCanaryTile', () => {
   beforeEach(() => {
     mockPost.mockReset();
+    mockLoggerWarn.mockReset();
   });
 
   // ---------------------------------------------------------------------------
@@ -260,30 +279,127 @@ describe('HoneypotCanaryTile', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Error / network failure
+  // Error / network failure (IMP-a133d32b7e4e)
+  //
+  // This tile is a security canary, so "we could not ask" must never render as
+  // "nobody touched the honeypots". The old behaviour swallowed the failure and
+  // showed 0/0 in the neutral tone — pixel-identical to a quiet fleet. These
+  // tests replace the three that pinned that behaviour.
   // ---------------------------------------------------------------------------
 
-  it('shows 0 counts and no ALERT badge on API error', async () => {
+  it('renders an unavailable state instead of a zero-count all-clear on API error', async () => {
     mockPost.mockRejectedValue(new Error('network failure'));
     render(<HoneypotCanaryTile />);
-    await waitFor(() => expect(screen.queryByText(/Loading…/)).not.toBeInTheDocument());
-    const zeroes = screen.getAllByText('0');
-    expect(zeroes.length).toBeGreaterThanOrEqual(2);
+
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    // The counts and their window labels must be gone: a 0 an operator can read
+    // as "no intrusions" is the whole defect.
+    expect(screen.queryByText('last 24h')).not.toBeInTheDocument();
+    expect(screen.queryByText('last 7d')).not.toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+  });
+
+  it('carries a warning tone, not the neutral tone, on API error', async () => {
+    mockPost.mockRejectedValue(new Error('network failure'));
+    const { container } = render(<HoneypotCanaryTile />);
+
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    const tile = container.firstElementChild as HTMLElement;
+    expect(tile.className).toContain('border-theme-warning-border');
+    // `border-theme` alone is the quiet-fleet tone.
+    expect(tile.className).not.toMatch(/border-theme(?![\w-])/);
+  });
+
+  it('does not show the ALERT badge on API error', async () => {
+    mockPost.mockRejectedValue(new Error('network failure'));
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
     expect(screen.queryByText('ALERT')).not.toBeInTheDocument();
   });
 
   it('does not show "Last access:" on API error', async () => {
     mockPost.mockRejectedValue(new Error('network failure'));
     render(<HoneypotCanaryTile />);
-    await waitFor(() => expect(screen.queryByText(/Loading…/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
     expect(screen.queryByText(/Last access:/)).not.toBeInTheDocument();
   });
 
-  it('renders "last 24h" and "last 7d" labels even on API error', async () => {
+  it('logs the failure through the shared logger', async () => {
     mockPost.mockRejectedValue(new Error('network failure'));
     render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+    expect(mockLoggerWarn).toHaveBeenCalled();
+  });
+
+  it('retries the fetch and recovers when the operator clicks Retry', async () => {
+    mockPost
+      .mockRejectedValueOnce(new Error('network failure'))
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+    expect(screen.queryByText(/Signal feed unavailable/i)).not.toBeInTheDocument();
+    expect(mockPost).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the explanation and the Retry control visible while a retry is in flight', async () => {
+    let releaseSecond: () => void = () => {};
+    mockPost
+      .mockRejectedValueOnce(new Error('network failure'))
+      .mockReturnValueOnce(new Promise((resolve) => {
+        releaseSecond = () => resolve(signalsResponse([]));
+      }));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(2));
+
+    // Mid-retry the operator must still be told the feed is down, and must
+    // still have the control — not a bare "Loading…".
+    expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/Honeypot status is unknown, not clear/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeDisabled();
+
+    releaseSecond();
+    await waitFor(() => expect(screen.queryByText(/Signal feed unavailable/i)).not.toBeInTheDocument());
+  });
+
+  it('treats a 200 with a malformed payload as unavailable, not as zero hits', async () => {
+    // extractData falls back to the raw body, so a well-formed HTTP response
+    // can still carry no `events`. Unguarded this reached render as
+    // undefined.filter(...) and threw the tile off the dashboard entirely.
+    mockPost.mockResolvedValue(envelope({ count: 0, channel: 'system_fleet' }));
+
+    render(<HoneypotCanaryTile />);
+
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    expect(screen.queryByText('last 24h')).not.toBeInTheDocument();
+    expect(mockLoggerWarn).toHaveBeenCalled();
+  });
+
+  it('returns to the unavailable state when a retry also fails', async () => {
+    mockPost.mockRejectedValue(new Error('still down'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    // The retry re-enters the loading state, so wait for it to settle before
+    // asserting — otherwise this passes on the pre-click render.
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText(/Loading…/)).not.toBeInTheDocument());
-    expect(screen.getByText('last 24h')).toBeInTheDocument();
-    expect(screen.getByText('last 7d')).toBeInTheDocument();
+
+    expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
   });
 });
