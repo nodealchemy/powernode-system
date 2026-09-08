@@ -211,4 +211,181 @@ RSpec.describe "Operator API — Fulfillment Requests", type: :request do
       end
     end
   end
+
+  # IMP-3fd7f5c67a7b — approve recorded source "operator_ui" while no operator
+  # surface existed: there was no index/show route, so a composed request could
+  # not be found, let alone reviewed, before releasing its frozen plan.
+  describe "GET /api/v1/system/fulfillment_requests" do
+    let(:reader) { user_with_permissions("system.fulfillment_requests.read", account: account) }
+
+    it "lists this account's requests, newest first" do
+      older = composed_request(account: account, request: "older")
+      newer = composed_request(account: account, request: "newer")
+      older.update!(created_at: 2.hours.ago)
+
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(reader)
+
+      expect(response).to have_http_status(:ok)
+      rows = JSON.parse(response.body)["data"]["fulfillment_requests"]
+      expect(rows.map { |r| r["id"] }).to eq([ newer.id, older.id ])
+    end
+
+    it "never leaks another account's requests" do
+      mine = composed_request(account: account)
+      theirs = composed_request(account: other_account)
+
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(reader)
+
+      ids = JSON.parse(response.body)["data"]["fulfillment_requests"].map { |r| r["id"] }
+      expect(ids).to include(mine.id)
+      expect(ids).not_to include(theirs.id)
+    end
+
+    it "filters by state so the operator can isolate what awaits a decision" do
+      composed = composed_request(account: account)
+      approved = composed_request(account: account)
+      approved.approve_by!(user: reader, source: "test")
+
+      get "/api/v1/system/fulfillment_requests", params: { state: "composed" },
+          headers: auth_headers_for(reader)
+
+      ids = JSON.parse(response.body)["data"]["fulfillment_requests"].map { |r| r["id"] }
+      expect(ids).to eq([ composed.id ])
+      expect(ids).not_to include(approved.id)
+    end
+
+    it "carries the pending-decision count so the hub can badge the tab" do
+      composed_request(account: account)
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(reader)
+      expect(JSON.parse(response.body)["data"]["awaiting_approval_count"]).to eq(1)
+    end
+
+    it "does NOT include the frozen plan in list rows" do
+      composed_request(account: account)
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(reader)
+      row = JSON.parse(response.body)["data"]["fulfillment_requests"].first
+      expect(row).not_to have_key("plan")
+    end
+
+    # Same trap the approve block documents: an unregistered name silently means
+    # "admins only" rather than "nobody", so the 403 examples below would pass on
+    # a typo. Pin catalog membership directly.
+    it "gates on a permission that is actually registered in the catalog" do
+      expect(::Permissions.permission_exists?("system.fulfillment_requests.read")).to be(true)
+    end
+
+    it "rejects a user without the read permission" do
+      anon = create(:user, account: account)
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(anon)
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    it "does not accept the approve permission as a substitute for read" do
+      approver = user_with_permissions("system.fulfillment_requests.approve", account: account)
+      get "/api/v1/system/fulfillment_requests", headers: auth_headers_for(approver)
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
+  describe "GET /api/v1/system/fulfillment_requests/:id" do
+    let(:reader) { user_with_permissions("system.fulfillment_requests.read", account: account) }
+
+    it "returns the FROZEN plan, so the operator approves what will execute" do
+      fr = composed_request(account: account)
+
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)["data"]["fulfillment_request"]
+      expect(body["id"]).to eq(fr.id)
+      # The exact bytes approve releases — not a re-composed or filtered copy.
+      expect(body["plan"]).to eq(fr.plan)
+      expect(body.dig("plan", "execution", "template_name")).to eq("fulfill-memcached")
+    end
+
+    it "surfaces the cumulative park trail, including a withheld autonomous approval" do
+      fr = composed_request(account: account)
+      fr.add_park!(step: "autonomous_approval", reason: "confidence below threshold")
+
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+
+      parked = JSON.parse(response.body)["data"]["fulfillment_request"]["parked"]
+      expect(parked.first["step"]).to eq("autonomous_approval")
+      expect(parked.first["reason"]).to eq("confidence below threshold")
+    end
+
+    it "surfaces unresolved gaps rather than hiding them from the approver" do
+      fr = composed_request(account: account)
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+      gaps = JSON.parse(response.body)["data"]["fulfillment_request"]["plan"]["unresolved_gaps"]
+      expect(gaps.first["capability"]).to eq("memcached-exporter")
+    end
+
+    # Compared against a RELOADED row, not the in-memory object create_composed!
+    # returned: plan_digest hashes `plan.to_json`, and jsonb reorders keys on the
+    # way through Postgres, so the two differ. Every path that matters here reads
+    # a persisted row — approve_by! runs on the row set_fulfillment_request
+    # loaded — so the digest an operator is shown and the one the approval
+    # FleetEvent carries do agree. The in-memory case is a separate concern.
+    it "carries the plan digest an auditor can match against the approval event" do
+      fr = composed_request(account: account)
+      persisted_digest = ::System::FulfillmentRequest.find(fr.id).plan_digest
+
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+
+      body = JSON.parse(response.body)["data"]["fulfillment_request"]
+      expect(body["plan_digest"]).to eq(persisted_digest)
+      expect(body["plan_digest"]).to match(/\A\h{64}\z/)
+    end
+
+    # The digest only earns its place if the number shown to the operator is the
+    # number the approval trail records. Assert across the two code paths rather
+    # than against the same method twice.
+    it "shows the digest the approval event then records" do
+      fr = composed_request(account: account)
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+      shown = JSON.parse(response.body)["data"]["fulfillment_request"]["plan_digest"]
+
+      emitted = nil
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!) do |**kwargs|
+        emitted = kwargs[:payload] if kwargs[:kind] == "system.fulfillment_approved"
+      end
+      ::System::FulfillmentRequest.find(fr.id).approve_by!(user: reader, source: "test")
+
+      expect(emitted[:plan_digest]).to eq(shown)
+    end
+
+    it "shows the same plan bytes the approval then releases" do
+      fr = composed_request(account: account)
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
+      shown = JSON.parse(response.body)["data"]["fulfillment_request"]["plan"]
+
+      # What show rendered must be what approve releases — the frozen-plan
+      # contract read from the operator's end.
+      expect(shown).to eq(::System::FulfillmentRequest.find(fr.id).plan)
+    end
+
+    it "404s for another account's request" do
+      theirs = composed_request(account: other_account)
+      get "/api/v1/system/fulfillment_requests/#{theirs.id}", headers: auth_headers_for(reader)
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "rejects a user without the read permission" do
+      fr = composed_request(account: account)
+      anon = create(:user, account: account)
+      get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(anon)
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    # The permission is checked BEFORE the row is looked up, so an unprivileged
+    # caller cannot use the 403/404 difference to learn which ids exist.
+    it "answers 403, not 404, for a nonexistent id when the caller cannot read" do
+      anon = create(:user, account: account)
+      get "/api/v1/system/fulfillment_requests/#{SecureRandom.uuid}",
+          headers: auth_headers_for(anon)
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
 end

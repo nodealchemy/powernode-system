@@ -1,5 +1,6 @@
 import { apiClient } from '@/shared/services/apiClient';
-import { extractData } from './helpers';
+import { extractData, extractGated } from './helpers';
+import type { Gated } from './helpers';
 import type { ApiEnvelope } from './types';
 import type {
   ServiceOffering,
@@ -11,6 +12,10 @@ import type {
   ServiceSubscriptionFilters,
   ServiceSubscriptionsListResponse,
   RemoteCatalogResponse,
+  FulfillmentApproveResponse,
+  FulfillmentRequestDetail,
+  FulfillmentRequestFilters,
+  FulfillmentRequestsListResponse,
 } from '../../types/service_delivery.types';
 
 export interface RemoteSubscribeRequest {
@@ -30,6 +35,7 @@ export interface RemoteSubscribeRequest {
 
 const OFFERINGS_BASE = '/system/federation/service_offerings';
 const SUBSCRIPTIONS_BASE = '/system/federation/service_subscriptions';
+const FULFILLMENT_BASE = '/system/fulfillment_requests';
 
 function paramsFromFilters(filters?: object): Record<string, string> {
   if (!filters) return {};
@@ -154,4 +160,40 @@ export const serviceCatalogApi = {
     );
     return extractData(response).subscription;
   },
+
+  // === Capability fulfillment (operator approval) ===
+  //
+  // `composed` is the one state the 60s sweep will not advance: it waits on a
+  // human. These three calls are that human's surface — list what is waiting,
+  // read the FROZEN plan being released, release it.
+
+  listFulfillmentRequests: async (
+    filters?: FulfillmentRequestFilters,
+  ): Promise<FulfillmentRequestsListResponse> => {
+    const response = await apiClient.get<ApiEnvelope<FulfillmentRequestsListResponse>>(
+      FULFILLMENT_BASE,
+      { params: paramsFromFilters(filters) },
+    );
+    return extractData(response);
+  },
+
+  getFulfillmentRequest: async (id: string): Promise<FulfillmentRequestDetail> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{ fulfillment_request: FulfillmentRequestDetail }>
+    >(`${FULFILLMENT_BASE}/${id}`);
+    return extractData(response).fulfillment_request;
+  },
+
+  // Gated<T>: approve is a human decision exempt from the kill switch, but NOT
+  // from the dual-plane fence (IMP-f90858fd9b5b), so it can still answer 202
+  // pending-approval. Callers must branch on isPendingApproval rather than
+  // reporting success.
+  approveFulfillment: async (id: string): Promise<Gated<FulfillmentApproveResponse>> => {
+    const response = await apiClient.post<ApiEnvelope<FulfillmentApproveResponse>>(
+      `${FULFILLMENT_BASE}/${id}/approve`,
+      {},
+    );
+    return extractGated(response, (d) => d);
+  },
+
 };

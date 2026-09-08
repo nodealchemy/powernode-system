@@ -1,6 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Server, Network as NetworkIcon, Globe2, Share2 } from 'lucide-react';
+import { Server, Network as NetworkIcon, Globe2, Share2, ClipboardCheck } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import {
   PathTabs,
@@ -12,18 +12,20 @@ import { OfferingsTab } from '@system/features/system/components/federation_hub/
 import { SubscriptionsTab } from '@system/features/system/components/federation_hub/SubscriptionsTab';
 import { CatalogBrowserTab } from '@system/features/system/components/federation_hub/CatalogBrowserTab';
 import { ChildrenTab } from '@system/features/system/components/federation_hub/ChildrenTab';
+import { FulfillmentTab } from '@system/features/system/components/federation_hub/FulfillmentTab';
 
-// Service Delivery hub. Four tabs:
+// Service Delivery hub. Five tabs:
 //   - Offerings — operator manages this platform's catalog
 //   - Subscriptions — subscriber views this platform's consumption
 //   - Catalog Browser — per-peer view + subscribe flow
 //   - Children — spawned child platforms (P6)
+//   - Fulfillment — composed capability requests awaiting a human approval
 //
 // Plan reference: Decentralized Federation §L.7 + P4.6.8 + §H + P6.
 
 const BASE_PATH = '/app/system/service-delivery';
 
-type TabKey = 'offerings' | 'subscriptions' | 'catalog' | 'children';
+type TabKey = 'offerings' | 'subscriptions' | 'catalog' | 'children' | 'fulfillment';
 
 const TABS: PathTabSpec<TabKey>[] = [
   {
@@ -49,6 +51,12 @@ const TABS: PathTabSpec<TabKey>[] = [
     label: 'Children',
     permission: 'system.children.read',
     icon: <Share2 className="w-4 h-4" />,
+  },
+  {
+    key: 'fulfillment',
+    label: 'Fulfillment',
+    permission: 'system.fulfillment_requests.read',
+    icon: <ClipboardCheck className="w-4 h-4" />,
   },
 ];
 
@@ -78,6 +86,7 @@ export const ServiceDeliveryPage: React.FC = () => {
           <Route path="subscriptions" element={<SubscriptionsTab />} />
           <Route path="catalog" element={<CatalogBrowserTab />} />
           <Route path="children" element={<ChildrenTab />} />
+          <Route path="fulfillment" element={<FulfillmentTab />} />
           <Route path="*" element={<Navigate to={firstPath} replace />} />
         </Routes>
       </PathTabs>
