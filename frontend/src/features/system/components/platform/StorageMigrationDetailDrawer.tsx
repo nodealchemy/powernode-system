@@ -1,6 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { X, Database, AlertTriangle, Clock } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { X, Database, AlertTriangle, Clock, Undo2, Trash2 } from 'lucide-react';
 import { EntityLink } from '@/shared/components/entity';
+import { Button } from '@/shared/components/ui/Button';
+import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
+import { apiErrorMessage, isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import type {
   StorageMigrationDetail,
@@ -8,6 +14,54 @@ import type {
 } from '../../types/storageMigration.types';
 
 const TERMINAL: ReadonlyArray<string> = ['completed', 'failed', 'cancelled'];
+
+/**
+ * ActiveModel::Type::Boolean's falsy set, so a client-side mirror of a Ruby
+ * guard agrees with it. Plain `Boolean(...)` does not: metadata is a free-form
+ * JSON column, and `Boolean("false")` is true while Rails casts it to false —
+ * which would render a control the backend then refuses.
+ */
+const RAILS_FALSE = new Set(['', 'false', 'f', '0', 'off', 'no', 'n']);
+
+function castBoolean(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'string') return !RAILS_FALSE.has(value.trim().toLowerCase());
+  if (typeof value === 'number') return value !== 0;
+  return Boolean(value);
+}
+
+/**
+ * Client-side mirrors of System::StorageMigration#can_revert_binding? and
+ * #can_cleanup?. They decide only whether to RENDER the control — the backend
+ * re-validates both and 422s on anything it will not do, so drift here costs a
+ * useless button, never an unauthorized action.
+ *
+ * Both also refuse once a request is already in flight. The model has NO
+ * re-entry guard: request_cleanup! re-runs happily, and cleanup leaves the
+ * status at `failed`, so without this the drawer would keep offering to delete
+ * target-side artifacts that a previous click already asked the agent to
+ * delete. `metadata.<action>_status` is the model's own record of that
+ * (requested → completed / failed).
+ */
+function revertRequested(m: StorageMigrationDetail): boolean {
+  return m.metadata?.revert_status === 'requested';
+}
+
+function cleanupRequested(m: StorageMigrationDetail): boolean {
+  return m.metadata?.cleanup_status === 'requested';
+}
+
+function canRevert(m: StorageMigrationDetail): boolean {
+  if (revertRequested(m)) return false;
+  if (m.status === 'failed') return true;
+  return m.status === 'completed' && castBoolean(m.metadata?.promote_failed);
+}
+
+function canCleanup(m: StorageMigrationDetail): boolean {
+  if (cleanupRequested(m)) return false;
+  if (m.status === 'failed') return true;
+  return m.status === 'cancelled' && Boolean(m.started_at);
+}
 
 /**
  * Slide-out drawer showing the full storage-migration detail: the
@@ -26,9 +80,18 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
   migrationId,
   onClose,
 }) => {
+  const { hasPermission } = usePermissions();
+  const { addNotification } = useNotifications();
+  const { confirmWithReason, close: closeConfirmation, ConfirmationDialog } = useReasonConfirm();
+  const canScale = hasPermission('system.platform.scale');
   const [migration, setMigration] = useState<StorageMigrationDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Written by the uncontrolled checkbox in the cleanup dialog's body, read
+  // once on confirm. A ref, not state, because useConfirmation snapshots the
+  // message element: a controlled checkbox driven from here would never move.
+  // Uncontrolled means the DOM shows the operator's click without a re-render.
+  const immediateRef = useRef(false);
 
   const fetchDetail = useCallback(
     async (id: string, isInitial: boolean) => {
@@ -51,12 +114,19 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
   );
 
   useEffect(() => {
+    // Drop any open confirmation on EVERY change of subject, not just on
+    // close. The drawer returns null when closed rather than unmounting, so
+    // useReasonConfirm's state outlives it — and its onConfirm closed over the
+    // migration id from the render that opened it. Left alone, a dialog opened
+    // for migration A survives a switch to B and would act on A while the
+    // drawer displays B.
+    closeConfirmation();
     if (!migrationId) {
       setMigration(null);
       return;
     }
     void fetchDetail(migrationId, true);
-  }, [migrationId, fetchDetail]);
+  }, [migrationId, fetchDetail, closeConfirmation]);
 
   // Auto-refresh while non-terminal. Stops when status reaches a
   // terminal state so the audit log freezes naturally.
@@ -68,6 +138,100 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
     }, 5_000);
     return () => window.clearInterval(interval);
   }, [migrationId, migration, fetchDetail]);
+
+  const handleRevert = useCallback(() => {
+    if (!migrationId) return;
+    confirmWithReason({
+      title: 'Revert binding to source',
+      message:
+        'Ask the on-node agent to re-point the canonical mount back to the source volume. ' +
+        'The target volume is left in place — this only moves the binding.',
+      confirmLabel: 'Revert binding',
+      cancelLabel: 'Leave as is',
+      variant: 'warning',
+      reasonPlaceholder: 'Why is this binding being reverted?',
+      onConfirm: async (reason) => {
+        try {
+          const result = await storageMigrationsApi.revert(migrationId, reason);
+          if (isPendingApproval(result)) {
+            addNotification(pendingApprovalNotice('reverting the storage binding', result));
+            return;
+          }
+          addNotification({
+            type: 'success',
+            message: 'Revert requested — the agent picks it up on its next tick.',
+          });
+          await fetchDetail(migrationId, false);
+        } catch (err: unknown) {
+          addNotification({ type: 'error', message: apiErrorMessage(err, 'Revert failed') });
+        }
+      },
+    });
+  }, [migrationId, confirmWithReason, addNotification, fetchDetail]);
+
+  const handleCleanup = useCallback(() => {
+    if (!migrationId) return;
+    // Reset per dialog: the ref outlives any single confirmation, so without
+    // this an override ticked into a cancelled dialog would apply to the next.
+    immediateRef.current = false;
+    confirmWithReason({
+      title: 'Clean up target-side artifacts',
+      message: (
+        <div className="space-y-3">
+          <p>
+            DESTRUCTIVE and irreversible: deletes the target-side scratch artifacts under
+            this migration&apos;s target subpath. Nothing on the source is touched. The
+            platform never runs this automatically on failure — it is an explicit operator
+            action, and the reason you give here is what lands in the audit log.
+          </p>
+          <label className="flex items-start gap-2 text-sm text-theme-secondary">
+            <input
+              type="checkbox"
+              onChange={(e) => {
+                immediateRef.current = e.target.checked;
+              }}
+              className="mt-0.5 w-4 h-4 rounded border-theme bg-theme-surface"
+            />
+            <span>
+              Skip the cleanup grace window.
+              <span className="block text-xs text-theme-tertiary">
+                Cleanup is otherwise held for a grace period after the migration failed or
+                was cancelled (24 hours unless this account overrides it), and the request
+                is refused until it elapses.
+              </span>
+            </span>
+          </label>
+        </div>
+      ),
+      confirmLabel: 'Delete target artifacts',
+      cancelLabel: 'Keep artifacts',
+      variant: 'danger',
+      reasonRequired: true,
+      reasonPlaceholder: 'Why are these artifacts being deleted?',
+      onConfirm: async (reason) => {
+        // reasonRequired keeps the confirm button disabled while the reason is
+        // blank, so `reason` is defined here by the hook's contract; the `??`
+        // is a type-level formality, not a guess about operator behaviour.
+        try {
+          const result = await storageMigrationsApi.cleanup(migrationId, {
+            reason: reason ?? '',
+            immediate: immediateRef.current,
+          });
+          if (isPendingApproval(result)) {
+            addNotification(pendingApprovalNotice('cleaning up the migration target', result));
+            return;
+          }
+          addNotification({
+            type: 'success',
+            message: 'Cleanup requested — the agent removes the target-side artifacts.',
+          });
+          await fetchDetail(migrationId, false);
+        } catch (err: unknown) {
+          addNotification({ type: 'error', message: apiErrorMessage(err, 'Cleanup failed') });
+        }
+      },
+    });
+  }, [migrationId, confirmWithReason, addNotification, fetchDetail]);
 
   if (!migrationId) return null;
 
@@ -157,6 +321,48 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
               </pre>
             </section>
 
+            {canScale &&
+              (canRevert(migration) ||
+                canCleanup(migration) ||
+                revertRequested(migration) ||
+                cleanupRequested(migration)) && (
+                <section className="space-y-2">
+                  <div className="text-xs uppercase text-theme-tertiary">Recovery</div>
+                  <div className="flex flex-wrap gap-2">
+                    {canRevert(migration) && (
+                      <Button size="sm" variant="outline" onClick={handleRevert}>
+                        <Undo2 className="w-4 h-4" />
+                        Revert to source
+                      </Button>
+                    )}
+                    {canCleanup(migration) && (
+                      <Button size="sm" variant="danger" onClick={handleCleanup}>
+                        <Trash2 className="w-4 h-4" />
+                        Clean up target
+                      </Button>
+                    )}
+                  </div>
+                  {revertRequested(migration) && (
+                    <p className="text-xs text-theme-secondary">
+                      Revert requested — waiting for the agent to report the mount is back
+                      on source.
+                    </p>
+                  )}
+                  {cleanupRequested(migration) && (
+                    <p className="text-xs text-theme-secondary">
+                      Cleanup requested — waiting for the agent to report the target-side
+                      artifacts are gone.
+                    </p>
+                  )}
+                  {(canRevert(migration) || canCleanup(migration)) && (
+                    <p className="text-xs text-theme-tertiary">
+                      Revert moves the canonical mount back to source. Cleanup deletes the
+                      target-side scratch artifacts and cannot be undone.
+                    </p>
+                  )}
+                </section>
+              )}
+
             <section>
               <div className="text-xs uppercase text-theme-tertiary mb-2">Audit log</div>
               {migration.audit_log.length === 0 ? (
@@ -172,6 +378,8 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
           </div>
         )}
       </aside>
+
+      {ConfirmationDialog}
     </>
   );
 };

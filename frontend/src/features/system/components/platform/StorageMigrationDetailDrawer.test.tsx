@@ -9,10 +9,14 @@ import type { StorageMigrationDetail } from '../../types/storageMigration.types'
 // =============================================================================
 
 const mockGet = jest.fn();
+const mockRevert = jest.fn();
+const mockCleanup = jest.fn();
 
 jest.mock('@system/features/system/services/api/storageMigrationsApi', () => ({
   storageMigrationsApi: {
     get: (...args: unknown[]) => mockGet(...args),
+    revert: (...args: unknown[]) => mockRevert(...args),
+    cleanup: (...args: unknown[]) => mockCleanup(...args),
   },
 }));
 
@@ -22,9 +26,20 @@ jest.mock('@/shared/components/entity', () => ({
   EntityLink: ({ label }: { label: string }) => <span data-testid="entity-link">{label}</span>,
 }));
 
-// usePermissions is used by EntityLink (via the real import path before our mock)
+// usePermissions is used by EntityLink (via the real import path before our
+// mock) AND by the drawer itself to gate the recovery actions on
+// system.platform.scale. Tests reassign this to restrict permissions.
+let mockPermissionGranted = (_perm: string) => true;
 jest.mock('@/shared/hooks/usePermissions', () => ({
-  usePermissions: () => ({ hasPermission: () => true }),
+  usePermissions: () => ({ hasPermission: (perm: string) => mockPermissionGranted(perm) }),
+}));
+
+const mockAddNotification = jest.fn();
+jest.mock('@/shared/hooks/useNotifications', () => ({
+  useNotifications: () => ({
+    addNotification: mockAddNotification,
+    showNotification: jest.fn(),
+  }),
 }));
 
 // =============================================================================
@@ -134,6 +149,10 @@ function renderDrawer({ migrationId, onClose = jest.fn() }: RenderProps) {
 describe('StorageMigrationDetailDrawer', () => {
   beforeEach(() => {
     mockGet.mockReset();
+    mockRevert.mockReset();
+    mockCleanup.mockReset();
+    mockAddNotification.mockReset();
+    mockPermissionGranted = (_perm: string) => true;
     jest.useFakeTimers();
   });
 
@@ -602,6 +621,403 @@ describe('StorageMigrationDetailDrawer', () => {
   // ---------------------------------------------------------------------------
   // Migration id change
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Recovery actions — revert / cleanup
+  // ---------------------------------------------------------------------------
+
+  it('offers Revert on a failed migration and calls the API through the confirmation', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockRevert.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    await screen.findByRole('button', { name: /revert to source/i });
+    fireEvent.click(screen.getByRole('button', { name: /revert to source/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^revert binding$/i }));
+
+    await waitFor(() =>
+      expect(mockRevert).toHaveBeenCalledWith('mig-failed-0003', undefined),
+    );
+  });
+
+  it('sends the typed reason with the revert request', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockRevert.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /revert to source/i }));
+    await screen.findByRole('button', { name: /^revert binding$/i });
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '  sync never finished  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /^revert binding$/i }));
+
+    await waitFor(() =>
+      expect(mockRevert).toHaveBeenCalledWith('mig-failed-0003', 'sync never finished'),
+    );
+  });
+
+  it('does not revert when the confirmation is cancelled', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /revert to source/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^leave as is$/i }));
+
+    expect(mockRevert).not.toHaveBeenCalled();
+  });
+
+  it('reports the pending-approval branch instead of claiming the revert happened', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockRevert.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'defop-1',
+      action_category: 'storage.revert',
+      approval_request_id: 'appr-1',
+      message: 'parked',
+    });
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /revert to source/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^revert binding$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringContaining('Approval required'),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('surfaces a revert failure as an error notification', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockRevert.mockRejectedValue(new Error('agent unreachable'));
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /revert to source/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^revert binding$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'agent unreachable',
+      }),
+    );
+  });
+
+  it('keeps Clean up target disabled until a reason is typed', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockCleanup.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+
+    const confirmButton = await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    expect(confirmButton).toBeDisabled();
+
+    // Whitespace is not a reason.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '   ' } });
+    await waitFor(() => expect(confirmButton).toBeDisabled());
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'target volume is scrap' } });
+    await waitFor(() => expect(confirmButton).not.toBeDisabled());
+
+    fireEvent.click(confirmButton);
+
+    await waitFor(() =>
+      expect(mockCleanup).toHaveBeenCalledWith('mig-failed-0003', {
+        reason: 'target volume is scrap',
+        immediate: false,
+      }),
+    );
+  });
+
+  it('sends immediate:true when the operator ticks the grace-window override', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockCleanup.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'volume is scrap' } });
+    fireEvent.click(screen.getByRole('button', { name: /^delete target artifacts$/i }));
+
+    await waitFor(() =>
+      expect(mockCleanup).toHaveBeenCalledWith('mig-failed-0003', {
+        reason: 'volume is scrap',
+        immediate: true,
+      }),
+    );
+  });
+
+  it('does not carry a grace-window override into the next cleanup dialog', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockCleanup.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    // First dialog: tick the override, then cancel.
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^keep artifacts$/i }));
+
+    // Second dialog: leave it alone.
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'second try' } });
+    fireEvent.click(screen.getByRole('button', { name: /^delete target artifacts$/i }));
+
+    await waitFor(() =>
+      expect(mockCleanup).toHaveBeenCalledWith('mig-failed-0003', {
+        reason: 'second try',
+        immediate: false,
+      }),
+    );
+  });
+
+  it('surfaces the backend 422 sentence rather than the axios status message', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    // What axios actually rejects with: a generic .message plus the server's
+    // own sentence buried in response.data.error.
+    mockCleanup.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 422'), {
+        response: {
+          status: 422,
+          data: {
+            error: 'Cleanup grace window not yet elapsed — 19h remaining (pass immediate: true to override)',
+          },
+        },
+      }),
+    );
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'scrap' } });
+    fireEvent.click(screen.getByRole('button', { name: /^delete target artifacts$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        message: expect.stringContaining('19h remaining'),
+      }),
+    );
+  });
+
+  it('refreshes the migration after a successful cleanup request', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockCleanup.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'scrap' } });
+    fireEvent.click(screen.getByRole('button', { name: /^delete target artifacts$/i }));
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    expect(mockAddNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  // -- already-requested state (the model has no re-entry guard) -------------
+
+  it('withdraws Clean up target once a cleanup is already requested', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_FAILED,
+      metadata: { cleanup_status: 'requested' },
+    });
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    await screen.findByText(/Cleanup requested — waiting for the agent/i);
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+  });
+
+  it('withdraws Revert to source once a revert is already requested', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_FAILED,
+      metadata: { revert_status: 'requested' },
+    });
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    await screen.findByText(/Revert requested — waiting for the agent/i);
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+  });
+
+  it('offers both again once a previous request has completed', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_FAILED,
+      metadata: { cleanup_status: 'failed', revert_status: 'completed' },
+    });
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    await screen.findByRole('button', { name: /clean up target/i });
+    expect(screen.getByRole('button', { name: /revert to source/i })).toBeInTheDocument();
+  });
+
+  it('reads promote_failed the way ActiveModel::Type::Boolean does', async () => {
+    // Rails casts the STRING "false" to false; plain Boolean("false") is true,
+    // which would render a Revert the backend then refuses.
+    mockGet.mockResolvedValue({
+      ...MIGRATION_TERMINAL,
+      metadata: { promote_failed: 'false' },
+    });
+
+    renderDrawer({ migrationId: 'mig-terminal-0002' });
+
+    await screen.findByText('Storage Migration');
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+  });
+
+  it('drops an open confirmation when the drawer switches to another migration', async () => {
+    mockGet
+      .mockResolvedValueOnce(MIGRATION_FAILED)
+      .mockResolvedValueOnce({ ...MIGRATION_FAILED, id: 'mig-other-9999' });
+
+    const { rerender } = renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /revert to source/i }));
+    await screen.findByRole('button', { name: /^revert binding$/i });
+
+    rerender(
+      <BrowserRouter>
+        <StorageMigrationDetailDrawer migrationId="mig-other-9999" onClose={jest.fn()} />
+      </BrowserRouter>,
+    );
+
+    // The dialog's onConfirm closed over the PREVIOUS id, so it must not
+    // survive the switch.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^revert binding$/i })).not.toBeInTheDocument(),
+    );
+    expect(mockRevert).not.toHaveBeenCalled();
+  });
+
+  it('reports the pending-approval branch for cleanup too', async () => {
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+    mockCleanup.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'defop-2',
+      action_category: 'storage.cleanup',
+      approval_request_id: null,
+      message: 'parked',
+    });
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /clean up target/i }));
+    await screen.findByRole('button', { name: /^delete target artifacts$/i });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'scrap' } });
+    fireEvent.click(screen.getByRole('button', { name: /^delete target artifacts$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringContaining('Approval required'),
+        }),
+      ),
+    );
+  });
+
+  // -- visibility rules (mirrors of can_revert_binding? / can_cleanup?) ------
+
+  it('hides both recovery actions without system.platform.scale', async () => {
+    mockPermissionGranted = (perm: string) => perm !== 'system.platform.scale';
+    mockGet.mockResolvedValue(MIGRATION_FAILED);
+
+    renderDrawer({ migrationId: 'mig-failed-0003' });
+
+    await screen.findByText('Disk quota exceeded');
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+  });
+
+  it('offers neither action on a still-syncing migration', async () => {
+    mockGet.mockResolvedValue(MIGRATION_DETAIL);
+
+    renderDrawer({ migrationId: 'mig-detail-0001' });
+
+    await screen.findByText('Rsync pass 1 complete');
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+  });
+
+  it('offers neither action on a cleanly completed migration', async () => {
+    mockGet.mockResolvedValue(MIGRATION_TERMINAL);
+
+    renderDrawer({ migrationId: 'mig-terminal-0002' });
+
+    await screen.findByText('Storage Migration');
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+  });
+
+  it('offers Revert but not Cleanup on a completed migration whose promote was swallowed', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_TERMINAL,
+      metadata: { promote_failed: true },
+    });
+
+    renderDrawer({ migrationId: 'mig-terminal-0002' });
+
+    await screen.findByRole('button', { name: /revert to source/i });
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+  });
+
+  it('offers Cleanup but not Revert on a cancelled migration that had started', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_DETAIL,
+      status: 'cancelled',
+      terminal: true,
+      cancelled_at: '2026-05-01T10:20:00Z',
+      started_at: '2026-05-01T10:02:00Z',
+    });
+
+    renderDrawer({ migrationId: 'mig-detail-0001' });
+
+    await screen.findByRole('button', { name: /clean up target/i });
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+  });
+
+  it('offers neither action on a cancelled migration that never started', async () => {
+    mockGet.mockResolvedValue({
+      ...MIGRATION_DETAIL,
+      status: 'cancelled',
+      terminal: true,
+      cancelled_at: '2026-05-01T10:20:00Z',
+      started_at: null,
+    });
+
+    renderDrawer({ migrationId: 'mig-detail-0001' });
+
+    await screen.findByText('Storage Migration');
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /clean up target/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /revert to source/i })).not.toBeInTheDocument();
+  });
 
   it('re-fetches when migrationId changes', async () => {
     mockGet

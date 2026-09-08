@@ -18,18 +18,20 @@ const ReasonPrompt: React.FC<{
   prompt: React.ReactNode;
   placeholder?: string;
   helpText?: string;
+  required?: boolean;
   onReasonChange: (reason: string) => void;
-}> = ({ prompt, placeholder, helpText, onReasonChange }) => {
+}> = ({ prompt, placeholder, helpText, required, onReasonChange }) => {
   const [reason, setReason] = useState('');
 
   return (
     <div className="space-y-4">
       {typeof prompt === 'string' ? <p>{prompt}</p> : prompt}
       <FormField
-        label="Reason (optional)"
+        label={required ? 'Reason (required)' : 'Reason (optional)'}
         type="textarea"
         rows={2}
         size="sm"
+        required={required}
         value={reason}
         onChange={(value) => {
           setReason(value);
@@ -52,6 +54,13 @@ export interface ReasonConfirmOptions {
   reasonPlaceholder?: string;
   /** Help text under the reason field. */
   reasonHelpText?: string;
+  /**
+   * Require a non-blank reason: the confirm button stays disabled until one is
+   * typed. For an action whose audit trail is the only record of WHY it was
+   * taken — a destructive, never-auto-run operator step — an optional reason is
+   * an unlabelled hole in that trail.
+   */
+  reasonRequired?: boolean;
   /**
    * Runs only if the operator confirms. Receives the trimmed reason, or
    * `undefined` when none was typed — every caller forwards it straight to an
@@ -85,11 +94,18 @@ export interface ReasonConfirmOptions {
  *   {ConfirmationDialog}
  */
 export function useReasonConfirm() {
-  const { confirm, ConfirmationDialog } = useConfirmation();
+  const { confirm, close, ConfirmationDialog } = useConfirmation();
   // Written by ReasonPrompt while the dialog is open; read once on confirm. A
   // ref (not state) because the dialog body is a snapshotted element — see
   // ReasonPrompt.
   const reasonRef = useRef('');
+  // State MIRROR of the same value, written on every keystroke purely to force
+  // a re-render of the owning component. `useConfirmation` builds its
+  // ConfirmationDialog fresh on each of those renders, which is what
+  // re-evaluates the `confirmDisabled` predicate below; the ref alone changes
+  // nothing on screen. The FIELD still reads from ReasonPrompt's own state —
+  // driving it from here would break it, for the reason ReasonPrompt documents.
+  const [, setReasonMirror] = useState('');
   // Core's `confirm` is a plain function rebuilt every render, so depending on
   // it directly would make `confirmWithReason` a new value every render too —
   // an inert useCallback here, and an inert one in any caller that lists
@@ -107,11 +123,13 @@ export function useReasonConfirm() {
       variant = 'danger',
       reasonPlaceholder,
       reasonHelpText,
+      reasonRequired = false,
       onConfirm,
     }: ReasonConfirmOptions) => {
       // Reset first: the ref outlives any single dialog, so without this a
       // reason typed into a cancelled confirmation would be sent by the next one.
       reasonRef.current = '';
+      setReasonMirror('');
       confirmRef.current({
         title,
         message: (
@@ -119,19 +137,24 @@ export function useReasonConfirm() {
             prompt={message}
             placeholder={reasonPlaceholder}
             helpText={reasonHelpText}
+            required={reasonRequired}
             onReasonChange={(reason) => {
               reasonRef.current = reason;
+              setReasonMirror(reason);
             }}
           />
         ),
         confirmLabel,
         cancelLabel,
         variant,
+        confirmDisabled: reasonRequired
+          ? () => reasonRef.current.trim() === ''
+          : undefined,
         onConfirm: () => onConfirm(reasonRef.current.trim() || undefined),
       });
     },
     [],
   );
 
-  return { confirmWithReason, ConfirmationDialog };
+  return { confirmWithReason, close, ConfirmationDialog };
 }

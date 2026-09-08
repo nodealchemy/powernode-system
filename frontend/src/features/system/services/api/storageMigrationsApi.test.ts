@@ -1,5 +1,7 @@
 import { storageMigrationsApi } from './storageMigrationsApi';
+import { isPendingApproval } from './helpers';
 import type {
+  StorageMigrationActionResult,
   StorageMigrationDetail,
   StorageMigrationListResponse,
   StorageMigrationSummary,
@@ -383,6 +385,139 @@ describe('storageMigrationsApi', () => {
       mockPost.mockRejectedValue(new Error('Conflict'));
 
       await expect(storageMigrationsApi.cancel('migration-a')).rejects.toThrow('Conflict');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Recovery actions (Increment 9) — revert / cleanup
+  //
+  // Both render the MCP tool's own serializer, which omits `terminal` and
+  // `initiated_by_user_id`, hence StorageMigrationActionResult rather than
+  // StorageMigrationDetail.
+  // ---------------------------------------------------------------------------
+
+  describe('revert', () => {
+    const ACTION_RESULT: StorageMigrationActionResult = (() => {
+      const { terminal: _t, initiated_by_user_id: _u, ...rest } = {
+        ...DETAIL_A,
+        status: 'failed' as const,
+      };
+      return rest;
+    })();
+
+    it('calls POST /system/platform/storage_migrations/:id/revert with a reason', async () => {
+      mockPost.mockResolvedValue(envelope({ storage_migration: ACTION_RESULT }));
+
+      await storageMigrationsApi.revert('migration-a', 'sync never finished');
+
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/migration-a/revert`, {
+        reason: 'sync never finished',
+      });
+    });
+
+    it('calls POST with reason: undefined when no reason is provided', async () => {
+      mockPost.mockResolvedValue(envelope({ storage_migration: ACTION_RESULT }));
+
+      await storageMigrationsApi.revert('migration-a');
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/migration-a/revert`, {
+        reason: undefined,
+      });
+    });
+
+    it('unwraps the migration on the applied branch', async () => {
+      mockPost.mockResolvedValue(envelope({ storage_migration: ACTION_RESULT }));
+
+      const result = await storageMigrationsApi.revert('migration-a');
+
+      expect(isPendingApproval(result)).toBe(false);
+      expect((result as StorageMigrationActionResult).status).toBe('failed');
+    });
+
+    it('passes an autonomy-gate pending marker through untouched', async () => {
+      const pending = {
+        pending: true,
+        deferred_operation_id: 'defop-1',
+        action_category: 'storage.revert',
+        approval_request_id: 'appr-1',
+        message: 'parked',
+      };
+      mockPost.mockResolvedValue(envelope(pending));
+
+      const result = await storageMigrationsApi.revert('migration-a');
+
+      expect(isPendingApproval(result)).toBe(true);
+      expect(result).toEqual(pending);
+    });
+
+    it('propagates API errors', async () => {
+      mockPost.mockRejectedValue(new Error('Cannot revert binding from status=syncing'));
+
+      await expect(storageMigrationsApi.revert('migration-a')).rejects.toThrow(
+        'Cannot revert binding from status=syncing',
+      );
+    });
+  });
+
+  describe('cleanup', () => {
+    const ACTION_RESULT: StorageMigrationActionResult = (() => {
+      const { terminal: _t, initiated_by_user_id: _u, ...rest } = {
+        ...DETAIL_A,
+        status: 'failed' as const,
+      };
+      return rest;
+    })();
+
+    it('calls POST /system/platform/storage_migrations/:id/cleanup with reason and immediate', async () => {
+      mockPost.mockResolvedValue(envelope({ storage_migration: ACTION_RESULT }));
+
+      await storageMigrationsApi.cleanup('migration-a', {
+        reason: 'target is scrap',
+        immediate: true,
+      });
+
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/migration-a/cleanup`, {
+        reason: 'target is scrap',
+        immediate: true,
+      });
+    });
+
+    it('sends immediate: undefined when the caller omits it', async () => {
+      mockPost.mockResolvedValue(envelope({ storage_migration: ACTION_RESULT }));
+
+      await storageMigrationsApi.cleanup('migration-a', { reason: 'target is scrap' });
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/migration-a/cleanup`, {
+        reason: 'target is scrap',
+        immediate: undefined,
+      });
+    });
+
+    it('passes an autonomy-gate pending marker through untouched', async () => {
+      const pending = {
+        pending: true,
+        deferred_operation_id: 'defop-2',
+        action_category: 'storage.cleanup',
+        approval_request_id: null,
+        message: 'parked',
+      };
+      mockPost.mockResolvedValue(envelope(pending));
+
+      const result = await storageMigrationsApi.cleanup('migration-a', { reason: 'x' });
+
+      expect(isPendingApproval(result)).toBe(true);
+    });
+
+    it('propagates the grace-window refusal', async () => {
+      mockPost.mockRejectedValue(
+        new Error('Cleanup grace window not yet elapsed — 19h remaining (pass immediate: true to override)'),
+      );
+
+      await expect(
+        storageMigrationsApi.cleanup('migration-a', { reason: 'x' }),
+      ).rejects.toThrow('19h remaining');
     });
   });
 

@@ -61,6 +61,22 @@ export interface StorageMigrationDetail extends StorageMigrationSummary {
   bytes_verified?: number | null;
 }
 
+/**
+ * What POST :id/revert and :id/cleanup actually return.
+ *
+ * Those two controller actions render `result[:storage_migration]` straight
+ * from the MCP tool's own serializer, NOT the controller's `serialize_full`.
+ * That serializer omits `terminal` and `initiated_by_user_id`, so typing the
+ * response as StorageMigrationDetail would promise two fields that are not on
+ * the wire — and the first caller to read `.terminal` off one would get
+ * undefined with no type error. Callers should treat the result as an
+ * acknowledgement and refetch for display.
+ */
+export type StorageMigrationActionResult = Omit<
+  StorageMigrationDetail,
+  'terminal' | 'initiated_by_user_id'
+>;
+
 export interface StorageMigrationListResponse {
   storage_migrations: StorageMigrationSummary[];
   count: number;
