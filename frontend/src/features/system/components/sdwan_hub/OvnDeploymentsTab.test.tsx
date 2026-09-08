@@ -241,14 +241,17 @@ describe('OvnDeploymentsTab', () => {
 
     renderTab();
 
-    // 'active' appears in both the deployment-status badge (px-3) and
-    // port-state badge (px-1.5); getAllByText is correct here
+    // 'active' appears in both the deployment-status badge and the port-state
+    // badges; getAllByText is correct here. The two are told apart by the
+    // shared StatusBadge's SIZE token now (md vs xs) rather than by the ad-hoc
+    // paddings the two hand-rolled maps happened to use.
     await waitFor(() =>
       expect(screen.getAllByText('active').length).toBeGreaterThan(0),
     );
-    // Verify the deployment-level badge (larger style) is present
     const badges = screen.getAllByText('active');
-    const deploymentBadge = badges.find((el) => el.className.includes('px-3'));
+    const deploymentBadge = badges
+      .map((el) => el.closest('.badge-theme'))
+      .find((el) => el?.className.includes('badge-theme-md'));
     expect(deploymentBadge).toBeDefined();
   });
 
@@ -489,11 +492,16 @@ describe('OvnDeploymentsTab', () => {
   // Status badge variants
   // ---------------------------------------------------------------------------
 
+  // Colour now comes from the shared StatusBadge's variant table
+  // (IMP-328c63a1da8a). Two of these rows CHANGED, deliberately: this tab used
+  // to render `pending` grey where four other maps rendered it warning, and
+  // `degraded` red where PeerStatusPill rendered it amber. Degraded means
+  // serving-but-impaired, which is not the same as down.
   it.each([
-    ['active', /bg-theme-success-bg/],
-    ['bootstrapping', /bg-theme-info-bg/],
-    ['pending', /bg-theme-background-secondary/],
-    ['degraded', /bg-theme-danger-bg/],
+    ['active', /badge-theme-success/],
+    ['bootstrapping', /badge-theme-info/],
+    ['pending', /badge-theme-warning/],
+    ['degraded', /badge-theme-warning/],
   ] as const)(
     'applies correct status badge class for status "%s"',
     async (status, expectedClass) => {
@@ -511,12 +519,11 @@ describe('OvnDeploymentsTab', () => {
 
       const { unmount } = renderTab();
 
-      // The deployment status badge has the larger px-3 py-1 class;
-      // port state badges use px-1.5 py-0.5 — query all and find the right one.
+      // The deployment status badge is size md; port state badges are xs.
       const badges = await waitFor(() => screen.getAllByText(status));
-      const deploymentBadge = badges.find((el) =>
-        el.className.includes('px-3'),
-      );
+      const deploymentBadge = badges
+        .map((el) => el.closest('.badge-theme'))
+        .find((el) => el?.className.includes('badge-theme-md'));
       expect(deploymentBadge).toBeDefined();
       expect(deploymentBadge!.className).toMatch(expectedClass);
       unmount();

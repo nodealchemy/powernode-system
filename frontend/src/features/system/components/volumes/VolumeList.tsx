@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -50,15 +51,6 @@ interface VolumeListFilters {
   status: string;
   attached: 'all' | 'attached' | 'unattached';
 }
-
-const statusVariants: Record<string, 'success' | 'warning' | 'danger' | 'secondary' | 'info'> = {
-  available: 'success',
-  'in-use': 'info',
-  creating: 'warning',
-  deleting: 'warning',
-  deleted: 'secondary',
-  error: 'danger'
-};
 
 const volumeTypeLabels: Record<string, string> = {
   gp2: 'General Purpose SSD (gp2)',
@@ -277,14 +269,12 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                   </Badge>
                 </td>
                 <td className="px-4 py-3">
-                  <Badge
-                    variant={statusVariants[volume.status] || 'secondary'}
+                  <StatusBadge
+                    status={volume.status}
                     size="sm"
                     dot
                     pulse={volume.status === 'creating'}
-                  >
-                    {volume.status}
-                  </Badge>
+                  />
                 </td>
                 <td className="px-4 py-3">
                   {volume.node_instance_id ? (
@@ -476,9 +466,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                   <p className="text-sm text-theme-secondary">{formatSize(volume.size_gb)}</p>
                 </div>
               </div>
-              <Badge variant={statusVariants[volume.status] || 'secondary'} size="sm" dot>
-                {volume.status}
-              </Badge>
+              <StatusBadge status={volume.status} size="sm" dot />
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">

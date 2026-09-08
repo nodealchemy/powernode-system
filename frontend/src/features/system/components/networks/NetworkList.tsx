@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -55,14 +56,6 @@ const crossRefs = (network: SystemProviderNetwork): NetworkCrossRefs => {
     node_instance_id: direct.node_instance_id ?? config.node_instance_id,
     node_instance_name: direct.node_instance_name ?? config.node_instance_name,
   };
-};
-
-const statusVariants: Record<string, 'success' | 'warning' | 'danger' | 'secondary'> = {
-  available: 'success',
-  pending: 'warning',
-  deleting: 'warning',
-  deleted: 'secondary',
-  error: 'danger'
 };
 
 export const NetworkList: React.FC<NetworkListProps> = ({
@@ -298,14 +291,12 @@ export const NetworkList: React.FC<NetworkListProps> = ({
                   <span className="font-mono text-theme-primary">{network.cidr_block}</span>
                 </td>
                 <td className="px-4 py-3">
-                  <Badge
-                    variant={statusVariants[network.status] || 'secondary'}
+                  <StatusBadge
+                    status={network.status}
                     size="sm"
                     dot
                     pulse={network.status === 'pending'}
-                  >
-                    {network.status}
-                  </Badge>
+                  />
                 </td>
                 <td className="px-4 py-3">
                   <span className="text-sm text-theme-secondary">
@@ -410,9 +401,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({
                   </div>
                 </div>
               </div>
-              <Badge variant={statusVariants[network.status] || 'secondary'} size="sm" dot>
-                {network.status}
-              </Badge>
+              <StatusBadge status={network.status} size="sm" dot />
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">

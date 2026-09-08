@@ -16,7 +16,8 @@ import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { apiErrorMessage } from '../../services/api/helpers';
 import { platformMigrationChainsApi } from '../../services/api/platformMigrationChainsApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
-import { MIGRATION_STATUS_STYLE, OperationBadge, StatusPill } from './MigrationsPanel';
+import { OperationBadge, StatusPill } from './MigrationsPanel';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   MigrationChainAuditEntry,
   MigrationChainDetail,
@@ -144,7 +145,7 @@ export const MigrationChainsPanel: React.FC = () => {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-3"><ChainStatusPill status={c.status} /></td>
+                <td className="px-4 py-3"><StatusBadge status={c.status} size="xs" /></td>
                 <td className="px-4 py-3 text-xs text-theme-secondary">
                   <HopProgress
                     currentHopIndex={c.current_hop_index}
@@ -184,28 +185,6 @@ export const MigrationChainsPanel: React.FC = () => {
 
 // ──────────────────────────────────────────────────────────────────────
 // Status + progress
-
-/**
- * A chain's own lifecycle. Four of its five states are shared with the
- * migration lifecycle and reuse MIGRATION_STATUS_STYLE verbatim; `in_flight`
- * is chain-only and takes the same treatment the migration enum gives its
- * working states.
- */
-const CHAIN_STATUS_STYLE: Record<MigrationChainStatus, string> = {
-  planned: MIGRATION_STATUS_STYLE.planned,
-  in_flight: MIGRATION_STATUS_STYLE.applying,
-  completed: MIGRATION_STATUS_STYLE.completed,
-  failed: MIGRATION_STATUS_STYLE.failed,
-  cancelled: MIGRATION_STATUS_STYLE.cancelled,
-};
-
-export const ChainStatusPill: React.FC<{ status: MigrationChainStatus }> = ({ status }) => (
-  <span
-    className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${CHAIN_STATUS_STYLE[status]}`}
-  >
-    {status}
-  </span>
-);
 
 /**
  * current_hop_index is the position the chain is AT, so it doubles as the count
@@ -430,7 +409,7 @@ const ChainDetailDrawer: React.FC<ChainDetailDrawerProps> = ({
         {chain && (
           <div className="p-4 space-y-5">
             <section className="grid grid-cols-2 gap-3">
-              <KeyValue label="Status"><ChainStatusPill status={chain.status} /></KeyValue>
+              <KeyValue label="Status"><StatusBadge status={chain.status} size="xs" /></KeyValue>
               <KeyValue label="Operation"><OperationBadge op={chain.operation} /></KeyValue>
               <KeyValue label="Resource">
                 <span className="font-mono text-xs">{chain.root_resource_kind}</span>

@@ -6,11 +6,11 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import { isPendingApproval } from '../../services/api/helpers';
 import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanFederationPeer,
-  SdwanFederationStatus,
 } from '../../types/sdwan.types';
 
 interface FederationPeerListProps {
@@ -129,7 +129,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
                 {p.remote_prefix_advertisement ?? '—'}
               </td>
               <td className="p-3">
-                <span className={statusClass(p.status)}>{p.status}</span>
+                <StatusBadge status={p.status} size="xs" />
                 {p.status === 'revoked' && p.revocation_reason && (
                   <div className="text-xs text-theme-secondary italic mt-1 max-w-xs truncate" title={p.revocation_reason}>
                     reason: {p.revocation_reason}
@@ -318,15 +318,3 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
     </>
   );
 };
-
-function statusClass(s: SdwanFederationStatus): string {
-  const base = 'px-2 py-0.5 rounded text-xs font-medium';
-  switch (s) {
-    case 'proposed':  return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'accepted':  return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'active':    return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'suspended': return `${base} bg-theme-warning-bg text-theme-warning-fg`;
-    case 'revoked':   return `${base} bg-theme-danger-bg text-theme-danger-fg`;
-    default:          return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}

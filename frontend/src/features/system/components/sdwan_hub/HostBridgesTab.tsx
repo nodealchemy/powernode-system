@@ -6,12 +6,12 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { Button } from '@/shared/components/ui/Button';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
+import { StatusBadge } from '@system/features/system/components/shared/StatusBadge';
 import { apiErrorMessage, isPendingApproval } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import { CreateHostBridgeModal } from './CreateHostBridgeModal';
 import type {
   SdwanHostBridge,
-  SdwanHostBridgeState,
 } from '@system/features/system/types/sdwan.types';
 
 // Phase O6 — read-only operator view of allocated SDWAN host bridges
@@ -298,7 +298,7 @@ const BridgeRow: React.FC<BridgeRowProps> = ({
           <span className={kindBadgeClass(b.kind)}>{b.kind}</span>
         </td>
         <td className="p-3">
-          <span className={stateBadgeClass(b.state)}>{b.state}</span>
+          <StatusBadge status={b.state} size="xs" />
         </td>
         <td className="p-3 text-theme-secondary text-sm">{b.short_id}</td>
         <td className="p-3 text-right">
@@ -388,18 +388,3 @@ function kindBadgeClass(kind: 'linux' | 'ovs'): string {
     : `${base} bg-theme-background-secondary text-theme-secondary`;
 }
 
-function stateBadgeClass(state: SdwanHostBridgeState): string {
-  const base = 'px-2 py-0.5 rounded text-xs font-medium';
-  switch (state) {
-    case 'active':
-      return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'pending':
-      return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'draining':
-      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
-    case 'removed':
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-    default:
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}

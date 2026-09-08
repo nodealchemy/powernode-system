@@ -107,6 +107,77 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       expect(cred["provider"]).to eq("cloudflare")
     end
 
+    # IMP-e24167f9dc58. Readiness became a backend fact in IMP-352cfa773ecb, but
+    # only the modal gated on it, so this endpoint accepted any supported?
+    # provider and the failure surfaced later, on the node, at issuance.
+    it "422s a provider the registry has not marked production_ready, naming it" do
+      expect(fake_vault).not_to receive(:store_credential)
+      body = valid_body.merge(
+        provider: "route53",
+        credentials: { access_key_id: "AKIA", secret_access_key: "s", region: "us-east-1" }
+      )
+
+      expect {
+        post base_path, params: body.to_json,
+             headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+      }.not_to change { ::System::AcmeDnsCredential.count }
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to include("route53")
+    end
+
+    it "still creates a provider the registry HAS marked production_ready" do
+      post base_path, params: valid_body.to_json,
+           headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:created)
+    end
+
+    # Must follow the registry rather than a hardcoded slug — the point of the
+    # earlier task was that readiness is per-deployment backend state.
+    it "follows the registry rather than a hardcoded slug" do
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).and_call_original
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).with("cloudflare").and_return(false)
+
+      post base_path, params: valid_body.to_json,
+           headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to include("cloudflare")
+    end
+
+    # An unsupported slug and a not-ready one are different refusals: the first
+    # says the platform has never heard of it, the second that this deployment
+    # cannot use it. Collapsing them would mislead the operator.
+    it "distinguishes an unknown provider from a known-but-not-ready one" do
+      post base_path, params: valid_body.merge(provider: "megacorp-dns").to_json,
+           headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+      unknown = JSON.parse(response.body)["error"]
+
+      post base_path, params: valid_body.merge(
+        provider: "route53",
+        credentials: { access_key_id: "A", secret_access_key: "s", region: "r" }
+      ).to_json, headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+      not_ready = JSON.parse(response.body)["error"]
+
+      expect(unknown).to include("Unsupported provider")
+      expect(not_ready).not_to include("Unsupported provider")
+      expect(not_ready).to include("route53")
+    end
+
+    # Mirrors the tool spec's ordering example. Without this the controller's
+    # guard could move below the missing-fields check and every other example
+    # here would still pass, because they all supply a complete credential set.
+    it "reports NOT-READY before missing fields when a provider fails both" do
+      post base_path, params: valid_body.merge(
+        provider: "route53", credentials: { access_key_id: "AKIA..." }
+      ).to_json, headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:unprocessable_content)
+      error = JSON.parse(response.body)["error"]
+      expect(error).to include("route53")
+      expect(error).not_to include("Missing required credential field")
+    end
+
     it "never echoes the token plaintext in the create response" do
       post base_path, params: valid_body.to_json,
                        headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
@@ -153,6 +224,27 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
         post base_path, params: valid_body.to_json,
                          headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
       }.not_to change { ::System::AcmeDnsCredential.count }
+    end
+  end
+
+  describe "PATCH /acme_dns_credentials/:id" do
+    let!(:cred) do
+      create(:system_acme_dns_credential, account: account, name: "alice-cf",
+                                          provider: "cloudflare", status: "valid")
+    end
+
+    # This is the PREMISE the readiness gate's narrowing rests on: #update is
+    # left ungated because it cannot change the provider. That was true only by
+    # inspection of update_params, so adding :provider there would have opened
+    # an ungated write path while the comment still said it was impossible.
+    it "cannot change the provider, which is why #update needs no readiness gate" do
+      patch "#{base_path}/#{cred.id}",
+            params: { name: "renamed", provider: "route53" }.to_json,
+            headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:ok)
+      expect(cred.reload.provider).to eq("cloudflare")
+      expect(cred.name).to eq("renamed")
     end
   end
 

@@ -192,6 +192,46 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       expect(cred.status).to eq("untested")
     end
 
+    # IMP-e24167f9dc58. Readiness moved from a frontend literal to the registry
+    # in IMP-352cfa773ecb, but only the modal gated on it — this verb accepted
+    # any supported? provider, so an agent could store a token for a provider
+    # the on-node issuer cannot use, and the failure surfaced only at issuance.
+    it "refuses a provider the registry has not marked production_ready, naming it" do
+      expect(vault_double).not_to receive(:store_credential)
+
+      r = call("system_acme_create_dns_credential",
+               name: "prod-route53",
+               provider: "route53",
+               credentials: { "access_key_id" => "AKIA", "secret_access_key" => "s", "region" => "us-east-1" })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("route53")
+      expect(::System::AcmeDnsCredential.where(provider: "route53")).to be_empty
+    end
+
+    it "still accepts a provider the registry HAS marked production_ready" do
+      r = call("system_acme_create_dns_credential",
+               name: "prod-cloudflare",
+               provider: "cloudflare",
+               credentials: { "api_token" => secret_token })
+      expect(r[:success]).to be true
+    end
+
+    # The refusal must follow the registry, not a hardcoded slug list — the
+    # whole point of the earlier task.
+    it "follows the registry rather than a hardcoded slug" do
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).and_call_original
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).with("cloudflare").and_return(false)
+
+      r = call("system_acme_create_dns_credential",
+               name: "prod-cloudflare",
+               provider: "cloudflare",
+               credentials: { "api_token" => secret_token })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("cloudflare")
+    end
+
     it "result serializes ONLY the public index (name, provider, status)" do
       r = call("system_acme_create_dns_credential",
                name: "prod-cloudflare",
@@ -225,13 +265,36 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       expect(r[:error]).to include("Unsupported provider")
     end
 
+    # route53 has three required fields, which is what makes this example worth
+    # keeping — it proves the message enumerates them. It is also not
+    # production_ready, so the readiness gate would now refuse it first; stub
+    # readiness so this example keeps testing the field validation it names
+    # rather than silently becoming a second readiness test.
     it "rejects when a required credential field is missing" do
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).and_call_original
+      allow(::Acme::DnsProviderRegistry).to receive(:production_ready?).with("route53").and_return(true)
+
       r = call("system_acme_create_dns_credential",
                name: "incomplete",
                provider: "route53",
                credentials: { "access_key_id" => "AKIA..." }) # missing secret_access_key + region
       expect(r[:success]).to be false
       expect(r[:error]).to include("Missing required credential field")
+    end
+
+    # Deliberate ordering: readiness is about whether the credential could EVER
+    # work on this deployment; field validation is about this payload. Telling
+    # an operator which field they forgot, for a provider they cannot use at
+    # all, sends them down the wrong path.
+    it "reports NOT-READY before missing fields when a provider fails both" do
+      r = call("system_acme_create_dns_credential",
+               name: "incomplete",
+               provider: "route53",
+               credentials: { "access_key_id" => "AKIA..." })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("route53")
+      expect(r[:error]).not_to include("Missing required credential field")
     end
 
     it "drops fields not declared by the provider registry (allowlist)" do

@@ -133,6 +133,114 @@ RSpec.describe System::FulfillmentRequest, type: :model do
     end
   end
 
+  describe "#plan_digest" do
+    # A plan whose key order is DELIBERATELY three-way distinct: not insertion
+    # order, not jsonb order, not alphabetical. Postgres orders jsonb keys by
+    # (length, then bytes), so this comes back am/zeta/execution/unresolved_gaps
+    # at the top level and a/gaps/template_name/base_os_module_id inside
+    # execution — neither of which is how it is written below. A fixture
+    # already in jsonb order would let a non-canonical implementation pass.
+    # Digests a RAW hash, bypassing the attribute cast that would stringify its
+    # keys — the only way to hand deep_sort_keys a genuinely mixed-key hash.
+    def deep_sorted_digest(raw)
+      ::Digest::SHA256.hexdigest(
+        described_class.new.send(:canonical_json, raw)
+      )
+    end
+
+    def unordered_plan
+      {
+        "zeta" => 1,
+        "execution" => {
+          "template_name" => "t",
+          "base_os_module_id" => "b",
+          "gaps" => [ { "package" => "memcached", "arch" => "x86_64" } ],
+          "a" => "first-alphabetically-last-by-length"
+        },
+        "unresolved_gaps" => [ { "reason" => "author_module", "capability" => "exporter" } ],
+        "am" => 2
+      }
+    end
+
+    it "is stable across the round trip through jsonb" do
+      fr = composed(plan: unordered_plan)
+      # THE DEFECT: `plan.to_json` follows Ruby's insertion order in memory and
+      # Postgres's key order after a reload, so an auditor who digests before
+      # the row is reloaded records a value the audit trail never matches.
+      expect(fr.plan_digest).to eq(described_class.find(fr.id).plan_digest)
+    end
+
+    it "does not depend on the order the caller wrote the keys in" do
+      a = composed(plan: unordered_plan)
+      reordered = {
+        "am" => 2,
+        "unresolved_gaps" => [ { "capability" => "exporter", "reason" => "author_module" } ],
+        "execution" => {
+          "a" => "first-alphabetically-last-by-length",
+          "gaps" => [ { "arch" => "x86_64", "package" => "memcached" } ],
+          "base_os_module_id" => "b",
+          "template_name" => "t"
+        },
+        "zeta" => 1
+      }
+      expect(composed(plan: reordered).plan_digest).to eq(a.plan_digest)
+    end
+
+    # What transform_keys(&:to_s) actually buys. An attribute assignment already
+    # round-trips through ActiveRecord::Type::Json#cast, which stringifies keys,
+    # so a symbol-only hash proves nothing. A hash that MIXES key types is the
+    # case that would otherwise make a bare `.sort` on the pairs raise
+    # "comparison of Array with Array failed".
+    it "canonicalises a hash with mixed key types rather than raising" do
+      mixed = { :execution => { "count" => 1 }, "gaps" => [], 7 => "seven" }
+      expect { deep_sorted_digest(mixed) }.not_to raise_error
+      expect(deep_sorted_digest(mixed))
+        .to eq(deep_sorted_digest({ 7 => "seven", "gaps" => [], "execution" => { "count" => 1 } }))
+    end
+
+    it "still distinguishes plans that differ in VALUE, not just in order" do
+      a = composed(plan: unordered_plan)
+      changed = unordered_plan
+      changed["execution"]["template_name"] = "t2"
+      expect(composed(plan: changed).plan_digest).not_to eq(a.plan_digest)
+    end
+
+    # Order inside an ARRAY is meaningful — hops, or a gap list the executor
+    # replays in sequence — so canonicalising must sort keys, never elements.
+    it "treats a reordered ARRAY as a different plan" do
+      a = composed(plan: { "execution" => { "reused_module_ids" => %w[m1 m2] } })
+      b = composed(plan: { "execution" => { "reused_module_ids" => %w[m2 m1] } })
+      expect(a.plan_digest).not_to eq(b.plan_digest)
+    end
+
+    it "sorts keys nested inside array elements too" do
+      a = composed(plan: { "gaps" => [ { "package" => "p", "arch" => "x" } ] })
+      b = composed(plan: { "gaps" => [ { "arch" => "x", "package" => "p" } ] })
+      expect(a.plan_digest).to eq(b.plan_digest)
+    end
+
+    it "is a sha256 hex digest" do
+      expect(composed.plan_digest).to match(/\A\h{64}\z/)
+    end
+
+    # Every other example here compares one digest to another, which any
+    # deterministic total order satisfies — including a swap back to
+    # `plan.to_json`, the change that silently invalidated the audit trail in
+    # the first place. Pin the bytes.
+    it "is the sha256 of the key-sorted JSON, byte for byte" do
+      expect(composed(plan: unordered_plan).plan_digest)
+        .to eq("98b88b5e07aa99ef338dfc334366cfd292eced14180a73228698c022652b7d05")
+    end
+
+    # The column is NOT NULL and defaults to {}, so `described_class.new` alone
+    # never reaches the `plan || {}` guard — an explicit nil does, and that is
+    # the only way an unsaved in-memory object can carry one.
+    it "treats an explicitly nil plan as an empty object" do
+      expect(described_class.new(plan: nil).plan_digest)
+        .to eq(::Digest::SHA256.hexdigest("{}"))
+    end
+  end
+
   describe "park + gate helpers" do
     it "add_park! appends and dedupes identical (step, reason) notes" do
       fr = composed

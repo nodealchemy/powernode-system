@@ -13,6 +13,7 @@ import { PackageRepositoryFormModal } from '@system/features/system/components/p
 import { CreateModuleFromPackageModal } from '@system/features/system/components/packages/CreateModuleFromPackageModal';
 import { PackageBrowser } from '@system/features/system/components/packages/PackageBrowser';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
+import { StatusBadge } from '@system/features/system/components/shared/StatusBadge';
 import { useResourceList } from '@system/features/system/hooks/useResourceList';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -366,18 +367,7 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
     );
 
   const syncBadge = (r: SystemPackageRepository) => (
-    <span
-      className={
-        'px-2 py-0.5 rounded text-xs ' +
-        (r.sync_status === 'idle'
-          ? 'bg-theme-success-bg text-theme-success-fg'
-          : r.sync_status === 'syncing'
-            ? 'bg-theme-warning-bg text-theme-warning-fg'
-            : 'bg-theme-danger-bg text-theme-danger-fg')
-      }
-    >
-      {r.sync_status}
-    </span>
+    <StatusBadge status={r.sync_status} size="xs" />
   );
 
   return (

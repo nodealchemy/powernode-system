@@ -321,20 +321,18 @@ RSpec.describe "Operator API — Fulfillment Requests", type: :request do
       expect(gaps.first["capability"]).to eq("memcached-exporter")
     end
 
-    # Compared against a RELOADED row, not the in-memory object create_composed!
-    # returned: plan_digest hashes `plan.to_json`, and jsonb reorders keys on the
-    # way through Postgres, so the two differ. Every path that matters here reads
-    # a persisted row — approve_by! runs on the row set_fulfillment_request
-    # loaded — so the digest an operator is shown and the one the approval
-    # FleetEvent carries do agree. The in-memory case is a separate concern.
+    # Compared against the IN-MEMORY object create_composed! returned, which is
+    # the stronger assertion: plan_digest canonicalises (deep-sorts keys) before
+    # hashing, so the round trip through jsonb no longer changes it
+    # (IMP-09837d6cf5ff). Before that fix this had to reload first.
     it "carries the plan digest an auditor can match against the approval event" do
       fr = composed_request(account: account)
-      persisted_digest = ::System::FulfillmentRequest.find(fr.id).plan_digest
 
       get "/api/v1/system/fulfillment_requests/#{fr.id}", headers: auth_headers_for(reader)
 
       body = JSON.parse(response.body)["data"]["fulfillment_request"]
-      expect(body["plan_digest"]).to eq(persisted_digest)
+      expect(body["plan_digest"]).to eq(fr.plan_digest)
+      expect(body["plan_digest"]).to eq(::System::FulfillmentRequest.find(fr.id).plan_digest)
       expect(body["plan_digest"]).to match(/\A\h{64}\z/)
     end
 

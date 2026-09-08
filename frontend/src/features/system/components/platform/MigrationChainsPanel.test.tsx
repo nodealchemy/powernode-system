@@ -353,11 +353,19 @@ describe('MigrationChainsPanel', () => {
     await openDrawer();
 
     const hop = await screen.findByTestId('chain-hop-1');
-    const pill = within(hop).getByText('transferring');
-    expect(pill).toBeInTheDocument();
-    // The chain enum has no `transferring`, so swapping in the chain pill would
-    // still render the text with an undefined class — assert the class instead.
-    expect(pill).toHaveClass('bg-theme-info-bg');
+    const hopPill = within(hop).getByText('transferring').closest('.badge-theme')!;
+    expect(hopPill.className).toContain('badge-theme-info');
+
+    // The discriminator: hop-2 is `planned` (secondary) while the hop under
+    // test is `transferring` (info). Before IMP-328c63a1da8a this test proved
+    // the point by asserting a class the chain map could not produce; both
+    // pills now read the same shared table, so the way to keep it falsifiable
+    // is to pin that two DIFFERENT hop statuses resolve to two different
+    // variants. Rendering every hop through one status would collapse these.
+    const laterHop = await screen.findByTestId('chain-hop-2');
+    const laterPill = within(laterHop).getByText('planned').closest('.badge-theme')!;
+    expect(laterPill.className).toContain('badge-theme-secondary');
+    expect(hopPill.className).not.toBe(laterPill.className);
   });
 
   // ---------------------------------------------------------------------------

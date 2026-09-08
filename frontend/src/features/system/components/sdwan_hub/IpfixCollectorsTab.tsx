@@ -5,11 +5,11 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
+import { StatusBadge } from '@system/features/system/components/shared/StatusBadge';
 import { isPendingApproval } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SdwanIpfixCollector,
-  SdwanIpfixState,
 } from '@system/features/system/types/sdwan.types';
 
 // Phase O6 — read view of registered IPFIX collectors plus inline
@@ -207,7 +207,7 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
         <td className="p-3 font-mono text-xs text-theme-secondary">{c.target_endpoint}</td>
         <td className="p-3 text-theme-secondary text-sm">1 in {c.sampling_rate}</td>
         <td className="p-3">
-          <span className={stateBadgeClass(c.state)}>{c.state}</span>
+          <StatusBadge status={c.state} size="xs" />
         </td>
         <td className="p-3">
           {c.is_winning_collector ? (
@@ -295,9 +295,3 @@ function formatTs(ts?: string | null): string {
   return ts ? new Date(ts).toLocaleString() : '—';
 }
 
-function stateBadgeClass(state: SdwanIpfixState): string {
-  const base = 'px-2 py-0.5 rounded text-xs font-medium';
-  return state === 'active'
-    ? `${base} bg-theme-success-bg text-theme-success-fg`
-    : `${base} bg-theme-background-secondary text-theme-secondary`;
-}

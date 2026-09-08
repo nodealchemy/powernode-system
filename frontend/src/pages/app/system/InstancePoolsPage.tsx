@@ -37,6 +37,7 @@ import type {
 } from '@system/features/system/services/api/types';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeTemplate } from '@system/features/system/types/system.types';
+import { StatusBadge } from '@system/features/system/components/shared/StatusBadge';
 
 // =============================================================================
 // Types
@@ -238,21 +239,6 @@ const instancePoolsApi = {
 // =============================================================================
 // Status pill helpers — validated theme tokens only.
 // =============================================================================
-
-function statusPillClasses(status: InstancePoolSummary['status']): string {
-  switch (status) {
-    case 'active':
-      return 'bg-theme-success-bg text-theme-success-fg';
-    case 'draining':
-      return 'bg-theme-warning-bg text-theme-warning-fg';
-    case 'archived':
-      return 'bg-theme-text-secondary/10 text-theme-secondary';
-    case 'paused':
-      return 'bg-theme-info-bg text-theme-info-fg';
-    default:
-      return 'bg-theme-text-secondary/10 text-theme-secondary';
-  }
-}
 
 function lifecyclePillClasses(
   lifecycleClass: InstancePoolSummary['lifecycle_class'],
@@ -660,13 +646,7 @@ const InstancePoolsPage: React.FC = () => {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusPillClasses(
-                          pool.status,
-                        )}`}
-                      >
-                        {pool.status}
-                      </span>
+                      <StatusBadge status={pool.status} size="xs" />
                     </td>
                     <td className="py-3 px-4">
                       <span
@@ -961,13 +941,7 @@ const InstancePoolsPage: React.FC = () => {
                       </button>
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusPillClasses(
-                          pool.status,
-                        )}`}
-                      >
-                        {pool.status}
-                      </span>
+                      <StatusBadge status={pool.status} size="xs" />
                       <span
                         className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${lifecyclePillClasses(
                           pool.lifecycle_class,
@@ -1898,13 +1872,7 @@ const PoolDetailModal: React.FC<PoolDetailModalProps> = ({
             Status
           </h3>
           <div className="flex flex-wrap gap-2">
-            <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusPillClasses(
-                pool.status,
-              )}`}
-            >
-              {pool.status}
-            </span>
+            <StatusBadge status={pool.status} size="xs" />
             <span
               className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${lifecyclePillClasses(
                 pool.lifecycle_class,
