@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
@@ -274,17 +275,26 @@ export const FulfillmentTab: React.FC = () => {
         </div>
       )}
 
-      {!loading && requests.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm space-y-2">
-          <div>No fulfillment requests.</div>
-          <div className="text-xs text-theme-tertiary max-w-2xl mx-auto">
-            A capability request composes a plan and then waits here for a human to
-            release it. Everything after that is driven by the worker sweep.
-          </div>
-        </div>
-      )}
-
-      {requests.length > 0 && (
+      {/* The header stays OUTSIDE the container. The container is skipped ONLY
+          when an error coincides with an empty list: the original guarded the
+          empty branch on `!error` but rendered the table alongside the banner,
+          so guarding the whole container would make a failed refresh blank a
+          list that is still on screen. */}
+      {!(error && requests.length === 0) && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={requests.length}
+        filteredCount={requests.length}
+        emptyState={{
+          icon: ClipboardCheck,
+          title: 'No fulfillment requests.',
+          description:
+            'A capability request composes a plan and then waits here for a human to release it. Everything after that is driven by the worker sweep.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -335,6 +345,8 @@ export const FulfillmentTab: React.FC = () => {
             ))}
           </tbody>
         </table>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
 
       {ConfirmationDialog}

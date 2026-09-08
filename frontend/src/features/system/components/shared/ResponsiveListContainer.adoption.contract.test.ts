@@ -48,12 +48,14 @@ const EXEMPT: readonly string[] = [
   'features/system/components/platform/PeerTable.tsx',
 ];
 
-/** Still owes the conversion. Delete the line as each is converted. */
-const UNMIGRATED: readonly string[] = [
-  // Landed after this ratchet did, in another lane. The equality oracle is
-  // what caught it: a ceiling would have absorbed it silently.
-  'features/system/components/federation_hub/FulfillmentTab.tsx',
-];
+/**
+ * Still owes the conversion. Delete the line as each is converted.
+ *
+ * Empty, and that is the point: adoption is complete, so every remaining
+ * non-container table is a deliberate EXEMPT with a stated reason. A new
+ * entry here means new debt, not a backlog.
+ */
+const UNMIGRATED: readonly string[] = [];
 
 const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [...EXEMPT, ...UNMIGRATED];
 
