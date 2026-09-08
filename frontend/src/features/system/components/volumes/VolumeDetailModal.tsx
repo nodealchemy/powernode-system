@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
   HardDrive,
@@ -7,17 +7,26 @@ import {
   Camera,
   MapPin,
   Calendar,
-  Shield
+  Shield,
+  History,
+  RotateCcw,
+  AlertTriangle
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import Pagination from '@/shared/components/ui/Pagination';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
+import type {
+  VolumeSnapshot,
+  VolumeRestoreResult
+} from '@system/features/system/services/api/volumesApi';
+import { VolumeRestoreError } from '@system/features/system/services/api/volumesApi';
 
 // The volume payload may carry the holding node id + instance display name
 // alongside `node_instance_id`; a `node_id` is required to build the
@@ -28,6 +37,55 @@ import type { SystemProviderVolume } from '@system/features/system/types/system.
 type VolumeWithAttachment = SystemProviderVolume & {
   node_id?: string;
   instance_name?: string;
+};
+
+/**
+ * Body of the restore confirmation. Owns its own state and reports upward
+ * because useConfirmation snapshots the `message` element when confirm() is
+ * called: a controlled checkbox driven by VolumeDetailModal state would keep
+ * the props from the render that opened the dialog and never tick.
+ */
+const RestorePrompt: React.FC<{
+  snapshotName: string;
+  volumeName: string;
+  attached: boolean;
+  onSwapChange: (swap: boolean) => void;
+}> = ({ snapshotName, volumeName, attached, onSwapChange }) => {
+  const [swap, setSwap] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <p>
+        Restore &quot;{volumeName}&quot; from snapshot &quot;{snapshotName}&quot;?
+      </p>
+      <p>
+        Most providers restore by <strong>copying</strong> the snapshot into a new
+        volume. On that path this volume is left untouched and the restored data
+        arrives in a separate disk, which you then have to put into service
+        yourself.
+      </p>
+      <label
+        htmlFor="restore-swap-into-place"
+        className="flex items-start gap-3 text-theme-primary cursor-pointer"
+      >
+        <input
+          id="restore-swap-into-place"
+          type="checkbox"
+          checked={swap}
+          onChange={(e) => { setSwap(e.target.checked); onSwapChange(e.target.checked); }}
+          className="mt-1"
+        />
+        <span>
+          <span className="font-medium">Swap the copy into place</span>
+          <span className="block text-sm text-theme-secondary">
+            {attached
+              ? 'Detach this volume from its instance and attach the copy at the same device. The workload loses access while the swap runs.'
+              : 'Only applies to an attached volume — this one is not attached, so the server will report the swap as skipped.'}
+          </span>
+        </span>
+      </label>
+    </div>
+  );
 };
 
 interface VolumeDetailModalProps {
@@ -87,6 +145,11 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
 
   const canUpdate = hasPermission('system.volumes.update');
   const canSnapshot = hasPermission('system.volumes.snapshot');
+  // Restore is gated on `manage` server-side — the broadest volume grant,
+  // because it is the broadest thing that can be done to a volume's contents.
+  const canManage = hasPermission('system.volumes.manage');
+  // Written by RestorePrompt while its dialog is open; read once on confirm.
+  const swapIntoPlaceRef = useRef(false);
 
   // State
   const [volume, setVolume] = useState<SystemProviderVolume | null>(null);
@@ -95,6 +158,24 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [snapshotName, setSnapshotName] = useState('');
   const [snapshotDescription, setSnapshotDescription] = useState('');
+  const [snapshots, setSnapshots] = useState<VolumeSnapshot[]>([]);
+  const [snapshotsPage, setSnapshotsPage] = useState(1);
+  const [snapshotsTotalPages, setSnapshotsTotalPages] = useState(1);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  // Distinguished from "no snapshots": a failed listing that rendered as an
+  // empty list would tell an operator this volume has no restore points.
+  const [snapshotsError, setSnapshotsError] = useState<string | null>(null);
+  const [restoreResult, setRestoreResult] = useState<VolumeRestoreResult | null>(null);
+  // A restore can fail AFTER the provider made a copy. The toast auto-dismisses;
+  // the copy's id must not, or the operator is left with a billable disk they
+  // cannot find.
+  const [restoreFailure, setRestoreFailure] = useState<{
+    message: string;
+    details?: Record<string, unknown>;
+  } | null>(null);
+  // Guards against an out-of-order snapshot listing overwriting a newer one
+  // when the modal switches volumes with a request in flight.
+  const snapshotsReqRef = useRef(0);
 
   // Fetch volume
   useEffect(() => {
@@ -124,6 +205,39 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     currentVolumeRef.current = volume;
   }, [volume]);
 
+  const loadSnapshots = useCallback(async (id: string, page: number) => {
+    const req = ++snapshotsReqRef.current;
+    setSnapshotsLoading(true);
+    setSnapshotsError(null);
+    try {
+      const result = await systemApi.getVolumeSnapshots(id, { page });
+      if (snapshotsReqRef.current !== req) return;
+      setSnapshots(result.snapshots);
+      setSnapshotsTotalPages(result.meta.total_pages);
+    } catch (error) {
+      if (snapshotsReqRef.current !== req) return;
+      setSnapshots([]);
+      setSnapshotsError(error instanceof Error ? error.message : 'An error occurred');
+    } finally {
+      if (snapshotsReqRef.current === req) setSnapshotsLoading(false);
+    }
+  }, []);
+
+  // Anything derived from the previous volume must not outlive it — a restore
+  // outcome shown under another volume's heading attributes a destructive
+  // result to the wrong disk, and a carried-over page number renders a volume
+  // that HAS restore points as having none.
+  useEffect(() => {
+    setRestoreResult(null);
+    setRestoreFailure(null);
+    setSnapshotsPage(1);
+  }, [volumeId]);
+
+  useEffect(() => {
+    if (!isOpen || !volumeId) return;
+    void loadSnapshots(volumeId, snapshotsPage);
+  }, [isOpen, volumeId, snapshotsPage, loadSnapshots]);
+
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
@@ -131,6 +245,12 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
       setShowSnapshotModal(false);
       setSnapshotName('');
       setSnapshotDescription('');
+      setSnapshots([]);
+      setSnapshotsPage(1);
+      setSnapshotsTotalPages(1);
+      setSnapshotsError(null);
+      setRestoreResult(null);
+      setRestoreFailure(null);
     }
   }, [isOpen]);
 
@@ -177,6 +297,71 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     }
   };
 
+  // Restore this volume from one of its snapshots. Confirm-gated and explicit
+  // about the copy-restore semantics, because the operator's mental model
+  // ("restore puts my data back here") is wrong on the copy path.
+  const requestRestore = (snapshot: VolumeSnapshot) => {
+    if (!volume) return;
+    const targetVolumeId = volume.id;
+    const snapshotId = snapshot.id;
+    swapIntoPlaceRef.current = false;
+
+    confirm({
+      title: 'Restore Snapshot',
+      message: (
+        <RestorePrompt
+          snapshotName={snapshot.name || snapshot.id}
+          volumeName={volume.name}
+          attached={Boolean(volume.node_instance_id)}
+          onSwapChange={(swap) => { swapIntoPlaceRef.current = swap; }}
+        />
+      ),
+      confirmLabel: 'Restore Snapshot',
+      cancelLabel: 'Leave As Is',
+      variant: 'danger',
+      onConfirm: () => performRestore(targetVolumeId, snapshotId)
+    });
+  };
+
+  const performRestore = async (targetVolumeId: string, snapshotId: string) => {
+    // The dialog outlives the modal's volumeId prop; do not restore whatever
+    // volume happens to be loaded now.
+    if (currentVolumeRef.current?.id !== targetVolumeId) return;
+
+    setActionLoading('restore');
+    setRestoreResult(null);
+    setRestoreFailure(null);
+    try {
+      const result = await systemApi.restoreVolumeSnapshot(
+        targetVolumeId,
+        snapshotId,
+        swapIntoPlaceRef.current
+      );
+      setRestoreResult(result);
+      addNotification({
+        type: 'success',
+        message: result.restored_in_place
+          ? 'Volume rolled back to the snapshot'
+          : 'Snapshot restored into a new volume'
+      });
+      const updated = await systemApi.getVolume(targetVolumeId);
+      setVolume(updated);
+      onVolumeUpdated?.();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
+      setRestoreFailure({
+        message: errorMessage,
+        details: error instanceof VolumeRestoreError ? error.details : undefined
+      });
+      addNotification({
+        type: 'error',
+        message: `Failed to restore snapshot: ${errorMessage}`
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   // Handle snapshot creation
   const handleCreateSnapshot = async () => {
     if (!volume) return;
@@ -195,6 +380,10 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
       setShowSnapshotModal(false);
       setSnapshotName('');
       setSnapshotDescription('');
+      // `@volume.snapshots.recent` puts the new one on page 1, so an operator
+      // deeper in the list would otherwise see nothing change.
+      setSnapshotsPage(1);
+      await loadSnapshots(volume.id, 1);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       addNotification({
@@ -358,6 +547,140 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                     <Calendar className="w-4 h-4" />
                     Updated: {formatDate(volume.updated_at)}
                   </div>
+                </div>
+
+                {/* Snapshots — list + restore (IMP-f17e2c0bae12). The create
+                    form above can make a restore point; without this section
+                    the only way to use one was the MCP verb. */}
+                <div className="pt-4 border-t border-theme space-y-3">
+                  <div className="flex items-center gap-2">
+                    <History className="w-4 h-4 text-theme-tertiary" />
+                    <h4 className="font-medium text-theme-primary">Snapshots</h4>
+                  </div>
+
+                  {restoreResult && (
+                    <div className="bg-theme-background rounded-lg p-3 border border-theme space-y-1 text-sm">
+                      {restoreResult.restored_in_place ? (
+                        <p className="text-theme-primary">
+                          This volume was <strong>rolled back</strong> to the snapshot. Every
+                          write made since it was taken has been discarded.
+                        </p>
+                      ) : (
+                        <p className="text-theme-primary">
+                          The snapshot was copied into a <strong>new volume</strong>
+                          {restoreResult.restored_volume
+                            ? ` — ${restoreResult.restored_volume.name} (${restoreResult.restored_volume.id})`
+                            : ''}
+                          . This volume is unchanged.
+                        </p>
+                      )}
+                      {restoreResult.swapped && (
+                        <p className="text-theme-secondary">
+                          Swapped into place at {restoreResult.swapped_device || 'the same device'}
+                          {restoreResult.swapped_instance_id
+                            ? ` on instance ${restoreResult.swapped_instance_id}`
+                            : ''}
+                          .
+                        </p>
+                      )}
+                      {restoreResult.swap_skipped && (
+                        <p className="text-theme-warning-fg flex items-start gap-1">
+                          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                          <span>Swap skipped: {restoreResult.swap_skipped}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {restoreFailure && (
+                    <div className="bg-theme-danger-bg border border-theme-danger-border/30 rounded-lg p-3 space-y-1 text-sm">
+                      <p className="text-theme-error-fg flex items-start gap-1">
+                        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                        <span>Restore failed: {restoreFailure.message}</span>
+                      </p>
+                      {typeof restoreFailure.details?.restored_volume_id === 'string' && (
+                        <p className="text-theme-error-fg">
+                          A copy was already created and is still there — volume{' '}
+                          {restoreFailure.details.restored_volume_id}. It is billable until you
+                          attach or delete it.
+                        </p>
+                      )}
+                      {typeof restoreFailure.details?.swap_stage === 'string' && (
+                        <p className="text-theme-secondary">
+                          The swap stopped at: {restoreFailure.details.swap_stage}.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {(() => {
+                    if (snapshotsLoading) {
+                      return (
+                        <div className="flex items-center justify-center py-6">
+                          <LoadingSpinner size="sm" />
+                        </div>
+                      );
+                    }
+                    if (snapshotsError) {
+                      return (
+                        <p className="text-sm text-theme-error-fg">
+                          Could not load snapshots: {snapshotsError}
+                        </p>
+                      );
+                    }
+                    if (snapshots.length === 0) {
+                      return (
+                        <p className="text-sm text-theme-secondary">
+                          No snapshots yet for this volume.
+                        </p>
+                      );
+                    }
+                    return (
+                      <>
+                        <ul className="divide-y divide-theme border border-theme rounded-lg">
+                          {snapshots.map((snap) => (
+                            <li
+                              key={snap.id}
+                              className="flex items-center justify-between gap-3 p-3"
+                            >
+                              <div className="min-w-0">
+                                <p className="text-theme-primary font-medium truncate">
+                                  {snap.name || snap.id}
+                                </p>
+                                <p className="text-xs text-theme-tertiary">
+                                  {snap.created_at ? formatDate(snap.created_at) : '—'}
+                                  {typeof snap.size_gb === 'number' ? ` · ${formatSize(snap.size_gb)}` : ''}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {snap.status && (
+                                  <Badge variant={snap.can_restore ? 'success' : 'secondary'} size="xs">
+                                    {snap.status}
+                                  </Badge>
+                                )}
+                                {canManage && snap.can_restore && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => requestRestore(snap)}
+                                    disabled={!!actionLoading}
+                                  >
+                                    <RotateCcw className="w-4 h-4 mr-2" />
+                                    Restore
+                                  </Button>
+                                )}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                        <Pagination
+                          currentPage={snapshotsPage}
+                          totalPages={snapshotsTotalPages}
+                          onPageChange={setSnapshotsPage}
+                        />
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Actions */}
