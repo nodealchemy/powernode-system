@@ -20,6 +20,7 @@ import {
   Check
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { History, Wrench } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
@@ -237,13 +238,13 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     }
   }, [module, addNotification]);
 
-  const tabs = [
-    { id: 'info' as const, label: 'Information', icon: Package },
-    { id: 'specs' as const, label: 'Specifications', icon: FileCode },
-    { id: 'dependencies' as const, label: 'Dependencies', icon: GitBranch },
-    { id: 'versions' as const, label: 'Versions', icon: History },
-    { id: 'puppet' as const, label: 'Puppet', icon: Wrench },
-    { id: 'autonomy' as const, label: 'Autonomy', icon: ShieldCheck }
+  const tabs: (Tab & { id: TabId })[] = [
+    { id: 'info', label: 'Information', icon: <Package className="w-4 h-4" /> },
+    { id: 'specs', label: 'Specifications', icon: <FileCode className="w-4 h-4" /> },
+    { id: 'dependencies', label: 'Dependencies', icon: <GitBranch className="w-4 h-4" /> },
+    { id: 'versions', label: 'Versions', icon: <History className="w-4 h-4" /> },
+    { id: 'puppet', label: 'Puppet', icon: <Wrench className="w-4 h-4" /> },
+    { id: 'autonomy', label: 'Autonomy', icon: <ShieldCheck className="w-4 h-4" /> }
   ];
 
   const renderAutonomyTab = () => {
@@ -693,24 +694,13 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       }
     >
           {/* Tabs */}
-          <div className="border-b border-theme">
-            <nav className="flex -mb-px">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === tab.id
-                      ? 'border-theme-info-border text-theme-info-fg'
-                      : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
-                  }`}
-                >
-                  <tab.icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-          </div>
+          <TabContainer
+            tabs={tabs}
+            activeTab={activeTab}
+            onTabChange={(id) => setActiveTab(id as TabId)}
+            variant="underline"
+            showContent={false}
+          />
 
           {/* Content */}
           <div className="pt-4">

@@ -117,21 +117,21 @@ async function renderLoaded(onClose: jest.Mock) {
 
 async function openRegionForm(onClose: jest.Mock) {
   await renderLoaded(onClose);
-  fireEvent.click(screen.getByRole('button', { name: /regions/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /regions/i }));
   fireEvent.click(await screen.findByText('Add Region'));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
 }
 
 async function openConnectionForm(onClose: jest.Mock) {
   await renderLoaded(onClose);
-  fireEvent.click(screen.getByRole('button', { name: /connections/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /connections/i }));
   fireEvent.click(await screen.findByText('Add Connection'));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
 }
 
 async function openRegionDeleteConfirm(onClose: jest.Mock) {
   await renderLoaded(onClose);
-  fireEvent.click(screen.getByRole('button', { name: /regions/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /regions/i }));
   fireEvent.click(await screen.findByTitle('Delete region'));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
 }
