@@ -95,8 +95,16 @@
 #                                900 = 15 min). One deadline for the whole
 #                                stage, not per attempt.
 #   STAGE1_MMDEBSTRAP_ATTEMPTS   How many times mmdebstrap is run before
-#                                giving up (default 3). Only transient-mirror
+#                                giving up (default 5). Only transient-mirror
 #                                failures are retried — see above.
+#   STAGE1_APT_RETRIES           apt's own per-fetch transport retries
+#                                (Acquire::Retries, default 10) — rides out an
+#                                origin that 5xx's individual index/package
+#                                fetches behind a backend whose probe is 200.
+#   STAGE1_RETRY_PAUSE           Seconds paused before each mmdebstrap retry,
+#                                multiplied by the attempt number (default 30:
+#                                30s, 60s, 90s ...); counts against
+#                                STAGE1_MIRROR_WAIT_MAX.
 #   STAGE1_BACKEND_PIN           1 (default) = probe every address of the
 #                                mirror host and pin a healthy one for this
 #                                job as described above; 0 = probe the host
@@ -204,13 +212,19 @@ done
 # job in the first second, not after a 15-minute wait.
 # ---------------------------------------------------------------------------
 MIRROR_WAIT_MAX="${STAGE1_MIRROR_WAIT_MAX:-900}"
-MMDEBSTRAP_ATTEMPTS="${STAGE1_MMDEBSTRAP_ATTEMPTS:-3}"
+MMDEBSTRAP_ATTEMPTS="${STAGE1_MMDEBSTRAP_ATTEMPTS:-5}"
+APT_RETRIES="${STAGE1_APT_RETRIES:-10}"
+RETRY_PAUSE="${STAGE1_RETRY_PAUSE:-30}"
 SNAPSHOT_BASE_URL_OVERRIDE="${STAGE1_SNAPSHOT_BASE_URL:-}"
 APT_CACHE_DIR="${STAGE1_APT_CACHE_DIR:-}"
 [[ "$MIRROR_WAIT_MAX" =~ ^[0-9]+$ ]] \
   || die "STAGE1_MIRROR_WAIT_MAX must be a non-negative integer number of seconds, got '${MIRROR_WAIT_MAX}'"
 [[ "$MMDEBSTRAP_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
   || die "STAGE1_MMDEBSTRAP_ATTEMPTS must be a positive integer, got '${MMDEBSTRAP_ATTEMPTS}'"
+[[ "$APT_RETRIES" =~ ^[0-9]+$ ]] \
+  || die "STAGE1_APT_RETRIES must be a non-negative integer, got '${APT_RETRIES}'"
+[[ "$RETRY_PAUSE" =~ ^[0-9]+$ ]] \
+  || die "STAGE1_RETRY_PAUSE must be a non-negative integer number of seconds, got '${RETRY_PAUSE}'"
 BACKEND_PIN="${STAGE1_BACKEND_PIN:-1}"
 case "$BACKEND_PIN" in
   0|1) ;;
@@ -713,7 +727,7 @@ mmdebstrap_args=(
   --include="$pkgs"
   --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
   --aptopt='Acquire::http::Pipeline-Depth "0"'
-  --aptopt='Acquire::Retries "3"'
+  --aptopt="Acquire::Retries \"${APT_RETRIES}\""
   noble /tmp/fat
   "$base_url"
 )
@@ -743,7 +757,23 @@ while :; do
   if [ "$attempt" -ge "$MMDEBSTRAP_ATTEMPTS" ]; then
     die "mmdebstrap failed ${MMDEBSTRAP_ATTEMPTS} times against ${base_url} with a transient-mirror signature each time (last exit ${rc}; last probe result: ${MIRROR_LAST_CODE}) — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
   fi
-  log "mmdebstrap attempt ${attempt} failed (exit ${rc}) with a transient-mirror signature — re-probing the mirror before attempt $((attempt + 1))"
+  # A degraded origin answers the probe with 200 and then 5xx's individual
+  # index/package fetches, so an immediate retry tends to hit the same
+  # condition. Pause (30s, 60s, 90s ... by default) before re-probing; the
+  # pause counts against the shared MIRROR_WAIT_MAX budget because the
+  # deadline is wall-clock (MIRROR_DEADLINE), so the next probe sees it.
+  pause=$((RETRY_PAUSE * attempt))
+  if [ "$pause" -gt 0 ]; then
+    remaining=$(( MIRROR_DEADLINE - $(date +%s) ))
+    if [ "$remaining" -le 0 ]; then
+      die "mmdebstrap failed on attempt ${attempt} (exit ${rc}) with a transient-mirror signature and the ${MIRROR_WAIT_MAX}s wait budget is exhausted — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
+    fi
+    [ "$pause" -gt "$remaining" ] && pause=$remaining
+    log "mmdebstrap attempt ${attempt} failed (exit ${rc}) with a transient-mirror signature — pausing ${pause}s, then re-probing the mirror before attempt $((attempt + 1))"
+    sleep "$pause"
+  else
+    log "mmdebstrap attempt ${attempt} failed (exit ${rc}) with a transient-mirror signature — re-probing the mirror before attempt $((attempt + 1))"
+  fi
   attempt=$((attempt + 1))
 done
 

@@ -169,7 +169,7 @@ run_stage1() {
         REAL_DATE="$REAL_DATE" FAKE_CLOCK="$FAKE_CLOCK" SLEEP_LOG="$SLEEP_LOG" CURL_CODES="$CURL_CODES" \
         CURL_LOG="$CURL_LOG" MM_OUTCOMES="$MM_OUTCOMES" MM_LOG="$MM_LOG" MM_ARCHIVES_SEEN="$MM_ARCHIVES_SEEN" \
         GETENT_ADDRS="$GETENT_ADDRS" CURL_IP_CODES="$CURL_IP_CODES" MM_HOSTS_SEEN="$MM_HOSTS_SEEN" \
-        STAGE1_MIRROR_WAIT_MAX=100 "$@" \
+        STAGE1_MIRROR_WAIT_MAX=100 STAGE1_RETRY_PAUSE=0 "$@" \
         bash "$STAGE1" --module stage1-selftest --apt-snapshot 20260415T000000Z 2>&1)
   RC=$?
   set -e
@@ -188,7 +188,7 @@ assert_eq "" "$(sleeps)" "healthy mirror -> no waiting"
 assert_match 'https://snapshot\.ubuntu\.com/ubuntu/20260415T000000Z/dists/noble/InRelease' "$(cat "$CURL_LOG")" "probe targets the pinned snapshot's InRelease"
 assert_match ' noble /tmp/fat https://snapshot\.ubuntu\.com/ubuntu/20260415T000000Z/$' "$(cat "$MM_LOG")" "mmdebstrap base_url is the pinned snapshot"
 assert_match '--include=ca-certificates,jq,curl ' "$(cat "$MM_LOG")" "package_spec still drives --include"
-assert_match "--aptopt=Acquire::Retries \"3\"" "$(cat "$MM_LOG")" "apt transport retries enabled"
+assert_match "--aptopt=Acquire::Retries \"10\"" "$(cat "$MM_LOG")" "apt transport retries enabled (default 10)"
 assert_no_match '--setup-hook|--customize-hook|--skip=' "$(cat "$MM_LOG")" "no cache hooks by default"
 assert_eq "ca-certificates	20240203	all" "$(cat /tmp/stage1-selftest.packages.txt)" "provenance capture unchanged"
 
@@ -232,6 +232,17 @@ run_stage1 "200" "transient transient transient ok" STAGE1_MMDEBSTRAP_ATTEMPTS=2
 assert_eq 2 "$RC" "attempts exhausted -> exit 2"
 assert_eq 2 "$(mm_calls)" "attempts exhausted -> exactly STAGE1_MMDEBSTRAP_ATTEMPTS runs"
 assert_match 'failed 2 times against https://snapshot\.ubuntu\.com/ubuntu/20260415T000000Z/' "$OUT" "exhaustion names the mirror"
+
+# --- 7b. paced pause before each retry (default 30s x attempt; 0 in this harness) ---
+run_stage1 "200" "transient transient ok" STAGE1_MMDEBSTRAP_ATTEMPTS=3 STAGE1_RETRY_PAUSE=7
+assert_eq 0 "$RC" "paced retries -> eventually exit 0"
+assert_eq 3 "$(mm_calls)" "paced retries -> three mmdebstrap runs"
+assert_eq "7 14" "$(sleeps)" "pause grows with the attempt number (7s, then 14s)"
+assert_match 'pausing 7s, then re-probing' "$OUT" "pause is logged with its length"
+run_stage1 "200" "transient transient transient ok" STAGE1_MMDEBSTRAP_ATTEMPTS=4 STAGE1_RETRY_PAUSE=60 STAGE1_MIRROR_WAIT_MAX=70
+assert_eq 2 "$RC" "pause consumes the shared wait budget -> deadline still bounds the stage"
+assert_eq "60 10" "$(sleeps)" "pause is clamped to the remaining budget, then the deadline fails the stage"
+assert_match 'wait budget is exhausted' "$OUT" "exhaustion via pause is named"
 
 # --- 8. alternate snapshot base: opt-in, live mirrors refused ---------------
 run_stage1 "200" "ok" STAGE1_SNAPSHOT_BASE_URL=https://snapshot-mirror.example.test/ubuntu
