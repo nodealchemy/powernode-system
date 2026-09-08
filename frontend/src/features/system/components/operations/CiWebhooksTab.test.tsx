@@ -52,7 +52,7 @@ const WEBHOOK_A = {
   last_received_at: '2026-05-01T12:00:00Z',
   received_count: 42,
   last_rotated_at: '2026-04-01T08:00:00Z',
-  webhook_url_path: '/api/v1/system/disk_image_webhooks/wh-001/receive',
+  webhook_url_path: '/api/v1/system/webhooks/disk_image/built/wh-001',
   created_at: '2026-03-01T00:00:00Z',
   updated_at: '2026-05-01T12:00:00Z',
 };
@@ -66,7 +66,7 @@ const WEBHOOK_B = {
   last_received_at: undefined,
   received_count: 0,
   last_rotated_at: undefined,
-  webhook_url_path: '/api/v1/system/disk_image_webhooks/wh-002/receive',
+  webhook_url_path: '/api/v1/system/webhooks/disk_image/built/wh-002',
   created_at: '2026-04-01T00:00:00Z',
   updated_at: '2026-04-01T00:00:00Z',
 };
@@ -74,7 +74,7 @@ const WEBHOOK_B = {
 const CREATED_RESPONSE = {
   disk_image_webhook: WEBHOOK_A,
   secret_plaintext: 'super-secret-value-shown-once',
-  webhook_url: 'https://powernode.example.com/api/v1/system/disk_image_webhooks/wh-001/receive',
+  webhook_url: 'https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-001',
   note: 'Store this secret in your CI secret manager immediately.',
 };
 
@@ -230,7 +230,7 @@ describe('CiWebhooksTab', () => {
 
     // Should show the webhook URL path value
     expect(
-      screen.getByText('/api/v1/system/disk_image_webhooks/wh-001/receive'),
+      screen.getByText('/api/v1/system/webhooks/disk_image/built/wh-001'),
     ).toBeInTheDocument();
 
     // The button title should now be "Collapse details"
@@ -547,7 +547,7 @@ describe('CiWebhooksTab', () => {
     // Webhook URL is displayed
     expect(
       screen.getByText(
-        'https://powernode.example.com/api/v1/system/disk_image_webhooks/wh-001/receive',
+        'https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-001',
       ),
     ).toBeInTheDocument();
 
@@ -697,5 +697,21 @@ describe('CiWebhooksTab', () => {
         }),
       ),
     );
+  });
+
+  // ── Fixture / server agreement ────────────────────────────────────────────
+  //
+  // The serializer derives webhook_url_path from the webhook's OWN id, so a
+  // fixture whose path names a different id describes a response the server
+  // cannot produce. The prefix is pinned against the serializer in
+  // services/api/diskImageWebhookPath.contract.test.ts; this pins the tail,
+  // which that scan cannot see.
+  describe('fixture integrity', () => {
+    it.each([
+      ['WEBHOOK_A', WEBHOOK_A],
+      ['WEBHOOK_B', WEBHOOK_B],
+    ])('%s derives its webhook_url_path from its own id', (_name, webhook) => {
+      expect(webhook.webhook_url_path).toMatch(new RegExp(`/${webhook.id}$`));
+    });
   });
 });
