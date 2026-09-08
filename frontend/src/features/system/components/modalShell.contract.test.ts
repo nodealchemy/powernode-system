@@ -48,8 +48,6 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   'platform/MigrationsPanel.tsx',
 
   // --- Still to migrate. Shrink this list; never grow it. ---
-  'modules/ModuleDetailModal.tsx',
-  'modules/ModuleFormModal.tsx',
   'nodes/NodeDetailModal.tsx',
   'nodes/NodeInstanceControls.tsx',
   'nodes/UnclaimedDevicesPanel.tsx',

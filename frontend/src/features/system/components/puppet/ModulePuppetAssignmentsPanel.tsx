@@ -17,10 +17,18 @@ import type { SystemPuppetModule } from '@system/features/system/types/system.ty
 
 interface ModulePuppetAssignmentsPanelProps {
   moduleId: string;
+  /**
+   * Notified when this panel raises a dialog of its own (the assign form or the
+   * shared delete confirmation). A parent that is itself a `Modal` uses it to
+   * suppress its Escape handler — the core Modal listens on `document`, so one
+   * keypress would otherwise tear down both dialogs.
+   */
+  onNestedDialogChange?: (open: boolean) => void;
 }
 
 export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanelProps> = ({
   moduleId,
+  onNestedDialogChange,
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
@@ -33,6 +41,13 @@ export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanel
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // `ConfirmationDialog` is non-null exactly while the shared confirmation is
+  // mounted, so it doubles as the hook's open flag.
+  const nestedDialogOpen = showAddForm || ConfirmationDialog !== null;
+  useEffect(() => {
+    onNestedDialogChange?.(nestedDialogOpen);
+  }, [nestedDialogOpen, onNestedDialogChange]);
 
   const refresh = useCallback(async () => {
     setLoading(true);

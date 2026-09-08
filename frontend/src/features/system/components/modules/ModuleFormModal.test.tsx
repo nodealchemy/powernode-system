@@ -702,7 +702,7 @@ describe('ModuleFormModal', () => {
     renderModal();
     await waitFor(() => expect(screen.getByRole('option', { name: 'ubuntu-22' })).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: '' }));  // X button has no accessible name
+    fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
     expect(defaultProps.onClose).toHaveBeenCalled();
   });
 
