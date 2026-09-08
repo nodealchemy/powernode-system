@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { TemplateDetailModal } from './TemplateDetailModal';
 import type { SystemNodeTemplate, SystemNode, SystemNodeModule } from '@system/features/system/types/system.types';
@@ -761,25 +761,139 @@ describe('TemplateDetailModal', () => {
       mockUnassignModuleFromTemplate.mockResolvedValue(undefined);
     });
 
+    // Detaching a module is confirm-gated (IMP-704d360af1d2): it is a bare
+    // row-level trash icon, so a mis-click detaches the wrong module from a
+    // template that live nodes compose from, with no undo in the UI.
+    async function openModulesTab() {
+      await waitFor(() => screen.getByText('Modules (2)'));
+      fireEvent.click(screen.getByText('Modules (2)'));
+    }
+
+    async function confirmRemove(moduleName = 'nginx') {
+      fireEvent.click(screen.getByLabelText(`Remove ${moduleName} from template`));
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove Module' }));
+    }
+
+    it('does not detach the module until the operator confirms', async () => {
+      renderModal();
+
+      await openModulesTab();
+      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+
+      expect(await screen.findByRole('button', { name: 'Remove Module' })).toBeInTheDocument();
+      expect(mockUnassignModuleFromTemplate).not.toHaveBeenCalled();
+    });
+
+    it('names both the module and the template in the confirmation', async () => {
+      renderModal();
+
+      await openModulesTab();
+      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+
+      await screen.findByRole('button', { name: 'Remove Module' });
+      // Scope to the confirmation: the module name also appears in the row
+      // behind it, and the template name in the detail modal's own title.
+      const confirmDialog = screen
+        .getByRole('button', { name: 'Remove Module' })
+        .closest('[role="dialog"]') as HTMLElement;
+      expect(confirmDialog).not.toBeNull();
+      expect(within(confirmDialog).getByText(/nginx/)).toBeInTheDocument();
+      expect(within(confirmDialog).getByText(/Ubuntu Base/)).toBeInTheDocument();
+      expect(
+        within(confirmDialog).getByRole('heading', { name: 'Remove Module' }),
+      ).toBeInTheDocument();
+    });
+
+    it('leaves the module attached when the operator dismisses the confirmation', async () => {
+      renderModal();
+
+      await openModulesTab();
+      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      fireEvent.click(await screen.findByRole('button', { name: 'Keep Module' }));
+
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Remove Module' })).not.toBeInTheDocument(),
+      );
+      expect(mockUnassignModuleFromTemplate).not.toHaveBeenCalled();
+    });
+
+    it('drops a pending confirmation when the modal closes, so it cannot reopen over another template', async () => {
+      // The component renders null rather than unmounting, so useConfirmation's
+      // state survives a close. A dialog carried over would still hold the
+      // module id and template it was opened against.
+      const { rerender } = renderModal({ templateId: 'tpl-1' });
+
+      await openModulesTab();
+      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await screen.findByRole('button', { name: 'Remove Module' });
+
+      rerender(
+        <BrowserRouter>
+          <TemplateDetailModal
+            templateId="tpl-1"
+            isOpen={false}
+            onClose={jest.fn()}
+            onTemplateUpdated={jest.fn()}
+          />
+        </BrowserRouter>,
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Remove Module' })).not.toBeInTheDocument(),
+      );
+
+      rerender(
+        <BrowserRouter>
+          <TemplateDetailModal
+            templateId="tpl-2"
+            isOpen={true}
+            onClose={jest.fn()}
+            onTemplateUpdated={jest.fn()}
+          />
+        </BrowserRouter>,
+      );
+
+      await waitFor(() => screen.getByText('Modules (2)'));
+      expect(screen.queryByRole('button', { name: 'Remove Module' })).not.toBeInTheDocument();
+      expect(mockUnassignModuleFromTemplate).not.toHaveBeenCalled();
+    });
+
+    it('Escape while the confirmation is open closes only the confirmation', async () => {
+      // The shared Modal registers its Escape handler on document, so without
+      // surrendering closeOnEscape both modals answer the same keypress and the
+      // operator loses the detail modal too.
+      const onClose = jest.fn();
+      renderModal({ onClose });
+
+      await openModulesTab();
+      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await screen.findByRole('button', { name: 'Remove Module' });
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Remove Module' })).not.toBeInTheDocument(),
+      );
+      expect(onClose).not.toHaveBeenCalled();
+      expect(mockUnassignModuleFromTemplate).not.toHaveBeenCalled();
+    });
+
     it('calls unassignModuleFromTemplate with templateId and moduleId', async () => {
       renderModal({ templateId: 'tpl-1' });
 
-      await waitFor(() => screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByText('Modules (2)'));
-
-      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await openModulesTab();
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockUnassignModuleFromTemplate).toHaveBeenCalledWith('tpl-1', 'mod-1')
       );
+      expect(mockUnassignModuleFromTemplate).toHaveBeenCalledTimes(1);
     });
 
     it('shows success notification with module name after removal', async () => {
       renderModal();
 
-      await waitFor(() => screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await openModulesTab();
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({
@@ -797,9 +911,8 @@ describe('TemplateDetailModal', () => {
 
       renderModal();
 
-      await waitFor(() => screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await openModulesTab();
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockGetTemplateModules).toHaveBeenCalledTimes(2)
@@ -811,9 +924,8 @@ describe('TemplateDetailModal', () => {
 
       renderModal();
 
-      await waitFor(() => screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByText('Modules (2)'));
-      fireEvent.click(screen.getByLabelText('Remove nginx from template'));
+      await openModulesTab();
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({

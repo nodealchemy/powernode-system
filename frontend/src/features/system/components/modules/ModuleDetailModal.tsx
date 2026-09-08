@@ -29,6 +29,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -66,6 +67,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
 }) => {
   const { addNotification } = useNotifications();
   const { hasPermission } = usePermissions();
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
   const navigate = useNavigate();
 
   const canManageDependencies = hasPermission('system.modules.update');
@@ -171,7 +173,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   }, [moduleId, selectedDependency, addNotification]);
 
   // Remove dependency handler
-  const handleRemoveDependency = useCallback(async (dependencyId: string) => {
+  const performRemoveDependency = useCallback(async (dependencyId: string) => {
     if (!moduleId) return;
 
     setRemovingDependency(dependencyId);
@@ -192,6 +194,29 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       setRemovingDependency(null);
     }
   }, [moduleId, addNotification]);
+
+  // Confirm-gated (IMP-704d360af1d2): the trigger is a bare row-level trash
+  // icon, so a mis-click drops the wrong dependency edge and there is no undo
+  // in the UI.
+  const requestRemoveDependency = useCallback((dependency: { id: string; name?: string }) => {
+    confirm({
+      title: 'Remove Dependency',
+      message: `Remove "${dependency.name || dependency.id}" as a dependency of "${module?.name || 'this module'}"? Composition will stop pulling it in, and re-adding it is the only way back.`,
+      confirmLabel: 'Remove Dependency',
+      cancelLabel: 'Keep Dependency',
+      variant: 'danger',
+      onConfirm: () => performRemoveDependency(dependency.id)
+    });
+  }, [confirm, module?.name, performRemoveDependency]);
+
+  // This component renders null rather than unmounting, so a confirmation the
+  // operator left open would otherwise survive the close and re-appear over the
+  // NEXT module — still holding the dependency id it was opened against.
+  // Declared above the `if (!isOpen) return null` guard for the same reason as
+  // the callback below.
+  useEffect(() => {
+    if (!isOpen) closeConfirmation();
+  }, [isOpen, closeConfirmation]);
 
   // Must stay above the `if (!isOpen) return null` guard below — a hook
   // declared after an early-return changes the hook count between the
@@ -591,7 +616,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => handleRemoveDependency(dep.id)}
+                      onClick={() => requestRemoveDependency(dep)}
                       disabled={removingDependency === dep.id}
                       title="Remove dependency"
                       className="text-theme-error-fg hover:text-theme-error-fg"
@@ -816,6 +841,8 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           </div>
         </div>
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

@@ -5,6 +5,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { TabContainer } from '@/shared/components/ui/TabContainer';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -43,6 +44,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
 }) => {
   const { addNotification } = useNotifications();
   const { hasPermission } = usePermissions();
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
   const canEdit = hasPermission('system.templates.update');
 
   // State
@@ -111,7 +113,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
   // Detach a module from this template, then refresh the Modules list.
   // Gated on `canEdit` (system.templates.update) at the button level. The
   // member id sent is the node module id, matching the DELETE route's :id.
-  const handleRemoveModule = useCallback(async (moduleId: string, moduleName: string) => {
+  const performRemoveModule = useCallback(async (moduleId: string, moduleName: string) => {
     if (!templateId) return;
 
     try {
@@ -129,6 +131,20 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
     }
   }, [templateId, addNotification, fetchModules]);
 
+  // Confirm-gated (IMP-704d360af1d2): the trigger is a bare row-level trash
+  // icon, so a mis-click detaches the wrong module from a template that live
+  // nodes compose from, and there is no undo in the UI.
+  const requestRemoveModule = useCallback((moduleId: string, moduleName: string) => {
+    confirm({
+      title: 'Remove Module',
+      message: `Remove "${moduleName}" from ${template?.name ? `template "${template.name}"` : 'this template'}? Nodes composed from it stop receiving the module on their next compose. Re-adding it is the only way back.`,
+      confirmLabel: 'Remove Module',
+      cancelLabel: 'Keep Module',
+      variant: 'danger',
+      onConfirm: () => performRemoveModule(moduleId, moduleName)
+    });
+  }, [confirm, template?.name, performRemoveModule]);
+
   // Load data when modal opens
   useEffect(() => {
     if (isOpen && templateId) {
@@ -145,14 +161,18 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
     }
   }, [isOpen, templateId, fetchTemplate, fetchNodes, fetchModules]);
 
-  // Reset when closed
+  // Reset when closed. This component renders null rather than unmounting, so
+  // a confirmation the operator left open would otherwise survive the close and
+  // re-appear over the NEXT template — still holding the module id and the
+  // template it was opened against.
   useEffect(() => {
     if (!isOpen) {
       setTemplate(null);
       setNodes([]);
       setModules([]);
+      closeConfirmation();
     }
-  }, [isOpen]);
+  }, [isOpen, closeConfirmation]);
 
   if (!isOpen) return null;
 
@@ -366,7 +386,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleRemoveModule(module.id, module.name)}
+                    onClick={() => requestRemoveModule(module.id, module.name)}
                     aria-label={`Remove ${module.name} from template`}
                   >
                     <Trash2 className="w-4 h-4 text-theme-danger-fg" />
@@ -407,6 +427,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
     <Modal
       isOpen
       onClose={onClose}
+      closeOnEscape={!ConfirmationDialog}
       variant="centered"
       size="4xl"
       title={loading ? 'Loading...' : template?.name || 'Template Details'}
@@ -443,6 +464,8 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
           </div>
         )}
       </div>
+
+      {ConfirmationDialog}
     </Modal>
   );
 };

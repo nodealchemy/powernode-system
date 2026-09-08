@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { ModuleDetailModal } from './ModuleDetailModal';
 import type { SystemNodeModule } from '@system/features/system/types/system.types';
@@ -1172,6 +1172,107 @@ describe('ModuleDetailModal', () => {
   // ===========================================================================
 
   describe('Dependencies tab — Remove Dependency', () => {
+    // Confirm-gated (IMP-704d360af1d2): a bare row-level trash icon that drops
+    // a dependency edge on a mis-click, with no undo in the UI.
+    function confirmRemove() {
+      fireEvent.click(screen.getByTitle('Remove dependency'));
+      return screen.findByRole('button', { name: 'Remove Dependency' }).then((btn) => {
+        fireEvent.click(btn);
+      });
+    }
+
+    it('does not remove the dependency until the operator confirms', async () => {
+      mockGetModule.mockResolvedValueOnce(BASE_MODULE);
+      mockGetModuleDependencies.mockResolvedValueOnce([DEP_MODULE]);
+
+      renderModal();
+
+      await waitForModuleLoad('ssh-base');
+      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTitle('Remove dependency'));
+
+      expect(
+        await screen.findByRole('button', { name: 'Remove Dependency' }),
+      ).toBeInTheDocument();
+      expect(mockRemoveModuleDependency).not.toHaveBeenCalled();
+      expect(screen.getByText('ssl-certs')).toBeInTheDocument();
+    });
+
+    it('names the dependency in the confirmation', async () => {
+      mockGetModule.mockResolvedValueOnce(BASE_MODULE);
+      mockGetModuleDependencies.mockResolvedValueOnce([DEP_MODULE]);
+
+      renderModal();
+
+      await waitForModuleLoad('ssh-base');
+      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Remove dependency'));
+
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText(/ssl-certs/)).toBeInTheDocument();
+      expect(within(dialog).getByText(/ssh-base/)).toBeInTheDocument();
+    });
+
+    it('keeps the dependency when the operator dismisses the confirmation', async () => {
+      mockGetModule.mockResolvedValueOnce(BASE_MODULE);
+      mockGetModuleDependencies.mockResolvedValueOnce([DEP_MODULE]);
+
+      renderModal();
+
+      await waitForModuleLoad('ssh-base');
+      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Remove dependency'));
+      fireEvent.click(await screen.findByRole('button', { name: 'Keep Dependency' }));
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', { name: 'Remove Dependency' }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(mockRemoveModuleDependency).not.toHaveBeenCalled();
+      expect(screen.getByText('ssl-certs')).toBeInTheDocument();
+    });
+
+    it('drops a pending confirmation when the modal closes, so it cannot reopen over another module', async () => {
+      mockGetModule.mockResolvedValue(BASE_MODULE);
+      mockGetModuleDependencies.mockResolvedValue([DEP_MODULE]);
+
+      const { rerender } = renderModal();
+
+      await waitForModuleLoad('ssh-base');
+      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await screen.findByRole('button', { name: 'Remove Dependency' });
+
+      rerender(
+        <BrowserRouter>
+          <ModuleDetailModal moduleId="mod-001" isOpen={false} onClose={jest.fn()} />
+        </BrowserRouter>,
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', { name: 'Remove Dependency' }),
+        ).not.toBeInTheDocument(),
+      );
+
+      rerender(
+        <BrowserRouter>
+          <ModuleDetailModal moduleId="mod-002" isOpen={true} onClose={jest.fn()} />
+        </BrowserRouter>,
+      );
+      await waitForModuleLoad('ssh-base');
+
+      expect(
+        screen.queryByRole('button', { name: 'Remove Dependency' }),
+      ).not.toBeInTheDocument();
+      expect(mockRemoveModuleDependency).not.toHaveBeenCalled();
+    });
+
     it('calls systemApi.removeModuleDependency with moduleId and dependencyId', async () => {
       mockGetModule.mockResolvedValueOnce(BASE_MODULE);
       mockGetModuleDependencies.mockResolvedValueOnce([DEP_MODULE]);
@@ -1184,11 +1285,12 @@ describe('ModuleDetailModal', () => {
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
 
-      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockRemoveModuleDependency).toHaveBeenCalledWith('mod-001', 'mod-dep-1'),
       );
+      expect(mockRemoveModuleDependency).toHaveBeenCalledTimes(1);
     });
 
     it('shows success notification after removing dependency', async () => {
@@ -1202,7 +1304,7 @@ describe('ModuleDetailModal', () => {
       fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({
@@ -1223,7 +1325,7 @@ describe('ModuleDetailModal', () => {
       fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await confirmRemove();
 
       await waitFor(() =>
         expect(screen.queryByText('ssl-certs')).not.toBeInTheDocument(),
@@ -1242,7 +1344,7 @@ describe('ModuleDetailModal', () => {
       fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await confirmRemove();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({
@@ -1263,7 +1365,7 @@ describe('ModuleDetailModal', () => {
       fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
-      fireEvent.click(screen.getByTitle('Remove dependency'));
+      await confirmRemove();
 
       await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
       expect(screen.getByText('ssl-certs')).toBeInTheDocument();
