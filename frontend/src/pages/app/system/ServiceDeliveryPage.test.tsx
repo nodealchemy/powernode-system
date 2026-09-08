@@ -86,12 +86,15 @@ describe('ServiceDeliveryPage', () => {
   it('marks the active tab from the /service-delivery/<tab> path segment', () => {
     renderAt('/app/system/service-delivery/subscriptions');
 
-    // The active tab carries the info-accent classes; siblings do not.
+    // The active tab carries PathTabs' accent border; siblings stay transparent.
     expect(screen.getByRole('link', { name: /Subscriptions/i }).className).toContain(
-      'text-theme-info-fg',
+      'border-theme-info-border',
+    );
+    expect(screen.getByRole('link', { name: /Offerings/i }).className).toContain(
+      'border-transparent',
     );
     expect(screen.getByRole('link', { name: /Offerings/i }).className).not.toContain(
-      'text-theme-info-fg',
+      'border-theme-info-border',
     );
 
     // The matched tab's body renders.
@@ -117,5 +120,33 @@ describe('ServiceDeliveryPage', () => {
       screen.getByText(/don't have permission to view service delivery/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', () => {
+    renderAt('/app/system/service-delivery/subscriptions');
+
+    const active = screen.getByRole('link', { name: /Subscriptions/i });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
   });
 });

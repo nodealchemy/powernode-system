@@ -1,8 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Plus, RefreshCw, Settings } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
+import {
+  PathTabs,
+  firstAccessibleTabPath,
+  activeTabKeyFromPath,
+  type PathTabSpec,
+} from '@/shared/components/navigation/PathTabs';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import {
   FleetTab,
@@ -23,7 +29,7 @@ import { SystemSettingsPanel } from '@system/features/system/components/settings
 
 type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'agent-peers' | 'ci-workers' | 'ci-webhooks' | 'module-builds';
 
-const TABS: { key: TabKey; label: string; permission: string }[] = [
+const TABS: PathTabSpec<TabKey>[] = [
   { key: 'fleet', label: 'Fleet', permission: 'system.fleet.read' },
   { key: 'tasks', label: 'Tasks', permission: 'system.tasks.read' },
   { key: 'gitops', label: 'GitOps', permission: 'system.gitops.read' },
@@ -41,17 +47,18 @@ const BASE_PATH = '/app/system/operations';
 const OperationsHubPage: React.FC = () => {
   const { hasPermission } = usePermissions();
   const location = useLocation();
+  const firstPath = firstAccessibleTabPath(TABS, BASE_PATH, hasPermission);
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => hasPermission(t.permission)),
-    [hasPermission]
+  // Drives the page actions below. Uses PathTabs' own derivation so the
+  // strip and the actions can never disagree. Falls back to the first
+  // visible tab on the bare hub path, which the index route below is
+  // about to redirect anyway.
+  const activeTabKey = useMemo<TabKey>(
+    () =>
+      activeTabKeyFromPath(TABS, BASE_PATH, location.pathname) ??
+      ((TABS.find((t) => hasPermission(t.permission))?.key ?? 'fleet') as TabKey),
+    [location.pathname, hasPermission],
   );
-
-  const activeTabKey = useMemo<TabKey>(() => {
-    const match = TABS.find((t) => location.pathname.endsWith(`/${t.key}`));
-    if (match) return match.key;
-    return (visibleTabs[0]?.key ?? 'fleet') as TabKey;
-  }, [location.pathname, visibleTabs]);
 
   const [gitopsActions, setGitopsActions] = useState<{ openCreate: () => void } | null>(null);
   const [cveActions, setCveActions] = useState<{ refresh: () => void } | null>(null);
@@ -84,7 +91,7 @@ const OperationsHubPage: React.FC = () => {
     pageActions.push({ label: 'Refresh', onClick: agentPeersActions.refresh, variant: 'secondary', icon: RefreshCw });
   }
 
-  if (visibleTabs.length === 0) {
+  if (!firstPath) {
     return (
       <PageContainer title="Operations">
         <div className="p-6 text-sm text-theme-secondary">
@@ -93,8 +100,6 @@ const OperationsHubPage: React.FC = () => {
       </PageContainer>
     );
   }
-
-  const defaultTabKey = visibleTabs[0].key;
 
   return (
     <PageContainer
@@ -106,40 +111,20 @@ const OperationsHubPage: React.FC = () => {
       ]}
       actions={pageActions}
     >
-      <div className="border-b border-theme mb-4">
-        <nav className="flex gap-2 flex-wrap">
-          {visibleTabs.map((t) => {
-            const active = activeTabKey === t.key;
-            return (
-              <Link
-                key={t.key}
-                to={`${BASE_PATH}/${t.key}`}
-                className={
-                  'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
-                  (active
-                    ? 'border-theme-focus text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary')
-                }
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-
-      <Routes>
-        <Route index element={<Navigate to={defaultTabKey} replace />} />
-        <Route path="fleet" element={<FleetTab />} />
-        <Route path="tasks" element={<TasksTab />} />
-        <Route path="gitops" element={<GitopsTab onActionsReady={setGitopsActions} />} />
-        <Route path="cve" element={<CveTab onActionsReady={setCveActions} />} />
-        <Route path="agent-peers" element={<AgentPeersTab onActionsReady={setAgentPeersActions} />} />
-        <Route path="ci-workers" element={<CiWorkersTab onActionsReady={setCiWorkersActions} />} />
-        <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
-        <Route path="module-builds" element={<ModuleBuildsTab onActionsReady={setModuleBuildsActions} />} />
-        <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
-      </Routes>
+      <PathTabs tabs={TABS} basePath={BASE_PATH} hasPermission={hasPermission}>
+        <Routes>
+          <Route index element={<Navigate to={firstPath} replace />} />
+          <Route path="fleet" element={<FleetTab />} />
+          <Route path="tasks" element={<TasksTab />} />
+          <Route path="gitops" element={<GitopsTab onActionsReady={setGitopsActions} />} />
+          <Route path="cve" element={<CveTab onActionsReady={setCveActions} />} />
+          <Route path="agent-peers" element={<AgentPeersTab onActionsReady={setAgentPeersActions} />} />
+          <Route path="ci-workers" element={<CiWorkersTab onActionsReady={setCiWorkersActions} />} />
+          <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
+          <Route path="module-builds" element={<ModuleBuildsTab onActionsReady={setModuleBuildsActions} />} />
+          <Route path="*" element={<Navigate to={firstPath} replace />} />
+        </Routes>
+      </PathTabs>
 
       <SystemSettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </PageContainer>

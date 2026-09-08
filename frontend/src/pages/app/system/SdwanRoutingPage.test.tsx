@@ -784,4 +784,33 @@ describe('SdwanRoutingPage', () => {
       ),
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // IMP-d725a6bad253 — shared PathTabs scaffold
+  //
+  // Every system hub must render its tab strip through the shared
+  // `PathTabs` component so the active-tab treatment is identical across
+  // hubs an operator moves between in one session. These assertions pin
+  // PathTabs' own markup (nav layout + active-link classes); a hand-rolled
+  // <nav> fails them.
+  // ---------------------------------------------------------------------------
+
+  it('renders the tab strip through the shared PathTabs scaffold', async () => {
+    mockGet.mockResolvedValue(envelope(ROUTING_OVERVIEW));
+    renderPage('/app/system/sdwan/routing/sessions');
+
+    const active = await screen.findByRole('link', { name: 'BGP Sessions' });
+    // PathTabs' active-link classes.
+    expect(active.className).toContain('border-theme-info-border');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).toContain('inline-flex');
+
+    // PathTabs' nav layout. `flex-wrap` + `gap-1` is the shared strip's
+    // signature: no hub's hand-rolled <nav> carried both.
+    const nav = active.closest('nav');
+    expect(nav).not.toBeNull();
+    expect(nav?.className).toContain('flex-wrap');
+    expect(nav?.className).toContain('items-center');
+    expect(nav?.className).toContain('gap-1');
+  });
 });
