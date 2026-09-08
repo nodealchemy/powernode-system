@@ -210,8 +210,8 @@ module System
     # it is stated as a census with a location instead: MANY sites reach this
     # validator — the gated create's unsaved candidate, CreatePool's `create!`,
     # InstancePoolsController#update's inline `update!` and its gate_update!
-    # pre-validation, UpdatePool's `update!` at approval time, destroy's
-    # on_proceed, SystemFleetTool's create/update, Gitops::ApplyService's
+    # pre-validation, UpdatePool's `update!` at approval time,
+    # SystemFleetTool's create/update, Gitops::ApplyService's
     # create/update, CiRunnerLeaseService, InstanceStatusSensor and two seeds.
     # spec/lint/instance_pool_replenish_gating_spec.rb (CEILING_WRITERS) holds
     # the enumerable half of that by file and count; this comment says only

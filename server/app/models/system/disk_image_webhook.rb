@@ -60,9 +60,10 @@ module System
     end
 
     # SINGLE SOURCE OF TRUTH for the delivery path. Three surfaces emit this
-    # URL — the serializer (list/show), the controller (create + rotate_secret
-    # inline branch) and Executors::DiskImage::TriggerWebhook (the deferred
-    # branch) — and they must not be able to disagree. The operator copies this
+    # URL — the serializer (list/show), the controller (create, and the render
+    # of a rotation) and Executors::DiskImage::TriggerWebhook (which performs
+    # every rotation, on both gate branches) — and they must not be able to
+    # disagree. The operator copies this
     # into a CI provider; a path that differs between two of them means one of
     # them silently never fires.
     def webhook_url_path
