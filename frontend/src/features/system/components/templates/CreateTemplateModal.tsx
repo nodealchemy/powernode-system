@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileText, AlertCircle } from 'lucide-react';
+import { FileText, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -205,35 +206,17 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 transition-opacity"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <FileText className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Template' : isDuplicateMode ? 'Duplicate Template' : 'Create Template'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? 'Edit Template' : isDuplicateMode ? 'Duplicate Template' : 'Create Template'}
+      icon={<FileText className="w-6 h-6" />}
+      maxWidth="lg"
+    >
           {/* Form */}
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4">
+            <div className="space-y-4">
               {/* Name */}
               <div>
                 <label
@@ -390,9 +373,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
               </Button>
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
