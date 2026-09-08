@@ -18,21 +18,26 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
 
 // Minimal Modal stub — passes isOpen, children, footer, title through so we
 // can query all rendered elements without a real portal.
+// `closeOnEscape` is surfaced as an attribute because the real Modal registers
+// its Escape handler on `document`, so two open Modals both fire on one press —
+// this modal has to opt out while a delete confirmation is stacked on it.
 jest.mock('@/shared/components/ui/Modal', () => ({
   Modal: ({
     isOpen,
     children,
     footer,
     title,
+    closeOnEscape,
   }: {
     isOpen: boolean;
     children: React.ReactNode;
     footer?: React.ReactNode;
     title?: React.ReactNode;
+    closeOnEscape?: boolean;
   }) => {
     if (!isOpen) return null;
     return (
-      <div data-testid="modal">
+      <div data-testid="modal" data-close-on-escape={String(closeOnEscape ?? true)}>
         <div data-testid="modal-title">{title}</div>
         <div data-testid="modal-body">{children}</div>
         {footer && <div data-testid="modal-footer">{footer}</div>}
@@ -156,14 +161,26 @@ const renderModal = (overrides: RenderProps = {}) => {
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app delete confirmation that replaced `window.confirm`
+ * (IMP-082f700a1eec). The row button is titled "Delete record"; the
+ * confirmation's footer button is deliberately labelled differently so the two
+ * never collide in a role query.
+ */
+const confirmDelete = async () => {
+  // The confirmation is the SECOND mocked Modal (the records modal is outer).
+  await screen.findByRole('button', { name: /^delete this record$/i });
+  const dialog = screen.getAllByTestId('modal').slice(-1)[0];
+  fireEvent.click(within(dialog).getByRole('button', { name: /^delete this record$/i }));
+};
+
 describe('DnsRecordsModal', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     // Default: no zones, no records
     mockListZones.mockResolvedValue([]);
     mockListRecords.mockResolvedValue([]);
-    // Suppress window.confirm noise — individual tests override as needed
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
+    jest.spyOn(window, 'confirm');
   });
 
   afterEach(() => {
@@ -465,7 +482,6 @@ describe('DnsRecordsModal', () => {
 
   describe('delete record', () => {
     it('calls deleteRecord with correct args after confirm', async () => {
-      jest.spyOn(window, 'confirm').mockReturnValue(true);
       mockListZones.mockResolvedValue([ZONE_A]);
       mockListRecords.mockResolvedValue([RECORD_A]);
       mockDeleteRecord.mockResolvedValue(undefined);
@@ -477,28 +493,41 @@ describe('DnsRecordsModal', () => {
 
       const deleteButtons = screen.getAllByTitle('Delete record');
       fireEvent.click(deleteButtons[0]);
+      await confirmDelete();
 
       await waitFor(() =>
         expect(mockDeleteRecord).toHaveBeenCalledWith('cred-42', 'rec-1', 'zone-alpha'),
       );
+      expect(window.confirm).not.toHaveBeenCalled();
     });
 
-    it('does NOT call deleteRecord when confirm returns false', async () => {
-      jest.spyOn(window, 'confirm').mockReturnValue(false);
+    it('does NOT call deleteRecord when the confirmation is cancelled', async () => {
       mockListZones.mockResolvedValue([ZONE_A]);
       mockListRecords.mockResolvedValue([RECORD_A]);
       renderModal();
 
       await waitFor(() => expect(screen.getByText('hub.alpha.example.org')).toBeInTheDocument());
 
+      // Before: the records modal owns Escape.
+      expect(screen.getByTestId('modal')).toHaveAttribute('data-close-on-escape', 'true');
+
       fireEvent.click(screen.getByTitle('Delete record'));
+      await screen.findByRole('button', { name: /^delete this record$/i });
+
+      // The confirmation is itself a Modal, so two now carry the testid; the
+      // records modal is the outer one, rendered first, and hands Escape over.
+      expect(screen.getAllByTestId('modal')[0]).toHaveAttribute(
+        'data-close-on-escape',
+        'false',
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
       // Give any async ops a tick to settle
       await waitFor(() => expect(mockDeleteRecord).not.toHaveBeenCalled());
     });
 
     it('fires addNotification(error) when deleteRecord rejects', async () => {
-      jest.spyOn(window, 'confirm').mockReturnValue(true);
       mockListZones.mockResolvedValue([ZONE_A]);
       mockListRecords.mockResolvedValue([RECORD_A]);
       mockDeleteRecord.mockRejectedValue(new Error('CF delete failed'));
@@ -506,6 +535,7 @@ describe('DnsRecordsModal', () => {
 
       await waitFor(() => expect(screen.getByText('hub.alpha.example.org')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Delete record'));
+      await confirmDelete();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith(
@@ -515,7 +545,6 @@ describe('DnsRecordsModal', () => {
     });
 
     it('refreshes records after a successful delete', async () => {
-      jest.spyOn(window, 'confirm').mockReturnValue(true);
       mockListZones.mockResolvedValue([ZONE_A]);
       // First load has RECORD_A; after delete, returns empty
       mockListRecords
@@ -526,6 +555,7 @@ describe('DnsRecordsModal', () => {
 
       await waitFor(() => expect(screen.getByText('hub.alpha.example.org')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Delete record'));
+      await confirmDelete();
 
       await waitFor(() =>
         expect(screen.getByText('No DNS records on this zone yet.')).toBeInTheDocument(),
@@ -1020,7 +1050,6 @@ describe('DnsRecordsModal', () => {
     });
 
     it('deleteRecord passes zoneId as the third argument', async () => {
-      jest.spyOn(window, 'confirm').mockReturnValue(true);
       mockListZones.mockResolvedValue([ZONE_A]);
       mockListRecords.mockResolvedValue([RECORD_A]);
       mockDeleteRecord.mockResolvedValue(undefined);
@@ -1031,6 +1060,7 @@ describe('DnsRecordsModal', () => {
 
       await waitFor(() => expect(screen.getByText('hub.alpha.example.org')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Delete record'));
+      await confirmDelete();
 
       await waitFor(() =>
         expect(mockDeleteRecord).toHaveBeenCalledWith('cred-999', 'rec-1', 'zone-alpha'),

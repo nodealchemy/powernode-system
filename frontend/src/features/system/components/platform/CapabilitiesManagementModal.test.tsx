@@ -28,21 +28,26 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
 }));
 
 // Modal: pass children, title, and footer through so we can query all content.
+// `closeOnEscape` is surfaced as an attribute because the real Modal registers
+// its Escape handler on `document`, so two open Modals both fire on one press —
+// this modal has to opt out while a delete confirmation is stacked on it.
 jest.mock('@/shared/components/ui/Modal', () => ({
   Modal: ({
     isOpen,
     title,
     children,
     footer,
+    closeOnEscape,
   }: {
     isOpen: boolean;
     title?: React.ReactNode;
     children: React.ReactNode;
     footer?: React.ReactNode;
+    closeOnEscape?: boolean;
   }) => {
     if (!isOpen) return null;
     return (
-      <div data-testid="modal">
+      <div data-testid="modal" data-close-on-escape={String(closeOnEscape ?? true)}>
         {title && <div data-testid="modal-title">{title}</div>}
         {children}
         {footer}
@@ -152,15 +157,21 @@ function renderModal({
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app delete confirmation that replaced `window.confirm`
+ * (IMP-082f700a1eec). The row's own button reads "Delete"; only the
+ * confirmation's footer button is named "Delete capability".
+ */
+async function confirmDelete() {
+  fireEvent.click(await screen.findByRole('button', { name: /^delete capability$/i }));
+}
+
 describe('CapabilitiesManagementModal', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockDelete.mockReset();
     mockAddNotification.mockReset();
-
-    // Default window.confirm to true (confirmed)
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -345,6 +356,7 @@ describe('CapabilitiesManagementModal', () => {
     await waitFor(() => expect(screen.getByText('skill')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Delete capability'));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockDelete).toHaveBeenCalledWith(
@@ -362,18 +374,45 @@ describe('CapabilitiesManagementModal', () => {
 
   it('does not call DELETE when user cancels the confirm dialog', async () => {
     mockGet.mockResolvedValue(listEnvelope([CAP_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
 
     renderModal();
 
     await waitFor(() => expect(screen.getByText('skill')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Delete capability'));
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     // Give any async effects time to settle
     await new Promise((r) => setTimeout(r, 50));
 
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('confirms the delete in-app rather than through window.confirm', async () => {
+    const confirmSpy = jest.spyOn(window, 'confirm');
+    mockGet.mockResolvedValue(listEnvelope([CAP_A]));
+
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('skill')).toBeInTheDocument());
+
+    // Before: this modal owns Escape.
+    expect(screen.getByTestId('modal')).toHaveAttribute('data-close-on-escape', 'true');
+
+    fireEvent.click(screen.getByTitle('Delete capability'));
+    await screen.findByRole('button', { name: /^delete capability$/i });
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/Capabilities are mutable declarations/),
+    ).toBeInTheDocument();
+
+    // The confirmation is itself a Modal, so two now carry the testid; this
+    // modal is the outer one, rendered first, and must hand Escape over.
+    expect(screen.getAllByTestId('modal')[0]).toHaveAttribute(
+      'data-close-on-escape',
+      'false',
+    );
   });
 
   it('shows an error notification when the DELETE call rejects', async () => {
@@ -385,6 +424,7 @@ describe('CapabilitiesManagementModal', () => {
     await waitFor(() => expect(screen.getByText('skill')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Delete capability'));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -404,6 +444,7 @@ describe('CapabilitiesManagementModal', () => {
     await waitFor(() => expect(screen.getByText('skill')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Delete capability'));
+    await confirmDelete();
 
     await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
 

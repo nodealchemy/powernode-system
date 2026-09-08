@@ -14,6 +14,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { peerCapabilitiesApi } from '../../services/api/peerCapabilitiesApi';
 import type {
   CapabilityConflictResolution,
@@ -70,6 +71,7 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
   onChanged,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
   const [capabilities, setCapabilities] = useState<FederationCapability[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,30 +99,40 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
     } else {
       setCapabilities([]);
       setError(null);
+      // This modal returns `null` when closed rather than unmounting, so
+      // useConfirmation's state outlives it: a confirmation the operator left
+      // open would re-appear on the next open, still bound to the PREVIOUS
+      // capability's onConfirm. Drop it with the rest of the state.
+      closeConfirmation();
     }
-  }, [isOpen, fetch]);
+  }, [isOpen, fetch, closeConfirmation]);
 
-  const handleDelete = async (cap: FederationCapability) => {
+  const handleDelete = (cap: FederationCapability) => {
     if (!peerId) return;
-    const ok = window.confirm(
-      `Delete capability "${cap.resource_kind}" (${cap.direction})?\n\n` +
+    confirm({
+      title: 'Delete capability',
+      message:
+        `Delete capability "${cap.resource_kind}" (${cap.direction})? ` +
         'Capabilities are mutable declarations — this is a hard delete, not a soft one.',
-    );
-    if (!ok) return;
-    setDeletingId(cap.id);
-    try {
-      await peerCapabilitiesApi.destroy(peerId, cap.id);
-      addNotification({ type: 'success', message: `Capability '${cap.resource_kind}' deleted.` });
-      await fetch();
-      onChanged?.();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Delete failed',
-      });
-    } finally {
-      setDeletingId(null);
-    }
+      confirmLabel: 'Delete capability',
+      variant: 'danger',
+      onConfirm: async () => {
+        setDeletingId(cap.id);
+        try {
+          await peerCapabilitiesApi.destroy(peerId, cap.id);
+          addNotification({ type: 'success', message: `Capability '${cap.resource_kind}' deleted.` });
+          await fetch();
+          onChanged?.();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Delete failed',
+          });
+        } finally {
+          setDeletingId(null);
+        }
+      },
+    });
   };
 
   const handleAdded = () => {
@@ -132,9 +144,16 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
   if (!peerId) return null;
 
   return (
+    <>
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      // The shared Modal registers its Escape handler on `document`, so while a
+      // delete confirmation is stacked on this one a single Escape press would
+      // fire BOTH onClose handlers — dismissing the confirmation and dumping the
+      // operator out of the capabilities panel. Hand Escape to the confirmation
+      // while it is open.
+      closeOnEscape={!ConfirmationDialog}
       icon={<Users className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
@@ -205,6 +224,9 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
         )}
       </div>
     </Modal>
+
+    {ConfirmationDialog}
+    </>
   );
 };
 

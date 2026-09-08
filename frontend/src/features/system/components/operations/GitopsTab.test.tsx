@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { GitopsTab } from './GitopsTab';
 import type {
@@ -158,6 +158,20 @@ const renderTab = (props: React.ComponentProps<typeof GitopsTab> = {}) =>
       <GitopsTab {...props} />
     </BrowserRouter>,
   );
+
+// Delete goes through the shared themed ConfirmationModal (IMP-082f700a1eec),
+// not window.confirm. The row's delete button carries the same accessible name
+// as the dialog's confirm button, so both lookups are scoped to the dialog.
+const confirmDelete = async () => {
+  await waitFor(() =>
+    expect(
+      screen.getByRole('heading', { name: /delete gitops repository/i }),
+    ).toBeInTheDocument(),
+  );
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: /^delete repository$/i }),
+  );
+};
 
 // =============================================================================
 // Tests
@@ -590,24 +604,35 @@ describe('GitopsTab', () => {
 
   it('prompts for confirmation before deleting a repository', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Delete repository')));
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      'Delete GitOps repository "fleet-desired-state"? Reconciliation will stop and its sync history is removed.',
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /delete gitops repository/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(
+        'Delete GitOps repository "fleet-desired-state"? Reconciliation will stop and its sync history is removed.',
+      ),
+    ).toBeInTheDocument();
+    expect(window.confirm).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }),
     );
     expect(mockGitopsApiDestroy).not.toHaveBeenCalled();
   });
 
   it('calls destroy with the repo id when user confirms deletion', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockGitopsApiDestroy.mockResolvedValue(undefined);
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Delete repository')));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockGitopsApiDestroy).toHaveBeenCalledWith('repo-a'),
@@ -616,11 +641,11 @@ describe('GitopsTab', () => {
 
   it('shows a success notification after successful deletion', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockGitopsApiDestroy.mockResolvedValue(undefined);
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Delete repository')));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -632,11 +657,11 @@ describe('GitopsTab', () => {
 
   it('shows an error notification when deletion throws', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockGitopsApiDestroy.mockRejectedValue(new Error('server error'));
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Delete repository')));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -648,11 +673,11 @@ describe('GitopsTab', () => {
 
   it('refreshes the list after successful deletion', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockGitopsApiDestroy.mockResolvedValue(undefined);
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Delete repository')));
+    await confirmDelete();
 
     // Initial load + post-delete refresh
     await waitFor(() => expect(mockGitopsApiList).toHaveBeenCalledTimes(2));

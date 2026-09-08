@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { PuppetModuleDetailModal } from './PuppetModuleDetailModal';
 import type { SystemPuppetModule, SystemPuppetResource } from '@system/features/system/types/system.types';
@@ -159,6 +159,19 @@ const waitForModuleLoaded = async (name = 'nginx') => {
     const heading = screen.getByRole('heading', { level: 2 });
     expect(heading).toHaveTextContent(name);
   });
+};
+
+// Resource deletion goes through the shared themed ConfirmationModal
+// (IMP-082f700a1eec) rather than window.confirm. The row buttons are titled
+// "Delete Resource", which matches the dialog's confirm label, so the lookup is
+// scoped to the dialog.
+const confirmResourceDelete = async () => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: /delete resource/i })).toBeInTheDocument(),
+  );
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: /^delete resource$/i }),
+  );
 };
 
 // =============================================================================
@@ -685,7 +698,6 @@ describe('PuppetModuleDetailModal', () => {
 
   it('calls deletePuppetResource with correct ids after confirm', async () => {
     mockDeletePuppetResource.mockResolvedValue(undefined);
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderModal({ moduleId: 'mod-1' });
     await waitForModuleLoaded();
@@ -694,6 +706,7 @@ describe('PuppetModuleDetailModal', () => {
     await waitFor(() => expect(screen.getByText('nginx_conf')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Delete Resource')[0]);
+    await confirmResourceDelete();
 
     await waitFor(() =>
       expect(mockDeletePuppetResource).toHaveBeenCalledWith('mod-1', 'res-a'),
@@ -707,7 +720,6 @@ describe('PuppetModuleDetailModal', () => {
 
   it('shows a success notification after deleting a resource', async () => {
     mockDeletePuppetResource.mockResolvedValue(undefined);
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderModal();
     await waitForModuleLoaded();
@@ -716,6 +728,7 @@ describe('PuppetModuleDetailModal', () => {
     await waitFor(() => expect(screen.getByText('nginx_conf')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Delete Resource')[0]);
+    await confirmResourceDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -727,7 +740,6 @@ describe('PuppetModuleDetailModal', () => {
 
   it('shows an error notification when delete fails', async () => {
     mockDeletePuppetResource.mockRejectedValue(new Error('Server Error'));
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderModal();
     await waitForModuleLoaded();
@@ -736,6 +748,7 @@ describe('PuppetModuleDetailModal', () => {
     await waitFor(() => expect(screen.getByText('nginx_conf')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Delete Resource')[0]);
+    await confirmResourceDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -745,9 +758,7 @@ describe('PuppetModuleDetailModal', () => {
     );
   });
 
-  it('does not call deletePuppetResource when window.confirm is cancelled', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
-
+  it('does not call deletePuppetResource when the confirmation is cancelled', async () => {
     renderModal();
     await waitForModuleLoaded();
 
@@ -755,6 +766,13 @@ describe('PuppetModuleDetailModal', () => {
     await waitFor(() => expect(screen.getByText('nginx_conf')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Delete Resource')[0]);
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /delete resource/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }),
+    );
 
     // Small tick to let any async code settle
     await new Promise(resolve => setTimeout(resolve, 50));

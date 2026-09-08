@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { diskImageWebhooksApi } from '@system/features/system/services/api/diskImageWebhooksApi';
 import type {
   SystemDiskImageWebhook,
@@ -17,6 +18,7 @@ interface CiWebhooksTabProps {
 export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const canDelete = hasPermission('system.disk_image_webhooks.delete');
   const canRotate = hasPermission('system.disk_image_webhooks.rotate_secret');
 
@@ -54,27 +56,41 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
     return () => onActionsReady?.(null);
   }, [onActionsReady]);
 
-  const handleRevoke = useCallback(async (webhook: SystemDiskImageWebhook) => {
-    if (!window.confirm(`Revoke webhook "${webhook.label}"? CI runs using this secret will start failing immediately.`)) return;
-    try {
-      await diskImageWebhooksApi.destroy(webhook.id);
-      addNotification({ type: 'success', message: `Webhook "${webhook.label}" revoked` });
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Revoke failed' });
-    }
-  }, [addNotification, refresh]);
+  const handleRevoke = useCallback((webhook: SystemDiskImageWebhook) => {
+    confirm({
+      title: 'Revoke webhook',
+      message: `Revoke webhook "${webhook.label}"? CI runs using this secret will start failing immediately.`,
+      confirmLabel: 'Revoke webhook',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await diskImageWebhooksApi.destroy(webhook.id);
+          addNotification({ type: 'success', message: `Webhook "${webhook.label}" revoked` });
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Revoke failed' });
+        }
+      },
+    });
+  }, [confirm, addNotification, refresh]);
 
-  const handleRotate = useCallback(async (webhook: SystemDiskImageWebhook) => {
-    if (!window.confirm(`Rotate secret for "${webhook.label}"? Old secret is revoked immediately — update CI before the next webhook fires.`)) return;
-    try {
-      const result = await diskImageWebhooksApi.rotateSecret(webhook.id);
-      setCreatedSecret(result);
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rotation failed' });
-    }
-  }, [addNotification, refresh]);
+  const handleRotate = useCallback((webhook: SystemDiskImageWebhook) => {
+    confirm({
+      title: 'Rotate webhook secret',
+      message: `Rotate secret for "${webhook.label}"? Old secret is revoked immediately — update CI before the next webhook fires.`,
+      confirmLabel: 'Rotate secret',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          const result = await diskImageWebhooksApi.rotateSecret(webhook.id);
+          setCreatedSecret(result);
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rotation failed' });
+        }
+      },
+    });
+  }, [confirm, addNotification, refresh]);
 
   return (
     <div className="space-y-4">
@@ -214,6 +230,8 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
           onClose={() => setCreatedSecret(null)}
         />
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

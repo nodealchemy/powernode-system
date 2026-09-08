@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
 import type {
   AcmeDnsCredentialSummary,
@@ -39,6 +40,7 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
   refreshKey = 0,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const [credentials, setCredentials] = useState<AcmeDnsCredentialSummary[]>([]);
   const [providers, setProviders] = useState<SupportedProvider[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,26 +99,31 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
     }
   };
 
-  const handleDelete = async (cred: AcmeDnsCredentialSummary) => {
-    const ok = window.confirm(
-      `Delete credential "${cred.name}"?\n\n` +
+  const handleDelete = (cred: AcmeDnsCredentialSummary) => {
+    confirm({
+      title: 'Delete DNS credential',
+      message:
+        `Delete credential "${cred.name}"? ` +
         'The Vault-stored token will be destroyed. This is reversible only by ' +
         're-creating the credential with a fresh token. Active certificates referencing ' +
         'this credential will block the delete.',
-    );
-    if (!ok) return;
-    setDeletingId(cred.id);
-    try {
-      await acmeDnsCredentialsApi.destroy(cred.id);
-      await fetchCreds();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Delete failed',
-      });
-    } finally {
-      setDeletingId(null);
-    }
+      confirmLabel: 'Delete credential',
+      variant: 'danger',
+      onConfirm: async () => {
+        setDeletingId(cred.id);
+        try {
+          await acmeDnsCredentialsApi.destroy(cred.id);
+          await fetchCreds();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Delete failed',
+          });
+        } finally {
+          setDeletingId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -195,6 +202,8 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
         credentialName={dnsRecordsTarget?.name ?? ''}
         onClose={() => setDnsRecordsTarget(null)}
       />
+
+      {ConfirmationDialog}
     </>
   );
 };

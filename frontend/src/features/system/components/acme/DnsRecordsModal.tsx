@@ -12,6 +12,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { dnsRecordsApi } from '../../services/api/dnsRecordsApi';
 import type {
   CloudflareZone,
@@ -49,6 +50,7 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
   onClose,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
   const [zones, setZones] = useState<CloudflareZone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [records, setRecords] = useState<DnsRecord[]>([]);
@@ -102,31 +104,41 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
       setZones([]);
       setSelectedZoneId(null);
       setRecords([]);
+      // This modal returns `null` when closed rather than unmounting, so
+      // useConfirmation's state outlives it: a confirmation the operator left
+      // open would re-appear on the next open, still bound to the PREVIOUS
+      // record's onConfirm. Drop it with the rest of the state.
+      closeConfirmation();
     }
-  }, [isOpen, credentialId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, credentialId, closeConfirmation]);
 
   useEffect(() => {
     if (selectedZoneId) void fetchRecords();
   }, [selectedZoneId, fetchRecords]);
 
-  const handleDelete = async (record: DnsRecord) => {
+  const handleDelete = (record: DnsRecord) => {
     if (!credentialId || !selectedZoneId) return;
-    const ok = window.confirm(
-      `Delete ${record.type} record "${record.name}" → "${record.content}"?\n\nThis is permanent.`,
-    );
-    if (!ok) return;
-    setDeletingId(record.id);
-    try {
-      await dnsRecordsApi.deleteRecord(credentialId, record.id, selectedZoneId);
-      await fetchRecords();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Delete failed',
-      });
-    } finally {
-      setDeletingId(null);
-    }
+    confirm({
+      title: 'Delete DNS record',
+      message: `Delete ${record.type} record "${record.name}" → "${record.content}"? This is permanent.`,
+      confirmLabel: 'Delete this record',
+      variant: 'danger',
+      onConfirm: async () => {
+        setDeletingId(record.id);
+        try {
+          await dnsRecordsApi.deleteRecord(credentialId, record.id, selectedZoneId);
+          await fetchRecords();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Delete failed',
+          });
+        } finally {
+          setDeletingId(null);
+        }
+      },
+    });
   };
 
   const handleAdded = () => {
@@ -142,9 +154,15 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
   if (!credentialId) return null;
 
   return (
+    <>
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      // The shared Modal registers its Escape handler on `document`, so while a
+      // delete confirmation is stacked on this one a single Escape press would
+      // fire BOTH onClose handlers — dismissing the confirmation and closing the
+      // records modal underneath it. Hand Escape to the confirmation while open.
+      closeOnEscape={!ConfirmationDialog}
       title={
         <div className="flex items-center gap-2">
           <Globe className="w-5 h-5 text-theme-info-fg" />
@@ -258,6 +276,9 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
         )}
       </div>
     </Modal>
+
+    {ConfirmationDialog}
+    </>
   );
 };
 

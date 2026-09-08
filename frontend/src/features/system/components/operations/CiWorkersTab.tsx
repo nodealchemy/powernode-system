@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { ciWorkersApi } from '@system/features/system/services/api/ciWorkersApi';
 import type {
   SystemCiWorker,
@@ -17,6 +18,7 @@ interface CiWorkersTabProps {
 export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const canDelete = hasPermission('system.ci_workers.delete');
   const canRotate = hasPermission('system.ci_workers.rotate_token');
 
@@ -53,27 +55,41 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
     return () => onActionsReady?.(null);
   }, [onActionsReady]);
 
-  const handleRevoke = useCallback(async (worker: SystemCiWorker) => {
-    if (!window.confirm(`Revoke CI worker "${worker.name}"? CI runs using this token will start failing immediately.`)) return;
-    try {
-      await ciWorkersApi.destroy(worker.id);
-      addNotification({ type: 'success', message: `CI worker "${worker.name}" revoked` });
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Revoke failed' });
-    }
-  }, [addNotification, refresh]);
+  const handleRevoke = useCallback((worker: SystemCiWorker) => {
+    confirm({
+      title: 'Revoke CI worker',
+      message: `Revoke CI worker "${worker.name}"? CI runs using this token will start failing immediately.`,
+      confirmLabel: 'Revoke CI worker',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await ciWorkersApi.destroy(worker.id);
+          addNotification({ type: 'success', message: `CI worker "${worker.name}" revoked` });
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Revoke failed' });
+        }
+      },
+    });
+  }, [confirm, addNotification, refresh]);
 
-  const handleRotate = useCallback(async (worker: SystemCiWorker) => {
-    if (!window.confirm(`Rotate token for "${worker.name}"? Old token is revoked immediately — update CI before the next run.`)) return;
-    try {
-      const result = await ciWorkersApi.rotateToken(worker.id);
-      setCreatedToken(result);
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rotation failed' });
-    }
-  }, [addNotification, refresh]);
+  const handleRotate = useCallback((worker: SystemCiWorker) => {
+    confirm({
+      title: 'Rotate worker token',
+      message: `Rotate token for "${worker.name}"? Old token is revoked immediately — update CI before the next run.`,
+      confirmLabel: 'Rotate token',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          const result = await ciWorkersApi.rotateToken(worker.id);
+          setCreatedToken(result);
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rotation failed' });
+        }
+      },
+    });
+  }, [confirm, addNotification, refresh]);
 
   return (
     <div className="space-y-4">
@@ -207,6 +223,8 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
           onClose={() => setCreatedToken(null)}
         />
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };
