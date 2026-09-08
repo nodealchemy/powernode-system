@@ -13,6 +13,7 @@ import { CreateHostBridgeModal } from './CreateHostBridgeModal';
 import type {
   SdwanHostBridge,
 } from '@system/features/system/types/sdwan.types';
+import { formatTimestamp } from '@/shared/utils/formatters';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase O6 — read-only operator view of allocated SDWAN host bridges
@@ -347,11 +348,11 @@ const BridgeRow: React.FC<BridgeRowProps> = ({
               <DetailItem label="State">{d.state}</DetailItem>
               <DetailItem label="Short ID">{d.short_id}</DetailItem>
               <DetailItem label="Bridge ID" mono>{d.id}</DetailItem>
-              <DetailItem label="Applied">{formatTs(d.applied_at)}</DetailItem>
-              <DetailItem label="Draining">{formatTs(d.draining_at)}</DetailItem>
-              <DetailItem label="Removed">{formatTs(d.removed_at)}</DetailItem>
-              <DetailItem label="Created">{formatTs(d.created_at)}</DetailItem>
-              <DetailItem label="Updated">{formatTs(d.updated_at)}</DetailItem>
+              <DetailItem label="Applied">{formatTimestamp(d.applied_at)}</DetailItem>
+              <DetailItem label="Draining">{formatTimestamp(d.draining_at)}</DetailItem>
+              <DetailItem label="Removed">{formatTimestamp(d.removed_at)}</DetailItem>
+              <DetailItem label="Created">{formatTimestamp(d.created_at)}</DetailItem>
+              <DetailItem label="Updated">{formatTimestamp(d.updated_at)}</DetailItem>
               {detailError && (
                 <div className="col-span-full text-xs text-theme-danger-fg">
                   Detail unavailable: {detailError}
@@ -378,9 +379,7 @@ const DetailItem: React.FC<DetailItemProps> = ({ label, mono, children }) => (
   </div>
 );
 
-function formatTs(ts?: string | null): string {
-  return ts ? new Date(ts).toLocaleString() : '—';
-}
+
 
 function kindBadgeClass(kind: 'linux' | 'ovs'): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';

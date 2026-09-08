@@ -44,13 +44,43 @@ const CORE_OWNED = [
   'formatFileSize',
 ];
 
-/** Any named `format*` helper, with enough of its body to classify. */
-const HELPER = /\b(?:const|let|var|function)\s+(format[A-Za-z0-9_]*)\s*[=(]/g;
+/**
+ * Any named helper, with enough of its body to classify.
+ *
+ * NOT restricted to `format*`: the sixth copy found during IMP-afe91410f14d is
+ * called `fmt`, and a name convention is exactly the assumption the previous
+ * pass already had to abandon once. The two classifiers below carry the weight
+ * instead, and they are deliberately asymmetric — see FULL_TIMESTAMP.
+ */
+const HELPER =
+  /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(|\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]*)?=\s*(?:async\s*)?\(/g;
 const BODY_LINES = 12;
 
-/** Bodies that duplicate something core already exports. */
-const FULL_TIMESTAMP = /toLocaleString\(/;
+/**
+ * Bodies that duplicate something core already exports.
+ *
+ * A byte ladder is unmistakable, so it is caught under ANY helper name. A
+ * toLocaleString call is not: most of the ~164 inline ones live in small render
+ * helpers assigned to a const, and the approving direction put those out of
+ * scope. So the timestamp shape is only reported when the author named the
+ * thing `format*`, which is what a formatter-by-intent looks like.
+ */
 const BYTE_LADDER = /1024/;
+const FULL_TIMESTAMP = /toLocaleString\(/;
+
+/**
+ * A module-scope `const KB = 1024` hoisted above a helper takes the literal OUT
+ * of the body window, and the ladder below it then classifies clean. Feeding
+ * those constants in alongside the body closes that hole; it is also why the
+ * sanctioned volumeSize helper needs its sanction at all.
+ */
+const UNIT_CONSTANT = /^\s*const\s+[A-Z][A-Z0-9_]*\s*=\s*[^;]*1024/m;
+
+function duplicatesCore(name: string, body: string, moduleConstants: string): boolean {
+  if (BYTE_LADDER.test(body)) return true;
+  if (UNIT_CONSTANT.test(moduleConstants) && /\bBYTES?_|_GB\b|_KB\b|_MB\b/.test(body)) return true;
+  return name.startsWith('format') && FULL_TIMESTAMP.test(body);
+}
 
 /**
  * Local copies that remain, each with the reason it was not converted here.
@@ -58,16 +88,24 @@ const BYTE_LADDER = /1024/;
  * cannot quietly outlive the copies it describes.
  */
 const KNOWN_LOCAL_COPIES: Record<string, string> = {
-  'sdwan_hub/HostBridgesTab.tsx:formatTs':
-    "Byte-identical to core's formatTimestamp. Left for a follow-up because sdwan_hub was being edited by another lane during this consolidation.",
-  'sdwan_hub/IpfixCollectorsTab.tsx:formatTs':
-    "Byte-identical to core's formatTimestamp. Left for a follow-up for the same reason as HostBridgesTab.",
-  'packages/CreateModuleFromPackageModal.tsx:formatSize':
-    "A fourth byte ladder, disagreeing again (0 decimals at KB, stops at MB). packages/ was being edited by another lane; it should adopt formatFileSize.",
-  'volumes/VolumeList.tsx:formatSize':
-    'Takes GIGABYTES and renders GB/TB, so core formatFileSize (which takes bytes) is the wrong function — converting it needs a decision about the unit, not just an import.',
-  'volumes/VolumeDetailModal.tsx:formatSize':
-    'The same GB-input helper as VolumeList, duplicated. Both should collapse onto one, once the unit question above is answered.',
+  'platform/StorageMigrationDetailDrawer.tsx:fmt':
+    'A byte ladder capped at MB, so a 1 GiB copy renders as "1024.0 MB" where every other size screen now says "1.0 GB". Found only when IMP-afe91410f14d dropped the format* name convention from this scan — it is called fmt. Left listed rather than converted because platform/ was another lane\'s directory during that task; its own spec pins the cap at StorageMigrationDetailDrawer.test.tsx:327 and 366, so converting it means updating those two assertions.',
+};
+
+/**
+ * The one extension-side formatter this guard sanctions, and the reason it is
+ * not a copy: provider volumes report `size_gb`, so core's formatFileSize —
+ * which takes BYTES — renders a 100 GB volume as '100 B' if handed the raw
+ * value. This helper multiplies into bytes ONCE and delegates, keeping the
+ * gigabyte as the domain unit and the ladder as core's (IMP-afe91410f14d).
+ *
+ * Sanctioned by PATH, and the arm below checks it actually delegates — an
+ * entry here is permission to convert a unit, not permission to hand-roll a
+ * second ladder under a blessed filename.
+ */
+const SANCTIONED_HELPERS: Record<string, string> = {
+  '../utils/volumeSize.ts:formatVolumeSize':
+    'Converts the API\'s gigabytes to bytes and delegates to core formatFileSize, because volume sizes are not reported in bytes.',
 };
 
 function findSources(dir: string, out: string[] = []): string[] {
@@ -90,19 +128,19 @@ interface Helper {
   duplicates: boolean;
 }
 
-function helpersIn(file: string, relative: string): Helper[] {
-  const body = readFileSync(file, 'utf8');
-  const lines = body.split('\n');
+function helpersIn(source: string, relative: string): Helper[] {
+  const lines = source.split('\n');
   const found: Helper[] = [];
 
-  for (const match of body.matchAll(HELPER)) {
-    const lineIndex = body.slice(0, match.index).split('\n').length - 1;
+  for (const match of source.matchAll(HELPER)) {
+    const name = match[1] ?? match[2];
+    const lineIndex = source.slice(0, match.index).split('\n').length - 1;
     const following = lines.slice(lineIndex, lineIndex + BODY_LINES).join('\n');
     found.push({
-      key: `${relative}:${match[1]}`,
-      name: match[1],
+      key: `${relative}:${name}`,
+      name,
       where: `${relative}:${lineIndex + 1}`,
-      duplicates: FULL_TIMESTAMP.test(following) || BYTE_LADDER.test(following),
+      duplicates: duplicatesCore(name, following, source),
     });
   }
   return found;
@@ -110,20 +148,52 @@ function helpersIn(file: string, relative: string): Helper[] {
 
 describe('date, duration and size formatting is owned by @/shared/utils/formatters', () => {
   const sources = findSources(scanRoot);
-  const helpers = sources.flatMap((file) =>
-    helpersIn(file, path.relative(path.join(scanRoot, 'features/system/components'), file))
-  );
+  const componentRoot = path.join(scanRoot, 'features/system/components');
+  // Sanctioned by helper KEY, not by file: every other helper in a sanctioned
+  // file is still examined, and the core-owned-names arm below still applies to
+  // it. A file-level exemption would have made that arm's "no exceptions"
+  // claim false.
+  const helpers = sources
+    .flatMap((file) => helpersIn(readFileSync(file, 'utf8'), path.relative(componentRoot, file)))
+    .filter((helper) => !(helper.key in SANCTIONED_HELPERS));
 
   it('scans the extension frontend, so an empty result means clean and not broken', () => {
     expect(sources.length).toBeGreaterThan(200);
     expect(sources.some((f) => f.endsWith('sdwan/PeerList.tsx'))).toBe(true);
     expect(sources.some((f) => f.endsWith('operations/OperationList.tsx'))).toBe(true);
-    // The body arm is only meaningful if it can see a body it should classify.
-    expect(helpers.some((h) => h.duplicates)).toBe(true);
+    // The body arm cannot be proved against the tree any more — the tree is
+    // clean, which is the point. Prove it against a FIXTURE run through the
+    // real extraction, not just the predicate: the line-window arithmetic in
+    // helpersIn is the half that would silently report nothing if it broke,
+    // and every arm would stay green while the guard saw no copies at all.
+    const fixture = [
+      "const KB = 1024;",
+      "",
+      "function formatWhen(ts: string): string {",
+      "  return new Date(ts).toLocaleString();",
+      "}",
+      "",
+      "const fmt = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MB`;",
+      "",
+      "const hoisted = (n: number) => `${(n / BYTES_PER_MB).toFixed(1)} MB`;",
+      "",
+      "const shout = (label: string) => label.toUpperCase();",
+    ].join("\n");
+    const classified = helpersIn(fixture, 'fixture.tsx');
+
+    expect(classified.find((h) => h.name === 'formatWhen')?.duplicates).toBe(true);
+    expect(classified.find((h) => h.name === 'fmt')?.duplicates).toBe(true);
+    expect(classified.find((h) => h.name === 'hoisted')?.duplicates).toBe(true);
+    expect(classified.find((h) => h.name === 'shout')?.duplicates).toBe(false);
+    // And the window must point at the right line, or the report is unreadable.
+    expect(classified.find((h) => h.name === 'formatWhen')?.where).toBe('fixture.tsx:3');
   });
 
   it('redefines none of the names core owns', () => {
-    const offenders = helpers
+    const everyHelper = sources.flatMap((file) =>
+      helpersIn(readFileSync(file, 'utf8'), path.relative(componentRoot, file))
+    );
+    const offenders = everyHelper
       .filter((h) => CORE_OWNED.includes(h.name))
       .map((h) => `${h.where} defines ${h.name}`);
 
@@ -168,6 +238,20 @@ describe('date, duration and size formatting is owned by @/shared/utils/formatte
     });
 
     expect(missing.map(([file]) => file)).toEqual([]);
+  });
+
+  it('keeps every sanctioned helper delegating to core rather than hand-rolling', () => {
+    const notDelegating = Object.entries(SANCTIONED_HELPERS).filter(([key, reason]) => {
+      const relative = key.split(':')[0];
+      const body = readFileSync(path.join(scanRoot, 'features/system/components', relative), 'utf8');
+      return (
+        !body.includes("from '@/shared/utils/formatters'") ||
+        !/formatFileSize\(|formatDateTime\(|formatTimestamp\(|formatDuration\(/.test(body) ||
+        reason.trim().length < 40
+      );
+    });
+
+    expect(notDelegating.map(([key]) => key)).toEqual([]);
   });
 
   it('gives every baselined copy a reason', () => {

@@ -236,7 +236,7 @@ describe('VolumeDetailModal', () => {
       mockGetVolume.mockResolvedValue(VOLUME_AVAILABLE);
       renderModal();
 
-      await waitFor(() => expect(screen.getByText('100 GB')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('100.0 GB')).toBeInTheDocument());
     });
 
     it('renders size in TB for volumes >= 1024 GB', async () => {

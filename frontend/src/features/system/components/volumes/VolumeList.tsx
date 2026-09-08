@@ -13,6 +13,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { formatTimestamp } from '@/shared/utils/formatters';
+import { formatVolumeSize } from '@system/features/system/utils/volumeSize';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { StatusBadge } from '../shared/StatusBadge';
@@ -61,11 +62,6 @@ const volumeTypeLabels: Record<string, string> = {
   ssd: 'SSD',
   hdd: 'HDD',
   custom: 'Custom'
-};
-
-const formatSize = (sizeGb: number): string => {
-  if (sizeGb >= 1024) return `${(sizeGb / 1024).toFixed(1)} TB`;
-  return `${sizeGb} GB`;
 };
 
 export const VolumeList: React.FC<VolumeListProps> = ({
@@ -256,7 +252,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <span className="text-theme-primary font-mono">{formatSize(volume.size_gb)}</span>
+                  <span className="text-theme-primary font-mono">{formatVolumeSize(volume.size_gb)}</span>
                   {volume.iops && (
                     <span className="ml-2 text-sm text-theme-secondary">{volume.iops} IOPS</span>
                   )}
@@ -375,7 +371,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Size</label>
-                        <p className="text-theme-primary font-mono">{formatSize(volume.size_gb)}</p>
+                        <p className="text-theme-primary font-mono">{formatVolumeSize(volume.size_gb)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Volume Type</label>
@@ -461,7 +457,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                 <HardDrive className="w-5 h-5 text-theme-tertiary flex-shrink-0" />
                 <div className="min-w-0">
                   <p className="font-medium text-theme-primary truncate">{volume.name}</p>
-                  <p className="text-sm text-theme-secondary">{formatSize(volume.size_gb)}</p>
+                  <p className="text-sm text-theme-secondary">{formatVolumeSize(volume.size_gb)}</p>
                 </div>
               </div>
               <StatusBadge status={volume.status} size="sm" dot />
