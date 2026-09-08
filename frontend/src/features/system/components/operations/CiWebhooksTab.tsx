@@ -7,6 +7,8 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { diskImageWebhooksApi } from '@system/features/system/services/api/diskImageWebhooksApi';
+import { apiErrorMessage, isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SystemDiskImageWebhook,
   SystemDiskImageWebhookCreatedResponse,
@@ -65,11 +67,23 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
       variant: 'danger',
       onConfirm: async () => {
         try {
-          await diskImageWebhooksApi.destroy(webhook.id);
+          const result = await diskImageWebhooksApi.destroy(webhook.id);
+          if (isPendingApproval(result)) {
+            // Parked, not revoked. Saying "revoked" here would tell the operator
+            // a still-live credential had been killed.
+            addNotification(
+              pendingApprovalNotice(`revoking webhook "${webhook.label}"`, result),
+            );
+            void refresh();
+            return;
+          }
           addNotification({ type: 'success', message: `Webhook "${webhook.label}" revoked` });
           void refresh();
         } catch (e) {
-          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Revoke failed' });
+          // apiErrorMessage, not e.message: the gate's THIRD branch renders a
+          // 422 carrying "Action ... is blocked by policy", and a bare Error
+          // message reduces that to "Request failed with status code 422".
+          addNotification({ type: 'error', message: apiErrorMessage(e, 'Revoke failed') });
         }
       },
     });
@@ -84,10 +98,20 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
       onConfirm: async () => {
         try {
           const result = await diskImageWebhooksApi.rotateSecret(webhook.id);
+          if (isPendingApproval(result)) {
+            // No secret was minted, so there is nothing for the one-time modal
+            // to show — and opening it on this envelope crashed the tab. Refresh
+            // so the row keeps showing the server's actual state.
+            addNotification(
+              pendingApprovalNotice(`rotating the secret for "${webhook.label}"`, result),
+            );
+            void refresh();
+            return;
+          }
           setCreatedSecret(result);
           void refresh();
         } catch (e) {
-          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rotation failed' });
+          addNotification({ type: 'error', message: apiErrorMessage(e, 'Rotation failed') });
         }
       },
     });

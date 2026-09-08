@@ -388,6 +388,148 @@ describe('CiWebhooksTab', () => {
     expect(screen.getByText('super-secret-value-shown-once')).toBeInTheDocument();
   });
 
+  // IMP-50d629fafd45 — rotate_secret is wrapped in gate!. Under a
+  // require_approval policy the controller returns 202 with the approval
+  // envelope and NO secret, and the handler used to feed that straight into
+  // the one-time modal, which then dereferenced disk_image_webhook.label and
+  // took the tab down with a TypeError. The operator also got no sign the
+  // rotation had been submitted.
+  //
+  // This is not an edge case: the declared default policy for the category is
+  // notify_and_proceed, but the policy service falls back to require_approval
+  // when no row exists, so an install where that declaration was never seeded
+  // takes this branch every time.
+  const PENDING_ROTATE = {
+    pending: true,
+    deferred_operation_id: 'def-op-1',
+    action_category: 'system.disk_image_webhook_rotate_secret',
+    approval_request_id: 'appr-1',
+    message: 'Rotation parked awaiting approval.',
+  };
+
+  it('does not open the secret modal when the rotation is parked for approval', async () => {
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+    mockPost.mockResolvedValue(envelope(PENDING_ROTATE));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalled());
+    // The modal must stay shut: there is no secret to show, and opening it
+    // crashes on the absent webhook.
+    await waitFor(() =>
+      expect(screen.queryByText(/This secret is shown ONCE/i)).not.toBeInTheDocument(),
+    );
+  });
+
+  it('tells the operator the rotation is awaiting approval, with the reference', async () => {
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+    mockPost.mockResolvedValue(envelope(PENDING_ROTATE));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/awaiting review/i),
+          details: expect.objectContaining({
+            approval_request_id: 'appr-1',
+            deferred_operation_id: 'def-op-1',
+          }),
+        }),
+      ),
+    );
+    // Never a success toast for something that has not happened.
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('refreshes the list after a parked rotation so the row reflects server state', async () => {
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+    mockPost.mockResolvedValue(envelope(PENDING_ROTATE));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+    const before = mockGet.mock.calls.length;
+
+    fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
+
+    // Exactly one further GET: the branch's own refresh. `before` is the
+    // mount-time load, so a count assertion kills "refresh was dropped from the
+    // pending branch" without passing on an incidental second fetch.
+    await waitFor(() => expect(mockGet.mock.calls.length).toBe(before + 1));
+  });
+
+  // Same defect class on the sibling gated action: destroy discarded the body
+  // entirely, so a parked revoke toasted "revoked" and the operator believed a
+  // still-live credential had been killed.
+  it('does not claim a revoke succeeded when it is parked for approval', async () => {
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+    mockDelete.mockResolvedValue(
+      envelope({ ...PENDING_ROTATE, action_category: 'system.disk_image_webhook_revoke' }),
+    );
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Revoke webhook'));
+    await confirmDialog(/revoke webhook/i, /^revoke webhook$/i);
+
+    // Positive FIRST. Waiting only on mockDelete can resolve on the tick the
+    // call was made, before the await continuation runs, which would make the
+    // negative below vacuous.
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/awaiting review/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('surfaces the policy reason when the gate BLOCKS the rotation', async () => {
+    // The gate's third branch: 422 with the server's own sentence. A bare
+    // Error message would show "Request failed with status code 422", which
+    // tells the operator nothing about why.
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+    mockPost.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 422'), {
+        response: {
+          data: { error: 'Action system.disk_image_webhook_rotate_secret is blocked by policy' },
+        },
+      }),
+    );
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringMatching(/blocked by policy/i),
+        }),
+      ),
+    );
+  });
+
   it('shows error notification when rotate fails', async () => {
     mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
     mockPost.mockRejectedValue(new Error('Rotate error'));
