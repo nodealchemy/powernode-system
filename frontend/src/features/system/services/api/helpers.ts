@@ -99,6 +99,27 @@ export function extractGated<T, R>(
   return pick(data);
 }
 
+/**
+ * Message an operator can act on, out of a rejected API call.
+ *
+ * Axios rejects with an AxiosError whose `.message` is the generic
+ * "Request failed with status code 422" — the server's own sentence lives in
+ * `response.data.error` and is discarded by the obvious
+ * `err instanceof Error ? err.message : fallback`. That matters wherever the
+ * backend's 422 carries the only instruction the operator has (a storage
+ * cleanup refused because its grace window has not elapsed says how many hours
+ * remain and how to override); throwing it away turns a fixable refusal into
+ * an opaque failure.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  const body = (err as { response?: { data?: { error?: unknown; message?: unknown } } })?.response
+    ?.data;
+  if (typeof body?.error === 'string' && body.error.trim()) return body.error;
+  if (typeof body?.message === 'string' && body.message.trim()) return body.message;
+  if (err instanceof Error && err.message.trim()) return err.message;
+  return fallback;
+}
+
 /** Synthesize a meta block for endpoints that don't paginate but still
  *  return collections (e.g., the bare-array catalog endpoints). */
 export function defaultMeta(count: number): PaginationMeta {

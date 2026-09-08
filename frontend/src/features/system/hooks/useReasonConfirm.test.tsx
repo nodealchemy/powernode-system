@@ -123,3 +123,122 @@ describe('useReasonConfirm', () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(undefined));
   });
 });
+
+// =============================================================================
+// reasonRequired (IMP-20b686717ec3)
+//
+// For a destructive, never-auto-run operator action the reason IS the audit
+// record, so an optional field is an unlabelled hole in it. The confirm button
+// stays disabled until a non-blank reason is typed.
+//
+// The mechanism is worth stating because it is not obvious: useConfirmation
+// snapshots `options` into state, so a boolean captured at confirm() time can
+// never change. The predicate has to be a function, AND something has to make
+// the owner re-render as the operator types — which is what the state mirror
+// beside the ref is for. A spec that only checked the initial disabled state
+// would pass on a version where the button never re-enables.
+// =============================================================================
+
+const RequiredHarness: React.FC<{ onConfirmSpy: (reason?: string) => void }> = ({
+  onConfirmSpy,
+}) => {
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() =>
+          confirmWithReason({
+            title: 'Clean up target',
+            message: 'This deletes the target-side artifacts.',
+            confirmLabel: 'Delete artifacts',
+            variant: 'danger',
+            reasonRequired: true,
+            onConfirm: onConfirmSpy,
+          })
+        }
+      >
+        Open cleanup dialog
+      </button>
+      {ConfirmationDialog}
+    </div>
+  );
+};
+
+describe('useReasonConfirm reasonRequired', () => {
+  beforeEach(() => {
+    onConfirm.mockReset();
+  });
+
+  it('labels the field required', async () => {
+    render(<RequiredHarness onConfirmSpy={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: /open cleanup dialog/i }));
+
+    expect(await screen.findByText(/reason \(required\)/i)).toBeInTheDocument();
+  });
+
+  it('disables confirm until a non-blank reason is typed, then enables it', async () => {
+    render(<RequiredHarness onConfirmSpy={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: /open cleanup dialog/i }));
+
+    const confirmButton = await screen.findByRole('button', { name: 'Delete artifacts' });
+    expect(confirmButton).toBeDisabled();
+
+    const field = document.querySelector('textarea') as HTMLTextAreaElement;
+
+    // Whitespace is not a reason — and this is the case the `.trim()` in the
+    // predicate has to agree with the `.trim() || undefined` that is sent.
+    fireEvent.change(field, { target: { value: '   ' } });
+    await waitFor(() => expect(confirmButton).toBeDisabled());
+
+    fireEvent.change(field, { target: { value: 'volume is scrap' } });
+    await waitFor(() => expect(confirmButton).not.toBeDisabled());
+
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith('volume is scrap'));
+  });
+
+  it('re-disables confirm when the reason is cleared again', async () => {
+    render(<RequiredHarness onConfirmSpy={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: /open cleanup dialog/i }));
+
+    const confirmButton = await screen.findByRole('button', { name: 'Delete artifacts' });
+    const field = document.querySelector('textarea') as HTMLTextAreaElement;
+
+    fireEvent.change(field, { target: { value: 'scrap' } });
+    await waitFor(() => expect(confirmButton).not.toBeDisabled());
+
+    fireEvent.change(field, { target: { value: '' } });
+    await waitFor(() => expect(confirmButton).toBeDisabled());
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('starts disabled again on a NEW dialog after a cancelled one was valid', async () => {
+    render(<RequiredHarness onConfirmSpy={onConfirm} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /open cleanup dialog/i }));
+    await screen.findByRole('button', { name: 'Delete artifacts' });
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: 'first reason' },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Delete artifacts' })).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() =>
+      expect(screen.queryByText('This deletes the target-side artifacts.')).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /open cleanup dialog/i }));
+
+    expect(await screen.findByRole('button', { name: 'Delete artifacts' })).toBeDisabled();
+  });
+
+  it('leaves confirm enabled when the reason is optional', async () => {
+    render(<Harness onConfirmSpy={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: /open revoke dialog/i }));
+
+    expect(await screen.findByRole('button', { name: 'Revoke' })).not.toBeDisabled();
+  });
+});
