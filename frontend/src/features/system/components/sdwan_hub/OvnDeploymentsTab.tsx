@@ -2,14 +2,13 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Layers, Shield, Network as NetworkIcon } from 'lucide-react';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
+import { StatusBadge } from '@system/features/system/components/shared/StatusBadge';
 import type {
   SdwanOvnAcl,
   SdwanOvnAclAction,
   SdwanOvnDeployment,
-  SdwanOvnDeploymentStatus,
   SdwanOvnLogicalSwitch,
   SdwanOvnLogicalSwitchPort,
-  SdwanOvnPortState,
 } from '@system/features/system/types/sdwan.types';
 
 // Phase O6 — read-only operator view of the per-account OVN deployment.
@@ -92,7 +91,7 @@ export const OvnDeploymentsTab: React.FC = () => {
               <p className="text-xs text-theme-secondary font-mono">{deployment.id}</p>
             </div>
           </div>
-          <span className={statusBadgeClass(deployment.status)}>{deployment.status}</span>
+          <StatusBadge status={deployment.status} size="md" />
         </div>
 
         <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -207,7 +206,7 @@ const PortRow: React.FC<PortRowProps> = ({ port: p }) => (
     <td className="p-1 text-theme-primary">{p.name}</td>
     <td className="p-1 text-theme-secondary">{p.kind}</td>
     <td className="p-1">
-      <span className={portStateBadgeClass(p.state)}>{p.state}</span>
+      <StatusBadge status={p.state} size="xs" />
     </td>
     <td className="p-1 font-mono text-theme-secondary">{p.mac}</td>
     <td className="p-1 font-mono text-theme-secondary truncate max-w-xs" title={p.addresses.join(', ')}>
@@ -249,36 +248,6 @@ const DetailField: React.FC<DetailFieldProps> = ({ label, value, mono }) => (
     <dd className={'text-theme-primary mt-1 ' + (mono ? 'font-mono text-xs' : '')}>{value}</dd>
   </div>
 );
-
-function statusBadgeClass(status: SdwanOvnDeploymentStatus): string {
-  const base = 'px-3 py-1 rounded text-sm font-medium';
-  switch (status) {
-    case 'active':
-      return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'bootstrapping':
-      return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'pending':
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-    case 'degraded':
-      return `${base} bg-theme-danger-bg text-theme-danger-fg`;
-    default:
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}
-
-function portStateBadgeClass(state: SdwanOvnPortState): string {
-  const base = 'px-1.5 py-0.5 rounded text-xs font-medium';
-  switch (state) {
-    case 'active':
-      return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'pending':
-      return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'removed':
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-    default:
-      return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}
 
 function actionBadgeClass(action: SdwanOvnAclAction): string {
   const base = 'px-1.5 py-0.5 rounded text-xs font-medium';

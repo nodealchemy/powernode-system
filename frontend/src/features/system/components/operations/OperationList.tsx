@@ -14,7 +14,7 @@ import {
   ChevronRight,
   ChevronDown
 } from 'lucide-react';
-import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -42,16 +42,6 @@ const statusLabels: Record<string, string> = {
   failed: 'Failed',
   aborted: 'Aborted',
   cancelled: 'Cancelled'
-};
-
-const statusColors: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'secondary' | 'primary'> = {
-  pending: 'warning',
-  scheduled: 'info',
-  running: 'primary',
-  complete: 'success',
-  failed: 'danger',
-  aborted: 'secondary',
-  cancelled: 'secondary'
 };
 
 const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
@@ -279,10 +269,11 @@ export const OperationList: React.FC<OperationListProps> = ({
                 </td>
 
                 <td className="py-3 px-4">
-                  <Badge variant={statusColors[operation.status] || 'secondary'}>
-                    <StatusIcon status={operation.status} />
-                    <span className="ml-1">{statusLabels[operation.status] || operation.status}</span>
-                  </Badge>
+                  <StatusBadge
+                    status={operation.status}
+                    icon={<StatusIcon status={operation.status} />}
+                    label={statusLabels[operation.status] || operation.status}
+                  />
                 </td>
 
                 <td className="py-3 px-4">
@@ -445,10 +436,12 @@ export const OperationList: React.FC<OperationListProps> = ({
             </div>
 
             <div className="flex items-center justify-between">
-              <Badge variant={statusColors[operation.status] || 'secondary'} size="xs">
-                <StatusIcon status={operation.status} />
-                <span className="ml-1">{statusLabels[operation.status] || operation.status}</span>
-              </Badge>
+              <StatusBadge
+                status={operation.status}
+                size="xs"
+                icon={<StatusIcon status={operation.status} />}
+                label={statusLabels[operation.status] || operation.status}
+              />
               <span className="text-xs text-theme-tertiary">
                 {formatDateTime(operation.started_at || operation.created_at)}
               </span>

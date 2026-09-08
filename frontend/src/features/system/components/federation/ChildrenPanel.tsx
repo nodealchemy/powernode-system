@@ -12,6 +12,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { childrenApi } from '../../services/api/childrenApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   ChildPeerSummary,
   ChildPeerDetail,
@@ -407,19 +408,6 @@ const StatusFilterBar: React.FC<{
   </div>
 );
 
-const StatusPill: React.FC<{ status: ChildPeerStatus }> = ({ status }) => {
-  const styleByStatus: Record<ChildPeerStatus, string> = {
-    proposed: 'bg-theme-background-tertiary text-theme-secondary',
-    accepted: 'bg-theme-info-bg text-theme-info-fg',
-    enrolled: 'bg-theme-info-bg text-theme-info-fg',
-    active: 'bg-theme-success-bg text-theme-success-fg',
-    degraded: 'bg-theme-warning-bg text-theme-warning-fg',
-    suspended: 'bg-theme-warning-bg text-theme-warning-fg',
-    revoked: 'bg-theme-danger-bg text-theme-danger-fg',
-  };
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}>
-      {status}
-    </span>
-  );
-};
+const StatusPill: React.FC<{ status: ChildPeerStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" />
+);

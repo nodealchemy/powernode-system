@@ -3,6 +3,7 @@ import { GitBranch, RefreshCw, Trash2, ChevronRight, ChevronDown } from 'lucide-
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -15,19 +16,6 @@ import type {
 
 interface GitopsTabProps {
   onActionsReady?: (handle: { openCreate: () => void } | null) => void;
-}
-
-function statusVariant(status: string): 'success' | 'danger' | 'warning' | 'secondary' {
-  switch (status) {
-    case 'success':
-      return 'success';
-    case 'failed':
-      return 'danger';
-    case 'partial':
-      return 'warning';
-    default:
-      return 'secondary';
-  }
 }
 
 // The sync_now failure envelopes, in the operator's words rather than axios'.
@@ -210,9 +198,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                           label={repo.name}
                           className="font-medium"
                         />
-                        <Badge variant={statusVariant(repo.last_status)} size="xs">
-                          {repo.last_status}
-                        </Badge>
+                        <StatusBadge status={repo.last_status} size="xs" />
                         {!repo.enabled && (
                           <Badge variant="secondary" size="xs">disabled</Badge>
                         )}
@@ -283,7 +269,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                               <ul className="space-y-1">
                                 {runs.map((run) => (
                                   <li key={run.id} className="flex items-center gap-2 text-xs flex-wrap">
-                                    <Badge variant={statusVariant(run.status)} size="xs">{run.status}</Badge>
+                                    <StatusBadge status={run.status} size="xs" />
                                     <span className="text-theme-secondary">{new Date(run.started_at).toLocaleString()}</span>
                                     <span className="text-theme-tertiary">· {run.diff_count} diff(s)</span>
                                     {run.proposal_ids.length > 0 && (

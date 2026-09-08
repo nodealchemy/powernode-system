@@ -12,6 +12,7 @@ import {
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   ServiceOffering,
   OfferingStatus,
@@ -399,21 +400,9 @@ const StatusFilterBar: React.FC<{
   </div>
 );
 
-const StatusPill: React.FC<{ status: OfferingStatus }> = ({ status }) => {
-  const styleByStatus: Record<OfferingStatus, string> = {
-    draft: 'bg-theme-background-tertiary text-theme-secondary',
-    active: 'bg-theme-success-bg text-theme-success-fg',
-    deprecated: 'bg-theme-warning-bg text-theme-warning-fg',
-    retired: 'bg-theme-danger-bg text-theme-danger-fg',
-  };
-  return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}
-    >
-      {status}
-    </span>
-  );
-};
+const StatusPill: React.FC<{ status: OfferingStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" />
+);
 
 interface ActionButtonProps {
   icon: React.ReactNode;

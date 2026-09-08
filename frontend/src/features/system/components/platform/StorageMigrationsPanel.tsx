@@ -14,6 +14,7 @@ import { EntityLink } from '@/shared/components/entity';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   StorageMigrationStatus,
   StorageMigrationSummary,
@@ -312,23 +313,6 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
   );
 };
 
-const STATUS_TONE: Record<StorageMigrationStatus, string> = {
-  planned: 'bg-theme-background-secondary text-theme-secondary',
-  approved: 'bg-theme-info-bg text-theme-info-fg',
-  preparing: 'bg-theme-info-bg text-theme-info-fg',
-  syncing: 'bg-theme-warning-bg text-theme-warning-fg',
-  verifying: 'bg-theme-warning-bg text-theme-warning-fg',
-  cutover: 'bg-theme-warning-bg text-theme-warning-fg',
-  completed: 'bg-theme-success-bg text-theme-success-fg',
-  failed: 'bg-theme-danger-bg text-theme-danger-fg',
-  cancelled: 'bg-theme-background-secondary text-theme-tertiary',
-};
-
 const StatusPill: React.FC<{ status: StorageMigrationStatus }> = ({ status }) => (
-  <span
-    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${STATUS_TONE[status]}`}
-  >
-    <Clock className="w-3 h-3" />
-    {status}
-  </span>
+  <StatusBadge status={status} size="xs" icon={<Clock className="w-3 h-3" />} />
 );

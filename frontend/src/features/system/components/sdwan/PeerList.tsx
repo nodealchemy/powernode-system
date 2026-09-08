@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Globe, Server, Trash2, Pencil, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type { SdwanPeer } from '../../types/sdwan.types';
 
 interface PeerListProps {
@@ -108,7 +109,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                 {p.endpoint || (p.publicly_reachable ? '—' : 'outbound only')}
               </td>
               <td className="p-3">
-                <span className={peerStatusClass(p.status)}>{p.status}</span>
+                <StatusBadge status={p.status} size="xs" />
               </td>
               <td className="p-3 text-xs text-theme-secondary">
                 {p.last_handshake_at ? new Date(p.last_handshake_at).toLocaleString() : 'never'}
@@ -268,17 +269,6 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
     </ResponsiveListContainer>
   );
 };
-
-function peerStatusClass(status: string): string {
-  const base = 'px-2 py-0.5 rounded text-xs font-medium';
-  switch (status) {
-    case 'active': return `${base} bg-theme-success-bg text-theme-success-fg`;
-    case 'degraded': return `${base} bg-theme-warning-bg text-theme-warning-fg`;
-    case 'pending': return `${base} bg-theme-info-bg text-theme-info-fg`;
-    case 'disconnected': return `${base} bg-theme-danger-bg text-theme-danger-fg`;
-    default: return `${base} bg-theme-background-secondary text-theme-secondary`;
-  }
-}
 
 // IMP-ab73cc2fca65 — render an observed WireGuard byte counter.
 //

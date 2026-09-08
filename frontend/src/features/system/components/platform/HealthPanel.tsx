@@ -17,6 +17,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { platformHealthApi } from '../../services/api/platformHealthApi';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   PlatformHealth,
   SubsystemStatus,
@@ -265,34 +266,15 @@ const Card: React.FC<CardProps> = ({ icon, label, status, primary, detail }) => 
   </div>
 );
 
-const StatusPill: React.FC<{ status: SubsystemStatus }> = ({ status }) => {
-  const config: Record<SubsystemStatus, { icon: React.ReactNode; cls: string; label: string }> = {
-    ok: {
-      icon: <CheckCircle2 className="w-3 h-3" />,
-      cls: 'bg-theme-success-bg text-theme-success-fg',
-      label: 'ok',
-    },
-    degraded: {
-      icon: <AlertCircle className="w-3 h-3" />,
-      cls: 'bg-theme-warning-bg text-theme-warning-fg',
-      label: 'degraded',
-    },
-    down: {
-      icon: <XCircle className="w-3 h-3" />,
-      cls: 'bg-theme-danger-bg text-theme-danger-fg',
-      label: 'down',
-    },
-    unknown: {
-      icon: <HelpCircle className="w-3 h-3" />,
-      cls: 'bg-theme-background-tertiary text-theme-secondary',
-      label: 'unknown',
-    },
-  };
-  const c = config[status];
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${c.cls}`}>
-      {c.icon}
-      {c.label}
-    </span>
-  );
+// Colour comes from the shared StatusBadge table; only the per-status ICON is
+// domain knowledge worth keeping here.
+const ICON_BY_STATUS: Record<SubsystemStatus, React.ReactNode> = {
+  ok: <CheckCircle2 className="w-3 h-3" />,
+  degraded: <AlertCircle className="w-3 h-3" />,
+  down: <XCircle className="w-3 h-3" />,
+  unknown: <HelpCircle className="w-3 h-3" />,
 };
+
+const StatusPill: React.FC<{ status: SubsystemStatus }> = ({ status }) => (
+  <StatusBadge status={status} size="xs" icon={ICON_BY_STATUS[status]} />
+);

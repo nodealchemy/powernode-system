@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { platformMigrationsApi } from '../../services/api/platformMigrationsApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
+import { StatusBadge } from '../shared/StatusBadge';
 import type {
   MigrationDetail,
   MigrationOperation,
@@ -168,33 +169,13 @@ export const OperationBadge: React.FC<{ op: MigrationOperation }> = ({ op }) => 
   );
 };
 
-/**
- * Status → theme classes for the MIGRATION lifecycle. Hoisted to module scope
- * and exported so the chain surface renders hop statuses with the identical
- * mapping (IMP-ffc2de6bd175) — a second copy is how two views of the same
- * status start disagreeing about what colour `conflict` is.
- *
- * A chain's OWN status is a different enum and lives in
- * MigrationChainsPanel; it reuses these classes for the four states the two
- * share rather than redefining them.
- */
-export const MIGRATION_STATUS_STYLE: Record<MigrationStatus, string> = {
-  planned: 'bg-theme-background-tertiary text-theme-secondary',
-  validating: 'bg-theme-info-bg text-theme-info-fg',
-  transferring: 'bg-theme-info-bg text-theme-info-fg',
-  conflict: 'bg-theme-warning-bg text-theme-warning-fg',
-  applying: 'bg-theme-info-bg text-theme-info-fg',
-  completed: 'bg-theme-success-bg text-theme-success-fg',
-  failed: 'bg-theme-danger-bg text-theme-danger-fg',
-  cancelled: 'bg-theme-background-tertiary text-theme-secondary',
-};
-
+// Kept as a named component rather than inlined: MigrationChainsPanel imports
+// it for hop statuses, and naming the migration vocabulary at the call sites
+// is still worth it. The "one mapping, two views" guarantee IMP-ffc2de6bd175
+// established by exporting a shared class map is now held one level up, by the
+// shared StatusBadge table (IMP-328c63a1da8a).
 export const StatusPill: React.FC<{ status: MigrationStatus }> = ({ status }) => (
-  <span
-    className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${MIGRATION_STATUS_STYLE[status]}`}
-  >
-    {status}
-  </span>
+  <StatusBadge status={status} size="xs" />
 );
 
 // ──────────────────────────────────────────────────────────────────────

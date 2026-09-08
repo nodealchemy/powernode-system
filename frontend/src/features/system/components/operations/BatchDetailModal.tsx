@@ -3,6 +3,7 @@ import { Hammer, ShieldCheck, AlertCircle } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
 import { capitalize, formatDateTime, formatFileSize } from '@/shared/utils/formatters';
@@ -29,27 +30,6 @@ const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
   partial: 'Partial',
   failed: 'Failed',
 };
-
-function statusVariant(
-  status: SystemModuleBuildBatchStatus
-): 'outline' | 'warning' | 'success' | 'danger' {
-  switch (status) {
-    case 'planning':
-      return 'outline';
-    case 'dispatched':
-    case 'awaiting_signature':
-    case 'publishing':
-      return 'warning';
-    case 'complete':
-      return 'success';
-    case 'partial':
-      return 'warning';
-    case 'failed':
-      return 'danger';
-    default:
-      return 'outline';
-  }
-}
 
 // NativeModuleBuildOrchestrator::TERMINAL_MODULE_STATES + "queued"/
 // "dispatched" — the only 4 values entry["state"] ever takes.
@@ -148,9 +128,11 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
           {loading ? 'Loading…' : 'Module build batch'}
           {batch && (
             <>
-              <Badge variant={statusVariant(batch.status)} size="sm">
-                {STATUS_LABELS[batch.status] ?? batch.status}
-              </Badge>
+              <StatusBadge
+                status={batch.status}
+                size="sm"
+                label={STATUS_LABELS[batch.status] ?? batch.status}
+              />
               {batch.shadow && <Badge variant="outline" size="sm">shadow</Badge>}
             </>
           )}

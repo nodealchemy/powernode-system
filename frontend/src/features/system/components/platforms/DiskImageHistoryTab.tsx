@@ -11,6 +11,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -137,13 +138,6 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
   };
 
-  const statusVariant = (status: string): 'success' | 'warning' | 'danger' | 'secondary' => {
-    if (status === 'published') return 'success';
-    if (status === 'failed') return 'danger';
-    if (status === 'verifying' || status === 'awaiting_upload' || status === 'queued') return 'warning';
-    return 'secondary';
-  };
-
   return (
     <section className="bg-theme-surface rounded-lg border border-theme">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
@@ -185,7 +179,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 text-sm flex-wrap">
                         <code className="text-theme-primary font-mono">{p.git_sha_short}</code>
-                        <Badge variant={statusVariant(p.status)} size="xs">{p.status}</Badge>
+                        <StatusBadge status={p.status} size="xs" />
                         {p.active && <Badge variant="info" size="xs">active</Badge>}
                         <Badge variant="secondary" size="xs">{p.arch}</Badge>
                         {p.attestation_present && (

@@ -14,6 +14,7 @@ import {
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import Pagination from '@/shared/components/ui/Pagination';
 import { EntityLink } from '@/shared/components/entity';
@@ -100,15 +101,6 @@ interface VolumeDetailModalProps {
   /** Callback to edit the volume */
   onEdit?: (volume: SystemProviderVolume) => void;
 }
-
-const statusVariants: Record<string, 'success' | 'warning' | 'danger' | 'secondary' | 'info'> = {
-  available: 'success',
-  'in-use': 'info',
-  creating: 'warning',
-  deleting: 'warning',
-  deleted: 'secondary',
-  error: 'danger'
-};
 
 const volumeTypeLabels: Record<string, string> = {
   gp2: 'General Purpose SSD (gp2)',
@@ -428,14 +420,12 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
       subtitle={
         volume ? (
           <div className="flex items-center gap-2">
-            <Badge
-              variant={statusVariants[volume.status] || 'secondary'}
+            <StatusBadge
+              status={volume.status}
               size="sm"
               dot
               pulse={volume.status === 'creating'}
-            >
-              {volume.status}
-            </Badge>
+            />
             {volume.encrypted && (
               <Badge variant="info" size="sm">
                 <Shield className="w-3 h-3 mr-1" />

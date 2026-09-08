@@ -1,5 +1,6 @@
 import React from 'react';
 import { Badge } from '@/shared/components/ui/Badge';
+import { StatusBadge } from '../shared/StatusBadge';
 import { capitalize, formatRelativeTime } from '@/shared/utils/formatters';
 import type {
   SystemModuleBuildBatch,
@@ -20,31 +21,6 @@ const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
   partial: 'Partial',
   failed: 'Failed',
 };
-
-// System::ModuleBuildBatch::STATUSES → Badge variant. planning is neutral
-// (not started yet); dispatched/awaiting_signature/publishing are all
-// in-flight (warning); partial also gets warning — it succeeded, but not
-// completely, so it still needs a look.
-function statusVariant(
-  status: SystemModuleBuildBatchStatus
-): 'outline' | 'warning' | 'success' | 'danger' {
-  switch (status) {
-    case 'planning':
-      return 'outline';
-    case 'dispatched':
-    case 'awaiting_signature':
-    case 'publishing':
-      return 'warning';
-    case 'complete':
-      return 'success';
-    case 'partial':
-      return 'warning';
-    case 'failed':
-      return 'danger';
-    default:
-      return 'outline';
-  }
-}
 
 // base_sha/head_sha are full 40-char shas for git-driven triggers, or an
 // opaque package-repo sync-snapshot token for "package" batches (see
@@ -70,9 +46,11 @@ export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect }) => {
                 >
                   {shortRef(batch.base_sha)}→{shortRef(batch.head_sha)}
                 </button>
-                <Badge variant={statusVariant(batch.status)} size="xs">
-                  {STATUS_LABELS[batch.status] ?? batch.status}
-                </Badge>
+                <StatusBadge
+                  status={batch.status}
+                  size="xs"
+                  label={STATUS_LABELS[batch.status] ?? batch.status}
+                />
                 {batch.shadow && (
                   <Badge variant="outline" size="xs">shadow</Badge>
                 )}

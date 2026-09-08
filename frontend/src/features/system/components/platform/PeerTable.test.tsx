@@ -12,8 +12,8 @@ import type { PlatformPeerSummary } from '../../types/peer.types';
 // Mocks
 //
 // PeerTable.tsx and its sub-components are pure presentational — no API calls,
-// no state, no hooks. The only child that needs a mock is PeerStatusPill, which
-// is imported by PeerStatusCell. We let the real PeerStatusPill render because
+// no state, no hooks. The only child that needs a mock is StatusBadge, which
+// is imported by PeerStatusCell. We let the real StatusBadge render because
 // it too is purely presentational and adds meaningful assertions (status label).
 // =============================================================================
 
@@ -312,40 +312,42 @@ describe('PeerStatusCell', () => {
     expect(container.querySelector('td')).toBeInTheDocument();
   });
 
-  it('renders the PeerStatusPill with the peer status label', () => {
+  it('renders the status badge with the peer status label', () => {
     renderRow(<PeerStatusCell peer={PEER_ACTIVE} />);
-    // PeerStatusPill renders the status string as text
+    // StatusBadge renders the status string as text
     expect(screen.getByText('active')).toBeInTheDocument();
   });
 
-  it('renders "degraded" status via PeerStatusPill', () => {
+  it('renders "degraded" status via the shared StatusBadge', () => {
     renderRow(<PeerStatusCell peer={PEER_NO_HEARTBEAT} />);
     expect(screen.getByText('degraded')).toBeInTheDocument();
   });
 
-  it('renders "enrolled" status via PeerStatusPill', () => {
+  it('renders "enrolled" status via the shared StatusBadge', () => {
     renderRow(<PeerStatusCell peer={PEER_STALE} />);
     expect(screen.getByText('enrolled')).toBeInTheDocument();
   });
 
-  it('renders status text inside a span with the pill classes', () => {
+  it('renders status text inside the shared badge', () => {
     renderRow(<PeerStatusCell peer={PEER_ACTIVE} />);
-    const pill = screen.getByText('active');
-    // PeerStatusPill always applies these structural classes
-    expect(pill).toHaveClass('inline-block', 'px-2', 'rounded', 'text-xs', 'font-medium');
+    // Structural classes come from the shared StatusBadge now, so the
+    // assertion moves from the bespoke pill's paddings to the badge tokens.
+    const badge = screen.getByText('active').closest('.badge-theme')!;
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).toContain('badge-theme-xs');
   });
 
   it('applies the success theme class for active status', () => {
     renderRow(<PeerStatusCell peer={PEER_ACTIVE} />);
-    const pill = screen.getByText('active');
-    expect(pill).toHaveClass('bg-theme-success-bg');
+    const pill = screen.getByText('active').closest('.badge-theme')!;
+    expect(pill.className).toContain('badge-theme-success');
   });
 
   it('applies the danger theme class for revoked status', () => {
     const revokedPeer: PlatformPeerSummary = { ...PEER_ACTIVE, status: 'revoked' };
     renderRow(<PeerStatusCell peer={revokedPeer} />);
-    const pill = screen.getByText('revoked');
-    expect(pill).toHaveClass('bg-theme-danger-bg');
+    const pill = screen.getByText('revoked').closest('.badge-theme')!;
+    expect(pill.className).toContain('badge-theme-danger');
   });
 });
 
