@@ -106,7 +106,6 @@ const KNOWN_HAND_WRITTEN: readonly string[] = [
   'sdwan/vips/VirtualIpCreateModal.tsx',
   'sdwan/vips/VirtualIpEditModal.tsx',
   'sdwan_hub/CreateHostBridgeModal.tsx',
-  'templates/CreateTemplateModal.tsx',
   'volumes/VolumeAttachModal.tsx',
   'volumes/VolumeDetailModal.tsx',
   'volumes/VolumeFormModal.tsx',
