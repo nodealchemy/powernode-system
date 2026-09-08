@@ -11,6 +11,9 @@ export interface SystemNode {
   config: Record<string, unknown>;
   node_template_id?: string;
   node_template_name?: string;
+  // Environment campaign, increment 1: which plane the row is in.
+  environment_id?: string;
+  environment_slug?: string;
   worker_id?: string;
   instance_count?: number;
   running_instances_count?: number;
@@ -23,6 +26,9 @@ export interface SystemNodeInstance {
   name: string;
   variety: 'cloud' | 'physical' | 'dynamic';
   status: string;
+  // Environment campaign, increment 1: denormalised from the node.
+  environment_id?: string;
+  environment_slug?: string;
   private_ip_address?: string;
   public_ip_address?: string;
   vpn_ip_address?: string;
@@ -112,6 +118,9 @@ export interface SystemNodeTemplate {
   config: Record<string, unknown>;
   node_platform_id?: string;
   node_platform_name?: string;
+  // Environment campaign, increment 1: which plane the template composes for.
+  environment_id?: string;
+  environment_slug?: string;
   node_count?: number;
   // Lightweight module summary embedded by NodeTemplateSerializer so the
   // list page can render module chips without an N+1 fetch. The full

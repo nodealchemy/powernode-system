@@ -9,7 +9,7 @@ module Api
 
         def index
           require_permission("system.nodes.read")
-          nodes = @account.system_nodes.includes(:node_template, :worker)
+          nodes = @account.system_nodes.includes(:node_template, :worker, :environment)
           nodes = apply_filters(nodes)
           nodes = paginate(nodes)
           render_success(nodes: serialize_collection(nodes), meta: pagination_meta)

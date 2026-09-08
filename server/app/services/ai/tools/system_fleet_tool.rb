@@ -1112,6 +1112,7 @@ module Ai
               description: { type: "string", required: false, description: "New free-text description for the node" },
               enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the node" },
               node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to. DESTRUCTIVE: a retarget REPLACES the node's modules — the new template's closure is applied and the previous template's assignments are purged. Assignments made outside a template (inference deployments, SDWAN flow exporters, module commits — they carry no source_template_module_id) are left alone. Modules and pointer move together or not at all: if the apply fails the retarget is rolled back. The reply's `template_applied` names the created and purged module ids plus `convergence`, which has FOUR buckets. `dispatched` — ids of cloud_init instances that got a sync_modules task and against which NO liveness objection is known. That is weaker than `an agent is listening`, and the difference matters: a `starting` instance that has never reported lands here, because a missing heartbeat during boot is not evidence of death (an agent enrolling normally has not reported yet) — nothing is listening for it either. NO bucket asserts an agent IS listening; `dispatched` asserts only the absence of evidence against. `dormant` — {instance_id, task_id, reason}: a task WAS created and will be pulled whenever an agent starts, but the instance is stopped/stopping/rebooting/pending/provisioning, so nothing is listening now and the worker janitor's unrunnable sweep may cancel the row at 48h first; not converged yet and may never be. `deferred` — {instance_id, reason}: pivot-booted direct_kernel/uefi_disk instances, which compose their union at boot; the reason is the reboot/rolling-reprovision instruction, EXCEPT for a pivot instance that is errored, silent or never-enrolled, where it is that liveness fact instead because the action is investigate/reprovision rather than reboot — read the ENTRY reason, not the bucket-level one, when they differ. Known gap (offer 01a07b3c-6e02): a pivot instance that is merely DORMANT gets the reboot instruction with no mention of the dormancy, which is wrong in verb for a stopped one and premature for one still provisioning. `skipped` — {instance_id, reason}: instances KNOWN to have no agent that will pull the task (errored, or running/starting but silent or never-enrolled); no task is created for these, so they are definitively NOT converged. `task_ids` spans `dispatched` PLUS `dormant` and is NOT positionally aligned with either — take a dormant instance's id from its own entry." },
+              environment: { type: "string", required: false, description: "Environment slug or id to move THIS node into, overriding the one inherited from its template (instances created afterwards inherit the node's). Unknown values are refused." },
               worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
               public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
               allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
@@ -1143,7 +1144,8 @@ module Ai
               public: { type: "boolean", required: false, description: "Whether the template is shared/public rather than account-private" },
               node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform the template binds to (System::NodeTemplate belongs_to :node_platform, and the column is NOT NULL)" },
               admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
-              config: { type: "object", required: false, description: "Arbitrary template config hash" }
+              config: { type: "object", required: false, description: "Arbitrary template config hash" },
+              environment: { type: "string", required: false, description: "Environment slug or id for the template; defaults to the account's default environment (dev) when omitted." }
             }
           },
           "system_update_template" => {
@@ -1156,7 +1158,8 @@ module Ai
               public: { type: "boolean", required: false, description: "Whether the template is shared/public rather than account-private" },
               node_platform_id: { type: "string", required: false, description: "UUID of a NodePlatform to retarget the template to" },
               admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
-              config: { type: "object", required: false, description: "Template config hash (init_script, boot_mode, sdwan_network_id, …) — REPLACES the stored hash" }
+              config: { type: "object", required: false, description: "Template config hash (init_script, boot_mode, sdwan_network_id, …) — REPLACES the stored hash" },
+              environment: { type: "string", required: false, description: "Environment slug (dev|ci|staging|ops|prod, or an account-defined one) or Ai::Environment id to move the template into. Nodes, instances and pools created from the template inherit it; existing rows keep theirs. Unknown values are refused." }
             }
           },
           "system_delete_module" => {
@@ -3000,6 +3003,7 @@ module Ai
           :name, :description, :enabled, :node_template_id, :worker_id,
           :public_address, :allocate_public_ip, :config
         ).to_h.compact
+        attrs[:environment] = resolve_environment!(params[:environment]) if params[:environment].present?
         return error_result("no mutable fields supplied") if attrs.empty?
 
         previous_template_id = node.node_template_id
@@ -3273,7 +3277,16 @@ module Ai
         attrs[:node_platform_id] = params[:node_platform_id] if params[:node_platform_id].present?
         attrs[:admin_user]       = params[:admin_user]       if params[:admin_user].present?
         attrs[:config]           = params[:config]           if params[:config].is_a?(Hash)
+        attrs[:environment]      = resolve_environment!(params[:environment]) if params[:environment].present?
         attrs
+      end
+
+      # Resolve an environment slug or id inside the current account; an
+      # unknown value is an error, never a silent no-op (the mis-named-key
+      # class: a dropped key reads as success).
+      def resolve_environment!(identifier)
+        ::Ai::Environment.find_for_account(@account.id, identifier) ||
+          raise(ArgumentError, "environment #{identifier.inspect} not found in this account (use a slug such as dev|ci|staging|ops|prod, or an id)")
       end
 
       # IMP-0cea3952202c — AI-first parity for the NodeModule resource. An
@@ -4858,7 +4871,7 @@ module Ai
       # parameters at all, so an agent looking for one template had to pull the
       # whole catalog and filter client-side.
       def list_templates(params = {})
-        templates = account_templates
+        templates = account_templates.includes(:node_platform)
         if (q = params[:q].to_s.strip).present?
           like = "%#{::ActiveRecord::Base.sanitize_sql_like(q)}%"
           templates = templates.where(
@@ -6565,12 +6578,14 @@ module Ai
 
       # === Scope helpers (account-scoped) ===
 
+      # Every serializer below reads `environment.slug`; preload it at the
+      # scope so no list path can N+1 on it.
       def account_nodes
-        ::System::Node.where(account: @account)
+        ::System::Node.where(account: @account).includes(:environment)
       end
 
       def account_templates
-        ::System::NodeTemplate.where(account: @account)
+        ::System::NodeTemplate.where(account: @account).includes(:environment)
       end
 
       def account_modules
@@ -6578,7 +6593,7 @@ module Ai
       end
 
       def account_instances
-        ::System::NodeInstance.where(account_id: @account.id)
+        ::System::NodeInstance.where(account_id: @account.id).includes(:environment)
       end
 
       # === Serializers ===
@@ -6588,6 +6603,8 @@ module Ai
           id: n.id,
           name: n.name,
           template_id: n.node_template_id,
+          environment_id: n.environment_id,
+          environment_slug: n.environment&.slug,
           worker_id: n.worker_id,
           ssh_key_fingerprint: n.ssh_key_fingerprint,
           ssh_key_type: n.ssh_key_type,
@@ -6610,6 +6627,8 @@ module Ai
           id: i.id,
           name: i.name,
           node_id: i.node_id,
+          environment_id: i.environment_id,
+          environment_slug: i.environment&.slug,
           variety: i.variety,
           status: i.status,
           architecture: i.architecture,
@@ -6679,6 +6698,8 @@ module Ai
           name: t.name,
           platform_id: t.node_platform_id,
           architecture_id: t.node_platform&.node_architecture_id,
+          environment_id: t.environment_id,
+          environment_slug: t.environment&.slug,
           enabled: t.enabled
         }
       end

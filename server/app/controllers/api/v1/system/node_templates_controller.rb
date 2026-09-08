@@ -11,6 +11,7 @@ module Api
           require_permission("system.templates.read")
           templates = @account.system_node_templates.includes(
             :node_platform,
+            :environment,
             template_modules: { node_module: :category }
           )
           templates = apply_filters(templates)

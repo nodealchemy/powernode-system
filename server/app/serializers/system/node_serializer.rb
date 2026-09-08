@@ -17,6 +17,8 @@ module System
         allocate_public_ip: @node.allocate_public_ip,
         node_template_id: @node.node_template_id,
         node_template_name: @node.node_template&.name,
+        environment_id: @node.environment_id,
+        environment_slug: @node.environment&.slug,
         worker_id: @node.worker_id,
         worker_name: @node.worker&.name,
         instance_count: @node.node_instances.count,

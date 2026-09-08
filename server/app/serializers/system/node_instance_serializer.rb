@@ -13,6 +13,8 @@ module System
         description: @instance.description,
         variety: @instance.variety,
         status: @instance.status,
+        environment_id: @instance.environment_id,
+        environment_slug: @instance.environment&.slug,
         config: @instance.config,
         private_ip_address: @instance.private_ip_address,
         public_ip_address: @instance.public_ip_address,

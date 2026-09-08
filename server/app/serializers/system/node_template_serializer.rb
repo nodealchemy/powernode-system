@@ -16,6 +16,8 @@ module System
         admin_user: @template.admin_user,
         config: @template.config,
         node_platform_id: @template.node_platform_id,
+        environment_id: @template.environment_id,
+        environment_slug: @template.environment&.slug,
         # Field names match the frontend SystemNodeTemplate type
         # (extensions/system/frontend/src/features/system/types/system.types.ts).
         # Earlier these were `platform_name` / `nodes_count` which the UI
