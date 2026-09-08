@@ -85,7 +85,6 @@ const KNOWN_HAND_WRITTEN: readonly string[] = [
   'providers/InstanceTypeFormModal.tsx',
   'providers/ProviderFormModal.tsx',
   'providers/RegionFormModal.tsx',
-  'puppet/PuppetModuleFormModal.tsx',
   'sdwan/AccessGrantCreateModal.tsx',
   'sdwan/AccessTab.tsx',
   'sdwan/FederationPeerList.tsx',

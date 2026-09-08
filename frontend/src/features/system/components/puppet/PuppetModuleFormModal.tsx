@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Package, AlertCircle } from 'lucide-react';
+import { Package } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -84,12 +85,10 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
     }
   }, [isOpen, editModule]);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) => {
-    const { name, value, type } = e.target;
-    const newValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
-    setFormData(prev => ({ ...prev, [name]: newValue }));
+  // FormField reports a value, the checkboxes still report an event; both land
+  // here so the clear-the-error behaviour cannot drift between them.
+  const setField = (name: string, value: string | boolean) => {
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -97,6 +96,13 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
         return next;
       });
     }
+  };
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value, type } = e.target;
+    setField(name, type === 'checkbox' ? (e.target as HTMLInputElement).checked : value);
   };
 
   const validateJson = (value: string, fieldName: string): boolean => {
@@ -199,212 +205,120 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
             <div className="space-y-4">
               {/* Name and Version */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error-fg">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    id="name"
-                    name="name"
-                    value={formData.name}
-                    onChange={handleChange}
-                    placeholder="e.g., puppetlabs-apache"
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error-border' : 'border-theme'
-                    }`}
-                  />
-                  {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.name}
-                    </p>
-                  )}
-                </div>
+                <FormField
+                  label="Name"
+                  id="name"
+                  required
+                  value={formData.name}
+                  onChange={(v) => setField('name', v)}
+                  placeholder="e.g., puppetlabs-apache"
+                  error={errors.name}
+                />
 
-                <div>
-                  <label htmlFor="version" className="block text-sm font-medium text-theme-primary mb-1">
-                    Version
-                  </label>
-                  <input
-                    type="text"
-                    id="version"
-                    name="version"
-                    value={formData.version}
-                    onChange={handleChange}
-                    placeholder="e.g., 1.0.0"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  />
-                </div>
+                <FormField
+                  label="Version"
+                  id="version"
+                  value={formData.version}
+                  onChange={(v) => setField('version', v)}
+                  placeholder="e.g., 1.0.0"
+                />
               </div>
 
               {/* Author and License */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="author" className="block text-sm font-medium text-theme-primary mb-1">
-                    Author
-                  </label>
-                  <input
-                    type="text"
-                    id="author"
-                    name="author"
-                    value={formData.author}
-                    onChange={handleChange}
-                    placeholder="e.g., Puppet Labs"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  />
-                </div>
+                <FormField
+                  label="Author"
+                  id="author"
+                  value={formData.author}
+                  onChange={(v) => setField('author', v)}
+                  placeholder="e.g., Puppet Labs"
+                />
 
-                <div>
-                  <label htmlFor="license" className="block text-sm font-medium text-theme-primary mb-1">
-                    License
-                  </label>
-                  <input
-                    type="text"
-                    id="license"
-                    name="license"
-                    value={formData.license}
-                    onChange={handleChange}
-                    placeholder="e.g., Apache-2.0"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  />
-                </div>
+                <FormField
+                  label="License"
+                  id="license"
+                  value={formData.license}
+                  onChange={(v) => setField('license', v)}
+                  placeholder="e.g., Apache-2.0"
+                />
               </div>
 
               {/* Forge Name */}
-              <div>
-                <label htmlFor="forge_name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Forge Name
-                </label>
-                <input
-                  type="text"
-                  id="forge_name"
-                  name="forge_name"
-                  value={formData.forge_name}
-                  onChange={handleChange}
-                  placeholder="e.g., puppetlabs/apache"
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm"
-                />
-              </div>
+              <FormField
+                label="Forge Name"
+                id="forge_name"
+                value={formData.forge_name}
+                onChange={(v) => setField('forge_name', v)}
+                placeholder="e.g., puppetlabs/apache"
+                className="font-mono text-sm"
+              />
 
               {/* Description */}
-              <div>
-                <label htmlFor="description" className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={formData.description}
-                  onChange={handleChange}
-                  placeholder="Module description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                />
-              </div>
+              <FormField
+                label="Description"
+                id="description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => setField('description', v)}
+                placeholder="Module description"
+              />
 
               {/* URLs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="source_url" className="block text-sm font-medium text-theme-primary mb-1">
-                    Source URL
-                  </label>
-                  <input
-                    type="text"
-                    id="source_url"
-                    name="source_url"
-                    value={formData.source_url}
-                    onChange={handleChange}
-                    placeholder="https://github.com/..."
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  />
-                </div>
+                <FormField
+                  label="Source URL"
+                  id="source_url"
+                  value={formData.source_url}
+                  onChange={(v) => setField('source_url', v)}
+                  placeholder="https://github.com/..."
+                />
 
-                <div>
-                  <label htmlFor="project_url" className="block text-sm font-medium text-theme-primary mb-1">
-                    Project URL
-                  </label>
-                  <input
-                    type="text"
-                    id="project_url"
-                    name="project_url"
-                    value={formData.project_url}
-                    onChange={handleChange}
-                    placeholder="https://forge.puppet.com/..."
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  />
-                </div>
+                <FormField
+                  label="Project URL"
+                  id="project_url"
+                  value={formData.project_url}
+                  onChange={(v) => setField('project_url', v)}
+                  placeholder="https://forge.puppet.com/..."
+                />
               </div>
 
               {/* Dependencies */}
-              <div>
-                <label htmlFor="dependencies" className="block text-sm font-medium text-theme-primary mb-1">
-                  Dependencies (JSON Array)
-                </label>
-                <textarea
-                  id="dependencies"
-                  name="dependencies"
-                  value={formData.dependencies}
-                  onChange={handleChange}
-                  rows={3}
-                  placeholder='[{"name": "puppetlabs/stdlib", "version_requirement": ">= 4.0.0"}]'
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.dependencies ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.dependencies && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.dependencies}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Dependencies (JSON Array)"
+                id="dependencies"
+                type="textarea"
+                rows={3}
+                value={formData.dependencies}
+                onChange={(v) => setField('dependencies', v)}
+                placeholder='[{"name": "puppetlabs/stdlib", "version_requirement": ">= 4.0.0"}]'
+                className="font-mono text-sm"
+                error={errors.dependencies}
+              />
 
               {/* Configuration */}
-              <div>
-                <label htmlFor="config" className="block text-sm font-medium text-theme-primary mb-1">
-                  Configuration (JSON)
-                </label>
-                <textarea
-                  id="config"
-                  name="config"
-                  value={formData.config}
-                  onChange={handleChange}
-                  rows={3}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.config ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.config && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.config}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Configuration (JSON)"
+                id="config"
+                type="textarea"
+                rows={3}
+                value={formData.config}
+                onChange={(v) => setField('config', v)}
+                className="font-mono text-sm"
+                error={errors.config}
+              />
 
               {/* Metadata */}
-              <div>
-                <label htmlFor="metadata" className="block text-sm font-medium text-theme-primary mb-1">
-                  Metadata (JSON)
-                </label>
-                <textarea
-                  id="metadata"
-                  name="metadata"
-                  value={formData.metadata}
-                  onChange={handleChange}
-                  rows={3}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.metadata ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                />
-                {errors.metadata && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.metadata}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Metadata (JSON)"
+                id="metadata"
+                type="textarea"
+                rows={3}
+                value={formData.metadata}
+                onChange={(v) => setField('metadata', v)}
+                className="font-mono text-sm"
+                error={errors.metadata}
+              />
 
               {/* Checkboxes */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
