@@ -28,7 +28,17 @@ module System
           when "rotate_secret"
             new_secret = webhook.rotate_secret!
             emit_rotated_event(webhook)
-            { webhook_id: webhook.id, action: "rotate_secret", secret_plaintext: new_secret }
+            # webhook_url, like the controller's inline branch. An operator
+            # whose rotation was approved asynchronously needs the URL just as
+            # much as one whose policy proceeded inline — omitting it here left
+            # the approval path handing back a secret with nothing to paste it
+            # beside.
+            {
+              webhook_id: webhook.id,
+              action: "rotate_secret",
+              secret_plaintext: new_secret,
+              webhook_url: webhook.webhook_url
+            }
           else
             # "trigger" (or missing) — manual re-fire marker; the actual
             # dispatch is the receiver's responsibility.
