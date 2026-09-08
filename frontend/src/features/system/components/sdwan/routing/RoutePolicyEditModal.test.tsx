@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { RoutePolicyEditModal } from './RoutePolicyEditModal';
 import type { SdwanRoutePolicy } from '../../../types/sdwan.types';
@@ -251,14 +251,149 @@ describe('RoutePolicyEditModal', () => {
       );
     });
 
-    it('does not throw if the fetch fails (catch silences the error)', async () => {
+    it('surfaces an inline error when the fetch fails', async () => {
       mockGet.mockRejectedValueOnce(new Error('network error'));
       renderModal(POLICY_WITHOUT_STATEMENTS);
-      // Textarea retains its initial value (no statements = default JSON)
-      await waitFor(() => {
-        expect(document.querySelector('textarea')).toBeInTheDocument();
+      expect(await screen.findByText(/could not load the current statements/i)).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Edit mode — the backfill gates Save (IMP-07502ddfb8cf)
+  //
+  // The list endpoint omits statements, so on edit the modal must never seed the
+  // textarea with DEFAULT_STATEMENTS nor let an operator save before the real
+  // statements have been fetched. Saving early replaced the live BGP policy with
+  // the placeholder "10.0.0.0/8 accept set_local_pref 200".
+  // ---------------------------------------------------------------------------
+
+  describe('edit mode — statements backfill gates Save', () => {
+    /** A getRoutePolicy promise we resolve/reject by hand, to hold the backfill pending. */
+    function deferredGet() {
+      let settle!: (value: unknown) => void;
+      let fail!: (reason: unknown) => void;
+      const promise = new Promise((resolve, reject) => {
+        settle = resolve;
+        fail = reject;
       });
-      expect(mockAddNotification).not.toHaveBeenCalled();
+      mockGet.mockReturnValueOnce(promise);
+      return { settle, fail };
+    }
+
+    it('does NOT seed the textarea with DEFAULT_STATEMENTS while the backfill is pending', () => {
+      deferredGet();
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+      const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
+      expect(textarea).not.toHaveValue(DEFAULT_STATEMENTS_JSON);
+    });
+
+    it('keeps Save disabled while the backfill is pending', () => {
+      deferredGet();
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+    });
+
+    it('does NOT issue the update when submitted while the backfill is pending', async () => {
+      deferredGet();
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+
+      // Submit the form directly — the disabled button is not the only entry point
+      // (Enter in a text field submits too).
+      fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+      });
+      expect(mockPatch).not.toHaveBeenCalled();
+    });
+
+    it('enables Save and submits the FETCHED statements once the backfill resolves', async () => {
+      const fetchedStatements = [
+        { match: { prefix_in: ['172.16.0.0/12'] }, action: { type: 'reject' } },
+      ];
+      const { settle } = deferredGet();
+      mockPatch.mockResolvedValueOnce(
+        envelope({ route_policy: { ...POLICY_WITHOUT_STATEMENTS, statements: fetchedStatements } })
+      );
+
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+
+      // Disabled BEFORE the backfill settles — without this the assertion below
+      // would hold even on code that never gated Save at all.
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+
+      await act(async () => {
+        settle(envelope({ route_policy: { ...POLICY_WITHOUT_STATEMENTS, statements: fetchedStatements } }));
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled()
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+      await waitFor(() => expect(mockPatch).toHaveBeenCalled());
+      const [, body] = mockPatch.mock.calls[0] as [string, { route_policy: Record<string, unknown> }];
+      expect(body.route_policy.statements).toEqual(fetchedStatements);
+    });
+
+    it('keeps Save disabled and never issues the update after the backfill FAILS', async () => {
+      mockGet.mockRejectedValueOnce(new Error('network error'));
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+
+      expect(await screen.findByText(/could not load the current statements/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+
+      fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+      });
+      expect(mockPatch).not.toHaveBeenCalled();
+    });
+
+    it('treats a response with no statements as a failed backfill rather than an empty policy', async () => {
+      mockGet.mockResolvedValueOnce(
+        envelope({ route_policy: { ...POLICY_WITHOUT_STATEMENTS } })
+      );
+      renderModal(POLICY_WITHOUT_STATEMENTS);
+
+      expect(await screen.findByText(/could not load the current statements/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+    });
+
+    it('does not gate Save in CREATE mode (no backfill is needed)', () => {
+      renderModal();
+      expect(screen.getByRole('button', { name: /create policy/i })).toBeEnabled();
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('does not gate Save when the policy already carries its statements', () => {
+      renderModal(POLICY_WITH_STATEMENTS);
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled();
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('releases the gate if the policy prop later arrives WITH its statements', async () => {
+      deferredGet();
+      const { rerender } = render(
+        <BrowserRouter>
+          <RoutePolicyEditModal policy={POLICY_WITHOUT_STATEMENTS} onClose={mockOnClose} onSaved={mockOnSaved} />
+        </BrowserRouter>
+      );
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+
+      // A caller that reuses this instance rather than remounting it must not be
+      // left with a permanently dead form.
+      rerender(
+        <BrowserRouter>
+          <RoutePolicyEditModal policy={POLICY_WITH_STATEMENTS} onClose={mockOnClose} onSaved={mockOnSaved} />
+        </BrowserRouter>
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled()
+      );
     });
   });
 

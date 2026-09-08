@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Route } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { isPendingApproval } from '../../../services/api/helpers';
@@ -40,21 +41,61 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   const [scopeResourceId, setScopeResourceId] = useState(policy?.scope_resource_id ?? '');
   const [direction, setDirection] = useState<SdwanRoutePolicyDirection>(policy?.direction ?? 'import');
   const [enabled, setEnabled] = useState(policy?.enabled ?? true);
+  // The list endpoint omits statements, so on edit the real ones arrive from the
+  // backfill below. Seeding the editor with DEFAULT_STATEMENTS here would let an
+  // early Save write the placeholder over the live policy, so the editor starts
+  // empty on edit and the placeholder is only ever offered when creating.
+  const needsStatementsBackfill = !!policy?.id && !policy.statements;
   const [statementsJson, setStatementsJson] = useState(
-    JSON.stringify(policy?.statements ?? DEFAULT_STATEMENTS, null, 2)
+    needsStatementsBackfill ? '' : JSON.stringify(policy?.statements ?? DEFAULT_STATEMENTS, null, 2)
   );
+  const [statementsLoading, setStatementsLoading] = useState(needsStatementsBackfill);
+  const [statementsError, setStatementsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // If editing, fetch full statements (the list endpoint omits them)
+  // If editing, fetch full statements (the list endpoint omits them). Until this
+  // resolves the form has no idea what the policy currently says, so Save stays
+  // blocked — and stays blocked for good if the fetch fails.
   useEffect(() => {
-    if (!policy?.id || policy.statements) return;
+    if (!policy?.id || policy.statements) {
+      // No backfill is owed for this policy — release any gate a previous one set,
+      // so a caller that reuses this instance is not left with a dead form.
+      setStatementsLoading(false);
+      setStatementsError(null);
+      return;
+    }
+    let cancelled = false;
+    setStatementsLoading(true);
+    setStatementsError(null);
     sdwanApi.getRoutePolicy(policy.id).then((p) => {
-      if (p.statements) setStatementsJson(JSON.stringify(p.statements, null, 2));
-    }).catch(() => {});
+      if (cancelled) return;
+      if (p.statements) {
+        setStatementsJson(JSON.stringify(p.statements, null, 2));
+      } else {
+        setStatementsError(
+          'Could not load the current statements for this policy — the server returned none. Close and reopen to retry; saving is blocked so the live policy is not overwritten.'
+        );
+      }
+      setStatementsLoading(false);
+    }).catch((err) => {
+      if (cancelled) return;
+      setStatementsError(
+        `Could not load the current statements for this policy: ${err instanceof Error ? err.message : 'request failed'}. Close and reopen to retry; saving is blocked so the live policy is not overwritten.`
+      );
+      setStatementsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [policy?.id, policy?.statements]);
+
+  // Enter in a text field submits the form, so the disabled button is not the
+  // only entry point — the guard has to live in the handler too.
+  const statementsUnavailable = statementsLoading || !!statementsError;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (statementsUnavailable) return;
     setSubmitting(true);
     try {
       let parsedStatements: SdwanRoutePolicyStatement[];
@@ -171,9 +212,21 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
             onChange={(e) => setStatementsJson(e.target.value)}
             required
             rows={14}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary font-mono text-xs"
+            disabled={statementsUnavailable}
+            placeholder={statementsLoading ? 'Loading current statements…' : undefined}
+            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary font-mono text-xs disabled:opacity-60"
             spellCheck={false}
           />
+          {statementsLoading && (
+            <div className="mt-1 text-xs text-theme-secondary">
+              Loading the policy&apos;s current statements…
+            </div>
+          )}
+          {statementsError && (
+            <div className="mt-2">
+              <ErrorAlert message={statementsError} />
+            </div>
+          )}
           <div className="mt-1 text-xs text-theme-secondary">
             Each statement is <code className="font-mono">{'{ match: {...}, action: {...} }'}</code>. Match keys:{' '}
             <code className="font-mono">prefix_in</code>, <code className="font-mono">as_path_regex</code>,{' '}
@@ -199,7 +252,7 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
           <Button variant="secondary" onClick={onClose} type="button">
             Cancel
           </Button>
-          <Button variant="primary" type="submit" disabled={submitting}>
+          <Button variant="primary" type="submit" disabled={submitting || statementsUnavailable}>
             {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create policy'}
           </Button>
         </div>
