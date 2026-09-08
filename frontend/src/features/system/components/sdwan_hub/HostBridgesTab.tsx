@@ -5,6 +5,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { Button } from '@/shared/components/ui/Button';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import { apiErrorMessage, isPendingApproval } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import { CreateHostBridgeModal } from './CreateHostBridgeModal';
@@ -154,15 +155,9 @@ export const HostBridgesTab: React.FC = () => {
     />
   );
 
-  if (loading) {
-    return (
-      <div>
-        {header}
-        <div className="p-8 text-center text-theme-secondary">Loading host bridges…</div>
-        {createModal}
-      </div>
-    );
-  }
+  // The header and the create modal render in EVERY state — including
+  // loading, error and empty — so they stay outside the container, whose
+  // loading and empty branches replace everything they wrap.
   if (error) {
     return (
       <div>
@@ -172,27 +167,24 @@ export const HostBridgesTab: React.FC = () => {
       </div>
     );
   }
-  if (bridges.length === 0) {
-    return (
-      <div>
-        {header}
-        <div className="p-12 text-center">
-          <NetworkIcon className="mx-auto mb-4 text-theme-secondary" size={48} />
-          <h3 className="text-lg font-medium text-theme-primary mb-2">No host bridges yet</h3>
-          <p className="text-theme-secondary">
-            Bridges are allocated by the on-node agent (during reconcile) or by the SDWAN
-            Host Bridge Compose skill. Lightweight-profile hosts get a Linux bridge;
-            heavyweight-profile hosts get OVS.
-          </p>
-        </div>
-        {createModal}
-      </div>
-    );
-  }
 
   return (
     <div>
       {header}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={bridges.length}
+        filteredCount={bridges.length}
+        emptyState={{
+          icon: NetworkIcon,
+          title: 'No host bridges yet',
+          description:
+            'Bridges are allocated by the on-node agent (during reconcile) or by the SDWAN Host Bridge Compose skill. Lightweight-profile hosts get a Linux bridge; heavyweight-profile hosts get OVS.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
       <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
@@ -223,6 +215,8 @@ export const HostBridgesTab: React.FC = () => {
         </tbody>
       </table>
       </div>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       {createModal}
     </div>
   );

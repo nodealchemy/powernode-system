@@ -131,7 +131,9 @@ describe('PeerList', () => {
     // Never resolves — keeps component in loading state.
     mockGetPeers.mockReturnValue(new Promise(() => {}));
     render(<PeerList networkId="net-abc" />);
-    expect(screen.getByText(/loading peers/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ── Error state ──────────────────────────────────────────────────────────────

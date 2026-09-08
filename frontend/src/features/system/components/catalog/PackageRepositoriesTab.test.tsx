@@ -991,4 +991,90 @@ describe('PackageRepositoriesTab', () => {
     await waitFor(() => screen.getByTestId('pkg-repo-form-modal'));
     expect(screen.queryByTestId('package-browser-repo-1')).not.toBeInTheDocument();
   });
+  // ---------------------------------------------------------------------------
+  // Platform link / unlink (IMP-d1900addb504)
+  //
+  // packageRepositoriesApi.linkPlatform / unlinkPlatform wrapped live routes
+  // and had no caller — the only way to change a repo's platform links was a
+  // full form save that reconciles the whole set. These pin the incremental
+  // per-platform controls on the repository detail.
+  // ---------------------------------------------------------------------------
+
+  describe('platform links', () => {
+    const PLATFORM_A = { id: 'plat-1', name: 'ubuntu-noble', enabled: true, public: true };
+    const PLATFORM_B = { id: 'plat-2', name: 'debian-bookworm', enabled: true, public: true };
+
+    const platformsResponse = () => ({
+      data: { success: true, data: { node_platforms: [PLATFORM_A, PLATFORM_B] } },
+    });
+
+    const REPO_LINKED = { ...REPO_APT, node_platform_ids: [PLATFORM_A.id] };
+
+    const withPlatforms = () => {
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/system/node_architectures') return Promise.resolve(archsResponse([ARCH_AMD64]));
+        if (url === '/system/node_platforms') return Promise.resolve(platformsResponse());
+        if (url === '/system/package_repositories') return Promise.resolve(reposResponse([REPO_LINKED]));
+        return Promise.reject(new Error(`Unexpected GET ${url}`));
+      });
+    };
+
+    it('links an unlinked platform to the selected repository', async () => {
+      withPlatforms();
+      mockPost.mockResolvedValue({
+        data: {
+          success: true,
+          data: { package_repository_id: REPO_LINKED.id, node_platform_id: PLATFORM_B.id, linked: true },
+        },
+      });
+
+      render(
+        <BrowserRouter>
+          <PackageRepositoriesTab />
+        </BrowserRouter>,
+      );
+
+      await waitFor(() => expect(screen.getByTestId(`package-repo-row-${REPO_LINKED.id}`)).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId(`package-repo-row-${REPO_LINKED.id}`));
+
+      const linkBtn = await screen.findByTestId(`package-repo-link-platform-${PLATFORM_B.id}`);
+      fireEvent.click(linkBtn);
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith(
+          `/system/package_repositories/${REPO_LINKED.id}/link_platform`,
+          { node_platform_id: PLATFORM_B.id },
+        ),
+      );
+    });
+
+    it('unlinks a linked platform from the selected repository', async () => {
+      withPlatforms();
+      mockDelete.mockResolvedValue({
+        data: {
+          success: true,
+          data: { package_repository_id: REPO_LINKED.id, node_platform_id: PLATFORM_A.id, linked: false },
+        },
+      });
+
+      render(
+        <BrowserRouter>
+          <PackageRepositoriesTab />
+        </BrowserRouter>,
+      );
+
+      await waitFor(() => expect(screen.getByTestId(`package-repo-row-${REPO_LINKED.id}`)).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId(`package-repo-row-${REPO_LINKED.id}`));
+
+      const unlinkBtn = await screen.findByTestId(`package-repo-unlink-platform-${PLATFORM_A.id}`);
+      fireEvent.click(unlinkBtn);
+
+      await waitFor(() =>
+        expect(mockDelete).toHaveBeenCalledWith(
+          `/system/package_repositories/${REPO_LINKED.id}/unlink_platform`,
+          { data: { node_platform_id: PLATFORM_A.id } },
+        ),
+      );
+    });
+  });
 });

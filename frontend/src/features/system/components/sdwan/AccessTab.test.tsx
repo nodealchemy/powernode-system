@@ -24,6 +24,7 @@ const mockRevokeAccessGrant = jest.fn();
 const mockRevokeUserDevice = jest.fn();
 const mockCreateAccessGrant = jest.fn();
 const mockIssueUserDevice = jest.fn();
+const mockUpdateAccessGrant = jest.fn();
 
 jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   sdwanApi: {
@@ -33,6 +34,7 @@ jest.mock('@system/features/system/services/api/sdwanApi', () => ({
     revokeUserDevice: (...a: unknown[]) => mockRevokeUserDevice(...a),
     createAccessGrant: (...a: unknown[]) => mockCreateAccessGrant(...a),
     issueUserDevice: (...a: unknown[]) => mockIssueUserDevice(...a),
+    updateAccessGrant: (...a: unknown[]) => mockUpdateAccessGrant(...a),
   },
 }));
 
@@ -163,6 +165,7 @@ describe('AccessTab', () => {
     mockRevokeUserDevice.mockReset();
     mockCreateAccessGrant.mockReset();
     mockIssueUserDevice.mockReset();
+    mockUpdateAccessGrant.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission.mockReset();
     mockHasPermission.mockReturnValue(true);
@@ -1017,5 +1020,74 @@ describe('AccessTab', () => {
     expect(mockAddNotification).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success' }),
     );
+  });
+  // ---------------------------------------------------------------------------
+  // Tag editing (IMP-d1900addb504)
+  //
+  // sdwanApi.updateAccessGrant had a live PUT route and no caller: tags were
+  // settable only at creation time. These pin the edit-tags control.
+  // ---------------------------------------------------------------------------
+
+  it('edits an active grant\'s tags through updateAccessGrant', async () => {
+    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+    mockGetUserDevices.mockResolvedValue({ devices: [] });
+    mockUpdateAccessGrant.mockResolvedValue({ ...GRANT_A, tags: ['vpn-pilot', 'contractor'] });
+
+    render(
+      <BrowserRouter>
+        <AccessTab networkId={NETWORK_ID} />
+      </BrowserRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /edit tags/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /edit tags/i })).toBeInTheDocument(),
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/tags/i), {
+      target: { value: 'vpn-pilot, contractor' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(mockUpdateAccessGrant).toHaveBeenCalledWith(NETWORK_ID, GRANT_A.id, {
+        tags: ['vpn-pilot', 'contractor'],
+      }),
+    );
+  });
+
+  it('does not offer tag editing on a revoked grant', async () => {
+    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_B] });
+    mockGetUserDevices.mockResolvedValue({ devices: [] });
+
+    render(
+      <BrowserRouter>
+        <AccessTab networkId={NETWORK_ID} />
+      </BrowserRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('bob@example.com')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /edit tags/i })).not.toBeInTheDocument();
+  });
+
+  it('does not offer tag editing without system.sdwan.user_devices.manage', async () => {
+    mockHasPermission.mockImplementation(
+      (perm: string) => perm !== 'system.sdwan.user_devices.manage',
+    );
+    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+    mockGetUserDevices.mockResolvedValue({ devices: [] });
+
+    render(
+      <BrowserRouter>
+        <AccessTab networkId={NETWORK_ID} />
+      </BrowserRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /edit tags/i })).not.toBeInTheDocument();
   });
 });

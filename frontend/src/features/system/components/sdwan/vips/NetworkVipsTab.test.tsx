@@ -11,6 +11,7 @@ import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
 const mockGet = jest.fn();
 const mockPost = jest.fn();
 const mockPut = jest.fn();
+const mockPatch = jest.fn();
 const mockDelete = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
@@ -18,6 +19,7 @@ jest.mock('@/shared/services/apiClient', () => ({
     get: (...args: unknown[]) => mockGet(...args),
     post: (...args: unknown[]) => mockPost(...args),
     put: (...args: unknown[]) => mockPut(...args),
+    patch: (...args: unknown[]) => mockPatch(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
   },
 }));
@@ -155,6 +157,7 @@ describe('NetworkVipsTab', () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockPut.mockReset();
+    mockPatch.mockReset();
     mockDelete.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission.mockReset();
@@ -171,7 +174,9 @@ describe('NetworkVipsTab', () => {
 
     renderTab();
 
-    expect(screen.getByText(/loading virtual ips/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -918,5 +923,165 @@ describe('NetworkVipsTab', () => {
     expect(mockAddNotification).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success' })
     );
+  });
+  // ---------------------------------------------------------------------------
+  // Edit wiring (IMP-d1900addb504)
+  //
+  // sdwanApi.updateVirtualIp had a live PATCH route and zero UI callers: a VIP
+  // was immutable once created. These pin that the tab opens the edit modal
+  // from the row action and that Save reaches the PATCH.
+  // ---------------------------------------------------------------------------
+
+  it('opens the edit modal from the VIP row and PATCHes the changed fields', async () => {
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([VIP_ACTIVE]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A, PEER_B]))
+      // the edit modal loads its own peer list for holder selection
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A, PEER_B]));
+
+    mockPatch.mockResolvedValueOnce(
+      envelope({ virtual_ip: { ...VIP_ACTIVE, name: 'webapp-vip-renamed' } })
+    );
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Edit'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /edit virtual ip/i })).toBeInTheDocument()
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/^name$/i), {
+      target: { value: 'webapp-vip-renamed' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: /save changes/i }));
+
+    // The WHOLE payload is pinned, not just the field that changed. A rename
+    // that also rewrites holder_peer_ids would move a live address, and an
+    // objectContaining assertion would not notice.
+    await waitFor(() =>
+      expect(mockPatch).toHaveBeenCalledWith(
+        `/system/sdwan/networks/${NETWORK_ID}/virtual_ips/${VIP_ACTIVE.id}`,
+        {
+          virtual_ip: {
+            name: 'webapp-vip-renamed',
+            description: '',
+            advertised_med: 0,
+            advertised_local_pref: 100,
+          },
+        }
+      )
+    );
+  });
+
+  it('writes the holder keys only once the operator moves a holder', async () => {
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([VIP_ACTIVE]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A, PEER_B]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A, PEER_B]));
+
+    mockPatch.mockResolvedValueOnce(envelope({ virtual_ip: VIP_ACTIVE }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Edit'));
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/primary holder/i)).toBeInTheDocument()
+    );
+    fireEvent.change(within(dialog).getByLabelText(/primary holder/i), {
+      target: { value: 'peer-bbb' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalled());
+    const body = mockPatch.mock.calls[0][1] as {
+      virtual_ip: { holder_peer_ids?: string[]; failover_holder_peer_ids?: string[] };
+    };
+    expect(body.virtual_ip.holder_peer_ids).toEqual(['peer-bbb']);
+    // peer-bbb was the stored failover candidate; promoting it must drop it
+    // from the candidate list rather than leave it failing over to itself.
+    expect(body.virtual_ip.failover_holder_peer_ids).toEqual([]);
+  });
+
+  it('sends a cleared description rather than dropping the key', async () => {
+    const described = { ...VIP_ACTIVE, description: 'old text' };
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([described]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A]));
+
+    mockPatch.mockResolvedValueOnce(envelope({ virtual_ip: described }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Edit'));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/^description$/i), { target: { value: '' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalled());
+    const body = mockPatch.mock.calls[0][1] as { virtual_ip: Record<string, unknown> };
+    expect(body.virtual_ip).toHaveProperty('description', '');
+  });
+
+  it('shows the pending-approval notice when the VIP update is parked', async () => {
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([VIP_ACTIVE]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A]));
+
+    mockPatch.mockResolvedValueOnce({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-2',
+          action_category: 'sdwan.virtual_ip_update',
+          approval_request_id: 'ar-2',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Edit'));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        })
+      )
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+  });
+
+  it('hides the VIP edit action when the operator cannot manage VIPs', async () => {
+    mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.vips.manage');
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([VIP_ACTIVE]))
+      .mockResolvedValueOnce(peerListEnvelope([PEER_A]));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    expect(screen.queryByTitle('Edit')).not.toBeInTheDocument();
   });
 });

@@ -111,7 +111,9 @@ describe('FederationPeerList', () => {
     // Never resolves — keeps component in loading state.
     mockGet.mockReturnValue(new Promise(() => {}));
     render(<FederationPeerList />);
-    expect(screen.getByText(/loading federation peers/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ── Error state ────────────────────────────────────────────────────────────

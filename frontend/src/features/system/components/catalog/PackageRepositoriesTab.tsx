@@ -1,5 +1,5 @@
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import { Database, Link2Off, RefreshCw, Trash2 } from 'lucide-react';
+import { Database, Link, Link2Off, RefreshCw, Trash2, Unlink } from 'lucide-react';
 import {
   packageRepositoriesApi,
   type PackageRepositoryKind,
@@ -8,6 +8,7 @@ import {
   type SystemPackageRepository,
 } from '@system/features/system/services/api/packageRepositoriesApi';
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
+import { platformsApi } from '@system/features/system/services/api/platformsApi';
 import { PackageRepositoryFormModal } from '@system/features/system/components/packages/PackageRepositoryFormModal';
 import { CreateModuleFromPackageModal } from '@system/features/system/components/packages/CreateModuleFromPackageModal';
 import { PackageBrowser } from '@system/features/system/components/packages/PackageBrowser';
@@ -17,6 +18,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
+import type { SystemNodePlatform } from '@system/features/system/types/system.types';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 
 type ActionsAPI = { openCreate: () => void };
@@ -53,6 +55,10 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   // way destroy does: a shared repo is reachable from every account, so it
   // takes manage_shared rather than a plain delete.
   const canManageShared = hasPermission('system.package_repositories.manage_shared');
+  // link_platform / unlink_platform run through authorize_repo_mutation!, which
+  // branches on visibility exactly the way destroy does — a shared repo takes
+  // manage_shared, an account repo takes update.
+  const canUpdate = hasPermission('system.package_repositories.update');
 
   const [editingRepo, setEditingRepo] = useState<SystemPackageRepository | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -65,6 +71,9 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   const [architectureOptions, setArchitectureOptions] = useState<MultiSelectOption[]>([]);
   const [staleLinks, setStaleLinks] = useState<StaleLinksReport | null>(null);
   const [staleLinksLoading, setStaleLinksLoading] = useState(false);
+  const [platforms, setPlatforms] = useState<SystemNodePlatform[]>([]);
+  const [platformLinkBusyId, setPlatformLinkBusyId] = useState<string | null>(null);
+  const [platformsError, setPlatformsError] = useState(false);
   const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
 
   const list = useResourceList<SystemPackageRepository, RepoFilters>({
@@ -112,6 +121,29 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
         setArchitectureOptions(opts);
       })
       .catch((e) => logger.error('[PackageRepositoriesTab] architectures load failed', e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Platform catalogue for the per-repository link/unlink controls
+  // (IMP-d1900addb504). Names come from here; the repo row only carries ids.
+  useEffect(() => {
+    let cancelled = false;
+    platformsApi
+      .getPlatforms()
+      .then((list) => {
+        if (cancelled) return;
+        setPlatforms(list);
+      })
+      .catch((e) => {
+        // getPlatforms needs system.platforms.read, which this tab does not
+        // otherwise require. Swallowing the failure would render "No platforms
+        // defined" — a claim about the data, not about the request.
+        if (cancelled) return;
+        setPlatformsError(true);
+        logger.error('[PackageRepositoriesTab] platforms load failed', e);
+      });
     return () => {
       cancelled = true;
     };
@@ -254,6 +286,37 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
       },
     });
   }, [selectedRepo, staleLinks, confirm, showNotification]);
+
+  // Incremental link/unlink. The form modal reconciles the WHOLE set on save;
+  // these touch one link at a time so an operator adding a platform cannot
+  // silently drop links added elsewhere since the form was opened.
+  const handleTogglePlatformLink = useCallback(
+    async (repo: SystemPackageRepository, platform: SystemNodePlatform, linked: boolean) => {
+      if (!(repo.shared ? canManageShared : canUpdate)) return;
+      setPlatformLinkBusyId(platform.id);
+      try {
+        if (linked) {
+          await packageRepositoriesApi.unlinkPlatform(repo.id, platform.id);
+          showNotification(`Unlinked ${platform.name} from ${repo.name}`, 'success');
+        } else {
+          await packageRepositoriesApi.linkPlatform(repo.id, platform.id);
+          showNotification(`Linked ${platform.name} to ${repo.name}`, 'success');
+        }
+        list.refresh();
+      } catch (e) {
+        // 403 on a shared repo without manage_shared, 422 on a cross-account
+        // platform — the link is unchanged either way, so say so.
+        logger.error('[PackageRepositoriesTab] platform link toggle failed', e);
+        showNotification(
+          `Failed to ${linked ? 'unlink' : 'link'} ${platform.name} ${linked ? 'from' : 'to'} ${repo.name}`,
+          'error',
+        );
+      } finally {
+        setPlatformLinkBusyId((cur) => (cur === platform.id ? null : cur));
+      }
+    },
+    [canManageShared, canUpdate, list, showNotification],
+  );
 
   const renderActions = (r: SystemPackageRepository) => (
     <div className="flex gap-2 justify-end">
@@ -476,6 +539,73 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
           </ResponsiveListContainer.Mobile>
         </ResponsiveListContainer>
       </section>
+
+      {selectedRepo && canViewRepos && (
+        <section className="rounded border border-theme bg-theme-surface p-4">
+          <div className="mb-2">
+            <h3 className="text-sm font-medium text-theme-primary flex items-center gap-2">
+              <Link size={14} />
+              Linked platforms
+            </h3>
+            <p className="text-xs text-theme-secondary mt-0.5">
+              Platforms whose nodes resolve packages from{' '}
+              <span className="text-theme-primary">{selectedRepo.name}</span>. A repository with no
+              links is platform-agnostic and offered everywhere its account can see it.
+            </p>
+          </div>
+
+          {platformsError ? (
+            <p className="text-xs text-theme-warning-fg">
+              Platform list unavailable — the platforms could not be loaded, so this
+              repository&apos;s links cannot be shown or changed here.
+            </p>
+          ) : platforms.length === 0 ? (
+            <p className="text-xs text-theme-tertiary">No platforms defined.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {platforms.map((p) => {
+                const linked = selectedRepo.node_platform_ids.includes(p.id);
+                const mayToggle = selectedRepo.shared ? canManageShared : canUpdate;
+                return (
+                  <li
+                    key={p.id}
+                    className={
+                      'flex items-center gap-1.5 px-2 py-1 rounded border text-xs ' +
+                      (linked
+                        ? 'border-theme-info-fg/40 bg-theme-info-bg text-theme-info-fg'
+                        : 'border-theme text-theme-secondary')
+                    }
+                    data-testid={`package-repo-platform-${p.id}`}
+                  >
+                    <span>{p.name}</span>
+                    {mayToggle && (
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePlatformLink(selectedRepo, p, linked)}
+                        disabled={platformLinkBusyId === p.id}
+                        title={linked ? `Unlink ${p.name}` : `Link ${p.name}`}
+                        aria-label={
+                          linked
+                            ? `Unlink ${p.name} from ${selectedRepo.name}`
+                            : `Link ${p.name} to ${selectedRepo.name}`
+                        }
+                        data-testid={
+                          linked
+                            ? `package-repo-unlink-platform-${p.id}`
+                            : `package-repo-link-platform-${p.id}`
+                        }
+                        className="p-0.5 rounded hover:bg-theme-background-secondary disabled:opacity-40"
+                      >
+                        {linked ? <Unlink size={12} /> : <Link size={12} />}
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      )}
 
       {selectedRepo && canViewRepos && (
         <section className="rounded border border-theme bg-theme-surface p-4">

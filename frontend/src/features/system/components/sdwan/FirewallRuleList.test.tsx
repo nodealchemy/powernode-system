@@ -110,7 +110,9 @@ describe('FirewallRuleList', () => {
     // Never resolves during this test — loading stays true
     mockGetFirewallRules.mockReturnValue(new Promise(() => {}));
     renderList();
-    expect(screen.getByText(/loading firewall rules/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ── Error state ────────────────────────────────────────────────────────────
@@ -148,7 +150,7 @@ describe('FirewallRuleList', () => {
     renderList();
     await waitFor(() =>
       expect(
-        screen.getByText(/no rules — all traffic is accepted by default/i)
+        screen.getByText(/all traffic is accepted by default/i)
       ).toBeInTheDocument()
     );
   });
@@ -158,7 +160,7 @@ describe('FirewallRuleList', () => {
     renderList();
     await waitFor(() =>
       expect(
-        screen.getByText(/no rules — all traffic is dropped/i)
+        screen.getByText(/all traffic is dropped/i)
       ).toBeInTheDocument()
     );
   });

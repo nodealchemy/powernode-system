@@ -1,9 +1,8 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useCallback, useState } from 'react';
 import { usePermissions } from '@/shared/hooks/usePermissions';
-import { useNotifications } from '@/shared/hooks/useNotifications';
-import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { NetworkList, NetworkDetailModal, NetworkFormModal } from '@system/features/system/components/networks';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { useCrudTab } from '@system/features/system/hooks/useCrudTab';
 import type { SystemProviderNetwork } from '@system/features/system/types/system.types';
 
 interface NetworksTabProps {
@@ -12,47 +11,44 @@ interface NetworksTabProps {
 
 export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
-  const { addNotification } = useNotifications();
   const canCreate = hasPermission('system.networks.create');
   const canDelete = hasPermission('system.networks.delete');
-  const { confirm, ConfirmationDialog } = useConfirmation();
 
-  const [showFormModal, setShowFormModal] = useState(false);
+  // Detail-modal state stays local: the hook owns the FORM, not the read view.
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedNetworkId, setSelectedNetworkId] = useState<string | null>(null);
-  const [editNetwork, setEditNetwork] = useState<SystemProviderNetwork | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  const handleCreate = useCallback(() => { setEditNetwork(null); setShowFormModal(true); }, []);
+  const {
+    showFormModal,
+    editEntity: editNetwork,
+    refreshKey,
+    handleCreate,
+    handleEdit,
+    handleDeleteClick,
+    handleSaved,
+    closeForm,
+    triggerRefresh,
+    ConfirmationDialog,
+  } = useCrudTab<SystemProviderNetwork>({
+    entityLabel: 'Network',
+    deleteMessage:
+      'Are you sure you want to delete this network? This action cannot be undone. All subnets and associated resources will also be removed.',
+    deleteFn: (id) => systemApi.deleteNetwork(id),
+    onActionsReady,
+  });
 
-  useEffect(() => {
-    onActionsReady?.({ openCreate: handleCreate });
-    return () => onActionsReady?.(null);
-  }, [onActionsReady, handleCreate]);
-
-  const handleView = useCallback((n: SystemProviderNetwork) => { setSelectedNetworkId(n.id); setShowDetailModal(true); }, []);
-  const handleEdit = useCallback((n: SystemProviderNetwork) => { setEditNetwork(n); setShowFormModal(true); }, []);
-  const handleDeleteClick = useCallback((id: string) => {
-    confirm({
-      title: 'Delete Network',
-      message: 'Are you sure you want to delete this network? This action cannot be undone. All subnets and associated resources will also be removed.',
-      confirmLabel: 'Delete Network',
-      variant: 'danger',
-      onConfirm: async () => {
-        try {
-          await systemApi.deleteNetwork(id);
-          addNotification({ type: 'success', message: 'Network deleted successfully' });
-          setRefreshKey((k) => k + 1);
-        } catch (error) {
-          addNotification({ type: 'error', message: `Failed to delete network: ${error instanceof Error ? error.message : 'An error occurred'}` });
-        }
-      }
-    });
-  }, [confirm, addNotification]);
-  const handleNetworkSaved = useCallback(() => { setRefreshKey((k) => k + 1); setEditNetwork(null); }, []);
-  const handleEditFromDetail = useCallback((n: SystemProviderNetwork) => {
-    setShowDetailModal(false); setSelectedNetworkId(null); setEditNetwork(n); setShowFormModal(true);
+  const handleView = useCallback((n: SystemProviderNetwork) => {
+    setSelectedNetworkId(n.id);
+    setShowDetailModal(true);
   }, []);
+  const handleEditFromDetail = useCallback(
+    (n: SystemProviderNetwork) => {
+      setShowDetailModal(false);
+      setSelectedNetworkId(null);
+      handleEdit(n);
+    },
+    [handleEdit],
+  );
 
   return (
     <>
@@ -68,15 +64,15 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
         networkId={selectedNetworkId}
         isOpen={showDetailModal}
         onClose={() => { setShowDetailModal(false); setSelectedNetworkId(null); }}
-        onNetworkUpdated={() => setRefreshKey((k) => k + 1)}
+        onNetworkUpdated={triggerRefresh}
         onEdit={handleEditFromDetail}
       />
 
       <NetworkFormModal
         network={editNetwork}
         isOpen={showFormModal}
-        onClose={() => { setShowFormModal(false); setEditNetwork(null); }}
-        onNetworkSaved={handleNetworkSaved}
+        onClose={closeForm}
+        onNetworkSaved={handleSaved}
       />
 
       {ConfirmationDialog}

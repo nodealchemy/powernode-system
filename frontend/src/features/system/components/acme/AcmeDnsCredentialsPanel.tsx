@@ -11,8 +11,10 @@ import {
   Globe,
   ChevronDown,
   ChevronRight,
+  Pencil,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
@@ -40,7 +42,11 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
   refreshKey = 0,
 }) => {
   const { addNotification } = useNotifications();
+  const { hasPermission } = usePermissions();
   const { confirm, ConfirmationDialog } = useConfirmation();
+  // PATCH /acme_dns_credentials/:id takes system.acme_dns.manage server-side
+  // (name + metadata only — never the provider, never the token).
+  const canManage = hasPermission('system.acme_dns.manage');
   const [credentials, setCredentials] = useState<AcmeDnsCredentialSummary[]>([]);
   const [providers, setProviders] = useState<SupportedProvider[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +56,10 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
   const [lastTestReason, setLastTestReason] = useState<Record<string, string>>({});
   // CF-DNS.3 — DNS records modal targeted at a specific credential
   const [dnsRecordsTarget, setDnsRecordsTarget] = useState<AcmeDnsCredentialSummary | null>(null);
+  // Rename (IMP-d1900addb504) — inline on the row, one credential at a time.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
   // Click-to-expand state — Set<id> so multiple rows can be open at once.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const toggleExpanded = useCallback((id: string) => {
@@ -96,6 +106,38 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
       setLastTestReason((prev) => ({ ...prev, [cred.id]: message }));
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const startRename = (cred: AcmeDnsCredentialSummary) => {
+    setRenamingId(cred.id);
+    setRenameDraft(cred.name);
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameDraft('');
+  };
+
+  const handleRename = async (cred: AcmeDnsCredentialSummary) => {
+    const next = renameDraft.trim();
+    if (!next || next === cred.name) {
+      cancelRename();
+      return;
+    }
+    setSavingRename(true);
+    try {
+      await acmeDnsCredentialsApi.updateName(cred.id, next);
+      cancelRename();
+      await fetchCreds();
+      addNotification({ type: 'success', message: `Credential renamed to "${next}".` });
+    } catch (err: unknown) {
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Rename failed',
+      });
+    } finally {
+      setSavingRename(false);
     }
   };
 
@@ -176,6 +218,13 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
                   onToggleExpanded={() => toggleExpanded(cred.id)}
                   onTest={() => handleTest(cred)}
                   onDelete={() => handleDelete(cred)}
+                  renaming={renamingId === cred.id}
+                  renameDraft={renameDraft}
+                  savingRename={savingRename}
+                  onRenameDraftChange={setRenameDraft}
+                  onStartRename={canManage ? () => startRename(cred) : undefined}
+                  onCancelRename={cancelRename}
+                  onSubmitRename={() => handleRename(cred)}
                   onManageDns={
                     cred.provider === 'cloudflare' ? () => setDnsRecordsTarget(cred) : undefined
                   }
@@ -218,6 +267,14 @@ interface CredentialRowProps {
   onTest: () => void;
   onDelete: () => void;
   onManageDns?: () => void;
+  renaming: boolean;
+  renameDraft: string;
+  savingRename: boolean;
+  onRenameDraftChange: (value: string) => void;
+  /** Absent when the operator lacks system.acme_dns.manage. */
+  onStartRename?: () => void;
+  onCancelRename: () => void;
+  onSubmitRename: () => void;
 }
 
 const CredentialRow: React.FC<CredentialRowProps> = ({
@@ -230,6 +287,13 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
   onTest,
   onDelete,
   onManageDns,
+  renaming,
+  renameDraft,
+  savingRename,
+  onRenameDraftChange,
+  onStartRename,
+  onCancelRename,
+  onSubmitRename,
 }) => (
   <React.Fragment>
     <tr className="border-t border-theme">
@@ -243,7 +307,53 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>
       </td>
-      <td className="px-4 py-3 text-theme-primary font-mono text-xs">{cred.name}</td>
+      <td className="px-4 py-3 text-theme-primary font-mono text-xs">
+        {renaming ? (
+          <div className="flex items-center gap-1">
+            <label htmlFor={`rename-${cred.id}`} className="sr-only">
+              Credential name
+            </label>
+            <input
+              id={`rename-${cred.id}`}
+              type="text"
+              value={renameDraft}
+              onChange={(e) => onRenameDraftChange(e.target.value)}
+              maxLength={128}
+              className="px-2 py-1 rounded bg-theme-surface border border-theme text-theme-primary font-mono text-xs"
+            />
+            <button
+              type="button"
+              onClick={onSubmitRename}
+              disabled={savingRename}
+              className="px-2 py-1 rounded text-xs text-theme-info-fg hover:bg-theme-surface-hover disabled:opacity-40"
+            >
+              {savingRename ? 'Saving…' : 'Save name'}
+            </button>
+            <button
+              type="button"
+              onClick={onCancelRename}
+              className="px-2 py-1 rounded text-xs text-theme-secondary hover:bg-theme-surface-hover"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <span className="inline-flex items-center gap-1">
+            {cred.name}
+            {onStartRename && (
+              <button
+                type="button"
+                onClick={onStartRename}
+                aria-label={`Rename ${cred.name}`}
+                title="Rename credential"
+                className="p-1 rounded text-theme-secondary hover:text-theme-primary hover:bg-theme-surface-hover transition-colors"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            )}
+          </span>
+        )}
+      </td>
       <td className="px-4 py-3 text-theme-secondary">
         <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
           {cred.provider}

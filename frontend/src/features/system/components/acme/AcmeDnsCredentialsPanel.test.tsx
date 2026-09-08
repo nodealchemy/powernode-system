@@ -14,6 +14,14 @@ import { AcmeDnsCredentialsPanel } from './AcmeDnsCredentialsPanel';
 const mockList = jest.fn();
 const mockTestConnectivity = jest.fn();
 const mockDestroy = jest.fn();
+const mockUpdateName = jest.fn();
+
+const mockHasPermission = jest.fn().mockReturnValue(true);
+jest.mock('@/shared/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    hasPermission: (perm: string) => mockHasPermission(perm),
+  }),
+}));
 
 jest.mock(
   '@system/features/system/services/api/acmeDnsCredentialsApi',
@@ -22,6 +30,7 @@ jest.mock(
       list: (...args: unknown[]) => mockList(...args),
       testConnectivity: (...args: unknown[]) => mockTestConnectivity(...args),
       destroy: (...args: unknown[]) => mockDestroy(...args),
+      updateName: (...args: unknown[]) => mockUpdateName(...args),
     },
   }),
 );
@@ -172,7 +181,10 @@ describe('AcmeDnsCredentialsPanel', () => {
     mockList.mockReset();
     mockTestConnectivity.mockReset();
     mockDestroy.mockReset();
+    mockUpdateName.mockReset();
     mockAddNotification.mockReset();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockReturnValue(true);
     jest.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
@@ -686,6 +698,45 @@ describe('AcmeDnsCredentialsPanel', () => {
     await waitFor(() => {
       const badges = screen.getAllByText('cloudflare');
       expect(badges.length).toBeGreaterThan(0);
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // Rename (IMP-d1900addb504)
+  //
+  // acmeDnsCredentialsApi.updateName wrapped the live PATCH route and had no
+  // caller: a credential's operator-facing name was fixed at creation.
+  // ---------------------------------------------------------------------------
+
+  describe('rename', () => {
+    it('renames a credential through updateName and reloads the list', async () => {
+      mockList.mockResolvedValue(makeListResponse([CRED_CF]));
+      mockUpdateName.mockResolvedValue({ ...CRED_CF, name: 'prod-cloudflare' });
+
+      renderPanel();
+      await screen.findByText('production-cloudflare');
+
+      fireEvent.click(screen.getByRole('button', { name: /rename production-cloudflare/i }));
+
+      const input = await screen.findByLabelText(/credential name/i);
+      fireEvent.change(input, { target: { value: 'prod-cloudflare' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save name$/i }));
+
+      await waitFor(() =>
+        expect(mockUpdateName).toHaveBeenCalledWith('cred-cf-1', 'prod-cloudflare'),
+      );
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+    });
+
+    it('hides the rename control without system.acme_dns.manage', async () => {
+      mockHasPermission.mockImplementation((perm: string) => perm !== 'system.acme_dns.manage');
+      mockList.mockResolvedValue(makeListResponse([CRED_CF]));
+
+      renderPanel();
+      await screen.findByText('production-cloudflare');
+
+      expect(
+        screen.queryByRole('button', { name: /rename production-cloudflare/i }),
+      ).not.toBeInTheDocument();
     });
   });
 });

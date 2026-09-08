@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { ArrowRightLeft, Pencil, Trash2, Power, PowerOff, ChevronRight, ChevronDown } from 'lucide-react';
 import { EntityLink } from '@/shared/components/entity';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanPortMapping, SdwanPeer } from '../../../types/sdwan.types';
 
 interface PortMappingListProps {
@@ -65,23 +66,23 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
     return `${peerId.slice(0, 8)}${p.publicly_reachable ? ' (hub)' : ''}`;
   };
 
-  if (loading) return <div className="p-4 text-theme-secondary">Loading port mappings…</div>;
   if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
-  if (mappings.length === 0) {
-    return (
-      <div className="p-8 text-center text-theme-secondary text-sm">
-        <ArrowRightLeft size={32} className="mx-auto mb-2 opacity-50" />
-        No port mappings in this network.
-        <div className="mt-2 text-xs">
-          Port mappings publish overlay services to v4-only clients via DNAT on a hub peer's underlay socket.
-          Inbound packets to <code className="font-mono">hub:port</code> get redirected to a target peer's overlay address.
-        </div>
-      </div>
-    );
-  }
-
   return (
+    <ResponsiveListContainer
+      loading={loading}
+      totalCount={mappings.length}
+      filteredCount={mappings.length}
+      emptyState={{
+        icon: ArrowRightLeft,
+        title: 'No port mappings in this network',
+        description:
+          "Port mappings publish overlay services to v4-only clients via DNAT on a hub peer's underlay socket. Inbound packets to hub:port get redirected to a target peer's overlay address.",
+      }}
+    >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
     <table className="w-full text-sm">
       <thead>
         <tr className="text-left text-theme-secondary border-b border-theme">
@@ -267,6 +268,8 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
         })}
       </tbody>
     </table>
+      </ResponsiveListContainer.Body>
+    </ResponsiveListContainer>
   );
 
   function peerDetail(peerId: string | null | undefined): string {

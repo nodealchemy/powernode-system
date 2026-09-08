@@ -11,6 +11,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { childrenApi } from '../../services/api/childrenApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   ChildPeerSummary,
   ChildPeerDetail,
@@ -152,13 +153,22 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
         </div>
       </header>
 
-      {!loading && children.length === 0 && (
-        <div className="p-12 text-center text-theme-secondary text-sm">
-          No spawned children yet. Click "Spawn Platform" to provision one.
-        </div>
-      )}
-
-      {children.length > 0 && (
+      {/* Header stays OUTSIDE the container: it carries the status filter and
+          the primary action, both of which must remain reachable when the list
+          is empty — the container's empty branch replaces everything it wraps. */}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={children.length}
+        filteredCount={children.length}
+        emptyState={{
+          icon: Server,
+          title: 'No spawned children yet',
+          description: 'Click "Spawn Platform" to provision one.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -187,7 +197,8 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
             ))}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
 
       {ConfirmationDialog}
     </div>
