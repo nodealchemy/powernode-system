@@ -33,10 +33,12 @@ const scanRoot = path.join(__dirname, '..', '..', '..');
 const LABEL_CLASS = 'block text-sm font-medium text-theme-primary mb-1';
 
 /**
- * How far past a label to look for its control. Labels here are followed by a
- * closing tag and at most a required-marker span before the control opens.
+ * How far past a label to look. The scan walks to `</label>` rather than
+ * stopping at a fixed offset — a caption that ran long used to fall out of the
+ * window and take its field with it — and this is only the bound that stops a
+ * stray label class from scanning to end of file.
  */
-const LOOKAHEAD_LINES = 6;
+const SCAN_LINES = 40;
 
 /** Control kinds FormField models. A bare `<input>` defaults to text. */
 const MIGRATABLE_CONTROL = /<(select|textarea)\b|<input\b(?![^>]*type=)|<input\b[^>]*type="(text|number|email|password|tel|url|date)"/;
@@ -44,8 +46,21 @@ const MIGRATABLE_CONTROL = /<(select|textarea)\b|<input\b(?![^>]*type=)|<input\b
 /** Control kinds FormField cannot express, which stay hand-written. */
 const EXEMPT_CONTROL = /<input\b[^>]*type="(radio|checkbox|file|color|range)"/;
 
-/** The first element opened after the label closes. */
-const FIRST_ELEMENT = /<([A-Za-z][A-Za-z0-9]*)/;
+/**
+ * The first tag after the label closes, opening OR closing — the optional
+ * slash is what makes closing tags visible. A caption over a static value
+ * display is followed by `</div>`; a pattern that could not match it would run
+ * on and pair that caption with the next field's control.
+ */
+const FIRST_TAG = /<\/?([A-Za-z][A-Za-z0-9]*)/;
+
+/**
+ * A hint paragraph or a JSX comment sitting between a caption and its control.
+ * Neither makes the pairing a composite, so both are stepped over: this is the
+ * shape that hid modules/ModuleFormModal.tsx's manifest field from an earlier
+ * version of this scan.
+ */
+const BETWEEN_LABEL_AND_CONTROL = /^\s*(?:\{\/\*[\s\S]*?\*\/\}|<p\b[^>]*>[\s\S]*?<\/p>)/;
 
 function findSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -82,15 +97,25 @@ function migratableFieldCount(source: string): number {
 
     // From the label line itself: the caption may run over several lines, and
     // may contain markup of its own, so the close tag is the anchor.
-    const window = lines.slice(i, i + 1 + LOOKAHEAD_LINES).join(' ');
-    if (!window.includes('</label>')) return;
+    const window = lines.slice(i, i + SCAN_LINES).join('\n');
+    const closed = window.indexOf('</label>');
+    if (closed === -1) return;
 
-    const after = window.split('</label>')[1];
-    const opened = FIRST_ELEMENT.exec(after);
-    if (!opened) return;
-    if (!['input', 'select', 'textarea'].includes(opened[1])) return;
+    let after = window.slice(closed + '</label>'.length);
+    for (;;) {
+      const skippable = BETWEEN_LABEL_AND_CONTROL.exec(after);
+      if (!skippable) break;
+      after = after.slice(skippable[0].length);
+    }
 
-    const control = after.slice(opened.index);
+    // The name check is what rejects a closing tag; the regex only has to SEE
+    // one. A pattern that could not match `</div>` would run past it and pair
+    // this caption with the next field's control.
+    const tag = FIRST_TAG.exec(after);
+    if (!tag) return;
+    if (!['input', 'select', 'textarea'].includes(tag[1])) return;
+
+    const control = after.slice(tag.index);
     if (EXEMPT_CONTROL.test(control)) return;
     if (MIGRATABLE_CONTROL.test(control)) count += 1;
   });
@@ -99,24 +124,32 @@ function migratableFieldCount(source: string): number {
 }
 
 /**
- * Files that still hand-write at least one migratable field.
+ * Files that still hand-write a field this scan calls migratable, each with the
+ * reason it stayed. An entry may only ever be removed: a new hand-written field
+ * fails the first arm by name rather than quietly joining this list, and the
+ * second arm fails if an entry outlives the code it describes.
  *
- * Now empty: every one of them was converted. It stays here for the first arm,
- * which is what keeps it empty — a new hand-written field fails that arm by
- * name rather than quietly joining a list. The second arm is dormant while the
- * list is empty and exists so that a future entry cannot outlive its file.
+ * KNOWN HOLE, singular, so nobody reads the list as more than it is: the scan
+ * keys on one exact class string, so a field written with a different label
+ * class — `mb-2`, or the same classes in another order — is invisible to it.
+ * Closing that would mean giving up the exact key for something with a real
+ * false-positive rate, which is a worse trade. Everything else it used to miss
+ * is now caught: a hint paragraph or a comment between the caption and the
+ * control is stepped over, and a long caption no longer falls out of a fixed
+ * window.
  *
- * KNOWN HOLES, so nobody reads this as more than it is. The scan keys on one
- * exact class string and on the control following the label directly, so it
- * does not see: a different label class (`mb-2`, or the same classes reordered),
- * a control wrapped in a positioning div, a hint paragraph sitting between the
- * label and its control, or a caption running past LOOKAHEAD_LINES. Real
- * examples of the last two survive in modules/ModuleFormModal.tsx, where the
- * spec textareas are separately unmigratable anyway — one is readOnly, which
- * FormField has no prop for. This arm catches the shape that was repeated 180
- * times; it is not a proof of absence.
+ * Not a hole: a caption followed by a container rather than a control. That is
+ * the composite exemption the operator direction asks for, and it is doing real
+ * work — it is what keeps FirewallRuleFormModal's selector, which pairs one
+ * caption with a kind select plus a value input, out of this list.
  */
-const KNOWN_HAND_WRITTEN: readonly string[] = [];
+const KNOWN_HAND_WRITTEN: readonly string[] = [
+  // The five spec textareas need two things FormField cannot express: the
+  // inherited file_spec renders readOnly, which has no prop, and all five are
+  // resize-y, which the textarea branch overrides with a hardcoded resize-none
+  // that a caller's className cannot reliably beat.
+  'features/system/components/modules/ModuleFormModal.tsx',
+];
 
 const sources = findSources(scanRoot).map((f) => ({
   rel: path.relative(scanRoot, f),
@@ -159,6 +192,40 @@ describe('form field contract', () => {
       '</div>',
     ].join('\n');
     expect(migratableFieldCount(composite)).toBe(0);
+
+    // A hint between the caption and the control still leaves one field. This
+    // is the shape that hid the manifest textarea from an earlier scan.
+    const hinted = [
+      '<label className="block text-sm font-medium text-theme-primary mb-1">',
+      '  Paste manifest.yaml',
+      '</label>',
+      '<p className="text-xs text-theme-secondary mb-2">',
+      '  What the server does with this.',
+      '</p>',
+      '<textarea id="manifest_yaml" />',
+    ].join('\n');
+    expect(migratableFieldCount(hinted)).toBe(1);
+
+    // A caption over a read-only value is not a field either. Its paragraph is
+    // skipped like a hint, so the closing tag behind it is what has to stop the
+    // scan — otherwise the caption pairs with the NEXT field's control.
+    const readOnlyDisplay = [
+      '  <div>',
+      '    <label className="block text-sm font-medium text-theme-primary mb-1">CIDR</label>',
+      '    <p className="font-mono">{vip.cidr}</p>',
+      '  </div>',
+      '  <input type="text" value={name} />',
+    ].join('\n');
+    expect(migratableFieldCount(readOnlyDisplay)).toBe(0);
+
+    // A caption longer than any fixed lookahead still finds its control.
+    const longCaption = [
+      '<label className="block text-sm font-medium text-theme-primary mb-1">',
+      ...Array(12).fill('  annotation line'),
+      '</label>',
+      '<input type="text" />',
+    ].join('\n');
+    expect(migratableFieldCount(longCaption)).toBe(1);
   });
 
   it('has no component outside the baseline hand-writing a FormField-shaped field', () => {
