@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { VolumeDetailModal } from './VolumeDetailModal';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
@@ -485,6 +485,72 @@ describe('VolumeDetailModal', () => {
   // -------------------------------------------------------------------------
 
   describe('detach action', () => {
+    // Detach is confirm-gated (IMP-443984320078): pulling a mounted volume out
+    // from under a running instance breaks its workload and the only undo is a
+    // re-attach. The footer button opens the dialog; the POST fires from the
+    // dialog's own "Detach Volume" button, so it must be scoped with within().
+    async function openDetachDialog() {
+      const detachBtn = await waitFor(() =>
+        screen.getByRole('button', { name: /detach volume/i })
+      );
+      fireEvent.click(detachBtn);
+      return screen.findByRole('dialog');
+    }
+
+    async function confirmDetach() {
+      const dialog = await openDetachDialog();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Detach Volume' }));
+    }
+
+    it('does not call systemApi.detachVolume until the operator confirms', async () => {
+      mockGetVolume.mockResolvedValue(VOLUME_IN_USE);
+      renderModal();
+
+      const dialog = await openDetachDialog();
+
+      expect(within(dialog).getByRole('button', { name: 'Detach Volume' })).toBeInTheDocument();
+      expect(mockDetachVolume).not.toHaveBeenCalled();
+    });
+
+    it('leaves the volume attached when the operator dismisses the confirmation', async () => {
+      mockGetVolume.mockResolvedValue(VOLUME_IN_USE);
+      renderModal();
+
+      const dialog = await openDetachDialog();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Keep Attached' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(mockDetachVolume).not.toHaveBeenCalled();
+    });
+
+    it('does not fire a pending confirmation at a different volume', async () => {
+      // useConfirmation's dialog state outlives the modal's volumeId prop, so a
+      // dialog opened against vol-inuse must not detach a volume loaded since.
+      const OTHER = { ...VOLUME_IN_USE, id: 'vol-other', name: 'other-vol' };
+      mockGetVolume.mockResolvedValueOnce(VOLUME_IN_USE).mockResolvedValue(OTHER);
+      const { rerender } = renderModal({ volumeId: 'vol-inuse' });
+
+      const dialog = await openDetachDialog();
+
+      rerender(
+        <BrowserRouter>
+          <VolumeDetailModal
+            volumeId="vol-other"
+            isOpen={true}
+            onClose={jest.fn()}
+            onVolumeUpdated={jest.fn()}
+            onEdit={jest.fn()}
+          />
+        </BrowserRouter>,
+      );
+      await waitFor(() => expect(screen.getByText('other-vol')).toBeInTheDocument());
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Detach Volume' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(mockDetachVolume).not.toHaveBeenCalled();
+    });
+
     it('calls systemApi.detachVolume with the correct volume id', async () => {
       mockGetVolume.mockResolvedValue(VOLUME_IN_USE);
       mockDetachVolume.mockResolvedValue({ ...VOLUME_IN_USE, status: 'available', node_instance_id: undefined });
@@ -496,14 +562,12 @@ describe('VolumeDetailModal', () => {
       });
       renderModal();
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() =>
         expect(mockDetachVolume).toHaveBeenCalledWith('vol-inuse')
       );
+      expect(mockDetachVolume).toHaveBeenCalledTimes(1);
     });
 
     it('shows success notification after detach', async () => {
@@ -514,10 +578,7 @@ describe('VolumeDetailModal', () => {
 
       renderModal();
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({
@@ -536,10 +597,7 @@ describe('VolumeDetailModal', () => {
 
       renderModal();
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() =>
         expect(mockGetVolume).toHaveBeenCalledTimes(2)
@@ -556,10 +614,7 @@ describe('VolumeDetailModal', () => {
 
       renderModal({ onVolumeUpdated });
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() => expect(onVolumeUpdated).toHaveBeenCalled());
     });
@@ -570,10 +625,7 @@ describe('VolumeDetailModal', () => {
 
       renderModal();
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith({
@@ -592,10 +644,7 @@ describe('VolumeDetailModal', () => {
 
       renderModal();
 
-      const detachBtn = await waitFor(() =>
-        screen.getByRole('button', { name: /detach volume/i })
-      );
-      fireEvent.click(detachBtn);
+      await confirmDetach();
 
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /detach volume/i })).toBeDisabled()

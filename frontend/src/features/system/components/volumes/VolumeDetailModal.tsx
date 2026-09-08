@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   HardDrive,
@@ -15,6 +15,7 @@ import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
 
@@ -76,6 +77,13 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
 }) => {
   const { addNotification } = useNotifications();
   const { hasPermission } = usePermissions();
+  const { confirm, ConfirmationDialog } = useConfirmation();
+  // The volume currently loaded. useConfirmation snapshots the whole onConfirm
+  // closure when confirm() is called, so reading `volume` from inside it yields
+  // the object from THAT render — comparing it against the id captured in the
+  // same render compares a value with itself. A ref is what lets the confirm
+  // handler see the volume that is on screen now.
+  const currentVolumeRef = useRef<VolumeWithAttachment | null>(null);
 
   const canUpdate = hasPermission('system.volumes.update');
   const canSnapshot = hasPermission('system.volumes.snapshot');
@@ -112,6 +120,10 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     }
   }, [isOpen, volumeId, addNotification]);
 
+  useEffect(() => {
+    currentVolumeRef.current = volume;
+  }, [volume]);
+
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
@@ -122,19 +134,36 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     }
   }, [isOpen]);
 
-  // Handle detach
-  const handleDetach = async () => {
+  // Handle detach — confirm-gated (IMP-443984320078): detaching a mounted
+  // volume pulls storage out from under whatever is running on the holding
+  // instance, and the only undo is a re-attach.
+  const requestDetach = () => {
     if (!volume) return;
+    const targetId = volume.id;
+    confirm({
+      title: 'Detach Volume',
+      message: `Detach "${volume.name}" from the instance holding it? Anything running against this volume loses access immediately, and the only way back is to re-attach it.`,
+      confirmLabel: 'Detach Volume',
+      cancelLabel: 'Keep Attached',
+      variant: 'danger',
+      onConfirm: () => performDetach(targetId)
+    });
+  };
+
+  const performDetach = async (targetId: string) => {
+    // A confirmation left open outlives the modal's isOpen flag, so it must not
+    // fire at whatever volume is loaded now.
+    if (currentVolumeRef.current?.id !== targetId) return;
 
     setActionLoading('detach');
     try {
-      await systemApi.detachVolume(volume.id);
+      await systemApi.detachVolume(targetId);
       addNotification({
         type: 'success',
         message: 'Volume detached successfully'
       });
       // Refresh volume
-      const updated = await systemApi.getVolume(volume.id);
+      const updated = await systemApi.getVolume(targetId);
       setVolume(updated);
       onVolumeUpdated?.();
     } catch (error) {
@@ -337,7 +366,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                     {volume.status === 'in-use' && volume.node_instance_id && (
                       <Button
                         variant="outline"
-                        onClick={handleDetach}
+                        onClick={requestDetach}
                         disabled={actionLoading === 'detach'}
                       >
                         {actionLoading === 'detach' ? (
@@ -449,6 +478,8 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
           </div>
         </div>
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

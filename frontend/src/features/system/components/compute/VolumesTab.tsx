@@ -54,18 +54,30 @@ export const VolumesTab: React.FC<VolumesTabProps> = ({ onActionsReady }) => {
   }, [confirm, addNotification]);
   const handleVolumeSaved = useCallback(() => { setRefreshKey((k) => k + 1); setEditVolume(null); }, []);
   const handleAttach = useCallback((v: SystemProviderVolume) => { setAttachVolume(v); setShowAttachModal(true); }, []);
-  const handleDetach = useCallback(async (v: SystemProviderVolume) => {
-    setDetaching(true);
-    try {
-      await systemApi.detachVolume(v.id);
-      addNotification({ type: 'success', message: 'Volume detached successfully' });
-      setRefreshKey((k) => k + 1);
-    } catch (error) {
-      addNotification({ type: 'error', message: `Failed to detach volume: ${error instanceof Error ? error.message : 'An error occurred'}` });
-    } finally {
-      setDetaching(false);
-    }
-  }, [addNotification]);
+  // Confirm-gated like delete: detaching a mounted volume pulls storage out
+  // from under whatever is running on the holding instance, and the only undo
+  // is a re-attach.
+  const handleDetach = useCallback((v: SystemProviderVolume) => {
+    confirm({
+      title: 'Detach Volume',
+      message: `Detach "${v.name}" from the instance holding it? Anything running against this volume loses access immediately, and the only way back is to re-attach it.`,
+      confirmLabel: 'Detach Volume',
+      cancelLabel: 'Keep Attached',
+      variant: 'danger',
+      onConfirm: async () => {
+        setDetaching(true);
+        try {
+          await systemApi.detachVolume(v.id);
+          addNotification({ type: 'success', message: 'Volume detached successfully' });
+          setRefreshKey((k) => k + 1);
+        } catch (error) {
+          addNotification({ type: 'error', message: `Failed to detach volume: ${error instanceof Error ? error.message : 'An error occurred'}` });
+        } finally {
+          setDetaching(false);
+        }
+      }
+    });
+  }, [confirm, addNotification]);
   const handleSnapshot = useCallback(async (v: SystemProviderVolume) => {
     try {
       await systemApi.createVolumeSnapshot(v.id, `${v.name}-snapshot`);
