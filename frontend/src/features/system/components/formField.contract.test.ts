@@ -39,6 +39,9 @@ const MIGRATABLE_CONTROL = /<(select|textarea)\b|<input\b(?![^>]*type=)|<input\b
 /** Control kinds FormField cannot express, which stay hand-written. */
 const EXEMPT_CONTROL = /<input\b[^>]*type="(radio|checkbox|file|color|range)"/;
 
+/** The first element opened after the label closes. */
+const FIRST_ELEMENT = /<([A-Za-z][A-Za-z0-9]*)/;
+
 function findSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules') continue;
@@ -53,7 +56,15 @@ function findSources(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Count labels that sit immediately in front of a control FormField models.
+ * Count labels that sit IMMEDIATELY in front of a control FormField models.
+ *
+ * "Immediately" is the operator direction's own word and is load-bearing, so
+ * it is what the scan checks: the first element opened after `</label>` has to
+ * be the control itself. A label followed by a wrapper element names a
+ * composite — a radio pair, or a kind-selector whose select and value input
+ * share one caption — and FormField, which renders one label and one control,
+ * cannot express it. Counting those would report work that must not be done.
+ *
  * A multi-line control tag is joined before matching, so `type=` on its own
  * line is still seen.
  */
@@ -63,33 +74,34 @@ function migratableFieldCount(source: string): number {
 
   lines.forEach((line, i) => {
     if (!line.includes(LABEL_CLASS)) return;
-    const window = lines.slice(i + 1, i + 1 + LOOKAHEAD_LINES).join(' ');
-    if (EXEMPT_CONTROL.test(window)) return;
-    if (MIGRATABLE_CONTROL.test(window)) count += 1;
+
+    // From the label line itself: the caption may run over several lines, and
+    // may contain markup of its own, so the close tag is the anchor.
+    const window = lines.slice(i, i + 1 + LOOKAHEAD_LINES).join(' ');
+    if (!window.includes('</label>')) return;
+
+    const after = window.split('</label>')[1];
+    const opened = FIRST_ELEMENT.exec(after);
+    if (!opened) return;
+    if (!['input', 'select', 'textarea'].includes(opened[1])) return;
+
+    const control = after.slice(opened.index);
+    if (EXEMPT_CONTROL.test(control)) return;
+    if (MIGRATABLE_CONTROL.test(control)) count += 1;
   });
 
   return count;
 }
 
 /**
- * Files that still hand-write at least one migratable field. Shrink this list;
- * never grow it.
+ * Files that still hand-write at least one migratable field.
+ *
+ * Now empty: every one of them was converted. It stays here because the two
+ * arms below are what keep it empty — an entry may only ever be removed, so a
+ * new hand-written field fails the first arm rather than quietly joining a
+ * list.
  */
-const KNOWN_HAND_WRITTEN: readonly string[] = [
-  'sdwan/AccessGrantCreateModal.tsx',
-  'sdwan/AccessTab.tsx',
-  'sdwan/FederationPeerList.tsx',
-  'sdwan/FederationPeerProposeModal.tsx',
-  'sdwan/FirewallRuleFormModal.tsx',
-  'sdwan/NetworkFormModal.tsx',
-  'sdwan/PeerAttachModal.tsx',
-  'sdwan/PeerEditModal.tsx',
-  'sdwan/UserDeviceIssueModal.tsx',
-  'sdwan/portmappings/PortMappingCreateModal.tsx',
-  'sdwan/routing/RoutePolicyEditModal.tsx',
-  'sdwan/vips/VirtualIpCreateModal.tsx',
-  'sdwan/vips/VirtualIpEditModal.tsx',
-];
+const KNOWN_HAND_WRITTEN: readonly string[] = [];
 
 const sources = findSources(componentsRoot).map((f) => ({
   rel: path.relative(componentsRoot, f),
@@ -103,8 +115,8 @@ describe('form field contract', () => {
   });
 
   it('recognises the label/control pairing it is built to find', () => {
-    // Guards the guard: if the pairing heuristic stopped matching anything,
-    // the assertion below would pass by seeing nothing at all.
+    // Guards the guard: with an empty baseline, a heuristic that matched
+    // nothing would make both arms below pass by seeing nothing at all.
     const sample = [
       '<label className="block text-sm font-medium text-theme-primary mb-1">',
       '  Name',
@@ -117,6 +129,18 @@ describe('form field contract', () => {
 
     const radio = sample.replace('type="text"', 'type="radio"');
     expect(migratableFieldCount(radio)).toBe(0);
+
+    // A caption over a group is not a field: the control does not follow the
+    // label, a container does.
+    const composite = [
+      '<label className="block text-sm font-medium text-theme-primary mb-1">Source</label>',
+      '<div className="grid grid-cols-3 gap-2">',
+      '  <select value={kind}>',
+      '    <option value="all">any</option>',
+      '  </select>',
+      '</div>',
+    ].join('\n');
+    expect(migratableFieldCount(composite)).toBe(0);
   });
 
   it('has no component outside the baseline hand-writing a FormField-shaped field', () => {
