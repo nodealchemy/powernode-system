@@ -1,0 +1,138 @@
+# Operator-facing /api/v1/system routes with no frontend caller.
+#
+# Read by frontend_route_parity_spec.rb (IMP-f3e7f5d9d0cd). An entry here says
+# "this route has no UI caller, ON PURPOSE, and here is the purpose". A route
+# that is not wired and not listed FAILS the lint, and an entry that gains a
+# caller ALSO fails until it is deleted — the list only means something if it
+# shrinks as UI lands.
+#
+# The key is the lint's own entry key: every verb reaching the same controller
+# action at the same path, sorted and joined with "|", then the path with each
+# dynamic segment written as :param. Rails declares both PATCH and PUT for
+# #update, so update entries read "PATCH|PUT".
+#
+# Reasons fall into four kinds, and the wording says which:
+#   * machine endpoint  — the consumer is a bootloader, a proxy, CI or a sidecar
+#   * MCP-only          — the operator drives it from an MCP verb by design
+#   * wired indirectly  — it IS called, through a shape the scanner cannot read
+#   * real gap          — an operator genuinely cannot reach it; queued, not excused
+routes:
+  # ---- machine endpoints (the caller is not a browser) -----------------------
+  "GET /api/v1/system/netboot/:param/script.ipxe":
+    "Machine endpoint: renders the iPXE chainload script a booting instance fetches
+     as text/plain via `chain http://...`. Operator-gated, but the consumer is a
+     bootloader, not a page."
+  "GET /api/v1/system/ingress/forward_auth":
+    "Machine endpoint: Traefik's forwardAuth hook for locally exposed services,
+     called per proxied request with the original request's headers."
+  "GET /api/v1/system/sdwan/bootstrap/:param":
+    "Machine endpoint: anonymous single-use fetch of a user's WireGuard config,
+     authenticated by the signed token in the path and piped into wg-quick."
+  "GET /api/v1/system/disk_image_registry_config":
+    "Machine endpoint: the build-disk-image CI workflow fetches registry config
+     here with a per-worker Bearer token, immediately before `oras login`."
+  "POST /api/v1/system/module_publications":
+    "Machine endpoint: CI-direct publish receiver — build-platform-modules POSTs
+     here after each `oras push + cosign sign`, with a per-worker Bearer token."
+  "POST /api/v1/system/sdwan/ipfix_collectors/:param/flow_samples":
+    "Machine endpoint: the ingest half of the flow API, POSTed by an IPFIX sidecar.
+     The operator half is the nested read, and the SDWAN hub does call that."
+
+  # ---- MCP-only / deliberately unwired ---------------------------------------
+  "POST /api/v1/system/sdwan/ipfix_collectors":
+    "MCP-only by design: this is the REST half of a verb split. The SDWAN hub's
+     IpfixCollectorsTab still points operators at system_sdwan_create_ipfix_collector,
+     and the controller header says so."
+  "POST /api/v1/system/platform/migration_chains":
+    "Deliberately unwired, and platformMigrationChainsApi.ts records why: nothing
+     composes a chain from the console yet, and hop_peer_ids carries destinations
+     only (the origin is prepended server-side), so an untested client method would
+     rot before it had a caller."
+
+  # ---- wired, through an indirection this lint cannot resolve ----------------
+  "GET /api/v1/system/autonomy":
+    "Wired indirectly: systemAutonomyConfigSource carries the URL as `fetchEndpoint`
+     and the shared useAutonomyConfig hook issues the GET. Not a gap."
+  "PATCH /api/v1/system/autonomy":
+    "Wired indirectly: the same source object's `updateEndpoint`, saved through the
+     shared useAutonomyConfig hook. Not a gap."
+  "POST /api/v1/system/provider_credentials/test":
+    "Wired indirectly: ProviderCredentialForm passes the URL to
+     onboardingApi.testCredentials({ endpoint }), which POSTs it. Not a gap."
+
+  # ---- single-row reads whose collection already ships the row ---------------
+  "GET /api/v1/system/sdwan/networks/:param/peers/:param":
+    "#show has no caller: the UI lists a network's peers and then edits (PUT) or
+     deletes rows it already holds — it never re-fetches one by id."
+  "GET /api/v1/system/sdwan/networks/:param/firewall_rules/:param":
+    "#show has no caller: rules are rendered from the network's rule list, then
+     edited (PUT) or deleted from it."
+  "GET /api/v1/system/sdwan/networks/:param/access_grants/:param":
+    "#show has no caller: grants are rendered from the network's grant list, then
+     updated (PUT) or revoked from it."
+  "GET /api/v1/system/sdwan/networks/:param/access_grants/:param/user_devices/:param":
+    "#show has no caller: devices are rendered from the grant's device list; nothing
+     fetches one by id."
+  "GET /api/v1/system/node_modules/:param/module_dependencies":
+    "#index has no caller: the module screen reads dependencies from the NodeModules
+     member action /node_modules/:id/dependencies (a derived dependencies+dependents
+     view) instead. This nested CRUD index is only written to — POST to add, DELETE
+     to remove."
+  "GET /api/v1/system/node_modules/:param/module_dependencies/:param":
+    "#show has no caller: the UI only adds and removes dependencies; it reads them
+     through the /node_modules/:id/dependencies member action, never one by id."
+  "GET /api/v1/system/node_modules/:param/module_puppet_assignments/:param":
+    "#show has no caller: puppetApi wires PUT and DELETE on this path against rows
+     the assignments list already returned."
+  "GET /api/v1/system/node_module_assignments/:param":
+    "#show has no caller: assignment ids arrive on the node-scoped module index's
+     embedded node_assignment rows (modulesApi.ts says so), and the UI then POSTs
+     enable/disable by id. Nothing re-fetches an assignment."
+
+  # ---- update verbs the UI replaces with a lifecycle action ------------------
+  "PATCH|PUT /api/v1/system/node_modules/:param/module_dependencies/:param":
+    "#update has no caller: modulesApi wires POST (add) and DELETE (remove) only,
+     so a dependency is replaced rather than edited."
+  "PATCH|PUT /api/v1/system/node_templates/:param/modules/:param":
+    "#update has no caller: SaveTemplateModal assigns with POST to the collection and
+     TemplateDetailModal detaches with DELETE. There is no per-assignment edit."
+  "PATCH|PUT /api/v1/system/acme_certificates/:param":
+    "#update has no caller: acmeCertificatesApi wires GET and DELETE only."
+  "PATCH|PUT /api/v1/system/sdwan/federation_peers/:param":
+    "#update has no caller: the peer lifecycle is action verbs — propose (POST),
+     revoke (POST .../revoke) and delete — not a generic edit."
+  "POST /api/v1/system/federation/service_offerings/:param/retire":
+    "Duplicate verb: the console DOES retire an offering — ServiceOfferingsPanel's
+     Retire button calls serviceCatalogApi.retireOffering, which is DELETE on the
+     member path — and #destroy runs the same @offering.retire!. This alias has no
+     caller; the capability is not missing."
+  "DELETE /api/v1/system/sdwan/networks/:param/access_grants/:param":
+    "#destroy has no caller: the UI revokes a grant (POST .../revoke), which is the
+     lifecycle verb it offers; hard delete is not exposed."
+  "DELETE /api/v1/system/sdwan/networks/:param/access_grants/:param/user_devices/:param":
+    "#destroy has no caller: the UI revokes a device (POST .../revoke) instead; hard
+     delete is not exposed."
+
+  # ---- real gaps: an operator cannot reach these. Queued, not excused --------
+  "GET /api/v1/system/provider_credentials":
+    "REAL GAP, listed pending a UI task: the controller header says #index exists so
+     the first-run wizard can show the 'configured' state without leaking secrets,
+     and nothing calls it."
+  "DELETE /api/v1/system/provider_credentials/:param":
+    "REAL GAP, listed pending a UI task: a stored cloud credential cannot be removed
+     from any screen today."
+  "GET /api/v1/system/platform/volumes":
+    "REAL GAP, listed pending a UI task: this REST shim exists so the deployment
+     wizard can create AND list volumes, and only the create half is wired."
+
+# Extension-tree files that write a /system URL and also make an apiClient call whose
+# URL this lint cannot resolve (the URL arrives as a function parameter). Empty today,
+# and that is the ratchet: a new blind spot fails the lint instead of quietly turning a
+# wired route into a phantom gap in the list above.
+#
+# Scoped to extensions/system on purpose. The lint also scans the CORE frontend tree,
+# which the extension's own CI checks out UNPINNED, so asserting a set of core file
+# names would turn every extension PR red on an unrelated core rename. Core-side
+# indirections are recorded on the route entry they reach instead — see
+# "POST /api/v1/system/provider_credentials/test" above.
+unresolvable_call_files: {}
