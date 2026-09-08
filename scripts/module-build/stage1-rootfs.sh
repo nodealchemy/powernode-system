@@ -25,6 +25,25 @@
 #      treated as transient and waited out with exponential backoff (5 s
 #      doubling to a 60 s cap); any other 4xx (a 404 = the pinned snapshot
 #      does not exist on this mirror) fails immediately.
+#      HEALTHY-BACKEND PINNING: the observed outage is a PARTIAL backend
+#      failure — the snapshot host has several A records and only some of
+#      them serve the snapshot; a build "flaps" purely on which address the
+#      resolver hands apt. So when the mirror host resolves to more than one
+#      address, every address is probed in turn with curl --resolve and the
+#      first one answering 200 is pinned for this job: a per-job hosts file
+#      (/tmp/stage1-hosts) is bind-mounted over /etc/hosts in a PRIVATE
+#      mount namespace around the mmdebstrap process only (unshare -m), so
+#      nothing outside that process tree — and never the builder host's
+#      own /etc/hosts — sees the pin. Where unshare -m is denied (the Gitea
+#      CI container has no CAP_SYS_ADMIN) the job-scoped /etc/hosts of that
+#      container/chroot is edited in place and restored on exit. The pin is
+#      re-derived before every retry. If no address is healthy the wait/
+#      backoff above applies; on giving up every address and its HTTP code
+#      is named. Where apt resolves: on a native build this script already
+#      runs INSIDE the per-job buildenv chroot (module-forge-build.sh
+#      chroots before invoking build-one-module.sh) and mmdebstrap
+#      --mode=root runs apt on that same side with Dir pointed into
+#      /tmp/fat, so /etc/hosts here IS the file apt's http method reads.
 #   2. mmdebstrap itself is run up to STAGE1_MMDEBSTRAP_ATTEMPTS times. A
 #      failed run is retried ONLY if its output carries a transient-mirror
 #      signature (5xx/429 on a fetch, connection errors, Hash Sum mismatch);
@@ -78,6 +97,10 @@
 #   STAGE1_MMDEBSTRAP_ATTEMPTS   How many times mmdebstrap is run before
 #                                giving up (default 3). Only transient-mirror
 #                                failures are retried — see above.
+#   STAGE1_BACKEND_PIN           1 (default) = probe every address of the
+#                                mirror host and pin a healthy one for this
+#                                job as described above; 0 = probe the host
+#                                name only and let the resolver choose.
 #   STAGE1_SNAPSHOT_BASE_URL     OPT-IN, default unset. An alternate base URL
 #                                that serves the SAME immutable snapshot tree
 #                                at <base>/<apt_snapshot>/ — e.g. an internal
@@ -123,6 +146,9 @@
 #         /tmp/$MODULE.packages.txt (resolved-package provenance),
 #         /tmp/stage1-mmdebstrap.log (the last mmdebstrap run's output,
 #         used for the transient-failure classification),
+#         /tmp/stage1-hosts (the per-job hosts file carrying the backend
+#         pin) and /tmp/stage1-hosts.orig (backup of /etc/hosts, only in
+#         the in-place fallback),
 #         /tmp/stage1-apt-cache-{seed,harvest}.sh (only when
 #         STAGE1_APT_CACHE_DIR is in effect)
 #
@@ -185,6 +211,11 @@ APT_CACHE_DIR="${STAGE1_APT_CACHE_DIR:-}"
   || die "STAGE1_MIRROR_WAIT_MAX must be a non-negative integer number of seconds, got '${MIRROR_WAIT_MAX}'"
 [[ "$MMDEBSTRAP_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
   || die "STAGE1_MMDEBSTRAP_ATTEMPTS must be a positive integer, got '${MMDEBSTRAP_ATTEMPTS}'"
+BACKEND_PIN="${STAGE1_BACKEND_PIN:-1}"
+case "$BACKEND_PIN" in
+  0|1) ;;
+  *) die "STAGE1_BACKEND_PIN must be 0 or 1, got '${BACKEND_PIN}'" ;;
+esac
 
 SNAPSHOT_BASE_URL_DEFAULT="https://snapshot.ubuntu.com/ubuntu/"
 LIVE_MIRROR_URL="http://archive.ubuntu.com/ubuntu/"
@@ -221,34 +252,194 @@ transient_http_code() {
   esac
 }
 
-# wait_for_mirror URL — returns once URL answers 200. Dies (exit 2) when the
-# shared deadline passes or the mirror answers with a non-transient code.
+# --- healthy-backend pinning -------------------------------------------------
+HOSTS_PIN_FILE=/tmp/stage1-hosts
+HOSTS_ORIG_BACKUP=/tmp/stage1-hosts.orig
+PINNED_IP=""          # address pinned for the next mmdebstrap run ("" = none)
+PIN_MODE=""           # namespace | inplace | off — decided once, lazily
+BACKEND_REPORT=""     # "addr=code addr=code ..." from the last probe round
+
+url_host() {
+  local hp="${1#*://}"
+  hp="${hp%%/*}"
+  printf '%s\n' "${hp%%:*}"
+}
+
+url_port() {
+  local hp="${1#*://}"
+  hp="${hp%%/*}"
+  case "$hp" in
+    *:*) printf '%s\n' "${hp##*:}" ;;
+    *) case "$1" in https://*) echo 443 ;; *) echo 80 ;; esac ;;
+  esac
+}
+
+# resolve_backends HOST — every address HOST resolves to, resolver order,
+# de-duplicated. Empty when getent is unavailable or HOST does not resolve.
+resolve_backends() {
+  command -v getent >/dev/null 2>&1 || return 0
+  getent ahosts "$1" 2>/dev/null | awk '!seen[$1]++ { print $1 }'
+}
+
+# probe_backend URL HOST PORT ADDR — HTTP code of URL fetched from ADDR
+# specifically (curl --resolve), so TLS/SNI still see the real host name.
+probe_backend() {
+  local code addr="$4"
+  case "$addr" in *:*) addr="[${addr}]" ;; esac
+  code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 \
+           --resolve "${2}:${3}:${addr}" "$1" 2>/dev/null) || true
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
+  printf '%s\n' "$code"
+}
+
+# select_backend URL — probes URL's host address by address, stopping at
+# the first that answers 200. Sets PINNED_IP and BACKEND_REPORT.
+# Returns 0 = healthy address pinned; 1 = none healthy, at least one
+# transient; 2 = none healthy, none transient; 3 = nothing to pin (fewer
+# than two addresses, or no resolver).
+select_backend() {
+  local url="$1" host port addr code any_transient=0
+  local -a addrs
+  host=$(url_host "$url")
+  port=$(url_port "$url")
+  mapfile -t addrs < <(resolve_backends "$host")
+  PINNED_IP=""
+  BACKEND_REPORT=""
+  [ "${#addrs[@]}" -ge 2 ] || return 3
+  for addr in "${addrs[@]}"; do
+    code=$(probe_backend "$url" "$host" "$port" "$addr")
+    BACKEND_REPORT="${BACKEND_REPORT:+${BACKEND_REPORT} }${addr}=${code}"
+    if [ "$code" = "200" ]; then
+      PINNED_IP="$addr"
+      return 0
+    fi
+    if transient_http_code "$code"; then
+      any_transient=1
+    fi
+  done
+  [ "$any_transient" -eq 1 ] && return 1
+  return 2
+}
+
+# write_hosts_pin HOST — (re)writes the per-job hosts file: the current
+# /etc/hosts minus any existing line for HOST, plus the pinned address.
+write_hosts_pin() {
+  local host="$1"
+  {
+    if [ -r /etc/hosts ]; then
+      awk -v h="$host" '{ keep = 1; for (i = 2; i <= NF; i++) if ($i == h) keep = 0; if (keep) print }' /etc/hosts
+    fi
+    printf '%s %s\n' "$PINNED_IP" "$host"
+  } > "$HOSTS_PIN_FILE"
+}
+
+restore_hosts_inplace() {
+  if [ -f "$HOSTS_ORIG_BACKUP" ]; then
+    cat "$HOSTS_ORIG_BACKUP" > /etc/hosts 2>/dev/null || true
+    rm -f "$HOSTS_ORIG_BACKUP"
+  fi
+}
+
+# decide_pin_mode — once: can the pin be applied in a private mount
+# namespace (preferred: nothing outside the mmdebstrap process tree sees
+# it), or only by editing this job's /etc/hosts in place (restored on
+# exit), or not at all?
+decide_pin_mode() {
+  [ -z "$PIN_MODE" ] || return 0
+  if [ ! -e /etc/hosts ]; then
+    : > /etc/hosts 2>/dev/null || true
+  fi
+  # shellcheck disable=SC2016  # the $1 is for the inner sh, deliberately unexpanded here
+  if [ -e /etc/hosts ] && command -v unshare >/dev/null 2>&1 \
+     && unshare -m --propagation private sh -c 'mount --bind "$1" /etc/hosts' sh "$HOSTS_PIN_FILE" >/dev/null 2>&1; then
+    PIN_MODE=namespace
+    log "backend pin mode: private mount namespace around mmdebstrap (nothing outside it sees the pin)"
+  elif [ -w /etc/hosts ]; then
+    PIN_MODE=inplace
+    trap restore_hosts_inplace EXIT
+    log "backend pin mode: in-place edit of this job's /etc/hosts (unshare -m unavailable here); restored after mmdebstrap and on exit"
+  else
+    PIN_MODE=off
+    log "WARNING: backend pin cannot be applied (/etc/hosts not writable and unshare -m unavailable) — proceeding unpinned"
+  fi
+}
+
+# run_mmdebstrap — mmdebstrap "${mmdebstrap_args[@]}" with the backend pin
+# in effect (if any). Returns mmdebstrap's exit status.
+run_mmdebstrap() {
+  local rc
+  if [ -z "$PINNED_IP" ] || [ "$PIN_MODE" = "off" ]; then
+    mmdebstrap "${mmdebstrap_args[@]}"
+    return $?
+  fi
+  case "$PIN_MODE" in
+    namespace)
+      # shellcheck disable=SC2016  # $0/$@ are for the inner bash, deliberately unexpanded here
+      unshare -m --propagation private bash -c 'mount --bind "$0" /etc/hosts && exec "$@"' \
+        "$HOSTS_PIN_FILE" mmdebstrap "${mmdebstrap_args[@]}"
+      return $? ;;
+    inplace)
+      [ -f "$HOSTS_ORIG_BACKUP" ] || cp /etc/hosts "$HOSTS_ORIG_BACKUP"
+      cat "$HOSTS_PIN_FILE" > /etc/hosts
+      mmdebstrap "${mmdebstrap_args[@]}"
+      rc=$?
+      restore_hosts_inplace
+      return "$rc" ;;
+  esac
+}
+
+# wait_for_mirror URL — returns once URL answers 200 (from a pinned healthy
+# backend when the host has several), with PINNED_IP set accordingly. Dies
+# (exit 2) when the shared deadline passes or every answer is non-transient.
 wait_for_mirror() {
-  local url="$1" delay=5 now remaining code
+  local url="$1" delay=5 now remaining code rc host
+  PINNED_IP=""
   if ! command -v curl >/dev/null 2>&1; then
     log "curl not on PATH — skipping the mirror probe (mmdebstrap retries still apply)"
     return 0
   fi
+  host=$(url_host "$url")
   while :; do
-    code=$(probe_http_code "$url")
     MIRROR_PROBES=$((MIRROR_PROBES + 1))
-    MIRROR_LAST_CODE="$code"
-    if [ "$code" = "200" ]; then
-      log "mirror probe OK: HTTP 200 from ${url} (probe ${MIRROR_PROBES})"
-      return 0
+    rc=3
+    if [ "$BACKEND_PIN" = "1" ]; then
+      set +e
+      select_backend "$url"
+      rc=$?
+      set -e
     fi
-    if ! transient_http_code "$code"; then
-      die "mirror probe: HTTP ${code} from ${url} — not a transient error (404 here means the pinned apt_snapshot does not exist on this mirror); not retrying"
-    fi
+    case "$rc" in
+      0)
+        MIRROR_LAST_CODE="$BACKEND_REPORT"
+        write_hosts_pin "$host"
+        decide_pin_mode
+        log "mirror probe OK: pinning ${host} -> ${PINNED_IP} for this job (${BACKEND_REPORT}; probe ${MIRROR_PROBES})"
+        return 0 ;;
+      1)
+        code="$BACKEND_REPORT"
+        MIRROR_LAST_CODE="$code" ;;
+      2)
+        die "mirror probe: no address of ${host} serves ${url} and none failed transiently (${BACKEND_REPORT}) — not retrying (404 here means the pinned apt_snapshot does not exist on this mirror)" ;;
+      *)
+        code=$(probe_http_code "$url")
+        MIRROR_LAST_CODE="$code"
+        if [ "$code" = "200" ]; then
+          log "mirror probe OK: HTTP 200 from ${url} (probe ${MIRROR_PROBES}; single address or no resolver — nothing to pin)"
+          return 0
+        fi
+        if ! transient_http_code "$code"; then
+          die "mirror probe: HTTP ${code} from ${url} — not a transient error (404 here means the pinned apt_snapshot does not exist on this mirror); not retrying"
+        fi ;;
+    esac
     now=$(date +%s)
     remaining=$(( MIRROR_DEADLINE - now ))
     if [ "$remaining" -le 0 ]; then
-      die "apt mirror ${url} still unhealthy after ${MIRROR_WAIT_MAX}s of waiting (${MIRROR_PROBES} probes, last HTTP code ${code}) — giving up. The pinned snapshot is unreachable, not misconfigured: re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree (see this script's header)."
+      die "apt mirror ${url} still unhealthy after ${MIRROR_WAIT_MAX}s of waiting (${MIRROR_PROBES} probes; last result: ${code}) — giving up. The pinned snapshot is unreachable, not misconfigured: re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree (see this script's header)."
     fi
     if [ "$delay" -gt "$remaining" ]; then
       delay="$remaining"
     fi
-    log "mirror probe: HTTP ${code} from ${url} — transient; retrying in ${delay}s (${remaining}s of wait budget left)"
+    log "mirror probe: ${code} from ${url} — transient; retrying in ${delay}s (${remaining}s of wait budget left)"
     sleep "$delay"
     delay=$(( delay * 2 ))
     if [ "$delay" -gt 60 ]; then
@@ -534,12 +725,12 @@ while :; do
   if [ "$attempt" -gt 1 ]; then
     reset_fat_dir
   fi
-  log "mmdebstrap attempt ${attempt}/${MMDEBSTRAP_ATTEMPTS} against ${base_url}"
+  log "mmdebstrap attempt ${attempt}/${MMDEBSTRAP_ATTEMPTS} against ${base_url}${PINNED_IP:+ (backend ${PINNED_IP})}"
   rm -f "$MMDEBSTRAP_LOG"
   # Output is tee'd (not swallowed) so the job log stays as verbose as before;
   # the copy is only for the transient-failure classification below.
   set +e
-  mmdebstrap "${mmdebstrap_args[@]}" 2>&1 | tee "$MMDEBSTRAP_LOG"
+  run_mmdebstrap 2>&1 | tee "$MMDEBSTRAP_LOG"
   rc=${PIPESTATUS[0]}
   set -e
   if [ "$rc" -eq 0 ]; then
@@ -550,7 +741,7 @@ while :; do
     die "mmdebstrap failed (exit ${rc}) on attempt ${attempt} with no transient-mirror signature in its output — not retrying (a missing package, keyring or disk problem does not get better by waiting; see the mmdebstrap output above)"
   fi
   if [ "$attempt" -ge "$MMDEBSTRAP_ATTEMPTS" ]; then
-    die "mmdebstrap failed ${MMDEBSTRAP_ATTEMPTS} times against ${base_url} with a transient-mirror signature each time (last exit ${rc}; last probe HTTP code ${MIRROR_LAST_CODE}) — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
+    die "mmdebstrap failed ${MMDEBSTRAP_ATTEMPTS} times against ${base_url} with a transient-mirror signature each time (last exit ${rc}; last probe result: ${MIRROR_LAST_CODE}) — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
   fi
   log "mmdebstrap attempt ${attempt} failed (exit ${rc}) with a transient-mirror signature — re-probing the mirror before attempt $((attempt + 1))"
   attempt=$((attempt + 1))
