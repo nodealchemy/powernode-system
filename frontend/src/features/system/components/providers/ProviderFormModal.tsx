@@ -46,6 +46,13 @@ interface ProviderFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   onProviderSaved?: (provider: SystemProvider) => void;
+  /**
+   * A credential was stored. Separate from onProviderSaved because storing a
+   * credential is its own button on its own tab: the provider may not have
+   * been touched at all, and a surface listing credentials would otherwise
+   * miss the one write it exists to show.
+   */
+  onCredentialSaved?: () => void;
   editProvider?: SystemProvider | null;
 }
 
@@ -68,6 +75,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   isOpen,
   onClose,
   onProviderSaved,
+  onCredentialSaved,
   editProvider
 }) => {
   const { addNotification } = useNotifications();
@@ -430,6 +438,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         credentials: credentialValues,
       });
       setCredentialSaved(true);
+      onCredentialSaved?.();
       addNotification({
         type: 'success',
         message: `Credentials saved for ${effectiveProvider.name}`,

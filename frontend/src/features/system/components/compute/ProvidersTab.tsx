@@ -1,6 +1,11 @@
 import React, { useCallback, useState } from 'react';
 import { usePermissions } from '@/shared/hooks/usePermissions';
-import { ProviderList, ProviderDetailModal, ProviderFormModal } from '@system/features/system/components/providers';
+import {
+  ProviderList,
+  ProviderDetailModal,
+  ProviderFormModal,
+  ProviderCredentialsPanel,
+} from '@system/features/system/components/providers';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useCrudTab } from '@system/features/system/hooks/useCrudTab';
 import type { SystemProvider } from '@system/features/system/types/system.types';
@@ -27,6 +32,7 @@ export const ProvidersTab: React.FC<ProvidersTabProps> = ({ onActionsReady }) =>
     handleDeleteClick,
     handleSaved,
     closeForm,
+    triggerRefresh,
     ConfirmationDialog,
   } = useCrudTab<SystemProvider>({
     entityLabel: 'Provider',
@@ -70,8 +76,15 @@ export const ProvidersTab: React.FC<ProvidersTabProps> = ({ onActionsReady }) =>
         isOpen={showFormModal}
         onClose={closeForm}
         onProviderSaved={handleSaved}
+        onCredentialSaved={triggerRefresh}
         editProvider={editProvider}
       />
+
+      {/* Storing a credential is a separate button on a separate tab of the
+          same form, so it needs its own bump: onProviderSaved fires only when
+          the PROVIDER is written, and an operator editing a provider purely to
+          fix a credential never triggers it. */}
+      <ProviderCredentialsPanel refreshKey={refreshKey} />
 
       {ConfirmationDialog}
     </>
