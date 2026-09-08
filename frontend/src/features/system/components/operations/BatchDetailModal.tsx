@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Hammer, X, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Hammer, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -139,43 +140,35 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
   }, [batchId]);
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-4xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3 min-w-0">
-              <Hammer className="w-6 h-6 text-theme-info-fg flex-shrink-0" />
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-lg font-semibold text-theme-primary">
-                    {loading ? 'Loading…' : 'Module build batch'}
-                  </h2>
-                  {batch && (
-                    <>
-                      <Badge variant={statusVariant(batch.status)} size="sm">
-                        {STATUS_LABELS[batch.status] ?? batch.status}
-                      </Badge>
-                      {batch.shadow && <Badge variant="outline" size="sm">shadow</Badge>}
-                    </>
-                  )}
-                </div>
-                {batch && (
-                  <p className="text-sm text-theme-secondary font-mono truncate">
-                    {batch.base_sha.slice(0, 7)}→{batch.head_sha.slice(0, 7)}
-                  </p>
-                )}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={
+        <span className="flex items-center gap-2 flex-wrap">
+          {loading ? 'Loading…' : 'Module build batch'}
+          {batch && (
+            <>
+              <Badge variant={statusVariant(batch.status)} size="sm">
+                {STATUS_LABELS[batch.status] ?? batch.status}
+              </Badge>
+              {batch.shadow && <Badge variant="outline" size="sm">shadow</Badge>}
+            </>
+          )}
+        </span>
+      }
+      subtitle={
+        batch ? (
+          <span className="font-mono truncate">
+            {batch.base_sha.slice(0, 7)}→{batch.head_sha.slice(0, 7)}
+          </span>
+        ) : undefined
+      }
+      icon={<Hammer className="w-6 h-6" />}
+      maxWidth="4xl"
+      footer={<Button variant="outline" onClick={onClose}>Close</Button>}
+    >
           {/* Body */}
-          <div className="p-6 max-h-[70vh] overflow-y-auto space-y-6">
+          <div className="space-y-6">
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -345,14 +338,7 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
               </>
             )}
           </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-end p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>Close</Button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

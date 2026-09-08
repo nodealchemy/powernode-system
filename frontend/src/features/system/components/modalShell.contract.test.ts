@@ -49,9 +49,6 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   // Not a dialog at all: a full-viewport click-catcher that dismisses an
   // absolutely-positioned dropdown menu.
   'nodes/NodeInstanceControls.tsx',
-
-  // --- Still to migrate. Shrink this list; never grow it. ---
-  'operations/BatchDetailModal.tsx',
 ];
 
 function findSources(dir: string, out: string[] = []): string[] {
