@@ -16,12 +16,11 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
-import { FormField } from '@/shared/components/ui/FormField';
-import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { resolveOperableType } from '@system/features/system/entityRegistry';
 import { useSystemWebSocket } from '@system/features/system/hooks/useSystemWebSocket';
+import { useReasonConfirm } from '@system/features/system/hooks/useReasonConfirm';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import type { SystemTask } from '@system/features/system/types/system.types';
@@ -63,44 +62,6 @@ const statusColors: Record<string, 'info' | 'success' | 'warning' | 'danger' | '
 };
 
 /**
- * The body of the stop-an-operation confirmation: a sentence plus an optional
- * free-text reason that is forwarded to the AASM event and lands in the task's
- * error_message + event timeline.
- *
- * It owns its own state and reports upward through `onReasonChange` on purpose.
- * `useConfirmation` snapshots the `message` element when `confirm()` is called
- * and re-renders that same element for the life of the dialog, so a *controlled*
- * field driven by OperationDetailModal state would never show what was typed —
- * the snapshot still holds the original props. Keeping the value here and
- * pushing it into a ref is what makes the field work at all.
- */
-const StopReasonPrompt: React.FC<{
-  prompt: string;
-  onReasonChange: (reason: string) => void;
-}> = ({ prompt, onReasonChange }) => {
-  const [reason, setReason] = useState('');
-
-  return (
-    <div className="space-y-4">
-      <p>{prompt}</p>
-      <FormField
-        label="Reason (optional)"
-        type="textarea"
-        rows={2}
-        size="sm"
-        value={reason}
-        onChange={(value) => {
-          setReason(value);
-          onReasonChange(value);
-        }}
-        placeholder="Why are you stopping this operation?"
-        helpText="Recorded on the operation's timeline for whoever looks at it next."
-      />
-    </div>
-  );
-};
-
-/**
  * OperationDetailModal - Modal for viewing operation details with event timeline
  */
 export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
@@ -111,11 +72,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const { confirm, ConfirmationDialog } = useConfirmation();
-  // Written by StopReasonPrompt while the confirmation dialog is open; read
-  // once on confirm. A ref (not state) because the dialog body is a snapshotted
-  // element — see StopReasonPrompt.
-  const reasonRef = useRef('');
+  // The reason field, its snapshot-safe state and the reset between dialogs all
+  // live in the shared hook — six other operator panels capture a reason the
+  // same way (IMP-abe28a971830).
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   // The operation currently on screen. `onConfirm` is a closure captured when
   // the dialog opened, so reading the `operationId` prop from inside it yields
   // the value from THAT render, not the current one — a ref is what makes the
@@ -237,13 +197,12 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
   // Cancel (pending/scheduled) and Abort (running) are the two AASM events an
   // operator may drive from here; they differ only in which state they are
   // legal from, so they share one confirm-with-reason path.
-  const runStopAction = async (action: 'cancel' | 'abort', targetId: string) => {
+  const runStopAction = async (action: 'cancel' | 'abort', targetId: string, reason?: string) => {
     // `targetId` is the operation the dialog was opened against. The dialog's
-    // state lives in useConfirmation, which outlives this modal's `isOpen`
-    // flag, so a confirmation left pending while the operator moves to another
-    // operation must not fire at whatever is on screen now.
+    // state outlives this modal's `isOpen` flag, so a confirmation left pending
+    // while the operator moves to another operation must not fire at whatever
+    // is on screen now.
     if (targetId !== currentOperationIdRef.current) return;
-    const reason = reasonRef.current.trim() || undefined;
     const pastTense = action === 'cancel' ? 'cancelled' : 'aborted';
 
     setActionLoading(action);
@@ -265,32 +224,22 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 
   const confirmStopAction = (action: 'cancel' | 'abort') => {
     if (!operation) return;
-    // Reset first: the ref outlives a dialog the operator dismissed, and a
-    // reason typed into that one must not ride along on the next attempt.
-    reasonRef.current = '';
 
     const isCancel = action === 'cancel';
     const targetId = operation.id;
-    confirm({
+    confirmWithReason({
       title: isCancel ? 'Cancel Operation' : 'Abort Operation',
-      message: (
-        <StopReasonPrompt
-          prompt={
-            isCancel
-              ? `Cancel "${operation.command}" before it starts? It will not run.`
-              : `Abort "${operation.command}" while it is running? Work already done is not rolled back.`
-          }
-          onReasonChange={(reason) => {
-            reasonRef.current = reason;
-          }}
-        />
-      ),
+      message: isCancel
+        ? `Cancel "${operation.command}" before it starts? It will not run.`
+        : `Abort "${operation.command}" while it is running? Work already done is not rolled back.`,
+      reasonPlaceholder: 'Why are you stopping this operation?',
+      reasonHelpText: "Recorded on the operation's timeline for whoever looks at it next.",
       confirmLabel: isCancel ? 'Cancel Operation' : 'Abort Operation',
       // The dismiss button must not read as a second way to say "yes" on a
       // dialog whose subject is cancelling; the shared default is "Cancel".
       cancelLabel: isCancel ? 'Keep Operation' : 'Keep Running',
       variant: isCancel ? 'warning' : 'danger',
-      onConfirm: () => runStopAction(action, targetId)
+      onConfirm: (reason) => runStopAction(action, targetId, reason)
     });
   };
 
