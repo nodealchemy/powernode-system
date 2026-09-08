@@ -106,9 +106,10 @@ module Api
         # and update_params permit :target_size, :max_size and :status. So the
         # SPEND CEILING that bounds the deliberately-ungated replenish tick
         # (see #replenish below) could be raised with no approval by anyone
-        # holding system.instances.control, and `status: "archived"` reached
-        # through here exactly the state the GATED #destroy's on_proceed
-        # writes.
+        # holding system.instances.control. `status: "archived"` is reachable
+        # ONLY through here: #destroy destroys the row rather than archiving it
+        # (IMP-4de09f201a0f corrected the closure that appeared to archive —
+        # it wrote to a row the executor had already deleted).
         #
         # Two transitions are gated, each under its own category so an operator
         # relaxing one does not relax the other:
@@ -187,9 +188,21 @@ module Api
             source_type: "System::InstancePool",
             source_id: id,
             description: "Delete instance pool '#{name}'",
-            on_proceed: ->(_r) {
-              @pool.update!(status: "archived") if @pool.persisted?
-              render_success(pool: @pool.reload.to_summary)
+            # The executor DESTROYS the pool; this closure only renders that.
+            # It used to archive the row and render `@pool.reload.to_summary`,
+            # which returned 404 on a deletion that had SUCCEEDED: `@pool` is
+            # the instance loaded before the gate, so `persisted?` was still
+            # true in memory, the archive UPDATE matched no row, and the reload
+            # then raised RecordNotFound (IMP-4de09f201a0f).
+            #
+            # The body is the destroyed row's identity rather than a summary of
+            # it, because there is no row left to summarise. InstancePoolsPage
+            # discards this body and keeps only `deleted`, so nothing downstream
+            # reads the old shape.
+            on_proceed: ->(result) {
+              render_success(deleted: true,
+                             id: result.result&.dig(:data, :pool_id) || id,
+                             name: result.result&.dig(:data, :name) || name)
             }
           )
         end

@@ -58,8 +58,14 @@ module Api
             source_type: "System::DiskImageWebhook",
             source_id: id,
             description: "Revoke disk image webhook '#{label}'",
+            # The executor performs the status flip. This closure renders it.
+            # It used to flip the status too, and the `!= "revoked"` guard did
+            # not stop the second write: `@webhook` is the instance loaded
+            # BEFORE the gate, so in memory it was still active. Idempotent, so
+            # nothing visible broke here — which is precisely why the same
+            # defect survived on the rotation path, where it is not
+            # (IMP-4de09f201a0f).
             on_proceed: ->(_r) {
-              @webhook.update!(status: "revoked") if @webhook.status != "revoked"
               render_success(message: "Webhook revoked")
             }
           )
@@ -80,9 +86,23 @@ module Api
             source_type: "System::DiskImageWebhook",
             source_id: id,
             description: "Rotate secret for disk image webhook '#{label}'",
-            on_proceed: ->(_r) {
-              new_secret = @webhook.rotate_secret!
-              emit_rotated_event(@webhook)
+            # THE EXECUTOR MINTS THE SECRET. This closure only renders what it
+            # returned. Both used to mint one (IMP-4de09f201a0f): two secrets
+            # per rotation, the executor's immediately superseded and thrown
+            # away, and two `system.disk_image_webhook_secret_rotated` fleet
+            # events for one operator action.
+            #
+            # `secret_plaintext` is read from the executor's result rather than
+            # from the row: the model returns the plaintext exactly once from
+            # `rotate_secret!`, and the copy persisted on the deferred
+            # operation is masked at rest by Ai::SensitiveParams. (The other
+            # in-memory channel is DeferredOperation#take_revealed_result!,
+            # which belongs to the approval path — Ai::ApprovalRequest is its
+            # only reader.) Reload the webhook for the serializer, since
+            # `@webhook` predates the executor's write.
+            on_proceed: ->(result) {
+              new_secret = result.result&.dig(:data, :secret_plaintext)
+              @webhook.reload
               render_success(
                 disk_image_webhook: ::System::DiskImageWebhookSerializer.new(@webhook).as_json,
                 secret_plaintext: new_secret,
@@ -110,19 +130,6 @@ module Api
           # Path comes from the model, which is the single home for it. Kept as
           # a method rather than inlined so both render sites read the same.
           webhook.webhook_url
-        end
-
-        def emit_rotated_event(webhook)
-          return unless defined?(::System::Fleet::EventBroadcaster)
-          ::System::Fleet::EventBroadcaster.emit!(
-            account:  @account,
-            kind:     "system.disk_image_webhook_secret_rotated",
-            severity: :medium,
-            source:   "operator_ui",
-            payload:  { webhook_id: webhook.id, label: webhook.label, by_user_id: current_user&.id }
-          )
-        rescue StandardError => e
-          Rails.logger.warn "[DiskImageWebhooks] rotated event emit failed: #{e.class}: #{e.message}"
         end
       end
     end

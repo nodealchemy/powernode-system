@@ -12,10 +12,20 @@ module System
       #   action: "rotate_secret"  — mint a fresh HMAC secret + invalidate
       #                              the prior; returns plaintext exactly once.
       #
-      # The controller's `on_proceed:` closure performs the same work
-      # synchronously when policy is auto_approve / notify_and_proceed. This
-      # executor runs the deferred (require_approval) path after operator
-      # approval clicks through the deferred-operation queue.
+      # THIS EXECUTOR IS THE SOLE AUTHORITY, AND IT RUNS EXACTLY ONCE PER
+      # OPERATION. Ai::AutonomyGate calls DeferredOperation#execute_now! on
+      # every branch that resolves to :proceed — auto_approve,
+      # notify_and_proceed, AND require_approval in core mode, where no
+      # Ai::ApprovalChain is loaded and the gate auto-proceeds
+      # (autonomy_gate.rb#require_approval_or_proceed). On a require_approval
+      # that actually parks, it runs once at approval time instead. The
+      # controller's `on_proceed:` closure only renders what it returns.
+      #
+      # This comment used to say the opposite: that the controller closure did
+      # the work on the inline branch, implying this executor did not. It ran
+      # on BOTH, and so did the closure, so a rotation minted two secrets and
+      # emitted two fleet events (IMP-4de09f201a0f). The closures now only
+      # render what this returns.
       class TriggerWebhook < ::System::Executors::Base
         protected
 
@@ -53,6 +63,15 @@ module System
 
         private
 
+        # THE ONLY emitter of this event. The controller carried a second copy
+        # for its inline branch, which is why one rotation produced two events;
+        # that copy is gone. It attributed the rotation to a user, so the
+        # attribution is carried here rather than dropped. `requesting_user`
+        # resolves the REQUESTER (deferred_operation.requested_by) — not the
+        # approver — on both branches, so an approved rotation now names who
+        # asked for it, which the controller's copy could never do because it
+        # never ran on that branch. `deferred_operation_id` points at the audit row, from
+        # which the branch is recoverable via its approval_request.
         def emit_rotated_event(webhook)
           return unless defined?(::System::Fleet::EventBroadcaster)
 
@@ -61,7 +80,12 @@ module System
             kind:     "system.disk_image_webhook_secret_rotated",
             severity: :medium,
             source:   "autonomy_executor",
-            payload:  { webhook_id: webhook.id, label: webhook.label }
+            payload:  {
+              webhook_id: webhook.id,
+              label: webhook.label,
+              by_user_id: requesting_user&.id,
+              deferred_operation_id: deferred_operation&.id
+            }
           )
         rescue StandardError => e
           Rails.logger.warn "[DiskImage::TriggerWebhook] rotated event emit failed: #{e.class}: #{e.message}"

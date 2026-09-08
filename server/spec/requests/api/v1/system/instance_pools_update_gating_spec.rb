@@ -9,7 +9,8 @@ require "rails_helper"
 # `update_params` permit :target_size, :max_size AND :status. So anyone holding
 # system.instances.control could raise the ceiling the (deliberately ungated,
 # IMP-714ab7da6b9c) 60 s replenish tick spends up to, and could reach
-# status "archived" — the state the GATED destroy's on_proceed writes — through
+# status "archived" — reachable ONLY here, since the GATED destroy destroys
+# the row rather than archiving it (IMP-4de09f201a0f) — through
 # an ungated verb.
 #
 # The property pinned here is about the ROW, not the status code: a ceiling

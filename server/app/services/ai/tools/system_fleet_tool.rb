@@ -1014,7 +1014,8 @@ module Ai
       # carrying target_size/max_size/status was the exact write
       # InstancePoolsController#update stopped doing bare: anyone holding
       # system.instances.create could raise the spend ceiling, or reach
-      # status "archived" — the state the GATED destroy's on_proceed writes.
+      # status "archived" — reachable only through an update, since the GATED
+      # destroy destroys the row rather than archiving it (IMP-4de09f201a0f).
       #
       # The category here is the CEILING RAISE one, and it is not the only
       # category this verb can gate under: the archive transition parks under

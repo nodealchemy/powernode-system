@@ -210,11 +210,14 @@ module InstancePoolReplenishGatingGuard
   # explain its own false positives stops being read.
   CEILING_WRITERS = {
     "app/controllers/api/v1/system/instance_pools_controller.rb" => {
-      count: 3,
-      why: "The REST surface: gate_create!'s unsaved candidate (`InstancePool.new`), " \
-           "#update's INLINE arm for everything the two gates do not cover, and " \
-           "#destroy's on_proceed `update!(status: \"archived\")`. The two GATED " \
-           "update transitions write through UpdatePool, not from here."
+      count: 2,
+      why: "The REST surface: gate_create!'s unsaved candidate (`InstancePool.new`) " \
+           "and #update's INLINE arm for everything the two gates do not cover. " \
+           "The two GATED update transitions write through UpdatePool, not from here. " \
+           "#destroy USED to write a third time — its on_proceed archived the row — " \
+           "and that write is gone (IMP-4de09f201a0f): DeletePool DESTROYS the pool, " \
+           "so the closure archiving it wrote to a row the executor had already " \
+           "deleted and then 404'd on the reload. The closure now only renders."
     },
     "app/services/ai/tools/system_fleet_tool.rb" => {
       count: 4,
