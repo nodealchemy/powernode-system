@@ -94,6 +94,12 @@ describe('HoneypotCanaryTile', () => {
     mockLoggerWarn.mockReset();
   });
 
+  // Only the two outage-stamp tests install fake timers; everything else runs
+  // on the real clock, so put it back rather than leaking a frozen one.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   // ---------------------------------------------------------------------------
   // Render / Loading state
   // ---------------------------------------------------------------------------
@@ -384,6 +390,193 @@ describe('HoneypotCanaryTile', () => {
     expect(screen.queryByText('0')).not.toBeInTheDocument();
     expect(screen.queryByText('last 24h')).not.toBeInTheDocument();
     expect(mockLoggerWarn).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // A feed outage must never LOWER an already-observed severity
+  // (IMP-b80f2bc38419, follow-up to IMP-a133d32b7e4e)
+  //
+  // Dropping the counts on failure is right — a stale number reads as fresh.
+  // Dropping the last known SEVERITY is a separate decision and the wrong one:
+  // it repaints a live intrusion amber and badge-less, so an operator scanning
+  // for red tiles stops seeing it. Losing the feed made the fleet look better
+  // than it was, which is the defect the original task existed to remove.
+  // ---------------------------------------------------------------------------
+
+  it('keeps the ALERT badge when the feed drops from an alerting state', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+    expect(screen.getByText('ALERT')).toBeInTheDocument();
+  });
+
+  it('keeps the error tone, not the warning tone, when the feed drops from an alerting state', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    const { container } = render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    const tile = container.firstElementChild as HTMLElement;
+    expect(tile.className).toContain('border-theme-error-border');
+    expect(tile.className).not.toContain('border-theme-warning-border');
+  });
+
+  it('keeps the last known "Last access:" timestamp when the feed drops', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText(/Last access:/)).toBeInTheDocument());
+    const before = screen.getByText(/Last access:/).textContent;
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    expect(screen.getByText(/Last access:/).textContent).toBe(before);
+  });
+
+  it('still hides the counts when the feed drops from an alerting state', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    // A preserved severity is not a licence to show a stale number.
+    expect(screen.queryByText('last 24h')).not.toBeInTheDocument();
+    expect(screen.queryByText('last 7d')).not.toBeInTheDocument();
+  });
+
+  it('marks how long the feed has been unavailable', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/feed unavailable since/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('does not invent an alert when the feed drops from a clear state', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([]))
+      .mockRejectedValueOnce(new Error('network failure'));
+
+    const { container } = render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('last 24h')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    expect(screen.queryByText('ALERT')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Last access:/)).not.toBeInTheDocument();
+    const tile = container.firstElementChild as HTMLElement;
+    expect(tile.className).toContain('border-theme-warning-border');
+  });
+
+  it('drops the preserved alert once the feed recovers to a clear reading', async () => {
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('network failure'))
+      .mockResolvedValueOnce(signalsResponse([]));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    // First click is the header control (healthy state); the second is the
+    // unavailable branch's own Retry — only one exists at a time.
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/Signal feed unavailable/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(screen.getByText('last 24h')).toBeInTheDocument());
+
+    // A preserved severity must not outlive the outage that justified it.
+    expect(screen.queryByText('ALERT')).not.toBeInTheDocument();
+    expect(screen.queryByText(/feed unavailable since/i)).not.toBeInTheDocument();
+  });
+
+  it('reports the start of the outage, not the last retry, across repeated failures', async () => {
+    // Real time moves too little between two clicks for toLocaleString, whose
+    // finest field is seconds, to distinguish "outage start" from "last retry".
+    // Without a controllable clock this test passes against a plain
+    // setUnavailableSince(new Date()) and pins nothing. The step is 5 minutes:
+    // visible in the rendered string, and far too small to drag
+    // EVENT_WITHIN_24H (23h old) out of either window.
+    jest.useFakeTimers({ now });
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValue(new Error('still down'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/feed unavailable since/i)).toBeInTheDocument());
+    const firstMarker = screen.getByText(/feed unavailable since/i).textContent;
+
+    jest.setSystemTime(now + 5 * 60 * 1000);
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    // Wait on the CATCH having run, not on the call having been made: the
+    // unavailable branch never renders "Loading…", so waiting for its absence
+    // resolves on the previous render and the assertion below would read the
+    // stamp from the first failure whatever the second one did.
+    await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText(/feed unavailable since/i).textContent).toBe(firstMarker);
+  });
+
+  it('re-stamps the marker for a NEW outage after the feed recovered in between', async () => {
+    // The stamp is only "the start of THIS outage" if it is cleared on
+    // recovery. Without that clear the tile reports the first outage's time
+    // during a later one, overstating how long the canary has been blind —
+    // beside a preserved ALERT, which is exactly when that number is read.
+    jest.useFakeTimers({ now });
+    mockPost
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(signalsResponse([EVENT_WITHIN_24H]))
+      .mockRejectedValueOnce(new Error('down again'));
+
+    render(<HoneypotCanaryTile />);
+    await waitFor(() => expect(screen.getByText('ALERT')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/feed unavailable since/i)).toBeInTheDocument());
+    const firstOutage = screen.getByText(/feed unavailable since/i).textContent;
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(screen.getByText('last 24h')).toBeInTheDocument());
+
+    jest.setSystemTime(now + 5 * 60 * 1000);
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh honeypot canaries/i }));
+    await waitFor(() => expect(screen.getByText(/feed unavailable since/i)).toBeInTheDocument());
+
+    expect(screen.getByText(/feed unavailable since/i).textContent).not.toBe(firstOutage);
   });
 
   it('returns to the unavailable state when a retry also fails', async () => {

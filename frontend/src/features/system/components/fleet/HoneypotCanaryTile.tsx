@@ -14,10 +14,25 @@ import { fleetApi, type FleetEvent } from '@system/features/system/services/api/
 // This is a security canary: a swallowed error that falls back to zero says
 // "no honeypot hits" when the truth is "we could not ask", and those two are
 // the states an operator most needs to tell apart.
+/**
+ * Severity ladder, worst last. Kept as a rank rather than a tone string so an
+ * outage can be compared against the last known reading — the comparison is the
+ * whole point of IMP-b80f2bc38419 and a class name cannot be ordered.
+ */
+type Severity = 0 | 1 | 2; // 0 clear, 1 warn, 2 alert
+
+/** What the last SUCCESSFUL fetch observed. Survives a feed outage. */
+interface LastKnown {
+  severity: Severity;
+  lastAccessAt: string | null;
+}
+
 export const HoneypotCanaryTile: React.FC = () => {
   const [accessEvents, setAccessEvents] = useState<FleetEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
+  const [unavailableSince, setUnavailableSince] = useState<Date | null>(null);
+  const [lastKnown, setLastKnown] = useState<LastKnown | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   const retry = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -40,6 +55,18 @@ export const HoneypotCanaryTile: React.FC = () => {
         }
         setAccessEvents(result.events);
         setUnavailable(false);
+        setUnavailableSince(null);
+        // Snapshot the severity this reading established. A later outage keeps
+        // it rather than repainting the tile amber — see the render below.
+        const now = Date.now();
+        const within = (e: FleetEvent, ms: number) =>
+          now - new Date(e.emitted_at).getTime() <= ms;
+        const fresh24h = result.events.filter((e) => within(e, 24 * 60 * 60 * 1000));
+        const fresh7d = result.events.filter((e) => within(e, 7 * 24 * 60 * 60 * 1000));
+        setLastKnown({
+          severity: fresh24h.length > 0 ? 2 : fresh7d.length > 0 ? 1 : 0,
+          lastAccessAt: result.events[0]?.emitted_at ?? null,
+        });
       } catch (err) {
         if (cancelled) return;
         // Drop any stale counts with the failure — showing the previous
@@ -47,6 +74,11 @@ export const HoneypotCanaryTile: React.FC = () => {
         // misreading in a subtler form.
         setAccessEvents([]);
         setUnavailable(true);
+        // Stamp the START of the outage, not this retry: an operator needs to
+        // know how long the canary has been blind, and a failing retry every
+        // few seconds would otherwise keep resetting the clock to "just now".
+        // `lastKnown` is deliberately NOT cleared here.
+        setUnavailableSince((since) => since ?? new Date());
         logger.warn('Honeypot canary signal fetch failed', {
           kind: 'system.honeypot_triggered',
           error: err instanceof Error ? err.message : String(err),
@@ -67,22 +99,42 @@ export const HoneypotCanaryTile: React.FC = () => {
     return Date.now() - t <= 24 * 60 * 60 * 1000;
   });
 
-  const alerting = !unavailable && last24h.length > 0;
-  const tone = unavailable
-    ? 'border-theme-warning-border'
-    : last24h.length > 0
+  const observed: Severity = last24h.length > 0 ? 2 : last7d.length > 0 ? 1 : 0;
+
+  // A feed outage may RAISE the severity to "unknown" (amber beats a neutral
+  // all-clear) but must never LOWER one already observed. Downgrading a red
+  // tile to amber because the endpoint dropped makes a live intrusion less
+  // conspicuous than it was a second earlier, which is the same defect class
+  // IMP-a133d32b7e4e removed — a failure making the fleet look better than it
+  // is — one rung down rather than gone. Note this is a different question
+  // from whether to show the COUNTS during an outage: a stale number invites a
+  // fresh reading and is still withheld below.
+  const severity: Severity = unavailable
+    ? (Math.max(lastKnown?.severity ?? 0, 1) as Severity)
+    : observed;
+
+  const alerting = severity === 2;
+  const tone =
+    severity === 2
       ? 'border-theme-error-border'
-      : last7d.length > 0
+      : severity === 1
         ? 'border-theme-warning-border'
         : 'border-theme';
 
-  const icon = unavailable ? (
-    <ShieldQuestion size={14} className="text-theme-warning-fg" />
-  ) : alerting ? (
+  // Severity wins the icon unconditionally: during an alerting outage the alert
+  // icon renders and the question mark does NOT, because the badge and tone are
+  // what an operator scans a dashboard for. The outage is carried by the body
+  // panel and the "since" stamp instead, not by the icon.
+  const icon = alerting ? (
     <ShieldAlert size={14} className="text-theme-error-fg" />
+  ) : unavailable ? (
+    <ShieldQuestion size={14} className="text-theme-warning-fg" />
   ) : (
     <Shield size={14} />
   );
+
+  // Prefer the live event; fall back to the snapshot taken before the outage.
+  const lastAccessAt = accessEvents[0]?.emitted_at ?? lastKnown?.lastAccessAt ?? null;
 
   return (
     <div className={`bg-theme-surface rounded-lg border ${tone} p-3`}>
@@ -91,7 +143,25 @@ export const HoneypotCanaryTile: React.FC = () => {
           {icon}
           Honeypot Canaries
         </div>
-        {alerting && <Badge variant="danger">ALERT</Badge>}
+        <div className="flex items-center gap-1">
+          {alerting && <Badge variant="danger">ALERT</Badge>}
+          {/* Without a re-fetch while mounted, the alerting-to-unavailable
+              transition this component now handles could never occur: the tile
+              fetched once and its only reload was the Retry button, which the
+              unavailable branch alone renders. Suppressed there so exactly one
+              refresh control exists at a time. */}
+          {!unavailable && (
+            <Button
+              variant="ghost"
+              size="xs"
+              loading={loading}
+              onClick={retry}
+              aria-label="Refresh honeypot canaries"
+            >
+              <RefreshCw size={12} />
+            </Button>
+          )}
+        </div>
       </div>
       <div className="mt-1">
         {/* `unavailable` is checked BEFORE `loading` so a retry in flight keeps
@@ -103,8 +173,15 @@ export const HoneypotCanaryTile: React.FC = () => {
             <div className="text-sm text-theme-warning-fg">
               Signal feed unavailable
               <div className="text-xs text-theme-tertiary">
-                Honeypot status is unknown, not clear.
+                {alerting
+                  ? 'Showing the last known state; it may have worsened since.'
+                  : 'Honeypot status is unknown, not clear.'}
               </div>
+              {unavailableSince && (
+                <div className="text-xs text-theme-tertiary">
+                  Feed unavailable since {unavailableSince.toLocaleString()}
+                </div>
+              )}
             </div>
             <Button variant="ghost" size="xs" loading={loading} onClick={retry}>
               <RefreshCw size={12} /> Retry
@@ -125,9 +202,9 @@ export const HoneypotCanaryTile: React.FC = () => {
           </div>
         )}
       </div>
-      {alerting && (
+      {alerting && lastAccessAt && (
         <div className="mt-2 text-xs text-theme-error-fg">
-          Last access: {accessEvents[0] && new Date(accessEvents[0].emitted_at).toLocaleString()}
+          Last access: {new Date(lastAccessAt).toLocaleString()}
         </div>
       )}
     </div>
