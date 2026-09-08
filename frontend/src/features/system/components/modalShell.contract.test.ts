@@ -61,8 +61,6 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   'operations/CiWorkersTab.tsx',
   'operations/GitopsTab.tsx',
   'operations/OperationDetailModal.tsx',
-  'platforms/DiskImageHistoryTab.tsx',
-  'platforms/PlatformFormModal.tsx',
   'providers/AvailabilityZoneFormModal.tsx',
   'providers/ConnectionFormModal.tsx',
   'providers/InstanceTypeFormModal.tsx',
