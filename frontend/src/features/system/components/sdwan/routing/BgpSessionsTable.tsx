@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Activity, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanBgpSession } from '../../../types/sdwan.types';
 
 interface BgpSessionsTableProps {
@@ -76,6 +77,18 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
 
   return (
     <div className="space-y-3">
+      {/* Error keeps its own banner: the container has no error slot, and
+          folding it into the empty state would hide a failed refresh behind
+          "no sessions reported yet" — the two mean opposite things here. */}
+      {error && (
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+      )}
+
+      {/* The state filter and its refresh stay OUTSIDE the container. This
+          filter is applied server-side, so a filtered-to-nothing result makes
+          totalCount 0 and the container drops its whole Filters row — which
+          would strand the operator with no way to clear the filter that
+          produced the empty screen. */}
       <div className="flex items-center gap-3">
         <select
           value={stateFilter}
@@ -103,19 +116,20 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
         </div>
       </div>
 
-      {loading ? (
-        <div className="p-4 text-theme-secondary text-sm">Loading sessions…</div>
-      ) : error ? (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
-      ) : sessions.length === 0 ? (
-        <div className="p-8 text-center text-theme-secondary text-sm">
-          <Activity size={32} className="mx-auto mb-2 opacity-50" />
-          No BGP sessions reported yet.
-          <div className="mt-1 text-xs">
-            Sessions appear here once an agent on an iBGP-enabled peer reports its observed FRR state via heartbeat.
-          </div>
-        </div>
-      ) : (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={sessions.length}
+        filteredCount={sessions.length}
+        emptyState={{
+          icon: Activity,
+          title: 'No BGP sessions reported yet',
+          description:
+            'Sessions appear here once an agent on an iBGP-enabled peer reports its observed FRR state via heartbeat.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-theme-secondary border-b border-theme">
@@ -228,7 +242,8 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
             })}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     </div>
   );
 };

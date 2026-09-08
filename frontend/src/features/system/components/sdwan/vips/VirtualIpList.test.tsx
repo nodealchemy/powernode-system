@@ -167,7 +167,9 @@ describe('VirtualIpList', () => {
 
     renderList();
 
-    expect(screen.getByText(/loading virtual ips/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

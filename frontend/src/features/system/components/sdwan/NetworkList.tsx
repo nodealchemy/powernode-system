@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Network as NetworkIcon, Trash2, ChevronRight, ChevronDown, Eye, Waypoints } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { SdwanTopology } from './SdwanTopology';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
@@ -63,28 +64,31 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
     });
   }, []);
 
-  if (loading) {
-    return <div className="p-8 text-center text-theme-secondary">Loading networks…</div>;
-  }
+  // The container owns loading and empty; it has no error slot, so the error
+  // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
     return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
-  }
-  if (networks.length === 0) {
-    return (
-      <div className="p-12 text-center">
-        <NetworkIcon className="mx-auto mb-4 text-theme-secondary" size={48} />
-        <h3 className="text-lg font-medium text-theme-primary mb-2">No SDWAN networks yet</h3>
-        <p className="text-theme-secondary">
-          Create your first overlay network to start connecting node instances.
-        </p>
-      </div>
-    );
   }
 
   // Standard platform table styling — matches CreditsPage / OutcomeBillingPage /
   // PagesPage etc.: surface-card wrapper, secondary-bg header row, divide-y
   // body rows, surface-hover on hover, transition-colors for the hover fade.
+  //
+  // Body, not Desktop: the Desktop slot is `hidden md:block`, which would blank
+  // this table on narrow screens. Body renders at every width and leaves the
+  // card wrapper below in charge of the surface, exactly as before.
   return (
+    <ResponsiveListContainer
+      loading={loading}
+      totalCount={networks.length}
+      filteredCount={networks.length}
+      emptyState={{
+        icon: NetworkIcon,
+        title: 'No SDWAN networks yet',
+        description: 'Create your first overlay network to start connecting node instances.',
+      }}
+    >
+      <ResponsiveListContainer.Body>
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <table className="w-full">
         <thead>
@@ -178,6 +182,8 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
         </tbody>
       </table>
     </div>
+      </ResponsiveListContainer.Body>
+    </ResponsiveListContainer>
   );
 };
 

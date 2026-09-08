@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Filter, Pencil, Trash2, Power, PowerOff, ChevronRight, ChevronDown } from 'lucide-react';
 import { EntityLink } from '@/shared/components/entity';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanRoutePolicy, SdwanRoutePolicyStatement } from '../../../types/sdwan.types';
 
 interface RoutePoliciesListProps {
@@ -175,19 +176,31 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
         </div>
       </div>
 
-      {loading ? (
-        <div className="p-4 text-theme-secondary text-sm">Loading…</div>
-      ) : error ? (
+      {/* Error keeps its own banner: the container has no error slot, and
+          folding it into the empty state would hide a failed load behind
+          "no route policies yet" — the two mean opposite things here. */}
+      {error && (
         <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
-      ) : policies.length === 0 ? (
-        <div className="p-8 text-center text-theme-secondary text-sm">
-          No route policies yet.
-          <div className="mt-2 text-xs">
-            Route policies control which prefixes get distributed via iBGP and what BGP attributes (local-pref, MED,
-            communities) are applied. Create one to filter or shape route distribution.
-          </div>
-        </div>
-      ) : (
+      )}
+
+      {/* The scope/direction filters stay OUTSIDE the container, above. They
+          are applied server-side, so filtering to nothing makes totalCount 0
+          and the container drops its whole Filters row — stranding the
+          operator with no way to clear the filter that emptied the screen. */}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={policies.length}
+        filteredCount={policies.length}
+        emptyState={{
+          icon: Filter,
+          title: 'No route policies yet',
+          description:
+            'Route policies control which prefixes get distributed via iBGP and what BGP attributes (local-pref, MED, communities) are applied. Create one to filter or shape route distribution.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-theme-secondary border-b border-theme">
@@ -382,7 +395,8 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
             })}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     </div>
   );
 };

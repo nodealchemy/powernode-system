@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Globe, Server, Trash2, Pencil, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type { SdwanPeer } from '../../types/sdwan.types';
 
 interface PeerListProps {
@@ -41,19 +42,23 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
     load();
   }, [load, refreshKey]);
 
-  if (loading) return <div className="p-4 text-theme-secondary">Loading peers…</div>;
   if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
-  if (peers.length === 0) {
-    return (
-      <div className="p-8 text-center text-theme-secondary text-sm">
-        No peers attached yet. Use the Attach Peer button to add a node instance.
-      </div>
-    );
-  }
-
   return (
-    <div className="overflow-x-auto">
+    <ResponsiveListContainer
+      loading={loading}
+      totalCount={peers.length}
+      filteredCount={peers.length}
+      emptyState={{
+        icon: Server,
+        title: 'No peers attached yet',
+        description: 'Use the Attach Peer button to add a node instance.',
+      }}
+    >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
+        <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
@@ -258,7 +263,9 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
           })}
         </tbody>
       </table>
-    </div>
+        </div>
+      </ResponsiveListContainer.Body>
+    </ResponsiveListContainer>
   );
 };
 

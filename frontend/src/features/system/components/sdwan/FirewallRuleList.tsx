@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Trash2, Shield, Pencil, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type { SdwanFirewallRule, SdwanSelector, SdwanPortRange } from '../../types/sdwan.types';
 
 interface FirewallRuleListProps {
@@ -43,7 +44,6 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
     load();
   }, [load, refreshKey]);
 
-  if (loading) return <div className="p-4 text-theme-secondary">Loading firewall rules…</div>;
   if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   return (
@@ -59,13 +59,26 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
         </span>
       </div>
 
-      {rules.length === 0 ? (
-        <div className="p-8 text-center text-theme-secondary text-sm">
-          {defaultPolicy === 'drop'
-            ? 'No rules — all traffic is dropped. Add rules to allow specific traffic.'
-            : 'No rules — all traffic is accepted by default. Add rules to refine policy.'}
-        </div>
-      ) : (
+      {/* The default-policy banner above stays OUTSIDE the container. When
+          there are no rules that banner IS the answer — "no rules" means very
+          different things under drop and under accept — and the container's
+          empty branch replaces everything it wraps. */}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={rules.length}
+        filteredCount={rules.length}
+        emptyState={{
+          icon: Shield,
+          title: 'No firewall rules',
+          description:
+            defaultPolicy === 'drop'
+              ? 'All traffic is dropped. Add rules to allow specific traffic.'
+              : 'All traffic is accepted by default. Add rules to refine policy.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full">
           <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
             <tr>
@@ -203,7 +216,8 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
             })}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     </div>
   );
 };
