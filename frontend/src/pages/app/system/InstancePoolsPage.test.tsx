@@ -199,6 +199,92 @@ describe('InstancePoolsPage', () => {
     );
   });
 
+  it('triggers recycle stale via POST when the Recycle stale action is clicked', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+    mockPost.mockResolvedValueOnce(
+      envelope({ pool: POOL_A, recycle_result: { ready_to_draining: 0 } }),
+    );
+
+    renderPage();
+
+    const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+    fireEvent.click(within(row).getByLabelText(/recycle stale members of web-warm/i));
+
+    await waitFor(() =>
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/instance_pools/pool-a/recycle_stale',
+      ),
+    );
+  });
+
+  it('reports the non-zero recycle counts in the success notification', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+    mockPost.mockResolvedValueOnce(
+      envelope({
+        pool: POOL_A,
+        recycle_result: {
+          warming_to_errored: 0,
+          ready_to_draining: 2,
+          claimed_flagged: 0,
+          errored_terminated: 1,
+          seed_reloads: 0,
+        },
+      }),
+    );
+
+    renderPage();
+
+    const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+    fireEvent.click(within(row).getByLabelText(/recycle stale members of web-warm/i));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message:
+          'Recycled stale members of "web-warm": 2 ready to draining, 1 errored terminated',
+      }),
+    );
+  });
+
+  it('reports that nothing was stale when every recycle count is zero', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+    mockPost.mockResolvedValueOnce(
+      envelope({
+        pool: POOL_A,
+        recycle_result: { ready_to_draining: 0, errored_terminated: 0 },
+      }),
+    );
+
+    renderPage();
+
+    const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+    fireEvent.click(within(row).getByLabelText(/recycle stale members of web-warm/i));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message: 'No stale members to recycle in "web-warm"',
+      }),
+    );
+  });
+
+  it('shows an error notification when recycle stale fails', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+    mockPost.mockRejectedValueOnce(new Error('permission denied'));
+
+    renderPage();
+
+    const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+    fireEvent.click(within(row).getByLabelText(/recycle stale members of web-warm/i));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'permission denied',
+      }),
+    );
+  });
+
   // IMP-cb2da06a384b — InstancePoolService#replenish! refuses every status
   // but 'active', so the control must not be offered on a draining pool: the
   // click could only ever produce a "pool 'spot-fleet' is draining" toast.

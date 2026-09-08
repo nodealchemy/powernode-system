@@ -30,6 +30,25 @@ export interface ProviderRegionCreate {
   capabilities?: Record<string, unknown>;
 }
 
+/**
+ * Per-resource upsert tallies returned by System::Providers::CatalogSyncService.
+ * `total` is optional because the availability-zone phase reports only
+ * created/updated — zones are synced per region, so there is no single row
+ * count to report. Callers derive it as created + updated when it is absent.
+ */
+export interface ProviderCatalogCounts {
+  created: number;
+  updated: number;
+  total?: number;
+}
+
+export interface ProviderCatalogSummary {
+  regions: ProviderCatalogCounts;
+  availability_zones: ProviderCatalogCounts;
+  instance_types: ProviderCatalogCounts;
+  volume_types: ProviderCatalogCounts;
+}
+
 export interface ProviderConnectionCreate {
   name: string;
   description?: string;
@@ -173,6 +192,19 @@ export const providersApi = {
       `/system/provider_connections/${id}/test`
     );
     return extractData(response);
+  },
+
+  // Pulls regions, availability zones, instance types and volume types from the
+  // provider through this connection's adapter and upserts them into the local
+  // catalog. Gated on system.connections.update server-side.
+  syncProviderConnectionCatalog: async (
+    id: string
+  ): Promise<{ connection: SystemProviderConnection; catalog: ProviderCatalogSummary }> => {
+    const response = await apiClient.post<
+      ApiEnvelope<{ provider_connection: SystemProviderConnection; catalog: ProviderCatalogSummary }>
+    >(`/system/provider_connections/${id}/sync_catalog`);
+    const data = extractData(response);
+    return { connection: data.provider_connection, catalog: data.catalog };
   },
 
   // ===== Provider Instance Types =====

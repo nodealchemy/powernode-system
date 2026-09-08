@@ -4,6 +4,7 @@ import {
   Plus,
   RefreshCw,
   Droplet,
+  Recycle,
   Trash2,
   Search,
   Filter,
@@ -115,6 +116,31 @@ interface InstancePoolListFilters {
 // identical to nodes/templates/etc.
 // =============================================================================
 
+/**
+ * Per-phase tallies from `InstancePoolService#recycle_stale_members!`. Left
+ * open-ended on purpose: the service adds phases over time and an unknown key
+ * should still be reported rather than dropped.
+ */
+type RecycleResult = Record<string, number>;
+
+/**
+ * Human-readable summary of a recycle sweep. Only non-zero phases are named —
+ * a sweep over a healthy pool returns every counter at zero and the operator
+ * needs to be told nothing was stale, not handed a wall of zeros.
+ */
+function summariseRecycle(result: RecycleResult, poolName: string): string {
+  const moved = Object.entries(result).filter(
+    ([, count]) => typeof count === 'number' && count > 0,
+  );
+  if (moved.length === 0) {
+    return `No stale members to recycle in "${poolName}"`;
+  }
+  const parts = moved.map(
+    ([phase, count]) => `${count} ${phase.replace(/_/g, ' ')}`,
+  );
+  return `Recycled stale members of "${poolName}": ${parts.join(', ')}`;
+}
+
 const instancePoolsApi = {
   list: async (params?: {
     status?: string;
@@ -181,6 +207,19 @@ const instancePoolsApi = {
       ApiEnvelope<{ pool: InstancePoolSummary }>
     >(`/system/instance_pools/${id}/drain`);
     return extractData(response).pool;
+  },
+
+  // The reaper runs this on its own tick; the operator-facing button exists so
+  // a stuck member can be swept now rather than at the next pass. The counters
+  // are InstancePoolService#recycle_stale_members!'s per-phase tallies.
+  recycleStale: async (
+    id: string,
+  ): Promise<{ pool: InstancePoolSummary; recycle_result: RecycleResult }> => {
+    const response = await apiClient.post<
+      ApiEnvelope<{ pool: InstancePoolSummary; recycle_result: RecycleResult }>
+    >(`/system/instance_pools/${id}/recycle_stale`);
+    const data = extractData(response);
+    return { pool: data.pool, recycle_result: data.recycle_result ?? {} };
   },
 
   // Gated too (system.instance_pool_delete). This DISCARDED the response, so
@@ -383,6 +422,32 @@ const InstancePoolsPage: React.FC = () => {
           type: 'error',
           message:
             err instanceof Error ? err.message : 'Failed to drain pool',
+        });
+      } finally {
+        setActioningPoolId(null);
+      }
+    },
+    [upsertItem, addNotification],
+  );
+
+  const handleRecycleStale = useCallback(
+    async (pool: InstancePoolSummary) => {
+      setActioningPoolId(pool.id);
+      try {
+        const { pool: updated, recycle_result } =
+          await instancePoolsApi.recycleStale(pool.id);
+        upsertItem(updated);
+        addNotification({
+          type: 'success',
+          message: summariseRecycle(recycle_result, pool.name),
+        });
+      } catch (err) {
+        addNotification({
+          type: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to recycle stale pool members',
         });
       } finally {
         setActioningPoolId(null);
@@ -702,6 +767,20 @@ const InstancePoolsPage: React.FC = () => {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => handleRecycleStale(pool)}
+                            /* An archived pool has nothing left to sweep;
+                               every other status can hold stale members. */
+                            disabled={isActioning || pool.status === 'archived'}
+                            title="Recycle stale members"
+                            aria-label={`Recycle stale members of ${pool.name}`}
+                          >
+                            <Recycle className="w-4 h-4" />
+                          </Button>
+                        )}
+                        {canControl && (
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => setDeletePool(pool)}
                             disabled={
                               isActioning || pool.status === 'archived'
@@ -976,6 +1055,17 @@ const InstancePoolsPage: React.FC = () => {
                     >
                       <Droplet className="w-4 h-4 mr-1" />
                       Drain
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleRecycleStale(pool)}
+                      /* Archived-only exclusion, same as the table-row button. */
+                      disabled={isActioning || pool.status === 'archived'}
+                      aria-label={`Recycle stale members of ${pool.name}`}
+                    >
+                      <Recycle className="w-4 h-4 mr-1" />
+                      Recycle stale
                     </Button>
                     <Button
                       variant="outline"
