@@ -245,7 +245,7 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
     >
 
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+            <div className="space-y-4">
               {manualOverride && (
                 <p className="text-xs text-theme-warning-fg bg-theme-background rounded-lg p-3 border border-theme">
                   This provider has a cloud connection, so its catalog is normally

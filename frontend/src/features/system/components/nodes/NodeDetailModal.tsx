@@ -144,6 +144,9 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
 
   // Delete instance state
   const [deleteInstanceConfirm, setDeleteInstanceConfirm] = useState<SystemNodeInstance | null>(null);
+  // Raised by ClaudeCodeCredentialPanel's revoke/replace confirmation, whose
+  // state lives two components away.
+  const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
   const [deletingInstance, setDeletingInstance] = useState(false);
 
   // WebSocket for real-time updates
@@ -767,7 +770,13 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                       row is expanded so the status GET is one request per
                       instance the operator actually opened, and the panel gates
                       itself on system.node_instance_credentials.read. */}
-                  {nodeId && <ClaudeCodeCredentialPanel nodeId={nodeId} instanceId={instance.id} />}
+                  {nodeId && (
+                    <ClaudeCodeCredentialPanel
+                      nodeId={nodeId}
+                      instanceId={instance.id}
+                      onNestedDialogChange={setCredentialDialogOpen}
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -1190,7 +1199,8 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
           !showEditModal &&
           !showCreateInstanceModal &&
           !editInstance &&
-          deleteInstanceConfirm === null
+          deleteInstanceConfirm === null &&
+          !credentialDialogOpen
         }
         footer={
           <div className="flex items-center gap-3">

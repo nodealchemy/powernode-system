@@ -585,7 +585,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 
     </Modal>
 
-      {ConfirmationDialog}
+      {/* Rendered only while this dialog is open: the component returns the
+          Modal's own null when closed, so an unguarded confirmation would
+          survive the close and hang over whatever is underneath. */}
+      {isOpen && ConfirmationDialog}
     </>
   );
 };

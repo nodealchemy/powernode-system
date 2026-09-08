@@ -17,6 +17,12 @@ import type {
 interface ClaudeCodeCredentialPanelProps {
   nodeId: string;
   instanceId: string;
+  /**
+   * Notified when this panel raises a dialog of its own. A parent that is
+   * itself a `Modal` uses it to suppress its Escape handler — the core Modal
+   * listens on `document`, so one keypress would otherwise tear down both.
+   */
+  onNestedDialogChange?: (open: boolean) => void;
 }
 
 type CredentialKind = 'api_key' | 'oauth';
@@ -46,11 +52,18 @@ type CredentialKind = 'api_key' | 'oauth';
  */
 export const ClaudeCodeCredentialPanel: React.FC<ClaudeCodeCredentialPanelProps> = ({
   nodeId,
-  instanceId
+  instanceId,
+  onNestedDialogChange
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
   const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
+
+  // `ConfirmationDialog` is non-null exactly while the shared confirmation is
+  // mounted, so it doubles as the hook's open flag.
+  useEffect(() => {
+    onNestedDialogChange?.(ConfirmationDialog !== null);
+  }, [ConfirmationDialog, onNestedDialogChange]);
 
   const canRead = hasPermission('system.node_instance_credentials.read');
   const canManage = hasPermission('system.node_instance_credentials.manage');

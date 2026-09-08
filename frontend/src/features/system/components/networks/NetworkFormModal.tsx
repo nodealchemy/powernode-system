@@ -207,8 +207,6 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
     <Modal
       isOpen={isOpen}

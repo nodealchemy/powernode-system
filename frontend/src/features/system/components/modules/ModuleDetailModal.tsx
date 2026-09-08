@@ -89,6 +89,8 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   const [showAddDependencyModal, setShowAddDependencyModal] = useState(false);
   // Raised by the puppet tab's own assign form / delete confirmation.
   const [puppetDialogOpen, setPuppetDialogOpen] = useState(false);
+  // Raised by the versions tab's promote / rollback confirmation.
+  const [versionsDialogOpen, setVersionsDialogOpen] = useState(false);
   const [selectedDependency, setSelectedDependency] = useState<string>('');
   const [addingDependency, setAddingDependency] = useState(false);
   const [removingDependency, setRemovingDependency] = useState<string | null>(null);
@@ -672,7 +674,10 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       // shared confirmation, and the puppet tab's own dialogs. Each is a core
       // Modal listening for Escape on document, so ours stands down.
       closeOnEscape={
-        !showAddDependencyModal && ConfirmationDialog === null && !puppetDialogOpen
+        !showAddDependencyModal &&
+        ConfirmationDialog === null &&
+        !puppetDialogOpen &&
+        !versionsDialogOpen
       }
       footer={
         <>
@@ -722,6 +727,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   <ModuleVersionsPanel
                     moduleId={module.id}
                     canUpdate={canManageDependencies}
+                    onNestedDialogChange={setVersionsDialogOpen}
                     onModuleChanged={() => {
                       // Rollback rewrites the module spec + current-version
                       // pointer — refetch so the other tabs show the result.

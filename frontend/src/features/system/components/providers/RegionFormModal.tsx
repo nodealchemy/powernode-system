@@ -162,7 +162,7 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
 
           {/* Form */}
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+            <div className="space-y-4">
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
