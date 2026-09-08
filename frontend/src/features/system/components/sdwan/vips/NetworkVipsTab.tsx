@@ -10,6 +10,7 @@ import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanVirtualIp } from '../../../types/sdwan.types';
 import { VirtualIpList } from './VirtualIpList';
 import { VirtualIpCreateModal } from './VirtualIpCreateModal';
+import { VirtualIpEditModal } from './VirtualIpEditModal';
 import { VirtualIpFailoverModal } from './VirtualIpFailoverModal';
 
 interface NetworkVipsTabProps {
@@ -28,6 +29,7 @@ export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onAct
 
   const [refreshKey, setRefreshKey] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
+  const [vipToEdit, setVipToEdit] = useState<SdwanVirtualIp | null>(null);
   const [vipToFailover, setVipToFailover] = useState<SdwanVirtualIp | null>(null);
   const [vipToDelete, setVipToDelete] = useState<SdwanVirtualIp | null>(null);
 
@@ -71,6 +73,7 @@ export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onAct
       <VirtualIpList
         networkId={networkId}
         refreshKey={refreshKey}
+        onEdit={canManage ? (v) => setVipToEdit(v) : undefined}
         onFailover={canManage ? (v) => setVipToFailover(v) : undefined}
         onDelete={canManage ? (v) => setVipToDelete(v) : undefined}
       />
@@ -83,6 +86,19 @@ export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onAct
             setShowCreate(false);
             triggerRefresh();
             addNotification?.({ type: 'success', message: 'Virtual IP created.' });
+          }}
+        />
+      )}
+
+      {vipToEdit && (
+        <VirtualIpEditModal
+          networkId={networkId}
+          vip={vipToEdit}
+          onClose={() => setVipToEdit(null)}
+          onSaved={() => {
+            setVipToEdit(null);
+            triggerRefresh();
+            addNotification?.({ type: 'success', message: 'Virtual IP updated.' });
           }}
         />
       )}

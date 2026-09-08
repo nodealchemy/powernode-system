@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Route } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Route, Play } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { usePermissions } from '@/shared/hooks/usePermissions';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { isPendingApproval } from '../../../services/api/helpers';
 import { pendingApprovalNotice } from '../../../utils/pendingApproval';
@@ -12,6 +13,9 @@ import type {
   SdwanRoutePolicyScope,
   SdwanRoutePolicyDirection,
   SdwanRoutePolicyStatement,
+  SdwanRoutePolicyCompiled,
+  SdwanNetwork,
+  SdwanPeer,
 } from '../../../types/sdwan.types';
 
 interface RoutePolicyEditModalProps {
@@ -34,7 +38,15 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   onSaved,
 }) => {
   const { addNotification } = useNotifications();
+  const { hasPermission } = usePermissions();
   const isEdit = !!policy;
+  // The preview walks three READ endpoints the modal's own manage permission
+  // does not imply — permissions are flat, so a manage-only operator would get
+  // a preview that 403s at every step. Offer it only when all three hold.
+  const canPreviewCompile =
+    hasPermission('system.sdwan.route_policies.read') &&
+    hasPermission('system.sdwan.networks.read') &&
+    hasPermission('system.sdwan.peers.read');
   const [name, setName] = useState(policy?.name ?? '');
   const [description, setDescription] = useState(policy?.description ?? '');
   const [scope, setScope] = useState<SdwanRoutePolicyScope>(policy?.scope ?? 'account');
@@ -52,6 +64,22 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   const [statementsLoading, setStatementsLoading] = useState(needsStatementsBackfill);
   const [statementsError, setStatementsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // ──── Compile preview (IMP-d1900addb504) ─────────────────────────
+  // GET route_policies/:id/compile?peer_id is per-PEER and needs a saved
+  // policy, so the preview only exists on edit. Peers are network-scoped,
+  // hence the network → peer cascade rather than one flat picker.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewNetworkId, setPreviewNetworkId] = useState('');
+  const [previewPeerId, setPreviewPeerId] = useState('');
+  const [previewNetworks, setPreviewNetworks] = useState<SdwanNetwork[]>([]);
+  const [previewPeers, setPreviewPeers] = useState<SdwanPeer[]>([]);
+  const [compiled, setCompiled] = useState<SdwanRoutePolicyCompiled | null>(null);
+  const [compiling, setCompiling] = useState(false);
+  const [compileError, setCompileError] = useState<string | null>(null);
+  // Monotonic request id: a compile that resolves after the operator moved on
+  // must not paint its output under the peer now selected.
+  const compileSeq = useRef(0);
 
   // If editing, fetch full statements (the list endpoint omits them). Until this
   // resolves the form has no idea what the policy currently says, so Save stays
@@ -88,6 +116,84 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
       cancelled = true;
     };
   }, [policy?.id, policy?.statements]);
+
+  // Network list for the preview cascade. Loaded only once the operator opens
+  // the preview: compiling is an optional step, and the common path through
+  // this modal is edit-and-save, which must not pay for a request it ignores.
+  useEffect(() => {
+    if (!policy?.id || !previewOpen || !canPreviewCompile) return;
+    let cancelled = false;
+    sdwanApi
+      .getNetworks()
+      .then((r) => {
+        if (cancelled) return;
+        setPreviewNetworks(r.networks);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCompileError(
+          `Could not load networks for the compile preview: ${err instanceof Error ? err.message : 'request failed'}`
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [policy?.id, previewOpen, canPreviewCompile]);
+
+  // Peers for the chosen network. Changing the network invalidates both the
+  // selected peer and any output already on screen — leaving the previous
+  // peer's compiled config under a new network's name would misattribute it.
+  useEffect(() => {
+    compileSeq.current += 1;
+    setPreviewPeerId('');
+    setPreviewPeers([]);
+    setCompiled(null);
+    if (!previewNetworkId) return;
+    let cancelled = false;
+    sdwanApi
+      .getPeers(previewNetworkId)
+      .then((r) => {
+        if (cancelled) return;
+        setPreviewPeers(r.peers);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCompileError(
+          `Could not load peers for that network: ${err instanceof Error ? err.message : 'request failed'}`
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewNetworkId]);
+
+  // Changing the peer invalidates any output already on screen for the same
+  // reason changing the network does — otherwise peer A's FRR config sits
+  // under peer B's name with nothing saying which one produced it.
+  const selectPreviewPeer = (peerId: string) => {
+    compileSeq.current += 1;
+    setPreviewPeerId(peerId);
+    setCompiled(null);
+    setCompileError(null);
+  };
+
+  const handlePreviewCompile = async () => {
+    if (!policy?.id || !previewPeerId) return;
+    const seq = ++compileSeq.current;
+    setCompiling(true);
+    setCompileError(null);
+    try {
+      const result = await sdwanApi.compileRoutePolicy(policy.id, previewPeerId);
+      if (seq !== compileSeq.current) return;
+      setCompiled(result.compiled);
+    } catch (err) {
+      if (seq !== compileSeq.current) return;
+      setCompiled(null);
+      setCompileError(err instanceof Error ? err.message : 'Compile failed');
+    } finally {
+      if (seq === compileSeq.current) setCompiling(false);
+    }
+  };
 
   // Enter in a text field submits the form, so the disabled button is not the
   // only entry point — the guard has to live in the handler too.
@@ -247,6 +353,121 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
             Enabled (compiles into FRR; disable to draft a policy without applying it)
           </label>
         </div>
+
+        {isEdit && canPreviewCompile && (
+          <section className="border border-theme rounded p-3 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-medium text-theme-primary">Preview compiled output</h3>
+                <p className="text-xs text-theme-secondary mt-0.5">
+                  Compilation is per-peer and reflects <strong>every</strong> policy that applies to
+                  that peer, not just this one. It reads the SAVED policy, so unsaved edits above
+                  are not included.
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={() => setPreviewOpen((open) => !open)}
+              >
+                {previewOpen ? 'Hide preview' : 'Show preview'}
+              </Button>
+            </div>
+
+            {previewOpen && (
+              <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="compile-network"
+                  className="block text-sm font-medium text-theme-primary mb-1"
+                >
+                  Compile for network
+                </label>
+                <select
+                  id="compile-network"
+                  value={previewNetworkId}
+                  onChange={(e) => setPreviewNetworkId(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
+                >
+                  <option value="">Select a network…</option>
+                  {previewNetworks.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {previewNetworkId && (
+                <div>
+                  <label
+                    htmlFor="compile-peer"
+                    className="block text-sm font-medium text-theme-primary mb-1"
+                  >
+                    Compile for peer
+                  </label>
+                  <select
+                    id="compile-peer"
+                    value={previewPeerId}
+                    onChange={(e) => selectPreviewPeer(e.target.value)}
+                    className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
+                  >
+                    <option value="">Select a peer…</option>
+                    {previewPeers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.node_instance_id?.slice(0, 8) ?? p.id.slice(0, 8)} (
+                        {p.publicly_reachable ? 'hub' : 'spoke'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={handlePreviewCompile}
+              disabled={compiling || !previewPeerId}
+            >
+              <Play size={14} />
+              <span className="ml-1">{compiling ? 'Compiling…' : 'Preview compiled'}</span>
+            </Button>
+
+            {compileError && <ErrorAlert message={compileError} />}
+
+            {compiled && (
+              <div className="space-y-2">
+                {(
+                  [
+                    ['Prefix lists', compiled.prefix_lists],
+                    ['IPv6 prefix lists', compiled.ipv6_prefix_lists],
+                    ['AS-path lists', compiled.as_path_lists],
+                    ['Community lists', compiled.community_lists],
+                    ['Route maps', compiled.route_maps],
+                  ] as Array<[string, string[]]>
+                ).map(([label, lines]) => (
+                  <div key={label}>
+                    <div className="text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                      {label}
+                    </div>
+                    {lines.length === 0 ? (
+                      <p className="text-xs text-theme-tertiary">none</p>
+                    ) : (
+                      <pre className="text-xs font-mono text-theme-primary bg-theme-background-secondary rounded p-2 overflow-x-auto">
+                        {lines.map((line) => (
+                          <div key={line}>{line}</div>
+                        ))}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+              </>
+            )}
+          </section>
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose} type="button">

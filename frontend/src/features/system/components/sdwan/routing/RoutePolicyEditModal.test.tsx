@@ -24,6 +24,13 @@ jest.mock('@/shared/services/apiClient', () => ({
   },
 }));
 
+const mockHasPermission = jest.fn().mockReturnValue(true);
+jest.mock('@/shared/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    hasPermission: (perm: string) => mockHasPermission(perm),
+  }),
+}));
+
 const mockAddNotification = jest.fn();
 jest.mock('@/shared/hooks/useNotifications', () => ({
   useNotifications: () => ({
@@ -111,6 +118,8 @@ describe('RoutePolicyEditModal', () => {
     mockPost.mockReset();
     mockPatch.mockReset();
     mockAddNotification.mockReset();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockReturnValue(true);
     mockOnClose.mockReset();
     mockOnSaved.mockReset();
   });
@@ -799,6 +808,163 @@ describe('RoutePolicyEditModal', () => {
       );
       expect(mockOnSaved).not.toHaveBeenCalled();
       expect(mockOnClose).toHaveBeenCalled();
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // Compile preview (IMP-d1900addb504)
+  //
+  // sdwanApi.compileRoutePolicy backed GET route_policies/:id/compile?peer_id
+  // and had no caller, so an operator could not see what a policy compiles to
+  // before applying it. The preview is per-peer, so it needs a peer selector,
+  // and it only exists when editing an existing policy.
+  // ---------------------------------------------------------------------------
+
+  describe('compile preview', () => {
+    const NETWORKS = [
+      { id: 'net-1', name: 'core', status: 'active', cidr: 'fd00::/64' },
+    ];
+    const PEERS = [
+      {
+        id: 'peer-1',
+        network_id: 'net-1',
+        node_instance_id: 'inst-abcdef12',
+        assigned_address: 'fd00::1/128',
+        publicly_reachable: true,
+        listen_port: 51820,
+        status: 'active',
+      },
+      {
+        id: 'peer-2',
+        network_id: 'net-1',
+        node_instance_id: 'inst-99887766',
+        assigned_address: 'fd00::2/128',
+        publicly_reachable: false,
+        listen_port: 51820,
+        status: 'active',
+      },
+    ];
+    const COMPILED = {
+      prefix_lists: ['ip prefix-list pl-internal permit 10.0.0.0/8 le 32'],
+      ipv6_prefix_lists: [],
+      as_path_lists: [],
+      community_lists: [],
+      route_maps: ['route-map prefer-internal-import permit 10'],
+    };
+
+    it('is not offered when creating a policy (no id to compile)', async () => {
+      renderModal(null);
+      expect(screen.queryByRole('button', { name: /show preview/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /preview compiled/i })).not.toBeInTheDocument();
+    });
+
+    it('fetches nothing until the operator opens the preview', () => {
+      renderModal(POLICY_WITH_STATEMENTS);
+      expect(screen.getByRole('button', { name: /show preview/i })).toBeInTheDocument();
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('compiles for the selected peer and renders the FRR output', async () => {
+      mockGet.mockImplementation((url: string) => {
+        if (url.startsWith('/system/sdwan/networks?') || url === '/system/sdwan/networks') {
+          return Promise.resolve(
+            envelope({ networks: NETWORKS, meta: { total: 1, page: 1, per_page: 25 } })
+          );
+        }
+        if (url === '/system/sdwan/networks/net-1/peers') {
+          return Promise.resolve(envelope({ peers: PEERS, count: PEERS.length }));
+        }
+        if (url.startsWith('/system/sdwan/route_policies/policy-1/compile')) {
+          return Promise.resolve(envelope({ compiled: COMPILED }));
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`));
+      });
+
+      renderModal(POLICY_WITH_STATEMENTS);
+
+      fireEvent.click(screen.getByRole('button', { name: /show preview/i }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /preview compiled/i })).toBeInTheDocument()
+      );
+
+      // Network then peer — compile is per-peer and peers are network-scoped.
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: 'core' })).toBeInTheDocument()
+      );
+      fireEvent.change(screen.getByLabelText(/compile for network/i), {
+        target: { value: 'net-1' },
+      });
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: /inst-abc \(hub\)/i })).toBeInTheDocument()
+      );
+      fireEvent.change(screen.getByLabelText(/compile for peer/i), {
+        target: { value: 'peer-1' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /preview compiled/i }));
+
+      await waitFor(() =>
+        expect(mockGet).toHaveBeenCalledWith(
+          '/system/sdwan/route_policies/policy-1/compile?peer_id=peer-1'
+        )
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByText('route-map prefer-internal-import permit 10')
+        ).toBeInTheDocument()
+      );
+    });
+    it('drops the previous peer\'s output when the peer selection changes', async () => {
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/system/sdwan/networks') {
+          return Promise.resolve(
+            envelope({ networks: NETWORKS, meta: { total: 1, page: 1, per_page: 25 } })
+          );
+        }
+        if (url === '/system/sdwan/networks/net-1/peers') {
+          return Promise.resolve(envelope({ peers: PEERS, count: PEERS.length }));
+        }
+        if (url.startsWith('/system/sdwan/route_policies/policy-1/compile')) {
+          return Promise.resolve(envelope({ compiled: COMPILED }));
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`));
+      });
+
+      renderModal(POLICY_WITH_STATEMENTS);
+      fireEvent.click(screen.getByRole('button', { name: /show preview/i }));
+
+      // Wait for the loaded OPTION: the select renders immediately with only
+      // its placeholder, and a change to a value it does not yet offer is a
+      // silent no-op in jsdom.
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: 'core' })).toBeInTheDocument()
+      );
+      fireEvent.change(screen.getByLabelText(/compile for network/i), { target: { value: 'net-1' } });
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: /inst-abc \(hub\)/i })).toBeInTheDocument()
+      );
+      fireEvent.change(screen.getByLabelText(/compile for peer/i), { target: { value: 'peer-1' } });
+      fireEvent.click(screen.getByRole('button', { name: /preview compiled/i }));
+
+      await waitFor(() =>
+        expect(screen.getByText('route-map prefer-internal-import permit 10')).toBeInTheDocument()
+      );
+
+      // Peer A's config must not sit on screen under peer B's name.
+      fireEvent.change(screen.getByLabelText(/compile for peer/i), { target: { value: 'peer-2' } });
+      await waitFor(() =>
+        expect(
+          screen.queryByText('route-map prefer-internal-import permit 10')
+        ).not.toBeInTheDocument()
+      );
+    });
+
+    it('is not offered without the three read permissions the preview needs', () => {
+      mockHasPermission.mockImplementation(
+        (perm: string) => perm !== 'system.sdwan.peers.read',
+      );
+      renderModal(POLICY_WITH_STATEMENTS);
+      expect(screen.queryByRole('button', { name: /show preview/i })).not.toBeInTheDocument();
     });
   });
 });
