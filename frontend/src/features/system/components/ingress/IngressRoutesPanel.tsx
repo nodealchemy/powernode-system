@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Globe,
-  AlertTriangle,
-  X,
   RefreshCw,
   Clock,
   ShieldAlert,
@@ -18,6 +16,7 @@ import type { IngressRoute, IngressRouteStatus } from '../../services/api/ingres
 import { InfiniteScrollSentinel } from '../shared/InfiniteScrollSentinel';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { StatusBadge } from '../shared/StatusBadge';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Routes tab — read-only monitor list of the ingress routes the platform
@@ -112,13 +111,7 @@ export const IngressRoutesPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
+        <ErrorAlert message={error} onClose={() => setError(null)} />
       )}
 
       {/* The header stays OUTSIDE the container. The container is skipped ONLY

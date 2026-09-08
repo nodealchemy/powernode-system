@@ -4,6 +4,7 @@ import { sdwanApi } from '../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { StatusBadge } from '../shared/StatusBadge';
 import type { SdwanPeer } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface PeerListProps {
   networkId: string;
@@ -43,7 +44,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
     load();
   }, [load, refreshKey]);
 
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <ResponsiveListContainer

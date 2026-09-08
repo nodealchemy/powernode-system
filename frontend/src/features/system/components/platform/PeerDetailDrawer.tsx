@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import {
   X,
   Network,
-  AlertTriangle,
   ExternalLink,
   ShieldCheck,
   Globe2,
@@ -14,6 +13,7 @@ import { platformPeersApi } from '../../services/api/platformPeersApi';
 import type { PlatformPeerDetail, PeerEndpoint } from '../../types/peer.types';
 import { GrantsManagementModal } from './GrantsManagementModal';
 import { CapabilitiesManagementModal } from './CapabilitiesManagementModal';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Slide-out drawer showing the full federation peer detail: endpoints
@@ -85,10 +85,7 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-          </div>
+          <ErrorAlert message={error} />
         )}
 
         {loading && <div className="p-6 text-sm text-theme-secondary">Loading…</div>}

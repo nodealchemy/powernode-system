@@ -372,15 +372,10 @@ describe('RequestCertificateModal', () => {
         expect(screen.getByText('Failed to load DNS credentials')).toBeInTheDocument(),
       );
 
-      // The dismiss button is a plain <button type="button"> with no visible text
-      // (only an X icon). It lives inside the error banner div.
-      const allButtons = screen.getAllByRole('button');
-      // Filter to find the icon-only button (no non-whitespace text content)
-      const dismissBtn = allButtons.find(
-        (b) => (b.textContent ?? '').trim() === '' && b.getAttribute('type') === 'button',
-      );
-      expect(dismissBtn).toBeTruthy();
-      fireEvent.click(dismissBtn!);
+      // ErrorAlert's dismiss carries aria-label="Dismiss", so it no longer has
+      // to be found by "the only button with no text".
+      const dismissBtn = screen.getByRole('button', { name: /dismiss/i });
+      fireEvent.click(dismissBtn);
 
       await waitFor(() =>
         expect(

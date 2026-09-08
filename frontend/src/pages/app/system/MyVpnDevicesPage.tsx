@@ -6,6 +6,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { myDevicesApi } from '@system/features/system/services/api/myDevicesApi';
 import type { SdwanMyDevice } from '@system/features/system/types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // My VPN — the RECIPIENT's surface for the agent-issued-device design
 // (increment 3 of 5). The operator-facing twin lives in the SDWAN hub's
@@ -124,8 +125,11 @@ const MyVpnDevicesPage: React.FC = () => {
         // has issued this user a device), so it must never stand in for a
         // failed load.
         <div className="space-y-3">
-          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm" role="alert">
-            {error}
+          {/* ErrorAlert carries no role of its own, and this page's error is the
+              only thing on screen when it fires — keep the live-region
+              announcement rather than trading it for the shared styling. */}
+          <div role="alert">
+            <ErrorAlert message={error} />
           </div>
           {reloadButton('Try again')}
         </div>

@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   TrendingUp,
-  AlertTriangle,
-  X,
   RefreshCw,
   Check,
   Edit2,
@@ -18,6 +16,7 @@ import type {
   DeploymentUpdateResponse,
   ServiceRole,
 } from '../../types/deployment.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Scaling panel — operator surface for adjusting platform-component
@@ -190,12 +189,8 @@ export const ScalingPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
+        <div className="px-4 pt-4">
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         </div>
       )}
 

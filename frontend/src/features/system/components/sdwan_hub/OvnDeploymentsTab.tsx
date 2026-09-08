@@ -10,6 +10,7 @@ import type {
   SdwanOvnLogicalSwitch,
   SdwanOvnLogicalSwitchPort,
 } from '@system/features/system/types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase O6 — read-only operator view of the per-account OVN deployment.
 // Phase O6 follow-up — extended to show nested logical switches with
@@ -54,7 +55,7 @@ export const OvnDeploymentsTab: React.FC = () => {
   // The container owns loading and empty; it has no error slot, so the error
   // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
 
   // This tab shows ONE deployment, not a list, so the container's count is the

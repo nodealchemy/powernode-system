@@ -284,11 +284,10 @@ describe('PeerControlPanel', () => {
         expect(screen.getByText('Network error')).toBeInTheDocument();
       });
 
-      // Find the X button within the error banner
-      const errorBanner = screen.getByText('Network error').closest('div.p-3');
-      const closeBtn = errorBanner?.querySelector('button[type="button"]');
-      expect(closeBtn).toBeTruthy();
-      fireEvent.click(closeBtn!);
+      // ErrorAlert's dismiss carries aria-label="Dismiss"; the accessible name
+      // is both stabler and stronger than the old descendant lookup.
+      const closeBtn = screen.getByRole('button', { name: /dismiss/i });
+      fireEvent.click(closeBtn);
 
       await waitFor(() => {
         expect(screen.queryByText('Network error')).not.toBeInTheDocument();

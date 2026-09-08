@@ -3,6 +3,7 @@ import { Trash2, Shield, Pencil, ChevronRight, ChevronDown } from 'lucide-react'
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type { SdwanFirewallRule, SdwanSelector, SdwanPortRange } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface FirewallRuleListProps {
   networkId: string;
@@ -44,7 +45,7 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
     load();
   }, [load, refreshKey]);
 
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <div className="space-y-2">

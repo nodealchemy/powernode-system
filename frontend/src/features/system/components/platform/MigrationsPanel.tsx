@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Move,
-  AlertTriangle,
   X,
   RefreshCw,
   ArrowRightLeft,
@@ -17,6 +16,7 @@ import type {
   MigrationStatus,
   MigrationSummary,
 } from '../../types/migration.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Read-only Migrations panel. Lists System::Migration rows with status
@@ -71,12 +71,8 @@ export const MigrationsPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
+        <div className="px-4 pt-4">
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         </div>
       )}
 
@@ -236,9 +232,8 @@ const MigrationDetailDrawer: React.FC<MigrationDetailDrawerProps> = ({ migration
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
+          <div className="px-4 pt-4">
+            <ErrorAlert message={error} />
           </div>
         )}
 

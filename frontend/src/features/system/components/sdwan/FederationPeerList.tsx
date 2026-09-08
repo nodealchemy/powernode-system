@@ -12,6 +12,7 @@ import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanFederationPeer,
 } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface FederationPeerListProps {
   refreshKey?: number;
@@ -70,7 +71,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
 
   useEffect(() => { load(); }, [load, refreshKey, localKey]);
 
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <>

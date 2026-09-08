@@ -355,7 +355,8 @@ describe('NetworkDetailModal', () => {
   it('shows loading indicator while fetching', () => {
     mockGetNetwork.mockReturnValue(new Promise(() => {})); // never resolves
     renderModal();
-    expect(screen.getByText(/loading network/i)).toBeInTheDocument();
+    // Chrome now comes from the shared LoadingSpinner: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
   it('shows error message when getNetwork rejects', async () => {

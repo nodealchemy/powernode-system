@@ -8,6 +8,7 @@ import { isPendingApproval } from '../../../services/api/helpers';
 import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanNetwork, SdwanPeer } from '../../../types/sdwan.types';
 import { BgpSessionsTable } from './BgpSessionsTable';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface NetworkRoutingTabProps {
   network: SdwanNetwork;
@@ -84,7 +85,7 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
   const totalLanSubnets = peers.reduce((sum, p) => sum + (p.lan_subnets?.length ?? 0), 0);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading routing data…</div>;
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <div className="space-y-5">

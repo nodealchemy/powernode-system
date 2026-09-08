@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ScalingPanel } from './ScalingPanel';
 
 // =============================================================================
@@ -666,9 +666,9 @@ describe('ScalingPanel', () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
 
-    // The error banner has an X dismiss button
-    const banner = screen.getByText('Network error').closest('div')!;
-    const xBtn = within(banner).getByRole('button');
+    // ErrorAlert's dismiss carries aria-label="Dismiss"; the accessible name
+    // is both stabler and stronger than the old descendant/icon-only lookups.
+    const xBtn = screen.getByRole('button', { name: /dismiss/i });
     fireEvent.click(xBtn);
 
     await waitFor(() => expect(screen.queryByText('Network error')).not.toBeInTheDocument());

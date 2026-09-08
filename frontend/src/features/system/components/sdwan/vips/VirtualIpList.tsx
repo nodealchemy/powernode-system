@@ -4,6 +4,7 @@ import { sdwanApi } from '../../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import { StatusBadge } from '../../shared/StatusBadge';
 import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface VirtualIpListProps {
   networkId: string;
@@ -66,7 +67,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
     return p.node_instance_id?.slice(0, 8) ?? peerId.slice(0, 8);
   };
 
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <ResponsiveListContainer

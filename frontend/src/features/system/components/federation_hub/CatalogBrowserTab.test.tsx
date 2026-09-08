@@ -178,11 +178,12 @@ describe('CatalogBrowserTab', () => {
     renderTab();
 
     await waitFor(() => expect(screen.getByText('Boom')).toBeInTheDocument());
-    // The error container uses the AlertTriangle lucide icon rendered as an SVG.
-    const errorDiv = screen.getByText('Boom').closest('div');
-    expect(errorDiv).not.toBeNull();
-    // The icon is rendered inside the same flex container.
-    expect(errorDiv?.querySelector('svg')).toBeTruthy();
+    // The icon now comes from the shared ErrorAlert, which renders it as a
+    // sibling of the message rather than inside the message's own div — so the
+    // assertion moves up to the alert box itself.
+    const alert = screen.getByText('Boom').closest('.bg-theme-error-bg');
+    expect(alert).not.toBeNull();
+    expect(alert?.querySelector('svg')).toBeTruthy();
   });
 
   // ---------------------------------------------------------------------------

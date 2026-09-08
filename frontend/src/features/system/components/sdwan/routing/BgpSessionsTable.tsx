@@ -3,6 +3,7 @@ import { Activity, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanBgpSession } from '../../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface BgpSessionsTableProps {
   networkId?: string;
@@ -81,7 +82,7 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
           folding it into the empty state would hide a failed refresh behind
           "no sessions reported yet" — the two mean opposite things here. */}
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+        <ErrorAlert message={error} />
       )}
 
       {/* The state filter and its refresh stay OUTSIDE the container. This

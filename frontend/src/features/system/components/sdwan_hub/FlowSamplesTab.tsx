@@ -6,6 +6,8 @@ import type {
   SdwanFlowSample,
   SdwanIpfixCollector,
 } from '@system/features/system/types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
+import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 
 // Phase O6 follow-up — read-only operator view of ingested IPFIX flow
 // records. Distributed-sidecar architecture: operator runs vector or
@@ -95,10 +97,14 @@ export const FlowSamplesTab: React.FC = () => {
   }, [loadSamples]);
 
   if (collectorsLoading) {
-    return <div className="p-8 text-center text-theme-secondary">Loading collectors…</div>;
+    return (
+      <div className="flex justify-center p-8">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
   }
   if (error && collectors.length === 0) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
   if (collectors.length === 0) {
     return (
@@ -166,7 +172,7 @@ export const FlowSamplesTab: React.FC = () => {
       </div>
 
       {error && (
-        <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
+        <ErrorAlert message={error} />
       )}
 
       {/* The collector / range / protocol filters and their Refresh stay

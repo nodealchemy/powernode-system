@@ -5,10 +5,10 @@ import {
   Globe2,
   Move,
   ShieldCheck,
-  AlertTriangle,
 } from 'lucide-react';
 import { platformApi } from '../../services/api/platformApi';
 import type { PlatformOverview } from '../../types/platform.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * At-a-glance status cards at the top of the Platform dashboard.
@@ -47,10 +47,7 @@ export const PlatformOverviewCards: React.FC = () => {
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4" />
-        Overview failed to load: {error}
-      </div>
+      <ErrorAlert message={`Overview failed to load: ${error}`} />
     );
   }
 

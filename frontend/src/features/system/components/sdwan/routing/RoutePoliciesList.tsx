@@ -4,6 +4,7 @@ import { EntityLink } from '@/shared/components/entity';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanRoutePolicy, SdwanRoutePolicyStatement } from '../../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface RoutePoliciesListProps {
   refreshKey?: number;
@@ -180,7 +181,7 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
           folding it into the empty state would hide a failed load behind
           "no route policies yet" — the two mean opposite things here. */}
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+        <ErrorAlert message={error} />
       )}
 
       {/* The scope/direction filters stay OUTSIDE the container, above. They
