@@ -152,12 +152,24 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
         setTimeout(() => setArmedDelete((cur) => (cur === repo.id ? null : cur)), 5000);
         return;
       }
-      await packageRepositoriesApi.delete(repo.id);
-      setArmedDelete(null);
-      if (selectedRepoId === repo.id) setSelectedRepoId(null);
-      list.refresh();
+      try {
+        await packageRepositoriesApi.delete(repo.id);
+        showNotification(`Deleted repository ${repo.name}`, 'success');
+        if (selectedRepoId === repo.id) setSelectedRepoId(null);
+        list.refresh();
+      } catch (e) {
+        // 403 on a shared repo, 422 when modules still link to it — the row
+        // stays put; tell the operator instead of failing silently.
+        logger.error('[PackageRepositoriesTab] delete failed', e);
+        showNotification(`Failed to delete repository ${repo.name}`, 'error');
+      } finally {
+        // Always disarm, or a failed delete leaves the button primed to fire
+        // again on the operator's next click. Guarded on this repo's id so a
+        // slow in-flight delete cannot disarm a row armed since.
+        setArmedDelete((cur) => (cur === repo.id ? null : cur));
+      }
     },
-    [armedDelete, canDelete, selectedRepoId, list]
+    [armedDelete, canDelete, selectedRepoId, list, showNotification]
   );
 
   const renderActions = (r: SystemPackageRepository) => (

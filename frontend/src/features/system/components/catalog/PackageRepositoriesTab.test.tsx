@@ -29,10 +29,11 @@ jest.mock('@/shared/hooks/usePermissions', () => ({
 }));
 
 const mockAddNotification = jest.fn();
+const mockShowNotification = jest.fn();
 jest.mock('@/shared/hooks/useNotifications', () => ({
   useNotifications: () => ({
     addNotification: mockAddNotification,
-    showNotification: jest.fn(),
+    showNotification: mockShowNotification,
   }),
 }));
 
@@ -215,6 +216,7 @@ describe('PackageRepositoriesTab', () => {
     mockPut.mockReset();
     mockDelete.mockReset();
     mockAddNotification.mockReset();
+    mockShowNotification.mockReset();
 
     // Default: architectures endpoint returns one arch.
     mockGet.mockImplementation((url: string) => {
@@ -666,6 +668,63 @@ describe('PackageRepositoriesTab', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('package-browser-repo-1')).not.toBeInTheDocument(),
     );
+  });
+
+  it('reports a successful delete through the global notification hook', async () => {
+    mockDelete.mockResolvedValueOnce({ data: { success: true } });
+
+    renderTab();
+
+    await waitFor(() => screen.getAllByTestId('package-repo-delete-repo-1'));
+    const deleteBtn = screen.getAllByTestId('package-repo-delete-repo-1')[0];
+
+    fireEvent.click(deleteBtn);
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mockShowNotification).toHaveBeenCalledWith(
+        'Deleted repository ubuntu-noble',
+        'success',
+      ),
+    );
+  });
+
+  it('reports a failed delete through the global notification hook', async () => {
+    mockDelete.mockRejectedValueOnce(new Error('422 linked modules'));
+
+    renderTab();
+
+    await waitFor(() => screen.getAllByTestId('package-repo-delete-repo-1'));
+    const deleteBtn = screen.getAllByTestId('package-repo-delete-repo-1')[0];
+
+    fireEvent.click(deleteBtn);
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mockShowNotification).toHaveBeenCalledWith(
+        'Failed to delete repository ubuntu-noble',
+        'error',
+      ),
+    );
+  });
+
+  it('disarms the delete button after a failed delete so the row is not left armed', async () => {
+    mockDelete.mockRejectedValueOnce(new Error('403 shared repository'));
+
+    renderTab();
+
+    await waitFor(() => screen.getAllByTestId('package-repo-delete-repo-1'));
+    const deleteBtn = screen.getAllByTestId('package-repo-delete-repo-1')[0];
+
+    fireEvent.click(deleteBtn);
+    expect(deleteBtn).toHaveAttribute('title', 'Click again to confirm delete');
+
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
+    await waitFor(() => expect(deleteBtn).toHaveAttribute('title', 'Delete'));
   });
 
   // ---------------------------------------------------------------------------
