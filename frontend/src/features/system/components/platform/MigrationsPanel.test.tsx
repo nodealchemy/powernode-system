@@ -137,7 +137,7 @@ describe('MigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('No migrations recorded yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No migrations recorded yet')).toBeInTheDocument(),
     );
     expect(screen.getByText(/0 records/)).toBeInTheDocument();
   });
@@ -148,7 +148,7 @@ describe('MigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('No migrations recorded yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No migrations recorded yet')).toBeInTheDocument(),
     );
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
@@ -315,7 +315,7 @@ describe('MigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('No migrations recorded yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No migrations recorded yet')).toBeInTheDocument(),
     );
 
     const refreshBtn = screen.getByTitle('Refresh');

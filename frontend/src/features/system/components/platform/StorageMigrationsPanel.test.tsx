@@ -307,7 +307,7 @@ describe('StorageMigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('No storage migrations recorded yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No storage migrations recorded yet')).toBeInTheDocument(),
     );
   });
 
@@ -325,7 +325,7 @@ describe('StorageMigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('No storage migrations recorded yet.')).toBeInTheDocument(),
+      expect(screen.getByText('No storage migrations recorded yet')).toBeInTheDocument(),
     );
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
@@ -336,7 +336,7 @@ describe('StorageMigrationsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByText('system_migrate_storage_component')).toBeInTheDocument(),
+      expect(screen.getByText((t) => t.includes('system_migrate_storage_component'))).toBeInTheDocument(),
     );
   });
 
@@ -901,7 +901,7 @@ describe('StorageMigrationsPanel', () => {
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByText('No storage migrations recorded yet.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No storage migrations recorded yet')).toBeInTheDocument());
 
     const refreshBtn = screen.getByTitle('Refresh');
     fireEvent.click(refreshBtn);

@@ -13,6 +13,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { EntityLink } from '@/shared/components/entity';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   StorageMigrationStatus,
   StorageMigrationSummary,
@@ -158,20 +159,24 @@ export const StorageMigrationsPanel: React.FC = () => {
         </div>
       )}
 
-      {!loading && migrations.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm space-y-2">
-          <div>No storage migrations recorded yet.</div>
-          <div className="text-xs text-theme-tertiary max-w-2xl mx-auto">
-            Storage migrations move a stateful component's data between volumes
-            on a single instance — e.g. switching the Postgres data directory
-            from one NFS pool to another. Plan one via the MCP action
-            <code className="font-mono mx-1">system_migrate_storage_component</code>
-            or from the platform deployment wizard.
-          </div>
-        </div>
-      )}
-
-      {migrations.length > 0 && (
+      {/* The header (count + refresh) stays OUTSIDE the container, and the
+          container itself is skipped entirely while an error is showing —
+          that preserves the existing precedence, where a failed load
+          suppresses the empty state rather than reporting "none yet". */}
+      {!error && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={migrations.length}
+        filteredCount={migrations.length}
+        emptyState={{
+          icon: Database,
+          title: 'No storage migrations recorded yet',
+          description: "Storage migrations move a stateful component's data between volumes on a single instance — e.g. switching the Postgres data directory from one NFS pool to another. Plan one via the system_migrate_storage_component MCP action or from the platform deployment wizard.",
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -196,6 +201,8 @@ export const StorageMigrationsPanel: React.FC = () => {
             ))}
           </tbody>
         </table>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
 
       <PlanStorageMigrationModal

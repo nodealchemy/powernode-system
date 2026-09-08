@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { platformDeploymentsApi } from '../../services/api/platformDeploymentsApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   DeploymentReconcileOutcome,
   DeploymentSummary,
@@ -198,15 +199,24 @@ export const ScalingPanel: React.FC = () => {
         </div>
       )}
 
-      {!loading && deployments.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm">
-          No platform deployments declared yet. Deployments are created when
-          you provision a platform-component NodeInstance — e.g. via
-          <code className="font-mono mx-1">powernode-hub-api</code> template.
-        </div>
-      )}
-
-      {deployments.length > 0 && (
+      {/* The header (count + refresh) stays OUTSIDE the container, and the
+          container itself is skipped entirely while an error is showing —
+          that preserves the existing precedence, where a failed load
+          suppresses the empty state rather than reporting "none yet". */}
+      {!error && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={deployments.length}
+        filteredCount={deployments.length}
+        emptyState={{
+          icon: TrendingUp,
+          title: 'No platform deployments declared yet',
+          description: 'Deployments are created when you provision a platform-component NodeInstance — e.g. via the powernode-hub-api template.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -235,6 +245,8 @@ export const ScalingPanel: React.FC = () => {
             ))}
           </tbody>
         </table>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
     </div>
   );

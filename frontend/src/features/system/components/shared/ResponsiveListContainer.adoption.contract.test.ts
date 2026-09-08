@@ -47,10 +47,6 @@ const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [
   // what caught it: a ceiling would have absorbed it silently.
   'features/system/components/federation_hub/FulfillmentTab.tsx',
   'features/system/components/ingress/IngressRoutesPanel.tsx',
-  'features/system/components/platform/MigrationChainsPanel.tsx',
-  'features/system/components/platform/MigrationsPanel.tsx',
-  'features/system/components/platform/ScalingPanel.tsx',
-  'features/system/components/platform/StorageMigrationsPanel.tsx',
   'pages/app/system/MyVpnDevicesPage.tsx',
 ];
 

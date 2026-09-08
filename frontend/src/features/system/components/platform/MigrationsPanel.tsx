@@ -9,6 +9,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { platformMigrationsApi } from '../../services/api/platformMigrationsApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   MigrationDetail,
   MigrationOperation,
@@ -78,20 +79,24 @@ export const MigrationsPanel: React.FC = () => {
         </div>
       )}
 
-      {!loading && migrations.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm space-y-2">
-          <div>No migrations recorded yet.</div>
-          <div className="text-xs text-theme-tertiary max-w-2xl mx-auto">
-            The interactive wizard for composing a plan, surfacing conflicts, and
-            one-clicking apply is the next slice. For now operators can compose +
-            apply programmatically via <code className="font-mono">Migration::PlanComposer</code>
-            + <code className="font-mono">MigrationApplyJob</code>; completed
-            and in-flight migrations will appear here.
-          </div>
-        </div>
-      )}
-
-      {migrations.length > 0 && (
+      {/* The header (count + refresh) stays OUTSIDE the container, and the
+          container itself is skipped entirely while an error is showing —
+          that preserves the existing precedence, where a failed load
+          suppresses the empty state rather than reporting "none yet". */}
+      {!error && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={migrations.length}
+        filteredCount={migrations.length}
+        emptyState={{
+          icon: ArrowRightLeft,
+          title: 'No migrations recorded yet',
+          description: 'The interactive wizard for composing a plan, surfacing conflicts, and one-clicking apply is the next slice. For now operators can compose and apply programmatically via Migration::PlanComposer and MigrationApplyJob; completed and in-flight migrations will appear here.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -134,6 +139,8 @@ export const MigrationsPanel: React.FC = () => {
             ))}
           </tbody>
         </table>
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
 
       <MigrationDetailDrawer
