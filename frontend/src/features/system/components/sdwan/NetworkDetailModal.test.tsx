@@ -125,34 +125,35 @@ jest.mock('../../components/sdwan', () => ({
       )}
     </div>
   ),
-  FirewallRuleCreateModal: ({ isOpen, networkId, onClose, onCreated }: {
+  // One component now serves both modes; `rule === null` is create. The stub
+  // keeps the two original testids so the create and edit paths stay
+  // separately assertable from this parent's point of view.
+  FirewallRuleFormModal: ({ isOpen, rule, onClose, onSaved }: {
     isOpen: boolean;
     networkId: string;
-    onClose: () => void;
-    onCreated: () => void;
-  }) => isOpen ? (
-    <div data-testid="firewall-rule-create-modal">
-      <button data-testid="close-fw-create" onClick={onClose}>Close</button>
-      <button data-testid="confirm-fw-create" onClick={() => { onCreated(); onClose(); }}>Create</button>
-    </div>
-  ) : null,
-  FirewallRuleEditModal: ({ isOpen, rule, onClose, onSaved }: {
-    isOpen: boolean;
     rule: SdwanFirewallRule | null;
     onClose: () => void;
     onSaved: () => void;
-  }) => isOpen ? (
-    <div data-testid="firewall-rule-edit-modal" data-rule-id={rule?.id}>
-      <button data-testid="close-fw-edit" onClick={onClose}>Close</button>
-      <button data-testid="confirm-fw-save" onClick={() => { onSaved(); onClose(); }}>Save</button>
-    </div>
-  ) : null,
+  }) => {
+    if (!isOpen) return null;
+    return rule ? (
+      <div data-testid="firewall-rule-edit-modal" data-rule-id={rule.id}>
+        <button data-testid="close-fw-edit" onClick={onClose}>Close</button>
+        <button data-testid="confirm-fw-save" onClick={() => { onSaved(); onClose(); }}>Save</button>
+      </div>
+    ) : (
+      <div data-testid="firewall-rule-create-modal">
+        <button data-testid="close-fw-create" onClick={onClose}>Close</button>
+        <button data-testid="confirm-fw-create" onClick={() => { onSaved(); onClose(); }}>Create</button>
+      </div>
+    );
+  },
   SdwanTopology: ({ networkId, refreshKey }: { networkId: string; refreshKey?: number }) => (
     <div data-testid="sdwan-topology" data-network-id={networkId} data-refresh-key={refreshKey} />
   ),
-  NetworkEditModal: ({ isOpen, network, onClose, onSaved }: {
+  NetworkFormModal: ({ isOpen, network, onClose, onSaved }: {
     isOpen: boolean;
-    network: SdwanNetwork;
+    network: SdwanNetwork | null;
     onClose: () => void;
     onSaved: () => void;
   }) => isOpen ? (
@@ -504,7 +505,7 @@ describe('NetworkDetailModal', () => {
   // Nested modals open/close
   // ---------------------------------------------------------------------------
 
-  it('opens NetworkEditModal when "Edit network" is clicked', async () => {
+  it('opens the network form modal when "Edit network" is clicked', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Edit network')).toBeInTheDocument());
 
@@ -512,7 +513,7 @@ describe('NetworkDetailModal', () => {
     expect(screen.getByTestId('network-edit-modal')).toBeInTheDocument();
   });
 
-  it('closes NetworkEditModal and triggers refresh on save', async () => {
+  it('closes the network form modal and triggers refresh on save', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Edit network')).toBeInTheDocument());
 
@@ -547,7 +548,7 @@ describe('NetworkDetailModal', () => {
     await waitFor(() => expect(mockGetNetwork).toHaveBeenCalledTimes(2));
   });
 
-  it('opens FirewallRuleCreateModal when "Add rule" is clicked on firewall tab', async () => {
+  it('opens the firewall rule form modal in create mode when "Add rule" is clicked on firewall tab', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Firewall')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Firewall'));
@@ -556,7 +557,7 @@ describe('NetworkDetailModal', () => {
     expect(screen.getByTestId('firewall-rule-create-modal')).toBeInTheDocument();
   });
 
-  it('closes FirewallRuleCreateModal and triggers refresh on create', async () => {
+  it('closes the firewall rule form modal and triggers refresh on create', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Firewall')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Firewall'));
@@ -595,10 +596,10 @@ describe('NetworkDetailModal', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // FirewallRuleList → FirewallRuleEditModal flow
+  // FirewallRuleList → FirewallRuleFormModal (edit mode) flow
   // ---------------------------------------------------------------------------
 
-  it('opens FirewallRuleEditModal when FirewallRuleList triggers onEdit', async () => {
+  it('opens the firewall rule form modal in edit mode when FirewallRuleList triggers onEdit', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Firewall')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Firewall'));
@@ -608,7 +609,7 @@ describe('NetworkDetailModal', () => {
     expect(screen.getByTestId('firewall-rule-edit-modal')).toHaveAttribute('data-rule-id', 'rule-1');
   });
 
-  it('closes FirewallRuleEditModal and triggers refresh on save', async () => {
+  it('closes the firewall rule form modal and triggers refresh on save', async () => {
     renderModal();
     await waitFor(() => expect(screen.getByText('Firewall')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Firewall'));

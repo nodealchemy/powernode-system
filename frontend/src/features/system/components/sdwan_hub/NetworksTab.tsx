@@ -6,7 +6,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import {
   NetworkList,
-  NetworkCreateModal,
+  NetworkFormModal,
   NetworkDetailModal,
 } from '@system/features/system/components/sdwan';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
@@ -74,10 +74,11 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
         refreshKey={refreshKey}
       />
 
-      <NetworkCreateModal
+      <NetworkFormModal
         isOpen={showCreate}
+        network={null}
         onClose={() => setShowCreate(false)}
-        onCreated={triggerRefresh}
+        onSaved={triggerRefresh}
       />
 
       <NetworkDetailModal

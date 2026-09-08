@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Shield } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Pencil, Shield } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -7,39 +7,66 @@ import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
 import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
+  SdwanFirewallRule,
   SdwanFirewallAction,
   SdwanFirewallDirection,
   SdwanFirewallProtocol,
   SdwanSelector,
 } from '../../types/sdwan.types';
 
-interface FirewallRuleCreateModalProps {
+interface FirewallRuleFormModalProps {
   isOpen: boolean;
   networkId: string;
+  /** The rule to edit, or null to create a new one. */
+  rule: SdwanFirewallRule | null;
   onClose: () => void;
-  onCreated: () => void;
+  onSaved: () => void;
 }
 
 type SelectorKind = 'all' | 'cidr' | 'peer_id' | 'tag';
 
+function selectorKind(sel?: SdwanSelector): SelectorKind {
+  if (!sel) return 'all';
+  if ('all' in sel && (sel as { all?: boolean }).all) return 'all';
+  if ('peer_id' in sel) return 'peer_id';
+  if ('cidr' in sel) return 'cidr';
+  if ('tag' in sel) return 'tag';
+  return 'all';
+}
+
+function selectorValue(sel?: SdwanSelector): string {
+  if (!sel) return '';
+  if ('peer_id' in sel) return (sel as { peer_id: string }).peer_id;
+  if ('cidr' in sel) return (sel as { cidr: string }).cidr;
+  if ('tag' in sel) return (sel as { tag: string }).tag;
+  return '';
+}
+
 /**
- * FirewallRuleCreateModal — minimal-but-complete form for the four-kind
- * selector grammar. Tag selectors compile to wildcard until slice 5
- * populates nft sets — the form annotates this so operators understand
- * the deferred semantics.
+ * FirewallRuleFormModal — create and edit a rule from one component, replacing
+ * the FirewallRuleCreateModal/FirewallRuleEditModal pair. Covers the four-kind
+ * selector grammar; tag selectors compile to wildcard until nft sets are
+ * populated, which the kind dropdown annotates.
+ *
+ * `enabled` is edit-only: a rule is created enabled, and the toggle exists to
+ * park an existing one without deleting it.
  */
-export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = ({
+export const FirewallRuleFormModal: React.FC<FirewallRuleFormModalProps> = ({
   isOpen,
   networkId,
+  rule,
   onClose,
-  onCreated,
+  onSaved,
 }) => {
   const { addNotification } = useNotifications();
+  const isEditMode = !!rule;
+
   const [name, setName] = useState('');
   const [priority, setPriority] = useState<number>(1000);
   const [action, setAction] = useState<SdwanFirewallAction>('accept');
   const [direction, setDirection] = useState<SdwanFirewallDirection>('ingress');
   const [protocol, setProtocol] = useState<SdwanFirewallProtocol>('any');
+  const [enabled, setEnabled] = useState(true);
   const [srcKind, setSrcKind] = useState<SelectorKind>('all');
   const [srcValue, setSrcValue] = useState('');
   const [dstKind, setDstKind] = useState<SelectorKind>('all');
@@ -50,13 +77,30 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
 
   const reset = () => {
     setName(''); setPriority(1000); setAction('accept'); setDirection('ingress');
-    setProtocol('any'); setSrcKind('all'); setSrcValue(''); setDstKind('all');
-    setDstValue(''); setPortFrom(''); setPortTo(''); setSubmitting(false);
+    setProtocol('any'); setEnabled(true); setSrcKind('all'); setSrcValue('');
+    setDstKind('all'); setDstValue(''); setPortFrom(''); setPortTo('');
+    setSubmitting(false);
   };
+
+  useEffect(() => {
+    if (!rule) return;
+    setName(rule.name);
+    setPriority(rule.priority);
+    setAction(rule.action);
+    setDirection(rule.direction);
+    setProtocol(rule.protocol);
+    setEnabled(rule.enabled);
+    setSrcKind(selectorKind(rule.src_selector));
+    setSrcValue(selectorValue(rule.src_selector));
+    setDstKind(selectorKind(rule.dst_selector));
+    setDstValue(selectorValue(rule.dst_selector));
+    setPortFrom(rule.port_range ? String(rule.port_range.from) : '');
+    setPortTo(rule.port_range ? String(rule.port_range.to) : '');
+  }, [rule]);
 
   const handleClose = () => {
     if (submitting) return;
-    reset();
+    if (!isEditMode) reset();
     onClose();
   };
 
@@ -71,6 +115,7 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name.trim()) {
       addNotification({ type: 'error', message: 'Rule name is required' });
       return;
@@ -79,13 +124,13 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
       addNotification({ type: 'error', message: 'Provide both port_from and port_to, or neither' });
       return;
     }
-    if (portFrom !== '' && !['tcp', 'udp'].includes(protocol)) {
+    if (!isEditMode && portFrom !== '' && !['tcp', 'udp'].includes(protocol)) {
       addNotification({ type: 'error', message: 'Port range only applies to tcp or udp' });
       return;
     }
     setSubmitting(true);
     try {
-      const result = await sdwanApi.createFirewallRule(networkId, {
+      const payload = {
         name: name.trim(),
         priority,
         action,
@@ -94,7 +139,25 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
         src_selector: buildSelector(srcKind, srcValue),
         dst_selector: buildSelector(dstKind, dstValue),
         port_range: portFrom !== '' ? { from: Number(portFrom), to: Number(portTo) } : null,
-      });
+      };
+
+      if (rule) {
+        const result = await sdwanApi.updateFirewallRule(networkId, rule.id, {
+          ...payload,
+          enabled,
+        });
+        if (isPendingApproval(result)) {
+          addNotification(pendingApprovalNotice(`updating firewall rule "${name}"`, result));
+          onClose();
+          return;
+        }
+        addNotification({ type: 'success', message: `Rule "${name}" updated` });
+        onSaved();
+        onClose();
+        return;
+      }
+
+      const result = await sdwanApi.createFirewallRule(networkId, payload);
       if (isPendingApproval(result)) {
         addNotification(pendingApprovalNotice(`creating firewall rule "${name}"`, result));
         reset();
@@ -102,18 +165,27 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
         return;
       }
       addNotification({ type: 'success', message: `Rule "${name}" created` });
-      onCreated();
+      onSaved();
       reset();
       onClose();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to create rule';
-      addNotification({ type: 'error', message: msg });
+      const fallback = isEditMode ? 'Update failed' : 'Failed to create rule';
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : fallback,
+      });
+    } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Add firewall rule" icon={<Shield className="w-6 h-6" />}>
+    <Modal
+      isOpen={isOpen}
+      onClose={handleClose}
+      title={rule ? `Edit ${rule.name}` : 'Add firewall rule'}
+      icon={rule ? <Pencil className="w-6 h-6" /> : <Shield className="w-6 h-6" />}
+    >
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">
@@ -158,7 +230,9 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
         {['tcp', 'udp'].includes(protocol) && (
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">Port from (optional)</label>
+              <label className="block text-sm font-medium text-theme-primary mb-1">
+                {isEditMode ? 'Port from' : 'Port from (optional)'}
+              </label>
               <input type="number" value={portFrom} onChange={(e) => setPortFrom(e.target.value)} min={1} max={65535}
                      className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                      disabled={submitting} />
@@ -172,10 +246,22 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
           </div>
         )}
 
+        {isEditMode && (
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)}
+                     disabled={submitting} />
+              <span className="text-sm text-theme-primary">Rule enabled</span>
+            </label>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={handleClose} disabled={submitting}>Cancel</Button>
           <Button variant="primary" type="submit" disabled={submitting || !name.trim()}>
-            {submitting ? 'Creating…' : 'Create rule'}
+            {submitting
+              ? (isEditMode ? 'Saving…' : 'Creating…')
+              : (isEditMode ? 'Save' : 'Create rule')}
           </Button>
         </div>
       </form>
@@ -229,3 +315,5 @@ const SelectorField: React.FC<{
     </div>
   );
 };
+
+export default FirewallRuleFormModal;

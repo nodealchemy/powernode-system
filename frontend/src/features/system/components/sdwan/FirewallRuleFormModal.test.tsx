@@ -1,17 +1,20 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
-import { FirewallRuleCreateModal } from './FirewallRuleCreateModal';
+import { FirewallRuleFormModal } from './FirewallRuleFormModal';
+import type { SdwanFirewallRule } from '../../types/sdwan.types';
 
 // =============================================================================
 // Mocks
 // =============================================================================
 
 const mockPost = jest.fn();
+const mockUpdateFirewallRule = jest.fn();
 
 jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   sdwanApi: {
     createFirewallRule: (...args: unknown[]) => mockPost(...args),
+    updateFirewallRule: (...args: unknown[]) => mockUpdateFirewallRule(...args),
   },
 }));
 
@@ -110,9 +113,17 @@ const defaultProps = {
 };
 
 function renderModal(props: Partial<typeof defaultProps> = {}) {
+  // rule={null} IS create mode — the whole point of the collapse.
+  const merged = { ...defaultProps, ...props };
   return render(
     <BrowserRouter>
-      <FirewallRuleCreateModal {...defaultProps} {...props} />
+      <FirewallRuleFormModal
+        isOpen={merged.isOpen}
+        networkId={merged.networkId}
+        rule={null}
+        onClose={merged.onClose}
+        onSaved={merged.onCreated}
+      />
     </BrowserRouter>,
   );
 }
@@ -121,7 +132,43 @@ function renderModal(props: Partial<typeof defaultProps> = {}) {
 // Tests
 // =============================================================================
 
-describe('FirewallRuleCreateModal', () => {
+const BASE_RULE: SdwanFirewallRule = {
+  id: 'rule-1',
+  network_id: 'net-1',
+  name: 'Allow HTTPS',
+  priority: 100,
+  action: 'accept',
+  direction: 'ingress',
+  protocol: 'tcp',
+  enabled: true,
+  src_selector: { all: true },
+  dst_selector: { cidr: '10.0.0.0/8' },
+  port_range: { from: 443, to: 443 },
+};
+
+const renderEditModal = (
+  props: Partial<React.ComponentProps<typeof FirewallRuleFormModal>> = {}
+) => {
+  const onClose = jest.fn();
+  const onSaved = jest.fn();
+
+  render(
+    <BrowserRouter>
+      <FirewallRuleFormModal
+        isOpen={true}
+        networkId={NETWORK_ID}
+        rule={BASE_RULE}
+        onClose={onClose}
+        onSaved={onSaved}
+        {...props}
+      />
+    </BrowserRouter>
+  );
+
+  return { onClose, onSaved };
+};
+
+describe('FirewallRuleFormModal — create mode (rule=null)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -817,5 +864,542 @@ describe('FirewallRuleCreateModal', () => {
       expect(onCreated).not.toHaveBeenCalled();
       expect(onClose).toHaveBeenCalled();
     });
+  });
+});
+
+describe('FirewallRuleFormModal — edit mode (rule given)', () => {
+  beforeEach(() => {
+    mockUpdateFirewallRule.mockReset();
+    mockAddNotification.mockReset();
+  });
+
+  // ──── Render / null guard ────────────────────────────────────────────────
+
+  // rule={null} no longer renders nothing — it IS create mode. The create half
+  // above covers that path; here we only assert the two modes are one component
+  // and that create mode carries no "Rule enabled" toggle.
+  it('renders create mode, not an empty tree, when the rule prop is null', () => {
+    render(
+      <BrowserRouter>
+        <FirewallRuleFormModal
+          isOpen={true}
+          networkId={NETWORK_ID}
+          rule={null}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+    expect(screen.getByRole('dialog', { name: 'Add firewall rule' })).toBeInTheDocument();
+    expect(screen.queryByText('Rule enabled')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when isOpen is false', () => {
+    const { container } = render(
+      <BrowserRouter>
+        <FirewallRuleFormModal
+          isOpen={false}
+          networkId={NETWORK_ID}
+          rule={BASE_RULE}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+    // Modal returns null when closed
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  // ──── Initial state populated from rule prop ─────────────────────────────
+
+  it('populates form fields from the rule prop on open', () => {
+    renderEditModal();
+
+    // Name field shows rule name
+    const nameInput = screen.getByDisplayValue('Allow HTTPS');
+    expect(nameInput).toBeInTheDocument();
+
+    // Priority field
+    expect(screen.getByDisplayValue('100')).toBeInTheDocument();
+  });
+
+  it('shows the modal title as "Edit <rule name>"', () => {
+    renderEditModal();
+    expect(screen.getByText('Edit Allow HTTPS')).toBeInTheDocument();
+  });
+
+  it('pre-selects action, direction, protocol from the rule', () => {
+    renderEditModal();
+
+    // The selects don't have id/htmlFor — query all comboboxes by display value.
+    // Order in DOM: Action, Direction, Protocol (3 selects in the second row).
+    const comboboxes = screen.getAllByRole('combobox');
+    // Find the action select (value = 'accept')
+    const actionSelect = comboboxes.find(
+      (s) => (s as HTMLSelectElement).value === 'accept'
+    );
+    expect(actionSelect).toBeTruthy();
+
+    const directionSelect = comboboxes.find(
+      (s) => (s as HTMLSelectElement).value === 'ingress'
+    );
+    expect(directionSelect).toBeTruthy();
+
+    const protocolSelect = comboboxes.find(
+      (s) => (s as HTMLSelectElement).value === 'tcp'
+    );
+    expect(protocolSelect).toBeTruthy();
+  });
+
+  it('shows Rule enabled checkbox checked when rule.enabled is true', () => {
+    renderEditModal();
+    const checkbox = screen.getByRole('checkbox');
+    expect(checkbox).toBeChecked();
+  });
+
+  it('shows Rule enabled checkbox unchecked when rule.enabled is false', () => {
+    renderEditModal({ rule: { ...BASE_RULE, enabled: false } });
+    const checkbox = screen.getByRole('checkbox');
+    expect(checkbox).not.toBeChecked();
+  });
+
+  // ──── Selector rendering ─────────────────────────────────────────────────
+
+  it('src_selector "all:true" renders as "any" with no value input', () => {
+    renderEditModal();
+    // Src is { all: true } — should select "any" option, no additional text input
+    const srcSelect = screen.getAllByDisplayValue('any')[0];
+    expect(srcSelect).toBeInTheDocument();
+    // No value input is rendered when kind === 'all'
+  });
+
+  it('dst_selector "cidr" renders with CIDR value input', () => {
+    renderEditModal();
+    // dst is { cidr: '10.0.0.0/8' } — there should be a text input with that value
+    expect(screen.getByDisplayValue('10.0.0.0/8')).toBeInTheDocument();
+  });
+
+  it('renders peer_id selector value when rule uses peer_id', () => {
+    renderEditModal({
+      rule: { ...BASE_RULE, src_selector: { peer_id: 'peer-abc' }, dst_selector: undefined },
+    });
+    expect(screen.getByDisplayValue('peer-abc')).toBeInTheDocument();
+  });
+
+  it('renders tag selector value when rule uses tag', () => {
+    renderEditModal({
+      rule: { ...BASE_RULE, src_selector: { tag: 'prod' }, dst_selector: undefined },
+    });
+    expect(screen.getByDisplayValue('prod')).toBeInTheDocument();
+  });
+
+  // ──── Port range conditional visibility ─────────────────────────────────
+
+  it('shows port range fields when protocol is tcp', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'tcp' } });
+    // Labels don't have htmlFor — find by text content presence
+    expect(screen.getByText('Port from')).toBeInTheDocument();
+    expect(screen.getByText('Port to')).toBeInTheDocument();
+  });
+
+  it('shows port range fields when protocol is udp', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'udp', port_range: null } });
+    expect(screen.getByText('Port from')).toBeInTheDocument();
+    expect(screen.getByText('Port to')).toBeInTheDocument();
+  });
+
+  it('hides port range fields when protocol is "any"', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'any', port_range: null } });
+    expect(screen.queryByText('Port from')).not.toBeInTheDocument();
+    expect(screen.queryByText('Port to')).not.toBeInTheDocument();
+  });
+
+  it('hides port range fields when protocol is "icmp6"', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'icmp6', port_range: null } });
+    expect(screen.queryByText('Port from')).not.toBeInTheDocument();
+    expect(screen.queryByText('Port to')).not.toBeInTheDocument();
+  });
+
+  it('populates port_range fields from rule', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'tcp', port_range: { from: 443, to: 443 } } });
+    // Two number inputs appear when protocol is tcp; they carry values 443 each
+    expect(screen.getByText('Port from')).toBeInTheDocument();
+    expect(screen.getByText('Port to')).toBeInTheDocument();
+    // Both spinbuttons have value 443
+    const spinbuttons = screen.getAllByRole('spinbutton');
+    // Priority field + port_from + port_to
+    const portInputs = spinbuttons.filter(
+      (el) => (el as HTMLInputElement).min === '1'
+    );
+    expect(portInputs).toHaveLength(2);
+    expect(portInputs[0]).toHaveValue(443);
+    expect(portInputs[1]).toHaveValue(443);
+  });
+
+  // ──── Validation: port range asymmetry ──────────────────────────────────
+
+  it('shows an error and does NOT call API when only port_from is set', async () => {
+    // Use udp with no port_range so we can fill one field
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'udp', port_range: null } });
+
+    // Labels have no htmlFor — find port inputs by spinbutton role; filter by min=1 to skip priority
+    const spinbuttons = screen.getAllByRole('spinbutton');
+    const portInputs = spinbuttons.filter(
+      (el) => (el as HTMLInputElement).min === '1'
+    );
+    // Fill only port_from (first port input)
+    fireEvent.change(portInputs[0], { target: { value: '80' } });
+    // Leave port_to (second) empty
+
+    const form = screen.getByText(/^save$/i).closest('form')!;
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' })
+      );
+    });
+    expect(mockUpdateFirewallRule).not.toHaveBeenCalled();
+  });
+
+  it('shows an error when only port_to is set (asymmetric)', async () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'udp', port_range: null } });
+
+    const spinbuttons = screen.getAllByRole('spinbutton');
+    const portInputs = spinbuttons.filter(
+      (el) => (el as HTMLInputElement).min === '1'
+    );
+    // Fill only port_to (second port input)
+    fireEvent.change(portInputs[1], { target: { value: '8080' } });
+
+    const form = screen.getByText(/^save$/i).closest('form')!;
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' })
+      );
+    });
+    expect(mockUpdateFirewallRule).not.toHaveBeenCalled();
+  });
+
+  // ──── Save button disabled when name is empty ────────────────────────────
+
+  it('disables Save button when name is cleared', () => {
+    renderEditModal();
+    const nameInput = screen.getByDisplayValue('Allow HTTPS');
+    fireEvent.change(nameInput, { target: { value: '' } });
+    expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
+  });
+
+  it('enables Save button when name is non-empty', () => {
+    renderEditModal();
+    expect(screen.getByRole('button', { name: /save/i })).not.toBeDisabled();
+  });
+
+  // ──── Successful submit ──────────────────────────────────────────────────
+
+  it('calls sdwanApi.updateFirewallRule with the ids and payload on submit', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce({ ...BASE_RULE, name: 'Allow HTTPS' });
+
+    const { onSaved, onClose } = renderEditModal();
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+
+    expect(mockUpdateFirewallRule).toHaveBeenCalledWith(NETWORK_ID, BASE_RULE.id, {
+      name: 'Allow HTTPS',
+      priority: 100,
+      action: 'accept',
+      direction: 'ingress',
+      protocol: 'tcp',
+      enabled: true,
+      src_selector: { all: true },
+      dst_selector: { cidr: '10.0.0.0/8' },
+      port_range: { from: 443, to: 443 },
+    });
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mockAddNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+  });
+
+  it('sends port_range as null when port fields are both empty', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce({ ...BASE_RULE, protocol: 'any', port_range: null });
+
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'any', port_range: null } });
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+
+    const [, , payload] = mockUpdateFirewallRule.mock.calls[0] as [string, string, { port_range: null }];
+    expect(payload.port_range).toBeNull();
+  });
+
+  it('sends src_selector as { all: true } when src kind is "any"', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce(BASE_RULE);
+
+    renderEditModal({ rule: { ...BASE_RULE, src_selector: { all: true } } });
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+
+    const [, , payload] = mockUpdateFirewallRule.mock.calls[0] as [string, string, { src_selector: unknown }];
+    expect(payload.src_selector).toEqual({ all: true });
+  });
+
+  it('sends dst_selector as { peer_id } when dst kind is "peer"', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce({ ...BASE_RULE, dst_selector: { peer_id: 'peer-xyz' } });
+
+    renderEditModal({
+      rule: { ...BASE_RULE, protocol: 'any', port_range: null, dst_selector: { peer_id: 'peer-xyz' } },
+    });
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+
+    const [, , payload] = mockUpdateFirewallRule.mock.calls[0] as [string, string, { dst_selector: unknown }];
+    expect(payload.dst_selector).toEqual({ peer_id: 'peer-xyz' });
+  });
+
+  it('sends updated name trimmed of whitespace', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce(BASE_RULE);
+
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'any', port_range: null } });
+
+    const nameInput = screen.getByDisplayValue('Allow HTTPS');
+    fireEvent.change(nameInput, { target: { value: '  Allow HTTPS  ' } });
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+
+    const [, , payload] = mockUpdateFirewallRule.mock.calls[0] as [string, string, { name: string }];
+    expect(payload.name).toBe('Allow HTTPS');
+  });
+
+  // ──── Error handling ─────────────────────────────────────────────────────
+
+  it('shows error notification and does NOT call onSaved when API rejects', async () => {
+    mockUpdateFirewallRule.mockRejectedValueOnce(new Error('Server error'));
+
+    const { onSaved, onClose } = renderEditModal();
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Server error' })
+      )
+    );
+
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows generic error message when API rejects with a non-Error value', async () => {
+    mockUpdateFirewallRule.mockRejectedValueOnce('oops');
+
+    renderEditModal();
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Update failed' })
+      )
+    );
+  });
+
+  // ──── Submitting state ───────────────────────────────────────────────────
+
+  it('shows "Saving…" text on the button while submitting', async () => {
+    let resolve!: (v: unknown) => void;
+    mockUpdateFirewallRule.mockReturnValueOnce(
+      new Promise((res) => {
+        resolve = res;
+      })
+    );
+
+    renderEditModal();
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(screen.getByText(/saving…/i)).toBeInTheDocument());
+
+    // Resolve to avoid act() warnings
+    resolve(BASE_RULE);
+    await waitFor(() => expect(screen.queryByText(/saving…/i)).not.toBeInTheDocument());
+  });
+
+  it('disables all form controls while submitting', async () => {
+    let resolve!: (v: unknown) => void;
+    mockUpdateFirewallRule.mockReturnValueOnce(
+      new Promise((res) => {
+        resolve = res;
+      })
+    );
+
+    renderEditModal();
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(screen.getByText(/saving…/i)).toBeInTheDocument());
+
+    const nameInput = screen.getByDisplayValue('Allow HTTPS');
+    expect(nameInput).toBeDisabled();
+
+    const cancelButton = screen.getByRole('button', { name: /cancel/i });
+    expect(cancelButton).toBeDisabled();
+
+    resolve(BASE_RULE);
+    await waitFor(() => expect(screen.queryByText(/saving…/i)).not.toBeInTheDocument());
+  });
+
+  // ──── Cancel button ──────────────────────────────────────────────────────
+
+  it('does not apply the create-only tcp/udp port guard in edit mode', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce(BASE_RULE);
+
+    // A rule carrying a port range on a non-tcp/udp protocol is legal on the
+    // edit path — the create modal refused it, the edit modal never did, and
+    // the collapse must not extend that refusal to existing rules.
+    renderEditModal({
+      rule: { ...BASE_RULE, protocol: 'any', port_range: { from: 443, to: 443 } },
+    });
+
+    fireEvent.submit(screen.getByText(/^save$/i).closest('form')!);
+
+    await waitFor(() => expect(mockUpdateFirewallRule).toHaveBeenCalledTimes(1));
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Port range only applies to tcp or udp' })
+    );
+  });
+
+  it('calls onClose when Cancel is clicked and leaves the edit fields seeded', () => {
+    const { onClose } = renderEditModal();
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Same reason as the network form: only create mode resets on close.
+    expect(screen.getByDisplayValue('Allow HTTPS')).toBeInTheDocument();
+  });
+
+  // ──── Selector kind change: value input appears/disappears ───────────────
+
+  it('hides value input when src selector changes from cidr to all', () => {
+    renderEditModal({ rule: { ...BASE_RULE, src_selector: { cidr: '192.168.0.0/16' }, dst_selector: undefined, protocol: 'any', port_range: null } });
+
+    // CIDR value should be visible initially
+    expect(screen.getByDisplayValue('192.168.0.0/16')).toBeInTheDocument();
+
+    // Change the src selector kind to 'any'
+    const selects = screen.getAllByRole('combobox');
+    // Source selector is the first selector select
+    const srcKindSelect = selects.find(
+      (s) => (s as HTMLSelectElement).value === 'cidr'
+    );
+    expect(srcKindSelect).toBeTruthy();
+    fireEvent.change(srcKindSelect!, { target: { value: 'all' } });
+
+    // Value input should now be gone
+    expect(screen.queryByDisplayValue('192.168.0.0/16')).not.toBeInTheDocument();
+  });
+
+  it('shows value input when src selector changes from all to cidr', () => {
+    renderEditModal({ rule: { ...BASE_RULE, src_selector: { all: true }, dst_selector: undefined, protocol: 'any', port_range: null } });
+
+    // Src kind is 'any' — no value input
+    const selects = screen.getAllByRole('combobox');
+    const srcKindSelect = selects.find(
+      (s) => (s as HTMLSelectElement).value === 'all'
+    );
+    expect(srcKindSelect).toBeTruthy();
+    fireEvent.change(srcKindSelect!, { target: { value: 'cidr' } });
+
+    // Now a text input for the CIDR should appear
+    // (value will be empty string initially)
+    const inputs = screen.getAllByRole('textbox');
+    expect(inputs.length).toBeGreaterThan(0);
+  });
+
+  // ──── Protocol change shows/hides port range ─────────────────────────────
+
+  it('shows port range fields when protocol is changed to tcp', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'any', port_range: null } });
+    expect(screen.queryByText('Port from')).not.toBeInTheDocument();
+
+    // Protocol select is the combobox with value 'any' that is NOT the src/dst selectors
+    // The src/dst selectors also use 'any' option label; protocol has value 'any' from Protocol label position
+    // Find by display value 'any' among comboboxes that also have option value='tcp'
+    const comboboxes = screen.getAllByRole('combobox');
+    const protocolSelect = comboboxes.find((s) => {
+      const el = s as HTMLSelectElement;
+      return (
+        el.value === 'any' &&
+        Array.from(el.options).some((o) => o.value === 'icmp6')
+      );
+    });
+    expect(protocolSelect).toBeTruthy();
+    fireEvent.change(protocolSelect!, { target: { value: 'tcp' } });
+
+    expect(screen.getByText('Port from')).toBeInTheDocument();
+    expect(screen.getByText('Port to')).toBeInTheDocument();
+  });
+
+  it('hides port range fields when protocol is changed from tcp to any', () => {
+    renderEditModal({ rule: { ...BASE_RULE, protocol: 'tcp', port_range: null } });
+    expect(screen.getByText('Port from')).toBeInTheDocument();
+
+    // Protocol select has value 'tcp' and contains icmp6 option
+    const comboboxes = screen.getAllByRole('combobox');
+    const protocolSelect = comboboxes.find((s) => {
+      const el = s as HTMLSelectElement;
+      return (
+        el.value === 'tcp' &&
+        Array.from(el.options).some((o) => o.value === 'icmp6')
+      );
+    });
+    expect(protocolSelect).toBeTruthy();
+    fireEvent.change(protocolSelect!, { target: { value: 'any' } });
+
+    expect(screen.queryByText('Port from')).not.toBeInTheDocument();
+  });
+
+  // ──── Pending-approval branch (IMP-87ec6f651f07) ──────────────────────────
+
+  it('shows the pending-approval notification (not success) and skips onSaved when the update is parked', async () => {
+    mockUpdateFirewallRule.mockResolvedValueOnce({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.firewall_rule_update',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+
+    const { onSaved, onClose } = renderEditModal();
+
+    const form = screen.getByText(/^save$/i).closest('form')!;
+    fireEvent.submit(form);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        })
+      )
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
   });
 });
