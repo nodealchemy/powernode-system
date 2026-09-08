@@ -751,7 +751,10 @@ describe('TasksTab', () => {
     expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
   });
 
-  it('calls POST /system/tasks/:id/cancel when Cancel is clicked', async () => {
+  // Since IMP-0ea71d15f980 the modal's Cancel opens the shared confirmation
+  // dialog and the reason comes from its optional field, so the POST fires from
+  // "Cancel Operation" and carries no hardcoded reason.
+  it('calls POST /system/tasks/:id/cancel when Cancel is confirmed', async () => {
     const cancelledTask: SystemTask = { ...TASK_PENDING, status: 'cancelled' };
 
     mockGet
@@ -769,14 +772,15 @@ describe('TasksTab', () => {
     fireEvent.click(screen.getAllByTitle('View Details')[0]);
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument(),
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Operation' }));
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
         `/system/tasks/${TASK_PENDING.id}/cancel`,
-        { reason: 'Cancelled by user' },
+        { reason: undefined },
       ),
     );
 
@@ -804,9 +808,10 @@ describe('TasksTab', () => {
     fireEvent.click(screen.getAllByTitle('View Details')[0]);
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument(),
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Operation' }));
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
