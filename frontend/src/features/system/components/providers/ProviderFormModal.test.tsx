@@ -1013,10 +1013,11 @@ describe('ProviderFormModal', () => {
     it('calls onClose when the X button is clicked', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
-      fireEvent.click(screen.getByRole('button', { name: '' }));
-      // The X button is the ghost button. Use the close via backdrop or Cancel
-      // since getByRole('button', { name: '' }) may be ambiguous.
-      // Use Cancel instead:
+      // The core Modal shell renders a labelled close control, so this no
+      // longer needs the nameless-button lookup that made the old assertion
+      // ambiguous enough to be dropped.
+      fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
+      expect(onClose).toHaveBeenCalled();
     });
 
     it('calls onClose when the Cancel button is clicked', () => {
@@ -1029,8 +1030,10 @@ describe('ProviderFormModal', () => {
     it('calls onClose when backdrop is clicked', () => {
       const onClose = jest.fn();
       const { container } = renderModal({ onClose });
-      // The backdrop is the fixed inset-0 bg-black/50 div
-      const backdrop = container.querySelector('.bg-black\\/50') as HTMLElement;
+      // The core Modal portals to document.body and dismisses on a click that
+      // lands on its positioning container.
+      void container;
+      const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
       if (backdrop) fireEvent.click(backdrop);
       expect(onClose).toHaveBeenCalled();
     });

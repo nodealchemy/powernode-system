@@ -57,12 +57,6 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   'operations/CiWorkersTab.tsx',
   'operations/GitopsTab.tsx',
   'operations/OperationDetailModal.tsx',
-  'providers/AvailabilityZoneFormModal.tsx',
-  'providers/ConnectionFormModal.tsx',
-  'providers/InstanceTypeFormModal.tsx',
-  'providers/ProviderDetailModal.tsx',
-  'providers/ProviderFormModal.tsx',
-  'providers/RegionFormModal.tsx',
 ];
 
 function findSources(dir: string, out: string[] = []): string[] {

@@ -482,8 +482,9 @@ describe('ProviderDetailModal', () => {
 
     await waitForLoaded();
 
-    // The fixed-inset backdrop div is the direct sibling above the centered panel
-    const overlay = document.querySelector('.fixed.inset-0.bg-black\\/50');
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const overlay = document.querySelector('[class*="justify-center"]');
     expect(overlay).not.toBeNull();
     fireEvent.click(overlay!);
 

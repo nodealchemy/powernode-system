@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Cpu, AlertCircle } from 'lucide-react';
+import { Cpu, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -197,8 +198,6 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   const numericField = (
     field: 'vcpus' | 'memory_mb' | 'storage_gb' | 'hourly_price',
     label: string,
@@ -230,25 +229,20 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-[60] overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Cpu className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Instance Type' : 'Add Instance Type'}
-              </h2>
-              {manualOverride && (
-                <Badge variant="warning" size="xs">Manual override</Badge>
-              )}
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={
+        <span className="flex items-center gap-3">
+          {isEditMode ? 'Edit Instance Type' : 'Add Instance Type'}
+          {manualOverride && (
+            <Badge variant="warning" size="xs">Manual override</Badge>
+          )}
+        </span>
+      }
+      icon={<Cpu className="w-6 h-6" />}
+      maxWidth="lg"
+    >
 
           <form onSubmit={handleSubmit}>
             <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
@@ -355,9 +349,7 @@ export const InstanceTypeFormModal: React.FC<InstanceTypeFormModalProps> = ({
               </Button>
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
