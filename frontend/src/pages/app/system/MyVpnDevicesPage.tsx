@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, RefreshCw, ShieldOff, Smartphone } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
+import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { myDevicesApi } from '@system/features/system/services/api/myDevicesApi';
@@ -117,27 +118,39 @@ const MyVpnDevicesPage: React.FC = () => {
       description="WireGuard configs for the devices issued to you. Each config contains a private key — download it once, keep it on the device that uses it, and don't forward it."
       breadcrumbs={[{ label: 'System', href: '/app/system' }, { label: 'My VPN' }]}
     >
-      {loading ? (
-        <div className="p-4 text-theme-secondary">Loading your devices…</div>
-      ) : error ? (
+      {error ? (
+        // The error branch keeps its own banner and its retry: the container
+        // has no error slot, and an empty list here is a NORMAL state (nobody
+        // has issued this user a device), so it must never stand in for a
+        // failed load.
         <div className="space-y-3">
           <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm" role="alert">
             {error}
           </div>
           {reloadButton('Try again')}
         </div>
-      ) : devices.length === 0 ? (
-        // An empty list is a NORMAL state (no device has been issued to this
-        // user yet), not a failure — say so plainly instead of showing an error.
-        <div className="p-12 text-center text-theme-secondary">
-          <Smartphone className="mx-auto mb-4" size={48} />
-          <h3 className="text-lg font-medium text-theme-primary mb-1">No VPN devices yet</h3>
-          <p className="text-sm mb-4">
-            When someone issues you a VPN device it will appear here with its config to download.
-          </p>
-          {reloadButton('Refresh')}
-        </div>
       ) : (
+        <ResponsiveListContainer
+          loading={loading}
+          totalCount={devices.length}
+          filteredCount={devices.length}
+          emptyState={{
+            icon: Smartphone,
+            title: 'No VPN devices yet',
+            description:
+              'When someone issues you a VPN device it will appear here with its config to download.',
+            // The label doubles as the accessible name here: the container's
+            // action button takes no aria-label, and a bare "Refresh" in an
+            // otherwise empty screen does not say what it refreshes. The icon
+            // is explicit because the slot defaults to Plus, and a create
+            // glyph on a retry says the opposite of what the button does.
+            action: { label: 'Refresh device list', onClick: load, icon: RefreshCw },
+          }}
+        >
+        {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which
+            would blank this table on narrow screens — and a phone is exactly
+            where someone reads this page. Body renders at every width. */}
+        <ResponsiveListContainer.Body>
         <div className="border border-theme rounded overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-theme-surface text-theme-secondary text-xs">
@@ -220,6 +233,8 @@ const MyVpnDevicesPage: React.FC = () => {
             </tbody>
           </table>
         </div>
+        </ResponsiveListContainer.Body>
+        </ResponsiveListContainer>
       )}
 
       {!loading && !error && devices.length > 0 && (

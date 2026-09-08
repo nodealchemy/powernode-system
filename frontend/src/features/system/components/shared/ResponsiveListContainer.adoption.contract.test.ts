@@ -22,33 +22,40 @@ import { join, relative } from 'path';
 const SRC_ROOT = join(__dirname, '..', '..', '..', '..');
 
 /**
- * Files that render a <table> without going through the container.
+ * Tables that render inside a modal, inside a composite tab, or as a
+ * presentational sub-table that takes its rows as a prop. None of these is a
+ * list surface: the container would wrap them in its own surface card and swap
+ * the layout, which is a redesign rather than the behaviour-preserving
+ * migration this ratchet tracks.
  *
- * Two kinds live here and they are NOT the same debt:
- *   - UNMIGRATED: still owes the conversion.
- *   - EXEMPT: renders a table inside a modal or inside a tab that owns other
- *     content, so it is not a list surface. The container would wrap it in
- *     its own surface card and swap the layout — that is a redesign, not the
- *     behaviour-preserving migration this ratchet tracks.
+ * This list is SEPARATE from the one below on purpose. When the two were one
+ * array distinguished only by a comment, moving a line from "still owes the
+ * work" to "never has to" was invisible to the equality assertion — debt could
+ * be relabelled as an exemption without the diff showing it. Two named lists
+ * make that move a change in both.
  */
-const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [
-  // --- EXEMPT: table inside a modal ---
+const EXEMPT: readonly string[] = [
+  // Table inside a modal.
   'features/system/components/acme/DnsRecordsModal.tsx',
   'features/system/components/operations/BatchDetailModal.tsx',
-  // --- EXEMPT: table is one part of a composite tab, not the tab's list ---
+  // Table is one part of a composite tab, not the tab's list. NOTE: both of
+  // these still hand-roll a loading string and an empty branch of their own.
+  // Exempt from the CONTAINER, not from that duplication.
   'features/system/components/sdwan/AccessTab.tsx',
   'features/system/components/sdwan/routing/NetworkRoutingTab.tsx',
-  // --- EXEMPT: presentational sub-table, receives rows as a prop and owns
-  //     no loading/empty/filter chrome of its own ---
+  // Presentational sub-table: receives rows as a prop, owns no loading, empty
+  // or filter chrome for the container to absorb.
   'features/system/components/platform/PeerTable.tsx',
+];
 
-  // --- UNMIGRATED (delete the line as each is converted) ---
+/** Still owes the conversion. Delete the line as each is converted. */
+const UNMIGRATED: readonly string[] = [
   // Landed after this ratchet did, in another lane. The equality oracle is
   // what caught it: a ceiling would have absorbed it silently.
   'features/system/components/federation_hub/FulfillmentTab.tsx',
-  'features/system/components/ingress/IngressRoutesPanel.tsx',
-  'pages/app/system/MyVpnDevicesPage.tsx',
 ];
+
+const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [...EXEMPT, ...UNMIGRATED];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -68,7 +75,9 @@ function tablesWithoutContainer(): string[] {
     .filter((file) => {
       const source = readFileSync(file, 'utf8');
       if (!source.includes('<table')) return false;
-      return !source.includes('ResponsiveListContainer');
+      // Match an IMPORT, not a mention. Keying on containment lets a single
+      // comment naming the container remove a file from this scan for good.
+      return !/^\s*import[^\n]*ResponsiveListContainer/m.test(source);
     })
     .map((file) => relative(SRC_ROOT, file).split(/[\\/]/).join('/'))
     .sort();

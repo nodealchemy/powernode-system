@@ -16,6 +16,7 @@ import { logger } from '@/shared/utils/logger';
 import { ingressApi } from '../../services/api/ingressApi';
 import type { IngressRoute, IngressRouteStatus } from '../../services/api/ingressApi';
 import { InfiniteScrollSentinel } from '../shared/InfiniteScrollSentinel';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 
 /**
  * Routes tab — read-only monitor list of the ingress routes the platform
@@ -119,19 +120,33 @@ export const IngressRoutesPanel: React.FC = () => {
         </div>
       )}
 
-      {!loading && routes.length === 0 && !error && (
-        <div className="p-12 text-center text-theme-secondary text-sm">
-          No ingress routes yet. Routes are derived from issued certificates — request a
-          certificate under ACME, or use the Expose Service tab to publish a service publicly.
-        </div>
-      )}
-
-      {visibleRoutes.length > 0 && (
-        <ul className="divide-y divide-theme" data-testid="ingress-routes-list">
-          {visibleRoutes.map((route) => (
-            <RouteRow key={route.id} route={route} />
-          ))}
-        </ul>
+      {/* The header stays OUTSIDE the container. The container is skipped ONLY
+          when an error coincides with an empty list: the original guarded the
+          empty branch on `!error` but rendered the list alongside the banner,
+          so guarding the whole container would make a failed refresh blank a
+          list that is still on screen.
+          The <table> further down this file is a nested per-route detail, not
+          this panel's list; the list itself is the <ul> below. */}
+      {!(error && routes.length === 0) && (
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={routes.length}
+        filteredCount={visibleRoutes.length}
+        emptyState={{
+          icon: Globe,
+          title: 'No ingress routes yet',
+          description:
+            'Routes are derived from issued certificates — request a certificate under ACME, or use the Expose Service tab to publish a service publicly.',
+        }}
+      >
+        <ResponsiveListContainer.Body>
+          <ul className="divide-y divide-theme" data-testid="ingress-routes-list">
+            {visibleRoutes.map((route) => (
+              <RouteRow key={route.id} route={route} />
+            ))}
+          </ul>
+        </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
       )}
 
       <InfiniteScrollSentinel onIntersect={loadMore} enabled={hasMore && !loading} />

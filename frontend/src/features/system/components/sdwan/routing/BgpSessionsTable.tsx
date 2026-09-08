@@ -116,6 +116,11 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
         </div>
       </div>
 
+      {/* Skipped when an error coincides with an empty list: the original
+          ternary let an error SUPPRESS the empty state, and showing both would
+          say "none reported yet" and "we could not ask" at the same time. Rows
+          already on screen still render beside the banner, as before. */}
+      {!(error && sessions.length === 0) && (
       <ResponsiveListContainer
         loading={loading}
         totalCount={sessions.length}
@@ -244,6 +249,7 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
         </table>
       </ResponsiveListContainer.Body>
       </ResponsiveListContainer>
+      )}
     </div>
   );
 };

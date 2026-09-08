@@ -28,6 +28,13 @@ export interface EmptyStateProps {
     label: string;
     onClick: () => void;
     permission?: boolean; // suppresses the button when false (e.g., user lacks the create permission)
+    /**
+     * Glyph for the button. Defaults to Plus, which is right for the common
+     * "create the first one" CTA and wrong for anything else — a retry or a
+     * refresh prefixed with a create glyph tells the operator the opposite of
+     * what the button does.
+     */
+    icon?: LucideIcon;
   };
 }
 
@@ -149,12 +156,15 @@ const ResponsiveListContainerImpl: React.FC<ResponsiveListContainerProps> = ({
         {emptyState.description && (
           <p className="text-theme-secondary mb-4">{emptyState.description}</p>
         )}
-        {emptyState.action && emptyState.action.permission !== false && (
-          <Button variant="primary" onClick={emptyState.action.onClick}>
-            <Plus className="w-4 h-4 mr-2" />
-            {emptyState.action.label}
-          </Button>
-        )}
+        {emptyState.action && emptyState.action.permission !== false && (() => {
+          const ActionIcon = emptyState.action.icon ?? Plus;
+          return (
+            <Button variant="primary" onClick={emptyState.action.onClick}>
+              <ActionIcon className="w-4 h-4 mr-2" />
+              {emptyState.action.label}
+            </Button>
+          );
+        })()}
       </div>
     );
   }
