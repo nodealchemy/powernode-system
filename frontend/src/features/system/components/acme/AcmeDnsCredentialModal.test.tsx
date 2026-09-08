@@ -280,8 +280,11 @@ describe('AcmeDnsCredentialModal', () => {
           screen.getByText(/fill the name and all required credential fields/i),
         ).toBeInTheDocument(),
       );
-      // Click the X button to dismiss
-      fireEvent.click(screen.getByRole('button', { name: '' }));
+      // ErrorAlert's dismiss carries aria-label="Dismiss". The previous query
+      // was `name: ''`, which matched ANY button with no accessible name — it
+      // happened to land on the right one only because the banner's X was the
+      // sole unlabelled button in the tree.
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
       await waitFor(() =>
         expect(
           screen.queryByText(/fill the name and all required credential fields/i),

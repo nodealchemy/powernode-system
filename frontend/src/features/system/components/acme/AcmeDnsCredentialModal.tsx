@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyRound, AlertCircle, X, ExternalLink, ShieldCheck } from 'lucide-react';
+import { KeyRound, AlertCircle, ExternalLink, ShieldCheck } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
 import type {
@@ -270,13 +271,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
       ) : (
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
-          <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
-            <AlertCircle className="w-4 h-4" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         )}
 
         <div>
