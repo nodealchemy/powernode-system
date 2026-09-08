@@ -176,6 +176,20 @@ module System
       # deliberately inert: it exempts a decision from the per-module consent
       # budget and makes its approval durable, and this service has neither a
       # consent budget nor any advisory binding.
+      # The plane the gated action acts on, read from the signal metadata
+      # (`instance_id`, `instance_ids`, `node_id`, ... at the top level or under
+      # "payload"), so a protected plane escalates here exactly as it does in
+      # Ai::AutonomyGate (Environment campaign, incr. 3). A resolver FAILURE is
+      # a refusal, not an unknown plane: returns [nil, error] and the caller
+      # parks the action.
+      def gate_environment(metadata)
+        meta = (metadata || {}).to_h.with_indifferent_access
+        params = meta.merge(meta[:payload].respond_to?(:to_h) ? meta[:payload].to_h : {})
+        [ ::Ai::EnvironmentResolution.resolve(account: @account, params: params), nil ]
+      rescue ::Ai::EnvironmentResolution::ResolverError => e
+        [ nil, e.message ]
+      end
+
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
                        force_policy: nil, advisory: false)
         # IMP-b400ec1a2df8: this arm used to be a private copy that only ever
@@ -188,10 +202,17 @@ module System
           return refuse_unpermitted_action(action_category)
         end
 
-        result = if force_policy
-          { policy: force_policy, source: "decision_engine_override" }
+        environment, resolution_error = gate_environment(metadata)
+        result = if resolution_error
+          { policy: "require_approval", source: "environment_resolution_failed", reason: resolution_error }
+        elsif force_policy
+          ::Ai::EnvironmentPolicyOverlay.apply({ policy: force_policy, source: "decision_engine_override" },
+                                               environment: environment, action_category: action_category)
         else
-          @policy_service.resolve(action_category: action_category, agent: @agent)
+          @policy_service.resolve(action_category: action_category, agent: @agent, environment: environment)
+        end
+        if result[:environment_escalation] || resolution_error
+          metadata = (metadata || {}).merge("environment_escalation" => result[:environment_escalation] || result[:reason])
         end
 
         case result[:policy]
@@ -217,8 +238,19 @@ module System
         end
       end
 
-      def policy_for(action_category)
-        @policy_service.resolve(action_category: action_category, agent: @agent)
+      # The verdict the DecisionEngine consults BEFORE it invokes a
+      # side-effectful skill (F3-06). It takes the signal metadata so the plane
+      # is resolved here too — otherwise a skill ran against a control-plane
+      # instance under an auto_approve row and only the AFTER-the-fact
+      # gate_action! parked (Environment campaign, incr. 3 review). A resolver
+      # failure answers require_approval, the same fail-closed arm as the gate.
+      def policy_for(action_category, metadata: nil)
+        environment, resolution_error = gate_environment(metadata)
+        if resolution_error
+          return { policy: "require_approval", source: "environment_resolution_failed", reason: resolution_error }
+        end
+
+        @policy_service.resolve(action_category: action_category, agent: @agent, environment: environment)
       end
 
       # IMP-01a025b3: the CVE half of the DecisionEngine's collaborator

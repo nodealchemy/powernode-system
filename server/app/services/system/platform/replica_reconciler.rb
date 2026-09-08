@@ -306,7 +306,7 @@ module System
           )
         end
 
-        blocking = non_auto_execute_categories
+        blocking = non_auto_execute_categories(instance_ids: victims.map(&:id))
         if blocking.any?
           return Result.new(
             ok: true, deployment_id: deployment.id, target_replicas: target,
@@ -385,7 +385,9 @@ module System
       # categories: the exemption is from the PERMISSION check (who may call),
       # never from the operator's policy (what may run unattended).
       def scale_out_park_reason(deployment, target)
-        policy = resolved_policy_for(SCALE_OUT_ACTION_CATEGORY)
+        # Resolved in the deployment's plane (its template's): a supervised
+        # plane parks scale-out too, not only the destructive scale-in.
+        policy = resolved_policy_for(SCALE_OUT_ACTION_CATEGORY, params: { template_id: deployment.node_template_id })
         unless AUTO_EXECUTE_POLICIES.include?(policy)
           return "the #{SCALE_OUT_ACTION_CATEGORY} policy (#{policy}) does not auto-execute"
         end
@@ -427,18 +429,21 @@ module System
       # operator's control, it does not replace it. Both must auto-execute.
       #
       # Returns the categories that did NOT clear, so the caller can name them.
-      def non_auto_execute_categories
+      def non_auto_execute_categories(instance_ids: [])
         [ SCALE_IN_ACTION_CATEGORY, TERMINATE_ACTION_CATEGORY ].reject do |category|
-          AUTO_EXECUTE_POLICIES.include?(resolved_policy_for(category))
+          AUTO_EXECUTE_POLICIES.include?(resolved_policy_for(category, params: { instance_ids: instance_ids }))
         end
       end
 
       # FAIL CLOSED, the same way BaseSkillExecutor#resolved_policy does: an
-      # unresolvable policy is not permission to destroy an instance.
-      def resolved_policy_for(category)
+      # unresolvable policy is not permission to destroy an instance. Resolved
+      # against the plane of the instances in `params` (Environment campaign,
+      # incr. 3): scaling the control plane in parks for a person.
+      def resolved_policy_for(category, params: {})
+        environment = ::Ai::EnvironmentResolution.resolve(account: @account, params: params)
         ::Ai::InterventionPolicyService
           .new(account: @account)
-          .resolve(action_category: category, agent: @agent, user: @user)[:policy].to_s
+          .resolve(action_category: category, agent: @agent, user: @user, environment: environment)[:policy].to_s
       rescue StandardError => e
         Rails.logger.error("[ReplicaReconciler] #{category} policy resolution failed, refusing: #{e.class}: #{e.message}")
         "require_approval"

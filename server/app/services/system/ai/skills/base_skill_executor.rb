@@ -387,7 +387,8 @@ module System
         def gate_action!(inputs)
           return nil unless self.class.gate_required?
 
-          policy = resolved_policy
+          match = resolved_policy_match(inputs)
+          policy = match[:policy].to_s
           # An auto-execute verdict runs here, on THIS instance, without a
           # durable row. Ai::AutonomyGate's own docstring says it writes an
           # Ai::DeferredOperation "in every case (audit trail)"; that promise is
@@ -400,7 +401,15 @@ module System
 
           # A nested peer never parks (see attr_writer :nested). Only a `block`
           # row still refuses, and it goes through the gate below so the refusal
-          # gets the same durable record a direct one does.
+          # gets the same durable record a direct one does. A PLANE escalation
+          # is the other refusal a nested peer cannot proceed past: the parent
+          # was gated in ITS plane, and a composed step against a protected one
+          # must not ride through — it fails loudly, naming the plane, so the
+          # operator runs it as a top-level action (Environment campaign, incr. 3).
+          if @nested && match[:environment_escalation].present? && policy != "block"
+            return failure("nested #{self.class.action_category} refused: #{match[:environment_escalation]} " \
+                           "— run it as a top-level action so it can be approved")
+          end
           return nil if @nested && policy != "block"
 
           category = self.class.action_category
@@ -483,17 +492,34 @@ module System
         end
 
         # The policy verdict alone, with none of the gate's side effects.
-        def resolved_policy
+        # Resolved WITH the environment of the inputs' subject (Environment
+        # campaign, incr. 3), so a skill run against a protected plane sees the
+        # same escalated verdict the gate would return and takes the gated
+        # branch instead of the auto-execute short-cut above.
+        def resolved_policy(inputs = {})
+          resolved_policy_match(inputs)[:policy].to_s
+        end
+
+        # The full verdict, with :environment_escalation when the plane parked
+        # it. FAIL CLOSED on any resolution error (policy OR plane).
+        def resolved_policy_match(inputs = {})
+          environment = ::Ai::EnvironmentResolution.resolve(account: @account, params: inputs)
           ::Ai::InterventionPolicyService
             .new(account: @account)
-            .resolve(action_category: self.class.action_category, agent: @agent, user: @user)[:policy].to_s
+            .resolve(action_category: self.class.action_category, agent: @agent, user: @user,
+                     environment: environment)
         rescue StandardError => e
           # FAIL CLOSED. An unresolvable policy is not permission — hand the
           # call to the gate, which parks it where an operator can see it.
           Rails.logger.error(
             "[#{self.class.name}] policy resolution failed, gating: #{e.class}: #{e.message}"
           )
-          "require_approval"
+          # `environment_escalation` is set deliberately: a NESTED peer proceeds
+          # past any non-block verdict (see #gate_action!), and a resolution
+          # failure — the resolver included — must not read as "no plane". With
+          # the marker the nested arm refuses instead (fail closed).
+          { policy: "require_approval", reason: "policy resolution failed: #{e.class}",
+            environment_escalation: "policy resolution failed: #{e.class}" }
         end
 
         # Subclasses MUST override. Receives the keyword args passed to

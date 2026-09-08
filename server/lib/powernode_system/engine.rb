@@ -121,6 +121,12 @@ module PowernodeSystem
             #     Nil ⇒ core mode, and core PARKS the plan in draft rather than
             #     proceeding ungated.
             adaptation_gate: "System::AdaptationGate",
+            #   * environment_resolver — which Ai::Environment a gated
+            #     operation's params (instance_id / node_id / template_id /
+            #     instance_pool_id) act on, for Ai::EnvironmentResolution and
+            #     the per-environment overlay in Ai::AutonomyGate. Nil ⇒ no
+            #     overlay (core mode has no fleet rows to place).
+            environment_resolver: "System::EnvironmentResolver",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }

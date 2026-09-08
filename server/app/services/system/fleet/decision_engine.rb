@@ -1913,7 +1913,11 @@ module System
         # an action that already happened. Resolved on the OWNER's gate
         # (HIER-P2A), the same one #decide hands the action to.
         if binding.fetch(:side_effectful)
-          policy = gate.policy_for(binding[:action_category])&.dig(:policy)
+          # The signal payload carries the subject (instance_id, node_id, ...),
+          # so the pre-gate verdict is resolved in the SAME plane gate_action!
+          # will use afterwards (Environment campaign, incr. 3).
+          policy = gate.policy_for(binding[:action_category],
+                                   metadata: skill_metadata_payload(signal, nil))&.dig(:policy)
           unless AUTO_EXECUTE_POLICIES.include?(policy)
             # Plan-only fallback: produce the dry_run plan for the approval
             # request when the executor supports it; otherwise skip.
