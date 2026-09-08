@@ -9,6 +9,7 @@ import {
   GitBranch,
   Package,
   Boxes,
+  Waypoints,
   Database,
   FolderKanban,
   Settings,
@@ -64,6 +65,16 @@ const DOMAIN_PRESENTATION: Record<string, DomainPresentation> = {
     label: 'SDWAN',
     icon: Network,
     description: 'Networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, federation.',
+  },
+  // Declared after `sdwan` for READING order, which is all this map controls.
+  // The server declares it BEFORE sdwan for a different and load-bearing
+  // reason — system.sdwan_federation_compose extends system.sdwan_ and the
+  // pivot takes the first match — and the two orders are deliberately
+  // independent (see SECTION_ORDER below).
+  topology: {
+    label: 'Topology Design',
+    icon: Waypoints,
+    description: 'System Topology Designer compositions: cross-account federation, multi-tenant isolation, service discovery.',
   },
   container_runtime: {
     label: 'Container Runtimes',

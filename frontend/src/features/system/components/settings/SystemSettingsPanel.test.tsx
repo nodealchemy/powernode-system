@@ -113,6 +113,15 @@ jest.mock('@/shared/components/approval-chains/ApprovalChainList', () => ({
 // =============================================================================
 
 const DOMAINS = {
+  // Declared before `sdwan` here for the same reason the server declares it
+  // first: system.sdwan_federation_compose extends system.sdwan_ and the pivot
+  // takes the first match. Leading with it also proves the sidebar reorders by
+  // presentation rather than echoing the server's key order.
+  topology: [
+    { action_category: 'system.sdwan_federation_compose', agent_bucket: 'System Topology Designer', policy: 'require_approval' },
+    { action_category: 'system.multi_tenant_isolation', agent_bucket: 'System Topology Designer', policy: 'require_approval' },
+    { action_category: 'system.service_discovery_compose', agent_bucket: 'System Topology Designer', policy: 'auto_approve' },
+  ],
   instance_pool: [
     { action_category: 'system.instance_pool_create', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
     { action_category: 'system.instance_pool_create', agent_bucket: 'Manual Operations', policy: 'auto_approve' },
@@ -147,6 +156,7 @@ const DOMAINS = {
 const EXPECTED_SECTIONS = [
   'Node Lifecycle',
   'SDWAN',
+  'Topology Design',
   'Container Runtimes',
   'Disk Image CI',
   'Instance Pools',
@@ -237,6 +247,63 @@ describe('SystemSettingsPanel', () => {
     // Manual Operations is an agent BUCKET now, not a domain of its own, so it
     // must not appear as a sidebar section.
     expect(screen.queryByRole('button', { name: /manual operations/i })).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // topology is an OWNED domain, not a fallback render (IMP-0ab06d6a7626)
+  //
+  // The panel tolerates an unrecognised server bucket by title-casing the key,
+  // using a generic icon and showing a generic blurb, and by appending the
+  // section after every curated one. That degradation is deliberate and stays.
+  // But `topology` is a known domain carrying approval-gated compositions an
+  // operator is expected to review, so it should present like its siblings.
+  // ---------------------------------------------------------------------------
+
+  it('gives the topology domain an owned label rather than the humanised key', async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
+    );
+
+    expect(
+      screen.getByRole('button', { name: /topology design/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('gives the topology domain an owned description, not the unknown-key blurb', async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /topology design/i }));
+
+    expect(
+      screen.queryByText('Policies the server groups under this domain.'),
+    ).not.toBeInTheDocument();
+    // Names the three categories the server files under this domain.
+    expect(screen.getByText(/federation/i)).toBeInTheDocument();
+  });
+
+  it('sorts topology among the curated sections instead of appending it last', async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
+    );
+
+    const labels = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent ?? '')
+      .filter((t) => EXPECTED_SECTIONS.some((label) => t.includes(label)));
+
+    const topologyIndex = labels.findIndex((t) => t.includes('Topology Design'));
+    const sdwanIndex = labels.findIndex((t) => t.includes('SDWAN'));
+    const lastIndex = labels.length - 1;
+
+    expect(topologyIndex).toBeGreaterThan(-1);
+    // An unowned key ranks SECTION_ORDER.length and lands after everything.
+    expect(topologyIndex).toBeLessThan(lastIndex);
+    expect(topologyIndex).toBe(sdwanIndex + 1);
   });
 
   it('lists sections in presentation order, not the server\'s key order', async () => {
