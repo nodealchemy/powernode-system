@@ -1309,4 +1309,86 @@ describe('OperationDetailModal', () => {
       expect(mockGet).toHaveBeenCalledTimes(2);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Retry after a failed initial load
+  // ---------------------------------------------------------------------------
+
+  describe('Retry after a failed initial load', () => {
+    it('offers a Retry control in the error branch', async () => {
+      mockGet.mockRejectedValue(new Error('network failure'));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText('Failed to load operation details')).toBeInTheDocument(),
+      );
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+    });
+
+    it('re-runs the initial fetch and renders the operation when the retry succeeds', async () => {
+      mockGet
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValue(envelope({ task: BASE_TASK }));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText('Failed to load operation details')).toBeInTheDocument(),
+      );
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+      await waitForCommand();
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(mockGet).toHaveBeenLastCalledWith('/system/tasks/task-123');
+      expect(screen.queryByText('Failed to load operation details')).not.toBeInTheDocument();
+    });
+
+    it('keeps the error branch with the retry still offered when the retry also fails', async () => {
+      mockGet.mockRejectedValue(new Error('still down'));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText('Failed to load operation details')).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      // The retry swaps in the spinner while it is in flight, so wait for the
+      // error branch to come back rather than reading a stale render.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument(),
+      );
+      expect(screen.getByText('Failed to load operation details')).toBeInTheDocument();
+    });
+
+    it('lets the fallback poll take over once a retry succeeds on a running operation', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValue(envelope({ task: { ...BASE_TASK, status: 'running' as const } }));
+      renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      // The failed load never starts the poll.
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+  });
 });
