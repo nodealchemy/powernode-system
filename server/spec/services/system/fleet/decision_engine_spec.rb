@@ -1415,6 +1415,37 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Environment campaign, increment 3: the F3-06 pre-gate below resolves in
+    # the signal subject's PLANE. An auto_approve row on a destructive
+    # category must not run the executor for real against a control-plane
+    # instance — it runs plan-only and the decision parks, exactly as it
+    # would under a require_approval row.
+    context "the pre-invoke verdict is resolved in the signal's plane" do
+      let(:platform)     { create(:system_node_platform, account: account) }
+      let(:ops)          { account.environments.find_by!(slug: "ops") }
+      let(:ops_template) { create(:system_node_template, account: account, node_platform: platform, environment: ops) }
+      let(:ops_instance) { create(:system_node_instance, :running, node: create(:system_node, account: account, node_template: ops_template)) }
+
+      before do
+        create(:ai_approval_chain, account: account, trigger_type: "autonomy_action", name: "Fleet Autonomy Actions")
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.node_boot_image_drift",
+                                       policy: "auto_approve", is_active: true)
+      end
+
+      it "runs the drift rollout plan-only and parks when the instance is on the control plane" do
+        executor = instance_double(System::Ai::Skills::BootImageDriftRolloutExecutor)
+        allow(System::Ai::Skills::BootImageDriftRolloutExecutor).to receive(:new).and_return(executor)
+        expect(executor).to receive(:execute).with(gated: true, instance_id: ops_instance.id, dry_run: true)
+                                             .and_return({ success: true, data: { plan: "canary" } })
+
+        d = engine.decide(kind: "system.boot_image_drift", severity: :high,
+                          payload: { "instance_id" => ops_instance.id },
+                          fingerprint: "boot_drift:#{ops_instance.id}")
+        expect(d[:decision]).to eq(:pending)
+      end
+    end
+
     # Audit finding F3-06: side-effectful executors ran BEFORE the policy
     # gate, so flipping a policy to require_approval/block did not stop the
     # action — it only changed how the already-performed action was recorded.

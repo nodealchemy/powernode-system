@@ -96,6 +96,27 @@ RSpec.describe System::Platform::ReplicaReconciler do
       expect(result.actual_after).to eq(3)
     end
 
+    # Environment campaign, increment 3: scale-out is resolved in the
+    # deployment's plane (its template's), so a supervised plane parks it.
+    it "resolves the scale-out verdict in the deployment template's plane" do
+      ops = account.environments.find_by!(slug: "ops")
+      template.update!(environment: ops)
+      node
+      live_instance!
+      deployment.update!(target_replicas: 3)
+      seen = []
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve) do |_svc, action_category:, environment: nil, **|
+        seen << [ action_category, environment&.slug ]
+        { policy: "auto_approve" }
+      end
+      deployment.update!(metadata: { ::System::PlatformDeployment::MAX_REPLICAS_METADATA_KEY => 3 })
+      stub_provision
+
+      reconciler.reconcile!(deployment)
+
+      expect(seen).to include([ described_class::SCALE_OUT_ACTION_CATEGORY, "ops" ])
+    end
+
     it "is a no-op when the live count already matches the target" do
       node
       live_instance!
@@ -161,6 +182,28 @@ RSpec.describe System::Platform::ReplicaReconciler do
       expect(result.ok?).to be true
       expect(result.terminated_instance_ids.size).to eq(2)
       expect(result.pending_removal_instance_ids).to be_empty
+    end
+
+    # Environment campaign, increment 3: the scale-in verdict is resolved in
+    # the VICTIMS' plane, not the account's default — scaling the control
+    # plane in must park for a person.
+    it "resolves both scale-in categories against the plane of the instances it would remove" do
+      ops = account.environments.find_by!(slug: "ops")
+      ::System::NodeInstance.where(node_id: node.id).update_all(environment_id: ops.id)
+      seen = []
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve) do |_svc, action_category:, environment: nil, **|
+        seen << [ action_category, environment&.slug ]
+        { policy: "auto_approve" }
+      end
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+        instance.update_column(:status, "terminated")
+        ::System::Runtime::Result.ok(data: {})
+      end
+
+      reconciler.reconcile!(deployment)
+
+      expect(seen).to include([ described_class::SCALE_IN_ACTION_CATEGORY, "ops" ],
+                              [ described_class::TERMINATE_ACTION_CATEGORY, "ops" ])
     end
 
     it "records a provider refusal as a failure rather than a silent success" do
