@@ -351,15 +351,54 @@ describe('VolumesTab', () => {
   // onDetach — systemApi.detachVolume
   // ---------------------------------------------------------------------------
 
+  // Detaching a mounted volume breaks the workload on the instance holding it,
+  // and the only undo is a re-attach — so it is confirm-gated like delete
+  // (IMP-443984320078).
+  function confirmDetach() {
+    fireEvent.click(screen.getByRole('button', { name: 'Detach Volume' }));
+  }
+
+  it('does not call systemApi.detachVolume until the operator confirms', async () => {
+    renderTab();
+
+    await act(async () => { capturedListProps.onDetach?.(VOLUME_IN_USE); });
+
+    expect(screen.getByRole('button', { name: 'Detach Volume' })).toBeInTheDocument();
+    expect(mockDetachVolume).not.toHaveBeenCalled();
+  });
+
+  it('names the volume in the confirmation', async () => {
+    renderTab();
+
+    await act(async () => { capturedListProps.onDetach?.(VOLUME_IN_USE); });
+
+    expect(screen.getByRole('heading', { name: 'Detach Volume' })).toBeInTheDocument();
+    expect(screen.getByText(/boot-vol/)).toBeInTheDocument();
+  });
+
+  it('leaves the volume attached when the operator dismisses the confirmation', async () => {
+    renderTab();
+
+    await act(async () => { capturedListProps.onDetach?.(VOLUME_IN_USE); });
+    fireEvent.click(screen.getByRole('button', { name: 'Keep Attached' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Detach Volume' })).not.toBeInTheDocument(),
+    );
+    expect(mockDetachVolume).not.toHaveBeenCalled();
+  });
+
   it('calls systemApi.detachVolume with the volume id and shows success notification', async () => {
     mockDetachVolume.mockResolvedValueOnce(VOLUME_AVAILABLE);
     renderTab();
 
-    capturedListProps.onDetach?.(VOLUME_IN_USE);
+    await act(async () => { capturedListProps.onDetach?.(VOLUME_IN_USE); });
+    confirmDetach();
 
     await waitFor(() =>
       expect(mockDetachVolume).toHaveBeenCalledWith('vol-in-use'),
     );
+    expect(mockDetachVolume).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'success', message: 'Volume detached successfully' }),
@@ -371,7 +410,8 @@ describe('VolumesTab', () => {
     mockDetachVolume.mockRejectedValueOnce(new Error('network error'));
     renderTab();
 
-    capturedListProps.onDetach?.(VOLUME_IN_USE);
+    await act(async () => { capturedListProps.onDetach?.(VOLUME_IN_USE); });
+    confirmDetach();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
