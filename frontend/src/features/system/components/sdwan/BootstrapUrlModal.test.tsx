@@ -1,4 +1,16 @@
 import React from 'react';
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { join, relative } from 'path';
+
+/** Every .test.tsx under a directory, for the cross-spec path scan below. */
+function walkSpecs(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) walkSpecs(full, out);
+    else if (entry.endsWith('.test.tsx')) out.push(full);
+  }
+  return out;
+}
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { BootstrapUrlModal } from './BootstrapUrlModal';
 import type { SdwanIssueUserDeviceResponse } from '../../types/sdwan.types';
@@ -6,6 +18,9 @@ import type { SdwanIssueUserDeviceResponse } from '../../types/sdwan.types';
 // =============================================================================
 // Fixtures
 // =============================================================================
+
+/** The bootstrap path prefix the server emits. Pinned against it below. */
+const BOOTSTRAP_PATH_PREFIX = '/api/v1/system/sdwan/bootstrap/';
 
 const DEVICE_RESULT: SdwanIssueUserDeviceResponse = {
   user_device: {
@@ -22,7 +37,7 @@ const DEVICE_RESULT: SdwanIssueUserDeviceResponse = {
   },
   bootstrap: {
     token: 'opaque-token-blob',
-    url: '/api/v1/sdwan/bootstrap/opaque-token-blob',
+    url: '/api/v1/system/sdwan/bootstrap/opaque-token-blob',
     expires_at: '2026-06-01T13:00:00Z',
   },
 };
@@ -96,7 +111,7 @@ describe('BootstrapUrlModal', () => {
 
   it('shows the full bootstrap URL composed from window.location.origin + path', () => {
     renderModal();
-    const expectedUrl = `${window.location.origin}/api/v1/sdwan/bootstrap/opaque-token-blob`;
+    const expectedUrl = `${window.location.origin}/api/v1/system/sdwan/bootstrap/opaque-token-blob`;
     const input = screen.getByRole<HTMLInputElement>('textbox');
     expect(input.value).toBe(expectedUrl);
   });
@@ -134,7 +149,7 @@ describe('BootstrapUrlModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /copy/i }));
     await waitFor(() => {
       expect(mockWriteText).toHaveBeenCalledWith(
-        `${window.location.origin}/api/v1/sdwan/bootstrap/opaque-token-blob`,
+        `${window.location.origin}/api/v1/system/sdwan/bootstrap/opaque-token-blob`,
       );
     });
   });
@@ -244,11 +259,11 @@ describe('BootstrapUrlModal', () => {
       ...DEVICE_RESULT,
       bootstrap: {
         ...DEVICE_RESULT.bootstrap,
-        url: '/api/v1/sdwan/bootstrap/different-token-xyz',
+        url: '/api/v1/system/sdwan/bootstrap/different-token-xyz',
       },
     };
     renderModal({ result });
-    const expected = `${window.location.origin}/api/v1/sdwan/bootstrap/different-token-xyz`;
+    const expected = `${window.location.origin}/api/v1/system/sdwan/bootstrap/different-token-xyz`;
     const input = screen.getByRole<HTMLInputElement>('textbox');
     expect(input.value).toBe(expected);
   });
@@ -282,5 +297,87 @@ describe('BootstrapUrlModal', () => {
   it('renders the "Public key:" label with the public key', () => {
     renderModal();
     expect(screen.getByText(/Public key:/i)).toBeInTheDocument();
+  });
+
+  // ── Server path parity ────────────────────────────────────────────────────────
+  //
+  // This modal shows the operator the exact URL a user will fetch their
+  // WireGuard config from. The URL is single-use and token-authenticated, so an
+  // operator who copies a wrong path hands the user a link that 404s with no
+  // signal about which half is wrong.
+  //
+  // The component only renders the URL it is handed, so a wrong fixture breaks
+  // nothing and every example still passes — which is exactly why the fixtures
+  // sat on a path the server has never emitted. The assertions below tie them
+  // to the server's own emitter so they cannot drift again.
+  //
+  // Note what is pinned and what is derived. BOOTSTRAP_PATH_PREFIX stays a
+  // LITERAL: it is the wire value under test, and computing the fixtures from
+  // the server file instead would make this spec agree with the server by
+  // construction and test nothing. The server read is the ORACLE, not the
+  // source of the value.
+
+  /** The prefix the server actually emits, read from its emitter. */
+  const serverBootstrapPrefix = (): string => {
+    const controller = readFileSync(
+      join(
+        __dirname, '..', '..', '..', '..', '..', '..',
+        'server', 'app', 'controllers', 'api', 'v1', 'system', 'sdwan',
+        'user_devices_controller.rb',
+      ),
+      'utf8',
+    );
+    // matchAll + an exact count, not `.match`, which takes the FIRST hit and
+    // cannot tell code from prose. That file opens with a header comment about
+    // this very URL, so a quoted example pasted there later would silently
+    // re-anchor this oracle onto a comment while the real emitter drifted.
+    const hits = [...controller.matchAll(/"(\/api\/v\d+\/[^"]*bootstrap\/)#\{token\}"/g)];
+    if (hits.length !== 1) {
+      throw new Error(
+        `Expected exactly one bootstrap URL literal in user_devices_controller.rb, found ${hits.length}. ` +
+        'If the emitter moved or changed shape, update this guard rather than deleting it.',
+      );
+    }
+    return hits[0][1];
+  };
+
+  it('pins the bootstrap path prefix the server actually emits', () => {
+    expect(BOOTSTRAP_PATH_PREFIX).toBe(serverBootstrapPrefix());
+  });
+
+  it('builds its fixture URLs from that prefix', () => {
+    expect(DEVICE_RESULT.bootstrap.url).toBe(`${BOOTSTRAP_PATH_PREFIX}opaque-token-blob`);
+  });
+
+  it('has no bootstrap path in any sdwan spec that uses a different prefix', () => {
+    // Scoped to the whole sdwan component tree, not just this file. The same
+    // defect was also sitting in AccessTab.test.tsx, which feeds this very
+    // modal a fixture of its own — a guard that only read __filename would
+    // never have seen it, and would not see the next one either.
+    //
+    // The fixtures this scans must stay LITERAL. Writing them as
+    // `${BOOTSTRAP_PATH_PREFIX}token` would satisfy the assertion above while
+    // leaving this one nothing to find, and the empty-match guard below would
+    // then fail on what looks like a harmless cleanup.
+    const specs = walkSpecs(__dirname);
+    expect(specs.length).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    let seen = 0;
+    for (const file of specs) {
+      const found =
+        readFileSync(file, 'utf8').match(
+          /\/api\/v\d+\/[A-Za-z0-9_\/-]*bootstrap\/[A-Za-z0-9_-]+/g,
+        ) ?? [];
+      seen += found.length;
+      for (const path of found) {
+        if (!path.startsWith(BOOTSTRAP_PATH_PREFIX)) {
+          offenders.push(`${relative(__dirname, file)}: ${path}`);
+        }
+      }
+    }
+    // Without this, deleting every fixture would read as a clean pass.
+    expect(seen).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
   });
 });

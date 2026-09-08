@@ -864,7 +864,7 @@ describe('AccessTab', () => {
       user_device: DEVICE_A,
       bootstrap: {
         token: 'tok-abc',
-        url: '/api/v1/bootstrap/tok-abc',
+        url: '/api/v1/system/sdwan/bootstrap/tok-abc',
         expires_at: '2026-06-05T23:00:00Z',
       },
     };
