@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Save, X } from 'lucide-react';
+import { Save } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -102,15 +103,13 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-theme-surface border border-theme rounded-lg shadow-xl w-full max-w-lg p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Save as Template</h2>
-          <Button size="xs" variant="ghost" onClick={onClose}>
-            <X size={16} />
-          </Button>
-        </div>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Save as Template"
+      icon={<Save className="w-6 h-6" />}
+      maxWidth="lg"
+    >
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">Name *</label>
@@ -179,7 +178,6 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
             {saving ? 'Saving…' : 'Save Template'}
           </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };

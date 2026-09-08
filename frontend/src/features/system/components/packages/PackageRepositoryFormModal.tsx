@@ -1,5 +1,5 @@
 import { FC, useEffect, useMemo, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, Package } from 'lucide-react';
 import { packageRepositoriesApi, type SystemPackageRepository, type PackageRepositoryCreate } from '@system/features/system/services/api/packageRepositoriesApi';
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
 import { platformsApi } from '@system/features/system/services/api/platformsApi';
@@ -7,6 +7,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
+import { Modal } from '@/shared/components/ui/Modal';
 import type { SystemNodeArchitecture, SystemNodePlatform } from '@system/features/system/types/system.types';
 
 interface Props {
@@ -220,8 +221,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
     [platforms],
   );
 
-  if (!open) return null;
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -262,15 +261,14 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl p-6 max-h-[90vh] overflow-y-auto"
-      >
-        <h2 className="text-lg font-semibold text-theme-primary mb-4">
-          {repository ? 'Edit Package Repository' : 'Create Package Repository'}
-        </h2>
-
+    <Modal
+      isOpen={open}
+      onClose={onClose}
+      title={repository ? 'Edit Package Repository' : 'Create Package Repository'}
+      icon={<Package className="w-6 h-6" />}
+      maxWidth="2xl"
+    >
+      <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-xs text-theme-secondary">Name</span>
@@ -476,6 +474,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 };

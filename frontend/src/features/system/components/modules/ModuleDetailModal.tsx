@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  X,
   Package,
   Settings,
   FileCode,
@@ -20,6 +19,7 @@ import {
   Copy,
   Check
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { History, Wrench } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
@@ -87,6 +87,10 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   const [loadingDependencies, setLoadingDependencies] = useState(false);
   const [availableModules, setAvailableModules] = useState<SystemNodeModule[]>([]);
   const [showAddDependencyModal, setShowAddDependencyModal] = useState(false);
+  // Raised by the puppet tab's own assign form / delete confirmation.
+  const [puppetDialogOpen, setPuppetDialogOpen] = useState(false);
+  // Raised by the versions tab's promote / rollback confirmation.
+  const [versionsDialogOpen, setVersionsDialogOpen] = useState(false);
   const [selectedDependency, setSelectedDependency] = useState<string>('');
   const [addingDependency, setAddingDependency] = useState(false);
   const [removingDependency, setRemovingDependency] = useState<string | null>(null);
@@ -232,8 +236,6 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       addNotification({ type: 'error', message: 'Could not copy webhook secret to clipboard' });
     }
   }, [module, addNotification]);
-
-  if (!isOpen) return null;
 
   const tabs = [
     { id: 'info' as const, label: 'Information', icon: Package },
@@ -660,38 +662,36 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-3xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : module?.name || 'Module Details'}
-                </h2>
-                {module && (
-                  <p className="text-sm text-theme-secondary">
-                    {varietyLabels[module.variety] || module.variety} Module
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {module && onEdit && (
-                <Button variant="outline" size="sm" onClick={() => onEdit(module)}>
-                  Edit
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={onClose}>
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-          </div>
-
+    <>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : module?.name || 'Module Details'}
+      subtitle={module ? `${varietyLabels[module.variety] || module.variety} Module` : undefined}
+      icon={<Package className="w-6 h-6" />}
+      maxWidth="3xl"
+      // Three dialogs can sit on top of this one — the Add Dependency form, the
+      // shared confirmation, and the puppet tab's own dialogs. Each is a core
+      // Modal listening for Escape on document, so ours stands down.
+      closeOnEscape={
+        !showAddDependencyModal &&
+        ConfirmationDialog === null &&
+        !puppetDialogOpen &&
+        !versionsDialogOpen
+      }
+      footer={
+        <>
+          {module && onEdit && (
+            <Button variant="outline" onClick={() => onEdit(module)}>
+              Edit
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </>
+      }
+    >
           {/* Tabs */}
           <div className="border-b border-theme">
             <nav className="flex -mb-px">
@@ -713,7 +713,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           </div>
 
           {/* Content */}
-          <div className="p-6 max-h-[60vh] overflow-y-auto">
+          <div className="pt-4">
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -727,6 +727,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   <ModuleVersionsPanel
                     moduleId={module.id}
                     canUpdate={canManageDependencies}
+                    onNestedDialogChange={setVersionsDialogOpen}
                     onModuleChanged={() => {
                       // Rollback rewrites the module spec + current-version
                       // pointer — refetch so the other tabs show the result.
@@ -735,7 +736,10 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   />
                 )}
                 {activeTab === 'puppet' && (
-                  <ModulePuppetAssignmentsPanel moduleId={module.id} />
+                  <ModulePuppetAssignmentsPanel
+                    moduleId={module.id}
+                    onNestedDialogChange={setPuppetDialogOpen}
+                  />
                 )}
                 {activeTab === 'autonomy' && renderAutonomyTab()}
               </>
@@ -745,48 +749,49 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
               </div>
             )}
           </div>
+    </Modal>
 
-          {/* Footer */}
-          <div className="flex justify-end p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Add Dependency Modal */}
+      {/* Add Dependency Modal — nested above the detail dialog. */}
       {showAddDependencyModal && (
-        <div className="fixed inset-0 z-[60] overflow-y-auto">
-          <div
-            className="fixed inset-0 bg-black/50 transition-opacity"
-            onClick={() => {
-              setShowAddDependencyModal(false);
-              setSelectedDependency('');
-            }}
-          />
-          <div className="flex min-h-full items-center justify-center p-4">
-            <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-              <div className="flex items-center justify-between p-4 border-b border-theme">
-                <div className="flex items-center gap-3">
-                  <Plus className="w-6 h-6 text-theme-info-fg" />
-                  <h3 className="text-lg font-semibold text-theme-primary">
-                    Add Dependency
-                  </h3>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setShowAddDependencyModal(false);
-                    setSelectedDependency('');
-                  }}
-                >
-                  <X className="w-5 h-5" />
-                </Button>
-              </div>
-
-              <div className="p-4">
+        <Modal
+          isOpen
+          onClose={() => {
+            setShowAddDependencyModal(false);
+            setSelectedDependency('');
+          }}
+          title="Add Dependency"
+          icon={<Plus className="w-6 h-6" />}
+          maxWidth="md"
+          footer={
+            <>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowAddDependencyModal(false);
+                  setSelectedDependency('');
+                }}
+                disabled={addingDependency}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleAddDependency}
+                disabled={!selectedDependency || addingDependency}
+              >
+                {addingDependency ? (
+                  <>
+                    <LoadingSpinner size="sm" className="mr-2" />
+                    Adding...
+                  </>
+                ) : (
+                  'Add Dependency'
+                )}
+              </Button>
+            </>
+          }
+        >
+              <div>
                 <label className="block text-sm font-medium text-theme-primary mb-2">
                   Select Module
                 </label>
@@ -810,40 +815,11 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   </select>
                 )}
               </div>
-
-              <div className="flex justify-end gap-3 p-4 border-t border-theme">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowAddDependencyModal(false);
-                    setSelectedDependency('');
-                  }}
-                  disabled={addingDependency}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleAddDependency}
-                  disabled={!selectedDependency || addingDependency}
-                >
-                  {addingDependency ? (
-                    <>
-                      <LoadingSpinner size="sm" className="mr-2" />
-                      Adding...
-                    </>
-                  ) : (
-                    'Add Dependency'
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {ConfirmationDialog}
-    </div>
+    </>
   );
 };
 

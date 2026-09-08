@@ -378,7 +378,9 @@ describe('ModuleBuildsTab', () => {
 
     await waitFor(() => expect(screen.getByText('pkg-closure')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    // The core Modal shell adds its own "Close modal" control alongside the
+    // footer's Close button, so the lookup has to be exact.
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
 
     await waitFor(() => expect(screen.queryByText('pkg-closure')).not.toBeInTheDocument());
   });

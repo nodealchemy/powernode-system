@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { X, Cloud, AlertCircle, KeyRound, CheckCircle2 } from 'lucide-react';
+import { Cloud, AlertCircle, KeyRound, CheckCircle2 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -441,8 +442,6 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   // Credentials tab needs the provider record (for its UUID) to associate
   // credentials. Available once editing OR once a new provider has been
   // successfully created in this session (createdProvider is populated by
@@ -451,25 +450,15 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   const credentialsTabAvailable = !!effectiveProvider;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Cloud className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Provider' : 'Add Provider'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? 'Edit Provider' : 'Add Provider'}
+      icon={<Cloud className="w-6 h-6" />}
+      maxWidth="2xl"
+    >
           {/* Tab strip */}
-          <div className="flex items-center gap-1 border-b border-theme px-4" role="tablist">
+          <div className="flex items-center gap-1 border-b border-theme" role="tablist">
             <button
               type="button"
               role="tab"
@@ -1286,9 +1275,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
             </div>
           </form>
           )}
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

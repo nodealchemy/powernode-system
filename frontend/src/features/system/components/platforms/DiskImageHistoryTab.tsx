@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ChevronDown,
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
@@ -23,6 +24,13 @@ import type {
 
 interface Props {
   platform: SystemNodePlatform;
+  /**
+   * Notified when the rollback confirmation dialog opens or closes. A parent
+   * that is itself a `Modal` uses this to suppress its own Escape handler
+   * while the nested confirm is up — the core Modal listens on `document`, so
+   * one keypress would otherwise tear down both dialogs.
+   */
+  onConfirmOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -37,7 +45,7 @@ interface Props {
  *
  * Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 4).
  */
-export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
+export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenChange }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
   const { currentUser } = useAuth();
@@ -49,6 +57,12 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
   const [loading, setLoading] = useState(true);
   const [rollingBackId, setRollingBackId] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<SystemDiskImagePublication | null>(null);
+
+  // Keep a Modal parent informed so it can stand down its Escape handler while
+  // this nested confirm is open.
+  useEffect(() => {
+    onConfirmOpenChange?.(confirmTarget !== null);
+  }, [confirmTarget, onConfirmOpenChange]);
 
   // Click-to-expand state — Set<id> so multiple rows can be open at once.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -323,9 +337,21 @@ const RollbackConfirmModal: React.FC<{
   submitting: boolean;
 }> = ({ publication, onConfirm, onCancel, submitting }) => {
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold mb-3 text-theme-primary">Activate publication?</h3>
+    <Modal
+      isOpen
+      onClose={onCancel}
+      title="Activate publication?"
+      icon={<RotateCcw className="w-6 h-6" />}
+      maxWidth="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button variant="primary" onClick={onConfirm} disabled={submitting}>
+            {submitting ? 'Activating…' : 'Activate'}
+          </Button>
+        </>
+      }
+    >
         <p className="text-sm text-theme-secondary mb-2">
           Re-activate publication{' '}
           <code className="font-mono">{publication.git_sha_short}</code>{' '}
@@ -336,14 +362,7 @@ const RollbackConfirmModal: React.FC<{
           currently-active publication will be retired (file_object soft-deleted,
           recoverable for the next 7 days).
         </p>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button variant="primary" onClick={onConfirm} disabled={submitting}>
-            {submitting ? 'Activating…' : 'Activate'}
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

@@ -198,12 +198,12 @@ describe('ArchitectureFormModal', () => {
     it('hides the submit button and shows "Close" instead of "Cancel"', () => {
       renderModal({ editArchitecture: architecture({ is_canonical: true }) });
       expect(screen.queryByRole('button', { name: /update architecture/i })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
     });
 
     it('does not call systemApi when form is submitted in canonical read-only mode', async () => {
       renderModal({ editArchitecture: architecture({ is_canonical: true }) });
-      fireEvent.submit(screen.getByRole('button', { name: /close/i }).closest('form')!);
+      fireEvent.submit(screen.getByRole('button', { name: /^close$/i }).closest('form')!);
       await waitFor(() => expect(mockCreateArchitecture).not.toHaveBeenCalled());
       expect(mockUpdateArchitecture).not.toHaveBeenCalled();
     });
@@ -236,7 +236,7 @@ describe('ArchitectureFormModal', () => {
 
     it('shows "Close" label instead of "Cancel"', () => {
       renderModal();
-      expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^close$/i })).toBeInTheDocument();
     });
   });
 
@@ -573,8 +573,9 @@ describe('ArchitectureFormModal', () => {
     it('calls onClose when the overlay backdrop is clicked', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
-      // The backdrop is a fixed div directly above the modal card
-      const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
       fireEvent.click(backdrop);
       expect(onClose).toHaveBeenCalledTimes(1);
     });

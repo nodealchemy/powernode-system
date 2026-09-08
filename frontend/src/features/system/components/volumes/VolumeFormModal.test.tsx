@@ -762,7 +762,8 @@ describe('VolumeFormModal', () => {
     await waitFor(() => expect(mockGetProviders).toHaveBeenCalled());
 
     // The backdrop is the fixed inset-0 bg-black div
-    const backdrop = container.querySelector('.bg-black\\/50') as HTMLElement;
+    void container;
+    const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalled();
   });

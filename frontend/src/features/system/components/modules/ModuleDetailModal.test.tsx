@@ -499,7 +499,7 @@ describe('ModuleDetailModal', () => {
       renderModal({ onClose });
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /close/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
 
       expect(onClose).toHaveBeenCalled();
     });
@@ -511,8 +511,10 @@ describe('ModuleDetailModal', () => {
       const { container } = renderModal({ onClose });
 
       await waitForModuleLoad('ssh-base');
-      // Backdrop is the first fixed inset-0 bg-black/50 div
-      const backdrop = container.querySelector('.fixed.inset-0.bg-black\\/50');
+      // The core Modal dismisses on a click that lands on its positioning
+      // container, which is what a click outside the panel resolves to.
+      void container;
+      const backdrop = document.querySelector('[class*="justify-center"]');
       expect(backdrop).toBeInTheDocument();
       fireEvent.click(backdrop!);
 
@@ -1211,7 +1213,12 @@ describe('ModuleDetailModal', () => {
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Remove dependency'));
 
-      const dialog = await screen.findByRole('dialog');
+      // The detail modal is a dialog too now; the confirmation portals last.
+      const dialog = await waitFor(() => {
+        const open = screen.getAllByRole('dialog');
+        if (open.length < 2) throw new Error('confirmation not open');
+        return open[open.length - 1];
+      });
       expect(within(dialog).getByText(/ssl-certs/)).toBeInTheDocument();
       expect(within(dialog).getByText(/ssh-base/)).toBeInTheDocument();
     });

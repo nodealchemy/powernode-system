@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  X,
   Cloud,
   MapPin,
   Server,
@@ -19,6 +18,7 @@ import {
   ChevronDown,
   ChevronRight
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -448,7 +448,6 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
     }
   }, [addNotification]);
 
-  if (!isOpen) return null;
 
   const tabs = [
     { id: 'info' as const, label: 'Information', icon: Cloud },
@@ -984,39 +983,45 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
     );
   };
 
+  // Six dialogs can sit on top of this one: the region / instance-type /
+  // availability-zone / connection forms and the two delete confirmations.
+  // Each is a core Modal registering Escape on `document`, so this one stands
+  // its own handler down while any of them is up.
+  const nestedDialogOpen =
+    showRegionModal ||
+    showInstanceTypeModal ||
+    showConnectionModal ||
+    zoneModalRegionId !== null ||
+    regionToDelete !== null ||
+    connectionToDelete !== null;
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-3xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Cloud className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : provider?.name || 'Provider Details'}
-                </h2>
-                {provider && (
-                  <p className="text-sm text-theme-secondary">
-                    {providerTypeLabels[provider.provider_type] || provider.provider_type}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {provider && onEdit && (
-                <Button variant="outline" size="sm" onClick={() => onEdit(provider)}>
-                  Edit
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={onClose}>
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-          </div>
-
+    <>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : provider?.name || 'Provider Details'}
+      subtitle={
+        provider
+          ? providerTypeLabels[provider.provider_type] || provider.provider_type
+          : undefined
+      }
+      icon={<Cloud className="w-6 h-6" />}
+      maxWidth="3xl"
+      closeOnEscape={!nestedDialogOpen}
+      footer={
+        <>
+          {provider && onEdit && (
+            <Button variant="outline" onClick={() => onEdit(provider)}>
+              Edit
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </>
+      }
+    >
           {/* Tabs */}
           <div className="border-b border-theme">
             <nav className="flex -mb-px">
@@ -1043,7 +1048,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
           </div>
 
           {/* Content */}
-          <div className="p-6 max-h-[60vh] overflow-y-auto">
+          <div className="pt-4">
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -1062,15 +1067,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
               </div>
             )}
           </div>
-
-          {/* Footer */}
-          <div className="flex justify-end p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          </div>
-        </div>
-      </div>
+    </Modal>
 
       {/* Region Form Modal */}
       {providerId && (
@@ -1137,78 +1134,62 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
 
       {/* Region Delete Confirmation */}
       {regionToDelete && (
-        <div className="fixed inset-0 z-[60] overflow-y-auto">
-          <div
-            className="fixed inset-0 bg-black/50 transition-opacity"
-            onClick={() => setRegionToDelete(null)}
-          />
-          <div className="flex min-h-full items-center justify-center p-4">
-            <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-              <div className="p-6">
-                <h3 className="text-lg font-semibold text-theme-primary mb-2">
-                  Delete Region
-                </h3>
-                <p className="text-theme-secondary mb-6">
-                  Are you sure you want to delete the region "{regionToDelete.name}"? This action cannot be undone.
-                </p>
-                <div className="flex justify-end gap-3">
-                  <Button
-                    variant="outline"
-                    onClick={() => setRegionToDelete(null)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="danger"
-                    onClick={handleDeleteRegion}
-                    disabled={deletingRegion}
-                  >
-                    {deletingRegion ? 'Deleting...' : 'Delete Region'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Modal
+          isOpen
+          onClose={() => setRegionToDelete(null)}
+          title="Delete Region"
+          icon={<MapPin className="w-6 h-6" />}
+          maxWidth="md"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setRegionToDelete(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDeleteRegion}
+                disabled={deletingRegion}
+              >
+                {deletingRegion ? 'Deleting...' : 'Delete Region'}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-theme-secondary">
+            Are you sure you want to delete the region "{regionToDelete.name}"? This action cannot be undone.
+          </p>
+        </Modal>
       )}
 
       {/* Connection Delete Confirmation */}
       {connectionToDelete && (
-        <div className="fixed inset-0 z-[60] overflow-y-auto">
-          <div
-            className="fixed inset-0 bg-black/50 transition-opacity"
-            onClick={() => setConnectionToDelete(null)}
-          />
-          <div className="flex min-h-full items-center justify-center p-4">
-            <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-              <div className="p-6">
-                <h3 className="text-lg font-semibold text-theme-primary mb-2">
-                  Delete Connection
-                </h3>
-                <p className="text-theme-secondary mb-6">
-                  Are you sure you want to delete the connection "{connectionToDelete.name}"? This action cannot be undone.
-                </p>
-                <div className="flex justify-end gap-3">
-                  <Button
-                    variant="outline"
-                    onClick={() => setConnectionToDelete(null)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="danger"
-                    onClick={handleDeleteConnection}
-                    disabled={deletingConnection}
-                  >
-                    {deletingConnection ? 'Deleting...' : 'Delete Connection'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Modal
+          isOpen
+          onClose={() => setConnectionToDelete(null)}
+          title="Delete Connection"
+          icon={<Server className="w-6 h-6" />}
+          maxWidth="md"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setConnectionToDelete(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDeleteConnection}
+                disabled={deletingConnection}
+              >
+                {deletingConnection ? 'Deleting...' : 'Delete Connection'}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-theme-secondary">
+            Are you sure you want to delete the connection "{connectionToDelete.name}"? This action cannot be undone.
+          </p>
+        </Modal>
       )}
-    </div>
+    </>
   );
 };
 

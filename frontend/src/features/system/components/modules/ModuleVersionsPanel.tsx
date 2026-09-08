@@ -40,15 +40,28 @@ interface ModuleVersionsPanelProps {
   canUpdate: boolean;
   /** Called after a rollback changes the module (spec + current version). */
   onModuleChanged?: () => void;
+  /**
+   * Notified when this panel raises a dialog of its own. A parent that is
+   * itself a `Modal` uses it to suppress its Escape handler — the core Modal
+   * listens on `document`, so one keypress would otherwise tear down both.
+   */
+  onNestedDialogChange?: (open: boolean) => void;
 }
 
 export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
   moduleId,
   canUpdate,
   onModuleChanged,
+  onNestedDialogChange,
 }) => {
   const { addNotification } = useNotifications();
   const { confirm, ConfirmationDialog } = useConfirmation();
+
+  // `ConfirmationDialog` is non-null exactly while the shared confirmation is
+  // mounted, so it doubles as the hook's open flag.
+  useEffect(() => {
+    onNestedDialogChange?.(ConfirmationDialog !== null);
+  }, [ConfirmationDialog, onNestedDialogChange]);
   const [versions, setVersions] = useState<SystemNodeModuleVersion[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

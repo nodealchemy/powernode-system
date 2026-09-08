@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  X,
   Network,
   MapPin,
   Calendar,
@@ -11,6 +10,7 @@ import {
   Edit2,
   Trash2
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -212,46 +212,49 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
     });
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Network className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : network?.name || 'Network Details'}
-                </h2>
-                {network && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <Badge
-                      variant={statusVariants[network.status] || 'secondary'}
-                      size="sm"
-                      dot
-                      pulse={network.status === 'pending'}
-                    >
-                      {network.status}
-                    </Badge>
-                    {network.is_default && (
-                      <Badge variant="info" size="sm">Default</Badge>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
+    <>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : network?.name || 'Network Details'}
+      icon={<Network className="w-6 h-6" />}
+      maxWidth="2xl"
+      // The nested SubnetFormModal registers its own Escape handler on
+      // document; without this the parent would close on the same keypress.
+      closeOnEscape={!showSubnetModal}
+      subtitle={
+        network ? (
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={statusVariants[network.status] || 'secondary'}
+              size="sm"
+              dot
+              pulse={network.status === 'pending'}
+            >
+              {network.status}
+            </Badge>
+            {network.is_default && (
+              <Badge variant="info" size="sm">Default</Badge>
+            )}
           </div>
-
+        ) : undefined
+      }
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          {canUpdate && onEdit && network && (
+            <Button variant="primary" onClick={() => onEdit(network)}>
+              Edit Network
+            </Button>
+          )}
+        </>
+      }
+    >
           {/* Content */}
-          <div className="p-6">
+          <div>
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -435,20 +438,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
               </div>
             )}
           </div>
-
-          {/* Footer */}
-          <div className="flex justify-end gap-3 p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-            {canUpdate && onEdit && network && (
-              <Button variant="primary" onClick={() => onEdit(network)}>
-                Edit Network
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
+    </Modal>
 
       {networkId && (
         <SubnetFormModal
@@ -463,7 +453,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
           manualOverride={providerHasConnection}
         />
       )}
-    </div>
+    </>
   );
 };
 

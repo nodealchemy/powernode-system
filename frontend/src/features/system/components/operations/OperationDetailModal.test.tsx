@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { OperationDetailModal } from './OperationDetailModal';
 
@@ -154,10 +154,19 @@ function renderModal({
 }
 
 // Wait until the header h2 has the expected command text (not "Loading...")
+/**
+ * The detail modal's own title. Both it and the shared confirmation are core
+ * `Modal`s now, so a bare heading lookup is ambiguous whenever a confirmation
+ * is open; the detail modal is the FIRST dialog in the document.
+ */
+function detailTitle() {
+  const dialog = screen.getAllByRole('dialog')[0];
+  return within(dialog).getByRole('heading', { level: 3 });
+}
+
 async function waitForCommand(command = 'provision_node') {
   await waitFor(() => {
-    const h2 = screen.getByRole('heading', { level: 2 });
-    expect(h2).toHaveTextContent(command);
+    expect(detailTitle()).toHaveTextContent(command);
   });
 }
 
@@ -195,7 +204,7 @@ describe('OperationDetailModal', () => {
     renderModal();
     // Header shows "Loading..."
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Loading...'),
+      expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('Loading...'),
     );
   });
 
@@ -213,7 +222,7 @@ describe('OperationDetailModal', () => {
     renderModal();
 
     await waitForCommand();
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('provision_node');
+    expect(detailTitle()).toHaveTextContent('provision_node');
   });
 
   it('shows error state when getTask rejects', async () => {
@@ -629,7 +638,9 @@ describe('OperationDetailModal', () => {
     renderModal({ onClose });
 
     await waitForCommand();
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
     expect(backdrop).not.toBeNull();
     fireEvent.click(backdrop);
 
@@ -1261,7 +1272,7 @@ describe('OperationDetailModal', () => {
       await act(async () => {
         resolveStale(envelope({ task: runningTask }));
       });
-      expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('destroy_node');
+      expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('destroy_node');
     });
 
     it('stops polling once the modal is closed', async () => {

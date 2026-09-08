@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Layers, AlertCircle } from 'lucide-react';
+import { Layers, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
@@ -45,6 +46,8 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [architectures, setArchitectures] = useState<SystemNodeArchitecture[]>([]);
   const [loadingArchitectures, setLoadingArchitectures] = useState(true);
+  // Raised by DiskImageHistoryTab's rollback confirm, which is a nested Modal.
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
 
   const isEditMode = !!editPlatform;
 
@@ -170,28 +173,19 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className={`relative w-full ${isEditMode ? 'max-w-4xl' : 'max-w-2xl'} bg-theme-surface rounded-lg shadow-xl`}>
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Layers className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Platform' : 'Create Platform'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? 'Edit Platform' : 'Create Platform'}
+      icon={<Layers className="w-6 h-6" />}
+      maxWidth={isEditMode ? '4xl' : '2xl'}
+      // The disk-image history tab can raise a nested confirm dialog, which
+      // registers its own Escape handler on document.
+      closeOnEscape={!rollbackConfirmOpen}
+    >
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div className="space-y-4">
               {/* Name */}
               <div>
                 <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
@@ -429,12 +423,15 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
               */}
               {isEditMode && editPlatform && (
                 <div className="border-t border-theme pt-4 mt-2">
-                  <DiskImageHistoryTab platform={editPlatform} />
+                  <DiskImageHistoryTab
+                    platform={editPlatform}
+                    onConfirmOpenChange={setRollbackConfirmOpen}
+                  />
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end gap-3 p-4 border-t border-theme">
+            <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-theme">
               <Button type="button" variant="outline" onClick={onClose}>
                 Cancel
               </Button>
@@ -450,9 +447,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
               </Button>
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

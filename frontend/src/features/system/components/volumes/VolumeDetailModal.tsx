@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  X,
   HardDrive,
   Link,
   Unlink,
@@ -12,6 +11,7 @@ import {
   RotateCcw,
   AlertTriangle
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -414,49 +414,52 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     });
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <HardDrive className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : volume?.name || 'Volume Details'}
-                </h2>
-                {volume && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <Badge
-                      variant={statusVariants[volume.status] || 'secondary'}
-                      size="sm"
-                      dot
-                      pulse={volume.status === 'creating'}
-                    >
-                      {volume.status}
-                    </Badge>
-                    {volume.encrypted && (
-                      <Badge variant="info" size="sm">
-                        <Shield className="w-3 h-3 mr-1" />
-                        Encrypted
-                      </Badge>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
+    <>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : volume?.name || 'Volume Details'}
+      icon={<HardDrive className="w-6 h-6" />}
+      maxWidth="2xl"
+      // The snapshot dialog and the shared confirmation are both Modals
+      // listening for Escape on document; suppress ours while either is up.
+      closeOnEscape={!showSnapshotModal && ConfirmationDialog === null}
+      subtitle={
+        volume ? (
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={statusVariants[volume.status] || 'secondary'}
+              size="sm"
+              dot
+              pulse={volume.status === 'creating'}
+            >
+              {volume.status}
+            </Badge>
+            {volume.encrypted && (
+              <Badge variant="info" size="sm">
+                <Shield className="w-3 h-3 mr-1" />
+                Encrypted
+              </Badge>
+            )}
           </div>
-
+        ) : undefined
+      }
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          {canUpdate && onEdit && volume && (
+            <Button variant="primary" onClick={() => onEdit(volume)}>
+              Edit Volume
+            </Button>
+          )}
+        </>
+      }
+    >
           {/* Content */}
-          <div className="p-6">
+          <div>
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -720,34 +723,47 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
               </div>
             )}
           </div>
+    </Modal>
 
-          {/* Footer */}
-          <div className="flex justify-end gap-3 p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-            {canUpdate && onEdit && volume && (
-              <Button variant="primary" onClick={() => onEdit(volume)}>
-                Edit Volume
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Snapshot Modal */}
+      {/* Snapshot Modal — nested above the detail dialog. */}
       {showSnapshotModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-black/50" onClick={() => {
+        <Modal
+          isOpen
+          onClose={() => {
             setShowSnapshotModal(false);
             setSnapshotName('');
             setSnapshotDescription('');
-          }} />
-          <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-            <div className="p-4 border-b border-theme">
-              <h3 className="text-lg font-semibold text-theme-primary">Create Snapshot</h3>
-            </div>
-            <div className="p-4 space-y-4">
+          }}
+          title="Create Snapshot"
+          icon={<Camera className="w-6 h-6" />}
+          maxWidth="md"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => {
+                setShowSnapshotModal(false);
+                setSnapshotName('');
+                setSnapshotDescription('');
+              }}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleCreateSnapshot}
+                disabled={actionLoading === 'snapshot'}
+              >
+                {actionLoading === 'snapshot' ? (
+                  <>
+                    <LoadingSpinner size="sm" className="mr-2" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Snapshot'
+                )}
+              </Button>
+            </>
+          }
+        >
+            <div className="space-y-4">
               <div>
                 <label htmlFor="snapshot-name" className="block text-sm font-medium text-theme-primary mb-1">
                   Snapshot Name
@@ -775,35 +791,14 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                 />
               </div>
             </div>
-            <div className="flex justify-end gap-3 p-4 border-t border-theme">
-              <Button variant="outline" onClick={() => {
-                setShowSnapshotModal(false);
-                setSnapshotName('');
-                setSnapshotDescription('');
-              }}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                onClick={handleCreateSnapshot}
-                disabled={actionLoading === 'snapshot'}
-              >
-                {actionLoading === 'snapshot' ? (
-                  <>
-                    <LoadingSpinner size="sm" className="mr-2" />
-                    Creating...
-                  </>
-                ) : (
-                  'Create Snapshot'
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
-      {ConfirmationDialog}
-    </div>
+      {/* Rendered only while this dialog is open: the component returns the
+          Modal's own null when closed, so an unguarded confirmation would
+          survive the close and hang over whatever is underneath. */}
+      {isOpen && ConfirmationDialog}
+    </>
   );
 };
 

@@ -619,8 +619,9 @@ describe('NetworkFormModal', () => {
     const onClose = jest.fn();
     renderModal({ onClose });
 
-    // The backdrop is a sibling div with onClick=onClose (fixed inset-0 bg-black/50)
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
     expect(backdrop).toBeInTheDocument();
     fireEvent.click(backdrop);
 

@@ -153,10 +153,10 @@ const renderModal = ({
     </BrowserRouter>,
   );
 
-// Wait for the modal to finish loading by checking the h2 heading shows the module name
+// Wait for the modal to finish loading by checking the shared Modal's title heading
 const waitForModuleLoaded = async (name = 'nginx') => {
   await waitFor(() => {
-    const heading = screen.getByRole('heading', { level: 2 });
+    const heading = screen.getByRole('heading', { level: 3 });
     expect(heading).toHaveTextContent(name);
   });
 };
@@ -165,12 +165,20 @@ const waitForModuleLoaded = async (name = 'nginx') => {
 // (IMP-082f700a1eec) rather than window.confirm. The row buttons are titled
 // "Delete Resource", which matches the dialog's confirm label, so the lookup is
 // scoped to the dialog.
+// Both the detail modal and the confirmation are now core `Modal`s, so two
+// elements carry role="dialog". The confirmation portals last, so it is the
+// final one in the document.
+const confirmationDialog = () => {
+  const dialogs = screen.getAllByRole('dialog');
+  return dialogs[dialogs.length - 1];
+};
+
 const confirmResourceDelete = async () => {
   await waitFor(() =>
     expect(screen.getByRole('heading', { name: /delete resource/i })).toBeInTheDocument(),
   );
   fireEvent.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: /^delete resource$/i }),
+    within(confirmationDialog()).getByRole('button', { name: /^delete resource$/i }),
   );
 };
 
@@ -195,7 +203,7 @@ describe('PuppetModuleDetailModal', () => {
   it('renders nothing when isOpen is false', () => {
     renderModal({ isOpen: false });
     expect(screen.queryByText('Puppet Module Details')).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 3 })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -209,7 +217,7 @@ describe('PuppetModuleDetailModal', () => {
 
     renderModal();
 
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Loading...');
+    expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('Loading...');
   });
 
   // ---------------------------------------------------------------------------
@@ -259,7 +267,7 @@ describe('PuppetModuleDetailModal', () => {
   it('renders the module name in the h2 header after loading', async () => {
     renderModal();
     await waitForModuleLoaded('nginx');
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('nginx');
+    expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('nginx');
   });
 
   it('shows version in header subtitle', async () => {
@@ -771,7 +779,7 @@ describe('PuppetModuleDetailModal', () => {
       expect(screen.getByRole('heading', { name: /delete resource/i })).toBeInTheDocument(),
     );
     fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }),
+      within(confirmationDialog()).getByRole('button', { name: /^cancel$/i }),
     );
 
     // Small tick to let any async code settle
@@ -904,8 +912,9 @@ describe('PuppetModuleDetailModal', () => {
     renderModal({ onClose });
     await waitForModuleLoaded();
 
-    // The backdrop is the fixed overlay div with bg-black/50
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50');
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]');
     if (backdrop) fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });

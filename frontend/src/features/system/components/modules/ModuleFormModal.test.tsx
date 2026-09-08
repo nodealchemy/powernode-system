@@ -702,7 +702,7 @@ describe('ModuleFormModal', () => {
     renderModal();
     await waitFor(() => expect(screen.getByRole('option', { name: 'ubuntu-22' })).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: '' }));  // X button has no accessible name
+    fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
     expect(defaultProps.onClose).toHaveBeenCalled();
   });
 
@@ -718,12 +718,12 @@ describe('ModuleFormModal', () => {
     renderModal();
     await waitFor(() => expect(screen.getByRole('option', { name: 'ubuntu-22' })).toBeInTheDocument());
 
-    // The backdrop div has onClick={onClose}; it's the second div inside the portal
-    const backdrop = document.querySelector('.bg-black\\/50');
-    if (backdrop) {
-      fireEvent.click(backdrop);
-      expect(defaultProps.onClose).toHaveBeenCalled();
-    }
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]');
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop!);
+    expect(defaultProps.onClose).toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------

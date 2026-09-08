@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Webhook, RotateCw, Trash2, Copy, Check, ChevronRight, ChevronDown } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -258,9 +259,21 @@ const CreateWebhookModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold mb-3 text-theme-primary">New disk-image webhook</h3>
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="New disk-image webhook"
+      icon={<Webhook className="w-6 h-6" />}
+      maxWidth="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={handleSubmit} disabled={!label.trim() || submitting}>
+            {submitting ? 'Creating…' : 'Create webhook'}
+          </Button>
+        </>
+      }
+    >
         <label className="block text-sm text-theme-secondary mb-1" htmlFor="webhook-label-input">Label</label>
         <input
           id="webhook-label-input"
@@ -274,14 +287,7 @@ const CreateWebhookModal: React.FC<{
           Pick a name that identifies this CI pipeline (e.g. "main-ci", "release-pipeline").
           Must be unique within your account.
         </p>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={!label.trim() || submitting}>
-            {submitting ? 'Creating…' : 'Create webhook'}
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
@@ -303,9 +309,21 @@ const SecretShownOnceModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-2xl p-6">
-        <h3 className="text-lg font-semibold mb-2 text-theme-primary">{title}</h3>
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={title}
+      icon={<Webhook className="w-6 h-6" />}
+      maxWidth="2xl"
+      // The secret is unrecoverable, so the only way out is the acknowledged
+      // Done button: no close chrome, no backdrop dismiss, no Escape.
+      showCloseButton={false}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+      footer={
+        <Button variant="primary" onClick={onClose} disabled={!acknowledged}>Done</Button>
+      }
+    >
         <p className="text-sm text-theme-warning-fg mb-4 font-medium">
           ⚠️ This secret is shown ONCE. It cannot be recovered. Save it now.
         </p>
@@ -345,11 +363,6 @@ const SecretShownOnceModal: React.FC<{
           />
           <span className="text-sm text-theme-primary">I have saved the secret in my CI's secret manager</span>
         </label>
-
-        <div className="flex justify-end">
-          <Button variant="primary" onClick={onClose} disabled={!acknowledged}>Done</Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };

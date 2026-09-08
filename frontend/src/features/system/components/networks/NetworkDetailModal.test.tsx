@@ -505,7 +505,7 @@ describe('NetworkDetailModal', () => {
 
     await waitFor(() => expect(screen.getByText('production-vpc')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -516,8 +516,9 @@ describe('NetworkDetailModal', () => {
 
     await waitFor(() => expect(screen.getByText('production-vpc')).toBeInTheDocument());
 
-    // The backdrop is the fixed inset-0 div with bg-black/50.
-    const backdrop = document.querySelector('.bg-black\\/50') as HTMLElement;
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
     expect(backdrop).toBeTruthy();
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);

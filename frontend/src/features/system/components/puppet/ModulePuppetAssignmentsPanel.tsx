@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Wrench, Plus, Trash2, Power, PowerOff } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -16,10 +17,18 @@ import type { SystemPuppetModule } from '@system/features/system/types/system.ty
 
 interface ModulePuppetAssignmentsPanelProps {
   moduleId: string;
+  /**
+   * Notified when this panel raises a dialog of its own (the assign form or the
+   * shared delete confirmation). A parent that is itself a `Modal` uses it to
+   * suppress its Escape handler — the core Modal listens on `document`, so one
+   * keypress would otherwise tear down both dialogs.
+   */
+  onNestedDialogChange?: (open: boolean) => void;
 }
 
 export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanelProps> = ({
   moduleId,
+  onNestedDialogChange,
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
@@ -32,6 +41,13 @@ export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanel
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // `ConfirmationDialog` is non-null exactly while the shared confirmation is
+  // mounted, so it doubles as the hook's open flag.
+  const nestedDialogOpen = showAddForm || ConfirmationDialog !== null;
+  useEffect(() => {
+    onNestedDialogChange?.(nestedDialogOpen);
+  }, [nestedDialogOpen, onNestedDialogChange]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -226,10 +242,25 @@ const AddPuppetAssignmentForm: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold mb-3 text-theme-primary">Assign puppet module</h3>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Assign puppet module"
+      icon={<Wrench className="w-6 h-6" />}
+      maxWidth="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!puppetModuleId || submitting || puppetModules.length === 0}
+          >
+            {submitting ? 'Assigning…' : 'Assign'}
+          </Button>
+        </>
+      }
+    >
         {puppetModules.length === 0 ? (
           <p className="text-sm text-theme-secondary mb-4">
             No unassigned puppet modules available.
@@ -258,18 +289,6 @@ const AddPuppetAssignmentForm: React.FC<{
             />
           </>
         )}
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!puppetModuleId || submitting || puppetModules.length === 0}
-          >
-            {submitting ? 'Assigning…' : 'Assign'}
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };

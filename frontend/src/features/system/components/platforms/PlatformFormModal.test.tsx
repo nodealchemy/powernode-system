@@ -179,8 +179,9 @@ describe('PlatformFormModal', () => {
   it('calls onClose when the backdrop is clicked', () => {
     const onClose = jest.fn();
     renderModal({ onClose });
-    // The backdrop is the first child of the outer container — a fixed overlay
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+    // The core Modal dismisses on a click that lands on its positioning
+    // container, which is what a click outside the panel resolves to.
+    const backdrop = document.querySelector('[class*="justify-center"]') as HTMLElement;
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });

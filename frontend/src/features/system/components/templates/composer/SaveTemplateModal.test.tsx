@@ -551,7 +551,7 @@ describe('SaveTemplateModal', () => {
     it('calls onClose when the X button is clicked', () => {
       const onClose = jest.fn();
       renderModal({ onClose });
-      fireEvent.click(screen.getByRole('button', { name: '' })); // X icon button
+      fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
