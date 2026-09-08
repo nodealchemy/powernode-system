@@ -19,6 +19,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -449,12 +450,14 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
   }, [addNotification]);
 
 
-  const tabs = [
-    { id: 'info' as const, label: 'Information', icon: Cloud },
-    { id: 'regions' as const, label: 'Regions', icon: MapPin, count: regions.length },
-    { id: 'instance_types' as const, label: 'Instance Types', icon: Cpu },
-    { id: 'connections' as const, label: 'Connections', icon: Server, count: connections.length },
-    { id: 'config' as const, label: 'Configuration', icon: Settings }
+  // `badge` renders whenever it is defined, where the inline strip it replaces
+  // rendered a count only when it was above zero — hence `|| undefined`.
+  const tabs: (Tab & { id: TabId })[] = [
+    { id: 'info', label: 'Information', icon: <Cloud className="w-4 h-4" /> },
+    { id: 'regions', label: 'Regions', icon: <MapPin className="w-4 h-4" />, badge: regions.length || undefined },
+    { id: 'instance_types', label: 'Instance Types', icon: <Cpu className="w-4 h-4" /> },
+    { id: 'connections', label: 'Connections', icon: <Server className="w-4 h-4" />, badge: connections.length || undefined },
+    { id: 'config', label: 'Configuration', icon: <Settings className="w-4 h-4" /> }
   ];
 
   const renderInfoTab = () => {
@@ -1023,29 +1026,13 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
       }
     >
           {/* Tabs */}
-          <div className="border-b border-theme">
-            <nav className="flex -mb-px">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === tab.id
-                      ? 'border-theme-info-border text-theme-info-fg'
-                      : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
-                  }`}
-                >
-                  <tab.icon className="w-4 h-4" />
-                  {tab.label}
-                  {tab.count !== undefined && tab.count > 0 && (
-                    <span className="ml-1 px-1.5 py-0.5 text-xs bg-theme-background rounded">
-                      {tab.count}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </nav>
-          </div>
+          <TabContainer
+            tabs={tabs}
+            activeTab={activeTab}
+            onTabChange={(id) => setActiveTab(id as TabId)}
+            variant="underline"
+            showContent={false}
+          />
 
           {/* Content */}
           <div className="pt-4">

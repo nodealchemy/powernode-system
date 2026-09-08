@@ -13,6 +13,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
+import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -261,10 +262,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
     return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
   };
 
-  const tabs = [
-    { id: 'info' as const, label: 'Information', icon: Activity },
-    { id: 'events' as const, label: 'Events', icon: Clock },
-    { id: 'options' as const, label: 'Options', icon: Server }
+  const tabs: (Tab & { id: TabId })[] = [
+    { id: 'info', label: 'Information', icon: <Activity className="w-4 h-4" /> },
+    { id: 'events', label: 'Events', icon: <Clock className="w-4 h-4" /> },
+    { id: 'options', label: 'Options', icon: <Server className="w-4 h-4" /> }
   ];
 
   const renderInfoTab = () => {
@@ -538,24 +539,13 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
       }
     >
           {/* Tabs */}
-          <div className="border-b border-theme">
-            <nav className="flex -mb-px">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === tab.id
-                      ? 'border-theme-info-border text-theme-info-fg'
-                      : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
-                  }`}
-                >
-                  <tab.icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-          </div>
+          <TabContainer
+            tabs={tabs}
+            activeTab={activeTab}
+            onTabChange={(id) => setActiveTab(id as TabId)}
+            variant="underline"
+            showContent={false}
+          />
 
           {/* Content */}
           <div className="pt-4">
