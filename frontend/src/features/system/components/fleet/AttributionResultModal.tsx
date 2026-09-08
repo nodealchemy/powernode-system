@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Search, X, AlertTriangle } from 'lucide-react';
+import { Search, AlertTriangle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -44,21 +45,14 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
     }
   }, [isOpen, instanceId, lookbackHours]);
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-theme-surface border border-theme rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-y-auto p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Search size={16} />
-            Attribute Failure
-          </h2>
-          <Button size="xs" variant="ghost" onClick={onClose}>
-            <X size={16} />
-          </Button>
-        </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Attribute Failure"
+      icon={<Search className="w-6 h-6" />}
+      maxWidth="3xl"
+    >
         <div className="mb-4 flex items-center gap-3">
           <label className="text-sm">Lookback (hours):</label>
           <input
@@ -109,8 +103,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 };
 
