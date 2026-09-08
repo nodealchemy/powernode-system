@@ -72,6 +72,30 @@ module Api
             )
           end
 
+          # Readiness is enforced at the WRITE path, not only in the modal
+          # (IMP-e24167f9dc58). A provider the registry has not marked
+          # production_ready is not wired through the on-node ACME issuer, so a
+          # credential stored for it looks saved and then fails at first
+          # issuance — the harm the frontend gate was added to prevent, reached
+          # by any caller that is not the modal.
+          #
+          # Deliberately a SEPARATE refusal from the supported? check above:
+          # "we have never heard of this provider" and "this deployment cannot
+          # use it yet" are different problems with different remedies.
+          #
+          # CREATE only. #update cannot change the provider (update_params
+          # permits name + metadata alone) and #rotate targets an existing row,
+          # which may predate the flag — refusing a rotate would strand a
+          # credential the operator is trying to repair.
+          unless ::Acme::DnsProviderRegistry.production_ready?(provider_slug)
+            return render_error(
+              "Provider #{provider_slug.inspect} is not wired through the on-node ACME " \
+              "issuer on this deployment, so a credential stored for it would fail at " \
+              "first issuance. Enable it on the agent, then retry.",
+              status: :unprocessable_content
+            )
+          end
+
           credentials = sanitize_credential_payload(params[:credentials], provider_slug)
           missing = required_fields(provider_slug) - credentials.keys
           unless missing.empty?
