@@ -74,8 +74,8 @@ const LIST_RESPONSE: AcmeDnsCredentialsListResponse = {
   credentials: [CREDENTIAL_SUMMARY, CREDENTIAL_SUMMARY_2],
   count: 2,
   supported_providers: [
-    { slug: 'cloudflare', required_fields: ['api_token'], description: 'Cloudflare DNS' },
-    { slug: 'route53', required_fields: ['access_key_id', 'secret_access_key', 'region'], description: 'AWS Route53' },
+    { slug: 'cloudflare', required_fields: ['api_token'], description: 'Cloudflare DNS', production_ready: true },
+    { slug: 'route53', required_fields: ['access_key_id', 'secret_access_key', 'region'], description: 'AWS Route53', production_ready: false },
   ],
 };
 

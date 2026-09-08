@@ -57,24 +57,28 @@ const CLOUDFLARE_PROVIDER: SupportedProvider = {
   slug: 'cloudflare',
   required_fields: ['api_token'],
   description: 'Cloudflare DNS',
+  production_ready: true,
 };
 
 const DIGITALOCEAN_PROVIDER: SupportedProvider = {
   slug: 'digitalocean',
   required_fields: ['auth_token'],
   description: 'DigitalOcean DNS',
+  production_ready: false,
 };
 
 const ROUTE53_PROVIDER: SupportedProvider = {
   slug: 'route53',
   required_fields: ['access_key_id', 'secret_access_key', 'region'],
   description: 'AWS Route 53',
+  production_ready: false,
 };
 
 const GCLOUD_PROVIDER: SupportedProvider = {
   slug: 'gcloud',
   required_fields: ['service_account_json'],
   description: 'Google Cloud DNS',
+  production_ready: false,
 };
 
 const ALL_PROVIDERS: SupportedProvider[] = [
@@ -307,6 +311,77 @@ describe('AcmeDnsCredentialModal', () => {
         o.textContent?.includes('cloudflare'),
       );
       expect(cfOption).not.toHaveAttribute('disabled');
+    });
+
+    it('enables a non-cloudflare provider the backend reports as production_ready', () => {
+      // Readiness is a backend field, not a frontend slug list: a deployment
+      // that wires route53 through its agent must become selectable without a
+      // frontend release.
+      renderModal({
+        supportedProviders: [
+          CLOUDFLARE_PROVIDER,
+          { ...ROUTE53_PROVIDER, production_ready: true },
+        ],
+      });
+      const select = screen.getByRole('combobox');
+      const r53 = Array.from(select.querySelectorAll('option')).find((o) =>
+        o.textContent?.includes('route53'),
+      );
+      expect(r53).not.toHaveAttribute('disabled');
+      expect(r53?.textContent).not.toMatch(/coming soon/);
+    });
+
+    it('switches to a backend-ready non-cloudflare provider and shows its fields', () => {
+      renderModal({
+        supportedProviders: [
+          CLOUDFLARE_PROVIDER,
+          { ...DIGITALOCEAN_PROVIDER, production_ready: true },
+        ],
+      });
+      fireEvent.change(screen.getByRole('combobox'), {
+        target: { value: 'digitalocean' },
+      });
+      expect(screen.getByRole('combobox')).toHaveValue('digitalocean');
+      expect(screen.getByText('DigitalOcean Personal Access Token')).toBeInTheDocument();
+    });
+
+    it('replaces the form with an empty state when the backend reports no ready provider', () => {
+      renderModal({
+        supportedProviders: [
+          { ...CLOUDFLARE_PROVIDER, production_ready: false },
+          { ...DIGITALOCEAN_PROVIDER, production_ready: false },
+        ],
+      });
+      expect(
+        screen.getByText(/No DNS provider is usable on this deployment yet/),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Save credential/ })).toBeDisabled();
+    });
+
+    it('disables cloudflare when the backend reports it not production_ready', () => {
+      renderModal({
+        supportedProviders: [
+          { ...CLOUDFLARE_PROVIDER, production_ready: false },
+          { ...DIGITALOCEAN_PROVIDER, production_ready: true },
+        ],
+      });
+      const select = screen.getByRole('combobox');
+      const cf = Array.from(select.querySelectorAll('option')).find((o) =>
+        o.textContent?.includes('cloudflare'),
+      );
+      expect(cf).toHaveAttribute('disabled');
+      expect(cf?.textContent).toMatch(/coming soon/);
+    });
+
+    it('opens preselected on the first backend-ready provider, not a hardcoded cloudflare', () => {
+      renderModal({
+        supportedProviders: [
+          { ...CLOUDFLARE_PROVIDER, production_ready: false },
+          { ...DIGITALOCEAN_PROVIDER, production_ready: true },
+        ],
+      });
+      expect(screen.getByRole('combobox')).toHaveValue('digitalocean');
     });
 
     it('does not change provider or clear credentials when a non-production-ready provider is selected', () => {

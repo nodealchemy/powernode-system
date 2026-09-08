@@ -128,8 +128,8 @@ const CRED_STALE = {
 };
 
 const SUPPORTED_PROVIDERS = [
-  { slug: 'cloudflare', required_fields: ['api_token'], description: 'Cloudflare' },
-  { slug: 'digitalocean', required_fields: ['auth_token'], description: 'DigitalOcean' },
+  { slug: 'cloudflare', required_fields: ['api_token'], description: 'Cloudflare', production_ready: true },
+  { slug: 'digitalocean', required_fields: ['auth_token'], description: 'DigitalOcean', production_ready: false },
 ];
 
 function makeListResponse(credentials: typeof CRED_CF[]) {

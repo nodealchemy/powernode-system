@@ -35,6 +35,13 @@ export interface SupportedProvider {
   slug: AcmeDnsProvider;
   required_fields: string[];
   description: string;
+  /**
+   * Whether the provider is wired end-to-end through the on-node ACME issuer
+   * and can actually complete an issuance today. Sourced from
+   * Acme::DnsProviderRegistry, never inferred in the frontend: a deployment
+   * that wires a new provider must not need a frontend release to expose it.
+   */
+  production_ready: boolean;
 }
 
 export interface AcmeDnsCredentialsListResponse {

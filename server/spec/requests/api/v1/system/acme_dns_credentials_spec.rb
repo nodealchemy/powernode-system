@@ -46,6 +46,24 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       expect(cloudflare["required_fields"]).to eq([ "api_token" ])
     end
 
+    it "surfaces production_ready per provider so the UI never hardcodes readiness" do
+      get base_path, headers: auth_headers_for(reader)
+      providers = JSON.parse(response.body)["data"]["supported_providers"]
+
+      expect(providers).to all(have_key("production_ready"))
+      expect(providers.find { |p| p["slug"] == "cloudflare" }["production_ready"]).to be true
+      # Pin a false on the wire independently of the registry lookup below, so
+      # the loop cannot pass by comparing a flipped registry against itself.
+      expect(providers.find { |p| p["slug"] == "route53" }["production_ready"]).to be false
+
+      Acme::DnsProviderRegistry::PROVIDERS.each_key do |slug|
+        payload = providers.find { |p| p["slug"] == slug }
+        expect(payload["production_ready"])
+          .to eq(Acme::DnsProviderRegistry.production_ready?(slug)),
+              "#{slug} readiness in the payload disagrees with the registry"
+      end
+    end
+
     it "rejects requests without read permission" do
       anon = create(:user, account: account)
       get base_path, headers: auth_headers_for(anon)
