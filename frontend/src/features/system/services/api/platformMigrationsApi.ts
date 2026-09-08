@@ -1,5 +1,5 @@
 import { apiClient } from '@/shared/services/apiClient';
-import { extractData } from './helpers';
+import { extractData, paramsFromFilters } from './helpers';
 import type { ApiEnvelope } from './types';
 import type {
   MigrationDetail,
@@ -12,20 +12,6 @@ import type {
 // Plan reference: Decentralized Federation §F + §I + P5 + P7.4.
 
 const BASE = '/system/platform/migrations';
-
-function paramsFromFilters(filters?: object): Record<string, string> {
-  if (!filters) return {};
-  const out: Record<string, string> = {};
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value === undefined || value === null) return;
-    if (Array.isArray(value)) {
-      if (value.length > 0) out[key] = value.join(',');
-    } else {
-      out[key] = String(value);
-    }
-  });
-  return out;
-}
 
 export const platformMigrationsApi = {
   list: async (filters?: MigrationListFilters): Promise<MigrationListResponse> => {

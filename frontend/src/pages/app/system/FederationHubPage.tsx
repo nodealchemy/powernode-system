@@ -205,6 +205,16 @@ const MonitorTab: React.FC<TabProps> = ({ hasPermission }) => {
           subtitle="Federation governance findings: trust expiry, stale peerings, prefix overlap, cert expiry, peer health and drift, migration chains."
         >
           <FederationGovernancePanel />
+          {/* A stalled-chain finding surfaces here, but the controls that act on
+              one (advance / run / cancel) live on the platform migrations tab —
+              beside the single-hop migrations they envelope (IMP-ffc2de6bd175). */}
+          <div className="mt-3">
+            <LinkPill
+              to="/app/system/compute/platform/migrations"
+              icon={<Layers className="w-4 h-4" />}
+              label="Migrations & chains"
+            />
+          </div>
         </Section>
       )}
     </div>
