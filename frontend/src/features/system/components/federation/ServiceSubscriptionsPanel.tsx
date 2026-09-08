@@ -11,6 +11,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { EntityLink } from '@/shared/components/entity';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   ServiceSubscription,
   SubscriptionStatus,
@@ -153,13 +154,22 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
         <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
       </header>
 
-      {!loading && subs.length === 0 && (
-        <div className="p-12 text-center text-theme-secondary text-sm">
-          No active subscriptions. Browse a federated peer's catalog to subscribe to their services.
-        </div>
-      )}
-
-      {subs.length > 0 && (
+      {/* Header stays OUTSIDE the container: it carries the status filter and
+          the primary action, both of which must remain reachable when the list
+          is empty — the container's empty branch replaces everything it wraps. */}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={subs.length}
+        filteredCount={subs.length}
+        emptyState={{
+          icon: Globe2,
+          title: 'No active subscriptions',
+          description: "Browse a federated peer's catalog to subscribe to their services.",
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -188,7 +198,8 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
             ))}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
 
       {ConfirmationDialog}
     </div>

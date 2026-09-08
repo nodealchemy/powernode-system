@@ -45,9 +45,6 @@ const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [
   // --- UNMIGRATED (delete the line as each is converted) ---
   'features/system/components/acme/AcmeCertificatesPanel.tsx',
   'features/system/components/acme/AcmeDnsCredentialsPanel.tsx',
-  'features/system/components/federation/ChildrenPanel.tsx',
-  'features/system/components/federation/ServiceOfferingsPanel.tsx',
-  'features/system/components/federation/ServiceSubscriptionsPanel.tsx',
   'features/system/components/ingress/IngressRoutesPanel.tsx',
   'features/system/components/platform/MigrationChainsPanel.tsx',
   'features/system/components/platform/MigrationsPanel.tsx',
