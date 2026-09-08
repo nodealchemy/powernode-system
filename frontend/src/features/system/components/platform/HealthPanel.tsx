@@ -8,7 +8,6 @@ import {
   ShieldCheck,
   Network,
   Globe2,
-  AlertTriangle,
   CheckCircle2,
   AlertCircle,
   XCircle,
@@ -22,6 +21,7 @@ import type {
   PlatformHealth,
   SubsystemStatus,
 } from '../../types/platform-health.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Read-only health snapshot panel for the
@@ -69,10 +69,7 @@ export const HealthPanel: React.FC = () => {
 
   if (error && !health) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4" />
-        {error}
-      </div>
+      <ErrorAlert message={error} />
     );
   }
 

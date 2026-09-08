@@ -11,6 +11,7 @@ import { pendingApprovalNotice } from '@system/features/system/utils/pendingAppr
 import type {
   SdwanIpfixCollector,
 } from '@system/features/system/types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase O6 — read view of registered IPFIX collectors plus inline
 // manage actions (state toggle + delete). Creation still happens via
@@ -99,7 +100,7 @@ export const IpfixCollectorsTab: React.FC = () => {
   // The container owns loading and empty; it has no error slot, so the error
   // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
 
   return (

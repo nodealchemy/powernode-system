@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ShieldCheck,
-  AlertCircle,
   X,
   Plus,
   Trash2,
@@ -13,6 +12,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { peerGrantsApi } from '../../services/api/peerGrantsApi';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import type {
   FederationGrant,
   GrantLifecycle,
@@ -162,13 +162,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
     >
       <div className="space-y-4">
         {error && (
-          <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
-            <AlertCircle className="w-4 h-4" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         )}
 
         {showIssueForm && (
@@ -410,13 +404,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
       </div>
 
       {error && (
-        <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-xs rounded">
-          <AlertCircle className="w-3 h-3" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
+        <ErrorAlert message={error} onClose={() => setError(null)} />
       )}
 
       <div className="grid grid-cols-2 gap-3">

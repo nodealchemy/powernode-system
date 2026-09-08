@@ -6,6 +6,7 @@ import type {
   SdwanFederationFinding,
   SdwanFederationFindingSeverity,
 } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * FederationGovernancePanel — runs the federation governance scan and renders
@@ -54,7 +55,7 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
         </Button>
       </div>
 
-      {error && <div className="p-2 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>}
+      {error && <ErrorAlert message={error} />}
 
       {findings === null ? (
         <div className="text-sm text-theme-secondary">Click "Re-scan" to run governance checks.</div>

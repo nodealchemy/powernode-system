@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Network, AlertTriangle, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Network, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useWebSocket } from '@/shared/hooks/useWebSocket';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { logger } from '@/shared/utils/logger';
@@ -7,6 +7,7 @@ import { usePlatformPeers } from '../../hooks/usePlatformPeers';
 import { PeerTable, PeerUrlCell, PeerStatusCell, PeerHeartbeatCell } from './PeerTable';
 import type { PlatformPeerSummary, PeerStatus } from '../../types/peer.types';
 import { PeerDetailDrawer } from './PeerDetailDrawer';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * PeerLivenessMonitor — read-only, real-time federation peer liveness for
@@ -192,10 +193,7 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
       </div>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-        </div>
+        <ErrorAlert message={error} />
       )}
 
       {!loading && peers.length === 0 && !error && (

@@ -24,6 +24,7 @@ import type {
   TopologyNodeData,
   HandleCounts,
 } from '../../types/network_topology.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * SystemTopology — system-wide @xyflow/react visualization of the
@@ -88,7 +89,7 @@ export const SystemTopology: React.FC<SystemTopologyProps> = ({ refreshKey }) =>
   }
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+      <ErrorAlert message={error} />
     );
   }
   if (!data) {

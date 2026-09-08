@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Database, AlertCircle } from 'lucide-react';
+import { Database } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -7,6 +7,7 @@ import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import { volumesApi } from '../../services/api/volumesApi';
 import type { SystemProviderVolume } from '../../types/system.types';
 import type { StorageMigrationSummary } from '../../types/storageMigration.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Plan a new storage migration. The operator picks source/target
@@ -110,10 +111,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span>{error}</span>
-          </div>
+          <ErrorAlert message={error} />
         )}
 
         <div className="space-y-3">

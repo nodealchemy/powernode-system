@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Network, AlertCircle, X, Copy, Check, KeyRound, Plus, Trash2, Users } from 'lucide-react';
+import { Network, Copy, Check, KeyRound, Plus, Trash2, Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
@@ -9,6 +9,7 @@ import type {
   SpawnMode,
   SpawnRole,
 } from '../../types/peer.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Invite-peer modal. Two phases:
@@ -200,13 +201,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
       {phase === 'form' ? (
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
-              <AlertCircle className="w-4 h-4" />
-              <span className="flex-1">{error}</span>
-              <button type="button" onClick={() => setError(null)} className="p-1">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
+            <ErrorAlert message={error} onClose={() => setError(null)} />
           )}
 
           <div>

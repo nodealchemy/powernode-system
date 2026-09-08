@@ -5,6 +5,7 @@ import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import { StatusBadge } from '../shared/StatusBadge';
 import { SdwanTopology } from './SdwanTopology';
 import type { SdwanNetwork } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface NetworkListProps {
   // Opens the detail modal for the given network. The modal is the
@@ -68,7 +69,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
   // The container owns loading and empty; it has no error slot, so the error
   // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
 
   // Standard platform table styling — matches CreditsPage / OutcomeBillingPage /

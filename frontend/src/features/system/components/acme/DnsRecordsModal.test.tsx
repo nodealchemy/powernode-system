@@ -383,14 +383,22 @@ describe('DnsRecordsModal', () => {
       );
     });
 
-    it('shows "Loading records…" while records are being fetched', async () => {
+    it('shows a loading spinner while records are being fetched', async () => {
       mockListZones.mockResolvedValue([ZONE_A]);
       // Never resolve so we can catch the loading state
       mockListRecords.mockReturnValue(new Promise(() => undefined));
       renderModal();
 
       await waitFor(() =>
-        expect(screen.getByText('Loading records…')).toBeInTheDocument(),
+        // Chrome now comes from the shared LoadingSpinner: a spinner, not copy.
+        //
+        // Scoped to the spinner's own centred wrapper, NOT a bare
+        // `.animate-spin`. This modal's Refresh icon ALSO spins while either
+        // fetch is in flight, so the unscoped query passes even with the
+        // loading block deleted outright — it would pin nothing.
+        expect(
+          document.querySelector('.flex.justify-center.p-8 .animate-spin'),
+        ).toBeInTheDocument(),
       );
     });
   });

@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import {
   Network,
-  AlertTriangle,
-  X,
   Plus,
   Trash2,
   RefreshCw,
@@ -21,6 +19,7 @@ import type {
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { InvitePeerModal } from './InvitePeerModal';
 import { PeerDetailDrawer } from './PeerDetailDrawer';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Operator-side panel: list this platform's symmetric and child-side
@@ -92,12 +91,8 @@ export const PeersPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
+        <div className="px-4 pt-4">
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         </div>
       )}
 

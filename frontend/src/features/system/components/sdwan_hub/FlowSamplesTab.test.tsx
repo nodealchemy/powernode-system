@@ -118,7 +118,8 @@ describe('FlowSamplesTab', () => {
 
     renderTab();
 
-    expect(screen.getByText(/loading collectors/i)).toBeInTheDocument();
+    // Chrome now comes from the shared LoadingSpinner: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
   // --------------------------------------------------------------------------

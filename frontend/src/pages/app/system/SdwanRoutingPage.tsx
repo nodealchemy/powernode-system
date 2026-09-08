@@ -22,6 +22,7 @@ import { RoutingOverviewPanel } from '@system/features/system/components/sdwan/r
 import { BgpSessionsTable } from '@system/features/system/components/sdwan/routing/BgpSessionsTable';
 import { RoutePoliciesList } from '@system/features/system/components/sdwan/routing/RoutePoliciesList';
 import { RoutePolicyEditModal } from '@system/features/system/components/sdwan/routing/RoutePolicyEditModal';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase B.1 (also slice 9d2 follow-up) — path-based tabs match the
 // canonical AdminSettingsPage pattern. Each tab is a child route under
@@ -161,7 +162,7 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
         {loading && !data ? (
           <div className="p-4 text-theme-secondary">Loading routing overview…</div>
         ) : error ? (
-          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+          <ErrorAlert message={error} />
         ) : data ? (
           <>
             <AsNumberSetupBanner

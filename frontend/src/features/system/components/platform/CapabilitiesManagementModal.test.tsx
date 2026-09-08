@@ -294,11 +294,10 @@ describe('CapabilitiesManagementModal', () => {
 
     await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
 
-    // The X button inside the error banner — there might be multiple X icons;
-    // find the one that is a sibling of the error text.
-    const errorBanner = screen.getByText('Network error').closest('div');
-    const dismissBtn = errorBanner!.querySelector('button[type="button"]');
-    fireEvent.click(dismissBtn!);
+    // ErrorAlert's dismiss carries aria-label="Dismiss"; the accessible name
+    // is both stabler and stronger than the old descendant/icon-only lookups.
+    const dismissBtn = screen.getByRole('button', { name: /dismiss/i });
+    fireEvent.click(dismissBtn);
 
     await waitFor(() => expect(screen.queryByText('Network error')).not.toBeInTheDocument());
   });

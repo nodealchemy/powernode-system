@@ -218,10 +218,9 @@ describe('InvitePeerModal', () => {
       expect(screen.getByText(/remote url is required/i)).toBeInTheDocument(),
     );
 
-    // Click the X inside the error banner
-    const dismissBtn = screen.getByText(/remote url is required/i)
-      .closest('div')!
-      .querySelector('button[type="button"]')!;
+    // ErrorAlert's dismiss carries aria-label="Dismiss"; the accessible name
+    // is both stabler and stronger than the old descendant/icon-only lookups.
+    const dismissBtn = screen.getByRole('button', { name: /dismiss/i });
     fireEvent.click(dismissBtn);
 
     expect(screen.queryByText(/remote url is required/i)).not.toBeInTheDocument();
