@@ -1070,3 +1070,93 @@ describe('nodesApi.downloadInstanceBootConfig', () => {
     ).rejects.toThrow('409 Conflict — device already claimed');
   });
 });
+
+// =============================================================================
+// applyTemplate — POST /system/nodes/:id/apply_template
+// =============================================================================
+
+describe('nodesApi.applyTemplate', () => {
+  beforeEach(() => {
+    mockPost.mockReset();
+  });
+
+  const APPLY_RESULT = {
+    dry_run: true,
+    created_count: 2,
+    skipped_count: 1,
+    purged_count: 0,
+    warnings: [] as string[],
+    errors: [] as string[],
+    created: [{ node_module_id: 'mod-a', source_template_module_id: 'tm-a' }],
+    purged_module_ids: [] as string[],
+  };
+
+  it('POSTs a dry run with both flags stated explicitly', async () => {
+    mockPost.mockResolvedValueOnce(envelope(APPLY_RESULT));
+
+    const result = await nodesApi.applyTemplate('node-a', { dry_run: true, purge_stale: false });
+
+    expect(mockPost).toHaveBeenCalledWith('/system/nodes/node-a/apply_template', {
+      dry_run: true,
+      purge_stale: false,
+    });
+    expect(result.dry_run).toBe(true);
+    expect(result.created_count).toBe(2);
+    expect(result.skipped_count).toBe(1);
+  });
+
+  it('POSTs the real apply with dry_run false', async () => {
+    mockPost.mockResolvedValueOnce(envelope({ ...APPLY_RESULT, dry_run: false }));
+
+    const result = await nodesApi.applyTemplate('node-b', { dry_run: false, purge_stale: false });
+
+    expect(mockPost).toHaveBeenCalledWith('/system/nodes/node-b/apply_template', {
+      dry_run: false,
+      purge_stale: false,
+    });
+    expect(result.dry_run).toBe(false);
+  });
+
+  it('forwards purge_stale when the operator opted into it', async () => {
+    mockPost.mockResolvedValueOnce(
+      envelope({ ...APPLY_RESULT, dry_run: false, purged_count: 3, purged_module_ids: ['m1', 'm2', 'm3'] })
+    );
+
+    const result = await nodesApi.applyTemplate('node-a', { dry_run: false, purge_stale: true });
+
+    expect(mockPost).toHaveBeenCalledWith('/system/nodes/node-a/apply_template', {
+      dry_run: false,
+      purge_stale: true,
+    });
+    expect(result.purged_count).toBe(3);
+    expect(result.purged_module_ids).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('defaults both flags to false when no options are given', async () => {
+    mockPost.mockResolvedValueOnce(envelope({ ...APPLY_RESULT, dry_run: false }));
+
+    await nodesApi.applyTemplate('node-a');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/nodes/node-a/apply_template', {
+      dry_run: false,
+      purge_stale: false,
+    });
+  });
+
+  it('carries warnings and errors through untouched', async () => {
+    mockPost.mockResolvedValueOnce(
+      envelope({ ...APPLY_RESULT, warnings: ['module x is disabled'], errors: [] })
+    );
+
+    const result = await nodesApi.applyTemplate('node-a', { dry_run: true, purge_stale: false });
+
+    expect(result.warnings).toEqual(['module x is disabled']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('propagates API errors', async () => {
+    mockPost.mockRejectedValueOnce(new Error('node has no template'));
+
+    await expect(nodesApi.applyTemplate('node-a')).rejects.toThrow('node has no template');
+  });
+});

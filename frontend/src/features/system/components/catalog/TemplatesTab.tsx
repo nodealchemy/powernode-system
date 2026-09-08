@@ -1,8 +1,16 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { Upload } from 'lucide-react';
+import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
-import { TemplateList, TemplateDetailModal, CreateTemplateModal } from '@system/features/system/components/templates';
+import {
+  TemplateList,
+  TemplateDetailModal,
+  CreateTemplateModal,
+  CloneTemplateModal,
+  ImportTemplateModal
+} from '@system/features/system/components/templates';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeTemplate } from '@system/features/system/types/system.types';
 
@@ -22,6 +30,8 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [editTemplate, setEditTemplate] = useState<SystemNodeTemplate | null>(null);
   const [duplicateTemplate, setDuplicateTemplate] = useState<SystemNodeTemplate | null>(null);
+  const [cloneTemplate, setCloneTemplate] = useState<SystemNodeTemplate | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const handleCreate = useCallback(() => {
@@ -41,6 +51,8 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
     setShowDetailModal(false); setSelectedTemplateId(null); setEditTemplate(t); setDuplicateTemplate(null); setShowCreateModal(true);
   }, []);
   const handleDuplicate = useCallback((t: SystemNodeTemplate) => { setDuplicateTemplate(t); setEditTemplate(null); setShowCreateModal(true); }, []);
+  const handleClone = useCallback((t: SystemNodeTemplate) => setCloneTemplate(t), []);
+  const handleLifecycleComplete = useCallback(() => setRefreshKey((k) => k + 1), []);
   const handleDeleteClick = useCallback((id: string) => {
     confirm({
       title: 'Delete Template',
@@ -62,6 +74,15 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
 
   return (
     <>
+      {canCreate && (
+        <div className="flex justify-end mb-3">
+          <Button variant="outline" size="sm" onClick={() => setShowImportModal(true)}>
+            <Upload className="w-4 h-4 mr-2" />
+            Import Template
+          </Button>
+        </div>
+      )}
+
       <TemplateList
         key={refreshKey}
         onView={handleView}
@@ -69,6 +90,7 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
         onDelete={canDelete ? handleDeleteClick : undefined}
         onCreate={canCreate ? handleCreate : undefined}
         onDuplicate={canCreate ? handleDuplicate : undefined}
+        onClone={canCreate ? handleClone : undefined}
       />
 
       <TemplateDetailModal
@@ -85,6 +107,19 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
         onTemplateCreated={handleTemplateCreated}
         editTemplate={editTemplate}
         duplicateFrom={duplicateTemplate}
+      />
+
+      <CloneTemplateModal
+        template={cloneTemplate}
+        isOpen={!!cloneTemplate}
+        onClose={() => setCloneTemplate(null)}
+        onCloned={handleLifecycleComplete}
+      />
+
+      <ImportTemplateModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImported={handleLifecycleComplete}
       />
 
       {ConfirmationDialog}

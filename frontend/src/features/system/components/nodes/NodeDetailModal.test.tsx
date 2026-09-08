@@ -170,6 +170,28 @@ jest.mock('./EditInstanceModal', () => ({
   },
 }));
 
+jest.mock('./ApplyTemplateModal', () => ({
+  ApplyTemplateModal: ({
+    isOpen,
+    node,
+    onClose,
+    onApplied,
+  }: {
+    isOpen: boolean;
+    node: { id: string } | null;
+    onClose: () => void;
+    onApplied?: () => void;
+  }) => {
+    if (!isOpen) return null;
+    return (
+      <div data-testid="apply-template-modal" data-node-id={node?.id ?? ''}>
+        <button onClick={onClose}>close-apply</button>
+        <button onClick={() => onApplied?.()}>trigger-applied</button>
+      </div>
+    );
+  },
+}));
+
 // NodeInstanceControls — blank stub so we don't need its own deps
 jest.mock('./NodeInstanceControls', () => ({
   __esModule: true,
@@ -1284,6 +1306,105 @@ describe('NodeDetailModal', () => {
       );
 
       await waitFor(() => expect(mockGetNode).toHaveBeenCalledWith('node-1'));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Apply template
+  // ---------------------------------------------------------------------------
+
+  describe('Apply template', () => {
+    it('offers Apply Template for a node with a template bound', async () => {
+      setupDefaultMocks();
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+    });
+
+    it('hides Apply Template when the node has no template', async () => {
+      setupDefaultMocks();
+      mockGetNode.mockResolvedValue({ ...NODE, node_template_id: undefined, node_template_name: undefined });
+      renderModal();
+
+      await waitFor(() => expect(mockGetNode).toHaveBeenCalled());
+      expect(screen.queryByRole('button', { name: /apply template/i })).not.toBeInTheDocument();
+    });
+
+    it('opens the apply-template drill-down on the loaded node', async () => {
+      setupDefaultMocks();
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /apply template/i }));
+
+      expect(screen.getByTestId('apply-template-modal')).toHaveAttribute('data-node-id', 'node-1');
+    });
+
+    it('refetches the node and notifies the parent after a successful apply', async () => {
+      setupDefaultMocks();
+      const onNodeUpdated = jest.fn();
+      renderModal({ onNodeUpdated });
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /apply template/i }));
+
+      const callsBefore = mockGetNode.mock.calls.length;
+      fireEvent.click(screen.getByText('trigger-applied'));
+
+      await waitFor(() => expect(mockGetNode.mock.calls.length).toBeGreaterThan(callsBefore));
+      expect(onNodeUpdated).toHaveBeenCalled();
+    });
+
+    // The shared Modal listens for Escape on document rather than on its own
+    // subtree, so this modal must stand down for the WHOLE time the
+    // apply-template modal is stacked above it — not only while that modal's
+    // own confirmation is up, which would still let one press close both.
+    it('does not close on Escape while the apply-template modal is stacked above it', async () => {
+      setupDefaultMocks();
+      const onClose = jest.fn();
+      renderModal({ onClose });
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /apply template/i }));
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('closes on Escape again once the drill-down is gone', async () => {
+      setupDefaultMocks();
+      const onClose = jest.fn();
+      renderModal({ onClose });
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /apply template/i }));
+      fireEvent.click(screen.getByText('close-apply'));
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it('closes the drill-down without applying', async () => {
+      setupDefaultMocks();
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /apply template/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /apply template/i }));
+      fireEvent.click(screen.getByText('close-apply'));
+
+      expect(screen.queryByTestId('apply-template-modal')).not.toBeInTheDocument();
     });
   });
 });

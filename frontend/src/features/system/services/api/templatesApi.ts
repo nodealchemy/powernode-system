@@ -124,6 +124,61 @@ export const templatesApi = {
     await apiClient.delete(`/system/node_templates/${templateId}/modules/${moduleId}`);
   },
 
+  /**
+   * Server-side deep clone: copies the source's TemplateModule joins wholesale
+   * (priorities, enabled flags, per-module config, recommends_override), which
+   * is what separates it from the client-side "Duplicate" that only prefills
+   * the create form.
+   *
+   * `name` is omitted rather than sent empty so the backend applies its own
+   * "<source>-copy" default. A clone carries the source's composition
+   * conflicts with it and the service reports rather than refusing, so
+   * `composition_report` must reach the operator — it is absent on a clean
+   * clone and every entry states its own severity.
+   */
+  cloneTemplate: async (
+    id: string,
+    name?: string
+  ): Promise<{ template: SystemNodeTemplate; composition_report?: TemplateCompositionReportEntry[] }> => {
+    const response = await apiClient.post<
+      ApiEnvelope<{ node_template: SystemNodeTemplate; composition_report?: TemplateCompositionReportEntry[] }>
+    >(`/system/node_templates/${id}/clone`, name ? { name } : {});
+    const data = extractData(response);
+    return { template: data.node_template, composition_report: data.composition_report };
+  },
+
+  /**
+   * Import a template bundle produced by `exportTemplate`. The backend accepts
+   * the bundle as an object or a JSON string; this always sends the parsed
+   * object so a malformed paste fails in the browser rather than as a 400.
+   *
+   * Like a clone, an import materializes a whole template's joins outside the
+   * per-assignment guard, so it reports a `composition_report` it does not
+   * enforce.
+   */
+  importTemplate: async (
+    bundle: Record<string, unknown>,
+    name?: string
+  ): Promise<{
+    template: SystemNodeTemplate;
+    template_modules_count: number;
+    composition_report?: TemplateCompositionReportEntry[];
+  }> => {
+    const response = await apiClient.post<
+      ApiEnvelope<{
+        node_template: SystemNodeTemplate;
+        template_modules_count: number;
+        composition_report?: TemplateCompositionReportEntry[];
+      }>
+    >('/system/node_templates/import', name ? { bundle, name } : { bundle });
+    const data = extractData(response);
+    return {
+      template: data.node_template,
+      template_modules_count: data.template_modules_count,
+      composition_report: data.composition_report,
+    };
+  },
+
   // Visual Template Composer (M-FE-1) — preview a composition without persisting.
   // Returns conflicts, footprint, and dependency graph so the canvas can
   // render warnings before the operator hits Save.
@@ -166,4 +221,21 @@ export interface TemplateComposePreview {
     nodes: { id: string; name: string; variety: string }[];
     edges: { source: string; target: string; type: string }[];
   };
+}
+
+/**
+ * One entry of the fail-closed composition verdict that the whole-template
+ * writers (clone, import) REPORT rather than enforce. Named
+ * `composition_report`, not `warnings`, precisely so a caller can tell a
+ * blocking verdict it must act on from an advisory one it may ignore —
+ * every entry therefore states its own severity.
+ */
+export interface TemplateCompositionReportEntry {
+  severity: 'error' | 'warning' | string;
+  kind: string;
+  detail?: string;
+  source_name?: string;
+  target_name?: string;
+  module_ids?: string[];
+  path?: string;
 }

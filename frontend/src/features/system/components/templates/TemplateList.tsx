@@ -14,6 +14,7 @@ import {
   Download,
   ChevronRight,
   ChevronDown,
+  GitFork,
   X
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -46,6 +47,12 @@ interface TemplateListProps {
   onCreate?: () => void;
   /** Callback when duplicate template is clicked */
   onDuplicate?: (template: SystemNodeTemplate) => void;
+  /**
+   * Callback when clone template is clicked. Distinct from `onDuplicate`:
+   * duplicate prefills the create form client-side and carries no module
+   * assignments, while clone is the server-side deep copy that does.
+   */
+  onClone?: (template: SystemNodeTemplate) => void;
   /** Optional className */
   className?: string;
 }
@@ -64,6 +71,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
   onDelete,
   onCreate,
   onDuplicate,
+  onClone,
   className = ''
 }) => {
   const { hasPermission } = usePermissions();
@@ -362,6 +370,17 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                           title="Duplicate Template"
                         >
                           <Copy className="w-4 h-4" />
+                        </Button>
+                      )}
+
+                      {canCreate && onClone && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onClone(template)}
+                          title="Clone Template (deep copy, including module assignments)"
+                        >
+                          <GitFork className="w-4 h-4" />
                         </Button>
                       )}
 

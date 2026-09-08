@@ -46,6 +46,7 @@ let capturedOnEdit: ((t: SystemNodeTemplate) => void) | undefined;
 let capturedOnDelete: ((id: string) => void) | undefined;
 let capturedOnCreate: (() => void) | undefined;
 let capturedOnDuplicate: ((t: SystemNodeTemplate) => void) | undefined;
+let capturedOnClone: ((t: SystemNodeTemplate) => void) | undefined;
 
 jest.mock('@system/features/system/components/templates', () => ({
   // TemplateList: renders a minimal sentinel; captures callbacks so tests
@@ -56,18 +57,21 @@ jest.mock('@system/features/system/components/templates', () => ({
     onDelete,
     onCreate,
     onDuplicate,
+    onClone,
   }: {
     onView?: (t: SystemNodeTemplate) => void;
     onEdit?: (t: SystemNodeTemplate) => void;
     onDelete?: (id: string) => void;
     onCreate?: () => void;
     onDuplicate?: (t: SystemNodeTemplate) => void;
+    onClone?: (t: SystemNodeTemplate) => void;
   }) => {
     capturedOnView = onView;
     capturedOnEdit = onEdit;
     capturedOnDelete = onDelete;
     capturedOnCreate = onCreate;
     capturedOnDuplicate = onDuplicate;
+    capturedOnClone = onClone;
     return <div data-testid="template-list" />;
   },
 
@@ -152,6 +156,61 @@ jest.mock('@system/features/system/components/templates', () => ({
       </div>
     );
   },
+
+  // CloneTemplateModal: controlled by the source template it was opened with.
+  CloneTemplateModal: ({
+    template,
+    isOpen,
+    onClose,
+    onCloned,
+  }: {
+    template: SystemNodeTemplate | null;
+    isOpen: boolean;
+    onClose: () => void;
+    onCloned?: (t: SystemNodeTemplate) => void;
+  }) => {
+    if (!isOpen) return null;
+    return (
+      <div data-testid="clone-template-modal" data-template-id={template?.id ?? ''}>
+        <button onClick={onClose}>close-clone</button>
+        <button onClick={() => onCloned?.({ ...(template as SystemNodeTemplate), id: 'tpl-cloned' })}>
+          trigger-cloned
+        </button>
+      </div>
+    );
+  },
+
+  ImportTemplateModal: ({
+    isOpen,
+    onClose,
+    onImported,
+  }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onImported?: (t: SystemNodeTemplate) => void;
+  }) => {
+    if (!isOpen) return null;
+    return (
+      <div data-testid="import-template-modal">
+        <button onClick={onClose}>close-import</button>
+        <button
+          onClick={() =>
+            onImported?.({
+              id: 'tpl-imported',
+              name: 'Imported',
+              enabled: true,
+              public: false,
+              config: {},
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            })
+          }
+        >
+          trigger-imported
+        </button>
+      </div>
+    );
+  },
 }));
 
 // =============================================================================
@@ -216,6 +275,7 @@ describe('TemplatesTab', () => {
     capturedOnDelete = undefined;
     capturedOnCreate = undefined;
     capturedOnDuplicate = undefined;
+    capturedOnClone = undefined;
   });
 
   // ---------------------------------------------------------------------------
@@ -517,6 +577,12 @@ describe('TemplatesTab', () => {
     renderTab();
     expect(capturedOnCreate).toBeUndefined();
     expect(capturedOnDuplicate).toBeUndefined();
+    // Clone and Import both POST through the same create permission, so they
+    // must disappear with the rest of it.
+    expect(capturedOnClone).toBeUndefined();
+    expect(
+      screen.queryByRole('button', { name: /import template/i }),
+    ).not.toBeInTheDocument();
 
     // Restore
     perm.usePermissions = original;
@@ -552,5 +618,86 @@ describe('TemplatesTab', () => {
     // Fresh create should have no editTemplate / duplicateFrom
     fireListCallback(capturedOnCreate);
     expect(screen.getByTestId('create-template-modal')).toHaveAttribute('data-mode', 'create');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Template lifecycle: clone + import
+  // ---------------------------------------------------------------------------
+
+  describe('Clone and import', () => {
+    it('offers an Import Template control', () => {
+      renderTab();
+      expect(screen.getByRole('button', { name: /import template/i })).toBeInTheDocument();
+    });
+
+    it('does not render the lifecycle modals before interaction', () => {
+      renderTab();
+      expect(screen.queryByTestId('clone-template-modal')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('import-template-modal')).not.toBeInTheDocument();
+    });
+
+    it('opens the import modal from the Import control and closes it again', () => {
+      renderTab();
+
+      fireEvent.click(screen.getByRole('button', { name: /import template/i }));
+      expect(screen.getByTestId('import-template-modal')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('close-import'));
+      expect(screen.queryByTestId('import-template-modal')).not.toBeInTheDocument();
+    });
+
+    it('hands TemplateList a clone callback that opens the clone modal on that template', () => {
+      renderTab();
+
+      expect(capturedOnClone).toBeDefined();
+      act(() => capturedOnClone!(TEMPLATE_B));
+
+      const modal = screen.getByTestId('clone-template-modal');
+      expect(modal).toHaveAttribute('data-template-id', 'tpl-b');
+    });
+
+    it('closes the clone modal without cloning', () => {
+      renderTab();
+      act(() => capturedOnClone!(TEMPLATE_A));
+
+      fireEvent.click(screen.getByText('close-clone'));
+      expect(screen.queryByTestId('clone-template-modal')).not.toBeInTheDocument();
+    });
+
+    it('refreshes the list after a clone', () => {
+      renderTab();
+      act(() => capturedOnClone!(TEMPLATE_A));
+      const before = screen.getByTestId('template-list');
+
+      fireEvent.click(screen.getByText('trigger-cloned'));
+
+      // The list is keyed on refreshKey, so a remount is what proves the
+      // refresh happened rather than the callback merely being wired.
+      expect(screen.getByTestId('template-list')).not.toBe(before);
+    });
+
+    it('refreshes the list after an import', () => {
+      renderTab();
+      fireEvent.click(screen.getByRole('button', { name: /import template/i }));
+      const before = screen.getByTestId('template-list');
+
+      fireEvent.click(screen.getByText('trigger-imported'));
+
+      expect(screen.getByTestId('template-list')).not.toBe(before);
+    });
+
+    // Clone is a server-side deep copy that carries the module assignments;
+    // Duplicate only prefills the create form. They are different actions and
+    // must stay separately wired.
+    it('keeps clone and duplicate as distinct callbacks', () => {
+      renderTab();
+      expect(capturedOnClone).toBeDefined();
+      expect(capturedOnDuplicate).toBeDefined();
+      expect(capturedOnClone).not.toBe(capturedOnDuplicate);
+
+      act(() => capturedOnDuplicate!(TEMPLATE_A));
+      expect(screen.getByTestId('create-template-modal')).toHaveAttribute('data-mode', 'duplicate');
+      expect(screen.queryByTestId('clone-template-modal')).not.toBeInTheDocument();
+    });
   });
 });

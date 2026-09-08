@@ -803,3 +803,122 @@ describe('templatesApi.composePreview', () => {
     );
   });
 });
+
+// =============================================================================
+// cloneTemplate — POST /system/node_templates/:id/clone
+// =============================================================================
+
+describe('templatesApi.cloneTemplate', () => {
+  beforeEach(() => {
+    mockPost.mockReset();
+  });
+
+  it('POSTs to the clone path and unwraps the new template', async () => {
+    const cloned = makeTemplate({ id: 'tpl-clone', name: 'ubuntu-base-copy' });
+    mockPost.mockResolvedValueOnce(envelope({ node_template: cloned }));
+
+    const result = await templatesApi.cloneTemplate('tpl-a', 'ubuntu-base-copy');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_templates/tpl-a/clone', {
+      name: 'ubuntu-base-copy',
+    });
+    expect(result.template).toEqual(cloned);
+  });
+
+  it('omits the name so the backend applies its "<source>-copy" default', async () => {
+    mockPost.mockResolvedValueOnce(envelope({ node_template: TPL_A }));
+
+    await templatesApi.cloneTemplate('tpl-a');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_templates/tpl-a/clone', {});
+  });
+
+  it('surfaces the composition_report entries with their severities', async () => {
+    mockPost.mockResolvedValueOnce(
+      envelope({
+        node_template: TPL_A,
+        composition_report: [
+          { severity: 'error', kind: 'instance_variety_collision', detail: 'Only one instance-variety module per category is allowed' },
+          { severity: 'warning', kind: 'mount_path_collision', detail: '/var/lib is claimed twice' },
+        ],
+      })
+    );
+
+    const result = await templatesApi.cloneTemplate('tpl-a');
+
+    expect(result.composition_report).toHaveLength(2);
+    expect(result.composition_report?.[0].severity).toBe('error');
+    expect(result.composition_report?.[1].kind).toBe('mount_path_collision');
+  });
+
+  it('leaves composition_report undefined for a clean clone', async () => {
+    mockPost.mockResolvedValueOnce(envelope({ node_template: TPL_A }));
+
+    const result = await templatesApi.cloneTemplate('tpl-a');
+
+    expect(result.composition_report).toBeUndefined();
+  });
+
+  it('propagates API errors', async () => {
+    mockPost.mockRejectedValueOnce(new Error('name already taken'));
+
+    await expect(templatesApi.cloneTemplate('tpl-a')).rejects.toThrow('name already taken');
+  });
+});
+
+// =============================================================================
+// importTemplate — POST /system/node_templates/import
+// =============================================================================
+
+describe('templatesApi.importTemplate', () => {
+  beforeEach(() => {
+    mockPost.mockReset();
+  });
+
+  it('POSTs the bundle to the collection import path', async () => {
+    const bundle = { node_template: { name: 'imported' }, template_modules: [] };
+    mockPost.mockResolvedValueOnce(
+      envelope({ node_template: TPL_B, template_modules_count: 3 })
+    );
+
+    const result = await templatesApi.importTemplate(bundle);
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_templates/import', { bundle });
+    expect(result.template).toEqual(TPL_B);
+    expect(result.template_modules_count).toBe(3);
+  });
+
+  it('sends an operator-supplied name alongside the bundle', async () => {
+    const bundle = { node_template: { name: 'imported' } };
+    mockPost.mockResolvedValueOnce(
+      envelope({ node_template: TPL_B, template_modules_count: 0 })
+    );
+
+    await templatesApi.importTemplate(bundle, 'renamed-on-import');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_templates/import', {
+      bundle,
+      name: 'renamed-on-import',
+    });
+  });
+
+  it('surfaces the composition_report from an import', async () => {
+    mockPost.mockResolvedValueOnce(
+      envelope({
+        node_template: TPL_B,
+        template_modules_count: 2,
+        composition_report: [{ severity: 'error', kind: 'composition_analysis_failed', detail: 'boom' }],
+      })
+    );
+
+    const result = await templatesApi.importTemplate({});
+
+    expect(result.composition_report?.[0].kind).toBe('composition_analysis_failed');
+  });
+
+  it('propagates API errors', async () => {
+    mockPost.mockRejectedValueOnce(new Error('bundle param required'));
+
+    await expect(templatesApi.importTemplate({})).rejects.toThrow('bundle param required');
+  });
+});
