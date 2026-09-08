@@ -349,8 +349,9 @@ module PowernodeSystem
           # flow — the worker sweep deliberately excludes `composed`, so this is
           # the only surface that releases a frozen plan to execute. Admin-only,
           # mirroring every other infra-mutation resource in this block.
-          resource :fulfillment_requests, actions: %i[approve], grant: { admin: :all },
+          resource :fulfillment_requests, actions: %i[read approve], grant: { admin: :all },
                    descriptions: {
+                     read: "List and inspect capability-fulfillment requests, including the FROZEN plan awaiting a decision",
                      approve: "Approve a composed capability-fulfillment request, releasing its FROZEN plan to execute"
                    }
           resource :infra_tasks, actions: %i[read create control], grant: { admin: :all }

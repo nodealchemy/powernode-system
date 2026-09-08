@@ -112,8 +112,12 @@ Rails.application.routes.draw do
         # on an out-of-band human decision, NOT on the orchestrator — the worker
         # sweep excludes `composed` from ADVANCEABLE_STATES on purpose. Without
         # this route an interactive request hung in `composed` forever.
-        # Approve-only: everything downstream is driven by the sweep.
-        resources :fulfillment_requests, only: [] do
+        # index/show exist so the decision has a surface to be made ON: approve
+        # records source "operator_ui", and until IMP-3fd7f5c67a7b there was no
+        # route by which an operator could find a composed request or read the
+        # frozen plan they were releasing. Everything downstream of approve is
+        # still driven by the sweep.
+        resources :fulfillment_requests, only: %i[index show] do
           member { post :approve }
         end
 

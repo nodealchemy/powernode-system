@@ -137,3 +137,112 @@ export interface RemoteCatalogResponse {
   offerings: RemoteCatalogOffering[];
   generated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Capability fulfillment (campaign 019f6084 inc-M)
+// ---------------------------------------------------------------------------
+//
+// A FulfillmentRequest is composed with its plan FROZEN. Every state after
+// `approved` is driven by the 60s worker sweep; `composed` is deliberately
+// excluded from it, because that edge waits on a human. Approving releases the
+// frozen plan verbatim — it is never re-composed — so the operator has to be
+// able to read those exact bytes first (IMP-3fd7f5c67a7b).
+
+export type FulfillmentRequestState =
+  | 'composed'
+  | 'approved'
+  | 'materializing'
+  | 'building'
+  | 'templated'
+  | 'provisioning'
+  | 'smoking'
+  | 'ready'
+  | 'failed'
+  | 'expired';
+
+/**
+ * A park the executor recorded — including a withheld autonomous approval.
+ * This is a CUMULATIVE trail: add_park! appends and never clears, so a
+ * non-empty `parked` says something was noted at some point, NOT that the
+ * latest advance parked. `step` names which stage recorded it.
+ */
+export interface FulfillmentPark {
+  step?: string;
+  reason?: string;
+  at?: string;
+  [key: string]: unknown;
+}
+
+/** A capability the composer could not resolve. Shown to the approver, never filtered. */
+export interface FulfillmentUnresolvedGap {
+  capability?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+/** The replayable context approve releases as-is. */
+export interface FulfillmentExecutionPlan {
+  base_os_module_id?: string;
+  reused_module_ids?: string[];
+  gaps?: Array<Record<string, unknown>>;
+  template_name?: string;
+  [key: string]: unknown;
+}
+
+export interface FulfillmentPlan {
+  execution?: FulfillmentExecutionPlan;
+  unresolved_gaps?: FulfillmentUnresolvedGap[];
+  [key: string]: unknown;
+}
+
+/** List row. Carries no plan — the plan is a per-request read. */
+export interface FulfillmentRequestSummary {
+  id: string;
+  state: FulfillmentRequestState;
+  request: string;
+  reused_count: number;
+  materialized_count: number;
+  instance_count: number;
+  build_batch_id: string | null;
+  template_id: string | null;
+  node_instance_ids: string[];
+  expires_at: string | null;
+  error: string | null;
+  parked: FulfillmentPark[] | null;
+  smoke: Record<string, unknown> | null;
+  approved_at: string | null;
+  approved_by_user_id: string | null;
+  created_at: string;
+}
+
+export interface FulfillmentRequestDetail extends FulfillmentRequestSummary {
+  plan: FulfillmentPlan;
+  /** sha256 of the frozen plan; the approval FleetEvent carries the same value. */
+  plan_digest: string;
+  cost_estimate: Record<string, unknown>;
+}
+
+export interface FulfillmentRequestsListResponse {
+  fulfillment_requests: FulfillmentRequestSummary[];
+  awaiting_approval_count: number;
+}
+
+export interface FulfillmentRequestFilters {
+  state?: FulfillmentRequestState;
+}
+
+/** What one inline advance reported back, so a capped request says so immediately. */
+export interface FulfillmentAdvanceResult {
+  ok: boolean;
+  state: string;
+  advanced: number | null;
+  waiting: boolean;
+  parked: FulfillmentPark[] | null;
+  error: string | null;
+  already_advancing: boolean;
+}
+
+export interface FulfillmentApproveResponse {
+  fulfillment_request: FulfillmentRequestSummary;
+  advance: FulfillmentAdvanceResult;
+}
