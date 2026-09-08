@@ -91,6 +91,30 @@
 #                                rolling mirror cannot serve a snapshot tree
 #                                and would silently change package versions.
 #                                Ignored when apt_snapshot is "none".
+#   STAGE1_APT_CACHE_DIR         OPT-IN, default unset. Absolute path of a
+#                                persistent .deb cache keyed by snapshot:
+#                                <dir>/<apt_snapshot>/archives/*.deb are
+#                                seeded into the chroot's apt cache before
+#                                mmdebstrap fetches anything, and every .deb
+#                                mmdebstrap fetched is harvested back
+#                                afterwards (before its own apt-get clean, so
+#                                the produced rootfs is unchanged). apt
+#                                verifies each cached file against the
+#                                snapshot index's hashes and re-fetches on
+#                                mismatch, so a stale or corrupt entry is
+#                                never trusted — and snapshot content is
+#                                immutable, so the key can never go stale.
+#                                Degrades to "no cache" with a WARNING when
+#                                the directory is missing or unwritable;
+#                                disabled when apt_snapshot is "none" (live
+#                                mirror content is not immutable, so there
+#                                is no safe cache key). NOTE: the build
+#                                chroot only sees what its caller mounts —
+#                                a native build needs module-forge-build.sh
+#                                to bind-mount a persistent host directory
+#                                into the buildenv and export this variable;
+#                                until it does, the variable is unset there
+#                                and this is a no-op.
 #
 # Reads:  /tmp/package_spec.txt (produced by the workflow's untouched
 #         "Parse manifest" step)
@@ -98,7 +122,9 @@
 #         hooks for log-forwarder-vector / storage-tools),
 #         /tmp/$MODULE.packages.txt (resolved-package provenance),
 #         /tmp/stage1-mmdebstrap.log (the last mmdebstrap run's output,
-#         used for the transient-failure classification)
+#         used for the transient-failure classification),
+#         /tmp/stage1-apt-cache-{seed,harvest}.sh (only when
+#         STAGE1_APT_CACHE_DIR is in effect)
 #
 # Exit: non-zero on any mmdebstrap/dpkg-query failure (set -euo pipefail
 # propagates the first one); 2 with a message naming the mirror URL and the
@@ -113,7 +139,7 @@ Usage: stage1-rootfs.sh --module MODULE [--apt-snapshot SNAPSHOT_OR_none]
 
 Stage 1 of the module build pipeline: mmdebstrap fat rootfs bootstrap +
 package-provenance capture. See the file header for the full option
-reference, the STAGE1_* resilience env knobs, and the
+reference, the STAGE1_* resilience/cache env knobs, and the
 workflow-env-var mapping.
 EOF
 }
@@ -154,6 +180,7 @@ done
 MIRROR_WAIT_MAX="${STAGE1_MIRROR_WAIT_MAX:-900}"
 MMDEBSTRAP_ATTEMPTS="${STAGE1_MMDEBSTRAP_ATTEMPTS:-3}"
 SNAPSHOT_BASE_URL_OVERRIDE="${STAGE1_SNAPSHOT_BASE_URL:-}"
+APT_CACHE_DIR="${STAGE1_APT_CACHE_DIR:-}"
 [[ "$MIRROR_WAIT_MAX" =~ ^[0-9]+$ ]] \
   || die "STAGE1_MIRROR_WAIT_MAX must be a non-negative integer number of seconds, got '${MIRROR_WAIT_MAX}'"
 [[ "$MMDEBSTRAP_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
@@ -272,6 +299,97 @@ resolve_snapshot_base_url() {
   SNAPSHOT_BASE_URL="$u"
 }
 
+# --- persistent apt cache (opt-in) -----------------------------------------
+# Populates cache_hook_args with the mmdebstrap flags that seed/harvest the
+# cache, or leaves it empty (default) so the mmdebstrap command line is
+# exactly the historical one.
+cache_hook_args=()
+setup_apt_cache() {
+  [ -n "$APT_CACHE_DIR" ] || return 0
+  if [ "$APT_SNAPSHOT" = "none" ]; then
+    log "STAGE1_APT_CACHE_DIR is set but apt_snapshot=none — cache disabled (live-mirror content is not immutable; no safe cache key)"
+    return 0
+  fi
+  case "$APT_CACHE_DIR" in
+    /*) ;;
+    *) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' is not an absolute path — cache disabled"; return 0 ;;
+  esac
+  case "$APT_CACHE_DIR" in
+    *[[:space:]\'\"\\]*) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' contains whitespace or quoting characters — cache disabled"; return 0 ;;
+  esac
+  local cache="${APT_CACHE_DIR}/${APT_SNAPSHOT}/archives"
+  if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+    log "WARNING: apt cache directory ${cache} is missing or not writable — cache disabled"
+    return 0
+  fi
+  # Both hooks run on the HOST side of mmdebstrap (root mode executes hooks
+  # outside the chroot with the chroot path as $1), which is where the cache
+  # directory is visible. Plain cp rather than mmdebstrap's rsync-based
+  # sync-in/sync-out so partial/ and lock files are never copied and so a
+  # concurrent job on the same cache cannot observe a half-written .deb
+  # (harvest writes to a temp name and renames; an entry that already
+  # exists is left alone).
+  cat > /tmp/stage1-apt-cache-seed.sh <<EOF
+#!/bin/sh
+# generated by stage1-rootfs.sh — mmdebstrap --setup-hook; \$1 = chroot dir.
+# Seeds the chroot's apt archive cache from the persistent snapshot cache.
+set -eu
+cache='${cache}'
+dst="\$1/var/cache/apt/archives"
+mkdir -p "\$dst"
+n=0
+for f in "\$cache"/*.deb; do
+  [ -f "\$f" ] || continue
+  name=\${f##*/}
+  if [ ! -e "\$dst/\$name" ]; then
+    if cp "\$f" "\$dst/\$name"; then
+      n=\$((n + 1))
+    else
+      echo "[stage-1] apt cache: WARNING could not seed \$name (ignored)"
+      rm -f "\$dst/\$name"
+    fi
+  fi
+done
+echo "[stage-1] apt cache: seeded \$n .deb(s) from \$cache"
+EOF
+  cat > /tmp/stage1-apt-cache-harvest.sh <<EOF
+#!/bin/sh
+# generated by stage1-rootfs.sh — mmdebstrap --customize-hook; \$1 = chroot dir.
+# Runs after every package is installed and BEFORE mmdebstrap's final
+# apt-get clean, so every .deb this run fetched is still present.
+set -eu
+cache='${cache}'
+src="\$1/var/cache/apt/archives"
+n=0
+for f in "\$src"/*.deb; do
+  [ -f "\$f" ] || continue
+  name=\${f##*/}
+  if [ ! -e "\$cache/\$name" ]; then
+    tmp="\$cache/.\$name.\$\$.tmp"
+    if cp "\$f" "\$tmp" 2>/dev/null; then
+      mv -n "\$tmp" "\$cache/\$name" 2>/dev/null || true
+    fi
+    rm -f "\$tmp"
+    if [ -e "\$cache/\$name" ]; then
+      n=\$((n + 1))
+    fi
+  fi
+done
+echo "[stage-1] apt cache: harvested \$n new .deb(s) into \$cache"
+EOF
+  chmod +x /tmp/stage1-apt-cache-seed.sh /tmp/stage1-apt-cache-harvest.sh
+  # --skip=essential/unlink keeps the essential-set .debs in the chroot's
+  # archive dir until the customize hook has copied them out; mmdebstrap's
+  # final cleanup (apt-get clean) still removes them from the produced
+  # rootfs, so the bootstrapped tree is identical with or without the cache.
+  cache_hook_args=(
+    --skip=essential/unlink
+    --setup-hook=/tmp/stage1-apt-cache-seed.sh
+    --customize-hook=/tmp/stage1-apt-cache-harvest.sh
+  )
+  log "apt cache enabled: ${cache}"
+}
+
 # ---------------------------------------------------------------------------
 # Stage body. The package/apt inputs below are the workflow's original Stage 1
 # step values; $MODULE/$APT_SNAPSHOT come from the arg parsing above.
@@ -388,6 +506,8 @@ EOF
   # component, already indexed by mmdebstrap's base apt-get update.
 esac
 
+setup_apt_cache
+
 # The content-determining arguments (suite, variant, components, --include,
 # keyring, base URL) are the original inline step's. Acquire::Retries is
 # apt's own per-fetch transport retry, layered under the probe/retry loop
@@ -398,6 +518,7 @@ mmdebstrap_args=(
   --variant=minbase
   --components=main,universe
   "${hook_args[@]}"
+  "${cache_hook_args[@]}"
   --include="$pkgs"
   --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
   --aptopt='Acquire::http::Pipeline-Depth "0"'
