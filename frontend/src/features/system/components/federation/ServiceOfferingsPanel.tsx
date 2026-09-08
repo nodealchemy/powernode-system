@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   ServiceOffering,
   OfferingStatus,
@@ -140,14 +141,22 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
         </div>
       </header>
 
-      {!loading && offerings.length === 0 && (
-        <div className="p-12 text-center text-theme-secondary text-sm">
-          No offerings yet. Publishing one makes it visible to federated peers in the
-          catalog endpoint.
-        </div>
-      )}
-
-      {offerings.length > 0 && (
+      {/* Header stays OUTSIDE the container: it carries the status filter and
+          the primary action, both of which must remain reachable when the list
+          is empty — the container's empty branch replaces everything it wraps. */}
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={offerings.length}
+        filteredCount={offerings.length}
+        emptyState={{
+          icon: Globe2,
+          title: 'No offerings yet',
+          description: 'Publishing one makes it visible to federated peers in the catalog endpoint.',
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
@@ -174,7 +183,8 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
             ))}
           </tbody>
         </table>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     </div>
   );
 };
