@@ -76,13 +76,11 @@ function migratableFieldCount(source: string): number {
  * never grow it.
  */
 const KNOWN_HAND_WRITTEN: readonly string[] = [
-  'modules/ModuleCategoryFormModal.tsx',
   'modules/ModuleFormModal.tsx',
   'nodes/CreateInstanceModal.tsx',
   'nodes/CreateNodeModal.tsx',
   'nodes/EditInstanceModal.tsx',
   'nodes/EditNodeModal.tsx',
-  'platforms/PlatformFormModal.tsx',
   'providers/AvailabilityZoneFormModal.tsx',
   'providers/ConnectionFormModal.tsx',
   'providers/InstanceTypeFormModal.tsx',
