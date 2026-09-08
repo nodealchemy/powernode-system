@@ -76,11 +76,7 @@ function migratableFieldCount(source: string): number {
  * never grow it.
  */
 const KNOWN_HAND_WRITTEN: readonly string[] = [
-  'providers/AvailabilityZoneFormModal.tsx',
-  'providers/ConnectionFormModal.tsx',
-  'providers/InstanceTypeFormModal.tsx',
   'providers/ProviderFormModal.tsx',
-  'providers/RegionFormModal.tsx',
   'sdwan/AccessGrantCreateModal.tsx',
   'sdwan/AccessTab.tsx',
   'sdwan/FederationPeerList.tsx',

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { MapPin, AlertCircle } from 'lucide-react';
+import { MapPin } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -164,83 +165,50 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
           <form onSubmit={handleSubmit}>
             <div className="space-y-4">
               {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter region name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                required
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter region name"
+                error={errors.name}
+                disabled={submitting}
+              />
 
               {/* Region Code */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Region Code <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.region_code}
-                  onChange={(e) => handleChange('region_code', e.target.value)}
-                  placeholder="e.g., us-east-1"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.region_code ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.region_code && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.region_code}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Region Code"
+                required
+                value={formData.region_code}
+                onChange={(v) => handleChange('region_code', v)}
+                placeholder="e.g., us-east-1"
+                className="font-mono"
+                error={errors.region_code}
+                disabled={submitting}
+              />
 
               {/* Description */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => handleChange('description', e.target.value)}
-                  placeholder="Optional description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => handleChange('description', v)}
+                placeholder="Optional description"
+                disabled={submitting}
+              />
 
               {/* Endpoint URL */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Endpoint URL
-                </label>
-                <input
-                  type="url"
-                  value={formData.endpoint_url}
-                  onChange={(e) => handleChange('endpoint_url', e.target.value)}
-                  placeholder="https://api.region.example.com"
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  disabled={submitting}
-                />
-                <p className="mt-1 text-xs text-theme-tertiary">
-                  API endpoint for this region (if different from provider default)
-                </p>
-              </div>
+              <FormField
+                label="Endpoint URL"
+                type="url"
+                value={formData.endpoint_url}
+                onChange={(v) => handleChange('endpoint_url', v)}
+                placeholder="https://api.region.example.com"
+                className="font-mono"
+                helpText="API endpoint for this region (if different from provider default)"
+                disabled={submitting}
+              />
             </div>
 
             {/* Footer */}

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Server, AlertCircle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Server, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -242,57 +243,37 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
           <form onSubmit={handleSubmit}>
             <div className="space-y-4">
               {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error-fg">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  placeholder="Enter connection name"
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error-border' : 'border-theme'
-                  }`}
-                  disabled={submitting}
-                />
-                {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.name}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Name"
+                required
+                value={formData.name}
+                onChange={(v) => handleChange('name', v)}
+                placeholder="Enter connection name"
+                error={errors.name}
+                disabled={submitting}
+              />
 
               {/* Description */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => handleChange('description', e.target.value)}
-                  placeholder="Optional description"
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Description"
+                type="textarea"
+                rows={2}
+                value={formData.description}
+                onChange={(v) => handleChange('description', v)}
+                placeholder="Optional description"
+                disabled={submitting}
+              />
 
               {/* Endpoint URL */}
-              <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Endpoint URL
-                </label>
-                <input
-                  type="url"
-                  value={formData.endpoint_url}
-                  onChange={(e) => handleChange('endpoint_url', e.target.value)}
-                  placeholder="https://api.provider.com"
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                  disabled={submitting}
-                />
-              </div>
+              <FormField
+                label="Endpoint URL"
+                type="url"
+                value={formData.endpoint_url}
+                onChange={(v) => handleChange('endpoint_url', v)}
+                placeholder="https://api.provider.com"
+                className="font-mono"
+                disabled={submitting}
+              />
 
               {/* Credentials Section */}
               <div className="pt-4 border-t border-theme">
@@ -300,64 +281,46 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
 
                 {/* Access Key */}
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Access Key {!isEditMode && <span className="text-theme-error-fg">*</span>}
-                  </label>
-                  <input
-                    type="text"
+                  <FormField
+                    label="Access Key"
+                    required={!isEditMode}
                     value={formData.access_key}
-                    onChange={(e) => handleChange('access_key', e.target.value)}
+                    onChange={(v) => handleChange('access_key', v)}
                     placeholder={isEditMode ? "Leave empty to keep existing" : "Enter access key"}
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.access_key ? 'border-theme-error-border' : 'border-theme'
-                    }`}
+                    className="font-mono"
+                    error={errors.access_key}
                     disabled={submitting}
                   />
-                  {errors.access_key && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.access_key}
-                    </p>
-                  )}
                 </div>
 
                 {/* Secret Key */}
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Secret Key {!isEditMode && <span className="text-theme-error-fg">*</span>}
-                  </label>
-                  <input
+                  {/* No reveal toggle: this field held a masked secret before this
+                      refactor and still does. Adding one would be a change to how
+                      a credential is handled, not a change of styling. */}
+                  <FormField
+                    label="Secret Key"
                     type="password"
+                    showPasswordToggle={false}
+                    required={!isEditMode}
                     value={formData.secret_key}
-                    onChange={(e) => handleChange('secret_key', e.target.value)}
+                    onChange={(v) => handleChange('secret_key', v)}
                     placeholder={isEditMode ? "Leave empty to keep existing" : "Enter secret key"}
-                    className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.secret_key ? 'border-theme-error-border' : 'border-theme'
-                    }`}
+                    className="font-mono"
+                    error={errors.secret_key}
                     disabled={submitting}
                   />
-                  {errors.secret_key && (
-                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      {errors.secret_key}
-                    </p>
-                  )}
                 </div>
 
                 {/* Tenant (optional) */}
-                <div>
-                  <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Tenant / Project ID
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.tenant}
-                    onChange={(e) => handleChange('tenant', e.target.value)}
-                    placeholder="Optional tenant or project ID"
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
-                    disabled={submitting}
-                  />
-                </div>
+                <FormField
+                  label="Tenant / Project ID"
+                  value={formData.tenant}
+                  onChange={(v) => handleChange('tenant', v)}
+                  placeholder="Optional tenant or project ID"
+                  className="font-mono"
+                  disabled={submitting}
+                />
               </div>
 
               {/* Test Connection */}
