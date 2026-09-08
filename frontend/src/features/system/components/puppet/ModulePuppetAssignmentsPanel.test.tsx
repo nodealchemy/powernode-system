@@ -97,7 +97,9 @@ describe('ModulePuppetAssignmentsPanel', () => {
     await screen.findByText('profile_base');
 
     fireEvent.click(screen.getByRole('button', { name: /Assign puppet module/i }));
-    const select = await screen.findByLabelText(/Puppet module/i);
+    // Exact text: the dialog itself is aria-labelledby the "Assign puppet
+    // module" title, which a loose regex would also match.
+    const select = await screen.findByLabelText('Puppet module');
     fireEvent.change(select, { target: { value: 'pm-2' } });
     fireEvent.click(screen.getByRole('button', { name: /^Assign$/i }));
 

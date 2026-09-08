@@ -270,8 +270,10 @@ describe('PuppetModuleFormModal', () => {
     it('calls onClose when the backdrop overlay is clicked', () => {
       const onClose = jest.fn();
       const { container } = renderModal({ onClose });
-      // The overlay is the fixed bg-black/50 div
-      const overlay = container.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+      // The core Modal portals to document.body and dismisses on a click that
+      // lands on its positioning container.
+      void container;
+      const overlay = document.querySelector('[class*="justify-center"]') as HTMLElement;
       fireEvent.click(overlay);
       expect(onClose).toHaveBeenCalledTimes(1);
     });

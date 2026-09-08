@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  X,
   Package,
   FileCode,
   Link,
@@ -15,6 +14,7 @@ import {
   Pencil,
   Trash2
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -121,8 +121,6 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
       },
     });
   };
-
-  if (!isOpen) return null;
 
   const tabs = [
     { id: 'info' as const, label: 'Information', icon: Package },
@@ -468,38 +466,29 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
 
   return (
     <>
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-4xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : module?.name || 'Puppet Module Details'}
-                </h2>
-                {module && module.version && (
-                  <p className="text-sm text-theme-secondary">
-                    v{module.version}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {module && onEdit && (
-                <Button variant="outline" size="sm" onClick={() => onEdit(module)}>
-                  Edit
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={onClose}>
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : module?.name || 'Puppet Module Details'}
+      subtitle={module && module.version ? `v${module.version}` : undefined}
+      icon={<Package className="w-6 h-6" />}
+      maxWidth="4xl"
+      // The shared confirmation dialog is itself a Modal listening for Escape
+      // on document; suppress ours so one keypress does not close both.
+      closeOnEscape={ConfirmationDialog === null}
+      footer={
+        <>
+          {module && onEdit && (
+            <Button variant="outline" onClick={() => onEdit(module)}>
+              Edit
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </>
+      }
+    >
           {/* Tabs */}
           <div className="border-b border-theme">
             <nav className="flex -mb-px">
@@ -526,7 +515,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
           </div>
 
           {/* Content */}
-          <div className="p-6 max-h-[60vh] overflow-y-auto">
+          <div className="pt-4">
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
@@ -544,16 +533,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
               </div>
             )}
           </div>
-
-          {/* Footer */}
-          <div className="flex justify-end p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
 
     {ConfirmationDialog}
     </>

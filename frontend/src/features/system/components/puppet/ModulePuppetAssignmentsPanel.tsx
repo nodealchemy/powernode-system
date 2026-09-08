@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Wrench, Plus, Trash2, Power, PowerOff } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -226,10 +227,25 @@ const AddPuppetAssignmentForm: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold mb-3 text-theme-primary">Assign puppet module</h3>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Assign puppet module"
+      icon={<Wrench className="w-6 h-6" />}
+      maxWidth="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!puppetModuleId || submitting || puppetModules.length === 0}
+          >
+            {submitting ? 'Assigning…' : 'Assign'}
+          </Button>
+        </>
+      }
+    >
         {puppetModules.length === 0 ? (
           <p className="text-sm text-theme-secondary mb-4">
             No unassigned puppet modules available.
@@ -258,18 +274,6 @@ const AddPuppetAssignmentForm: React.FC<{
             />
           </>
         )}
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!puppetModuleId || submitting || puppetModules.length === 0}
-          >
-            {submitting ? 'Assigning…' : 'Assign'}
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
