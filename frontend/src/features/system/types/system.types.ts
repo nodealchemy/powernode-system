@@ -416,6 +416,32 @@ export interface SystemProviderConnection {
   updated_at: string;
 }
 
+/**
+ * A stored cloud credential, as #index serialises it. The encrypted values are
+ * never in this shape — the controller returns metadata and provider context
+ * only, which is what makes a list of configured credentials safe to render.
+ */
+export interface SystemProviderCredential {
+  id: string;
+  provider_id: string;
+  provider_name?: string;
+  provider_type?: string;
+  name?: string;
+  scope: string;
+  is_active: boolean;
+  last_test_at?: string | null;
+  last_test_status?: string | null;
+  /**
+   * The provider SDK's own authentication error, verbatim. It is the one field
+   * on this record that can quote something the operator typed, so think
+   * before rendering it — the credentials panel deliberately does not.
+   */
+  last_error?: string | null;
+  consecutive_failures?: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SystemProviderInstanceType {
   id: string;
   name: string;

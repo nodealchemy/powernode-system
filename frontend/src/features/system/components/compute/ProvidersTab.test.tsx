@@ -39,6 +39,7 @@ let capturedDetailOnEdit: ((p: SystemProvider) => void) | undefined;
 
 let capturedFormOnClose: (() => void) | undefined;
 let capturedFormOnProviderSaved: (() => void) | undefined;
+let capturedFormOnCredentialSaved: (() => void) | undefined;
 
 jest.mock('@system/features/system/components/providers', () => ({
   ProviderList: ({
@@ -122,24 +123,39 @@ jest.mock('@system/features/system/components/providers', () => ({
     isOpen,
     onClose,
     onProviderSaved,
+    onCredentialSaved,
     editProvider,
   }: {
     isOpen: boolean;
     onClose: () => void;
     onProviderSaved?: () => void;
+    onCredentialSaved?: () => void;
     editProvider?: SystemProvider | null;
   }) => {
     capturedFormOnClose = onClose;
     capturedFormOnProviderSaved = onProviderSaved;
+    capturedFormOnCredentialSaved = onCredentialSaved;
     if (!isOpen) return null;
     return (
       <div data-testid="provider-form-modal">
         <span data-testid="form-edit-provider-id">{editProvider?.id ?? 'null'}</span>
         <button data-testid="form-close" onClick={onClose}>Close</button>
         <button data-testid="form-saved" onClick={() => onProviderSaved?.()}>Saved</button>
+        <button
+          data-testid="form-credential-saved"
+          onClick={() => onCredentialSaved?.()}
+        >
+          Credential saved
+        </button>
       </div>
     );
   },
+
+  ProviderCredentialsPanel: ({ refreshKey }: { refreshKey?: number }) => (
+    <div data-testid="provider-credentials-panel">
+      <span data-testid="credentials-refresh-key">{String(refreshKey ?? 0)}</span>
+    </div>
+  ),
 }));
 
 // --- Permissions ---
@@ -494,3 +510,56 @@ describe('ProvidersTab', () => {
   });
 });
 
+// =============================================================================
+// Configured credentials (IMP-18832c3c6128)
+//
+// The screen that CREATES a cloud credential had no surface that lists or
+// removes one: provider_credentials #index and #destroy had no caller in
+// either frontend tree, so a credential typed wrong could only be corrected
+// with database access. These pin the surface onto this screen, where
+// creation already lives.
+// =============================================================================
+
+describe('ProvidersTab configured credentials', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockHasPermission = jest.fn(() => true);
+    capturedFormOnProviderSaved = undefined;
+    capturedFormOnCredentialSaved = undefined;
+  });
+
+  it('renders the configured-credentials panel', () => {
+    renderTab();
+
+    expect(screen.getByTestId('provider-credentials-panel')).toBeInTheDocument();
+  });
+
+  it('re-reads the credential list when a credential is stored', async () => {
+    renderTab();
+
+    const before = screen.getByTestId('credentials-refresh-key').textContent;
+
+    // The write this panel exists to show is its OWN button on its own tab of
+    // the provider form. Leaning on the provider-saved signal would leave the
+    // list stale after exactly that action — and an operator storing their
+    // first credential would be looking at an empty state, which renders no
+    // refresh button to recover with.
+    await act(async () => {
+      capturedFormOnCredentialSaved?.();
+    });
+
+    expect(screen.getByTestId('credentials-refresh-key').textContent).not.toBe(before);
+  });
+
+  it('re-reads the credential list when the provider itself is saved', async () => {
+    renderTab();
+
+    const before = screen.getByTestId('credentials-refresh-key').textContent;
+
+    await act(async () => {
+      capturedFormOnProviderSaved?.();
+    });
+
+    expect(screen.getByTestId('credentials-refresh-key').textContent).not.toBe(before);
+  });
+});
