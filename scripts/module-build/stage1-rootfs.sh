@@ -3,15 +3,45 @@
 # mmdebstrap fat rootfs bootstrap from package_spec + per-module apt-source
 # hooks, plus the inc5 package-provenance (dpkg-query) capture.
 #
-# Extracted VERBATIM (campaign 019f5885 inc6 — pure refactor, no logic
-# changes) from the "Stage 1 — bootstrap fat rootfs (mmdebstrap +
-# package_spec)" step of .gitea/workflows/build-platform-modules.yaml: same
-# commands, same order, same env semantics, same hardcoded /tmp/* scratch
-# paths — so the fat rootfs + provenance capture this produces are
-# byte-identical to the pre-refactor inline step. The workflow step is now
-# a thin invocation of this script; a future on-node/native build (inc7+,
-# driven by build-one-module.sh in this same directory) runs the identical
+# Extracted (campaign 019f5885 inc6 — pure refactor at the time) from the
+# "Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)" step of
+# .gitea/workflows/build-platform-modules.yaml. The CONTENT-DETERMINING inputs
+# of that step are unchanged: same suite/variant/components, same --include
+# list from package_spec, same keyring, same apt_snapshot pin resolved to the
+# same base URL, same hardcoded /tmp/* scratch paths — so the fat rootfs +
+# provenance capture are what the inline step produced. The workflow step is
+# a thin invocation of this script; a native build (build-one-module.sh in
+# this same directory, driven by module-forge-build.sh) runs the identical
 # script with no Gitea Actions context at all.
+#
+# MIRROR RESILIENCE (fix/stage1-mirror-resilience, 2026-09-08). The pinned
+# snapshot.ubuntu.com mirror flaps 200/502/503 for stretches of an hour or
+# more, and the original inline step failed the whole build on the FIRST apt
+# error — every module in a batch burned its retries in ~30 s. The mmdebstrap
+# invocation is now wrapped in a bounded probe-then-retry loop:
+#
+#   1. Before mmdebstrap runs, the mirror's dists/noble/InRelease is probed
+#      with curl until it answers HTTP 200. 5xx / 429 / no-response are
+#      treated as transient and waited out with exponential backoff (5 s
+#      doubling to a 60 s cap); any other 4xx (a 404 = the pinned snapshot
+#      does not exist on this mirror) fails immediately.
+#   2. mmdebstrap itself is run up to STAGE1_MMDEBSTRAP_ATTEMPTS times. A
+#      failed run is retried ONLY if its output carries a transient-mirror
+#      signature (5xx/429 on a fetch, connection errors, Hash Sum mismatch);
+#      any other failure (unknown package, keyring, disk) fails at once.
+#      Before a retry the partial /tmp/fat is removed and the mirror is
+#      re-probed.
+#   3. Every wait shares ONE deadline, STAGE1_MIRROR_WAIT_MAX seconds from
+#      the moment this script starts. Worst case for a dead mirror is that
+#      budget spent probing, then a clear failure naming the mirror URL and
+#      the last HTTP code; worst case for a flapping mirror is that budget
+#      plus up to STAGE1_MMDEBSTRAP_ATTEMPTS mmdebstrap runs.
+#
+# apt's own transport retry (Acquire::Retries) is also enabled. Nothing here
+# alters or substitutes the apt_snapshot pin: the timestamp comes from the
+# manifest, the base URL is the canonical snapshot service unless the
+# operator OPTS IN to an alternate mirror of the same snapshot tree (below),
+# and archive.ubuntu.com is never used as a fallback.
 #
 # Only two values varied by workflow context in the original inline step —
 # both threaded through as explicit CLI args below (never read from the
@@ -37,14 +67,43 @@
 #   --apt-snapshot VALUE        manifest's build.apt_snapshot, or the
 #                               literal string "none" (default)
 #
+# Env (optional — none is a credential; all reach a native build by plain
+# process-environment inheritance from module-forge-build.sh through
+# build-one-module.sh, the same channel BUILD_SKIP_UNCHANGED / CORE_REF use;
+# in the Gitea workflow set them in the step's `env:` block):
+#   STAGE1_MIRROR_WAIT_MAX       Total seconds this stage may spend WAITING
+#                                for the mirror across every probe (default
+#                                900 = 15 min). One deadline for the whole
+#                                stage, not per attempt.
+#   STAGE1_MMDEBSTRAP_ATTEMPTS   How many times mmdebstrap is run before
+#                                giving up (default 3). Only transient-mirror
+#                                failures are retried — see above.
+#   STAGE1_SNAPSHOT_BASE_URL     OPT-IN, default unset. An alternate base URL
+#                                that serves the SAME immutable snapshot tree
+#                                at <base>/<apt_snapshot>/ — e.g. an internal
+#                                proxy or mirror of snapshot.ubuntu.com. It
+#                                replaces https://snapshot.ubuntu.com/ubuntu/
+#                                for this run only; the timestamp pin still
+#                                comes from the manifest, so the resolved
+#                                package set is identical by construction.
+#                                Any *.ubuntu.com live rolling mirror
+#                                (archive/security/ports) is REFUSED: a
+#                                rolling mirror cannot serve a snapshot tree
+#                                and would silently change package versions.
+#                                Ignored when apt_snapshot is "none".
+#
 # Reads:  /tmp/package_spec.txt (produced by the workflow's untouched
 #         "Parse manifest" step)
 # Writes: /tmp/fat (the bootstrapped rootfs), /tmp/hooks/* (apt-source
 #         hooks for log-forwarder-vector / storage-tools),
-#         /tmp/$MODULE.packages.txt (resolved-package provenance)
+#         /tmp/$MODULE.packages.txt (resolved-package provenance),
+#         /tmp/stage1-mmdebstrap.log (the last mmdebstrap run's output,
+#         used for the transient-failure classification)
 #
 # Exit: non-zero on any mmdebstrap/dpkg-query failure (set -euo pipefail
-# propagates the first one).
+# propagates the first one); 2 with a message naming the mirror URL and the
+# last HTTP code when the mirror wait budget is exhausted or the failure is
+# classified as non-transient.
 
 set -euo pipefail
 
@@ -54,13 +113,18 @@ Usage: stage1-rootfs.sh --module MODULE [--apt-snapshot SNAPSHOT_OR_none]
 
 Stage 1 of the module build pipeline: mmdebstrap fat rootfs bootstrap +
 package-provenance capture. See the file header for the full option
-reference and the workflow-env-var mapping.
+reference, the STAGE1_* resilience env knobs, and the
+workflow-env-var mapping.
 EOF
 }
 
 die() {
   echo "stage1-rootfs.sh: error: $*" >&2
   exit 2
+}
+
+log() {
+  echo "[stage-1] $*"
 }
 
 MODULE=""
@@ -84,11 +148,133 @@ done
 [ -n "$MODULE" ] || { usage >&2; die "--module is required"; }
 
 # ---------------------------------------------------------------------------
-# Everything below is VERBATIM from the workflow's Stage 1 step body — no
-# text changed beyond this comment block. $MODULE/$APT_SNAPSHOT are now
-# populated by the arg parsing above instead of the shell/GITHUB_ENV
-# environment; every other reference (including all /tmp/* paths) is
-# byte-for-byte identical to the inline step.
+# Resilience knobs (see the header). Validated up front so a typo fails the
+# job in the first second, not after a 15-minute wait.
+# ---------------------------------------------------------------------------
+MIRROR_WAIT_MAX="${STAGE1_MIRROR_WAIT_MAX:-900}"
+MMDEBSTRAP_ATTEMPTS="${STAGE1_MMDEBSTRAP_ATTEMPTS:-3}"
+SNAPSHOT_BASE_URL_OVERRIDE="${STAGE1_SNAPSHOT_BASE_URL:-}"
+[[ "$MIRROR_WAIT_MAX" =~ ^[0-9]+$ ]] \
+  || die "STAGE1_MIRROR_WAIT_MAX must be a non-negative integer number of seconds, got '${MIRROR_WAIT_MAX}'"
+[[ "$MMDEBSTRAP_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
+  || die "STAGE1_MMDEBSTRAP_ATTEMPTS must be a positive integer, got '${MMDEBSTRAP_ATTEMPTS}'"
+
+SNAPSHOT_BASE_URL_DEFAULT="https://snapshot.ubuntu.com/ubuntu/"
+LIVE_MIRROR_URL="http://archive.ubuntu.com/ubuntu/"
+
+# Output lines that mean "the MIRROR (or the path to it) failed", as opposed
+# to "this build is wrong". Matched case-insensitively against the captured
+# mmdebstrap output to decide whether a failed run is worth retrying. apt
+# prints fetch failures as `Err:N <url> <suite> <file>` followed by the HTTP
+# status line; mmdebstrap then reports `apt-get update --error-on=any ...
+# failed: process exited with 100` — the exit code alone cannot distinguish
+# a 503 from a misspelled package, which is why the text is inspected.
+TRANSIENT_OUTPUT_RE='Err:[0-9]+ .*[[:space:]](408|425|429|5[0-9][0-9])[[:space:]]|Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error|Could not connect|Failed to connect|Connection (timed out|refused|reset)|Temporary failure resolving|Could not resolve|Unable to connect|Error reading from server|Network is unreachable|Undetermined Error|Hash Sum mismatch'
+
+# --- mirror probe ----------------------------------------------------------
+# One deadline for the whole stage: however many probes and retries happen,
+# the total time spent WAITING is bounded by STAGE1_MIRROR_WAIT_MAX.
+MIRROR_DEADLINE=$(( $(date +%s) + MIRROR_WAIT_MAX ))
+MIRROR_PROBES=0
+MIRROR_LAST_CODE="n/a"
+
+# probe_http_code URL — prints the HTTP status of a GET (000 = no HTTP
+# response at all: DNS, connect or TLS failure, or a timeout).
+probe_http_code() {
+  local code
+  code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 "$1" 2>/dev/null) || true
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
+  printf '%s\n' "$code"
+}
+
+transient_http_code() {
+  case "$1" in
+    000|408|425|429|5[0-9][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# wait_for_mirror URL — returns once URL answers 200. Dies (exit 2) when the
+# shared deadline passes or the mirror answers with a non-transient code.
+wait_for_mirror() {
+  local url="$1" delay=5 now remaining code
+  if ! command -v curl >/dev/null 2>&1; then
+    log "curl not on PATH — skipping the mirror probe (mmdebstrap retries still apply)"
+    return 0
+  fi
+  while :; do
+    code=$(probe_http_code "$url")
+    MIRROR_PROBES=$((MIRROR_PROBES + 1))
+    MIRROR_LAST_CODE="$code"
+    if [ "$code" = "200" ]; then
+      log "mirror probe OK: HTTP 200 from ${url} (probe ${MIRROR_PROBES})"
+      return 0
+    fi
+    if ! transient_http_code "$code"; then
+      die "mirror probe: HTTP ${code} from ${url} — not a transient error (404 here means the pinned apt_snapshot does not exist on this mirror); not retrying"
+    fi
+    now=$(date +%s)
+    remaining=$(( MIRROR_DEADLINE - now ))
+    if [ "$remaining" -le 0 ]; then
+      die "apt mirror ${url} still unhealthy after ${MIRROR_WAIT_MAX}s of waiting (${MIRROR_PROBES} probes, last HTTP code ${code}) — giving up. The pinned snapshot is unreachable, not misconfigured: re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree (see this script's header)."
+    fi
+    if [ "$delay" -gt "$remaining" ]; then
+      delay="$remaining"
+    fi
+    log "mirror probe: HTTP ${code} from ${url} — transient; retrying in ${delay}s (${remaining}s of wait budget left)"
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+    if [ "$delay" -gt 60 ]; then
+      delay=60
+    fi
+  done
+}
+
+# transient_mmdebstrap_failure LOGFILE — true if the captured output carries
+# a transient-mirror signature (see TRANSIENT_OUTPUT_RE).
+transient_mmdebstrap_failure() {
+  [ -s "$1" ] && grep -qiE "$TRANSIENT_OUTPUT_RE" "$1"
+}
+
+# reset_fat_dir — clear a partial /tmp/fat left by a failed mmdebstrap run
+# so the retry starts from the empty target mmdebstrap requires. Any mounts
+# mmdebstrap may have left under it are unmounted innermost-first.
+reset_fat_dir() {
+  [ -e /tmp/fat ] || return 0
+  local m
+  if [ -r /proc/self/mountinfo ]; then
+    while read -r m; do
+      umount -l "$m" 2>/dev/null || true
+    done < <(awk '$5 ~ "^/tmp/fat(/|$)" { print $5 }' /proc/self/mountinfo | sort -r)
+  fi
+  rm -rf /tmp/fat || die "could not clear the partial /tmp/fat before retrying mmdebstrap"
+}
+
+# --- alternate snapshot base (opt-in) --------------------------------------
+# Sets SNAPSHOT_BASE_URL (a global, deliberately NOT a command substitution:
+# the announcement below goes to stdout and must never end up inside the
+# URL handed to mmdebstrap).
+SNAPSHOT_BASE_URL="$SNAPSHOT_BASE_URL_DEFAULT"
+resolve_snapshot_base_url() {
+  local u="$SNAPSHOT_BASE_URL_OVERRIDE"
+  if [ -z "$u" ]; then
+    SNAPSHOT_BASE_URL="$SNAPSHOT_BASE_URL_DEFAULT"
+    return 0
+  fi
+  [[ "$u" =~ ^https?://[^[:space:]\'\"]+$ ]] \
+    || die "STAGE1_SNAPSHOT_BASE_URL='${u}' is not an http(s) URL"
+  case "$u" in
+    *archive.ubuntu.com*|*security.ubuntu.com*|*ports.ubuntu.com*)
+      die "STAGE1_SNAPSHOT_BASE_URL='${u}' names a live rolling mirror; it must serve the immutable snapshot tree at <base>/<apt_snapshot>/ (never archive.ubuntu.com — that would silently change the resolved package versions)" ;;
+  esac
+  [[ "$u" == */ ]] || u="${u}/"
+  log "STAGE1_SNAPSHOT_BASE_URL is set — using operator-supplied snapshot base ${u} in place of ${SNAPSHOT_BASE_URL_DEFAULT} (the manifest's apt_snapshot pin is unchanged)"
+  SNAPSHOT_BASE_URL="$u"
+}
+
+# ---------------------------------------------------------------------------
+# Stage body. The package/apt inputs below are the workflow's original Stage 1
+# step values; $MODULE/$APT_SNAPSHOT come from the arg parsing above.
 # ---------------------------------------------------------------------------
 
 # mmdebstrap produces a minimal Ubuntu noble rootfs at
@@ -119,12 +305,17 @@ done
 # needs (coverage/lag risk) — it keeps today's live-mirror
 # behavior unchanged.
 if [[ "${APT_SNAPSHOT:-none}" != "none" ]]; then
-  base_url="https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/"
-  echo "[stage-1] apt_snapshot=${APT_SNAPSHOT} — pinning mmdebstrap base_url to ${base_url}"
+  resolve_snapshot_base_url
+  base_url="${SNAPSHOT_BASE_URL}${APT_SNAPSHOT}/"
+  log "apt_snapshot=${APT_SNAPSHOT} — pinning mmdebstrap base_url to ${base_url}"
 else
-  base_url="http://archive.ubuntu.com/ubuntu/"
-  echo "[stage-1] apt_snapshot=none — using live ${base_url} (per-module opt-out, or manifest hasn't pinned yet)"
+  if [ -n "$SNAPSHOT_BASE_URL_OVERRIDE" ]; then
+    log "STAGE1_SNAPSHOT_BASE_URL is set but apt_snapshot=none — ignored (there is no snapshot to redirect)"
+  fi
+  base_url="$LIVE_MIRROR_URL"
+  log "apt_snapshot=none — using live ${base_url} (per-module opt-out, or manifest hasn't pinned yet)"
 fi
+probe_url="${base_url}dists/noble/InRelease"
 pkgs="ca-certificates"
 if [ -s /tmp/package_spec.txt ]; then
   pkgs="${pkgs},$(tr '\n' ',' < /tmp/package_spec.txt | sed 's/,$//')"
@@ -197,16 +388,52 @@ EOF
   # component, already indexed by mmdebstrap's base apt-get update.
 esac
 
-mmdebstrap \
-  --mode=root \
-  --variant=minbase \
-  --components=main,universe \
-  "${hook_args[@]}" \
-  --include="$pkgs" \
-  --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
-  --aptopt='Acquire::http::Pipeline-Depth "0"' \
-  noble /tmp/fat \
+# The content-determining arguments (suite, variant, components, --include,
+# keyring, base URL) are the original inline step's. Acquire::Retries is
+# apt's own per-fetch transport retry, layered under the probe/retry loop
+# below; it cannot change which packages resolve.
+# shellcheck disable=SC2054  # the commas are inside single --components= / --include= words, not element separators
+mmdebstrap_args=(
+  --mode=root
+  --variant=minbase
+  --components=main,universe
+  "${hook_args[@]}"
+  --include="$pkgs"
+  --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+  --aptopt='Acquire::http::Pipeline-Depth "0"'
+  --aptopt='Acquire::Retries "3"'
+  noble /tmp/fat
   "$base_url"
+)
+
+MMDEBSTRAP_LOG=/tmp/stage1-mmdebstrap.log
+attempt=1
+while :; do
+  wait_for_mirror "$probe_url"
+  if [ "$attempt" -gt 1 ]; then
+    reset_fat_dir
+  fi
+  log "mmdebstrap attempt ${attempt}/${MMDEBSTRAP_ATTEMPTS} against ${base_url}"
+  rm -f "$MMDEBSTRAP_LOG"
+  # Output is tee'd (not swallowed) so the job log stays as verbose as before;
+  # the copy is only for the transient-failure classification below.
+  set +e
+  mmdebstrap "${mmdebstrap_args[@]}" 2>&1 | tee "$MMDEBSTRAP_LOG"
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    log "mmdebstrap succeeded on attempt ${attempt}"
+    break
+  fi
+  if ! transient_mmdebstrap_failure "$MMDEBSTRAP_LOG"; then
+    die "mmdebstrap failed (exit ${rc}) on attempt ${attempt} with no transient-mirror signature in its output — not retrying (a missing package, keyring or disk problem does not get better by waiting; see the mmdebstrap output above)"
+  fi
+  if [ "$attempt" -ge "$MMDEBSTRAP_ATTEMPTS" ]; then
+    die "mmdebstrap failed ${MMDEBSTRAP_ATTEMPTS} times against ${base_url} with a transient-mirror signature each time (last exit ${rc}; last probe HTTP code ${MIRROR_LAST_CODE}) — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
+  fi
+  log "mmdebstrap attempt ${attempt} failed (exit ${rc}) with a transient-mirror signature — re-probing the mirror before attempt $((attempt + 1))"
+  attempt=$((attempt + 1))
+done
 
 # Build provenance: capture the exact resolved package set (SBOM
 # stepping stone — campaign 019f5885 inc5; full SLSA provenance

@@ -68,6 +68,13 @@
 #                  parent clone (announced as such). Passes straight
 #                  through this script — it neither reads nor forwards it
 #                  explicitly. See stage15.sh's header.
+#   STAGE1_MIRROR_WAIT_MAX, STAGE1_MMDEBSTRAP_ATTEMPTS,
+#   STAGE1_SNAPSHOT_BASE_URL
+#                  Stage 1 mirror-resilience knobs, consulted only by
+#                  stage1-rootfs.sh and passed through by the same
+#                  inheritance (this script neither reads nor forwards them
+#                  explicitly). All optional, none a credential; the opt-in
+#                  one defaults OFF. See stage1-rootfs.sh's header.
 #
 # Outputs (same hardcoded /tmp/* contract the workflow's three stages
 # already share):
