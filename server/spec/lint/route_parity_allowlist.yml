@@ -114,9 +114,10 @@ routes:
      delete is not exposed."
 
   # ---- real gaps: an operator cannot reach these. Queued, not excused --------
-  "GET /api/v1/system/platform/volumes":
-    "REAL GAP, listed pending a UI task: this REST shim exists so the deployment
-     wizard can create AND list volumes, and only the create half is wired."
+  # EMPTY. All three entries this section was seeded with have been wired:
+  # provider_credentials index + destroy (IMP-18832c3c6128) and platform/volumes
+  # index (IMP-6db06a13b6c5). A new entry here is a debt, not an excuse — it
+  # says an endpoint exists that no operator can reach.
 
 # Extension-tree files that write a /system URL and also make an apiClient call whose
 # URL this lint cannot resolve (the URL arrives as a function parameter). Empty today,

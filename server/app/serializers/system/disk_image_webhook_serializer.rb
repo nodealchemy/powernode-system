@@ -28,7 +28,7 @@ module System
         received_count:    @webhook.received_count,
         last_rotated_at:   @webhook.last_rotated_at,
         created_by_id:     @webhook.created_by_id,
-        webhook_url_path:  "/api/v1/system/webhooks/disk_image/built/#{@webhook.id}",
+        webhook_url_path:  @webhook.webhook_url_path,
         created_at:        @webhook.created_at,
         updated_at:        @webhook.updated_at
       }
