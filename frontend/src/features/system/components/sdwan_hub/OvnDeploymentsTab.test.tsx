@@ -130,7 +130,8 @@ describe('OvnDeploymentsTab', () => {
 
     renderTab();
 
-    expect(screen.getByText(/Loading OVN deployment/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -146,7 +147,11 @@ describe('OvnDeploymentsTab', () => {
       expect(screen.getByText(/No OVN deployment yet/i)).toBeInTheDocument(),
     );
     expect(screen.getByText(/heavyweight-profile only/i)).toBeInTheDocument();
-    expect(screen.getByText('system_sdwan_create_ovn_deployment')).toBeInTheDocument();
+    // The MCP action name is now inside the container's description string
+    // rather than its own <code> element, so match on containment.
+    expect(
+      screen.getByText((t) => t.includes('system_sdwan_create_ovn_deployment')),
+    ).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

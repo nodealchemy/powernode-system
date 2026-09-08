@@ -172,7 +172,8 @@ describe('HostBridgesTab', () => {
 
     renderTab();
 
-    expect(screen.getByText(/loading host bridges/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

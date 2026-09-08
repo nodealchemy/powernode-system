@@ -102,7 +102,8 @@ describe('IpfixCollectorsTab', () => {
     // Never resolve — keep loading state
     mockGet.mockReturnValue(new Promise(() => {}));
     renderTab();
-    expect(screen.getByText(/loading ipfix collectors/i)).toBeInTheDocument();
+    // Chrome now comes from ResponsiveListContainer: a spinner, not copy.
+    expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -136,7 +137,9 @@ describe('IpfixCollectorsTab', () => {
       expect(screen.getByText('No IPFIX collectors yet')).toBeInTheDocument(),
     );
     expect(screen.getByText(/register a collector via/i)).toBeInTheDocument();
-    expect(screen.getByText('system_sdwan_create_ipfix_collector')).toBeInTheDocument();
+    expect(
+      screen.getByText((t) => t.includes('system_sdwan_create_ipfix_collector')),
+    ).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Layers, Shield, Network as NetworkIcon } from 'lucide-react';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import type {
   SdwanOvnAcl,
   SdwanOvnAclAction,
@@ -51,23 +52,30 @@ export const OvnDeploymentsTab: React.FC = () => {
     load();
   }, [load]);
 
-  if (loading) {
-    return <div className="p-8 text-center text-theme-secondary">Loading OVN deployment…</div>;
-  }
+  // The container owns loading and empty; it has no error slot, so the error
+  // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
     return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
+
+  // This tab shows ONE deployment, not a list, so the container's count is the
+  // presence of that deployment: 0 drives the loading spinner and the empty
+  // state, and the loaded body below renders only once it exists.
   if (!deployment) {
     return (
-      <div className="p-12 text-center">
-        <Layers className="mx-auto mb-4 text-theme-secondary" size={48} />
-        <h3 className="text-lg font-medium text-theme-primary mb-2">No OVN deployment yet</h3>
-        <p className="text-theme-secondary">
-          OVN deployments are heavyweight-profile only. Compose one with the SDWAN OVN
-          Compose Topology skill or the <code className="text-xs">system_sdwan_create_ovn_deployment</code>{' '}
-          MCP action.
-        </p>
-      </div>
+      <ResponsiveListContainer
+        loading={loading}
+        totalCount={0}
+        filteredCount={0}
+        emptyState={{
+          icon: Layers,
+          title: 'No OVN deployment yet',
+          description:
+            'OVN deployments are heavyweight-profile only. Compose one with the SDWAN OVN Compose Topology skill or the system_sdwan_create_ovn_deployment MCP action.',
+        }}
+      >
+        <ResponsiveListContainer.Body>{null}</ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     );
   }
 

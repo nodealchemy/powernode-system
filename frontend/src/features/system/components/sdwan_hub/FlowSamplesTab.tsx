@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Activity, ArrowRight } from 'lucide-react';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import type {
   SdwanFlowSample,
   SdwanIpfixCollector,
@@ -168,19 +169,26 @@ export const FlowSamplesTab: React.FC = () => {
         <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
       )}
 
-      {samplesLoading && samples.length === 0 ? (
-        <div className="p-8 text-center text-theme-secondary">Loading flow samples…</div>
-      ) : samples.length === 0 ? (
-        <div className="p-12 text-center">
-          <Activity className="mx-auto mb-4 text-theme-secondary" size={48} />
-          <h3 className="text-lg font-medium text-theme-primary mb-2">No flow samples in this range</h3>
-          <p className="text-theme-secondary">
-            Either no traffic was sampled in the selected time range, or the sidecar
-            collector hasn&apos;t POSTed any records yet. Verify the sidecar is running
-            and pointing at <code className="text-xs">/api/v1/system/sdwan/ipfix_collectors/{selectedCollectorId}/flow_samples</code>.
-          </p>
-        </div>
-      ) : (
+      {/* The collector / range / protocol filters and their Refresh stay
+          ABOVE the container. They select what is fetched, so filtering to
+          nothing makes totalCount 0 and the container would drop its whole
+          Filters row — stranding the operator with no way to widen the range
+          that produced the empty screen. */}
+      <ResponsiveListContainer
+        loading={samplesLoading}
+        totalCount={samples.length}
+        filteredCount={samples.length}
+        emptyState={{
+          icon: Activity,
+          title: 'No flow samples in this range',
+          // The exact ingest path stays in the copy: it is the one thing an
+          // operator seeing this screen has to go and check.
+          description: `Either no traffic was sampled in the selected time range, or the sidecar collector hasn't POSTed any records yet. Verify the sidecar is running and pointing at /api/v1/system/sdwan/ipfix_collectors/${selectedCollectorId}/flow_samples.`,
+        }}
+      >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-theme-background-secondary text-theme-secondary">
@@ -226,7 +234,8 @@ export const FlowSamplesTab: React.FC = () => {
             Showing {samples.length} sample{samples.length === 1 ? '' : 's'} (limit 200).
           </div>
         </div>
-      )}
+      </ResponsiveListContainer.Body>
+      </ResponsiveListContainer>
     </div>
   );
 };

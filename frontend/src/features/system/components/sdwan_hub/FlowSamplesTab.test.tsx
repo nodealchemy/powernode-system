@@ -354,7 +354,9 @@ describe('FlowSamplesTab', () => {
 
     renderTab();
 
-    await waitFor(() => expect(screen.getByText(/Loading flow samples…/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(document.querySelector('.animate-spin')).toBeInTheDocument(),
+    );
   });
 
   // --------------------------------------------------------------------------
