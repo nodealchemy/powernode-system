@@ -225,13 +225,19 @@ const instancePoolsApi = {
   },
 
   // Gated too (system.instance_pool_delete). This DISCARDED the response, so
-  // a parked 202 was indistinguishable from a completed archive: the caller
-  // dropped the row from the list and toasted "archived" while the pool was
-  // still active and its replenish tick still spending. The non-pending body
-  // carries the archived pool; the caller only needs to know it happened.
+  // a parked 202 was indistinguishable from a completed deletion: the caller
+  // dropped the row from the list and toasted success while the pool was
+  // still active and its replenish tick still spending.
+  //
+  // The pool is DESTROYED, not archived — the executor calls `destroy!`. The
+  // body was typed as `{ pool: InstancePoolSummary }`, which the server could
+  // not send: rendering a summary of the destroyed row is what made this
+  // endpoint answer 404 for a deletion that succeeded (IMP-4de09f201a0f). The
+  // body now carries the destroyed row's identity, and the caller still needs
+  // only to know it happened.
   destroy: async (id: string): Promise<Gated<Deleted>> => {
     const response = await apiClient.delete<
-      ApiEnvelope<{ pool: InstancePoolSummary }>
+      ApiEnvelope<{ deleted: boolean; id: string; name: string }>
     >(`/system/instance_pools/${id}`);
     return extractGated(response, () => ({ deleted: true }) as Deleted);
   },

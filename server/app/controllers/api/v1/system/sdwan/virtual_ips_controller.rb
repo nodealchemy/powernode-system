@@ -134,20 +134,23 @@ module Api
               source_type: "Sdwan::VirtualIp",
               source_id: id,
               description: "Delete VIP #{address || id}",
+              # RENDER ONLY. This used to sweep lingering assignment rows here
+              # as a "double-check" after the executor's destroy. There was
+              # nothing left to sweep: DeleteVirtualIp#perform calls
+              # `vip.destroy!` and Sdwan::VirtualIp declares
+              # `has_many :assignments, dependent: :destroy`, so the rows are
+              # already gone and the update_all matched zero. It was a write in
+              # a closure that happened to be harmless — the same shape as the
+              # rotation that was not (IMP-4de09f201a0f).
+              #
+              # Its history is why it is worth removing rather than leaving:
+              # IMP-800b25c1cc45 found it naming a class that does not exist,
+              # so every :proceed destroy raised NameError AFTER the executor
+              # had removed the row and the caller saw 500 for a destroy that
+              # succeeded. It survived because the default require_approval
+              # tier never reaches on_proceed. Dead code on a branch nobody
+              # exercises is how both of those defects lasted.
               on_proceed: ->(_r) {
-                # Executor handled the destroy + assignment cleanup; double-check
-                # any lingering assignment rows. Idempotent.
-                #
-                # IMP-800b25c1cc45: this named ::Sdwan::VipAssignment, which does
-                # not exist — the model is Sdwan::VirtualIpAssignment and its FK
-                # column is sdwan_virtual_ip_id. Every :proceed destroy raised
-                # NameError AFTER the executor had already removed the row, so
-                # the caller saw 500 for a destroy that succeeded. Unreachable
-                # from the default require_approval tier, which is why it stood:
-                # gate! never calls on_proceed on :pending.
-                ::Sdwan::VirtualIpAssignment
-                  .where(sdwan_virtual_ip_id: id, released_at: nil)
-                  .update_all(released_at: Time.current, updated_at: Time.current)
                 render_success(deleted: true, id: id)
               }
             )
