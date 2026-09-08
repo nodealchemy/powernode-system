@@ -1,8 +1,9 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { VolumeDetailModal } from './VolumeDetailModal';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
+import { VolumeRestoreError } from '@system/features/system/services/api/volumesApi';
 
 // =============================================================================
 // Mocks
@@ -11,18 +12,23 @@ import type { SystemProviderVolume } from '@system/features/system/types/system.
 const mockGetVolume = jest.fn();
 const mockDetachVolume = jest.fn();
 const mockCreateVolumeSnapshot = jest.fn();
+const mockGetVolumeSnapshots = jest.fn();
+const mockRestoreVolumeSnapshot = jest.fn();
 
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
     getVolume: (...args: unknown[]) => mockGetVolume(...args),
     detachVolume: (...args: unknown[]) => mockDetachVolume(...args),
     createVolumeSnapshot: (...args: unknown[]) => mockCreateVolumeSnapshot(...args),
+    getVolumeSnapshots: (...args: unknown[]) => mockGetVolumeSnapshots(...args),
+    restoreVolumeSnapshot: (...args: unknown[]) => mockRestoreVolumeSnapshot(...args),
   },
 }));
 
+const mockHasPermission = jest.fn().mockReturnValue(true);
 jest.mock('@/shared/hooks/usePermissions', () => ({
   usePermissions: () => ({
-    hasPermission: () => true,
+    hasPermission: (...args: unknown[]) => mockHasPermission(...args),
   }),
 }));
 
@@ -138,6 +144,14 @@ describe('VolumeDetailModal', () => {
   beforeEach(() => {
     mockGetVolume.mockReset();
     mockDetachVolume.mockReset();
+    mockGetVolumeSnapshots.mockReset();
+    mockGetVolumeSnapshots.mockResolvedValue({
+      snapshots: [],
+      meta: { current_page: 1, per_page: 10, total_count: 0, total_pages: 1, next_page: null, prev_page: null },
+    });
+    mockRestoreVolumeSnapshot.mockReset();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockReturnValue(true);
     mockCreateVolumeSnapshot.mockReset();
     mockAddNotification.mockReset();
   });
@@ -952,6 +966,398 @@ describe('VolumeDetailModal', () => {
 
       await waitFor(() => expect(mockGetVolume).toHaveBeenCalledWith('vol-xyz'));
       await waitFor(() => expect(screen.getByText('second-vol')).toBeInTheDocument());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Snapshots section — list + restore — IMP-f17e2c0bae12
+  // -------------------------------------------------------------------------
+
+  describe('snapshots section', () => {
+    const SNAP_A = {
+      id: 'snap-a',
+      name: 'nightly-2026-03-01',
+      description: 'nightly',
+      status: 'completed',
+      size_gb: 100,
+      can_restore: true,
+      created_at: '2026-03-01T02:00:00Z',
+    };
+    const SNAP_PENDING = {
+      id: 'snap-b',
+      name: 'in-flight',
+      status: 'pending',
+      size_gb: 100,
+      can_restore: false,
+      created_at: '2026-03-02T02:00:00Z',
+    };
+    // Deliberately decorrelated from `status`: an implementation that read
+    // `status === 'completed'` instead of the server's can_restore boolean
+    // would offer Restore on this one.
+    const SNAP_COMPLETED_NOT_RESTORABLE = {
+      id: 'snap-c',
+      name: 'archived-away',
+      status: 'completed',
+      size_gb: 100,
+      can_restore: false,
+      created_at: '2026-03-03T02:00:00Z',
+    };
+
+    function snapshotPage(
+      snapshots: Array<Record<string, unknown>>,
+      meta: Partial<{ current_page: number; total_pages: number; total_count: number }> = {},
+    ) {
+      return {
+        snapshots,
+        meta: {
+          current_page: 1,
+          per_page: 10,
+          total_count: snapshots.length,
+          total_pages: 1,
+          next_page: null,
+          prev_page: null,
+          ...meta,
+        },
+      };
+    }
+
+    async function openWithSnapshots(
+      snapshots = [SNAP_A],
+      meta = {},
+      volume = VOLUME_AVAILABLE,
+    ) {
+      mockGetVolume.mockResolvedValue(volume);
+      mockGetVolumeSnapshots.mockResolvedValue(snapshotPage(snapshots, meta));
+      renderModal();
+      await waitFor(() => expect(screen.getByText('Snapshots')).toBeInTheDocument());
+    }
+
+    it('lists the volume snapshots', async () => {
+      await openWithSnapshots();
+
+      expect(mockGetVolumeSnapshots).toHaveBeenCalledWith('vol-abc', { page: 1 });
+      await waitFor(() =>
+        expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument(),
+      );
+    });
+
+    it('shows an empty state when the volume has no snapshots', async () => {
+      await openWithSnapshots([]);
+
+      await waitFor(() =>
+        expect(screen.getByText(/no snapshots/i)).toBeInTheDocument(),
+      );
+    });
+
+    it('pages through snapshots', async () => {
+      await openWithSnapshots([SNAP_A], { total_pages: 3, total_count: 25 });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: '2' }));
+
+      await waitFor(() =>
+        expect(mockGetVolumeSnapshots).toHaveBeenCalledWith('vol-abc', { page: 2 }),
+      );
+    });
+
+    it('offers Restore only for snapshots the server says can be restored', async () => {
+      await openWithSnapshots([SNAP_A, SNAP_PENDING, SNAP_COMPLETED_NOT_RESTORABLE]);
+
+      await waitFor(() => expect(screen.getByText('archived-away')).toBeInTheDocument());
+      expect(screen.getByText('in-flight')).toBeInTheDocument();
+      // Only SNAP_A — the completed-but-not-restorable one must not get a
+      // button, which is what separates can_restore from status.
+      expect(screen.getAllByRole('button', { name: 'Restore' })).toHaveLength(1);
+    });
+
+    it('hides Restore entirely without the system.volumes.manage permission', async () => {
+      mockHasPermission.mockImplementation((p: string) => p !== 'system.volumes.manage');
+      await openWithSnapshots();
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+    });
+
+    it('does not restore until the operator confirms', async () => {
+      await openWithSnapshots();
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+      await screen.findByRole('dialog');
+      expect(mockRestoreVolumeSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('explains copy-restore in the confirmation', async () => {
+      await openWithSnapshots();
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+      const dialog = await screen.findByRole('dialog');
+      // The copy path is the one that surprises operators: the data lands in a
+      // different disk and this volume is untouched.
+      expect(
+        within(dialog).getByText(/the snapshot into a new volume/i),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText(/left untouched/i)).toBeInTheDocument();
+      expect(within(dialog).getByLabelText(/swap/i)).toBeInTheDocument();
+    });
+
+    it('restores without a swap by default', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: false,
+        restored_volume: { ...VOLUME_AVAILABLE, id: 'vol-copy', name: 'restored-copy' },
+        restored_from: SNAP_A,
+        swapped: false,
+        swap_skipped: null,
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() =>
+        expect(mockRestoreVolumeSnapshot).toHaveBeenCalledWith('vol-abc', 'snap-a', false),
+      );
+    });
+
+    it('opts into swap_into_place when the operator ticks the box', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: false,
+        restored_volume: { ...VOLUME_AVAILABLE, id: 'vol-copy', name: 'restored-copy' },
+        restored_from: SNAP_A,
+        swapped: true,
+        swap_skipped: null,
+        swapped_instance_id: 'inst-1',
+        swapped_device: '/dev/xvdf',
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByLabelText(/swap/i));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() =>
+        expect(mockRestoreVolumeSnapshot).toHaveBeenCalledWith('vol-abc', 'snap-a', true),
+      );
+    });
+
+    it('reports that the data landed in a NEW volume when the restore was a copy', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: false,
+        restored_volume: { ...VOLUME_AVAILABLE, id: 'vol-copy', name: 'restored-copy' },
+        restored_from: SNAP_A,
+        swapped: false,
+        swap_skipped: null,
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      // The operator must not be told "restored" when this volume is unchanged.
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      const panel = await screen.findByText(/This volume is unchanged/i);
+      expect(panel).toHaveTextContent(/new volume/i);
+      expect(panel).toHaveTextContent(/restored-copy/);
+      expect(panel).toHaveTextContent(/vol-copy/);
+    });
+
+    it('reports an in-place restore as this volume being rolled back', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: true,
+        restored_volume: null,
+        restored_from: SNAP_A,
+        swapped: false,
+        swap_skipped: null,
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() => expect(screen.getByText(/rolled back/i)).toBeInTheDocument());
+    });
+
+    it('names the reason when a requested swap was skipped', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: false,
+        restored_volume: { ...VOLUME_AVAILABLE, id: 'vol-copy', name: 'restored-copy' },
+        restored_from: SNAP_A,
+        swapped: false,
+        swap_skipped: 'source_not_attached',
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByLabelText(/swap/i));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/source_not_attached/)).toBeInTheDocument(),
+      );
+    });
+
+    it('reports the swap when one happened', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: false,
+        restored_volume: { ...VOLUME_AVAILABLE, id: 'vol-copy', name: 'restored-copy' },
+        restored_from: SNAP_A,
+        swapped: true,
+        swap_skipped: null,
+        swapped_instance_id: 'inst-1',
+        swapped_device: '/dev/xvdf',
+      });
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByLabelText(/swap/i));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() => expect(screen.getByText(/\/dev\/xvdf/)).toBeInTheDocument());
+    });
+
+    it('shows an error notification when the restore fails', async () => {
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockRejectedValue(new Error('provider refused'));
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Failed to restore snapshot: provider refused',
+        }),
+      );
+    });
+
+    it('keeps the orphaned copy visible when a restore fails after creating one', async () => {
+      // The controller's render_restore_error carries the copy's id precisely
+      // because losing it strands a billable, unattached disk. A toast
+      // auto-dismisses, so the id has to land somewhere durable.
+      await openWithSnapshots();
+      mockRestoreVolumeSnapshot.mockRejectedValue(
+        new VolumeRestoreError('Swap failed after the copy was created', {
+          restored_volume_id: 'vol-orphan',
+          swap_stage: 'attach',
+          swapped: false,
+        }),
+      );
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByLabelText(/swap/i));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+
+      const orphanLine = await screen.findByText(/vol-orphan/);
+      expect(orphanLine).toHaveTextContent(/billable/i);
+      // The stage the swap stopped at, so the operator knows what to undo.
+      expect(screen.getByText(/the swap stopped at: attach/i)).toBeInTheDocument();
+    });
+
+    it('discards a snapshot listing that arrives after the modal moved on', async () => {
+      let resolveStale!: (v: unknown) => void;
+      mockGetVolume.mockResolvedValue(VOLUME_AVAILABLE);
+      mockGetVolumeSnapshots
+        .mockReturnValueOnce(new Promise((res) => { resolveStale = res; }))
+        .mockResolvedValue(snapshotPage([SNAP_PENDING]));
+      const { rerender } = renderModal({ volumeId: 'vol-abc' });
+
+      mockGetVolume.mockResolvedValue({ ...VOLUME_AVAILABLE, id: 'vol-other', name: 'other-vol' });
+      rerender(
+        <BrowserRouter>
+          <VolumeDetailModal
+            volumeId="vol-other"
+            isOpen={true}
+            onClose={jest.fn()}
+            onVolumeUpdated={jest.fn()}
+            onEdit={jest.fn()}
+          />
+        </BrowserRouter>,
+      );
+      await waitFor(() => expect(screen.getByText('in-flight')).toBeInTheDocument());
+
+      // The first volume's listing lands late and must not replace the list.
+      await act(async () => { resolveStale(snapshotPage([SNAP_A])); });
+
+      expect(screen.getByText('in-flight')).toBeInTheDocument();
+      expect(screen.queryByText('nightly-2026-03-01')).not.toBeInTheDocument();
+    });
+
+    it('clears a previous restore outcome when the modal moves to another volume', async () => {
+      mockGetVolume.mockResolvedValue(VOLUME_AVAILABLE);
+      mockGetVolumeSnapshots.mockResolvedValue(snapshotPage([SNAP_A]));
+      mockRestoreVolumeSnapshot.mockResolvedValue({
+        restored_in_place: true,
+        restored_volume: null,
+        restored_from: SNAP_A,
+        swapped: false,
+        swap_skipped: null,
+      });
+      const { rerender } = renderModal();
+
+      await waitFor(() => expect(screen.getByText('nightly-2026-03-01')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Snapshot' }));
+      await waitFor(() => expect(screen.getByText(/rolled back/i)).toBeInTheDocument());
+
+      // A destructive outcome must not be reported under a different volume.
+      mockGetVolume.mockResolvedValue({ ...VOLUME_AVAILABLE, id: 'vol-other', name: 'other-vol' });
+      rerender(
+        <BrowserRouter>
+          <VolumeDetailModal
+            volumeId="vol-other"
+            isOpen={true}
+            onClose={jest.fn()}
+            onVolumeUpdated={jest.fn()}
+            onEdit={jest.fn()}
+          />
+        </BrowserRouter>,
+      );
+
+      await waitFor(() => expect(screen.getByText('other-vol')).toBeInTheDocument());
+      expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument();
+    });
+
+    it('refreshes the snapshot list after a snapshot is created', async () => {
+      await openWithSnapshots([]);
+      mockCreateVolumeSnapshot.mockResolvedValue(SNAP_A);
+
+      await waitFor(() => expect(mockGetVolumeSnapshots).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole('button', { name: /create snapshot/i }));
+      const dialogButtons = await screen.findAllByRole('button', { name: /create snapshot/i });
+      fireEvent.click(dialogButtons[dialogButtons.length - 1]);
+
+      await waitFor(() => expect(mockGetVolumeSnapshots).toHaveBeenCalledTimes(2));
+    });
+
+    it('surfaces a failure to load the snapshot list instead of showing it as empty', async () => {
+      mockGetVolume.mockResolvedValue(VOLUME_AVAILABLE);
+      mockGetVolumeSnapshots.mockRejectedValue(new Error('boom'));
+      renderModal();
+
+      await waitFor(() =>
+        expect(screen.getByText(/could not load snapshots/i)).toBeInTheDocument(),
+      );
+      expect(screen.queryByText(/no snapshots yet/i)).not.toBeInTheDocument();
     });
   });
 });

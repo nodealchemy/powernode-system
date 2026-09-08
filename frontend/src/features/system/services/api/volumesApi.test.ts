@@ -3,7 +3,7 @@
 // Covers every exported method: exact URL, params, payload, envelope
 // unwrapping, optional-argument edge cases, and API error propagation.
 
-import { volumesApi } from './volumesApi';
+import { volumesApi, VolumeRestoreError } from './volumesApi';
 
 // =============================================================================
 // Mocks
@@ -715,6 +715,145 @@ describe('volumesApi', () => {
       mockPost.mockRejectedValueOnce(new Error('Snapshot limit exceeded'));
 
       await expect(volumesApi.createVolumeSnapshot('vol-1', 'failed-snap')).rejects.toThrow('Snapshot limit exceeded');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getVolumeSnapshots / restoreVolumeSnapshot — IMP-f17e2c0bae12
+  // ---------------------------------------------------------------------------
+
+  describe('getVolumeSnapshots', () => {
+    it('GETs the volume snapshots sub-resource and unwraps the paginated envelope', async () => {
+      mockGet.mockResolvedValueOnce(
+        paginatedEnvelope({ snapshots: [SNAPSHOT_A] }, { total_count: 1 }),
+      );
+
+      const result = await volumesApi.getVolumeSnapshots('vol-1');
+
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/vol-1/snapshots`, { params: undefined });
+      expect(result.snapshots).toHaveLength(1);
+      expect(result.snapshots[0].id).toBe('snap-1');
+      expect(result.meta.total_count).toBe(1);
+    });
+
+    it('forwards pagination params', async () => {
+      mockGet.mockResolvedValueOnce(paginatedEnvelope({ snapshots: [] }));
+
+      await volumesApi.getVolumeSnapshots('vol-2', { page: 3, per_page: 5 });
+
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/vol-2/snapshots`, {
+        params: { page: 3, per_page: 5 },
+      });
+    });
+
+    it('propagates an API error', async () => {
+      mockGet.mockRejectedValueOnce(new Error('Forbidden'));
+
+      await expect(volumesApi.getVolumeSnapshots('vol-1')).rejects.toThrow('Forbidden');
+    });
+  });
+
+  describe('restoreVolumeSnapshot', () => {
+    const RESTORE_RESULT = {
+      volume: VOLUME_A,
+      restored_in_place: false,
+      restored_volume: { ...VOLUME_A, id: 'vol-copy', name: 'restored-copy' },
+      restored_from: SNAPSHOT_A,
+      swapped: true,
+      swap_skipped: null,
+      swapped_instance_id: 'inst-1',
+      swapped_device: '/dev/xvdf',
+    };
+
+    it('POSTs the snapshot id to the restore endpoint', async () => {
+      mockPost.mockResolvedValueOnce(envelope(RESTORE_RESULT));
+
+      const result = await volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1');
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/vol-1/restore`, {
+        snapshot_id: 'snap-1',
+        swap_into_place: false,
+      });
+      expect(result.restored_in_place).toBe(false);
+      expect(result.restored_volume?.id).toBe('vol-copy');
+    });
+
+    it('sends swap_into_place when the operator opted in', async () => {
+      mockPost.mockResolvedValueOnce(envelope(RESTORE_RESULT));
+
+      await volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1', true);
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/vol-1/restore`, {
+        snapshot_id: 'snap-1',
+        swap_into_place: true,
+      });
+    });
+
+    it('surfaces swapped and swap_skipped from the response', async () => {
+      mockPost.mockResolvedValueOnce(
+        envelope({ ...RESTORE_RESULT, swapped: false, swap_skipped: 'volume_not_attached' }),
+      );
+
+      const result = await volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1', true);
+
+      expect(result.swapped).toBe(false);
+      expect(result.swap_skipped).toBe('volume_not_attached');
+    });
+
+    it('propagates an API error', async () => {
+      mockPost.mockRejectedValueOnce(new Error('Snapshot not found for this volume'));
+
+      await expect(
+        volumesApi.restoreVolumeSnapshot('vol-1', 'nope'),
+      ).rejects.toThrow('Snapshot not found for this volume');
+    });
+
+    // A restore that failed AFTER the provider made a copy carries the copy's
+    // id in the error envelope's `details`. Axios rejects with a raw AxiosError
+    // whose message is a bare status line, so without unwrapping, the caller
+    // loses both the server's message and the id of a billable orphan disk.
+    it('raises VolumeRestoreError carrying the server message and details', async () => {
+      mockPost.mockRejectedValueOnce({
+        response: {
+          data: {
+            success: false,
+            error: 'Swap failed after the copy was created',
+            details: {
+              restored_volume_id: 'vol-orphan',
+              swapped: false,
+              swap_stage: 'attach',
+            },
+          },
+        },
+        message: 'Request failed with status code 422',
+      });
+
+      await expect(
+        volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1', true),
+      ).rejects.toBeInstanceOf(VolumeRestoreError);
+
+      mockPost.mockRejectedValueOnce({
+        response: {
+          data: {
+            success: false,
+            error: 'Swap failed after the copy was created',
+            details: { restored_volume_id: 'vol-orphan', swap_stage: 'attach' },
+          },
+        },
+      });
+      await volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1', true).catch((e) => {
+        expect(e.message).toBe('Swap failed after the copy was created');
+        expect(e.details).toEqual({ restored_volume_id: 'vol-orphan', swap_stage: 'attach' });
+      });
+    });
+
+    it('rethrows a non-envelope failure untouched', async () => {
+      const networkError = new Error('Network Error');
+      mockPost.mockRejectedValueOnce(networkError);
+
+      await expect(
+        volumesApi.restoreVolumeSnapshot('vol-1', 'snap-1'),
+      ).rejects.toBe(networkError);
     });
   });
 
