@@ -114,13 +114,6 @@ routes:
      delete is not exposed."
 
   # ---- real gaps: an operator cannot reach these. Queued, not excused --------
-  "GET /api/v1/system/provider_credentials":
-    "REAL GAP, listed pending a UI task: the controller header says #index exists so
-     the first-run wizard can show the 'configured' state without leaking secrets,
-     and nothing calls it."
-  "DELETE /api/v1/system/provider_credentials/:param":
-    "REAL GAP, listed pending a UI task: a stored cloud credential cannot be removed
-     from any screen today."
   "GET /api/v1/system/platform/volumes":
     "REAL GAP, listed pending a UI task: this REST shim exists so the deployment
      wizard can create AND list volumes, and only the create half is wired."
