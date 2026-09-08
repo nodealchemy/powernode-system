@@ -317,15 +317,85 @@ describe('AccessTab', () => {
     expect(mockGetUserDevices).toHaveBeenCalledWith(NETWORK_ID, 'grant-b');
   });
 
-  it('gracefully handles a getUserDevices error by showing empty device list', async () => {
-    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
-    mockGetUserDevices.mockRejectedValue(new Error('Devices fetch failed'));
+  // ---------------------------------------------------------------------------
+  // Per-grant device-fetch failure (IMP-16175251e1b6)
+  //
+  // This is the view an operator revokes user devices from. A per-grant fetch
+  // failure used to render exactly like a grant with no devices, so an access
+  // audit read a failed request as "nothing outstanding to revoke".
+  // ---------------------------------------------------------------------------
 
-    renderTab();
+  describe('per-grant device fetch failure', () => {
+    it('still renders the grant row', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+      mockGetUserDevices.mockRejectedValue(new Error('Devices fetch failed'));
 
-    // Should still render the grant row, just with empty devices
-    await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
-    expect(screen.getByText(/No devices issued yet/i)).toBeInTheDocument();
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+    });
+
+    it('does NOT claim the grant has no devices', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+      mockGetUserDevices.mockRejectedValue(new Error('Devices fetch failed'));
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+      expect(screen.queryByText(/No devices issued yet/i)).not.toBeInTheDocument();
+    });
+
+    it('renders a devices-unavailable marker naming the failure', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+      mockGetUserDevices.mockRejectedValue(new Error('Devices fetch failed'));
+
+      renderTab();
+
+      const marker = await screen.findByText(/devices unavailable/i);
+      expect(marker).toBeInTheDocument();
+      expect(marker.textContent).toMatch(/Devices fetch failed/);
+    });
+
+    it('marks ONLY the grant whose fetch failed', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A, GRANT_B] });
+      mockGetUserDevices.mockImplementation((_networkId: string, grantId: string) =>
+        grantId === 'grant-a'
+          ? Promise.reject(new Error('Devices fetch failed'))
+          : Promise.resolve({ devices: [] }),
+      );
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText(/devices unavailable/i)).toBeInTheDocument());
+      // grant-b loaded fine and genuinely has none.
+      expect(screen.getByText(/No devices issued yet/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/devices unavailable/i)).toHaveLength(1);
+    });
+
+    it('does not present the device total as complete when a fetch failed', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A, GRANT_B] });
+      mockGetUserDevices.mockImplementation((_networkId: string, grantId: string) =>
+        grantId === 'grant-a'
+          ? Promise.reject(new Error('Devices fetch failed'))
+          : Promise.resolve({ devices: [DEVICE_A] }),
+      );
+
+      renderTab();
+
+      // A bare "1 device total" understates the fleet and reads as authoritative.
+      await waitFor(() => expect(screen.getByText(/1 grant of 2 could not be counted/i)).toBeInTheDocument());
+    });
+
+    it('shows no marker and a plain total when every fetch succeeds', async () => {
+      mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A, GRANT_B] });
+      mockGetUserDevices.mockResolvedValue({ devices: [] });
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+      expect(screen.queryByText(/devices unavailable/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/could not be counted/i)).not.toBeInTheDocument();
+    });
   });
 
   // ---------------------------------------------------------------------------
