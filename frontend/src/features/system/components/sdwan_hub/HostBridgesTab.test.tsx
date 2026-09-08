@@ -9,11 +9,13 @@ import type { SdwanHostBridge } from '@system/features/system/types/sdwan.types'
 // =============================================================================
 
 const mockGet = jest.fn();
+const mockPost = jest.fn();
 const mockDelete = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
   apiClient: {
     get: (...args: unknown[]) => mockGet(...args),
+    post: (...args: unknown[]) => mockPost(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
   },
 }));
@@ -33,6 +35,20 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
   }),
 }));
 
+// The allocate modal has its own spec; here we only care that the tab opens it
+// and refreshes when it reports a bridge was created.
+let capturedOnCreated: (() => void) | undefined;
+jest.mock('./CreateHostBridgeModal', () => ({
+  CreateHostBridgeModal: (props: { isOpen: boolean; onClose: () => void; onCreated: () => void }) => {
+    capturedOnCreated = props.onCreated;
+    return props.isOpen ? (
+      <div data-testid="create-host-bridge-modal">
+        <button onClick={props.onClose} data-testid="create-modal-close">Close</button>
+      </div>
+    ) : null;
+  },
+}));
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -40,6 +56,17 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
 /** Wrap the API double-envelope: AxiosResponse body = { success, data: payload } */
 function envelope<T>(payload: T) {
   return { data: { success: true, data: payload } };
+}
+
+/**
+ * What axios ACTUALLY rejects with: a generic `.message` plus the server's own
+ * sentence in response.data.error. Rejecting with a bare Error would validate
+ * the wrong shape and pass whether or not the component reads the body.
+ */
+function axiosError(serverMessage: string, status = 422) {
+  return Object.assign(new Error(`Request failed with status code ${status}`), {
+    response: { status, data: { error: serverMessage } },
+  });
 }
 
 // =============================================================================
@@ -128,10 +155,12 @@ const renderTab = () =>
 describe('HostBridgesTab', () => {
   beforeEach(() => {
     mockGet.mockReset();
+    mockPost.mockReset();
     mockDelete.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission.mockReset();
     mockHasPermission.mockReturnValue(true);
+    capturedOnCreated = undefined;
   });
 
   // ---------------------------------------------------------------------------
@@ -692,6 +721,203 @@ describe('HostBridgesTab', () => {
     );
     expect(mockAddNotification).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Activate (IMP-61be0ada331d)
+  // ---------------------------------------------------------------------------
+
+  it('activates a pending bridge and refreshes the list', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_LINUX], count: 1 }));
+    mockPost.mockResolvedValue(
+      envelope({ host_bridge: { ...BRIDGE_LINUX, state: 'active' } }),
+    );
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByTestId('activate-host-bridge-hb-002')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('activate-host-bridge-hb-002'));
+
+    await waitFor(() =>
+      expect(mockPost).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-002/activate', {}),
+    );
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message: 'Bridge br-002 activated',
+      }),
+    );
+    // Initial load + post-activate refresh.
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('offers Activate only on pending bridges', async () => {
+    mockGet.mockResolvedValue(
+      envelope({
+        host_bridges: [BRIDGE_ACTIVE, BRIDGE_LINUX, BRIDGE_DRAINING, BRIDGE_REMOVED],
+        count: 4,
+      }),
+    );
+
+    renderTab();
+
+    // pending
+    await waitFor(() =>
+      expect(screen.getByTestId('activate-host-bridge-hb-002')).toBeInTheDocument(),
+    );
+    // Firing mark_active on an already-active bridge is a no-op that would
+    // report success for nothing, so `active` is excluded too.
+    expect(screen.queryByTestId('activate-host-bridge-hb-001')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('activate-host-bridge-hb-003')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('activate-host-bridge-hb-004')).not.toBeInTheDocument();
+  });
+
+  it('hides Activate without system.sdwan.host_bridges.manage', async () => {
+    mockHasPermission.mockImplementation(
+      (perm: string) => perm !== 'system.sdwan.host_bridges.manage',
+    );
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_LINUX], count: 1 }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('br-002')).toBeInTheDocument());
+    expect(screen.queryByTestId('activate-host-bridge-hb-002')).not.toBeInTheDocument();
+  });
+
+  it('reports the pending-approval branch for activate instead of claiming success', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_LINUX], count: 1 }));
+    mockPost.mockResolvedValue(
+      envelope({
+        pending: true,
+        deferred_operation_id: 'defop-9',
+        action_category: 'sdwan.host_bridge_update',
+        approval_request_id: 'appr-9',
+        message: 'parked',
+      }),
+    );
+
+    renderTab();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('activate-host-bridge-hb-002')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('activate-host-bridge-hb-002'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    // Nothing was written, so the list must not be refetched as if it had been.
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces an activate failure as an error notification', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_LINUX], count: 1 }));
+    mockPost.mockRejectedValue(axiosError('cannot activate a removed host bridge — use readopt to revive a removed bridge'));
+
+    renderTab();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('activate-host-bridge-hb-002')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('activate-host-bridge-hb-002'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        // The pre-gate refusal's hint, not "Request failed with status code 422".
+        message: expect.stringContaining('use readopt'),
+      }),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Allocate (IMP-61be0ada331d)
+  // ---------------------------------------------------------------------------
+
+  it('opens the allocate modal from the header', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_ACTIVE], count: 1 }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('ovs-br-001')).toBeInTheDocument());
+    expect(screen.queryByTestId('create-host-bridge-modal')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /allocate bridge/i }));
+
+    expect(screen.getByTestId('create-host-bridge-modal')).toBeInTheDocument();
+  });
+
+  it('offers Allocate from the empty state, which is where it is most wanted', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [], count: 0 }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('No host bridges yet')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /allocate bridge/i })).toBeInTheDocument();
+  });
+
+  it('offers Allocate even when the list failed to load', async () => {
+    mockGet.mockRejectedValue(new Error('boom'));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /allocate bridge/i })).toBeInTheDocument();
+  });
+
+  it('hides Allocate without system.sdwan.host_bridges.manage', async () => {
+    mockHasPermission.mockImplementation(
+      (perm: string) => perm !== 'system.sdwan.host_bridges.manage',
+    );
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_ACTIVE], count: 1 }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('ovs-br-001')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /allocate bridge/i })).not.toBeInTheDocument();
+  });
+
+  it('closes the allocate modal when it asks to be closed', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_ACTIVE], count: 1 }));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('ovs-br-001')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /allocate bridge/i }));
+    expect(screen.getByTestId('create-host-bridge-modal')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('create-modal-close'));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('create-host-bridge-modal')).not.toBeInTheDocument(),
+    );
+    // Closing is not creating — the list must not be refetched.
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the list when the modal reports a bridge was allocated', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_ACTIVE], count: 1 }));
+
+    renderTab();
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /allocate bridge/i }));
+
+    await waitFor(() => expect(capturedOnCreated).toBeDefined());
+    capturedOnCreated!();
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByTestId('create-host-bridge-modal')).not.toBeInTheDocument(),
     );
   });
 });
