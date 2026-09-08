@@ -42,11 +42,10 @@ const ERROR_BANNER_EXEMPT: readonly string[] = [
   // would drop both the label and the monospacing that makes a stack trace
   // readable.
   'features/system/components/platform/MigrationsPanel.tsx',
-  // The three below are NOT exempt — each still owes the conversion. They are
+  // The two below are NOT exempt — each still owes the conversion. They are
   // listed rather than converted because another lane owns them in this
   // drain, and converting them here would collide with that lane's in-flight
   // edits to the same regions. Delete each line once it is on ErrorAlert.
-  'features/system/components/federation_hub/FulfillmentTab.tsx',
   'features/system/components/acme/AcmeDnsCredentialModal.tsx',
   'features/system/components/packages/CreateModuleFromPackageModal.tsx',
 ];
