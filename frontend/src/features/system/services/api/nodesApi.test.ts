@@ -13,7 +13,7 @@
  * envelope. Pagination `meta` sits at the response root alongside `data`.
  */
 
-import { nodesApi } from './nodesApi';
+import { nodesApi, apiErrorMessage } from './nodesApi';
 import type { NodeCreate, NodeFilters, NodeInstanceCreate } from './nodesApi';
 import type { SystemNode, SystemNodeInstance } from '../../types/system.types';
 import type { PaginationMeta } from './types';
@@ -1158,5 +1158,210 @@ describe('nodesApi.applyTemplate', () => {
     mockPost.mockRejectedValueOnce(new Error('node has no template'));
 
     await expect(nodesApi.applyTemplate('node-a')).rejects.toThrow('node has no template');
+  });
+});
+
+// =============================================================================
+// Claude Code credential — write-only CRUD
+//
+// The plaintext api_key / oauth blob is a SECRET. These tests pin the two
+// halves of that contract: the request carries it, and no response the client
+// hands back ever does.
+// =============================================================================
+
+describe('nodesApi Claude Code credential', () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockPost.mockReset();
+    mockDelete.mockReset();
+  });
+
+  const CREDENTIAL = {
+    id: 'cred-1',
+    node_instance_id: 'inst-1',
+    credential_kind: 'api_key' as const,
+    configured: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z',
+  };
+
+  const notFound = () =>
+    Object.assign(new Error('Request failed with status code 404'), {
+      response: { status: 404, data: { success: false, error: 'Claude Code credential not found' } },
+    });
+
+  describe('getClaudeCodeCredential', () => {
+    it('GETs the singular nested credential path', async () => {
+      mockGet.mockResolvedValueOnce(envelope({ credential: CREDENTIAL }));
+
+      const result = await nodesApi.getClaudeCodeCredential('node-a', 'inst-1');
+
+      expect(mockGet).toHaveBeenCalledWith(
+        '/system/nodes/node-a/node_instances/inst-1/claude_code_credential'
+      );
+      expect(result).toEqual(CREDENTIAL);
+    });
+
+    it('returns null when no credential is configured', async () => {
+      mockGet.mockRejectedValueOnce(notFound());
+
+      await expect(nodesApi.getClaudeCodeCredential('node-a', 'inst-1')).resolves.toBeNull();
+    });
+
+    // set_node and set_instance render 404 too, and so would a wrong path.
+    // Collapsing those into "not configured" would offer a Set button that
+    // then fails, and would hide a genuinely missing instance.
+    it('propagates a 404 that is not the credential\'s own', async () => {
+      mockGet.mockRejectedValueOnce(
+        Object.assign(new Error('Request failed with status code 404'), {
+          response: { status: 404, data: { success: false, error: 'Node Instance not found' } },
+        })
+      );
+
+      await expect(nodesApi.getClaudeCodeCredential('node-a', 'inst-1')).rejects.toThrow(
+        'Request failed with status code 404'
+      );
+    });
+
+    // A 403 means the caller may not READ the credential. Collapsing it into
+    // "not configured" would tell them the opposite of the truth and hide the
+    // permission problem.
+    it('propagates a 403 rather than reporting "not configured"', async () => {
+      mockGet.mockRejectedValueOnce(
+        Object.assign(new Error('Forbidden'), { response: { status: 403 } })
+      );
+
+      await expect(nodesApi.getClaudeCodeCredential('node-a', 'inst-1')).rejects.toThrow('Forbidden');
+    });
+
+    it('propagates a network error with no response at all', async () => {
+      mockGet.mockRejectedValueOnce(new Error('Network Error'));
+
+      await expect(nodesApi.getClaudeCodeCredential('node-a', 'inst-1')).rejects.toThrow(
+        'Network Error'
+      );
+    });
+  });
+
+  describe('setClaudeCodeCredential', () => {
+    it('POSTs an api_key at the top level of the body', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ credential: CREDENTIAL }));
+
+      await nodesApi.setClaudeCodeCredential('node-a', 'inst-1', { api_key: 'sk-test-value' });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/nodes/node-a/node_instances/inst-1/claude_code_credential',
+        { api_key: 'sk-test-value' }
+      );
+    });
+
+    it('POSTs an oauth object at the top level of the body', async () => {
+      const oauth = { accessToken: 'a', refreshToken: 'b', expiresAt: 1780000000000 };
+      mockPost.mockResolvedValueOnce(
+        envelope({ credential: { ...CREDENTIAL, credential_kind: 'oauth' } })
+      );
+
+      await nodesApi.setClaudeCodeCredential('node-a', 'inst-1', { oauth });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/nodes/node-a/node_instances/inst-1/claude_code_credential',
+        { oauth }
+      );
+    });
+
+    it('returns only the index card, which carries no secret', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ credential: CREDENTIAL }));
+
+      const result = await nodesApi.setClaudeCodeCredential('node-a', 'inst-1', {
+        api_key: 'sk-test-value',
+      });
+
+      expect(JSON.stringify(result)).not.toContain('sk-test-value');
+      expect(result.credential_kind).toBe('api_key');
+      expect(result.configured).toBe(true);
+    });
+
+    it('propagates the 409 that says a credential already exists', async () => {
+      mockPost.mockRejectedValueOnce(new Error('Credential already exists for this instance'));
+
+      await expect(
+        nodesApi.setClaudeCodeCredential('node-a', 'inst-1', { api_key: 'x' })
+      ).rejects.toThrow('Credential already exists for this instance');
+    });
+  });
+
+  describe('rotateClaudeCodeCredential', () => {
+    it('POSTs to the rotate sub-path', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ credential: CREDENTIAL }));
+
+      await nodesApi.rotateClaudeCodeCredential('node-a', 'inst-1', { api_key: 'sk-new' });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/nodes/node-a/node_instances/inst-1/claude_code_credential/rotate',
+        { api_key: 'sk-new' }
+      );
+    });
+
+    it('propagates the kind-mismatch conflict', async () => {
+      mockPost.mockRejectedValueOnce(
+        new Error('Credential is api_key-kind — delete and re-create to switch kinds')
+      );
+
+      await expect(
+        nodesApi.rotateClaudeCodeCredential('node-a', 'inst-1', {
+          oauth: { accessToken: 'a', refreshToken: 'b', expiresAt: 1780000000000 },
+        })
+      ).rejects.toThrow('delete and re-create to switch kinds');
+    });
+  });
+
+  describe('deleteClaudeCodeCredential', () => {
+    it('DELETEs the singular nested credential path', async () => {
+      mockDelete.mockResolvedValueOnce({ data: { success: true } });
+
+      await nodesApi.deleteClaudeCodeCredential('node-a', 'inst-1');
+
+      expect(mockDelete).toHaveBeenCalledWith(
+        '/system/nodes/node-a/node_instances/inst-1/claude_code_credential'
+      );
+    });
+
+    it('propagates a failed delete', async () => {
+      mockDelete.mockRejectedValueOnce(new Error('Vault unavailable'));
+
+      await expect(nodesApi.deleteClaudeCodeCredential('node-a', 'inst-1')).rejects.toThrow(
+        'Vault unavailable'
+      );
+    });
+  });
+});
+
+// =============================================================================
+// apiErrorMessage
+// =============================================================================
+
+describe('apiErrorMessage', () => {
+  it('prefers the server sentence over the axios status line', () => {
+    const err = Object.assign(new Error('Request failed with status code 422'), {
+      response: { status: 422, data: { success: false, error: 'expiresAt is required' } },
+    });
+
+    expect(apiErrorMessage(err, 'fallback')).toBe('expiresAt is required');
+  });
+
+  it('falls back to the Error message when the envelope carries none', () => {
+    expect(apiErrorMessage(new Error('Network Error'), 'fallback')).toBe('Network Error');
+  });
+
+  it('ignores a blank server message', () => {
+    const err = Object.assign(new Error('Request failed with status code 500'), {
+      response: { status: 500, data: { error: '   ' } },
+    });
+
+    expect(apiErrorMessage(err, 'fallback')).toBe('Request failed with status code 500');
+  });
+
+  it('uses the caller-supplied fallback for a non-Error rejection', () => {
+    expect(apiErrorMessage('something odd', 'fallback')).toBe('fallback');
   });
 });

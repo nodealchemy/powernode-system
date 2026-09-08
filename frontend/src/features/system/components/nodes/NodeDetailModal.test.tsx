@@ -17,6 +17,7 @@ const mockDeleteNodeInstance = jest.fn();
 const mockAssociatePublicIp = jest.fn();
 const mockDisassociatePublicIp = jest.fn();
 const mockDownloadInstanceBootConfig = jest.fn();
+const mockGetClaudeCodeCredential = jest.fn();
 
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
@@ -28,6 +29,7 @@ jest.mock('@system/features/system/services/systemApi', () => ({
     associatePublicIp: (...args: unknown[]) => mockAssociatePublicIp(...args),
     disassociatePublicIp: (...args: unknown[]) => mockDisassociatePublicIp(...args),
     downloadInstanceBootConfig: (...args: unknown[]) => mockDownloadInstanceBootConfig(...args),
+    getClaudeCodeCredential: (...args: unknown[]) => mockGetClaudeCodeCredential(...args),
     enableModuleAssignment: (...args: unknown[]) => mockEnableModuleAssignment(...args),
     disableModuleAssignment: (...args: unknown[]) => mockDisableModuleAssignment(...args),
   },
@@ -360,6 +362,7 @@ const setupDefaultMocks = () => {
   mockGetNode.mockResolvedValue(NODE);
   mockGetNodeInstances.mockResolvedValue({ node_instances: [INSTANCE_CLOUD, INSTANCE_PHYSICAL] });
   mockGetNodeModules.mockResolvedValue({ node_modules: [MODULE] });
+  mockGetClaudeCodeCredential.mockResolvedValue(null);
   mockGetTasks.mockResolvedValue({ tasks: [TASK_RUNNING, TASK_FAILED], meta: META });
 };
 
@@ -1405,6 +1408,38 @@ describe('NodeDetailModal', () => {
       fireEvent.click(screen.getByText('close-apply'));
 
       expect(screen.queryByTestId('apply-template-modal')).not.toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Claude Code credential panel
+  // ---------------------------------------------------------------------------
+
+  describe('Claude Code credential panel', () => {
+    const openInstancesTab = async () => {
+      setupDefaultMocks();
+      renderModal();
+      await waitForModal();
+      clickTab('Instances');
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+    };
+
+    it('is not mounted until the instance row is expanded', async () => {
+      await openInstancesTab();
+
+      // Collapsed: no status request for a credential nobody asked about.
+      expect(mockGetClaudeCodeCredential).not.toHaveBeenCalled();
+    });
+
+    it('reads the credential status for the expanded instance only', async () => {
+      await openInstancesTab();
+      fireEvent.click(screen.getByText('web-01').closest('button')!);
+
+      await waitFor(() =>
+        expect(screen.getByText('Claude Code credential')).toBeInTheDocument(),
+      );
+      expect(mockGetClaudeCodeCredential).toHaveBeenCalledWith('node-1', 'inst-1');
+      expect(mockGetClaudeCodeCredential).toHaveBeenCalledTimes(1);
     });
   });
 });

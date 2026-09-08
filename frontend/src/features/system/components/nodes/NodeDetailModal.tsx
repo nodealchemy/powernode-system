@@ -24,6 +24,7 @@ import { EditNodeModal } from './EditNodeModal';
 import { CreateInstanceModal } from './CreateInstanceModal';
 import { EditInstanceModal } from './EditInstanceModal';
 import { ApplyTemplateModal } from './ApplyTemplateModal';
+import { ClaudeCodeCredentialPanel } from './ClaudeCodeCredentialPanel';
 
 interface NodeDetailModalProps {
   /** Node ID to display */
@@ -761,6 +762,12 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                     <p className="text-theme-primary text-xs">{new Date(instance.updated_at).toLocaleString()}</p>
                   </div>
                   </div>
+
+                  {/* Claude Code credential — write-only. Mounted only while the
+                      row is expanded so the status GET is one request per
+                      instance the operator actually opened, and the panel gates
+                      itself on system.node_instance_credentials.read. */}
+                  {nodeId && <ClaudeCodeCredentialPanel nodeId={nodeId} instanceId={instance.id} />}
                 </div>
               )}
             </div>
