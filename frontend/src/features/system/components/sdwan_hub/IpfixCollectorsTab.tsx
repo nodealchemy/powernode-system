@@ -4,6 +4,7 @@ import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import { isPendingApproval } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
@@ -95,27 +96,27 @@ export const IpfixCollectorsTab: React.FC = () => {
     }
   }, [addNotification]);
 
-  if (loading) {
-    return <div className="p-8 text-center text-theme-secondary">Loading IPFIX collectors…</div>;
-  }
+  // The container owns loading and empty; it has no error slot, so the error
+  // short-circuit stays here and keeps its existing precedence over both.
   if (error) {
     return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
-  if (collectors.length === 0) {
-    return (
-      <div className="p-12 text-center">
-        <Activity className="mx-auto mb-4 text-theme-secondary" size={48} />
-        <h3 className="text-lg font-medium text-theme-primary mb-2">No IPFIX collectors yet</h3>
-        <p className="text-theme-secondary">
-          IPFIX is heavyweight-profile only — lightweight (Linux-bridge) hosts ignore the
-          payload. Register a collector via the SDWAN IPFIX Collector Compose skill or
-          the <code className="text-xs">system_sdwan_create_ipfix_collector</code> MCP action.
-        </p>
-      </div>
-    );
-  }
 
   return (
+    <ResponsiveListContainer
+      loading={loading}
+      totalCount={collectors.length}
+      filteredCount={collectors.length}
+      emptyState={{
+        icon: Activity,
+        title: 'No IPFIX collectors yet',
+        description:
+          'IPFIX is heavyweight-profile only — lightweight (Linux-bridge) hosts ignore the payload. Register a collector via the SDWAN IPFIX Collector Compose skill or the system_sdwan_create_ipfix_collector MCP action.',
+      }}
+    >
+      {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+          blank this table on narrow screens. Body renders at every width. */}
+      <ResponsiveListContainer.Body>
     <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
@@ -144,6 +145,8 @@ export const IpfixCollectorsTab: React.FC = () => {
         </tbody>
       </table>
     </div>
+      </ResponsiveListContainer.Body>
+    </ResponsiveListContainer>
   );
 };
 

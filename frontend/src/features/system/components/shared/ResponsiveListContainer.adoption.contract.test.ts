@@ -53,10 +53,6 @@ const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [
   'features/system/components/platform/MigrationsPanel.tsx',
   'features/system/components/platform/ScalingPanel.tsx',
   'features/system/components/platform/StorageMigrationsPanel.tsx',
-  'features/system/components/sdwan_hub/FlowSamplesTab.tsx',
-  'features/system/components/sdwan_hub/HostBridgesTab.tsx',
-  'features/system/components/sdwan_hub/IpfixCollectorsTab.tsx',
-  'features/system/components/sdwan_hub/OvnDeploymentsTab.tsx',
   'pages/app/system/MyVpnDevicesPage.tsx',
 ];
 
