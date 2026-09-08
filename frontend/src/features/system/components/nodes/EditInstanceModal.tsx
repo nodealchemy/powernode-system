@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Cpu } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { Badge } from '@/shared/components/ui/Badge';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -199,51 +200,34 @@ export const EditInstanceModal: React.FC<EditInstanceModalProps> = ({
         )}
 
         {/* Name Field */}
-        <div>
-          <label htmlFor="edit-instance-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger-fg">*</span>
-          </label>
-          <input
-            id="edit-instance-name"
-            type="text"
-            value={formData.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="my-instance-01"
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
-            `}
-            disabled={submitting}
-          />
-          {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
-          )}
-        </div>
+        <FormField
+          label="Name"
+          id="edit-instance-name"
+          required
+          value={formData.name}
+          onChange={(v) => handleChange('name', v)}
+          placeholder="my-instance-01"
+          error={errors.name}
+          disabled={submitting}
+        />
 
         {/* Instance Type */}
         <div>
-          <label htmlFor="edit-instance-variety" className="block text-sm font-medium text-theme-primary mb-1">
-            Instance Type <span className="text-theme-danger-fg">*</span>
-          </label>
-          <select
+          <FormField
+            label="Instance Type"
             id="edit-instance-variety"
+            type="select"
+            required
             value={formData.variety}
-            onChange={(e) => handleChange('variety', e.target.value)}
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.variety ? 'border-theme-danger-border' : 'border-theme'}
-            `}
+            onChange={(v) => handleChange('variety', v)}
+            error={errors.variety}
             disabled={submitting}
-          >
-            <option value="cloud">Cloud Instance</option>
-            <option value="physical">Physical Server</option>
-            <option value="dynamic">Dynamic Instance</option>
-          </select>
-          {errors.variety && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.variety}</p>
-          )}
+            options={[
+              { value: 'cloud', label: 'Cloud Instance' },
+              { value: 'physical', label: 'Physical Server' },
+              { value: 'dynamic', label: 'Dynamic Instance' },
+            ]}
+          />
           <p className="mt-1 text-xs text-theme-secondary">
             {formData.variety === 'cloud' && 'Virtual machine hosted in a cloud provider'}
             {formData.variety === 'physical' && 'Physical hardware server'}

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Cpu, Cloud, Server, Zap, Loader2, RefreshCw } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
@@ -518,27 +519,16 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
     >
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Name Field */}
-        <div>
-          <label htmlFor="instance-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger-fg">*</span>
-          </label>
-          <input
-            id="instance-name"
-            type="text"
-            value={formData.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="my-instance-01"
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
-            `}
-            disabled={submitting}
-          />
-          {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
-          )}
-        </div>
+        <FormField
+          label="Name"
+          id="instance-name"
+          required
+          value={formData.name}
+          onChange={(v) => handleChange('name', v)}
+          placeholder="my-instance-01"
+          error={errors.name}
+          disabled={submitting}
+        />
 
         {/* Instance Type */}
         <div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Server } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeTemplate, SystemNode } from '@system/features/system/types/system.types';
@@ -185,74 +186,54 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
     >
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Name Field */}
-        <div>
-          <label htmlFor="edit-node-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger-fg">*</span>
-          </label>
-          <input
-            id="edit-node-name"
-            type="text"
-            value={formData.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="my-node-01"
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
-            `}
-            disabled={submitting}
-          />
-          {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
-          )}
-        </div>
+        <FormField
+          label="Name"
+          id="edit-node-name"
+          required
+          value={formData.name}
+          onChange={(v) => handleChange('name', v)}
+          placeholder="my-node-01"
+          error={errors.name}
+          disabled={submitting}
+        />
 
         {/* Description Field */}
-        <div>
-          <label htmlFor="edit-node-description" className="block text-sm font-medium text-theme-primary mb-1">
-            Description
-          </label>
-          <textarea
-            id="edit-node-description"
-            value={formData.description}
-            onChange={(e) => handleChange('description', e.target.value)}
-            placeholder="Optional description for this node"
-            rows={3}
-            className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary resize-none"
-            disabled={submitting}
-          />
-        </div>
+        <FormField
+          label="Description"
+          id="edit-node-description"
+          type="textarea"
+          rows={3}
+          value={formData.description}
+          onChange={(v) => handleChange('description', v)}
+          placeholder="Optional description for this node"
+          disabled={submitting}
+        />
 
         {/* Template Selection */}
         <div>
-          <label htmlFor="edit-node-template" className="block text-sm font-medium text-theme-primary mb-1">
-            Template <span className="text-theme-danger-fg">*</span>
-          </label>
-          <select
+          <FormField
+            label="Template"
             id="edit-node-template"
+            type="select"
+            required
             value={formData.node_template_id}
-            onChange={(e) => handleChange('node_template_id', e.target.value)}
-            className={`
-              w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-              focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.node_template_id ? 'border-theme-danger-border' : 'border-theme'}
-            `}
+            onChange={(v) => handleChange('node_template_id', v)}
+            error={errors.node_template_id}
             disabled={submitting || loadingTemplates}
-          >
-            <option value="">
-              {loadingTemplates ? 'Loading templates...' : 'Select a template'}
-            </option>
-            {templates.map(template => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-                {template.node_platform_name ? ` (${template.node_platform_name})` : ''}
-                {!template.enabled ? ' [Disabled]' : ''}
-              </option>
-            ))}
-          </select>
-          {errors.node_template_id && (
-            <p className="mt-1 text-sm text-theme-danger-fg">{errors.node_template_id}</p>
-          )}
+            options={[
+              {
+                value: '',
+                label: loadingTemplates ? 'Loading templates...' : 'Select a template',
+              },
+              ...templates.map(template => ({
+                value: template.id,
+                label:
+                  template.name +
+                  (template.node_platform_name ? ` (${template.node_platform_name})` : '') +
+                  (!template.enabled ? ' [Disabled]' : ''),
+              })),
+            ]}
+          />
 
           {/* Template Info */}
           {selectedTemplate && (
