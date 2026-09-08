@@ -563,13 +563,30 @@ describe('sdwanApi.revokeAccessGrant', () => {
   });
 });
 
-describe('sdwanApi.deleteAccessGrant', () => {
-  it('DELETEs an access grant', async () => {
-    mockDelete.mockResolvedValue({ data: { success: true } });
+// IMP-2239a7111d41 — the hard-DELETE clients for access grants and user devices
+// were removed. They had no callers, and the distinction that matters is NOT
+// the approval gate: the server gates DELETE at require_approval exactly like
+// /revoke (access_grants_controller.rb #destroy). It is what survives. DELETE
+// cascades through `has_many :user_devices, dependent: :destroy` and, via the
+// VaultCredential after_destroy hook, drops each device's WireGuard key from
+// Vault, defeating the 90-day audit retention that the soft revoke preserves.
+// Leaving a raw delete client in the facade is a ready-made way for a future
+// caller to destroy the audit trail while believing it revoked access.
+//
+// This guard is keyed on the two literal names, so it does not catch the same
+// client re-added under another name, nor a component calling apiClient.delete
+// on these paths directly. It is paired with a PRESENCE assertion on the revoke
+// replacements because a broken import or a renamed facade would otherwise let
+// the absence half pass vacuously.
+describe('access-grant and user-device removal is revoke-only', () => {
+  it('does NOT expose a hard-delete client for either resource', () => {
+    expect(sdwanApi).not.toHaveProperty('deleteAccessGrant');
+    expect(sdwanApi).not.toHaveProperty('deleteUserDevice');
+  });
 
-    await sdwanApi.deleteAccessGrant('net-1', 'ag-1');
-
-    expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/networks/net-1/access_grants/ag-1');
+  it('still exposes the audit-preserving revoke clients', () => {
+    expect(typeof sdwanApi.revokeAccessGrant).toBe('function');
+    expect(typeof sdwanApi.revokeUserDevice).toBe('function');
   });
 });
 
@@ -627,18 +644,6 @@ describe('sdwanApi.revokeUserDevice', () => {
       { reason: 'lost device' }
     );
     expect(result.revoked_at).toBe('2026-01-01T12:00:00Z');
-  });
-});
-
-describe('sdwanApi.deleteUserDevice', () => {
-  it('DELETEs a user device', async () => {
-    mockDelete.mockResolvedValue({ data: { success: true } });
-
-    await sdwanApi.deleteUserDevice('net-1', 'ag-1', 'ud-1');
-
-    expect(mockDelete).toHaveBeenCalledWith(
-      '/system/sdwan/networks/net-1/access_grants/ag-1/user_devices/ud-1'
-    );
   });
 });
 
