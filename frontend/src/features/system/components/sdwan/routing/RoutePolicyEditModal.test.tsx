@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { RoutePolicyEditModal } from './RoutePolicyEditModal';
-import type { SdwanRoutePolicy } from '../../../types/sdwan.types';
+import type { SdwanRoutePolicy } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Mocks

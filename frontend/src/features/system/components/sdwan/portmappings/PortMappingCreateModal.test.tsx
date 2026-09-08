@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PortMappingCreateModal } from './PortMappingCreateModal';
-import type { SdwanPeer, SdwanVirtualIp, SdwanPortMapping } from '../../../types/sdwan.types';
+import type { SdwanPeer, SdwanVirtualIp, SdwanPortMapping } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Mocks

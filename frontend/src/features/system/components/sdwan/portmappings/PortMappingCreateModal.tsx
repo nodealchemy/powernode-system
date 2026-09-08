@@ -5,15 +5,15 @@ import { Button } from '@/shared/components/ui/Button';
 import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { sdwanApi } from '../../../services/api/sdwanApi';
-import { isPendingApproval } from '../../../services/api/helpers';
-import { pendingApprovalNotice } from '../../../utils/pendingApproval';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SdwanPortMapping,
   SdwanPeer,
   SdwanVirtualIp,
   SdwanPortMappingProtocol,
-} from '../../../types/sdwan.types';
+} from '@system/features/system/types/sdwan.types';
 
 interface PortMappingCreateModalProps {
   networkId: string;

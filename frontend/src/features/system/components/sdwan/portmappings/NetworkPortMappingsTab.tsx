@@ -4,10 +4,10 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { sdwanApi } from '../../../services/api/sdwanApi';
-import { isPendingApproval } from '../../../services/api/helpers';
-import { pendingApprovalNotice } from '../../../utils/pendingApproval';
-import type { SdwanPortMapping } from '../../../types/sdwan.types';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
+import type { SdwanPortMapping } from '@system/features/system/types/sdwan.types';
 import { PortMappingList } from './PortMappingList';
 import { PortMappingCreateModal } from './PortMappingCreateModal';
 

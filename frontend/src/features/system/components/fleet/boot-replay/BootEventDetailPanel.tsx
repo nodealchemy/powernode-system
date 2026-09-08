@@ -1,5 +1,5 @@
 import { FC } from 'react';
-import type { BootEvent } from '../../../services/api/bootReplayApi';
+import type { BootEvent } from '@system/features/system/services/api/bootReplayApi';
 
 interface Props {
   event: BootEvent | null;

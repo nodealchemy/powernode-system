@@ -6,9 +6,9 @@ import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
-import { sdwanApi } from '../../../services/api/sdwanApi';
-import { isPendingApproval } from '../../../services/api/helpers';
-import { pendingApprovalNotice } from '../../../utils/pendingApproval';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SdwanRoutePolicy,
   SdwanRoutePolicyScope,
@@ -17,7 +17,7 @@ import type {
   SdwanRoutePolicyCompiled,
   SdwanNetwork,
   SdwanPeer,
-} from '../../../types/sdwan.types';
+} from '@system/features/system/types/sdwan.types';
 
 interface RoutePolicyEditModalProps {
   policy?: SdwanRoutePolicy | null; // null = create

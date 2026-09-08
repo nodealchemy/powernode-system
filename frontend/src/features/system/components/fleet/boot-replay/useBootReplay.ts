@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { bootReplayApi, type BootReplayResponse } from '../../../services/api/bootReplayApi';
+import { bootReplayApi, type BootReplayResponse } from '@system/features/system/services/api/bootReplayApi';
 import { logger } from '@/shared/utils/logger';
 
 export interface UseBootReplayState {

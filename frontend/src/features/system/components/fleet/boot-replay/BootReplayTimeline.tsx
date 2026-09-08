@@ -1,7 +1,7 @@
 import { FC, useMemo, useState } from 'react';
 import { useBootReplay } from './useBootReplay';
 import { BootEventDetailPanel } from './BootEventDetailPanel';
-import type { BootEvent } from '../../../services/api/bootReplayApi';
+import type { BootEvent } from '@system/features/system/services/api/bootReplayApi';
 
 interface Props {
   instanceId: string | null;

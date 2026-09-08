@@ -1,6 +1,6 @@
 import React from 'react';
 import { Globe2, Network, Activity, GitBranch } from 'lucide-react';
-import type { SdwanRoutingOverview } from '../../../types/sdwan.types';
+import type { SdwanRoutingOverview } from '@system/features/system/types/sdwan.types';
 
 interface RoutingOverviewPanelProps {
   data: SdwanRoutingOverview;

@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { VirtualIpFailoverModal } from './VirtualIpFailoverModal';
-import type { SdwanVirtualIp } from '../../../types/sdwan.types';
+import type { SdwanVirtualIp } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Mocks

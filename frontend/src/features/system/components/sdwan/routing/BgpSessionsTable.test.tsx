@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BgpSessionsTable } from './BgpSessionsTable';
-import type { SdwanBgpSession } from '../../../types/sdwan.types';
+import type { SdwanBgpSession } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Mocks
