@@ -9,6 +9,8 @@ import {
 } from '@system/features/system/services/api/packageRepositoriesApi';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
+import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 
 interface Props {
   repository: SystemPackageRepository;
@@ -203,10 +205,16 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
         )}
 
         {error && (
-          <div className="mb-3 p-2 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+          <div className="mb-3">
+            <ErrorAlert message={error} />
+          </div>
         )}
 
-        {loading && <div className="p-6 text-center text-theme-secondary">Resolving dependency closure…</div>}
+        {loading && (
+          <div className="p-6">
+            <LoadingSpinner size="lg" message="Resolving dependency closure…" />
+          </div>
+        )}
 
         {!loading && preview && (
           <div className="flex-1 grid grid-cols-2 gap-4 overflow-hidden">
