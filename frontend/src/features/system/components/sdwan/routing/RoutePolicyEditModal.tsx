@@ -313,7 +313,7 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
             rows={14}
             disabled={statementsUnavailable}
             placeholder={statementsLoading ? 'Loading current statements…' : undefined}
-            className="font-mono text-xs disabled:opacity-60"
+            className="font-mono text-xs"
             spellCheck={false}
           />
           {statementsLoading && (

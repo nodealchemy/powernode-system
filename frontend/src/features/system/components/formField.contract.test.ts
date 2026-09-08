@@ -22,7 +22,12 @@ import path from 'node:path';
  * can only shrink.
  */
 
-const componentsRoot = __dirname;
+/**
+ * The whole extension frontend, not just the component tree: the create- and
+ * edit-pool forms live on a page, and scanning only `components/` reported an
+ * empty baseline while twelve hand-written fields sat one directory over.
+ */
+const scanRoot = path.join(__dirname, '..', '..', '..');
 
 /** The label class every hand-written field repeats. */
 const LABEL_CLASS = 'block text-sm font-medium text-theme-primary mb-1';
@@ -96,22 +101,35 @@ function migratableFieldCount(source: string): number {
 /**
  * Files that still hand-write at least one migratable field.
  *
- * Now empty: every one of them was converted. It stays here because the two
- * arms below are what keep it empty — an entry may only ever be removed, so a
- * new hand-written field fails the first arm rather than quietly joining a
- * list.
+ * Now empty: every one of them was converted. It stays here for the first arm,
+ * which is what keeps it empty — a new hand-written field fails that arm by
+ * name rather than quietly joining a list. The second arm is dormant while the
+ * list is empty and exists so that a future entry cannot outlive its file.
+ *
+ * KNOWN HOLES, so nobody reads this as more than it is. The scan keys on one
+ * exact class string and on the control following the label directly, so it
+ * does not see: a different label class (`mb-2`, or the same classes reordered),
+ * a control wrapped in a positioning div, a hint paragraph sitting between the
+ * label and its control, or a caption running past LOOKAHEAD_LINES. Real
+ * examples of the last two survive in modules/ModuleFormModal.tsx, where the
+ * spec textareas are separately unmigratable anyway — one is readOnly, which
+ * FormField has no prop for. This arm catches the shape that was repeated 180
+ * times; it is not a proof of absence.
  */
 const KNOWN_HAND_WRITTEN: readonly string[] = [];
 
-const sources = findSources(componentsRoot).map((f) => ({
-  rel: path.relative(componentsRoot, f),
+const sources = findSources(scanRoot).map((f) => ({
+  rel: path.relative(scanRoot, f),
   source: readFileSync(f, 'utf8'),
 }));
 
 describe('form field contract', () => {
   it('is scanning a real tree', () => {
-    expect(existsSync(componentsRoot)).toBe(true);
+    expect(existsSync(scanRoot)).toBe(true);
     expect(sources.length).toBeGreaterThan(100);
+    // Pin the widened root: the page tree is where the gap was.
+    expect(sources.some((f) => f.rel.startsWith('pages/'))).toBe(true);
+    expect(sources.some((f) => f.rel.startsWith('features/'))).toBe(true);
   });
 
   it('recognises the label/control pairing it is built to find', () => {
