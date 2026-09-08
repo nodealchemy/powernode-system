@@ -65,6 +65,9 @@ module System
     has_many :node_instances, class_name: "System::NodeInstance", dependent: :destroy
 
     before_validation :inherit_environment_from_template, on: :create
+    # See NodeTemplate#cascade_environment_to_fleet: instances still in this
+    # node's previous plane follow it; an explicitly placed instance stays.
+    after_update :cascade_environment_to_instances, if: :saved_change_to_environment_id?
     validate :node_template_belongs_to_account
     validate :environment_belongs_to_account
 
@@ -256,6 +259,13 @@ module System
       return if environment_id.present?
 
       self.environment = node_template&.environment || (account && ::Ai::Environment.default_for(account))
+    end
+
+    def cascade_environment_to_instances
+      previous = environment_id_before_last_save
+      return if previous.nil?
+
+      node_instances.where(environment_id: previous).update_all(environment_id: environment_id, updated_at: Time.current)
     end
 
     # A node on another tenant's template was never refused before the

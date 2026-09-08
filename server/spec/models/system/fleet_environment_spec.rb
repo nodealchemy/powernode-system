@@ -153,6 +153,34 @@ RSpec.describe "fleet rows carry an environment" do
       expect(template.reload.environment.slug).to eq("dev")
     end
 
+    # The gate reads the INSTANCE's plane first, so a placement that stopped
+    # at the template left the live control plane gated as dev.
+    it "moving a template carries the nodes and instances still in its previous plane, not the explicitly placed ones" do
+      node = create(:system_node, account: account, node_template: template)
+      instance = create(:system_node_instance, node: node, account: account)
+      placed_node = create(:system_node, account: account, node_template: template, environment: env("prod"))
+      placed_instance = create(:system_node_instance, node: node, account: account, environment: env("ci"))
+
+      r = call("system_update_template", template_id: template.id, environment: "ops")
+      expect(r[:success]).to be true
+
+      expect(node.reload.environment.slug).to eq("ops")
+      expect(instance.reload.environment.slug).to eq("ops")
+      expect(placed_node.reload.environment.slug).to eq("prod")
+      expect(placed_instance.reload.environment.slug).to eq("ci")
+    end
+
+    it "moving a node carries its instances still in the node's previous plane" do
+      node = create(:system_node, account: account, node_template: template)
+      instance = create(:system_node_instance, node: node, account: account)
+      placed = create(:system_node_instance, node: node, account: account, environment: env("ci"))
+
+      call("system_update_node", node_id: node.id, environment: "ops")
+
+      expect(instance.reload.environment.slug).to eq("ops")
+      expect(placed.reload.environment.slug).to eq("ci")
+    end
+
     it "refuses an unknown environment instead of silently ignoring it" do
       r = call("system_update_template", template_id: template.id, environment: "moon")
       expect(r[:success]).to be false

@@ -38,6 +38,12 @@ module System
     validate  :environment_belongs_to_account
 
     before_validation :inherit_default_environment, on: :create
+    # PLACEMENT CASCADES. Moving a template moves every node that was still in
+    # the template's PREVIOUS plane (and those nodes' instances likewise); a
+    # node an operator placed elsewhere on purpose keeps its own plane. Without
+    # this the gate — which reads the INSTANCE's plane first — kept treating a
+    # freshly protected control plane as dev (Environment campaign, incr. 3).
+    after_update :cascade_environment_to_fleet, if: :saved_change_to_environment_id?
 
     scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
@@ -94,6 +100,16 @@ module System
     end
 
     private
+
+    def cascade_environment_to_fleet
+      previous = environment_id_before_last_save
+      return if previous.nil?
+
+      moved_nodes = nodes.where(environment_id: previous)
+      ::System::NodeInstance.where(node_id: moved_nodes.select(:id), environment_id: previous)
+                            .update_all(environment_id: environment_id, updated_at: Time.current)
+      moved_nodes.update_all(environment_id: environment_id, updated_at: Time.current)
+    end
 
     def inherit_default_environment
       return if environment_id.present? || account.nil?
