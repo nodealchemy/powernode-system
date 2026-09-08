@@ -1,5 +1,6 @@
 import { FC, useEffect, useState, useMemo } from 'react';
 import { Boxes } from 'lucide-react';
+import { formatFileSize } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
 import {
   packagesApi,
@@ -103,12 +104,6 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
       .reduce((sum, c) => sum + 1 + c.transitive_required_if_chosen.length, 0);
     return preview.required_packages.length + transitiveExtra;
   }, [preview, selectedRecommends]);
-
-  const formatSize = (b: number): string => {
-    if (b < 1024) return `${b} B`;
-    if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
-    return `${(b / 1024 / 1024).toFixed(1)} MB`;
-  };
 
   const toggle = (name: string) => {
     setSelectedRecommends((prev) => {
@@ -236,7 +231,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
                       <span className="text-xs text-theme-secondary ml-1">v{p.version}</span>
                       {p.installed_size_bytes !== undefined && (
                         <span className="text-xs text-theme-secondary ml-2">
-                          {formatSize(p.installed_size_bytes)}
+                          {formatFileSize(p.installed_size_bytes)}
                         </span>
                       )}
                     </li>
@@ -274,7 +269,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
                           <div className="text-xs text-theme-secondary mt-1">
                             <span>recommended by {c.from}</span>
                             <span className="mx-1">·</span>
-                            <span>{formatSize(c.installed_size_bytes)}</span>
+                            <span>{formatFileSize(c.installed_size_bytes)}</span>
                             {c.transitive_required_if_chosen.length > 0 && (
                               <>
                                 <span className="mx-1">·</span>
@@ -308,7 +303,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
             <div className="text-sm text-theme-secondary">
               <span className="font-medium text-theme-primary">{totalModuleCount} NodeModules</span>
               <span className="mx-2">·</span>
-              <span>~{formatSize(totalSize)} installed</span>
+              <span>~{formatFileSize(totalSize)} installed</span>
               <span className="mx-2">·</span>
               <span>
                 {effectiveArchitectures.length} architecture{effectiveArchitectures.length === 1 ? '' : 's'}

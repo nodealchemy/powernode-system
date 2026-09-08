@@ -12,6 +12,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { formatDateTime } from '@/shared/utils/formatters';
+import { formatVolumeSize } from '@system/features/system/utils/volumeSize';
 import { Modal } from '@/shared/components/ui/Modal';
 import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
@@ -389,14 +390,6 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     }
   };
 
-  // Format size
-  const formatSize = (sizeGb: number) => {
-    if (sizeGb >= 1024) {
-      return `${(sizeGb / 1024).toFixed(1)} TB`;
-    }
-    return `${sizeGb} GB`;
-  };
-
   return (
     <>
     <Modal
@@ -452,7 +445,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm text-theme-secondary mb-1">Size</label>
-                      <p className="text-theme-primary font-medium text-lg">{formatSize(volume.size_gb)}</p>
+                      <p className="text-theme-primary font-medium text-lg">{formatVolumeSize(volume.size_gb)}</p>
                     </div>
                     <div>
                       <label className="block text-sm text-theme-secondary mb-1">Volume Type</label>
@@ -633,7 +626,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                                 </p>
                                 <p className="text-xs text-theme-tertiary">
                                   {snap.created_at ? formatDateTime(snap.created_at) : '—'}
-                                  {typeof snap.size_gb === 'number' ? ` · ${formatSize(snap.size_gb)}` : ''}
+                                  {typeof snap.size_gb === 'number' ? ` · ${formatVolumeSize(snap.size_gb)}` : ''}
                                 </p>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">

@@ -284,10 +284,12 @@ describe('CreateModuleFromPackageModal', () => {
 
     await waitFor(() => expect(screen.getByText('libssl3')).toBeInTheDocument());
     expect(screen.getByText('libc6')).toBeInTheDocument();
-    // Size formatting: 512000 bytes → 500 KB (512000 / 1024 = 500)
-    expect(screen.getByText('500 KB')).toBeInTheDocument();
-    // 1024000 bytes: 1024000 < 1048576 (1024*1024), so → 1000 KB
-    expect(screen.getByText('1000 KB')).toBeInTheDocument();
+    // Size formatting on core's ladder (IMP-afe91410f14d): one decimal above
+    // bytes, where this modal's own ladder used none at KB.
+    // 512000 bytes / 1024 = 500
+    expect(screen.getByText('500.0 KB')).toBeInTheDocument();
+    // 1024000 bytes: still under 1048576, so KB rather than MB
+    expect(screen.getByText('1000.0 KB')).toBeInTheDocument();
   });
 
   it('shows "no transitive requires" when required list is empty', async () => {
@@ -337,8 +339,8 @@ describe('CreateModuleFromPackageModal', () => {
     renderModal();
 
     await waitFor(() => expect(screen.getByText('Extended nginx modules')).toBeInTheDocument());
-    // 204800 bytes → 200 KB
-    expect(screen.getByText('200 KB')).toBeInTheDocument();
+    // 204800 bytes → 200 KB, now with core's decimal
+    expect(screen.getByText('200.0 KB')).toBeInTheDocument();
   });
 
   it('shows transitive deps count when non-zero', async () => {
@@ -747,6 +749,29 @@ describe('CreateModuleFromPackageModal', () => {
 
     renderModal();
 
-    await waitFor(() => expect(screen.getByText('2 KB')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('2.0 KB')).toBeInTheDocument());
+  });
+
+  // The rung this modal's own ladder could not reach. Its deleted body ended at
+  // `return `${(b / 1024 / 1024).toFixed(1)} MB`` with no GB branch, so a 2 GiB
+  // package — texlive, cuda, any of the large ones this modal is used to browse
+  // — read as '2048.0 MB'. Core's ladder carries through GB, TB and PB, and
+  // adopting it (IMP-afe91410f14d) is what removes the cap. Pinned here because
+  // the cap removal is the one behaviour change with no other coverage.
+  it('formats bytes in GB range, which its own ladder capped at MB', async () => {
+    const preview: ResolveDependenciesPreview = {
+      ...PREVIEW_EMPTY,
+      required_packages: [
+        { name: 'huge', version: '1.0', architecture: 'amd64', installed_size_bytes: 2 * 1024 ** 3 },
+      ],
+    };
+    mockPost
+      .mockResolvedValueOnce(envelope(preview))
+      .mockResolvedValueOnce(envelope(SUGGESTION_FALLBACK));
+
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('2.0 GB')).toBeInTheDocument());
+    expect(screen.queryByText('2048.0 MB')).not.toBeInTheDocument();
   });
 });

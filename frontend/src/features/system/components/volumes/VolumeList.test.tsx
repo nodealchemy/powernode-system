@@ -316,7 +316,7 @@ describe('VolumeList', () => {
       mockGetVolumes.mockResolvedValue(volumesResponse([VOLUME_AVAILABLE]));
       renderList();
       await waitFor(() =>
-        expect(screen.getAllByText('500 GB').length).toBeGreaterThan(0),
+        expect(screen.getAllByText('500.0 GB').length).toBeGreaterThan(0),
       );
     });
 

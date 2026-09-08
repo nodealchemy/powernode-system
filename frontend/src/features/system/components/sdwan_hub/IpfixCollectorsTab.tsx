@@ -11,6 +11,7 @@ import { pendingApprovalNotice } from '@system/features/system/utils/pendingAppr
 import type {
   SdwanIpfixCollector,
 } from '@system/features/system/types/sdwan.types';
+import { formatTimestamp } from '@/shared/utils/formatters';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase O6 — read view of registered IPFIX collectors plus inline
@@ -264,8 +265,8 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
               <DetailItem label="State">{d.state}</DetailItem>
               <DetailItem label="Compiler Picks">{d.is_winning_collector ? 'Winning' : 'No'}</DetailItem>
               <DetailItem label="Collector ID" mono>{d.id}</DetailItem>
-              <DetailItem label="Created">{formatTs(d.created_at)}</DetailItem>
-              <DetailItem label="Updated">{formatTs(d.updated_at)}</DetailItem>
+              <DetailItem label="Created">{formatTimestamp(d.created_at)}</DetailItem>
+              <DetailItem label="Updated">{formatTimestamp(d.updated_at)}</DetailItem>
               {detailError && (
                 <div className="col-span-full text-xs text-theme-danger-fg">
                   Detail unavailable: {detailError}
@@ -292,7 +293,5 @@ const DetailItem: React.FC<DetailItemProps> = ({ label, mono, children }) => (
   </div>
 );
 
-function formatTs(ts?: string | null): string {
-  return ts ? new Date(ts).toLocaleString() : '—';
-}
+
 
