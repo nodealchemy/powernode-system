@@ -15,6 +15,10 @@ const mockDeleteProviderRegion = jest.fn();
 const mockDeleteProviderConnection = jest.fn();
 const mockTestProviderConnection = jest.fn();
 const mockSyncProviderConnectionCatalog = jest.fn();
+const mockGetProviderInstanceTypes = jest.fn();
+const mockDeleteProviderInstanceType = jest.fn();
+const mockGetProviderAvailabilityZones = jest.fn();
+const mockDeleteProviderAvailabilityZone = jest.fn();
 
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
@@ -26,7 +30,50 @@ jest.mock('@system/features/system/services/systemApi', () => ({
     testProviderConnection: (...args: unknown[]) => mockTestProviderConnection(...args),
     syncProviderConnectionCatalog: (...args: unknown[]) =>
       mockSyncProviderConnectionCatalog(...args),
+    getProviderInstanceTypesPage: (...args: unknown[]) =>
+      mockGetProviderInstanceTypes(...args),
+    deleteProviderInstanceType: (...args: unknown[]) => mockDeleteProviderInstanceType(...args),
+    getProviderAvailabilityZonesPage: (...args: unknown[]) =>
+      mockGetProviderAvailabilityZones(...args),
+    deleteProviderAvailabilityZone: (...args: unknown[]) =>
+      mockDeleteProviderAvailabilityZone(...args),
   },
+}));
+
+jest.mock('./InstanceTypeFormModal', () => ({
+  InstanceTypeFormModal: ({ isOpen, onClose, onSaved, instanceType, manualOverride }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onSaved?: () => void;
+    instanceType: { id: string; name: string } | null;
+    manualOverride?: boolean;
+  }) =>
+    isOpen ? (
+      <div data-testid="instance-type-form-modal" data-manual-override={String(!!manualOverride)}>
+        <span data-testid="instance-type-form-subject">{instanceType?.name ?? 'new'}</span>
+        <button onClick={onClose}>Close Instance Type Form</button>
+        <button onClick={onSaved}>Save Instance Type</button>
+      </div>
+    ) : null,
+}));
+
+jest.mock('./AvailabilityZoneFormModal', () => ({
+  AvailabilityZoneFormModal: ({ isOpen, onClose, onSaved, regionId, zone, manualOverride }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onSaved?: () => void;
+    regionId: string;
+    zone: { id: string; name: string } | null;
+    manualOverride?: boolean;
+  }) =>
+    isOpen ? (
+      <div data-testid="zone-form-modal" data-manual-override={String(!!manualOverride)}>
+        <span data-testid="zone-form-region">{regionId}</span>
+        <span data-testid="zone-form-subject">{zone?.name ?? 'new'}</span>
+        <button onClick={onClose}>Close Zone Form</button>
+        <button onClick={onSaved}>Save Zone</button>
+      </div>
+    ) : null,
 }));
 
 jest.mock('@/shared/components/ui/Button', () => ({
@@ -275,6 +322,12 @@ describe('ProviderDetailModal', () => {
     mockDeleteProviderConnection.mockReset();
     mockTestProviderConnection.mockReset();
     mockSyncProviderConnectionCatalog.mockReset();
+    mockGetProviderInstanceTypes.mockReset();
+    mockGetProviderInstanceTypes.mockResolvedValue({ instanceTypes: [], total: 0 });
+    mockDeleteProviderInstanceType.mockReset();
+    mockGetProviderAvailabilityZones.mockReset();
+    mockGetProviderAvailabilityZones.mockResolvedValue({ zones: [], total: 0 });
+    mockDeleteProviderAvailabilityZone.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission = jest.fn(() => true);
   });
@@ -1095,6 +1148,269 @@ describe('ProviderDetailModal', () => {
     fireEvent.click(screen.getByText('Connections'));
 
     expect(screen.queryByTitle('Sync catalog')).not.toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Sub-catalog: instance types (IMP-353211667af8)
+  // -------------------------------------------------------------------------
+
+  const INSTANCE_TYPE = {
+    id: 'it-1',
+    name: 'General Medium',
+    instance_type_code: 't3.medium',
+    vcpus: 2,
+    memory_mb: 4096,
+    storage_gb: 50,
+    enabled: true,
+    specs: {},
+    provider_id: 'prov-1',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+
+  const ZONE = {
+    id: 'az-1',
+    name: 'Zone A',
+    zone_code: 'us-east-1a',
+    status: 'available' as const,
+    enabled: true,
+    capabilities: {},
+    provider_region_id: 'reg-a',
+    operational: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+
+  it('lists the provider instance types when the Instance Types tab is opened', async () => {
+    setupHappyPath();
+    mockGetProviderInstanceTypes.mockResolvedValue({ instanceTypes: [INSTANCE_TYPE], total: 1 });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+
+    await waitFor(() =>
+      expect(mockGetProviderInstanceTypes).toHaveBeenCalledWith('prov-1'),
+    );
+    expect(await screen.findByTestId('instance-type-it-1')).toBeInTheDocument();
+    expect(screen.getByText('t3.medium')).toBeInTheDocument();
+  });
+
+  it('opens the instance type form in create mode from the Instance Types tab', async () => {
+    setupHappyPath();
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+    fireEvent.click(await screen.findByText('Add Instance Type'));
+
+    expect(await screen.findByTestId('instance-type-form-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('instance-type-form-subject')).toHaveTextContent('new');
+  });
+
+  it('opens the instance type form pre-filled from a row', async () => {
+    setupHappyPath();
+    mockGetProviderInstanceTypes.mockResolvedValue({ instanceTypes: [INSTANCE_TYPE], total: 1 });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+    fireEvent.click(await screen.findByTitle('Edit instance type'));
+
+    expect(screen.getByTestId('instance-type-form-subject')).toHaveTextContent(
+      'General Medium',
+    );
+  });
+
+  it('deletes an instance type and reloads the list', async () => {
+    setupHappyPath();
+    mockGetProviderInstanceTypes.mockResolvedValue({ instanceTypes: [INSTANCE_TYPE], total: 1 });
+    mockDeleteProviderInstanceType.mockResolvedValue(undefined);
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+    fireEvent.click(await screen.findByTitle('Delete instance type'));
+
+    await waitFor(() =>
+      expect(mockDeleteProviderInstanceType).toHaveBeenCalledWith('prov-1', 'it-1'),
+    );
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message: 'Instance type "General Medium" deleted successfully',
+      }),
+    );
+  });
+
+  it('marks sub-catalog writes as a manual override when the provider has a connection', async () => {
+    setupHappyPath();
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+    fireEvent.click(await screen.findByText('Add Instance Type'));
+
+    expect(screen.getByTestId('instance-type-form-modal')).toHaveAttribute(
+      'data-manual-override',
+      'true',
+    );
+  });
+
+  it('does not mark sub-catalog writes as an override for a provider with no connection', async () => {
+    setupHappyPath({ connections: [] });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+    fireEvent.click(await screen.findByText('Add Instance Type'));
+
+    expect(screen.getByTestId('instance-type-form-modal')).toHaveAttribute(
+      'data-manual-override',
+      'false',
+    );
+  });
+
+  it('says so when the instance type list is truncated by the page cap', async () => {
+    setupHappyPath();
+    mockGetProviderInstanceTypes.mockResolvedValue({
+      instanceTypes: [INSTANCE_TYPE],
+      total: 137,
+    });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+
+    expect(
+      await screen.findByText(/Showing 1 of 137 instance types/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no truncation notice when the page holds every instance type', async () => {
+    setupHappyPath();
+    mockGetProviderInstanceTypes.mockResolvedValue({
+      instanceTypes: [INSTANCE_TYPE],
+      total: 1,
+    });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Instance Types'));
+
+    await screen.findByTestId('instance-type-it-1');
+    expect(screen.queryByText(/Showing 1 of/)).not.toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Sub-catalog: availability zones under a region row
+  // -------------------------------------------------------------------------
+
+  it('loads a region\'s availability zones when the region row is expanded', async () => {
+    setupHappyPath();
+    mockGetProviderAvailabilityZones.mockResolvedValue({ zones: [ZONE], total: 1 });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Regions'));
+    fireEvent.click(await screen.findByTestId('region-zones-toggle-reg-a'));
+
+    await waitFor(() =>
+      expect(mockGetProviderAvailabilityZones).toHaveBeenCalledWith('prov-1', 'reg-a'),
+    );
+    expect(await screen.findByTestId('availability-zone-az-1')).toBeInTheDocument();
+    expect(screen.getByText('us-east-1a')).toBeInTheDocument();
+  });
+
+  it('opens the zone form for the region whose row it was launched from', async () => {
+    setupHappyPath();
+    mockGetProviderAvailabilityZones.mockResolvedValue({ zones: [ZONE], total: 1 });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Regions'));
+    fireEvent.click(await screen.findByTestId('region-zones-toggle-reg-a'));
+    fireEvent.click(await screen.findByText('Add Zone'));
+
+    expect(screen.getByTestId('zone-form-region')).toHaveTextContent('reg-a');
+    expect(screen.getByTestId('zone-form-subject')).toHaveTextContent('new');
+  });
+
+  it('collapsing a region row drops the zones it loaded', async () => {
+    setupHappyPath();
+    mockGetProviderAvailabilityZones.mockResolvedValue({ zones: [ZONE], total: 1 });
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Regions'));
+    const toggle = await screen.findByTestId('region-zones-toggle-reg-a');
+    fireEvent.click(toggle);
+    await screen.findByTestId('availability-zone-az-1');
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('availability-zone-az-1')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('ignores a late zone response for a region that is no longer expanded', async () => {
+    setupHappyPath();
+    let resolveFirst: ((v: { zones: typeof ZONE[]; total: number }) => void) | undefined;
+    mockGetProviderAvailabilityZones.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Regions'));
+    const toggle = await screen.findByTestId('region-zones-toggle-reg-a');
+
+    // Expand, then collapse before the fetch settles.
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    resolveFirst?.({ zones: [ZONE], total: 1 });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('availability-zone-az-1')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('deletes an availability zone and reloads the region\'s zones', async () => {
+    setupHappyPath();
+    mockGetProviderAvailabilityZones.mockResolvedValue({ zones: [ZONE], total: 1 });
+    mockDeleteProviderAvailabilityZone.mockResolvedValue(undefined);
+
+    renderModal();
+
+    await waitForLoaded();
+    fireEvent.click(screen.getByText('Regions'));
+    fireEvent.click(await screen.findByTestId('region-zones-toggle-reg-a'));
+    fireEvent.click(await screen.findByTitle('Delete availability zone'));
+
+    await waitFor(() =>
+      expect(mockDeleteProviderAvailabilityZone).toHaveBeenCalledWith(
+        'prov-1',
+        'reg-a',
+        'az-1',
+      ),
+    );
   });
 
   it('shows error notification when connection test returns success:false', async () => {

@@ -515,6 +515,122 @@ describe('providersApi', () => {
     });
   });
 
+  describe('paged sub-catalog readers', () => {
+    it('getProviderInstanceTypesPage asks for the server maximum and returns the total', async () => {
+      mockGet.mockResolvedValue(
+        envelope({ instance_types: [INSTANCE_TYPE_A], meta: { total_count: 137 } }),
+      );
+
+      const result = await providersApi.getProviderInstanceTypesPage('prov-1');
+
+      expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/instance_types', {
+        params: { per_page: 100 },
+      });
+      expect(result.instanceTypes).toHaveLength(1);
+      expect(result.total).toBe(137);
+    });
+
+    it('falls back to the row count when the server sends no meta', async () => {
+      mockGet.mockResolvedValue(envelope({ instance_types: [INSTANCE_TYPE_A] }));
+
+      const result = await providersApi.getProviderInstanceTypesPage('prov-1');
+
+      expect(result.total).toBe(1);
+    });
+
+    it('getProviderAvailabilityZonesPage asks for the server maximum and returns the total', async () => {
+      mockGet.mockResolvedValue(
+        envelope({ availability_zones: [AZ_A], meta: { total_count: 42 } }),
+      );
+
+      const result = await providersApi.getProviderAvailabilityZonesPage('prov-1', 'reg-1');
+
+      expect(mockGet).toHaveBeenCalledWith(
+        '/system/providers/prov-1/regions/reg-1/availability_zones',
+        { params: { per_page: 100 } },
+      );
+      expect(result.total).toBe(42);
+    });
+  });
+
+  describe('provider instance type writes', () => {
+    it('createProviderInstanceType POSTs to the provider-scoped collection', async () => {
+      mockPost.mockResolvedValue(envelope({ instance_type: INSTANCE_TYPE_A }));
+
+      await providersApi.createProviderInstanceType('prov-1', {
+        name: 'Large',
+        instance_type_code: 'm5.large',
+        vcpus: 2,
+      });
+
+      expect(mockPost).toHaveBeenCalledWith('/system/providers/prov-1/instance_types', {
+        instance_type: { name: 'Large', instance_type_code: 'm5.large', vcpus: 2 },
+      });
+    });
+
+    it('updateProviderInstanceType PUTs to the member route', async () => {
+      mockPut.mockResolvedValue(envelope({ instance_type: INSTANCE_TYPE_A }));
+
+      await providersApi.updateProviderInstanceType('prov-1', 'it-1', { enabled: false });
+
+      expect(mockPut).toHaveBeenCalledWith(
+        '/system/providers/prov-1/instance_types/it-1',
+        { instance_type: { enabled: false } },
+      );
+    });
+
+    it('deleteProviderInstanceType DELETEs the member route', async () => {
+      mockDelete.mockResolvedValue({ data: { success: true } });
+
+      await expect(
+        providersApi.deleteProviderInstanceType('prov-1', 'it-1'),
+      ).resolves.toBeUndefined();
+
+      expect(mockDelete).toHaveBeenCalledWith('/system/providers/prov-1/instance_types/it-1');
+    });
+  });
+
+  describe('provider availability zone writes', () => {
+    it('createProviderAvailabilityZone POSTs under the region', async () => {
+      mockPost.mockResolvedValue(envelope({ availability_zone: AZ_A }));
+
+      await providersApi.createProviderAvailabilityZone('prov-1', 'reg-1', {
+        name: 'Zone A',
+        zone_code: 'us-east-1a',
+      });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/providers/prov-1/regions/reg-1/availability_zones',
+        { availability_zone: { name: 'Zone A', zone_code: 'us-east-1a' } },
+      );
+    });
+
+    it('updateProviderAvailabilityZone PUTs under the region', async () => {
+      mockPut.mockResolvedValue(envelope({ availability_zone: AZ_A }));
+
+      await providersApi.updateProviderAvailabilityZone('prov-1', 'reg-1', 'az-1', {
+        status: 'impaired',
+      });
+
+      expect(mockPut).toHaveBeenCalledWith(
+        '/system/providers/prov-1/regions/reg-1/availability_zones/az-1',
+        { availability_zone: { status: 'impaired' } },
+      );
+    });
+
+    it('deleteProviderAvailabilityZone DELETEs under the region', async () => {
+      mockDelete.mockResolvedValue({ data: { success: true } });
+
+      await expect(
+        providersApi.deleteProviderAvailabilityZone('prov-1', 'reg-1', 'az-1'),
+      ).resolves.toBeUndefined();
+
+      expect(mockDelete).toHaveBeenCalledWith(
+        '/system/providers/prov-1/regions/reg-1/availability_zones/az-1',
+      );
+    });
+  });
+
   // ===========================================================================
   // Provider Instance Types
   // ===========================================================================

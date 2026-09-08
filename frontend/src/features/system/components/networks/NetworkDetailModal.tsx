@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   X,
   Network,
@@ -6,7 +6,10 @@ import {
   Calendar,
   Server,
   CheckCircle,
-  XCircle
+  XCircle,
+  Plus,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -14,7 +17,12 @@ import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
-import type { SystemProviderNetwork } from '@system/features/system/types/system.types';
+import { logger } from '@/shared/utils/logger';
+import { SubnetFormModal } from './SubnetFormModal';
+import type {
+  SystemProviderNetwork,
+  SystemProviderNetworkSubnet
+} from '@system/features/system/types/system.types';
 
 interface NetworkDetailModalProps {
   /** Network ID to display */
@@ -51,10 +59,25 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
   const { hasPermission } = usePermissions();
 
   const canUpdate = hasPermission('system.networks.update');
+  // ProviderNetworkSubnetsController gates each verb on its own
+  // system.networks.* permission, the same family as the network itself.
+  const canCreateSubnets = hasPermission('system.networks.create');
+  const canDeleteSubnets = hasPermission('system.networks.delete');
 
   // State
   const [network, setNetwork] = useState<SystemProviderNetwork | null>(null);
   const [loading, setLoading] = useState(true);
+  const [subnets, setSubnets] = useState<SystemProviderNetworkSubnet[]>([]);
+  const [subnetsLoading, setSubnetsLoading] = useState(false);
+  const [subnetsTotal, setSubnetsTotal] = useState(0);
+  const [showSubnetModal, setShowSubnetModal] = useState(false);
+  const [editSubnet, setEditSubnet] = useState<SystemProviderNetworkSubnet | null>(null);
+  /**
+   * True once we know the owning provider has a connection. Left false when the
+   * lookup fails or the payload carries no provider_id — the label is a claim
+   * about the provider, so an unknown answer must not assert one.
+   */
+  const [providerHasConnection, setProviderHasConnection] = useState(false);
 
   // Fetch network
   useEffect(() => {
@@ -80,10 +103,101 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
     }
   }, [isOpen, networkId, addNotification]);
 
+  const refreshSubnets = useCallback(async () => {
+    if (!networkId) return;
+    setSubnetsLoading(true);
+    try {
+      const page = await systemApi.getNetworkSubnetsPage(networkId);
+      setSubnets(page.subnets);
+      setSubnetsTotal(page.total);
+    } catch (error) {
+      logger.error('[NetworkDetailModal] subnet load failed', error);
+      addNotification({ type: 'error', message: 'Failed to load subnets' });
+    } finally {
+      setSubnetsLoading(false);
+    }
+  }, [networkId, addNotification]);
+
+  /**
+   * Run after a subnet WRITE, not on the initial load. The header count comes
+   * from the network payload's subnet_count, so reloading only the list leaves
+   * the header contradicting the rows until the modal is reopened. The initial
+   * load already has a fresh network and must not fetch it twice.
+   */
+  const refreshAfterSubnetWrite = useCallback(async () => {
+    if (!networkId) return;
+    await refreshSubnets();
+    try {
+      setNetwork(await systemApi.getNetwork(networkId));
+    } catch (error) {
+      // Pass the MESSAGE, not the error: logger.warn JSON.stringify()s its
+      // context, which on an AxiosError serialises the request headers.
+      logger.warn('[NetworkDetailModal] network refresh after subnet write failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }, [networkId, refreshSubnets]);
+
+  useEffect(() => {
+    if (isOpen && networkId) void refreshSubnets();
+  }, [isOpen, networkId, refreshSubnets]);
+
+  // Whether writing a subnet by hand is an override of a synced catalog. The
+  // network payload carries provider_id; a connection on that provider means
+  // sync_catalog owns these rows. Any failure leaves the flag false rather than
+  // labelling a manual provider's subnets as an override.
+  useEffect(() => {
+    let cancelled = false;
+    if (!isOpen || !network?.provider_id) {
+      setProviderHasConnection(false);
+      return;
+    }
+    systemApi
+      .getProviderConnections()
+      .then((all) => {
+        if (cancelled) return;
+        setProviderHasConnection(all.some((c) => c.provider_id === network.provider_id));
+      })
+      .catch((error) => {
+        logger.warn('[NetworkDetailModal] provider connection lookup failed', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, network?.provider_id]);
+
+  const handleDeleteSubnet = useCallback(
+    async (subnet: SystemProviderNetworkSubnet) => {
+      if (!networkId) return;
+      try {
+        await systemApi.deleteNetworkSubnet(networkId, subnet.id);
+        addNotification({
+          type: 'success',
+          message: `Subnet "${subnet.name}" deleted successfully`
+        });
+        await refreshAfterSubnetWrite();
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'An error occurred';
+        addNotification({
+          type: 'error',
+          message: `Failed to delete subnet: ${errorMessage}`
+        });
+      }
+    },
+    [networkId, addNotification, refreshAfterSubnetWrite]
+  );
+
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
       setNetwork(null);
+      setSubnets([]);
+      setSubnetsTotal(0);
+      setShowSubnetModal(false);
+      setEditSubnet(null);
+      setProviderHasConnection(false);
     }
   }, [isOpen]);
 
@@ -205,16 +319,102 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                   </div>
                 )}
 
-                {/* Subnet Count (if available) */}
-                {network.subnet_count !== undefined && (
-                  <div className="flex items-center gap-6 pt-4 border-t border-theme">
+                {/* Subnets */}
+                <div className="pt-4 border-t border-theme">
+                  <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Server className="w-4 h-4 text-theme-tertiary" />
                       <span className="text-theme-secondary">Subnets:</span>
-                      <span className="text-theme-primary font-medium">{network.subnet_count}</span>
+                      <span className="text-theme-primary font-medium">
+                        {network.subnet_count ?? subnets.length}
+                      </span>
                     </div>
+                    {canCreateSubnets && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditSubnet(null);
+                          setShowSubnetModal(true);
+                        }}
+                        title={
+                          providerHasConnection
+                            ? 'Add subnet (manual override)'
+                            : 'Add subnet'
+                        }
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Add Subnet
+                      </Button>
+                    )}
                   </div>
-                )}
+
+                  {providerHasConnection && (
+                    <p className="text-xs text-theme-warning-fg bg-theme-background rounded-lg p-3 border border-theme mb-2">
+                      This network&apos;s provider has a cloud connection, so its subnets
+                      are normally populated by Sync catalog. Writes here are a manual
+                      override.
+                    </p>
+                  )}
+
+                  {subnetsLoading ? (
+                    <LoadingSpinner size="sm" />
+                  ) : subnets.length === 0 ? (
+                    <p className="text-sm text-theme-tertiary">No subnets in this network</p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {subnetsTotal > subnets.length && (
+                        <li className="text-xs text-theme-warning-fg">
+                          Showing {subnets.length} of {subnetsTotal} subnets — use the
+                          API for the rest.
+                        </li>
+                      )}
+                      {subnets.map(subnet => (
+                        <li
+                          key={subnet.id}
+                          className="flex items-center justify-between gap-2 text-sm"
+                          data-testid={`network-subnet-${subnet.id}`}
+                        >
+                          <span className="text-theme-primary">
+                            {subnet.name}{' '}
+                            <span className="font-mono text-theme-secondary">
+                              {subnet.cidr_block}
+                            </span>
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <Badge variant={subnet.is_public ? 'info' : 'secondary'} size="xs">
+                              {subnet.is_public ? 'public' : 'private'}
+                            </Badge>
+                            {canUpdate && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setEditSubnet(subnet);
+                                  setShowSubnetModal(true);
+                                }}
+                                title="Edit subnet"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </Button>
+                            )}
+                            {canDeleteSubnets && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDeleteSubnet(subnet)}
+                                title="Delete subnet"
+                                className="text-theme-error-fg hover:text-theme-error-fg"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
 
                 {/* Timestamps */}
                 <div className="flex items-center gap-6 text-sm text-theme-tertiary pt-4 border-t border-theme">
@@ -249,6 +449,20 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {networkId && (
+        <SubnetFormModal
+          networkId={networkId}
+          subnet={editSubnet}
+          isOpen={showSubnetModal}
+          onClose={() => {
+            setShowSubnetModal(false);
+            setEditSubnet(null);
+          }}
+          onSaved={refreshAfterSubnetWrite}
+          manualOverride={providerHasConnection}
+        />
+      )}
     </div>
   );
 };

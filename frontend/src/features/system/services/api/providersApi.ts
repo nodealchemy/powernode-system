@@ -49,6 +49,37 @@ export interface ProviderCatalogSummary {
   volume_types: ProviderCatalogCounts;
 }
 
+/**
+ * Writable instance-type fields. Mirrors
+ * ProviderInstanceTypesController#instance_type_params exactly — sending
+ * anything else is silently dropped by strong parameters.
+ */
+export interface ProviderInstanceTypeCreate {
+  name: string;
+  /**
+   * `null` clears the column. An omitted key leaves it untouched on update, so
+   * a form that blanks a field must send null rather than dropping the key —
+   * otherwise the edit is discarded behind a success toast.
+   */
+  description?: string | null;
+  instance_type_code: string;
+  vcpus?: number | null;
+  memory_mb?: number | null;
+  storage_gb?: number | null;
+  hourly_price?: number | null;
+  enabled?: boolean;
+  specs?: Record<string, unknown>;
+}
+
+/** Mirrors ProviderAvailabilityZonesController#zone_params. */
+export interface ProviderAvailabilityZoneCreate {
+  name: string;
+  zone_code: string;
+  status?: 'available' | 'impaired' | 'unavailable';
+  enabled?: boolean;
+  capabilities?: Record<string, unknown>;
+}
+
 export interface ProviderConnectionCreate {
   name: string;
   description?: string;
@@ -228,6 +259,55 @@ export const providersApi = {
     return extractData(response).instance_type;
   },
 
+  /**
+   * Instance types with the page total, for the management surface. The index
+   * action paginates at 20 by default (Paginatable#paginate), so a plain read
+   * silently truncates a populated catalog; ask for the server maximum and
+   * carry `total` so a still-truncated list can say so instead of pretending
+   * to be complete. Kept separate from getProviderInstanceTypes so existing
+   * callers keep their array return.
+   */
+  getProviderInstanceTypesPage: async (
+    providerId: string
+  ): Promise<{ instanceTypes: SystemProviderInstanceType[]; total: number }> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{ instance_types: SystemProviderInstanceType[]; meta?: { total_count?: number } }>
+    >(`/system/providers/${providerId}/instance_types`, { params: { per_page: 100 } });
+    const data = extractData(response);
+    const instanceTypes = data.instance_types ?? [];
+    return { instanceTypes, total: data.meta?.total_count ?? instanceTypes.length };
+  },
+
+  createProviderInstanceType: async (
+    providerId: string,
+    data: ProviderInstanceTypeCreate
+  ): Promise<SystemProviderInstanceType> => {
+    const response = await apiClient.post<ApiEnvelope<{ instance_type: SystemProviderInstanceType }>>(
+      `/system/providers/${providerId}/instance_types`,
+      { instance_type: data }
+    );
+    return extractData(response).instance_type;
+  },
+
+  updateProviderInstanceType: async (
+    providerId: string,
+    instanceTypeId: string,
+    data: Partial<ProviderInstanceTypeCreate>
+  ): Promise<SystemProviderInstanceType> => {
+    const response = await apiClient.put<ApiEnvelope<{ instance_type: SystemProviderInstanceType }>>(
+      `/system/providers/${providerId}/instance_types/${instanceTypeId}`,
+      { instance_type: data }
+    );
+    return extractData(response).instance_type;
+  },
+
+  deleteProviderInstanceType: async (
+    providerId: string,
+    instanceTypeId: string
+  ): Promise<void> => {
+    await apiClient.delete(`/system/providers/${providerId}/instance_types/${instanceTypeId}`);
+  },
+
   getInstanceTypesForRegion: async (
     regionId: string
   ): Promise<SystemProviderInstanceType[]> => {
@@ -258,5 +338,58 @@ export const providersApi = {
       `/system/providers/${providerId}/regions/${regionId}/availability_zones/${zoneId}`
     );
     return extractData(response).availability_zone;
+  },
+
+  /** Zones with the page total. Same pagination reasoning as instance types. */
+  getProviderAvailabilityZonesPage: async (
+    providerId: string,
+    regionId: string
+  ): Promise<{ zones: SystemProviderAvailabilityZone[]; total: number }> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{
+        availability_zones: SystemProviderAvailabilityZone[];
+        meta?: { total_count?: number };
+      }>
+    >(`/system/providers/${providerId}/regions/${regionId}/availability_zones`, {
+      params: { per_page: 100 }
+    });
+    const data = extractData(response);
+    const zones = data.availability_zones ?? [];
+    return { zones, total: data.meta?.total_count ?? zones.length };
+  },
+
+  createProviderAvailabilityZone: async (
+    providerId: string,
+    regionId: string,
+    data: ProviderAvailabilityZoneCreate
+  ): Promise<SystemProviderAvailabilityZone> => {
+    const response = await apiClient.post<ApiEnvelope<{ availability_zone: SystemProviderAvailabilityZone }>>(
+      `/system/providers/${providerId}/regions/${regionId}/availability_zones`,
+      { availability_zone: data }
+    );
+    return extractData(response).availability_zone;
+  },
+
+  updateProviderAvailabilityZone: async (
+    providerId: string,
+    regionId: string,
+    zoneId: string,
+    data: Partial<ProviderAvailabilityZoneCreate>
+  ): Promise<SystemProviderAvailabilityZone> => {
+    const response = await apiClient.put<ApiEnvelope<{ availability_zone: SystemProviderAvailabilityZone }>>(
+      `/system/providers/${providerId}/regions/${regionId}/availability_zones/${zoneId}`,
+      { availability_zone: data }
+    );
+    return extractData(response).availability_zone;
+  },
+
+  deleteProviderAvailabilityZone: async (
+    providerId: string,
+    regionId: string,
+    zoneId: string
+  ): Promise<void> => {
+    await apiClient.delete(
+      `/system/providers/${providerId}/regions/${regionId}/availability_zones/${zoneId}`
+    );
   },
 };
