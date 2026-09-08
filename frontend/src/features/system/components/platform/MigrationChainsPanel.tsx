@@ -386,11 +386,12 @@ const ChainDetailDrawer: React.FC<ChainDetailDrawerProps> = ({
 
   if (!chainId) return null;
 
-  // Mirrors System::MigrationChain::TRANSITIONS, which is the authority — NOT
-  // the controller's header comment, which says "planned/in_flight → cancelled"
-  // and is wrong. TRANSITIONS gives in_flight only completed|failed, and the
-  // cancel action guards on can_transition_to?("cancelled"), so offering Cancel
-  // on an in-flight chain would be a button that always 422s.
+  // Mirrors System::MigrationChain::TRANSITIONS, which is the authority.
+  // TRANSITIONS gives in_flight only completed|failed, and the cancel action
+  // guards on can_transition_to?("cancelled"), so offering Cancel on an
+  // in-flight chain would be a button that always 422s. (The controller header
+  // used to claim "planned/in_flight → cancelled"; that was the wrong half and
+  // was corrected in IMP-0b89e9418f64, so the two now agree.)
   //
   // advance / run are different: ChainExecutor refuses only on terminal?, so
   // both are live for planned and in_flight.

@@ -39,7 +39,24 @@ module Api
         #     tick advance them.
         #
         #   POST   /api/v1/system/platform/migration_chains/:id/cancel
-        #     Transition planned/in_flight → cancelled (terminal).
+        #     Transition planned → cancelled (terminal). ONLY from `planned`:
+        #     System::MigrationChain::TRANSITIONS allows in_flight → completed
+        #     or failed and nothing else, so cancelling a chain that has started
+        #     is refused with 422 "Chain is in_flight and cannot be cancelled".
+        #     The constraint is that hops already applied on earlier peers have
+        #     no rollback path (see docs/federation/MIGRATION_DEVELOPER_GUIDE.md,
+        #     "Stuck-chain detection vs. recovery").
+        #
+        #     Worth knowing, because a STALLED chain is what an operator reaches
+        #     for cancel to resolve, and waiting is NOT a way out: once an
+        #     in_flight chain has made no audit progress for
+        #     ChainSweepService::STALL_THRESHOLD, the 60s sweep skips it
+        #     (`next if stalled?(chain)`), so it never reaches a terminal state
+        #     on its own. The one actuator is POST .../advance, which lands the
+        #     next hop or fails the chain.
+        #
+        #     The model's TRANSITIONS table is the single source of truth here;
+        #     this comment and any UI follow it (IMP-0b89e9418f64).
         #
         # Permissions:
         #   system.platform.read     — index + show

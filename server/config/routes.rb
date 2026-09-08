@@ -570,7 +570,8 @@ Rails.application.routes.draw do
           # P9.5 — Operator surface for multi-hop migration chains.
           # Compose a chain (one envelope row + N-1 hop Migration rows
           # in planned state); advance one hop on demand; run to
-          # completion synchronously; or cancel an active chain.
+          # completion synchronously; or cancel a chain that has not started
+          # yet (cancel is legal from `planned` only — see the controller header).
           # The worker (MigrationChainAdvanceJob, 60s cron) also
           # advances active chains autonomously.
           resources :migration_chains, only: %i[index show create] do
