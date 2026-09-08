@@ -114,12 +114,25 @@ const renderPanel = (props: Partial<React.ComponentProps<typeof ChildrenPanel>> 
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app revoke confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmRevoke(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /revoke child peer/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
+
 describe('ChildrenPanel', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockAddNotification.mockReset();
-    jest.spyOn(window, 'prompt').mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -314,19 +327,46 @@ describe('ChildrenPanel', () => {
     expect(screen.queryByTitle('Revoke child')).not.toBeInTheDocument();
   });
 
-  it('aborts revoke when prompt is cancelled (returns null)', async () => {
+  it('never uses window.prompt for the revoke reason', async () => {
+    const promptSpy = jest.spyOn(window, 'prompt');
     mockGet.mockResolvedValue(childrenEnvelope([CHILD_ACTIVE]));
-    jest.spyOn(window, 'prompt').mockReturnValue(null);
 
     renderPanel();
 
-    await waitFor(() =>
-      expect(screen.getByTitle('Revoke child')).toBeInTheDocument()
-    );
-
+    await waitFor(() => expect(screen.getByTitle('Revoke child')).toBeInTheDocument());
     fireEvent.click(screen.getByTitle('Revoke child'));
 
-    // POST should NOT have been called
+    await screen.findByRole('button', { name: /revoke child peer/i });
+    expect(promptSpy).not.toHaveBeenCalled();
+  });
+
+  it('asks for confirmation in-app before revoking, and issues nothing until confirmed', async () => {
+    mockGet.mockResolvedValue(childrenEnvelope([CHILD_ACTIVE]));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByTitle('Revoke child')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Revoke child'));
+
+    // The dialog is open and explains what revoking does…
+    expect(await screen.findByText(/subsequent federation_api calls from the child fail/i)).toBeInTheDocument();
+    // …and nothing has been sent yet.
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('aborts revoke when the operator cancels the confirmation', async () => {
+    mockGet.mockResolvedValue(childrenEnvelope([CHILD_ACTIVE]));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByTitle('Revoke child')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Revoke child'));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByText(/subsequent federation_api calls/i)).not.toBeInTheDocument()
+    );
     expect(mockPost).not.toHaveBeenCalled();
   });
 
@@ -335,7 +375,6 @@ describe('ChildrenPanel', () => {
       .mockResolvedValueOnce(childrenEnvelope([CHILD_ACTIVE]))
       .mockResolvedValueOnce(childrenEnvelope([CHILD_REVOKED]));
     mockPost.mockResolvedValue(envelope({ child: CHILD_REVOKED }));
-    jest.spyOn(window, 'prompt').mockReturnValue('test reason');
 
     renderPanel();
 
@@ -344,6 +383,7 @@ describe('ChildrenPanel', () => {
     );
 
     fireEvent.click(screen.getByTitle('Revoke child'));
+    await confirmRevoke('test reason');
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -353,12 +393,11 @@ describe('ChildrenPanel', () => {
     );
   });
 
-  it('calls POST with empty body when prompt returns empty string', async () => {
+  it('calls POST with empty body when no reason is typed', async () => {
     mockGet
       .mockResolvedValueOnce(childrenEnvelope([CHILD_ACTIVE]))
       .mockResolvedValueOnce(childrenEnvelope([CHILD_REVOKED]));
     mockPost.mockResolvedValue(envelope({ child: CHILD_REVOKED }));
-    jest.spyOn(window, 'prompt').mockReturnValue('');
 
     renderPanel();
 
@@ -367,6 +406,7 @@ describe('ChildrenPanel', () => {
     );
 
     fireEvent.click(screen.getByTitle('Revoke child'));
+    await confirmRevoke();
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -381,7 +421,6 @@ describe('ChildrenPanel', () => {
       .mockResolvedValueOnce(childrenEnvelope([CHILD_ACTIVE]))
       .mockResolvedValueOnce(childrenEnvelope([]));
     mockPost.mockResolvedValue(envelope({ child: CHILD_REVOKED }));
-    jest.spyOn(window, 'prompt').mockReturnValue('');
 
     renderPanel();
 
@@ -390,6 +429,7 @@ describe('ChildrenPanel', () => {
     );
 
     fireEvent.click(screen.getByTitle('Revoke child'));
+    await confirmRevoke();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
@@ -407,7 +447,6 @@ describe('ChildrenPanel', () => {
   it('shows error notification when revoke fails', async () => {
     mockGet.mockResolvedValue(childrenEnvelope([CHILD_ACTIVE]));
     mockPost.mockRejectedValue(new Error('Network error'));
-    jest.spyOn(window, 'prompt').mockReturnValue('bad');
 
     renderPanel();
 
@@ -416,6 +455,7 @@ describe('ChildrenPanel', () => {
     );
 
     fireEvent.click(screen.getByTitle('Revoke child'));
+    await confirmRevoke('bad');
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(

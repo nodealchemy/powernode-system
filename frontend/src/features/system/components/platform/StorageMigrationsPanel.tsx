@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { EntityLink } from '@/shared/components/entity';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import type {
   StorageMigrationStatus,
@@ -34,6 +35,7 @@ import { StorageMigrationDetailDrawer } from './StorageMigrationDetailDrawer';
  */
 export const StorageMigrationsPanel: React.FC = () => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [migrations, setMigrations] = useState<StorageMigrationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,23 +91,31 @@ export const StorageMigrationsPanel: React.FC = () => {
   );
 
   const handleCancel = useCallback(
-    async (id: string) => {
-      const reason = window.prompt('Cancel reason (optional)') ?? undefined;
-      setActionPending(id);
-      try {
-        await storageMigrationsApi.cancel(id, reason);
-        addNotification({ type: 'success', message: 'Storage migration cancelled.' });
-        await fetchMigrations();
-      } catch (err: unknown) {
-        addNotification({
-          type: 'error',
-          message: err instanceof Error ? err.message : 'Cancel failed',
-        });
-      } finally {
-        setActionPending(null);
-      }
+    (id: string) => {
+      confirmWithReason({
+        title: 'Cancel storage migration',
+        message: 'Cancel this storage migration? Any preparation already done is abandoned.',
+        confirmLabel: 'Cancel migration',
+        cancelLabel: 'Keep migration',
+        reasonPlaceholder: 'Why is this migration being cancelled?',
+        onConfirm: async (reason) => {
+          setActionPending(id);
+          try {
+            await storageMigrationsApi.cancel(id, reason);
+            addNotification({ type: 'success', message: 'Storage migration cancelled.' });
+            await fetchMigrations();
+          } catch (err: unknown) {
+            addNotification({
+              type: 'error',
+              message: err instanceof Error ? err.message : 'Cancel failed',
+            });
+          } finally {
+            setActionPending(null);
+          }
+        },
+      });
     },
-    [fetchMigrations, addNotification],
+    [fetchMigrations, addNotification, confirmWithReason],
   );
 
   return (
@@ -197,6 +207,8 @@ export const StorageMigrationsPanel: React.FC = () => {
         migrationId={selectedId}
         onClose={() => setSelectedId(null)}
       />
+
+      {ConfirmationDialog}
     </div>
   );
 };

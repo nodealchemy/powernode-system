@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { childrenApi } from '../../services/api/childrenApi';
 import type {
   ChildPeerSummary,
@@ -34,6 +35,7 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
   onSelect,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [children, setChildren] = useState<ChildPeerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<ChildPeerStatus | null>(null);
@@ -102,30 +104,31 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
     void fetchChildren();
   }, [fetchChildren, refreshKey]);
 
-  const handleRevoke = async (child: ChildPeerSummary) => {
-    const reason = window.prompt(
-      `Revoke spawned child "${child.remote_instance_url}"?\n\n` +
-        'This is terminal: subsequent federation_api calls from the child fail. ' +
-        'Optional reason:',
-      '',
-    );
-    if (reason === null) return;
-    setRevokingId(child.id);
-    try {
-      await childrenApi.revoke(child.id, reason || undefined);
-      addNotification({
-        type: 'success',
-        message: `Revoked child "${child.remote_instance_url}"`,
-      });
-      await fetchChildren();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to revoke child',
-      });
-    } finally {
-      setRevokingId(null);
-    }
+  const handleRevoke = (child: ChildPeerSummary) => {
+    confirmWithReason({
+      title: 'Revoke spawned child',
+      message: `Revoke spawned child "${child.remote_instance_url}"? This is terminal: subsequent federation_api calls from the child fail.`,
+      confirmLabel: 'Revoke child peer',
+      reasonPlaceholder: 'Why is this child being revoked?',
+      onConfirm: async (reason) => {
+        setRevokingId(child.id);
+        try {
+          await childrenApi.revoke(child.id, reason);
+          addNotification({
+            type: 'success',
+            message: `Revoked child "${child.remote_instance_url}"`,
+          });
+          await fetchChildren();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Failed to revoke child',
+          });
+        } finally {
+          setRevokingId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -185,6 +188,8 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
           </tbody>
         </table>
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

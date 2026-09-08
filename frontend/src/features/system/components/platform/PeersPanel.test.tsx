@@ -11,7 +11,8 @@ import type { PlatformPeerSummary } from '../../types/peer.types';
 //   - usePlatformPeers hook  →  platformPeersApi.listPeers  →  apiClient.get
 //   - platformPeersApi.revoke  →  apiClient.post (called directly in handleRevoke)
 //   - useNotifications
-//   - window.prompt (for the revoke reason dialog)
+//   - window.prompt is spied on only to assert it is NEVER used (the revoke
+//     reason now comes from an in-app confirmation dialog)
 //   - InvitePeerModal, PeerDetailDrawer (child modals — stubbed)
 // =============================================================================
 
@@ -179,6 +180,20 @@ function renderPanel() {
 // =============================================================================
 // Tests
 // =============================================================================
+
+/**
+ * Drives the in-app revoke confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmRevoke(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /revoke federation peer/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
 
 describe('PeersPanel', () => {
   let promptSpy: jest.SpyInstance;
@@ -594,9 +609,8 @@ describe('PeersPanel', () => {
       expect(screen.getAllByTitle('Revoke peer').length).toBe(1);
     });
 
-    it('calls window.prompt with the peer URL when Revoke is clicked', async () => {
+    it('opens an in-app confirmation naming the peer, and never uses window.prompt', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
-      promptSpy.mockReturnValue(null); // operator cancels
       renderPanel();
       await waitFor(() =>
         expect(screen.getByTitle('Revoke peer')).toBeInTheDocument(),
@@ -604,15 +618,14 @@ describe('PeersPanel', () => {
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
 
-      expect(promptSpy).toHaveBeenCalledWith(
-        expect.stringContaining('https://alpha.example.com'),
-        '',
-      );
+      expect(
+        await screen.findByText(/revoke federation peer "https:\/\/alpha\.example\.com"/i),
+      ).toBeInTheDocument();
+      expect(promptSpy).not.toHaveBeenCalled();
     });
 
-    it('does NOT call the API when the operator cancels the prompt (returns null)', async () => {
+    it('does NOT call the API until the confirmation is confirmed', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
-      promptSpy.mockReturnValue(null);
       renderPanel();
       await waitFor(() =>
         expect(screen.getByTitle('Revoke peer')).toBeInTheDocument(),
@@ -620,7 +633,25 @@ describe('PeersPanel', () => {
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
 
+      // Anchor on the open dialog first — without this the assertion below
+      // would pass just as well on a Revoke button that did nothing at all.
+      await screen.findByRole('button', { name: /revoke federation peer/i });
+
       // Give any async activity a tick to settle
+      await new Promise((r) => setTimeout(r, 0));
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call the API when the operator cancels the confirmation', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
+      renderPanel();
+      await waitFor(() =>
+        expect(screen.getByTitle('Revoke peer')).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByTitle('Revoke peer'));
+      fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
       await new Promise((r) => setTimeout(r, 0));
       expect(mockPost).not.toHaveBeenCalled();
     });
@@ -632,7 +663,6 @@ describe('PeersPanel', () => {
       mockPost.mockResolvedValue(
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
-      promptSpy.mockReturnValue(''); // operator submits empty reason
 
       renderPanel();
       await waitFor(() =>
@@ -640,6 +670,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(mockPost).toHaveBeenCalledWith(
@@ -656,7 +687,6 @@ describe('PeersPanel', () => {
       mockPost.mockResolvedValue(
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
-      promptSpy.mockReturnValue('security incident');
 
       renderPanel();
       await waitFor(() =>
@@ -664,6 +694,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke('security incident');
 
       await waitFor(() =>
         expect(mockPost).toHaveBeenCalledWith(
@@ -680,7 +711,6 @@ describe('PeersPanel', () => {
       mockPost.mockResolvedValue(
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
-      promptSpy.mockReturnValue('');
 
       renderPanel();
       await waitFor(() =>
@@ -688,6 +718,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith(
@@ -705,7 +736,6 @@ describe('PeersPanel', () => {
     it('shows an error notification when the revoke API call fails', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       mockPost.mockRejectedValue(new Error('Revoke failed: unauthorized'));
-      promptSpy.mockReturnValue('');
 
       renderPanel();
       await waitFor(() =>
@@ -713,6 +743,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith(
@@ -727,7 +758,6 @@ describe('PeersPanel', () => {
     it('shows a fallback error message for non-Error revoke rejections', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       mockPost.mockRejectedValue('unexpected');
-      promptSpy.mockReturnValue('');
 
       renderPanel();
       await waitFor(() =>
@@ -735,6 +765,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(mockAddNotification).toHaveBeenCalledWith(
@@ -750,7 +781,6 @@ describe('PeersPanel', () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       // Never resolves — holds the loading state
       mockPost.mockReturnValue(new Promise(() => {}));
-      promptSpy.mockReturnValue('');
 
       renderPanel();
       await waitFor(() =>
@@ -758,6 +788,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(screen.getByTitle('Revoke peer')).toHaveTextContent('Revoking…'),
@@ -767,7 +798,6 @@ describe('PeersPanel', () => {
     it('disables the Revoke button while the API call is in flight', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       mockPost.mockReturnValue(new Promise(() => {}));
-      promptSpy.mockReturnValue('');
 
       renderPanel();
       await waitFor(() =>
@@ -775,6 +805,7 @@ describe('PeersPanel', () => {
       );
 
       fireEvent.click(screen.getByTitle('Revoke peer'));
+      await confirmRevoke();
 
       await waitFor(() =>
         expect(screen.getByTitle('Revoke peer')).toBeDisabled(),
@@ -783,7 +814,6 @@ describe('PeersPanel', () => {
 
     it('revoke action cell click does not propagate to the row (drawer does not open)', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
-      promptSpy.mockReturnValue(null); // cancel prompt immediately
 
       renderPanel();
       await waitFor(() =>

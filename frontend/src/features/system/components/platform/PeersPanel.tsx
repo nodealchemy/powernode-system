@@ -18,6 +18,7 @@ import type {
   SpawnMode,
   SpawnRole,
 } from '../../types/peer.types';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { InvitePeerModal } from './InvitePeerModal';
 import { PeerDetailDrawer } from './PeerDetailDrawer';
 
@@ -29,6 +30,7 @@ import { PeerDetailDrawer } from './PeerDetailDrawer';
  */
 export const PeersPanel: React.FC = () => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [statusFilter, setStatusFilter] = useState<PeerStatus | null>(null);
   const { peers, loading, error, setError, refetch } = usePlatformPeers(
     statusFilter ? { status: statusFilter } : undefined,
@@ -37,27 +39,28 @@ export const PeersPanel: React.FC = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
-  const handleRevoke = async (peer: PlatformPeerSummary) => {
-    const reason = window.prompt(
-      `Revoke federation peer "${peer.remote_instance_url}"?\n\n` +
-        'This is terminal: subsequent federation_api calls from the peer fail. ' +
-        'Optional reason:',
-      '',
-    );
-    if (reason === null) return;
-    setRevokingId(peer.id);
-    try {
-      await platformPeersApi.revoke(peer.id, reason || undefined);
-      addNotification({ type: 'success', message: `Peer '${peer.remote_instance_url}' revoked.` });
-      await refetch();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to revoke peer',
-      });
-    } finally {
-      setRevokingId(null);
-    }
+  const handleRevoke = (peer: PlatformPeerSummary) => {
+    confirmWithReason({
+      title: 'Revoke federation peer',
+      message: `Revoke federation peer "${peer.remote_instance_url}"? This is terminal: subsequent federation_api calls from the peer fail.`,
+      confirmLabel: 'Revoke federation peer',
+      reasonPlaceholder: 'Why is this peer being revoked?',
+      onConfirm: async (reason) => {
+        setRevokingId(peer.id);
+        try {
+          await platformPeersApi.revoke(peer.id, reason);
+          addNotification({ type: 'success', message: `Peer '${peer.remote_instance_url}' revoked.` });
+          await refetch();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Failed to revoke peer',
+          });
+        } finally {
+          setRevokingId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -138,6 +141,8 @@ export const PeersPanel: React.FC = () => {
         peerId={selectedId}
         onClose={() => setSelectedId(null)}
       />
+
+      {ConfirmationDialog}
     </div>
   );
 };

@@ -111,6 +111,20 @@ const renderPanel = (props: React.ComponentProps<typeof ServiceSubscriptionsPane
 // Tests
 // =============================================================================
 
+/**
+ * Drives the in-app cancel confirmation that replaced `window.prompt`
+ * (IMP-e5cba23c32fd). Optionally types a reason, then confirms.
+ */
+async function confirmCancel(reason?: string) {
+  const confirmButton = await screen.findByRole('button', { name: /^cancel subscription$/i });
+  if (reason !== undefined) {
+    fireEvent.change(document.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(confirmButton);
+}
+
 describe('ServiceSubscriptionsPanel', () => {
   beforeEach(() => {
     mockListSubscriptions.mockReset();
@@ -264,7 +278,6 @@ describe('ServiceSubscriptionsPanel', () => {
 
   it('calls cancelSubscription with id and reason, then refreshes', async () => {
     mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
-    const promptSpy = jest.spyOn(window, 'prompt').mockReturnValue('testing reason');
     const cancelledSub = { ...SUB_A, status: 'cancelled' as const };
     mockCancelSubscription.mockResolvedValue(cancelledSub);
     // Second call returns updated list
@@ -274,6 +287,7 @@ describe('ServiceSubscriptionsPanel', () => {
     renderPanel();
     const cancelBtn = await screen.findByTitle('Cancel subscription');
     fireEvent.click(cancelBtn);
+    await confirmCancel('testing reason');
 
     await waitFor(() =>
       expect(mockCancelSubscription).toHaveBeenCalledWith('sub-aaa', 'testing reason'),
@@ -283,67 +297,75 @@ describe('ServiceSubscriptionsPanel', () => {
         expect.objectContaining({ type: 'success', message: 'Cancelled subscription to "api-gateway"' }),
       ),
     );
-    promptSpy.mockRestore();
   });
 
-  it('calls cancelSubscription with undefined reason when prompt returns empty string', async () => {
+  it('calls cancelSubscription with undefined reason when no reason is typed', async () => {
     mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
-    const promptSpy = jest.spyOn(window, 'prompt').mockReturnValue('');
     mockCancelSubscription.mockResolvedValue({ ...SUB_A, status: 'cancelled' as const });
 
     renderPanel();
     const cancelBtn = await screen.findByTitle('Cancel subscription');
     fireEvent.click(cancelBtn);
+    await confirmCancel();
 
     await waitFor(() =>
       expect(mockCancelSubscription).toHaveBeenCalledWith('sub-aaa', undefined),
     );
+  });
+
+  it('never uses window.prompt for the cancellation reason', async () => {
+    const promptSpy = jest.spyOn(window, 'prompt');
+    mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
+
+    renderPanel();
+    fireEvent.click(await screen.findByTitle('Cancel subscription'));
+
+    await screen.findByRole('button', { name: /^cancel subscription$/i });
+    expect(promptSpy).not.toHaveBeenCalled();
     promptSpy.mockRestore();
   });
 
-  it('does not call cancelSubscription when user dismisses the prompt', async () => {
+  it('does not call cancelSubscription when the operator dismisses the confirmation', async () => {
     mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
-    const promptSpy = jest.spyOn(window, 'prompt').mockReturnValue(null);
 
     renderPanel();
     const cancelBtn = await screen.findByTitle('Cancel subscription');
     fireEvent.click(cancelBtn);
 
+    fireEvent.click(await screen.findByRole('button', { name: /keep subscription/i }));
+
     // Give async code a chance to run
     await new Promise((r) => setTimeout(r, 50));
     expect(mockCancelSubscription).not.toHaveBeenCalled();
-    promptSpy.mockRestore();
   });
 
   it('shows error notification when cancelSubscription fails', async () => {
     mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
-    const promptSpy = jest.spyOn(window, 'prompt').mockReturnValue('reason');
     mockCancelSubscription.mockRejectedValue(new Error('server error'));
 
     renderPanel();
     const cancelBtn = await screen.findByTitle('Cancel subscription');
     fireEvent.click(cancelBtn);
+    await confirmCancel('reason');
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'error', message: 'server error' }),
       ),
     );
-    promptSpy.mockRestore();
   });
 
   it('shows Cancelling… text while the request is in flight', async () => {
     mockListSubscriptions.mockResolvedValue(listResponse([SUB_A]));
-    const promptSpy = jest.spyOn(window, 'prompt').mockReturnValue('reason');
     // Never resolves so we can inspect the in-flight state
     mockCancelSubscription.mockReturnValue(new Promise(() => {}));
 
     renderPanel();
     const cancelBtn = await screen.findByTitle('Cancel subscription');
     fireEvent.click(cancelBtn);
+    await confirmCancel('reason');
 
     await waitFor(() => expect(screen.getByText('Cancelling…')).toBeInTheDocument());
-    promptSpy.mockRestore();
   });
 
   // ---------------------------------------------------------------------------

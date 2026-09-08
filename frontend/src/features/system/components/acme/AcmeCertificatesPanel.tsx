@@ -14,6 +14,7 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { acmeCertificatesApi } from '../../services/api/acmeCertificatesApi';
 import type {
   AcmeCertificateSummary,
@@ -38,6 +39,7 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
   refreshKey = 0,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [certs, setCerts] = useState<AcmeCertificateSummary[]>([]);
   const [issuers, setIssuers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,25 +130,27 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
     }
   };
 
-  const handleRevoke = async (cert: AcmeCertificateSummary) => {
-    const reason = window.prompt(
-      `Revoke certificate for "${cert.common_name}"?\n\n` +
-        'This is irreversible. Optional reason:',
-      '',
-    );
-    if (reason === null) return;
-    setActingId(cert.id);
-    try {
-      await acmeCertificatesApi.revoke(cert.id, reason || undefined);
-      await fetchCerts();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Revoke failed',
-      });
-    } finally {
-      setActingId(null);
-    }
+  const handleRevoke = (cert: AcmeCertificateSummary) => {
+    confirmWithReason({
+      title: 'Revoke certificate',
+      message: `Revoke certificate for "${cert.common_name}"? This is irreversible.`,
+      confirmLabel: 'Revoke certificate now',
+      reasonPlaceholder: 'Why is this certificate being revoked?',
+      onConfirm: async (reason) => {
+        setActingId(cert.id);
+        try {
+          await acmeCertificatesApi.revoke(cert.id, reason);
+          await fetchCerts();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Revoke failed',
+          });
+        } finally {
+          setActingId(null);
+        }
+      },
+    });
   };
 
   const handleDelete = async (cert: AcmeCertificateSummary) => {
@@ -231,6 +235,8 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
           await fetchCerts();
         }}
       />
+
+      {ConfirmationDialog}
     </>
   );
 };

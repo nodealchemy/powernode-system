@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { EntityLink } from '@/shared/components/entity';
+import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   ServiceSubscription,
@@ -40,6 +41,7 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
   onSelect,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
   const [subs, setSubs] = useState<ServiceSubscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<SubscriptionStatus | null>(initialStatusFilter);
@@ -110,31 +112,32 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
     void fetchSubs();
   }, [fetchSubs, refreshKey]);
 
-  const handleCancel = async (sub: ServiceSubscription) => {
-    const reason = window.prompt(
-      `Cancel subscription to "${sub.service_offering_slug}" on ${sub.local_hostname}?\n\n` +
-        'This revokes the federation grant and removes the Traefik route. ' +
-        'Provide an optional reason:',
-      '',
-    );
-    if (reason === null) return; // user cancelled the prompt itself
-
-    setCancellingId(sub.id);
-    try {
-      await serviceCatalogApi.cancelSubscription(sub.id, reason || undefined);
-      addNotification({
-        type: 'success',
-        message: `Cancelled subscription to "${sub.service_offering_slug}"`,
-      });
-      await fetchSubs();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to cancel subscription',
-      });
-    } finally {
-      setCancellingId(null);
-    }
+  const handleCancel = (sub: ServiceSubscription) => {
+    confirmWithReason({
+      title: 'Cancel subscription',
+      message: `Cancel subscription to "${sub.service_offering_slug}" on ${sub.local_hostname}? This revokes the federation grant and removes the Traefik route.`,
+      confirmLabel: 'Cancel subscription',
+      cancelLabel: 'Keep subscription',
+      reasonPlaceholder: 'Why is this subscription being cancelled?',
+      onConfirm: async (reason) => {
+        setCancellingId(sub.id);
+        try {
+          await serviceCatalogApi.cancelSubscription(sub.id, reason);
+          addNotification({
+            type: 'success',
+            message: `Cancelled subscription to "${sub.service_offering_slug}"`,
+          });
+          await fetchSubs();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Failed to cancel subscription',
+          });
+        } finally {
+          setCancellingId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -186,6 +189,8 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
           </tbody>
         </table>
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };
