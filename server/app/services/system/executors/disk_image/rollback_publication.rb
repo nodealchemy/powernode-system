@@ -63,11 +63,80 @@ module System
             end
           end
 
+          emit_rolled_back_event(platform, target, previous_file_object_id)
+
           { rolled_back_to: target.id, platform_id: platform.id, previous_file_object_id: previous_file_object_id }
         end
 
         def summarize = "Roll back disk image to #{params[:target_publication_id]}"
         def impact    = "Reverts active publication — affects all new node provisions"
+
+        private
+
+        # THE ONLY emitter of system.disk_image_rolled_back, and it lives here
+        # because this executor is the only arm that runs on every branch the
+        # rollback completes on.
+        #
+        # DiskImagePublicationsController used to emit it from the arm reached
+        # when policy resolves to proceed inline, and nothing emitted on the
+        # approved branch — so a rollback that was parked, deliberated over and
+        # approved rolled the platform back and recorded nothing. The seeded
+        # policy for this category is require_approval, so on a deployment with
+        # an approval chain the unrecorded path was the NORMAL one. The fleet
+        # log held the automatic rollbacks and not the deliberate ones
+        # (IMP-a18da6f5e05c).
+        #
+        # TWO OTHER DOORS reach this executor with `deferred_operation: nil` —
+        # Ai::Tools::SystemFleetTool#revert_disk_image and
+        # System::Ai::Skills::DiskImageRollbackExecutor. Both emitted nothing
+        # before and now emit here. `requesting_user` is nil-safe for them
+        # (System::Executors::Base), so this cannot raise, but the resulting
+        # `by_user_id: nil` is LOSSY, not honest: both doors are gated on this
+        # same category and their caller's identity exists one frame up, on
+        # their own deferred operation. It is dropped at the call site, not
+        # absent. Threading it through is filed separately; do not read a nil
+        # here as "no human asked for this".
+        #
+        # PLACEMENT. Outside this executor's OWN transaction above, so a write
+        # that rolled back cannot leave an event claiming it happened. It is
+        # NOT outside every transaction: on the approval path the whole
+        # executor runs inside ApprovalRequest's status-flip transaction
+        # (ai/approval_request.rb, `after_update :notify_source_of_decision`,
+        # which its own comment records as firing pre-commit). The FleetEvent
+        # row joins that transaction and stays consistent with the pointer, but
+        # the ActionCable broadcast does not — a subscriber can refresh before
+        # the new pointer is visible. That is a property of the approval seam,
+        # not of this emit.
+        #
+        # THE RESCUE IS NARROW ON PURPOSE. EventBroadcaster.emit! already
+        # swallows its own failures and returns nil; the ONE thing it
+        # deliberately re-raises is a schema deploy defect, because a missing
+        # FleetEvent table would make every emission in the platform vanish at
+        # WARN while everything read as healthy. Catching StandardError here
+        # would defeat exactly that, so it is re-raised.
+        def emit_rolled_back_event(platform, target, previous_active_id)
+          return unless defined?(::System::Fleet::EventBroadcaster)
+
+          ::System::Fleet::EventBroadcaster.emit!(
+            account:  platform.account,
+            kind:     "system.disk_image_rolled_back",
+            severity: :medium,
+            source:   "autonomy_executor",
+            payload: {
+              platform_id:                platform.id,
+              platform_name:              platform.name,
+              activated_publication_id:   target.id,
+              activated_git_sha:          target.git_sha,
+              prior_file_object_id:       previous_active_id,
+              by_user_id:                 requesting_user&.id,
+              deferred_operation_id:      deferred_operation&.id
+            }
+          )
+        rescue StandardError => e
+          raise if ::System::DeployDefect.schema?(e)
+
+          Rails.logger.warn "[DiskImage::RollbackPublication] rolled_back event emit failed: #{e.class}: #{e.message}"
+        end
       end
     end
   end
