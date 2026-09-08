@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Network, Pencil } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -134,51 +135,40 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
       icon={network ? <Pencil className="w-6 h-6" /> : <Network className="w-6 h-6" />}
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-            placeholder="e.g. edge-overlay"
-            autoFocus
-            disabled={submitting}
-          />
-        </div>
+        <FormField
+          label="Name"
+          value={name}
+          onChange={setName}
+          placeholder="e.g. edge-overlay"
+          autoFocus
+          disabled={submitting}
+        />
 
-        <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">
-            {isEditMode ? 'Description' : 'Description (optional)'}
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-            rows={2}
-            placeholder="What is this network for?"
-            disabled={submitting}
-          />
-        </div>
+        <FormField
+          label={isEditMode ? 'Description' : 'Description (optional)'}
+          type="textarea"
+          rows={2}
+          value={description}
+          onChange={setDescription}
+          placeholder="What is this network for?"
+          disabled={submitting}
+        />
 
         {isEditMode && (
-          <div>
-            <label className="block text-sm font-medium text-theme-primary mb-1">Status</label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
-              disabled={submitting}
-            >
-              <option value="registered">registered</option>
-              <option value="active">active</option>
-              <option value="suspended">suspended</option>
-              <option value="archived">archived</option>
-            </select>
-            <p className="text-xs text-theme-secondary mt-1">
-              Suspended networks compile a default-deny ruleset; archived stops compilation entirely.
-            </p>
-          </div>
+          <FormField
+            label="Status"
+            type="select"
+            value={status}
+            onChange={setStatus}
+            disabled={submitting}
+            helpText="Suspended networks compile a default-deny ruleset; archived stops compilation entirely."
+            options={[
+              { value: 'registered', label: 'registered' },
+              { value: 'active', label: 'active' },
+              { value: 'suspended', label: 'suspended' },
+              { value: 'archived', label: 'archived' },
+            ]}
+          />
         )}
 
         <div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
@@ -171,20 +172,14 @@ export const VirtualIpEditModal: React.FC<VirtualIpEditModalProps> = ({
         {peersError && <ErrorAlert message={peersError} />}
 
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label htmlFor="vip-edit-name" className="block text-sm font-medium text-theme-primary mb-1">
-              Name
-            </label>
-            <input
-              id="vip-edit-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              maxLength={64}
-              className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-            />
-          </div>
+          <FormField
+            label="Name"
+            id="vip-edit-name"
+            value={name}
+            onChange={setName}
+            nativeRequired
+            maxLength={64}
+          />
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">CIDR</label>
             <p className="px-3 py-2 rounded bg-theme-background-secondary border border-theme text-theme-secondary font-mono text-sm">
@@ -193,18 +188,12 @@ export const VirtualIpEditModal: React.FC<VirtualIpEditModalProps> = ({
           </div>
         </div>
 
-        <div>
-          <label htmlFor="vip-edit-description" className="block text-sm font-medium text-theme-primary mb-1">
-            Description
-          </label>
-          <input
-            id="vip-edit-description"
-            type="text"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-          />
-        </div>
+        <FormField
+          label="Description"
+          id="vip-edit-description"
+          value={description}
+          onChange={setDescription}
+        />
 
         <p className="text-xs text-theme-secondary">
           Address and mode ({vip.anycast ? 'anycast' : 'active/passive'}) are fixed for the life of
@@ -234,24 +223,17 @@ export const VirtualIpEditModal: React.FC<VirtualIpEditModalProps> = ({
           </div>
         ) : (
           <>
-            <div>
-              <label htmlFor="vip-edit-primary" className="block text-sm font-medium text-theme-primary mb-1">
-                Primary holder
-              </label>
-              <select
-                id="vip-edit-primary"
-                value={primaryHolderId}
-                onChange={(e) => selectPrimaryHolder(e.target.value)}
-                className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
-              >
-                <option value="">Select a peer…</option>
-                {peers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {peerLabel(p)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <FormField
+              label="Primary holder"
+              id="vip-edit-primary"
+              type="select"
+              value={primaryHolderId}
+              onChange={selectPrimaryHolder}
+              options={[
+                { value: '', label: 'Select a peer…' },
+                ...peers.map((p) => ({ value: p.id, label: peerLabel(p) })),
+              ]}
+            />
 
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-2">

@@ -325,7 +325,7 @@ describe('PortMappingCreateModal', () => {
     mockListVirtualIps.mockReturnValue(Promise.reject(new Error('network error')));
     renderModal();
 
-    fireEvent.click(screen.getByLabelText(/virtual ip/i));
+    fireEvent.click(screen.getByLabelText(/virtual ip \(follows holder\)/i));
 
     await screen.findByText(/could not load the virtual ips for this network/i);
     expect(screen.queryByText(/No VIPs in this network/)).not.toBeInTheDocument();
@@ -335,7 +335,7 @@ describe('PortMappingCreateModal', () => {
     mockListVirtualIps.mockReturnValue(Promise.resolve({ virtual_ips: [], count: 0 }));
     renderModal();
 
-    fireEvent.click(screen.getByLabelText(/virtual ip/i));
+    fireEvent.click(screen.getByLabelText(/virtual ip \(follows holder\)/i));
 
     await waitFor(() =>
       expect(screen.getByText(/No VIPs in this network/)).toBeInTheDocument(),
@@ -411,7 +411,7 @@ describe('PortMappingCreateModal', () => {
       renderModal();
 
       await screen.findByText(/could not load the virtual ips for this network/i);
-      fireEvent.click(screen.getByLabelText(/virtual ip/i));
+      fireEvent.click(screen.getByLabelText(/virtual ip \(follows holder\)/i));
 
       expect(screen.getByRole('button', { name: /create mapping/i })).toBeDisabled();
 
@@ -510,7 +510,7 @@ describe('PortMappingCreateModal', () => {
     );
 
     // VIP radio should be checked
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     expect(vipRadio).toBeChecked();
   });
 
@@ -532,7 +532,7 @@ describe('PortMappingCreateModal', () => {
 
   it('switches to Target virtual IP dropdown when VIP radio is clicked', () => {
     renderModal();
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
     expect(screen.getByText('Target virtual IP')).toBeInTheDocument();
     expect(screen.queryByText('Target peer')).not.toBeInTheDocument();
@@ -540,7 +540,7 @@ describe('PortMappingCreateModal', () => {
 
   it('switches back to Target peer dropdown when peer radio is clicked', () => {
     renderModal();
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
     const peerRadio = screen.getByLabelText(/specific peer/i);
     fireEvent.click(peerRadio);
@@ -550,7 +550,7 @@ describe('PortMappingCreateModal', () => {
 
   it('shows VIPs in the target VIP dropdown', async () => {
     renderModal();
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
     await waitFor(() =>
       expect(screen.getByRole('option', { name: /db-vip/ })).toBeInTheDocument(),
@@ -560,7 +560,7 @@ describe('PortMappingCreateModal', () => {
   it('shows "No VIPs in this network" warning when VIP list is empty', async () => {
     mockListVirtualIps.mockReturnValue(Promise.resolve({ virtual_ips: [], count: 0 }));
     renderModal();
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
     await waitFor(() =>
       expect(screen.getByText(/No VIPs in this network/)).toBeInTheDocument(),
@@ -750,7 +750,7 @@ describe('PortMappingCreateModal', () => {
     });
 
     // Switch to VIP target type but leave VIP unselected
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
 
     const form = screen.getByRole('button', { name: /create mapping/i }).closest('form')!;
@@ -917,7 +917,7 @@ describe('PortMappingCreateModal', () => {
     });
 
     // Switch to VIP target
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
 
     await waitFor(() =>
@@ -1261,7 +1261,7 @@ describe('PortMappingCreateModal', () => {
       target: { value: '443' },
     });
 
-    const vipRadio = screen.getByLabelText(/virtual ip/i);
+    const vipRadio = screen.getByLabelText(/virtual ip \(follows holder\)/i);
     fireEvent.click(vipRadio);
 
     await waitFor(() =>

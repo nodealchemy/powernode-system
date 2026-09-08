@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { FormField } from '@/shared/components/ui/FormField';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { isPendingApproval } from '../../services/api/helpers';
@@ -110,20 +111,17 @@ export const PeerAttachModal: React.FC<PeerAttachModalProps> = ({ isOpen, networ
     <Modal isOpen={isOpen} onClose={handleClose} title="Attach peer to network" icon={<Users className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Node instance</label>
-          <select
+          <FormField
+            label="Node instance"
+            type="select"
             value={nodeInstanceId}
-            onChange={(e) => setNodeInstanceId(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+            onChange={setNodeInstanceId}
             disabled={submitting || loadingInstances}
-          >
-            <option value="">{loadingInstances ? 'Loading…' : 'Select a node instance'}</option>
-            {instances.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} ({i.status})
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: '', label: loadingInstances ? 'Loading…' : 'Select a node instance' },
+              ...instances.map((i) => ({ value: i.id, label: `${i.name} (${i.status})` })),
+            ]}
+          />
         </div>
 
         <div>
@@ -146,41 +144,32 @@ export const PeerAttachModal: React.FC<PeerAttachModalProps> = ({ isOpen, networ
         {publiclyReachable && (
           <div className="space-y-3">
             <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                IPv6 endpoint host <span className="text-xs text-theme-secondary">(preferred)</span>
-              </label>
-              <input
-                type="text"
+              <FormField
+                label={<>IPv6 endpoint host <span className="text-xs text-theme-secondary">(preferred)</span></>}
                 value={endpointHostV6}
-                onChange={(e) => setEndpointHostV6(e.target.value)}
-                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
+                onChange={setEndpointHostV6}
                 placeholder="2001:db8::1 or hub.v6.example.com"
+                className="font-mono text-sm"
                 disabled={submitting}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">
-                IPv4 endpoint host <span className="text-xs text-theme-secondary">(fallback)</span>
-              </label>
-              <input
-                type="text"
+              <FormField
+                label={<>IPv4 endpoint host <span className="text-xs text-theme-secondary">(fallback)</span></>}
                 value={endpointHostV4}
-                onChange={(e) => setEndpointHostV4(e.target.value)}
-                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
+                onChange={setEndpointHostV4}
                 placeholder="203.0.113.10 or hub.example.com"
+                className="font-mono text-sm"
                 disabled={submitting}
+                helpText="Provide at least one. Both = v6 preferred with v4 fallback."
               />
-              <p className="text-xs text-theme-secondary mt-1">
-                Provide at least one. Both = v6 preferred with v4 fallback.
-              </p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-theme-primary mb-1">Port</label>
-              <input
+              <FormField
+                label="Port"
                 type="number"
-                value={endpointPort}
-                onChange={(e) => setEndpointPort(Number(e.target.value))}
-                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
+                value={String(endpointPort)}
+                onChange={(v) => setEndpointPort(Number(v))}
                 min={1}
                 max={65535}
                 disabled={submitting}
