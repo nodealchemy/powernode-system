@@ -222,7 +222,9 @@ module Ai
       # === DNS credentials ===
 
       # Mirrors AcmeDnsCredentialsController#create EXACTLY:
-      #   1. validate provider via DnsProviderRegistry.supported?
+      #   1. validate provider via DnsProviderRegistry.supported? AND
+      #      .production_ready? — a provider the on-node issuer cannot use is
+      #      refused here, not at issuance time
       #   2. inside a transaction, build the row with public fields ONLY
       #      (name, provider, status, metadata) — NEVER the secret
       #   3. hand the plaintext `credentials` STRAIGHT to Vault via
@@ -235,6 +237,17 @@ module Ai
           return error_result(
             "Unsupported provider: #{provider_slug.inspect}. " \
             "Supported: #{::Acme::DnsProviderRegistry::PROVIDERS.keys.inspect}"
+          )
+        end
+
+        # Same gate as AcmeDnsCredentialsController#create — this verb is the
+        # other write path, and a gate on only one of them is advice rather
+        # than a constraint (IMP-e24167f9dc58).
+        unless ::Acme::DnsProviderRegistry.production_ready?(provider_slug)
+          return error_result(
+            "Provider #{provider_slug.inspect} is not wired through the on-node ACME " \
+            "issuer on this deployment, so a credential stored for it would fail at " \
+            "first issuance. Enable it on the agent, then retry."
           )
         end
 
