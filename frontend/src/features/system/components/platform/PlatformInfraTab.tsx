@@ -19,6 +19,7 @@ import { HealthPanel } from './HealthPanel';
 import { ScalingPanel } from './ScalingPanel';
 import { MigrationsPanel } from './MigrationsPanel';
 import { StorageMigrationsPanel } from './StorageMigrationsPanel';
+import { MigrationChainsPanel } from './MigrationChainsPanel';
 import { DeployPlatformPanel } from './DeployPlatformPanel';
 
 /**
@@ -143,6 +144,7 @@ const PeersTab: React.FC = () => <PeersPanel />;
 const MigrationsTab: React.FC = () => (
   <div className="space-y-6">
     <MigrationsPanel />
+    <MigrationChainsPanel />
     <StorageMigrationsPanel />
   </div>
 );

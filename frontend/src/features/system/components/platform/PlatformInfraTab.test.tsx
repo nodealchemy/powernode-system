@@ -33,6 +33,10 @@ jest.mock('./MigrationsPanel', () => ({
   MigrationsPanel: () => <div data-testid="migrations-panel" />,
 }));
 
+jest.mock('./MigrationChainsPanel', () => ({
+  MigrationChainsPanel: () => <div data-testid="migration-chains-panel" />,
+}));
+
 jest.mock('./StorageMigrationsPanel', () => ({
   StorageMigrationsPanel: () => <div data-testid="storage-migrations-panel" />,
 }));
@@ -191,9 +195,12 @@ describe('PlatformInfraTab', () => {
     expect(screen.getByTestId('children-panel')).toBeInTheDocument();
   });
 
-  it('renders MigrationsPanel and StorageMigrationsPanel for /migrations route', () => {
+  it('renders the three migration panels for the /migrations route', () => {
     renderAt(`${BASE}/migrations`);
     expect(screen.getByTestId('migrations-panel')).toBeInTheDocument();
+    // Multi-hop chains (IMP-ffc2de6bd175) had six operator endpoints and no
+    // surface at all, so a stalled chain was invisible from the console.
+    expect(screen.getByTestId('migration-chains-panel')).toBeInTheDocument();
     expect(screen.getByTestId('storage-migrations-panel')).toBeInTheDocument();
   });
 

@@ -149,7 +149,8 @@ const OPERATION_LABEL: Record<MigrationOperation, { icon: React.ReactNode; label
   migrate: { icon: <ArrowRightLeft className="w-3 h-3" />, label: 'migrate' },
 };
 
-const OperationBadge: React.FC<{ op: MigrationOperation }> = ({ op }) => {
+/** Exported for the chain surface — chains carry the same operation enum. */
+export const OperationBadge: React.FC<{ op: MigrationOperation }> = ({ op }) => {
   const c = OPERATION_LABEL[op];
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
@@ -159,23 +160,34 @@ const OperationBadge: React.FC<{ op: MigrationOperation }> = ({ op }) => {
   );
 };
 
-const StatusPill: React.FC<{ status: MigrationStatus }> = ({ status }) => {
-  const styleByStatus: Record<MigrationStatus, string> = {
-    planned: 'bg-theme-background-tertiary text-theme-secondary',
-    validating: 'bg-theme-info-bg text-theme-info-fg',
-    transferring: 'bg-theme-info-bg text-theme-info-fg',
-    conflict: 'bg-theme-warning-bg text-theme-warning-fg',
-    applying: 'bg-theme-info-bg text-theme-info-fg',
-    completed: 'bg-theme-success-bg text-theme-success-fg',
-    failed: 'bg-theme-danger-bg text-theme-danger-fg',
-    cancelled: 'bg-theme-background-tertiary text-theme-secondary',
-  };
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}>
-      {status}
-    </span>
-  );
+/**
+ * Status → theme classes for the MIGRATION lifecycle. Hoisted to module scope
+ * and exported so the chain surface renders hop statuses with the identical
+ * mapping (IMP-ffc2de6bd175) — a second copy is how two views of the same
+ * status start disagreeing about what colour `conflict` is.
+ *
+ * A chain's OWN status is a different enum and lives in
+ * MigrationChainsPanel; it reuses these classes for the four states the two
+ * share rather than redefining them.
+ */
+export const MIGRATION_STATUS_STYLE: Record<MigrationStatus, string> = {
+  planned: 'bg-theme-background-tertiary text-theme-secondary',
+  validating: 'bg-theme-info-bg text-theme-info-fg',
+  transferring: 'bg-theme-info-bg text-theme-info-fg',
+  conflict: 'bg-theme-warning-bg text-theme-warning-fg',
+  applying: 'bg-theme-info-bg text-theme-info-fg',
+  completed: 'bg-theme-success-bg text-theme-success-fg',
+  failed: 'bg-theme-danger-bg text-theme-danger-fg',
+  cancelled: 'bg-theme-background-tertiary text-theme-secondary',
 };
+
+export const StatusPill: React.FC<{ status: MigrationStatus }> = ({ status }) => (
+  <span
+    className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${MIGRATION_STATUS_STYLE[status]}`}
+  >
+    {status}
+  </span>
+);
 
 // ──────────────────────────────────────────────────────────────────────
 // Detail drawer

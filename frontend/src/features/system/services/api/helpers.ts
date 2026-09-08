@@ -100,6 +100,31 @@ export function extractGated<T, R>(
 }
 
 /**
+ * Query params from a filters object: undefined/null keys dropped, arrays
+ * joined comma-separated (the shape every filterable index action in this API
+ * parses), everything else stringified.
+ *
+ * Extracted because platformMigrationsApi and platformMigrationChainsApi
+ * carried byte-identical private copies; a third would have made the
+ * array-joining convention a matter of luck.
+ */
+export function paramsFromFilters(filters?: object): Record<string, string> {
+  if (!filters) return {};
+  const out: Record<string, string> = {};
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) {
+      if (value.length > 0) out[key] = value.join(',');
+    } else if (typeof value === 'boolean') {
+      out[key] = value ? 'true' : 'false';
+    } else {
+      out[key] = String(value);
+    }
+  });
+  return out;
+}
+
+/**
  * Message an operator can act on, out of a rejected API call.
  *
  * Axios rejects with an AxiosError whose `.message` is the generic
