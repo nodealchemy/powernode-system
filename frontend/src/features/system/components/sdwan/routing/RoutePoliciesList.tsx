@@ -187,6 +187,11 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
           are applied server-side, so filtering to nothing makes totalCount 0
           and the container drops its whole Filters row — stranding the
           operator with no way to clear the filter that emptied the screen. */}
+      {/* Skipped when an error coincides with an empty list: the original
+          ternary let an error SUPPRESS the empty state, and showing both would
+          say "none yet" and "we could not ask" at the same time. Rows already
+          on screen still render beside the banner, as before. */}
+      {!(error && policies.length === 0) && (
       <ResponsiveListContainer
         loading={loading}
         totalCount={policies.length}
@@ -397,6 +402,7 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
         </table>
       </ResponsiveListContainer.Body>
       </ResponsiveListContainer>
+      )}
     </div>
   );
 };

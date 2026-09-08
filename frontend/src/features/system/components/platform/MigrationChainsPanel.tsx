@@ -98,11 +98,12 @@ export const MigrationChainsPanel: React.FC = () => {
         </div>
       )}
 
-      {/* The header (count + refresh) stays OUTSIDE the container, and the
-          container itself is skipped entirely while an error is showing —
-          that preserves the existing precedence, where a failed load
-          suppresses the empty state rather than reporting "none yet". */}
-      {!error && (
+      {/* The header stays OUTSIDE the container. The container is skipped ONLY
+          when an error coincides with an empty list: the original guarded the
+          empty branch on `!error` but rendered the table alongside the banner,
+          so guarding the whole container would make a failed refresh blank a
+          list that is still on screen. */}
+      {!(error && chains.length === 0) && (
       <ResponsiveListContainer
         loading={loading}
         totalCount={chains.length}

@@ -328,6 +328,42 @@ describe('MigrationsPanel', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Error alongside a loaded list (IMP-91dab7a7dfb0)
+  //
+  // A failed REFRESH must not blank rows that are already on screen. The
+  // ResponsiveListContainer migration briefly guarded the whole container on
+  // `!error`, which did exactly that: the operator lost the list and was left
+  // with only a banner. The original guarded the EMPTY branch alone.
+  // ---------------------------------------------------------------------------
+
+  it('keeps the loaded rows on screen when a refresh fails', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([MIGRATION_A]));
+    mockGet.mockRejectedValueOnce(new Error('gateway timeout'));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('NodeInstance')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Refresh'));
+
+    // Banner appears...
+    await waitFor(() => expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument());
+    // ...and the rows it failed to replace are still there.
+    expect(screen.getByText('NodeInstance')).toBeInTheDocument();
+    expect(screen.queryByText('No migrations recorded yet')).not.toBeInTheDocument();
+  });
+
+  it('shows only the error when the list was empty and the load failed', async () => {
+    mockGet.mockRejectedValueOnce(new Error('gateway timeout'));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument());
+    // "none recorded yet" and "we could not ask" must never be on screen together.
+    expect(screen.queryByText('No migrations recorded yet')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
   // Detail drawer — open
   // ---------------------------------------------------------------------------
 
