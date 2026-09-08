@@ -138,10 +138,29 @@ const DOMAIN_PRESENTATION: Record<string, DomainPresentation> = {
  * So the split is: the API returns everything, and the extension's modal picks
  * what it owns. Do NOT move this filter into the endpoint.
  *
- * Dropping the bucket wholesale is safe only because no SYSTEM category can
- * reach it — spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb pins
- * that every seeded category files under a named domain, and that spec is what
- * fails if a new family ever lands without a prefix.
+ * Dropping the bucket wholesale is safe only because no category this extension
+ * owns can reach it. The guarantee is
+ * spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb, and its oracle
+ * is keyed to `Ai::InterventionPolicy.registered_categories` — every registered
+ * category prefixed `system.` or `sdwan.` must file under a named domain, with
+ * one policy row per registered category so the pivot sees the worst-case
+ * population rather than today's seeds. That spec is what fails if a new family
+ * ever lands without a prefix.
+ *
+ * REGISTERED, not seeded, and the difference is the reason this note exists.
+ * The registry is exactly what the PATCH half of the same concern admits
+ * (System::AutonomyActions#update gates on `category_registered?`), so it is
+ * the population an operator can put in front of the pivot. A seeded-set
+ * invariant is strictly narrower and says nothing about a category that is
+ * registered and deliberately unseeded: `system.multi_tenant_isolation` and
+ * `system.service_discovery_compose` were exactly that, and were stranded in
+ * this bucket the moment an operator saved a policy row for them through the
+ * endpoint — a path no seed file exercises (IMP-fa63f411633b). Understating the
+ * guarantee as "seeded" is the framing that let that scope error ship twice.
+ *
+ * The extension-namespace qualifier is load-bearing too: core's statics land
+ * here BY DESIGN, so the invariant is not "nothing reaches other" but "nothing
+ * OURS reaches other".
  */
 const FOREIGN_DOMAIN_KEY = 'other';
 
