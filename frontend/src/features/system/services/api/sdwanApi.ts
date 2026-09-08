@@ -259,8 +259,9 @@ export const sdwanApi = {
     return extractGated(response, (d) => d.access_grant);
   },
 
-  // Tags only. Status moves through revokeAccessGrant / deleteAccessGrant,
-  // which are approval-gated; the server no longer permits it here.
+  // Tags only. Status moves through revokeAccessGrant, the soft revoke that
+  // preserves the grant and its devices for audit; the server no longer
+  // permits a status change here.
   updateAccessGrant: async (
     networkId: string,
     grantId: string,
@@ -283,13 +284,6 @@ export const sdwanApi = {
       { reason }
     );
     return extractGated(response, (d) => d.access_grant);
-  },
-
-  deleteAccessGrant: async (networkId: string, grantId: string): Promise<Gated<Deleted>> => {
-    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
-      `/system/sdwan/networks/${networkId}/access_grants/${grantId}`
-    );
-    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 4: User VPN — user devices ─────────────────────────────
@@ -324,13 +318,6 @@ export const sdwanApi = {
       { reason }
     );
     return extractGated(response, (d) => d.user_device);
-  },
-
-  deleteUserDevice: async (networkId: string, grantId: string, deviceId: string): Promise<Gated<Deleted>> => {
-    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
-      `/system/sdwan/networks/${networkId}/access_grants/${grantId}/user_devices/${deviceId}`
-    );
-    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 6: Federation peers ────────────────────────────────────
