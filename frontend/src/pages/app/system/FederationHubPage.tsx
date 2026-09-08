@@ -28,11 +28,9 @@ import { SystemTopology } from '@system/features/system/components/network/Syste
 import { OvnDeploymentsTab } from '@system/features/system/components/sdwan_hub/OvnDeploymentsTab';
 import { FederationGovernancePanel } from '@system/features/system/components/sdwan/FederationGovernancePanel';
 import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
-import { ServiceOfferingsPanel } from '@system/features/system/components/federation/ServiceOfferingsPanel';
-import { ServiceOfferingEditorModal } from '@system/features/system/components/federation/ServiceOfferingEditorModal';
+import { OfferingsTab } from '@system/features/system/components/federation_hub/OfferingsTab';
 import { CatalogBrowserTab } from '@system/features/system/components/federation_hub/CatalogBrowserTab';
 import { ConciergePanel } from '@system/features/system/components/concierge/ConciergePanel';
-import type { ServiceOffering } from '@system/features/system/types/service_delivery.types';
 
 /**
  * FederationHubPage — the platform multi-site hub. Two top-level, path-based
@@ -232,10 +230,6 @@ const ControlTab: React.FC<TabProps> = ({ hasPermission }) => {
   const canManageVips = hasPermission('system.sdwan.vips.manage');
   const canReadAcmeDns = hasPermission('system.acme_dns.read');
 
-  const [offeringEditorOpen, setOfferingEditorOpen] = useState(false);
-  const [editingOffering, setEditingOffering] = useState<ServiceOffering | null>(null);
-  const [offeringsRefreshKey, setOfferingsRefreshKey] = useState(0);
-
   return (
     <div className="space-y-8" data-testid="federation-control-tab">
       {canReadPeers && (
@@ -254,23 +248,12 @@ const ControlTab: React.FC<TabProps> = ({ hasPermission }) => {
           title="Service offerings"
           subtitle="This platform's published catalog of federated services."
         >
-          <ServiceOfferingsPanel
-            refreshKey={offeringsRefreshKey}
-            onCreateClick={() => {
-              setEditingOffering(null);
-              setOfferingEditorOpen(true);
-            }}
-            onSelect={(offering) => {
-              setEditingOffering(offering);
-              setOfferingEditorOpen(true);
-            }}
-          />
-          <ServiceOfferingEditorModal
-            isOpen={offeringEditorOpen}
-            onClose={() => setOfferingEditorOpen(false)}
-            editOffering={editingOffering}
-            onSaved={() => setOfferingsRefreshKey((k) => k + 1)}
-          />
+          {/* OfferingsTab already owns this: the panel, the editor modal, and
+              the editorOpen / editingOffering / refreshKey state between them.
+              The hub composes it rather than re-declaring that state machine
+              (IMP-350b40c2f26f) — a second copy meant every change to the
+              offerings flow had to be made in two places. */}
+          <OfferingsTab />
         </Section>
       )}
 
