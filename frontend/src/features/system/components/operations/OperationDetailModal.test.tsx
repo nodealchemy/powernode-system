@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
@@ -1389,6 +1391,42 @@ describe('OperationDetailModal', () => {
         jest.advanceTimersByTime(5000);
       });
       expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reason capture is shared, not duplicated
+  // ---------------------------------------------------------------------------
+
+  describe('Reason-capturing confirmation', () => {
+    // IMP-abe28a971830: this modal grew a private StopReasonPrompt in the same
+    // drain that extracted useReasonConfirm for six other sites, so two
+    // reason-capturing confirm bodies existed over the one shared
+    // ConfirmationModal. The behavioural specs above pass either way — only a
+    // source-level guard can tell the shared hook from a local copy.
+    const modalSource = readFileSync(path.join(__dirname, 'OperationDetailModal.tsx'), 'utf8');
+
+    it('pins the file identity it is asserting over', () => {
+      // A wrong path throws at collection time rather than yielding an empty
+      // string, so this is not a vacuity guard — it just names the subject.
+      expect(modalSource).toContain('OperationDetailModal');
+    });
+
+    it('captures the stop reason through the shared useReasonConfirm hook', () => {
+      expect(modalSource).toMatch(
+        /import\s*\{[^}]*\buseReasonConfirm\b[^}]*\}\s*from\s*'@system\/features\/system\/hooks\/useReasonConfirm'/,
+      );
+      expect(modalSource).toContain('confirmWithReason');
+    });
+
+    it('does not keep a private reason-prompt body', () => {
+      // Name the duplicate's shape, not FormField itself: banning the shared
+      // field outright would fail this spec for an unrelated inline input added
+      // later, while the dedupe stayed perfectly intact.
+      expect(modalSource).not.toContain('StopReasonPrompt');
+      expect(modalSource).not.toMatch(/const\s+\w*ReasonPrompt\b/);
+      expect(modalSource).not.toContain('onReasonChange');
+      expect(modalSource).not.toContain('reasonRef');
     });
   });
 });
