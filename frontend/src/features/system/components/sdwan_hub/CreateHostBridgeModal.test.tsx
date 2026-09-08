@@ -53,7 +53,7 @@ function axiosError(serverMessage: string, status = 422) {
   });
 }
 
-const NODE = { id: 'node-1', name: 'dna' };
+const NODE = { id: 'node-1', name: 'hv-alpha' };
 const INSTANCE_A = { id: 'ni-abc', name: 'node-alpha', status: 'running' };
 const INSTANCE_B = { id: 'ni-def', name: 'node-beta', status: 'running' };
 
