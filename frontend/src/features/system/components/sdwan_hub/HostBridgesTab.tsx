@@ -1,11 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Network as NetworkIcon, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Network as NetworkIcon, Trash2, Plus, Play, ChevronDown, ChevronRight } from 'lucide-react';
 import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { Button } from '@/shared/components/ui/Button';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
-import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { apiErrorMessage, isPendingApproval } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
+import { CreateHostBridgeModal } from './CreateHostBridgeModal';
 import type {
   SdwanHostBridge,
   SdwanHostBridgeState,
@@ -31,6 +33,17 @@ import type {
 // removed once the grace window elapses), so offering the control there
 // would arm-and-confirm into nothing and report success.
 //
+// IMP-61be0ada331d added the two write paths that existed on the API and the
+// MCP surface but on no console form: allocate a bridge on a host, and ACTIVATE
+// one. Activation is not bookkeeping — the compiler's `compilable` scope emits
+// active|draining only, so a bridge sitting in `pending` is invisible to it and
+// does nothing on the node.
+//
+// Activate is offered on `pending` rows only. The state machine also permits
+// pending|active → active, but firing it on an already-active bridge is a
+// no-op that would report success for nothing — the same reasoning that hides
+// the release button on `draining` rows.
+//
 // Bridges are grouped visually by host — the controller sorts by
 // (node_instance_id, short_id) so consecutive rows share a host.
 export const HostBridgesTab: React.FC = () => {
@@ -42,6 +55,8 @@ export const HostBridgesTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
 
   // Click-to-expand state — Set<id> so multiple rows can be open at once.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -87,28 +102,98 @@ export const HostBridgesTab: React.FC = () => {
     }
   }, [addNotification]);
 
+  const handleActivate = useCallback(async (bridge: SdwanHostBridge) => {
+    setActivatingId(bridge.id);
+    try {
+      const result = await sdwanApi.activateHostBridge(bridge.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`activating bridge ${bridge.bridge_name}`, result));
+        return;
+      }
+      addNotification({ type: 'success', message: `Bridge ${bridge.bridge_name} activated` });
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      // The pre-gate refusal ("cannot activate a removed host bridge — use
+      // readopt to revive a removed bridge") is the only instruction the
+      // operator gets, and it is reachable by a plain race with the reaper.
+      // Axios's own .message would replace it with the status code.
+      addNotification({
+        type: 'error',
+        message: apiErrorMessage(err, 'Failed to activate bridge'),
+      });
+    } finally {
+      setActivatingId(null);
+    }
+  }, [addNotification]);
+
+  // The header is rendered on EVERY branch — loading, error, empty and populated.
+  // Allocate is most wanted from the empty state, which is exactly the branch an
+  // early return would have skipped.
+  const header = (
+    <div className="flex items-center justify-between gap-3 mb-4">
+      <p className="text-sm text-theme-secondary">
+        Allocate a bridge here when a host needs one out of band.
+      </p>
+      {canManage && (
+        <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)}>
+          <Plus size={16} />
+          Allocate bridge
+        </Button>
+      )}
+    </div>
+  );
+
+  const createModal = (
+    <CreateHostBridgeModal
+      isOpen={createOpen}
+      onClose={() => setCreateOpen(false)}
+      onCreated={() => {
+        setCreateOpen(false);
+        setRefreshKey((k) => k + 1);
+      }}
+    />
+  );
+
   if (loading) {
-    return <div className="p-8 text-center text-theme-secondary">Loading host bridges…</div>;
+    return (
+      <div>
+        {header}
+        <div className="p-8 text-center text-theme-secondary">Loading host bridges…</div>
+        {createModal}
+      </div>
+    );
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
+    return (
+      <div>
+        {header}
+        <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
+        {createModal}
+      </div>
+    );
   }
   if (bridges.length === 0) {
     return (
-      <div className="p-12 text-center">
-        <NetworkIcon className="mx-auto mb-4 text-theme-secondary" size={48} />
-        <h3 className="text-lg font-medium text-theme-primary mb-2">No host bridges yet</h3>
-        <p className="text-theme-secondary">
-          Bridges are allocated by the on-node agent (during reconcile) or by the SDWAN
-          Host Bridge Compose skill. Lightweight-profile hosts get a Linux bridge;
-          heavyweight-profile hosts get OVS.
-        </p>
+      <div>
+        {header}
+        <div className="p-12 text-center">
+          <NetworkIcon className="mx-auto mb-4 text-theme-secondary" size={48} />
+          <h3 className="text-lg font-medium text-theme-primary mb-2">No host bridges yet</h3>
+          <p className="text-theme-secondary">
+            Bridges are allocated by the on-node agent (during reconcile) or by the SDWAN
+            Host Bridge Compose skill. Lightweight-profile hosts get a Linux bridge;
+            heavyweight-profile hosts get OVS.
+          </p>
+        </div>
+        {createModal}
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div>
+      {header}
+      <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
@@ -131,10 +216,14 @@ export const HostBridgesTab: React.FC = () => {
               expanded={expandedIds.has(b.id)}
               onToggleExpanded={toggleExpanded}
               onDelete={handleDelete}
+              onActivate={handleActivate}
+              activating={activatingId === b.id}
             />
           ))}
         </tbody>
       </table>
+      </div>
+      {createModal}
     </div>
   );
 };
@@ -145,6 +234,8 @@ interface BridgeRowProps {
   expanded: boolean;
   onToggleExpanded: (id: string) => void;
   onDelete: (bridge: SdwanHostBridge) => void;
+  onActivate: (bridge: SdwanHostBridge) => void;
+  activating: boolean;
 }
 
 // The host is a cross-reference to a node_instance. The shared EntityLink
@@ -160,7 +251,15 @@ const renderHost = (b: SdwanHostBridge): React.ReactNode => {
   return <span className="text-theme-primary">{label}</span>;
 };
 
-const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, onToggleExpanded, onDelete }) => {
+const BridgeRow: React.FC<BridgeRowProps> = ({
+  bridge: b,
+  canManage,
+  expanded,
+  onToggleExpanded,
+  onDelete,
+  onActivate,
+  activating,
+}) => {
   // Per-row armed-confirm state so each row's delete button arms
   // independently; one row's armed state never bleeds into another.
   const { armed, trigger } = useArmedConfirm(() => onDelete(b));
@@ -209,6 +308,19 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, o
         </td>
         <td className="p-3 text-theme-secondary text-sm">{b.short_id}</td>
         <td className="p-3 text-right">
+          {canManage && b.state === 'pending' && (
+            <button
+              type="button"
+              onClick={() => onActivate(b)}
+              disabled={activating}
+              className="p-1 mr-1 rounded text-xs text-theme-success-fg hover:bg-theme-success-bg disabled:opacity-40"
+              aria-label={`Activate bridge ${b.bridge_name}`}
+              title="Activate bridge — makes it visible to the topology compiler"
+              data-testid={`activate-host-bridge-${b.id}`}
+            >
+              {activating ? '…' : <Play size={16} />}
+            </button>
+          )}
           {canManage && b.state !== 'removed' && b.state !== 'draining' && (
             <button
               type="button"

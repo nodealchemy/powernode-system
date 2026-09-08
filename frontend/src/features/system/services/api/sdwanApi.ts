@@ -36,6 +36,7 @@ import type {
   SdwanPortMappingCreate,
   SdwanPortMappingUpdate,
   SdwanHostBridge,
+  SdwanHostBridgeKind,
   SdwanOvnDeployment,
   SdwanOvnDeploymentSummary,
   SdwanOvnCompiledPlan,
@@ -588,7 +589,7 @@ export const sdwanApi = {
     };
   },
 
-  // -------- Phase O6: HostBridges (read-only) --------
+  // -------- Phase O6: HostBridges --------
   getHostBridges: async (filters?: SdwanHostBridgeFilters): Promise<SdwanHostBridge[]> => {
     const response = await apiClient.get<ApiEnvelope<{ host_bridges: SdwanHostBridge[] }>>(
       '/system/sdwan/host_bridges',
@@ -602,6 +603,43 @@ export const sdwanApi = {
       `/system/sdwan/host_bridges/${id}`
     );
     return extractData(response).host_bridge;
+  },
+
+  // IMP-61be0ada331d — allocate a bridge on a host.
+  //
+  // `kind` is deliberately optional and is OMITTED from the body unless the
+  // operator picks one: Sdwan::HostBridgeAllocator resolves it from the host's
+  // network_profile (heavyweight → ovs, lightweight → linux), and sending a
+  // client-side default here is how two surfaces start answering one payload
+  // differently. The server never reads a `network` — the bridge is scoped to
+  // the HOST, and the allocator mints the short_id under a per-host row lock.
+  //
+  // Gated through Sdwan::Executors::CreateHostBridge, so a seeded account can
+  // resolve this to notify_and_proceed or park it for approval; callers must
+  // branch on isPendingApproval rather than reading the bridge off the result.
+  createHostBridge: async (params: {
+    node_instance_id: string;
+    kind?: SdwanHostBridgeKind;
+  }): Promise<Gated<SdwanHostBridge>> => {
+    const body: Record<string, unknown> = { node_instance_id: params.node_instance_id };
+    if (params.kind) body.kind = params.kind;
+    const response = await apiClient.post<ApiEnvelope<{ host_bridge: SdwanHostBridge }>>(
+      '/system/sdwan/host_bridges',
+      body
+    );
+    return extractGated(response, (d) => d.host_bridge);
+  },
+
+  // IMP-61be0ada331d — activation is NOT bookkeeping. The topology compiler's
+  // `compilable` scope emits active|draining only, so a bridge left in
+  // `pending` is invisible to it and does nothing on the node. Gated through
+  // Sdwan::Executors::ActivateHostBridge.
+  activateHostBridge: async (id: string): Promise<Gated<SdwanHostBridge>> => {
+    const response = await apiClient.post<ApiEnvelope<{ host_bridge: SdwanHostBridge }>>(
+      `/system/sdwan/host_bridges/${id}/activate`,
+      {}
+    );
+    return extractGated(response, (d) => d.host_bridge);
   },
 
   // IMP-53a5c597ec8c — releasing a bridge DRAINS it by default: the row
