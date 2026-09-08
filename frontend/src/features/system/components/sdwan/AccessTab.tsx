@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { UserPlus, Plus, Smartphone, Trash2, Ban } from 'lucide-react';
+import { UserPlus, Plus, Smartphone, Trash2, Ban, Tag } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -46,9 +46,53 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
   const [bootstrapResult, setBootstrapResult] = useState<SdwanIssueUserDeviceResponse | null>(null);
   const [revokeGrantConfirm, setRevokeGrantConfirm] = useState<SdwanAccessGrant | null>(null);
   const [revokeDeviceConfirm, setRevokeDeviceConfirm] = useState<SdwanUserDevice | null>(null);
+  // Tag editing (IMP-d1900addb504). Tags were settable only at creation; this
+  // is the one field sdwanApi.updateAccessGrant still accepts — status moves
+  // through the soft revoke, which the server enforces.
+  const [grantToTag, setGrantToTag] = useState<SdwanAccessGrant | null>(null);
+  const [tagDraft, setTagDraft] = useState('');
+  const [savingTags, setSavingTags] = useState(false);
 
   const [localRefreshKey, setLocalRefreshKey] = useState(0);
   const triggerLocalRefresh = useCallback(() => setLocalRefreshKey((k) => k + 1), []);
+
+  const openTagEditor = useCallback((grant: SdwanAccessGrant) => {
+    setGrantToTag(grant);
+    setTagDraft(grant.tags.join(', '));
+  }, []);
+
+  const handleSaveTags = async () => {
+    if (!grantToTag) return;
+    setSavingTags(true);
+    try {
+      // Comma-separated in, trimmed and de-duplicated out. An empty box is a
+      // deliberate "clear the tags", not a no-op.
+      const tags = Array.from(
+        new Set(
+          tagDraft
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean)
+        )
+      );
+      const result = await sdwanApi.updateAccessGrant(networkId, grantToTag.id, { tags });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`updating tags on the access grant`, result));
+        setGrantToTag(null);
+        return;
+      }
+      addNotification({ type: 'success', message: 'Grant tags updated' });
+      setGrantToTag(null);
+      triggerLocalRefresh();
+    } catch (err) {
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to update tags',
+      });
+    } finally {
+      setSavingTags(false);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -143,6 +187,10 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
                           <Plus size={14} />
                           <span className="ml-1">Issue device</span>
                         </Button>
+                        <Button variant="secondary" onClick={() => openTagEditor(g)}>
+                          <Tag size={14} />
+                          <span className="ml-1">Edit tags</span>
+                        </Button>
                         <Button variant="danger" onClick={() => setRevokeGrantConfirm(g)}>
                           <Ban size={14} />
                           <span className="ml-1">Revoke</span>
@@ -234,6 +282,42 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
         result={bootstrapResult}
         onClose={() => setBootstrapResult(null)}
       />
+
+      <Modal
+        isOpen={grantToTag !== null}
+        onClose={() => setGrantToTag(null)}
+        icon={<Tag className="w-6 h-6" />}
+        title="Edit tags"
+      >
+        {grantToTag && (
+          <div className="space-y-3">
+            <p className="text-sm text-theme-secondary">
+              Tags on <strong>{grantToTag.user_email ?? grantToTag.user_id}</strong>&apos;s grant.
+              They label the grant for reporting and policy matching; they do not themselves
+              change what the user can reach.
+            </p>
+            <div>
+              <label htmlFor="grant-tags" className="block text-sm font-medium text-theme-primary mb-1">
+                Tags (comma separated)
+              </label>
+              <input
+                id="grant-tags"
+                type="text"
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                placeholder="e.g. contractor, vpn-pilot"
+                className="w-full px-3 py-2 rounded bg-theme-surface border border-theme text-theme-primary"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setGrantToTag(null)}>Cancel</Button>
+              <Button variant="primary" onClick={handleSaveTags} disabled={savingTags}>
+                {savingTags ? 'Saving…' : 'Save'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         isOpen={revokeGrantConfirm !== null}
