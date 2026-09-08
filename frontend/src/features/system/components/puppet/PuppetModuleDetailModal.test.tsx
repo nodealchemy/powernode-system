@@ -375,7 +375,7 @@ describe('PuppetModuleDetailModal', () => {
     renderModal();
     await waitForModuleLoaded();
 
-    // Tabs are plain buttons containing the label text
+    // Tab labels sit in a span inside the shared TabContainer's role="tab" button, so getByText resolves the span and the click bubbles to it
     expect(screen.getByText('Information')).toBeInTheDocument();
     expect(screen.getByText('Resources')).toBeInTheDocument();
     expect(screen.getByText('Dependencies')).toBeInTheDocument();

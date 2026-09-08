@@ -96,7 +96,7 @@ async function openAddDependency(onClose: jest.Mock) {
   renderModal(onClose);
   await screen.findByRole('heading', { name: 'ssh-base' });
 
-  fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
   fireEvent.click(await screen.findByRole('button', { name: /add dependency/i }));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
 }
@@ -106,7 +106,7 @@ async function openRemoveConfirmation(onClose: jest.Mock) {
   renderModal(onClose);
   await screen.findByRole('heading', { name: 'ssh-base' });
 
-  fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
   await screen.findByText('ssl-certs');
   fireEvent.click(screen.getByTitle('Remove dependency'));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
@@ -116,7 +116,7 @@ async function openPuppetAssignForm(onClose: jest.Mock) {
   renderModal(onClose);
   await screen.findByRole('heading', { name: 'ssh-base' });
 
-  fireEvent.click(screen.getByRole('button', { name: /puppet/i }));
+  fireEvent.click(screen.getByRole('tab', { name: /puppet/i }));
   fireEvent.click(await screen.findByRole('button', { name: /assign puppet module/i }));
   await waitFor(() => expect(dialogs()).toHaveLength(2));
 }

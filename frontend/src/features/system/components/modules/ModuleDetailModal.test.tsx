@@ -444,12 +444,12 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      expect(screen.getByRole('button', { name: /information/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /specifications/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /dependencies/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /versions/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /puppet/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /autonomy/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /information/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /specifications/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /dependencies/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /versions/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /puppet/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /autonomy/i })).toBeInTheDocument();
     });
 
     it('defaults to the Information tab on open', async () => {
@@ -470,7 +470,7 @@ describe('ModuleDetailModal', () => {
       await waitForModuleLoad('ssh-base');
 
       // Click to Specs tab
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
       expect(screen.getByText('File spec')).toBeInTheDocument();
 
       // Re-open with a different module → should reset to info
@@ -687,7 +687,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('File spec')).toBeInTheDocument();
     });
@@ -698,7 +698,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       const noEntries = screen.getAllByText('No entries.');
       expect(noEntries.length).toBeGreaterThan(0);
@@ -714,7 +714,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('/etc/ssh/**')).toBeInTheDocument();
       expect(screen.getByText('/etc/ssh/sshd_config')).toBeInTheDocument();
@@ -730,7 +730,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       // Badge shows count = 2
       expect(screen.getByText('2')).toBeInTheDocument();
@@ -748,7 +748,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(
         screen.getByText(/file spec.*inherited from base-subscription/i),
@@ -762,7 +762,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('Package spec')).toBeInTheDocument();
       expect(screen.getByText('openssh-server')).toBeInTheDocument();
@@ -780,7 +780,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('Lifecycle')).toBeInTheDocument();
       expect(screen.getByText('systemctl start ssh')).toBeInTheDocument();
@@ -792,7 +792,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('reboot required on attach/detach')).toBeInTheDocument();
     });
@@ -803,7 +803,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('hot-swap allowed')).toBeInTheDocument();
     });
@@ -815,7 +815,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('Configuration')).toBeInTheDocument();
       expect(screen.getByText(/"key"/)).toBeInTheDocument();
@@ -827,7 +827,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /specifications/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /specifications/i }));
 
       expect(screen.getByText('No configuration set.')).toBeInTheDocument();
     });
@@ -845,7 +845,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(mockGetModuleDependencies).toHaveBeenCalledWith('mod-001'),
@@ -859,7 +859,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(screen.getByText('No dependencies configured')).toBeInTheDocument(),
@@ -873,7 +873,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
     });
@@ -885,7 +885,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(screen.getByText('No dependencies configured')).toBeInTheDocument(),
@@ -905,7 +905,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
@@ -920,7 +920,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -941,7 +941,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -967,7 +967,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
 
       fireEvent.click(screen.getByRole('button', { name: /add dependency/i }));
@@ -993,7 +993,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1018,7 +1018,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1047,7 +1047,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1076,7 +1076,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1104,7 +1104,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1125,7 +1125,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1148,7 +1148,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument(),
       );
@@ -1190,7 +1190,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
 
       fireEvent.click(screen.getByTitle('Remove dependency'));
@@ -1209,7 +1209,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Remove dependency'));
 
@@ -1230,7 +1230,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Remove dependency'));
       fireEvent.click(await screen.findByRole('button', { name: 'Keep Dependency' }));
@@ -1251,7 +1251,7 @@ describe('ModuleDetailModal', () => {
       const { rerender } = renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       fireEvent.click(screen.getByTitle('Remove dependency'));
       await screen.findByRole('button', { name: 'Remove Dependency' });
@@ -1288,7 +1288,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
 
@@ -1308,7 +1308,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       await confirmRemove();
@@ -1329,7 +1329,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       await confirmRemove();
@@ -1348,7 +1348,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       await confirmRemove();
@@ -1369,7 +1369,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
       await confirmRemove();
@@ -1392,7 +1392,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       // The dependents count button has text split across <strong> + text nodes;
       // getByRole concatenates all text content within the element.
@@ -1411,7 +1411,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(
@@ -1428,7 +1428,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(screen.getByText('No dependencies configured')).toBeInTheDocument(),
@@ -1448,7 +1448,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /autonomy/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /autonomy/i }));
 
       expect(screen.getByTestId('consent-budget-editor')).toBeInTheDocument();
       expect(screen.getByTestId('canary-marker')).toBeInTheDocument();
@@ -1460,7 +1460,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /autonomy/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /autonomy/i }));
 
       expect(screen.getByText('ConsentBudgetEditor:ssh-base')).toBeInTheDocument();
     });
@@ -1471,7 +1471,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /autonomy/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /autonomy/i }));
 
       expect(screen.getByText('CanaryMarker:ssh-base')).toBeInTheDocument();
     });
@@ -1482,7 +1482,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /autonomy/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /autonomy/i }));
 
       expect(screen.getByText(/consent budget is a per-module ceiling/i)).toBeInTheDocument();
     });
@@ -1502,7 +1502,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() =>
         expect(screen.getByText('No dependencies configured')).toBeInTheDocument(),
@@ -1522,7 +1522,7 @@ describe('ModuleDetailModal', () => {
       renderModal();
 
       await waitForModuleLoad('ssh-base');
-      fireEvent.click(screen.getByRole('button', { name: /dependencies/i }));
+      fireEvent.click(screen.getByRole('tab', { name: /dependencies/i }));
 
       await waitFor(() => expect(screen.getByText('ssl-certs')).toBeInTheDocument());
 
