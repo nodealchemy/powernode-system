@@ -12,6 +12,7 @@ import {
   StopCircle,
   RefreshCw
 } from 'lucide-react';
+import { formatDuration, formatTimestamp } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
@@ -235,24 +236,6 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
     });
   };
 
-  const formatDateTime = (dateString?: string) => {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleString();
-  };
-
-  const formatDuration = () => {
-    if (!operation?.started_at) return '—';
-    const start = new Date(operation.started_at).getTime();
-    const end = operation.completed_at
-      ? new Date(operation.completed_at).getTime()
-      : Date.now();
-    const duration = Math.floor((end - start) / 1000);
-
-    if (duration < 60) return `${duration} seconds`;
-    if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`;
-    return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
-  };
-
   const tabs: (Tab & { id: TabId })[] = [
     { id: 'info', label: 'Information', icon: <Activity className="w-4 h-4" /> },
     { id: 'events', label: 'Events', icon: <Clock className="w-4 h-4" /> },
@@ -331,7 +314,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Duration</label>
-              <p className="text-theme-primary">{formatDuration()}</p>
+              <p className="text-theme-primary">{formatDuration(operation.started_at, operation.completed_at)}</p>
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Exclusive</label>
@@ -349,21 +332,21 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
               <Calendar className="w-4 h-4" />
               <span>Scheduled</span>
             </div>
-            <p className="text-theme-primary text-sm">{formatDateTime(operation.scheduled_at)}</p>
+            <p className="text-theme-primary text-sm">{formatTimestamp(operation.scheduled_at)}</p>
           </div>
           <div>
             <div className="flex items-center gap-2 text-sm text-theme-secondary mb-1">
               <Clock className="w-4 h-4" />
               <span>Started</span>
             </div>
-            <p className="text-theme-primary text-sm">{formatDateTime(operation.started_at)}</p>
+            <p className="text-theme-primary text-sm">{formatTimestamp(operation.started_at)}</p>
           </div>
           <div>
             <div className="flex items-center gap-2 text-sm text-theme-secondary mb-1">
               <CheckCircle className="w-4 h-4" />
               <span>Completed</span>
             </div>
-            <p className="text-theme-primary text-sm">{formatDateTime(operation.completed_at)}</p>
+            <p className="text-theme-primary text-sm">{formatTimestamp(operation.completed_at)}</p>
           </div>
         </div>
 

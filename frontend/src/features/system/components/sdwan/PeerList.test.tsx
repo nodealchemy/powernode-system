@@ -277,6 +277,51 @@ describe('PeerList', () => {
     );
   });
 
+  // ── Traffic counters ─────────────────────────────────────────────────────────
+  //
+  // The distinction these pin is documented in the component and was untested
+  // until the formatter consolidation (IMP-c11d5ad755b8) moved the byte
+  // formatting to core: a null counter means no heartbeat has ever carried a
+  // counter pair, and rendering it as "0 B" would tell the operator the tunnel
+  // is idle when the truth is that nothing has reported. Core's formatFileSize
+  // maps null to '0 B', so the component keeps a wrapper for exactly this — and
+  // that wrapper needs a test, or the next consolidation deletes it.
+
+  it('renders measured-zero traffic as "0 B", not as unmeasured', async () => {
+    mockGetPeers.mockResolvedValue(
+      peersResponse([{ ...PEER_HUB, rx_bytes: 0, tx_bytes: 0 }]),
+    );
+    render(<PeerList networkId="net-abc" />);
+    fireEvent.click(await waitFor(() => screen.getByTitle('Expand details')));
+    await waitFor(() =>
+      expect(screen.getByText('0 B / 0 B')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/not measured/)).not.toBeInTheDocument();
+  });
+
+  it('renders null counters as "not measured", not as zero', async () => {
+    mockGetPeers.mockResolvedValue(
+      peersResponse([{ ...PEER_HUB, rx_bytes: null, tx_bytes: null }]),
+    );
+    render(<PeerList networkId="net-abc" />);
+    fireEvent.click(await waitFor(() => screen.getByTitle('Expand details')));
+    await waitFor(() =>
+      expect(screen.getByText('not measured / not measured')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/0 B/)).not.toBeInTheDocument();
+  });
+
+  it('formats measured counters through the shared size ladder', async () => {
+    mockGetPeers.mockResolvedValue(
+      peersResponse([{ ...PEER_HUB, rx_bytes: 1536, tx_bytes: 2 * 1024 ** 3 }]),
+    );
+    render(<PeerList networkId="net-abc" />);
+    fireEvent.click(await waitFor(() => screen.getByTitle('Expand details')));
+    await waitFor(() =>
+      expect(screen.getByText('1.5 KB / 2.0 GB')).toBeInTheDocument(),
+    );
+  });
+
   // ── Status badge colours ─────────────────────────────────────────────────────
 
   it('renders the status text for each peer', async () => {

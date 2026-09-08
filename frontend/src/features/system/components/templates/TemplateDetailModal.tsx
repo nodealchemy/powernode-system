@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FileText, Server, Package, Settings, Globe, Lock, User, Calendar, Edit2, Trash2 } from 'lucide-react';
+import { formatDateTime } from '@/shared/utils/formatters';
 import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -189,17 +190,6 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Format date
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
   // Tab content components
   const InfoTab = () => (
     <div className="space-y-6">
@@ -286,11 +276,11 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
       <div className="flex items-center gap-6 text-sm text-theme-tertiary">
         <div className="flex items-center gap-1">
           <Calendar className="w-4 h-4" />
-          Created: {template?.created_at ? formatDate(template.created_at) : '-'}
+          Created: {template?.created_at ? formatDateTime(template.created_at) : '-'}
         </div>
         <div className="flex items-center gap-1">
           <Calendar className="w-4 h-4" />
-          Updated: {template?.updated_at ? formatDate(template.updated_at) : '-'}
+          Updated: {template?.updated_at ? formatDateTime(template.updated_at) : '-'}
         </div>
       </div>
     </div>

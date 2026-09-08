@@ -683,6 +683,10 @@ describe('OperationDetailModal', () => {
     // Multiple "—" characters exist for timestamps; just verify the label is present
   });
 
+  // Compact 's', not ' seconds': this modal's copy was the only place that spelled
+  // the unit out, and it did so only in the sub-minute branch — the same function
+  // then rendered '1m 30s'. Core's formatDuration is compact throughout
+  // (IMP-c11d5ad755b8), which also makes this screen agree with OperationList.
   it('formats duration in seconds when task ran for less than a minute', async () => {
     const now = new Date();
     const startedAt = new Date(now.getTime() - 30 * 1000).toISOString();
@@ -699,7 +703,7 @@ describe('OperationDetailModal', () => {
 
     await waitForCommand();
     await waitFor(() =>
-      expect(screen.getByText(/\d+ seconds/)).toBeInTheDocument(),
+      expect(screen.getByText(/^\d+s$/)).toBeInTheDocument(),
     );
   });
 

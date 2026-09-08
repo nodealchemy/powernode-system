@@ -6,6 +6,7 @@ import type {
   SdwanFlowSample,
   SdwanIpfixCollector,
 } from '@system/features/system/types/sdwan.types';
+import { formatFileSize } from '@/shared/utils/formatters';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 
@@ -224,7 +225,7 @@ export const FlowSamplesTab: React.FC = () => {
                     <span className={protocolBadgeClass(s.protocol_label)}>{s.protocol_label}</span>
                   </td>
                   <td className="p-3 text-right text-theme-secondary">
-                    {formatBytes(s.octet_count)}
+                    {formatFileSize(s.octet_count)}
                   </td>
                   <td className="p-3 text-right text-theme-secondary">
                     {s.packet_count.toLocaleString()}
@@ -273,9 +274,3 @@ function protocolBadgeClass(label: string): string {
   }
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}

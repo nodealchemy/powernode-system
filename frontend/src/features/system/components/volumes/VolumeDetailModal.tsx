@@ -11,6 +11,7 @@ import {
   RotateCcw,
   AlertTriangle
 } from 'lucide-react';
+import { formatDateTime } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
 import { FormField } from '@/shared/components/ui/FormField';
 import { Button } from '@/shared/components/ui/Button';
@@ -396,17 +397,6 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
     return `${sizeGb} GB`;
   };
 
-  // Format date
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
   return (
     <>
     <Modal
@@ -535,11 +525,11 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                 <div className="flex items-center gap-6 text-sm text-theme-tertiary pt-4 border-t border-theme">
                   <div className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
-                    Created: {formatDate(volume.created_at)}
+                    Created: {formatDateTime(volume.created_at)}
                   </div>
                   <div className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
-                    Updated: {formatDate(volume.updated_at)}
+                    Updated: {formatDateTime(volume.updated_at)}
                   </div>
                 </div>
 
@@ -642,7 +632,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                                   {snap.name || snap.id}
                                 </p>
                                 <p className="text-xs text-theme-tertiary">
-                                  {snap.created_at ? formatDate(snap.created_at) : '—'}
+                                  {snap.created_at ? formatDateTime(snap.created_at) : '—'}
                                   {typeof snap.size_gb === 'number' ? ` · ${formatSize(snap.size_gb)}` : ''}
                                 </p>
                               </div>

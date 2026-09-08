@@ -15,6 +15,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { StatusBadge } from '../shared/StatusBadge';
+import { formatDuration, formatTimestamp } from '@/shared/utils/formatters';
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -139,24 +140,6 @@ export const OperationList: React.FC<OperationListProps> = ({
       description: p.description,
     } as Partial<SystemTask>),
   });
-
-  const formatDateTime = (dateString?: string) => {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleString();
-  };
-
-  const formatDuration = (operation: SystemTask) => {
-    if (!operation.started_at) return '—';
-    const start = new Date(operation.started_at).getTime();
-    const end = operation.completed_at
-      ? new Date(operation.completed_at).getTime()
-      : Date.now();
-    const duration = Math.floor((end - start) / 1000);
-
-    if (duration < 60) return `${duration}s`;
-    if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`;
-    return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
-  };
 
   // Click-to-expand state — Set<id> so multiple rows can be open at once.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -296,7 +279,7 @@ export const OperationList: React.FC<OperationListProps> = ({
 
                 <td className="py-3 px-4">
                   <span className="text-sm text-theme-secondary">
-                    {formatDuration(operation)}
+                    {formatDuration(operation.started_at, operation.completed_at)}
                   </span>
                 </td>
 
@@ -329,7 +312,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Duration</label>
-                        <p className="text-theme-primary">{formatDuration(operation)}</p>
+                        <p className="text-theme-primary">{formatDuration(operation.started_at, operation.completed_at)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resource</label>
@@ -345,15 +328,15 @@ export const OperationList: React.FC<OperationListProps> = ({
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Scheduled</label>
-                        <p className="text-theme-primary text-xs">{formatDateTime(operation.scheduled_at)}</p>
+                        <p className="text-theme-primary text-xs">{formatTimestamp(operation.scheduled_at)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Started</label>
-                        <p className="text-theme-primary text-xs">{formatDateTime(operation.started_at)}</p>
+                        <p className="text-theme-primary text-xs">{formatTimestamp(operation.started_at)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Completed</label>
-                        <p className="text-theme-primary text-xs">{formatDateTime(operation.completed_at)}</p>
+                        <p className="text-theme-primary text-xs">{formatTimestamp(operation.completed_at)}</p>
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Operation ID</label>
@@ -443,7 +426,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                 label={statusLabels[operation.status] || operation.status}
               />
               <span className="text-xs text-theme-tertiary">
-                {formatDateTime(operation.started_at || operation.created_at)}
+                {formatTimestamp(operation.started_at || operation.created_at)}
               </span>
             </div>
 
@@ -469,7 +452,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Duration</label>
-                  <p className="text-theme-primary">{formatDuration(operation)}</p>
+                  <p className="text-theme-primary">{formatDuration(operation.started_at, operation.completed_at)}</p>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Initiated By</label>
@@ -481,11 +464,11 @@ export const OperationList: React.FC<OperationListProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Started</label>
-                  <p className="text-theme-primary text-xs">{formatDateTime(operation.started_at)}</p>
+                  <p className="text-theme-primary text-xs">{formatTimestamp(operation.started_at)}</p>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Completed</label>
-                  <p className="text-theme-primary text-xs">{formatDateTime(operation.completed_at)}</p>
+                  <p className="text-theme-primary text-xs">{formatTimestamp(operation.completed_at)}</p>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Operation ID</label>

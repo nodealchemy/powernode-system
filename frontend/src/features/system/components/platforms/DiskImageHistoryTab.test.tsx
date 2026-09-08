@@ -352,13 +352,17 @@ describe('DiskImageHistoryTab', () => {
     expect(screen.getByText(/2 attempts/i)).toBeInTheDocument();
   });
 
+  // One decimal, not two: core's formatFileSize uses a single decimal above
+  // bytes at every unit, and adopting it (IMP-c11d5ad755b8) retired this tab's
+  // local two-decimal GB branch. The change is deliberate — the three copies it
+  // replaced disagreed with each other about exactly this.
   it('formats size_bytes as GB for large publications', async () => {
     mockApiList.mockResolvedValue({ publications: [PUB_ACTIVE] }); // 2 GB
 
     renderTab();
 
     await waitFor(() =>
-      expect(screen.getByText('2.00 GB')).toBeInTheDocument(),
+      expect(screen.getByText('2.0 GB')).toBeInTheDocument(),
     );
   });
 

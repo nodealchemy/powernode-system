@@ -10,6 +10,7 @@ import {
   Edit2,
   Trash2
 } from 'lucide-react';
+import { formatDateTime } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -193,17 +194,6 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
       setProviderHasConnection(false);
     }
   }, [isOpen]);
-
-  // Format date
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
 
   return (
     <>
@@ -414,11 +404,11 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                 <div className="flex items-center gap-6 text-sm text-theme-tertiary pt-4 border-t border-theme">
                   <div className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
-                    Created: {formatDate(network.created_at)}
+                    Created: {formatDateTime(network.created_at)}
                   </div>
                   <div className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
-                    Updated: {formatDate(network.updated_at)}
+                    Updated: {formatDateTime(network.updated_at)}
                   </div>
                 </div>
               </div>
