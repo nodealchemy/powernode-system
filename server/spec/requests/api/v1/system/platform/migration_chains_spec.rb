@@ -182,9 +182,57 @@ RSpec.describe "Api::V1::System::Platform::MigrationChains", type: :request do
       expect(response).to have_http_status(:unprocessable_content)
     end
 
+    # IMP-0b89e9418f64. The controller header claimed cancel was legal from
+    # planned OR in_flight; the model's TRANSITIONS allow in_flight → completed
+    # or failed only, so an operator cancelling a chain that is mid-hop — the
+    # STALLED chain the whole operator surface exists for — is refused. The
+    # header was the wrong half; the behaviour is deliberate, because
+    # cancelling mid-hop needs a defined rollback of the hop in flight and none
+    # exists. This pins the refusal AND its reason so the two cannot drift
+    # apart again silently.
+    it "422s an in_flight chain, naming the state, since mid-hop cancel has no rollback" do
+      chain.update!(status: "in_flight", started_at: ::Time.current)
+
+      post "#{base}/#{chain.id}/cancel", headers: auth_headers_for(canceller)
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to eq("Chain is in_flight and cannot be cancelled")
+      expect(chain.reload.status).to eq("in_flight")
+    end
+
+    it "keeps the model as the single source of truth for what cancel accepts" do
+      # The controller gates on can_transition_to?, so the model's table is the
+      # only place the legal set is defined. A header or a UI that disagrees is
+      # the thing that is wrong.
+      expect(::System::MigrationChain::TRANSITIONS.fetch("planned")).to include("cancelled")
+      expect(::System::MigrationChain::TRANSITIONS.fetch("in_flight")).not_to include("cancelled")
+    end
+
     it "forbids without cancel permission" do
       post "#{base}/#{chain.id}/cancel", headers: auth_headers_for(operator)
       expect(response).to have_http_status(:forbidden)
+    end
+  end
+
+  # The header is documentation an operator and a UI author both read; a stale
+  # claim here is what sent the chains UI looking for an in-flight cancel.
+  describe "controller documentation" do
+    it "does not claim cancel is legal from in_flight" do
+      # Force the autoload FIRST: config.eager_load is off in test unless CI,
+      # and const_source_location on a not-yet-loaded constant reports
+      # Zeitwerk's shim (zeitwerk/cref.rb) rather than the source file — which
+      # would make the negative arm below pass vacuously. Same precedent as
+      # spec/lib/powernode/gate_registry_coherence_spec.rb. Reading the file
+      # that DEFINES the class also means no relative path to rot.
+      ::Api::V1::System::Platform::MigrationChainsController
+      path, = Object.const_source_location(
+        "Api::V1::System::Platform::MigrationChainsController"
+      )
+      raise "controller has no source location" if path.nil?
+      expect(path).to end_with("migration_chains_controller.rb")
+      source = File.read(path)
+      expect(source).not_to include("planned/in_flight → cancelled")
+      expect(source).to include("planned → cancelled")
     end
   end
 end

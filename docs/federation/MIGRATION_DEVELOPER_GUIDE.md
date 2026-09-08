@@ -306,8 +306,12 @@ them:
 - **Auto-recovery does not.** The sweep **skips** a stalled chain rather than
   retrying it — there is no reconciler that re-drives a stuck `transferring`
   hop, no dedicated sensor, and no automatic retry/backoff. Recovery is
-  **operator-driven**: the operator inspects the governance finding and either
-  cancels the chain or hand-advances it via the operator API.
+  **operator-driven**: the operator inspects the governance finding and
+  hand-advances it via the operator API
+  (`POST /api/v1/system/platform/migration_chains/:id/advance`). Cancel is NOT
+  a recovery route for a stalled chain — a stalled chain is `in_flight`, and
+  `MigrationChain::TRANSITIONS` has no `in_flight → cancelled` edge, so the
+  cancel endpoint answers 422. Cancel applies to a `planned` chain only.
 - **Audit shipment is write-only.** `Federation::AuditShipmentService` /
   `System::FederationAuditShipment` ship a WORM audit trail; they do **not**
   walk `migration_chains` to reconcile stuck transfers. Don't mistake audit

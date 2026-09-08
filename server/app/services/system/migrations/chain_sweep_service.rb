@@ -82,8 +82,11 @@ module System
       end
 
       # Don't keep retrying a chain that's gone past STALL_THRESHOLD
-      # without making progress — governance will surface it; operator
-      # decides whether to cancel or hand-advance.
+      # without making progress — governance will surface it and the operator
+      # hand-advances it (POST .../migration_chains/:id/advance). NOT cancel:
+      # a stalled chain is in_flight, and TRANSITIONS has no in_flight →
+      # cancelled edge, so that call 422s (IMP-0b89e9418f64). Skipping here
+      # also means the chain will not reach a terminal state on its own.
       def stalled?(chain)
         return false unless chain.status == "in_flight"
         return false unless chain.started_at

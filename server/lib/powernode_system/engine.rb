@@ -303,7 +303,7 @@ module PowernodeSystem
                      grant: { admin: true }
           permission "system.migrations.apply", "Compose, advance, or run multi-hop migration chains",
                      grant: { admin: true }
-          permission "system.migrations.cancel", "Cancel an active multi-hop migration chain",
+          permission "system.migrations.cancel", "Cancel a planned multi-hop migration chain (not one already in flight)",
                      grant: { admin: true }
 
           # ---------------------------------------------------------------

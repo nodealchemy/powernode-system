@@ -522,9 +522,10 @@ describe('MigrationChainsPanel', () => {
   });
 
   it('does not offer Cancel on an in-flight chain, and says why', async () => {
-    // MigrationChain::TRANSITIONS gives in_flight only completed|failed. The
-    // controller's own header comment claims planned/in_flight → cancelled and
-    // is wrong; the cancel action guards on can_transition_to? and 422s.
+    // MigrationChain::TRANSITIONS gives in_flight only completed|failed, and
+    // the cancel action guards on can_transition_to?, so offering Cancel here
+    // would be a button that always 422s. (The controller header used to claim
+    // planned/in_flight → cancelled; corrected in IMP-0b89e9418f64.)
     mockGet
       .mockResolvedValueOnce(envelope({ migration_chains: [CHAIN_IN_FLIGHT], count: 1 }))
       .mockResolvedValue(envelope({ migration_chain: CHAIN_DETAIL }));

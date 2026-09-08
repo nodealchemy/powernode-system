@@ -67,7 +67,7 @@ export const platformMigrationChainsApi = {
     return extractData(response);
   },
 
-  /** planned | in_flight → cancelled (terminal). */
+  /** planned → cancelled (terminal). in_flight is refused with 422 — MigrationChain::TRANSITIONS is the authority. */
   cancel: async (id: string): Promise<MigrationChainDetail> => {
     const response = await apiClient.post<ApiEnvelope<{ migration_chain: MigrationChainDetail }>>(
       `${BASE}/${id}/cancel`,
