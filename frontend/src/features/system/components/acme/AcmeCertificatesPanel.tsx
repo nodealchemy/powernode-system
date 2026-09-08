@@ -17,6 +17,7 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { acmeCertificatesApi } from '../../services/api/acmeCertificatesApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   AcmeCertificateSummary,
   AcmeCertificateStatus,
@@ -204,14 +205,22 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
           </Button>
         </header>
 
-        {!loading && certs.length === 0 && (
-          <div className="p-12 text-center text-theme-secondary text-sm">
-            No certificates yet. Click "Request certificate" to issue one against Let's
-            Encrypt using one of your configured DNS provider credentials.
-          </div>
-        )}
-
-        {certs.length > 0 && (
+        {/* Header stays OUTSIDE the container: it carries the count summary and
+            the primary action, which must stay reachable when the list is
+            empty — the container's empty branch replaces everything it wraps. */}
+        <ResponsiveListContainer
+          loading={loading}
+          totalCount={certs.length}
+          filteredCount={certs.length}
+          emptyState={{
+            icon: ShieldCheck,
+            title: 'No certificates yet',
+            description: 'Click "Request certificate" to issue one against Let\'s Encrypt using one of your configured DNS provider credentials.',
+          }}
+        >
+        {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+            blank this table on narrow screens. Body renders at every width. */}
+        <ResponsiveListContainer.Body>
           <table className="w-full text-sm">
             <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
               <tr>
@@ -239,7 +248,8 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
               ))}
             </tbody>
           </table>
-        )}
+        </ResponsiveListContainer.Body>
+        </ResponsiveListContainer>
       </div>
 
       <RequestCertificateModal

@@ -43,8 +43,9 @@ const EXPECTED_WITHOUT_CONTAINER: readonly string[] = [
   'features/system/components/platform/PeerTable.tsx',
 
   // --- UNMIGRATED (delete the line as each is converted) ---
-  'features/system/components/acme/AcmeCertificatesPanel.tsx',
-  'features/system/components/acme/AcmeDnsCredentialsPanel.tsx',
+  // Landed after this ratchet did, in another lane. The equality oracle is
+  // what caught it: a ceiling would have absorbed it silently.
+  'features/system/components/federation_hub/FulfillmentTab.tsx',
   'features/system/components/ingress/IngressRoutesPanel.tsx',
   'features/system/components/platform/MigrationChainsPanel.tsx',
   'features/system/components/platform/MigrationsPanel.tsx',
