@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Filter, Pencil, Trash2, Power, PowerOff, ChevronRight, ChevronDown } from 'lucide-react';
 import { EntityLink } from '@/shared/components/entity';
-import { sdwanApi } from '../../../services/api/sdwanApi';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
-import type { SdwanRoutePolicy, SdwanRoutePolicyStatement } from '../../../types/sdwan.types';
+import type { SdwanRoutePolicy, SdwanRoutePolicyStatement } from '@system/features/system/types/sdwan.types';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface RoutePoliciesListProps {

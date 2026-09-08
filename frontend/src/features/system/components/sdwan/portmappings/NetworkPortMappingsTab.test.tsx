@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { NetworkPortMappingsTab } from './NetworkPortMappingsTab';
-import type { SdwanPortMapping, SdwanPeer, SdwanVirtualIp } from '../../../types/sdwan.types';
+import type { SdwanPortMapping, SdwanPeer, SdwanVirtualIp } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Mocks

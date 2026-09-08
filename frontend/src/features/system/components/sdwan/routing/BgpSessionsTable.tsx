@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Activity, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
-import { sdwanApi } from '../../../services/api/sdwanApi';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
-import type { SdwanBgpSession } from '../../../types/sdwan.types';
+import type { SdwanBgpSession } from '@system/features/system/types/sdwan.types';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface BgpSessionsTableProps {

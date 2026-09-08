@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Globe, Pencil, Trash2, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
-import { sdwanApi } from '../../../services/api/sdwanApi';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import { StatusBadge } from '../../shared/StatusBadge';
-import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
+import type { SdwanVirtualIp, SdwanPeer } from '@system/features/system/types/sdwan.types';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface VirtualIpListProps {

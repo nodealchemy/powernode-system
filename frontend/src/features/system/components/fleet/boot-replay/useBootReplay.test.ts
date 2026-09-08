@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { useBootReplay } from './useBootReplay';
-import type { BootReplayResponse } from '../../../services/api/bootReplayApi';
+import type { BootReplayResponse } from '@system/features/system/services/api/bootReplayApi';
 
 // =============================================================================
 // Mocks

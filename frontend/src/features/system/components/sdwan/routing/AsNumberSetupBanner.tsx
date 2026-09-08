@@ -2,10 +2,10 @@ import React, { useState } from 'react';
 import { Cpu, CheckCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { sdwanApi } from '../../../services/api/sdwanApi';
-import { isPendingApproval } from '../../../services/api/helpers';
-import { pendingApprovalNotice } from '../../../utils/pendingApproval';
-import type { SdwanAccountBgp } from '../../../types/sdwan.types';
+import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
+import type { SdwanAccountBgp } from '@system/features/system/types/sdwan.types';
 
 interface AsNumberSetupBannerProps {
   accountBgp: SdwanAccountBgp | null;

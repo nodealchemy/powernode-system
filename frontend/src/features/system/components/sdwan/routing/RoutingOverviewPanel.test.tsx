@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { RoutingOverviewPanel } from './RoutingOverviewPanel';
-import type { SdwanRoutingOverview } from '../../../types/sdwan.types';
+import type { SdwanRoutingOverview } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
 // Fixtures

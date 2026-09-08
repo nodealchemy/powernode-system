@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { BootEventDetailPanel } from './BootEventDetailPanel';
-import type { BootEvent } from '../../../services/api/bootReplayApi';
+import type { BootEvent } from '@system/features/system/services/api/bootReplayApi';
 
 describe('BootEventDetailPanel', () => {
   it('renders the empty-state message when event is null', () => {

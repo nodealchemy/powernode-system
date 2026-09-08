@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { BootReplayTimeline } from './BootReplayTimeline';
-import type { BootEvent, BootReplayResponse } from '../../../services/api/bootReplayApi';
+import type { BootEvent, BootReplayResponse } from '@system/features/system/services/api/bootReplayApi';
 
 const mockUseBootReplay = jest.fn();
 
