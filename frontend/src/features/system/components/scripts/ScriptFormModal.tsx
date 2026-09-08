@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileCode, AlertCircle } from 'lucide-react';
+import { FileCode, AlertCircle } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -133,28 +134,16 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <FileCode className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? 'Edit Script' : 'Create Script'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? 'Edit Script' : 'Create Script'}
+      icon={<FileCode className="w-6 h-6" />}
+      maxWidth="2xl"
+    >
           <form onSubmit={handleSubmit}>
-            <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div className="space-y-4">
               {/* Name and Type Row */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -265,7 +254,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
               </div>
             </div>
 
-            <div className="flex justify-end gap-3 p-4 border-t border-theme">
+            <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-theme">
               <Button type="button" variant="outline" onClick={onClose}>
                 Cancel
               </Button>
@@ -281,9 +270,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
               </Button>
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
