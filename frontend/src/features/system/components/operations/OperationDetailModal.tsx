@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
   Activity,
@@ -20,6 +20,7 @@ import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { resolveOperableType } from '@system/features/system/entityRegistry';
+import { useSystemWebSocket } from '@system/features/system/hooks/useSystemWebSocket';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import type { SystemTask } from '@system/features/system/types/system.types';
@@ -42,6 +43,13 @@ const statusLabels: Record<string, string> = {
   aborted: 'Aborted',
   cancelled: 'Cancelled'
 };
+
+// Statuses a task can still move on from. Anything else is terminal, so there
+// is nothing left to watch for.
+const ACTIVE_STATUSES = [ 'pending', 'scheduled', 'running' ];
+
+// Fallback refresh cadence, used only while the SystemChannel socket is down.
+const POLL_INTERVAL_MS = 5000;
 
 const statusColors: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'secondary' | 'primary'> = {
   pending: 'warning',
@@ -112,6 +120,12 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
   // the value from THAT render, not the current one — a ref is what makes the
   // stale-target check in runStopAction actually compare two different things.
   const currentOperationIdRef = useRef(operationId);
+  // Monotonic fetch token. The poll makes concurrent and out-of-order GETs
+  // routine, so every response checks that it is still the newest one before
+  // it writes: otherwise a slow response for the previous operation lands on
+  // top of the current one, and a poll issued just before an abort reverts the
+  // status the abort's own refresh had already applied.
+  const fetchSeqRef = useRef(0);
   const [operation, setOperation] = useState<SystemTask | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('info');
@@ -126,31 +140,89 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 
   useEffect(() => {
     if (isOpen && operationId) {
+      const seq = ++fetchSeqRef.current;
       setLoading(true);
       setActiveTab('info');
 
       systemApi.getTask(operationId)
         .then(data => {
+          if (seq !== fetchSeqRef.current) return;
           setOperation(data);
         })
         .catch(() => {
+          if (seq !== fetchSeqRef.current) return;
           setOperation(null);
         })
         .finally(() => {
+          if (seq !== fetchSeqRef.current) return;
           setLoading(false);
         });
     }
   }, [isOpen, operationId]);
 
-  const refreshOperation = async () => {
+  const refreshOperation = useCallback(async () => {
     if (!operationId) return;
+    const seq = ++fetchSeqRef.current;
     try {
       const data = await systemApi.getTask(operationId);
+      if (seq !== fetchSeqRef.current || currentOperationIdRef.current !== operationId) return;
       setOperation(data);
     } catch {
       // Silently fail refresh
     }
-  };
+  }, [operationId]);
+
+  // Live updates. System::Task#broadcast_update pushes a full task frame on
+  // every status change and a throttled progress frame in between; that stream
+  // is what keeps OperationList moving, so without it the drill-down an
+  // operator opened from a moving row sits frozen at its opening value.
+  //
+  // Frames are MERGED, never substituted: SystemChannel#serialize_task_static
+  // carries only the scalar columns, so replacing the loaded task with a frame
+  // would blank the events timeline, the options blob, Exclusive and
+  // Initiated By.
+  const applyLiveUpdate = useCallback(
+    (update: Partial<SystemTask> & { id?: string }) => {
+      setOperation(prev => (prev && update.id === prev.id ? { ...prev, ...update } : prev));
+    },
+    []
+  );
+
+  // An open transport is not the same as a live feed: SystemChannel#subscribed
+  // rejects an unauthorized subscription, and a rejection never reaches
+  // `isConnected`. Gating the fallback on the transport alone would therefore
+  // leave the modal frozen — the exact defect this fixes — in the one case
+  // where no frames ever arrive. `connection_established` is transmitted only
+  // on an accepted subscription, so that is what the poll defers to.
+  const [liveSubscribed, setLiveSubscribed] = useState(false);
+
+  const { isConnected: liveSocketConnected } = useSystemWebSocket({
+    onConnected: () => setLiveSubscribed(true),
+    onError: () => setLiveSubscribed(false),
+    onOperationUpdate: (op) => applyLiveUpdate(op as unknown as Partial<SystemTask> & { id: string }),
+    onOperationProgress: (p) => applyLiveUpdate({
+      id: p.operation_id,
+      status: p.status,
+      progress: p.progress,
+      description: p.description
+    })
+  });
+
+  useEffect(() => {
+    if (!liveSocketConnected) setLiveSubscribed(false);
+  }, [liveSocketConnected]);
+
+  const liveUpdatesActive = liveSocketConnected && liveSubscribed;
+
+  // Fallback poll: only while the live feed is absent and the task can still move.
+  const isActiveOperation = operation ? ACTIVE_STATUSES.includes(operation.status) : false;
+
+  useEffect(() => {
+    if (!isOpen || !operationId || !isActiveOperation || liveUpdatesActive) return;
+
+    const timer = setInterval(() => { void refreshOperation(); }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [isOpen, operationId, isActiveOperation, liveUpdatesActive, refreshOperation]);
 
   // Cancel (pending/scheduled) and Abort (running) are the two AASM events an
   // operator may drive from here; they differ only in which state they are
