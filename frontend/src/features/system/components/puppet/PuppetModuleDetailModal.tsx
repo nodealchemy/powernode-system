@@ -20,6 +20,7 @@ import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { PuppetResourceForm } from '@system/features/system/components/puppet/PuppetResourceForm';
 import type { SystemPuppetModule, SystemPuppetResource } from '@system/features/system/types/system.types';
@@ -44,6 +45,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, close: closeConfirmation, ConfirmationDialog } = useConfirmation();
   const canCreateResources = hasPermission('system.puppet.create');
   const canUpdateResources = hasPermission('system.puppet.update');
   const canDeleteResources = hasPermission('system.puppet.delete');
@@ -81,8 +83,14 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
         .finally(() => {
           setLoading(false);
         });
+    } else {
+      // This modal returns `null` when closed rather than unmounting, so
+      // useConfirmation's state outlives it: a confirmation the operator left
+      // open would re-appear on the next open, still bound to the PREVIOUS
+      // resource's onConfirm.
+      closeConfirmation();
     }
-  }, [isOpen, moduleId]);
+  }, [isOpen, moduleId, closeConfirmation]);
 
   const handleResourceSaved = (saved: SystemPuppetResource) => {
     setResources(prev => {
@@ -95,17 +103,23 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
     setResourceFormState(null);
   };
 
-  const handleDeleteResource = async (resource: SystemPuppetResource) => {
+  const handleDeleteResource = (resource: SystemPuppetResource) => {
     if (!moduleId) return;
-    if (!window.confirm(`Delete resource "${resource.name}"? This cannot be undone.`)) return;
-
-    try {
-      await systemApi.deletePuppetResource(moduleId, resource.id);
-      setResources(prev => prev.filter(r => r.id !== resource.id));
-      addNotification({ type: 'success', message: `Deleted ${resource.name}` });
-    } catch {
-      addNotification({ type: 'error', message: `Failed to delete ${resource.name}` });
-    }
+    confirm({
+      title: 'Delete resource',
+      message: `Delete resource "${resource.name}"? This cannot be undone.`,
+      confirmLabel: 'Delete resource',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await systemApi.deletePuppetResource(moduleId, resource.id);
+          setResources(prev => prev.filter(r => r.id !== resource.id));
+          addNotification({ type: 'success', message: `Deleted ${resource.name}` });
+        } catch {
+          addNotification({ type: 'error', message: `Failed to delete ${resource.name}` });
+        }
+      },
+    });
   };
 
   if (!isOpen) return null;
@@ -453,6 +467,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
   };
 
   return (
+    <>
     <div className="fixed inset-0 z-50 overflow-y-auto">
       <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
 
@@ -539,6 +554,9 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
         </div>
       </div>
     </div>
+
+    {ConfirmationDialog}
+    </>
   );
 };
 

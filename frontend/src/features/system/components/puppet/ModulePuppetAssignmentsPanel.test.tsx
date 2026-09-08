@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ModulePuppetAssignmentsPanel } from './ModulePuppetAssignmentsPanel';
 import type { PuppetAssignment } from '@system/features/system/services/api/puppetApi';
 
@@ -123,7 +123,6 @@ describe('ModulePuppetAssignmentsPanel', () => {
   });
 
   it('removes an assignment after confirm', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockDeleteAssignment.mockResolvedValue(undefined);
 
     render(<ModulePuppetAssignmentsPanel moduleId="mod-1" />);
@@ -131,10 +130,35 @@ describe('ModulePuppetAssignmentsPanel', () => {
 
     fireEvent.click(screen.getByTitle('Remove assignment'));
 
+    // Removal goes through the shared themed ConfirmationModal
+    // (IMP-082f700a1eec) rather than window.confirm.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /remove puppet assignment/i })).toBeInTheDocument()
+    );
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^remove assignment$/i })
+    );
+
     await waitFor(() =>
       expect(mockDeleteAssignment).toHaveBeenCalledWith('mod-1', 'mpa-1')
     );
     await waitFor(() => expect(mockGetAssignments).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not remove an assignment when the confirmation is cancelled', async () => {
+    render(<ModulePuppetAssignmentsPanel moduleId="mod-1" />);
+    await screen.findByText('profile_base');
+
+    fireEvent.click(screen.getByTitle('Remove assignment'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /remove puppet assignment/i })).toBeInTheDocument()
+    );
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i })
+    );
+
+    expect(mockDeleteAssignment).not.toHaveBeenCalled();
   });
 
   it('hides write controls without puppet write permissions', async () => {

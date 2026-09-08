@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ModuleVersionsPanel } from './ModuleVersionsPanel';
 import type { SystemNodeModuleVersion } from '@system/features/system/types/system.types';
 
@@ -208,7 +208,6 @@ describe('ModuleVersionsPanel promote', () => {
 
 describe('ModuleVersionsPanel rollback', () => {
   it('rolls the module spec back to a prior version after confirm', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockRollbackModule.mockResolvedValue({
       node_module: { id: 'mod-a' },
       new_version: { id: 'ver-3', version_number: 3, changelog: null },
@@ -221,6 +220,15 @@ describe('ModuleVersionsPanel rollback', () => {
     // Rollback targets a NON-current version — v2 here (v1 is current).
     fireEvent.click(screen.getByTitle('Roll back to this version'));
 
+    // Rollback now goes through the shared themed ConfirmationModal
+    // (IMP-082f700a1eec) rather than window.confirm.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /roll back module spec/i })).toBeInTheDocument()
+    );
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^roll back$/i })
+    );
+
     await waitFor(() =>
       expect(mockRollbackModule).toHaveBeenCalledWith('mod-a', { targetVersionId: 'ver-2' })
     );
@@ -229,12 +237,17 @@ describe('ModuleVersionsPanel rollback', () => {
   });
 
   it('does not roll back when the confirm is dismissed', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
-
     render(<ModuleVersionsPanel moduleId="mod-a" canUpdate />);
     await screen.findByText('v2');
 
     fireEvent.click(screen.getByTitle('Roll back to this version'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /roll back module spec/i })).toBeInTheDocument()
+    );
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i })
+    );
 
     expect(mockRollbackModule).not.toHaveBeenCalled();
   });

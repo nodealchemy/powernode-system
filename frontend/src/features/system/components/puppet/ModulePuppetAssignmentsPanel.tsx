@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { puppetApi } from '@system/features/system/services/api/puppetApi';
 import type { PuppetAssignment } from '@system/features/system/services/api/puppetApi';
 import type { SystemPuppetModule } from '@system/features/system/types/system.types';
@@ -22,6 +23,7 @@ export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanel
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const canCreate = hasPermission('system.puppet.create');
   const canUpdate = hasPermission('system.puppet.update');
   const canDelete = hasPermission('system.puppet.delete');
@@ -62,21 +64,26 @@ export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanel
     }
   }, [moduleId, addNotification, refresh]);
 
-  const handleRemove = useCallback(async (assignment: PuppetAssignment) => {
-    if (!window.confirm(
-      `Remove puppet module "${assignment.puppet_module_name ?? assignment.puppet_module_id}" from this module?`
-    )) return;
-    setBusyId(assignment.id);
-    try {
-      await puppetApi.deletePuppetAssignment(moduleId, assignment.id);
-      void refresh();
-      addNotification({ type: 'success', message: 'Puppet assignment removed' });
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Remove failed' });
-    } finally {
-      setBusyId(null);
-    }
-  }, [moduleId, addNotification, refresh]);
+  const handleRemove = useCallback((assignment: PuppetAssignment) => {
+    confirm({
+      title: 'Remove puppet assignment',
+      message: `Remove puppet module "${assignment.puppet_module_name ?? assignment.puppet_module_id}" from this module?`,
+      confirmLabel: 'Remove assignment',
+      variant: 'danger',
+      onConfirm: async () => {
+        setBusyId(assignment.id);
+        try {
+          await puppetApi.deletePuppetAssignment(moduleId, assignment.id);
+          void refresh();
+          addNotification({ type: 'success', message: 'Puppet assignment removed' });
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Remove failed' });
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
+  }, [confirm, moduleId, addNotification, refresh]);
 
   return (
     <div className="space-y-3">
@@ -168,6 +175,8 @@ export const ModulePuppetAssignmentsPanel: React.FC<ModulePuppetAssignmentsPanel
           }}
         />
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

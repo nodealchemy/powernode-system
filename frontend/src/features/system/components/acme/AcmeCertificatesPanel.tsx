@@ -14,6 +14,7 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { useReasonConfirm } from '../../hooks/useReasonConfirm';
 import { acmeCertificatesApi } from '../../services/api/acmeCertificatesApi';
 import type {
@@ -39,7 +40,11 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
   refreshKey = 0,
 }) => {
   const { addNotification } = useNotifications();
-  const { confirmWithReason, ConfirmationDialog } = useReasonConfirm();
+  const { confirmWithReason, ConfirmationDialog: ReasonConfirmationDialog } = useReasonConfirm();
+  // A second, reason-free confirmation slot. `useReasonConfirm` always renders a
+  // reason field, which is wrong for the plain yes/no actions below; each hook
+  // owns exactly one dialog, so the panel keeps one of each and renders both.
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const [certs, setCerts] = useState<AcmeCertificateSummary[]>([]);
   const [issuers, setIssuers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,55 +84,59 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
     void fetchCerts();
   }, [fetchCerts, refreshKey]);
 
-  const handleRequestIssue = async (cert: AcmeCertificateSummary) => {
-    if (
-      !window.confirm(
-        `Request ACME issuance for "${cert.common_name}" (${cert.issuer})?\n\n` +
-          'This calls Let\'s Encrypt + your DNS provider. Typical duration: 60-180s. ' +
-          'The connection stays open; the response is the source of truth.',
-      )
-    ) {
-      return;
-    }
-    setActingId(cert.id);
-    try {
-      await acmeCertificatesApi.requestIssue(cert.id);
-      await fetchCerts();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Issuance failed',
-      });
-      await fetchCerts();
-    } finally {
-      setActingId(null);
-    }
+  const handleRequestIssue = (cert: AcmeCertificateSummary) => {
+    confirm({
+      title: 'Request certificate issuance',
+      message:
+        `Request ACME issuance for "${cert.common_name}" (${cert.issuer})? ` +
+        'This calls Let\'s Encrypt + your DNS provider. Typical duration: 60-180s. ' +
+        'The connection stays open; the response is the source of truth.',
+      confirmLabel: 'Request issuance',
+      variant: 'warning',
+      onConfirm: async () => {
+        setActingId(cert.id);
+        try {
+          await acmeCertificatesApi.requestIssue(cert.id);
+          await fetchCerts();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Issuance failed',
+          });
+          await fetchCerts();
+        } finally {
+          setActingId(null);
+        }
+      },
+    });
   };
 
-  const handleRenew = async (cert: AcmeCertificateSummary) => {
-    if (
-      !window.confirm(
-        `Renew certificate for "${cert.common_name}"?\n\n` +
-          'This calls Let\'s Encrypt + your DNS provider to obtain a fresh cert ' +
-          'using the same account key. Typical duration: 30-120 seconds. ' +
-          'Traefik hot-reloads the cert without dropping connections.',
-      )
-    ) {
-      return;
-    }
-    setActingId(cert.id);
-    try {
-      await acmeCertificatesApi.renew(cert.id);
-      await fetchCerts();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Renewal failed',
-      });
-      await fetchCerts();
-    } finally {
-      setActingId(null);
-    }
+  const handleRenew = (cert: AcmeCertificateSummary) => {
+    confirm({
+      title: 'Renew certificate',
+      message:
+        `Renew certificate for "${cert.common_name}"? ` +
+        'This calls Let\'s Encrypt + your DNS provider to obtain a fresh cert ' +
+        'using the same account key. Typical duration: 30-120 seconds. ' +
+        'Traefik hot-reloads the cert without dropping connections.',
+      confirmLabel: 'Renew certificate',
+      variant: 'warning',
+      onConfirm: async () => {
+        setActingId(cert.id);
+        try {
+          await acmeCertificatesApi.renew(cert.id);
+          await fetchCerts();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Renewal failed',
+          });
+          await fetchCerts();
+        } finally {
+          setActingId(null);
+        }
+      },
+    });
   };
 
   const handleRevoke = (cert: AcmeCertificateSummary) => {
@@ -153,20 +162,27 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
     });
   };
 
-  const handleDelete = async (cert: AcmeCertificateSummary) => {
-    if (!window.confirm(`Delete certificate row for "${cert.common_name}"?`)) return;
-    setActingId(cert.id);
-    try {
-      await acmeCertificatesApi.destroy(cert.id);
-      await fetchCerts();
-    } catch (err: unknown) {
-      addNotification({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Delete failed',
-      });
-    } finally {
-      setActingId(null);
-    }
+  const handleDelete = (cert: AcmeCertificateSummary) => {
+    confirm({
+      title: 'Delete certificate row',
+      message: `Delete certificate row for "${cert.common_name}"?`,
+      confirmLabel: 'Delete certificate',
+      variant: 'danger',
+      onConfirm: async () => {
+        setActingId(cert.id);
+        try {
+          await acmeCertificatesApi.destroy(cert.id);
+          await fetchCerts();
+        } catch (err: unknown) {
+          addNotification({
+            type: 'error',
+            message: err instanceof Error ? err.message : 'Delete failed',
+          });
+        } finally {
+          setActingId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -236,6 +252,7 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
         }}
       />
 
+      {ReasonConfirmationDialog}
       {ConfirmationDialog}
     </>
   );

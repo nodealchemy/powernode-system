@@ -3,6 +3,7 @@ import { History, Undo2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { modulesApi } from '@system/features/system/services/api/modulesApi';
 import type {
   SystemNodeModuleVersion,
@@ -47,6 +48,7 @@ export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
   onModuleChanged,
 }) => {
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const [versions, setVersions] = useState<SystemNodeModuleVersion[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,26 +100,32 @@ export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
     }
   }, [addNotification, refresh]);
 
-  const handleRollback = useCallback(async (version: SystemNodeModuleVersion) => {
-    if (!window.confirm(
-      `Roll the module spec back to v${version.version_number}? ` +
-      'This snapshots a new version from the prior state and repoints the module at it.'
-    )) return;
-    setBusyVersionId(version.id);
-    try {
-      const result = await modulesApi.rollbackModule(moduleId, { targetVersionId: version.id });
-      addNotification({
-        type: 'success',
-        message: `Rolled back to v${version.version_number} (new v${result.new_version.version_number})`,
-      });
-      onModuleChanged?.();
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rollback failed' });
-    } finally {
-      setBusyVersionId(null);
-    }
-  }, [moduleId, addNotification, onModuleChanged, refresh]);
+  const handleRollback = useCallback((version: SystemNodeModuleVersion) => {
+    confirm({
+      title: 'Roll back module spec',
+      message:
+        `Roll the module spec back to v${version.version_number}? ` +
+        'This snapshots a new version from the prior state and repoints the module at it.',
+      confirmLabel: 'Roll back',
+      variant: 'danger',
+      onConfirm: async () => {
+        setBusyVersionId(version.id);
+        try {
+          const result = await modulesApi.rollbackModule(moduleId, { targetVersionId: version.id });
+          addNotification({
+            type: 'success',
+            message: `Rolled back to v${version.version_number} (new v${result.new_version.version_number})`,
+          });
+          onModuleChanged?.();
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Rollback failed' });
+        } finally {
+          setBusyVersionId(null);
+        }
+      },
+    });
+  }, [confirm, moduleId, addNotification, onModuleChanged, refresh]);
 
   return (
     <div className="space-y-3">
@@ -201,6 +209,8 @@ export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
           })}
         </ul>
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };

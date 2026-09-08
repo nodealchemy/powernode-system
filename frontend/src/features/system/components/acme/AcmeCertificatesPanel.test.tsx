@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { AcmeCertificatesPanel } from './AcmeCertificatesPanel';
 import { acmeCertificatesApi } from '../../services/api/acmeCertificatesApi';
@@ -289,14 +289,26 @@ async function confirmRevoke(reason?: string) {
   fireEvent.click(confirmButton);
 }
 
+/**
+ * Drives one of the reason-free confirmations that replaced `window.confirm`
+ * (IMP-082f700a1eec): request-issuance, renew and delete.
+ */
+async function confirmAction(label: RegExp) {
+  // Scoped to the dialog: the row action buttons carry `title` attributes that
+  // a future label rename could collide with.
+  const dialog = await screen.findByTestId('modal');
+  fireEvent.click(within(dialog).getByRole('button', { name: label }));
+}
+
 describe('AcmeCertificatesPanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     // Default DNS creds for modal tests
     mockDnsCredsList.mockResolvedValue(DNS_CREDS_RESPONSE);
-    // handleDelete still uses window.confirm; the revoke REASON now comes from
-    // an in-app confirmation dialog (IMP-e5cba23c32fd).
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    // Every confirmation on this panel is now in-app: the revoke REASON dialog
+    // (IMP-e5cba23c32fd) and the plain issue/renew/delete confirmations
+    // (IMP-082f700a1eec). The spy exists only to prove nothing calls it.
+    jest.spyOn(window, 'confirm');
   });
 
   afterEach(() => {
@@ -562,13 +574,13 @@ describe('AcmeCertificatesPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('calls acmeCertificatesApi.requestIssue with cert id on Issue click after confirm', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
     mockRequestIssue.mockResolvedValue(makeActionResponse(PENDING_CERT));
 
     renderPanel();
     const issueBtn = await waitFor(() => screen.getByTitle('Request ACME issuance'));
     fireEvent.click(issueBtn);
+    await confirmAction(/^request issuance$/i);
 
     await waitFor(() =>
       expect(mockRequestIssue).toHaveBeenCalledWith('cert-pending-1'),
@@ -578,25 +590,25 @@ describe('AcmeCertificatesPanel', () => {
   });
 
   it('does NOT call requestIssue if user cancels the confirm dialog', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
 
     renderPanel();
     const issueBtn = await waitFor(() => screen.getByTitle('Request ACME issuance'));
     fireEvent.click(issueBtn);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     expect(mockRequestIssue).not.toHaveBeenCalled();
   });
 
   it('shows error notification when requestIssue fails', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
     mockRequestIssue.mockRejectedValue(new Error('ACME timeout'));
 
     renderPanel();
     const issueBtn = await waitFor(() => screen.getByTitle('Request ACME issuance'));
     fireEvent.click(issueBtn);
+    await confirmAction(/^request issuance$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -609,19 +621,19 @@ describe('AcmeCertificatesPanel', () => {
   });
 
   it('confirm dialog for Issue contains the common_name and issuer', async () => {
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
 
     renderPanel();
     const issueBtn = await waitFor(() => screen.getByTitle('Request ACME issuance'));
     fireEvent.click(issueBtn);
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining('dev.powernode.net'),
-    );
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining('letsencrypt-staging'),
-    );
+    await screen.findByRole('button', { name: /^request issuance$/i });
+    // The row also renders both strings, so scope to the confirmation dialog
+    // (the panel itself is not a Modal, so this is the only one open).
+    const dialog = within(screen.getByTestId('modal'));
+    expect(dialog.getByText(/dev\.powernode\.net/)).toBeInTheDocument();
+    expect(dialog.getByText(/letsencrypt-staging/)).toBeInTheDocument();
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------
@@ -629,7 +641,6 @@ describe('AcmeCertificatesPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('calls acmeCertificatesApi.renew with cert id on Renew click after confirm', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
     mockRenew.mockResolvedValue(makeActionResponse(VALID_CERT));
 
@@ -638,6 +649,7 @@ describe('AcmeCertificatesPanel', () => {
       screen.getByTitle('Renew now (force ACME renewal — same account key, fresh cert)'),
     );
     fireEvent.click(renewBtn);
+    await confirmAction(/^renew certificate$/i);
 
     await waitFor(() =>
       expect(mockRenew).toHaveBeenCalledWith('cert-valid-1'),
@@ -646,7 +658,6 @@ describe('AcmeCertificatesPanel', () => {
   });
 
   it('does NOT call renew if user cancels the confirm dialog', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
 
     renderPanel();
@@ -654,13 +665,13 @@ describe('AcmeCertificatesPanel', () => {
       screen.getByTitle('Renew now (force ACME renewal — same account key, fresh cert)'),
     );
     fireEvent.click(renewBtn);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     expect(mockRenew).not.toHaveBeenCalled();
   });
 
   it('shows error notification when renew fails', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([VALID_CERT]));
     mockRenew.mockRejectedValue(new Error('LE rate limit'));
 
@@ -669,6 +680,7 @@ describe('AcmeCertificatesPanel', () => {
       screen.getByTitle('Renew now (force ACME renewal — same account key, fresh cert)'),
     );
     fireEvent.click(renewBtn);
+    await confirmAction(/^renew certificate$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -759,13 +771,13 @@ describe('AcmeCertificatesPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('calls acmeCertificatesApi.destroy with cert id after confirm', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
     mockDestroy.mockResolvedValue(undefined);
 
     renderPanel();
     const deleteBtn = await waitFor(() => screen.getByTitle('Delete row'));
     fireEvent.click(deleteBtn);
+    await confirmAction(/^delete certificate$/i);
 
     await waitFor(() =>
       expect(mockDestroy).toHaveBeenCalledWith('cert-pending-1'),
@@ -774,25 +786,36 @@ describe('AcmeCertificatesPanel', () => {
   });
 
   it('does NOT call destroy if user cancels the confirm dialog', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
 
     renderPanel();
     const deleteBtn = await waitFor(() => screen.getByTitle('Delete row'));
     fireEvent.click(deleteBtn);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     expect(mockDestroy).not.toHaveBeenCalled();
   });
 
+  it('never uses window.confirm for the delete confirmation', async () => {
+    mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
+
+    renderPanel();
+    fireEvent.click(await waitFor(() => screen.getByTitle('Delete row')));
+
+    await screen.findByRole('button', { name: /^delete certificate$/i });
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(mockDestroy).not.toHaveBeenCalled();
+  });
+
   it('shows error notification when destroy fails', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([PENDING_CERT]));
     mockDestroy.mockRejectedValue(new Error('Delete failed'));
 
     renderPanel();
     const deleteBtn = await waitFor(() => screen.getByTitle('Delete row'));
     fireEvent.click(deleteBtn);
+    await confirmAction(/^delete certificate$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({

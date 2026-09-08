@@ -102,6 +102,26 @@ const renderTab = (props: React.ComponentProps<typeof CiWebhooksTab> = {}) =>
     </BrowserRouter>,
   );
 
+// Revoke/rotate go through the shared themed ConfirmationModal (IMP-082f700a1eec),
+// not window.confirm — so a test that wants the action to run must click the
+// dialog's confirm button, and one that wants it cancelled clicks Cancel.
+// The row action buttons carry the same accessible name as the dialog's
+// confirm button (both are titled e.g. "Revoke webhook"), so every lookup here
+// is scoped to the dialog rather than the whole screen.
+const confirmDialog = async (heading: RegExp, button: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: button }));
+};
+
+const cancelDialog = async (heading: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }));
+};
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -255,6 +275,22 @@ describe('CiWebhooksTab', () => {
   // Revoke (delete) flow
   // ---------------------------------------------------------------------------
 
+  it('opens the shared themed confirmation dialog for revoke instead of window.confirm', async () => {
+    mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Revoke webhook'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /revoke webhook/i })).toBeInTheDocument(),
+    );
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
   it('calls destroy endpoint and refreshes list after confirming revoke', async () => {
     mockGet
       .mockResolvedValueOnce(listEnvelope([WEBHOOK_A]))
@@ -267,14 +303,16 @@ describe('CiWebhooksTab', () => {
 
     fireEvent.click(screen.getByTitle('Revoke webhook'));
 
+    // The dialog names the webhook it is about to revoke.
+    await waitFor(() =>
+      expect(screen.getByText(/Revoke webhook "main-ci"\?/)).toBeInTheDocument(),
+    );
+    await confirmDialog(/revoke webhook/i, /^revoke webhook$/i);
+
     await waitFor(() =>
       expect(mockDelete).toHaveBeenCalledWith('/system/disk_image_webhooks/wh-001'),
     );
-
-    // confirm was called with the appropriate message
-    expect(window.confirm).toHaveBeenCalledWith(
-      expect.stringContaining('main-ci'),
-    );
+    expect(window.confirm).not.toHaveBeenCalled();
 
     // Success notification
     await waitFor(() =>
@@ -286,15 +324,14 @@ describe('CiWebhooksTab', () => {
 
   it('does not call destroy if the user cancels the confirm dialog', async () => {
     mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
 
     renderTab();
 
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Revoke webhook'));
+    await cancelDialog(/revoke webhook/i);
 
-    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
     expect(mockDelete).not.toHaveBeenCalled();
   });
 
@@ -307,6 +344,7 @@ describe('CiWebhooksTab', () => {
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Revoke webhook'));
+    await confirmDialog(/revoke webhook/i, /^revoke webhook$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
@@ -330,6 +368,7 @@ describe('CiWebhooksTab', () => {
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
 
     await waitFor(() =>
       expect(mockPost).toHaveBeenCalledWith(
@@ -358,6 +397,7 @@ describe('CiWebhooksTab', () => {
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith(
@@ -368,15 +408,14 @@ describe('CiWebhooksTab', () => {
 
   it('does not call rotate_secret if the user cancels the confirm dialog', async () => {
     mockGet.mockResolvedValue(listEnvelope([WEBHOOK_A]));
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
 
     renderTab();
 
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate secret'));
+    await cancelDialog(/rotate webhook secret/i);
 
-    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
     expect(mockPost).not.toHaveBeenCalled();
   });
 
@@ -596,6 +635,7 @@ describe('CiWebhooksTab', () => {
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
 
     await waitFor(() =>
       expect(screen.getByText(/This secret is shown ONCE/i)).toBeInTheDocument(),
@@ -623,6 +663,7 @@ describe('CiWebhooksTab', () => {
     await waitFor(() => expect(screen.getByText('main-ci')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate secret'));
+    await confirmDialog(/rotate webhook secret/i, /^rotate secret$/i);
 
     await waitFor(() =>
       expect(screen.getByText(/This secret is shown ONCE/i)).toBeInTheDocument(),

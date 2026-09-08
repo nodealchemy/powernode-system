@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { CiWorkersTab } from './CiWorkersTab';
 import type { SystemCiWorker, SystemCiWorkerCreatedResponse } from '@system/features/system/types/system.types';
 
@@ -90,6 +90,23 @@ const CREATED_RESPONSE: SystemCiWorkerCreatedResponse = {
 const renderTab = (props: Partial<React.ComponentProps<typeof CiWorkersTab>> = {}) =>
   render(<CiWorkersTab {...props} />);
 
+// Revoke/rotate go through the shared themed ConfirmationModal (IMP-082f700a1eec),
+// not window.confirm. The row action buttons carry the same accessible name as
+// the dialog's confirm button, so both lookups are scoped to the dialog.
+const confirmDialog = async (heading: RegExp, button: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: button }));
+};
+
+const cancelDialog = async (heading: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }));
+};
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -101,8 +118,9 @@ describe('CiWorkersTab', () => {
     mockHasPermission.mockReturnValue(true);
     // Default: return an empty list
     mockCiWorkersApiList.mockResolvedValue([]);
-    // Suppress window.confirm — tests that need it override per-test
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    // Every confirmation here is now the in-app themed dialog; the spy exists
+    // only so tests can prove window.confirm is never reached.
+    jest.spyOn(window, 'confirm');
   });
 
   afterEach(() => {
@@ -605,7 +623,6 @@ describe('CiWorkersTab', () => {
     mockCiWorkersApiDestroy.mockResolvedValue(undefined);
     mockCiWorkersApiList.mockResolvedValue([]);
 
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderTab();
 
@@ -613,6 +630,7 @@ describe('CiWorkersTab', () => {
 
     const revokeBtn = screen.getByTitle('Revoke worker');
     fireEvent.click(revokeBtn);
+    await confirmDialog(/revoke ci worker/i, /^revoke ci worker$/i);
 
     await waitFor(() =>
       expect(mockCiWorkersApiDestroy).toHaveBeenCalledWith('wkr-aaa'),
@@ -626,13 +644,12 @@ describe('CiWorkersTab', () => {
   it('does NOT call ciWorkersApi.destroy() when revoke is cancelled', async () => {
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
 
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
-
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Revoke worker'));
+    await cancelDialog(/revoke ci worker/i);
 
     // Give async handler time to run
     await new Promise(r => setTimeout(r, 50));
@@ -643,30 +660,34 @@ describe('CiWorkersTab', () => {
     mockCiWorkersApiList.mockResolvedValueOnce([WORKER_A]).mockResolvedValue([]);
     mockCiWorkersApiDestroy.mockResolvedValue(undefined);
 
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Revoke worker'));
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
-    expect(confirmSpy.mock.calls[0][0]).toContain('release-pipeline-runner');
-    expect(confirmSpy.mock.calls[0][0]).toContain('CI runs using this token will start failing');
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /revoke ci worker/i })).toBeInTheDocument(),
+    );
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText(/release-pipeline-runner/)).toBeInTheDocument();
+    expect(
+      dialog.getByText(/CI runs using this token will start failing/),
+    ).toBeInTheDocument();
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
   it('shows error notification when revoke fails', async () => {
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
     mockCiWorkersApiDestroy.mockRejectedValue(new Error('Not found'));
 
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Revoke worker'));
+    await confirmDialog(/revoke ci worker/i, /^revoke ci worker$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -685,7 +706,6 @@ describe('CiWorkersTab', () => {
     mockCiWorkersApiRotateToken.mockResolvedValue(CREATED_RESPONSE);
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
 
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderTab();
 
@@ -693,6 +713,7 @@ describe('CiWorkersTab', () => {
 
     const rotateBtn = screen.getByTitle('Rotate token');
     fireEvent.click(rotateBtn);
+    await confirmDialog(/rotate worker token/i, /^rotate token$/i);
 
     await waitFor(() =>
       expect(mockCiWorkersApiRotateToken).toHaveBeenCalledWith('wkr-aaa'),
@@ -706,13 +727,12 @@ describe('CiWorkersTab', () => {
   it('does NOT call ciWorkersApi.rotateToken() when rotate is cancelled', async () => {
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
 
-    jest.spyOn(window, 'confirm').mockReturnValue(false);
-
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate token'));
+    await cancelDialog(/rotate worker token/i);
 
     await new Promise(r => setTimeout(r, 50));
     expect(mockCiWorkersApiRotateToken).not.toHaveBeenCalled();
@@ -723,30 +743,32 @@ describe('CiWorkersTab', () => {
     mockCiWorkersApiRotateToken.mockResolvedValue(CREATED_RESPONSE);
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
 
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate token'));
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
-    expect(confirmSpy.mock.calls[0][0]).toContain('release-pipeline-runner');
-    expect(confirmSpy.mock.calls[0][0]).toContain('Old token is revoked immediately');
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /rotate worker token/i })).toBeInTheDocument(),
+    );
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText(/release-pipeline-runner/)).toBeInTheDocument();
+    expect(dialog.getByText(/Old token is revoked immediately/)).toBeInTheDocument();
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
   it('shows error notification when rotate fails', async () => {
     mockCiWorkersApiList.mockResolvedValue([WORKER_A]);
     mockCiWorkersApiRotateToken.mockRejectedValue(new Error('Rotation failed'));
 
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderTab();
 
     await waitFor(() => expect(screen.getByText('release-pipeline-runner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle('Rotate token'));
+    await confirmDialog(/rotate worker token/i, /^rotate token$/i);
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({

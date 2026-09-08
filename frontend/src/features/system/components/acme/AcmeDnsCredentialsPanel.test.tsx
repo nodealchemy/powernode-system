@@ -151,6 +151,18 @@ const renderPanel = (refreshKey = 0) =>
     </BrowserRouter>,
   );
 
+/**
+ * Drives the in-app delete confirmation that replaced `window.confirm`
+ * (IMP-082f700a1eec). The row's own button reads "Delete"; only the
+ * confirmation's footer button is named "Delete credential".
+ */
+const confirmDelete = async () => {
+  await screen.findByRole('dialog');
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: /^delete credential$/i }),
+  );
+};
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -470,8 +482,7 @@ describe('AcmeDnsCredentialsPanel', () => {
   // Delete action
   // ---------------------------------------------------------------------------
 
-  it('asks for confirmation before deleting', async () => {
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
+  it('asks for confirmation in-app before deleting, never via window.confirm', async () => {
     mockList.mockResolvedValue(makeListResponse([CRED_CF]));
 
     renderPanel();
@@ -479,12 +490,21 @@ describe('AcmeDnsCredentialsPanel', () => {
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Delete'));
 
-    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /delete dns credential/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(screen.getByText(/The Vault-stored token will be destroyed/)).toBeInTheDocument();
+
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }),
+    );
     expect(mockDestroy).not.toHaveBeenCalled();
   });
 
   it('calls acmeDnsCredentialsApi.destroy with the credential id after confirmation', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([CRED_CF]));
     mockDestroy.mockResolvedValue(undefined);
 
@@ -492,12 +512,12 @@ describe('AcmeDnsCredentialsPanel', () => {
 
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Delete'));
+    await confirmDelete();
 
     await waitFor(() => expect(mockDestroy).toHaveBeenCalledWith('cred-cf-1'));
   });
 
   it('shows the delete error via addNotification on failure', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([CRED_CF]));
     mockDestroy.mockRejectedValue(new Error('Cannot delete — active certs'));
 
@@ -505,6 +525,7 @@ describe('AcmeDnsCredentialsPanel', () => {
 
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Delete'));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
@@ -515,7 +536,6 @@ describe('AcmeDnsCredentialsPanel', () => {
   });
 
   it('re-fetches the list after a successful delete', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([CRED_CF]));
     mockDestroy.mockResolvedValue(undefined);
 
@@ -523,12 +543,12 @@ describe('AcmeDnsCredentialsPanel', () => {
 
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
     fireEvent.click(await screen.findByText('Delete'));
+    await confirmDelete();
 
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
   });
 
   it('shows "Deleting…" text while the destroy request is in flight', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     mockList.mockResolvedValue(makeListResponse([CRED_CF]));
     let resolveDestroy!: () => void;
     mockDestroy.mockReturnValue(new Promise<void>((r) => { resolveDestroy = r; }));
@@ -537,6 +557,7 @@ describe('AcmeDnsCredentialsPanel', () => {
 
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Delete'));
+    await confirmDelete();
 
     await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
 

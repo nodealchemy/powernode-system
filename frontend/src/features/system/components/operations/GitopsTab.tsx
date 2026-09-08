@@ -5,6 +5,7 @@ import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { gitopsApi } from '@system/features/system/services/api/gitopsApi';
 import type {
   SystemGitopsRepository,
@@ -45,6 +46,7 @@ function syncErrorMessage(e: unknown, repoName: string): string {
 export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const canWrite = hasPermission('system.gitops.write');
   const canSync = hasPermission('system.gitops.sync');
 
@@ -141,16 +143,23 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
     }
   }, [addNotification, refresh, expandedIds, loadSyncRuns]);
 
-  const handleDelete = useCallback(async (repo: SystemGitopsRepository) => {
-    if (!window.confirm(`Delete GitOps repository "${repo.name}"? Reconciliation will stop and its sync history is removed.`)) return;
-    try {
-      await gitopsApi.destroy(repo.id);
-      addNotification({ type: 'success', message: `Repository "${repo.name}" deleted` });
-      void refresh();
-    } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Delete failed' });
-    }
-  }, [addNotification, refresh]);
+  const handleDelete = useCallback((repo: SystemGitopsRepository) => {
+    confirm({
+      title: 'Delete GitOps repository',
+      message: `Delete GitOps repository "${repo.name}"? Reconciliation will stop and its sync history is removed.`,
+      confirmLabel: 'Delete repository',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await gitopsApi.destroy(repo.id);
+          addNotification({ type: 'success', message: `Repository "${repo.name}" deleted` });
+          void refresh();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Delete failed' });
+        }
+      },
+    });
+  }, [confirm, addNotification, refresh]);
 
   return (
     <div className="space-y-4">
@@ -332,6 +341,8 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
           }}
         />
       )}
+
+      {ConfirmationDialog}
     </div>
   );
 };
