@@ -10,7 +10,8 @@ import {
   Server,
   Calendar,
   Ban,
-  StopCircle
+  StopCircle,
+  RefreshCw
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -138,27 +139,36 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
     currentOperationIdRef.current = operationId;
   }, [operationId]);
 
+  // The initial load, extracted so the error branch can re-run it. A failed
+  // first load leaves `operation` null, and the live refresh below is keyed on
+  // the loaded status, so nothing ever retries on its own: a transient 502
+  // during a deploy boot would otherwise strand the operator on a dead modal.
+  const loadOperation = useCallback(() => {
+    if (!operationId) return;
+    const seq = ++fetchSeqRef.current;
+    setLoading(true);
+
+    systemApi.getTask(operationId)
+      .then(data => {
+        if (seq !== fetchSeqRef.current) return;
+        setOperation(data);
+      })
+      .catch(() => {
+        if (seq !== fetchSeqRef.current) return;
+        setOperation(null);
+      })
+      .finally(() => {
+        if (seq !== fetchSeqRef.current) return;
+        setLoading(false);
+      });
+  }, [operationId]);
+
   useEffect(() => {
     if (isOpen && operationId) {
-      const seq = ++fetchSeqRef.current;
-      setLoading(true);
       setActiveTab('info');
-
-      systemApi.getTask(operationId)
-        .then(data => {
-          if (seq !== fetchSeqRef.current) return;
-          setOperation(data);
-        })
-        .catch(() => {
-          if (seq !== fetchSeqRef.current) return;
-          setOperation(null);
-        })
-        .finally(() => {
-          if (seq !== fetchSeqRef.current) return;
-          setLoading(false);
-        });
+      loadOperation();
     }
-  }, [isOpen, operationId]);
+  }, [isOpen, operationId, loadOperation]);
 
   const refreshOperation = useCallback(async () => {
     if (!operationId) return;
@@ -578,7 +588,13 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
             ) : (
               <div className="text-center py-12">
                 <AlertCircle className="w-12 h-12 text-theme-error-fg mx-auto mb-4" />
-                <p className="text-theme-error-fg">Failed to load operation details</p>
+                <p className="text-theme-error-fg mb-4">Failed to load operation details</p>
+                {/* The same branch renders when there is no operationId at all,
+                    where loadOperation is a no-op — do not offer a dead control. */}
+                <Button variant="outline" size="sm" onClick={loadOperation} disabled={!operationId}>
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Retry
+                </Button>
               </div>
             )}
           </div>
