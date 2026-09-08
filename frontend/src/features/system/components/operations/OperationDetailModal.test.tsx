@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { OperationDetailModal } from './OperationDetailModal';
 
@@ -33,6 +33,30 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
     addNotification: mockAddNotification,
     showNotification: jest.fn(),
   }),
+}));
+
+// SystemChannel subscription — capture the callbacks so tests can emit frames,
+// and let each test decide whether the socket is up (the poll is the fallback
+// for when it is not).
+interface CapturedWsOptions {
+  onOperationUpdate?: (op: Record<string, unknown>) => void;
+  onOperationProgress?: (p: Record<string, unknown>) => void;
+}
+let capturedWsOptions: CapturedWsOptions = {};
+let mockWsConnected = false;
+jest.mock('@system/features/system/hooks/useSystemWebSocket', () => ({
+  __esModule: true,
+  useSystemWebSocket: (opts: CapturedWsOptions) => {
+    capturedWsOptions = opts;
+    return {
+      isConnected: mockWsConnected,
+      error: null,
+      refreshOperations: jest.fn(),
+      getTask: jest.fn(),
+      refreshStats: jest.fn(),
+      ping: jest.fn(),
+    };
+  },
 }));
 
 jest.mock('@/shared/hooks/BreadcrumbContext', () => ({
@@ -145,6 +169,12 @@ describe('OperationDetailModal', () => {
     mockPost.mockReset();
     mockAddNotification.mockReset();
     mockHasPermission.mockReturnValue(true);
+    capturedWsOptions = {};
+    mockWsConnected = false;
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   // ---------------------------------------------------------------------------
@@ -923,6 +953,360 @@ describe('OperationDetailModal', () => {
         }),
       );
       expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Live updates — websocket subscription + poll fallback — IMP-4fae9e3356d7
+  // ---------------------------------------------------------------------------
+
+  describe('Live updates', () => {
+    const runningTask = { ...BASE_TASK, status: 'running' as const, progress: 42 };
+
+    // The SystemChannel payload (SystemChannel#serialize_task_static) carries
+    // only the scalar columns — no events, options, exclusive or
+    // initiated_by_name — so a frame must be merged into the loaded task, never
+    // substituted for it.
+    const socketFrame = {
+      id: 'task-123',
+      command: 'provision_node',
+      status: 'complete' as const,
+      progress: 100,
+      description: 'Provision a new node',
+      error_message: undefined,
+      scheduled_at: '2026-06-01T10:00:00Z',
+      started_at: '2026-06-01T10:01:00Z',
+      completed_at: '2026-06-01T10:05:00Z',
+      operable_type: undefined,
+      operable_id: undefined,
+      created_at: '2026-06-01T09:59:00Z',
+      updated_at: '2026-06-01T10:05:00Z',
+    };
+
+    it('subscribes for operation updates and progress ticks', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      expect(typeof capturedWsOptions.onOperationUpdate).toBe('function');
+      expect(typeof capturedWsOptions.onOperationProgress).toBe('function');
+    });
+
+    it('advances the progress bar on a task_progress tick for this operation', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      expect(screen.getByText('42%')).toBeInTheDocument();
+
+      act(() => {
+        capturedWsOptions.onOperationProgress?.({
+          operation_id: 'task-123',
+          status: 'running',
+          progress: 77,
+        });
+      });
+
+      expect(screen.getByText('77%')).toBeInTheDocument();
+      expect(screen.queryByText('42%')).not.toBeInTheDocument();
+    });
+
+    it('ignores a progress tick addressed to a different operation', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      act(() => {
+        capturedWsOptions.onOperationProgress?.({
+          operation_id: 'some-other-task',
+          status: 'running',
+          progress: 99,
+        });
+      });
+
+      expect(screen.getByText('42%')).toBeInTheDocument();
+      expect(screen.queryByText('99%')).not.toBeInTheDocument();
+    });
+
+    it('flips the status badge on a task_updated frame for this operation', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      expect(screen.getByText('Running')).toBeInTheDocument();
+
+      act(() => {
+        capturedWsOptions.onOperationUpdate?.(socketFrame);
+      });
+
+      expect(screen.getByText('Complete')).toBeInTheDocument();
+      expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    });
+
+    it('ignores a task_updated frame addressed to a different operation', async () => {
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await waitForCommand();
+      act(() => {
+        capturedWsOptions.onOperationUpdate?.({ ...socketFrame, id: 'some-other-task' });
+      });
+
+      expect(screen.getByText('Running')).toBeInTheDocument();
+      expect(screen.queryByText('Complete')).not.toBeInTheDocument();
+    });
+
+    it('merges a task_updated frame rather than replacing the loaded task', async () => {
+      mockGet.mockResolvedValue(
+        envelope({
+          task: {
+            ...runningTask,
+            exclusive: true,
+            initiated_by_name: 'operator@example.com',
+            events: [
+              { type: 'info', timestamp: '2026-06-01T10:01:30Z', message: 'Job started' },
+            ],
+            options: { region: 'us-east-1' },
+          },
+        }),
+      );
+      renderModal();
+
+      await waitForCommand();
+      act(() => {
+        capturedWsOptions.onOperationUpdate?.(socketFrame);
+      });
+
+      // Fields the socket frame does not carry must survive the merge.
+      expect(screen.getByText('Complete')).toBeInTheDocument();
+      expect(screen.getByText('operator@example.com')).toBeInTheDocument();
+      expect(screen.getByText('Yes')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Events'));
+      expect(screen.getByText('Job started')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Options'));
+      expect(screen.getByText(/us-east-1/)).toBeInTheDocument();
+    });
+
+    it('polls every 5s while the operation is running and the socket is down', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      ['pending' as const],
+      ['scheduled' as const],
+    ])('also polls while the operation is %s', async (status) => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet.mockResolvedValue(envelope({ task: { ...BASE_TASK, status } }));
+      renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['complete' as const],
+      ['failed' as const],
+      ['aborted' as const],
+      ['cancelled' as const],
+    ])('does not poll once the operation is %s', async (status) => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet.mockResolvedValue(envelope({ task: { ...BASE_TASK, status } }));
+      renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not poll once the channel confirms the subscription', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = true;
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await act(async () => {
+        capturedWsOptions.onConnected?.();
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it('still polls when the socket is open but the subscription was rejected', async () => {
+      // SystemChannel#subscribed calls reject() on an unauthorized account and
+      // never transmits connection_established, so no frame will ever arrive —
+      // yet the transport reports itself connected.
+      jest.useFakeTimers();
+      mockWsConnected = true;
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      renderModal();
+
+      await act(async () => {
+        capturedWsOptions.onError?.('Unauthorized');
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('starts polling when the live feed drops and stops when it returns', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = true;
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      const { rerender } = renderModal();
+
+      const reopen = () =>
+        rerender(
+          <BrowserRouter>
+            <OperationDetailModal operationId="task-123" isOpen={true} onClose={jest.fn()} />
+          </BrowserRouter>,
+        );
+
+      await act(async () => {
+        capturedWsOptions.onConnected?.();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      // Socket drops — the fallback takes over.
+      mockWsConnected = false;
+      await act(async () => {
+        reopen();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+
+      // Socket returns and the channel re-confirms — the fallback stands down.
+      mockWsConnected = true;
+      await act(async () => {
+        reopen();
+        capturedWsOptions.onConnected?.();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('discards a poll response that arrives after the modal moved on', async () => {
+      let resolveStale!: (v: unknown) => void;
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockReturnValueOnce(new Promise((res) => { resolveStale = res; }))
+        .mockResolvedValue(
+          envelope({ task: { ...runningTask, id: 'task-456', command: 'destroy_node' } }),
+        );
+      const { rerender } = renderModal({ operationId: 'task-123' });
+
+      await act(async () => {});
+      // Kick off a poll whose response we hold open.
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+
+      // The operator moves to another operation while that GET is in flight.
+      await act(async () => {
+        rerender(
+          <BrowserRouter>
+            <OperationDetailModal operationId="task-456" isOpen={true} onClose={jest.fn()} />
+          </BrowserRouter>,
+        );
+      });
+      await waitForCommand('destroy_node');
+
+      // The stale response must not overwrite what is on screen.
+      await act(async () => {
+        resolveStale(envelope({ task: runningTask }));
+      });
+      expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('destroy_node');
+    });
+
+    it('stops polling once the modal is closed', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet.mockResolvedValue(envelope({ task: runningTask }));
+      const { rerender } = renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <BrowserRouter>
+          <OperationDetailModal operationId="task-123" isOpen={false} onClose={jest.fn()} />
+        </BrowserRouter>,
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops polling as soon as a poll reports the operation finished', async () => {
+      jest.useFakeTimers();
+      mockWsConnected = false;
+      mockGet
+        .mockResolvedValueOnce(envelope({ task: runningTask }))
+        .mockResolvedValue(
+          envelope({ task: { ...BASE_TASK, status: 'complete' as const, progress: 100 } }),
+        );
+      renderModal();
+
+      await act(async () => {});
+      expect(mockGet).toHaveBeenCalledTimes(1);
+
+      // One poll observes completion...
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
+
+      // ...and no further poll is scheduled.
+      await act(async () => {
+        jest.advanceTimersByTime(30000);
+      });
+      expect(mockGet).toHaveBeenCalledTimes(2);
     });
   });
 });
