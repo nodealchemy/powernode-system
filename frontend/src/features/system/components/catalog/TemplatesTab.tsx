@@ -1,9 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
-import { useNotifications } from '@/shared/hooks/useNotifications';
-import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import {
   TemplateList,
   TemplateDetailModal,
@@ -12,6 +10,7 @@ import {
   ImportTemplateModal
 } from '@system/features/system/components/templates';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { useCrudTab } from '@system/features/system/hooks/useCrudTab';
 import type { SystemNodeTemplate } from '@system/features/system/types/system.types';
 
 interface TemplatesTabProps {
@@ -20,57 +19,74 @@ interface TemplatesTabProps {
 
 export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
-  const { addNotification } = useNotifications();
   const canCreate = hasPermission('system.templates.create');
   const canDelete = hasPermission('system.templates.delete');
-  const { confirm, ConfirmationDialog } = useConfirmation();
 
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const [editTemplate, setEditTemplate] = useState<SystemNodeTemplate | null>(null);
+  // The create modal is dual-purpose: it opens either editing a template or
+  // duplicating one. `duplicateTemplate` is the second half of a state pair
+  // whose first half the hook owns, so every handler that touches the form has
+  // to clear it — including the one published through onActionsReady, which is
+  // why this tab publishes its own handle rather than the hook's.
   const [duplicateTemplate, setDuplicateTemplate] = useState<SystemNodeTemplate | null>(null);
   const [cloneTemplate, setCloneTemplate] = useState<SystemNodeTemplate | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+
+  const crud = useCrudTab<SystemNodeTemplate>({
+    entityLabel: 'Template',
+    deleteMessage:
+      'Are you sure you want to delete this template? This action cannot be undone. Any nodes using this template will retain their current configuration.',
+    deleteFn: (id) => systemApi.deleteTemplate(id),
+  });
+  const { handleCreate: openBlankForm, handleEdit: openFormWith, closeForm, handleSaved } = crud;
 
   const handleCreate = useCallback(() => {
-    setEditTemplate(null);
     setDuplicateTemplate(null);
-    setShowCreateModal(true);
-  }, []);
+    openBlankForm();
+  }, [openBlankForm]);
 
   useEffect(() => {
     onActionsReady?.({ openCreate: handleCreate });
     return () => onActionsReady?.(null);
   }, [onActionsReady, handleCreate]);
 
-  const handleView = useCallback((t: SystemNodeTemplate) => { setSelectedTemplateId(t.id); setShowDetailModal(true); }, []);
-  const handleEdit = useCallback((t: SystemNodeTemplate) => { setEditTemplate(t); setDuplicateTemplate(null); setShowCreateModal(true); }, []);
-  const handleEditFromDetail = useCallback((t: SystemNodeTemplate) => {
-    setShowDetailModal(false); setSelectedTemplateId(null); setEditTemplate(t); setDuplicateTemplate(null); setShowCreateModal(true);
+  const handleView = useCallback((t: SystemNodeTemplate) => {
+    setSelectedTemplateId(t.id);
+    setShowDetailModal(true);
   }, []);
-  const handleDuplicate = useCallback((t: SystemNodeTemplate) => { setDuplicateTemplate(t); setEditTemplate(null); setShowCreateModal(true); }, []);
+  const handleEdit = useCallback(
+    (t: SystemNodeTemplate) => {
+      setDuplicateTemplate(null);
+      openFormWith(t);
+    },
+    [openFormWith],
+  );
+  const handleEditFromDetail = useCallback(
+    (t: SystemNodeTemplate) => {
+      setShowDetailModal(false);
+      setSelectedTemplateId(null);
+      handleEdit(t);
+    },
+    [handleEdit],
+  );
+  // Duplicate opens the same form with no entity under edit, seeded FROM one.
+  const handleDuplicate = useCallback(
+    (t: SystemNodeTemplate) => {
+      setDuplicateTemplate(t);
+      openBlankForm();
+    },
+    [openBlankForm],
+  );
   const handleClone = useCallback((t: SystemNodeTemplate) => setCloneTemplate(t), []);
-  const handleLifecycleComplete = useCallback(() => setRefreshKey((k) => k + 1), []);
-  const handleDeleteClick = useCallback((id: string) => {
-    confirm({
-      title: 'Delete Template',
-      message: 'Are you sure you want to delete this template? This action cannot be undone. Any nodes using this template will retain their current configuration.',
-      confirmLabel: 'Delete Template',
-      variant: 'danger',
-      onConfirm: async () => {
-        try {
-          await systemApi.deleteTemplate(id);
-          addNotification({ type: 'success', message: 'Template deleted successfully' });
-          setRefreshKey((k) => k + 1);
-        } catch (error) {
-          addNotification({ type: 'error', message: `Failed to delete template: ${error instanceof Error ? error.message : 'An error occurred'}` });
-        }
-      }
-    });
-  }, [confirm, addNotification]);
-  const handleTemplateCreated = useCallback(() => { setRefreshKey((k) => k + 1); setEditTemplate(null); setDuplicateTemplate(null); }, []);
+  const handleFormClose = useCallback(() => {
+    setDuplicateTemplate(null);
+    closeForm();
+  }, [closeForm]);
+  const handleTemplateCreated = useCallback(() => {
+    setDuplicateTemplate(null);
+    handleSaved();
+  }, [handleSaved]);
 
   return (
     <>
@@ -84,10 +100,10 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
       )}
 
       <TemplateList
-        key={refreshKey}
+        key={crud.refreshKey}
         onView={handleView}
         onEdit={handleEdit}
-        onDelete={canDelete ? handleDeleteClick : undefined}
+        onDelete={canDelete ? crud.handleDeleteClick : undefined}
         onCreate={canCreate ? handleCreate : undefined}
         onDuplicate={canCreate ? handleDuplicate : undefined}
         onClone={canCreate ? handleClone : undefined}
@@ -97,15 +113,15 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
         templateId={selectedTemplateId}
         isOpen={showDetailModal}
         onClose={() => { setShowDetailModal(false); setSelectedTemplateId(null); }}
-        onTemplateUpdated={() => setRefreshKey((k) => k + 1)}
+        onTemplateUpdated={crud.triggerRefresh}
         onEdit={handleEditFromDetail}
       />
 
       <CreateTemplateModal
-        isOpen={showCreateModal}
-        onClose={() => { setShowCreateModal(false); setEditTemplate(null); setDuplicateTemplate(null); }}
+        isOpen={crud.showFormModal}
+        onClose={handleFormClose}
         onTemplateCreated={handleTemplateCreated}
-        editTemplate={editTemplate}
+        editTemplate={crud.editEntity}
         duplicateFrom={duplicateTemplate}
       />
 
@@ -113,16 +129,16 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({ onActionsReady }) =>
         template={cloneTemplate}
         isOpen={!!cloneTemplate}
         onClose={() => setCloneTemplate(null)}
-        onCloned={handleLifecycleComplete}
+        onCloned={crud.triggerRefresh}
       />
 
       <ImportTemplateModal
         isOpen={showImportModal}
         onClose={() => setShowImportModal(false)}
-        onImported={handleLifecycleComplete}
+        onImported={crud.triggerRefresh}
       />
 
-      {ConfirmationDialog}
+      {crud.ConfirmationDialog}
     </>
   );
 };
