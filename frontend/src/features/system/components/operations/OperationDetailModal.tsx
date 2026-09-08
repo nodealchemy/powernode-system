@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  X,
   Activity,
   Clock,
   CheckCircle,
@@ -13,6 +12,7 @@ import {
   StopCircle,
   RefreshCw
 } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -242,8 +242,6 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
       onConfirm: (reason) => runStopAction(action, targetId, reason)
     });
   };
-
-  if (!isOpen) return null;
 
   const formatDateTime = (dateString?: string) => {
     if (!dateString) return '—';
@@ -477,79 +475,19 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-3xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Activity className="w-6 h-6 text-theme-info-fg" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : operation?.command || 'Operation Details'}
-                </h2>
-                {operation && (
-                  <p className="text-sm text-theme-secondary">
-                    {operation.operable_type || 'System Operation'}
-                  </p>
-                )}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
-          {/* Tabs */}
-          <div className="border-b border-theme">
-            <nav className="flex -mb-px">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === tab.id
-                      ? 'border-theme-info-border text-theme-info-fg'
-                      : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
-                  }`}
-                >
-                  <tab.icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Content */}
-          <div className="p-6 max-h-[60vh] overflow-y-auto">
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <LoadingSpinner size="lg" />
-              </div>
-            ) : operation ? (
-              <>
-                {activeTab === 'info' && renderInfoTab()}
-                {activeTab === 'events' && renderEventsTab()}
-                {activeTab === 'options' && renderOptionsTab()}
-              </>
-            ) : (
-              <div className="text-center py-12">
-                <AlertCircle className="w-12 h-12 text-theme-error-fg mx-auto mb-4" />
-                <p className="text-theme-error-fg mb-4">Failed to load operation details</p>
-                {/* The same branch renders when there is no operationId at all,
-                    where loadOperation is a no-op — do not offer a dead control. */}
-                <Button variant="outline" size="sm" onClick={loadOperation} disabled={!operationId}>
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Retry
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-between p-4 border-t border-theme">
+    <>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={loading ? 'Loading...' : operation?.command || 'Operation Details'}
+      subtitle={operation ? operation.operable_type || 'System Operation' : undefined}
+      icon={<Activity className="w-6 h-6" />}
+      maxWidth="3xl"
+      // The shared confirmation is itself a Modal listening for Escape on
+      // document; suppress ours so one keypress does not close both.
+      closeOnEscape={ConfirmationDialog === null}
+      footer={
+        <div className="flex items-center justify-between w-full">
             <div className="flex items-center gap-2">
               {/* Control buttons based on operation status */}
               {operation && canControlOperations && (
@@ -596,12 +534,59 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
             <Button variant="outline" onClick={onClose}>
               Close
             </Button>
-          </div>
         </div>
-      </div>
+      }
+    >
+          {/* Tabs */}
+          <div className="border-b border-theme">
+            <nav className="flex -mb-px">
+              {tabs.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === tab.id
+                      ? 'border-theme-info-border text-theme-info-fg'
+                      : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
+                  }`}
+                >
+                  <tab.icon className="w-4 h-4" />
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {/* Content */}
+          <div className="pt-4">
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <LoadingSpinner size="lg" />
+              </div>
+            ) : operation ? (
+              <>
+                {activeTab === 'info' && renderInfoTab()}
+                {activeTab === 'events' && renderEventsTab()}
+                {activeTab === 'options' && renderOptionsTab()}
+              </>
+            ) : (
+              <div className="text-center py-12">
+                <AlertCircle className="w-12 h-12 text-theme-error-fg mx-auto mb-4" />
+                <p className="text-theme-error-fg mb-4">Failed to load operation details</p>
+                {/* The same branch renders when there is no operationId at all,
+                    where loadOperation is a no-op — do not offer a dead control. */}
+                <Button variant="outline" size="sm" onClick={loadOperation} disabled={!operationId}>
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
+
+    </Modal>
 
       {ConfirmationDialog}
-    </div>
+    </>
   );
 };
 

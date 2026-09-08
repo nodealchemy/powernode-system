@@ -51,12 +51,7 @@ const KNOWN_HAND_ROLLED: readonly string[] = [
   'nodes/NodeInstanceControls.tsx',
 
   // --- Still to migrate. Shrink this list; never grow it. ---
-  'operations/AgentPeersTab.tsx',
   'operations/BatchDetailModal.tsx',
-  'operations/CiWebhooksTab.tsx',
-  'operations/CiWorkersTab.tsx',
-  'operations/GitopsTab.tsx',
-  'operations/OperationDetailModal.tsx',
 ];
 
 function findSources(dir: string, out: string[] = []): string[] {

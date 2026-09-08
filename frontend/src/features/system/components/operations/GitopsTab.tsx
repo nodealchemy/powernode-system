@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { GitBranch, RefreshCw, Trash2, ChevronRight, ChevronDown } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
@@ -382,10 +383,21 @@ const CreateGitopsRepositoryModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold mb-3 text-theme-primary">New GitOps repository</h3>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="New GitOps repository"
+      icon={<GitBranch className="w-6 h-6" />}
+      maxWidth="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
+            {submitting ? 'Creating…' : 'Register repository'}
+          </Button>
+        </>
+      }
+    >
         <label className="block text-sm text-theme-secondary mb-1" htmlFor="gitops-name-input">Name</label>
         <input
           id="gitops-name-input"
@@ -448,14 +460,6 @@ const CreateGitopsRepositoryModal: React.FC<{
           proposals for any drift. Enable auto-apply later from the repo's
           settings to apply diffs without manual approval.
         </p>
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
-            {submitting ? 'Creating…' : 'Register repository'}
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
