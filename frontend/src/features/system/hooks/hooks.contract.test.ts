@@ -28,14 +28,34 @@ const repoRoot = path.resolve(hooksDir, '../../../../../../..');
 const EXT_SYSTEM_SRC = path.join(repoRoot, 'extensions/system/frontend/src');
 const CORE_SRC = path.join(repoRoot, 'frontend/src');
 
-const SOURCE_ROOTS = [
-  EXT_SYSTEM_SRC,
-  CORE_SRC,
-  path.join(repoRoot, 'extensions/marketing/frontend/src'),
-  path.join(repoRoot, 'extensions/supply-chain/frontend/src'),
-  path.join(repoRoot, 'extensions/private/business/frontend/src'),
-  path.join(repoRoot, 'extensions/private/trading/frontend/src'),
-];
+/**
+ * Every extension's frontend src, DISCOVERED rather than listed.
+ *
+ * Naming the sibling extensions here would be an extension file referencing
+ * other extensions, which the core-purity guard forbids and which this file
+ * originally did. Globbing is also the more honest check: an extension added
+ * later is searched without anyone remembering to edit this list.
+ */
+function extensionSrcRoots(): string[] {
+  const roots: string[] = [];
+  const extRoot = path.join(repoRoot, 'extensions');
+  if (!existsSync(extRoot)) return roots;
+  for (const slug of readdirSync(extRoot)) {
+    const dir = path.join(extRoot, slug);
+    if (!statSync(dir).isDirectory()) continue;
+    // `extensions/private/<slug>` nests one level deeper than the public ones.
+    const candidates =
+      slug === 'private'
+        ? readdirSync(dir)
+            .map((inner) => path.join(dir, inner, 'frontend/src'))
+            .filter((p) => existsSync(p))
+        : [path.join(dir, 'frontend/src')];
+    for (const c of candidates) if (existsSync(c)) roots.push(c);
+  }
+  return roots;
+}
+
+const SOURCE_ROOTS = [EXT_SYSTEM_SRC, CORE_SRC, ...extensionSrcRoots()];
 
 const isSourceFile = (f: string) => /\.tsx?$/.test(f);
 const isSpecFile = (f: string) => /\.(test|spec)\.tsx?$/.test(f);
