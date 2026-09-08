@@ -29,6 +29,21 @@ const mockSendMessage = jest.fn(() => Promise.resolve(true));
 let mockIsConnected = true;
 let mockConnectionError: string | null = null;
 
+const mockLoggerWarn = jest.fn();
+jest.mock('@/shared/utils/logger', () => {
+  const stub = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: jest.fn(),
+    apiStart: jest.fn(),
+    apiComplete: jest.fn(),
+    apiError: jest.fn(),
+    child: jest.fn(() => stub),
+  };
+  return { ...jest.requireActual('@/shared/utils/logger'), logger: stub };
+});
+
 jest.mock('@/shared/hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     isConnected: mockIsConnected,
@@ -192,6 +207,20 @@ describe('useSystemWebSocket — subscription', () => {
     renderHook(() => useSystemWebSocket({}), { wrapper: createWrapper(store) });
 
     expect(mockSubscribe).not.toHaveBeenCalled();
+  });
+
+  // IMP-1f4b84af602c — the skipped subscription must be reported through the
+  // shared logger, not console.warn. console output is invisible to the
+  // frontend console guards' baseline and is not routed anywhere in production.
+  it('reports the skipped subscription through the shared logger', () => {
+    const store = noAccountStore();
+    mockIsConnected = true;
+
+    renderHook(() => useSystemWebSocket({}), { wrapper: createWrapper(store) });
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('Cannot subscribe'),
+    );
   });
 
   it('does NOT subscribe when isConnected is false', () => {

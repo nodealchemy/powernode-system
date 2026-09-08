@@ -8,6 +8,7 @@ import { TabContainer } from '@/shared/components/ui/TabContainer';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { logger } from '@/shared/utils/logger';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useSystemWebSocket, type NodeUpdatePayload } from '@system/features/system/hooks/useSystemWebSocket';
@@ -79,10 +80,20 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
       const templateNodes = result.nodes.filter(node => node.node_template_id === templateId);
       setNodes(templateNodes);
     } catch (error) {
-      // Non-critical error
-      if (process.env.NODE_ENV === 'development') {
-        console.warn('Failed to fetch template nodes:', error);
-      }
+      // Non-critical: the Nodes tab renders empty rather than failing the modal.
+      // logger gates on the environment itself, so no NODE_ENV check here.
+      //
+      // Only the MESSAGE. logger.warn JSON.stringify()s its context, and the
+      // error reaching this catch is a raw AxiosError whose own `config` holds
+      // `headers.Authorization: Bearer <token>` — passing the error object
+      // would print the session token. It would also serialize to `{}` for a
+      // plain Error (only logger.error unwraps one) and throw outright on a
+      // circular reference, turning a non-critical failure into an unhandled
+      // rejection.
+      logger.warn('Failed to fetch template nodes', {
+        templateId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }, [templateId]);
 
@@ -103,10 +114,12 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
       const result = await systemApi.getTemplateModules(templateId);
       setModules(result.modules);
     } catch (error) {
-      // Non-critical error
-      if (process.env.NODE_ENV === 'development') {
-        console.warn('Failed to fetch template modules:', error);
-      }
+      // Non-critical: the Modules tab renders empty rather than failing the modal.
+      // Message only — see the note in fetchNodes above.
+      logger.warn('Failed to fetch template modules', {
+        templateId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }, [templateId]);
 
