@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { X, Cpu, AlertCircle, Lock } from 'lucide-react';
+import { Cpu, AlertCircle, Lock } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -181,28 +182,16 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <Cpu className="w-6 h-6 text-theme-info-fg" />
-              <h2 className="text-lg font-semibold text-theme-primary">
-                {isEditMode ? (isCanonical ? 'Architecture (canonical)' : 'Edit Architecture') : 'Create Architecture'}
-              </h2>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={isEditMode ? (isCanonical ? 'Architecture (canonical)' : 'Edit Architecture') : 'Create Architecture'}
+      icon={<Cpu className="w-6 h-6" />}
+      maxWidth="lg"
+    >
           {isCanonical && (
-            <div className="mx-4 mt-4 p-3 rounded border border-theme bg-theme-background-secondary text-sm text-theme-secondary flex items-start gap-2">
+            <div className="mb-4 p-3 rounded border border-theme bg-theme-background-secondary text-sm text-theme-secondary flex items-start gap-2">
               <Lock className="w-4 h-4 mt-0.5 flex-shrink-0 text-theme-info-fg" />
               <span>
                 This is a seeded canonical architecture — read-only via the API. Evolve via a database migration.
@@ -414,9 +403,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
               )}
             </div>
           </form>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
