@@ -262,6 +262,32 @@ describe('diskImageWebhooksApi', () => {
   // destroy(id)
   // ---------------------------------------------------------------------------
 
+  describe('rotateSecret(id) gating', () => {
+    it('passes the pending-approval envelope through instead of a secret', async () => {
+      // CHARACTERIZATION, not a regression test — say so honestly. At runtime
+      // this already passed the envelope through, because extractData returns
+      // the body when there is no nested data key. What was broken was the
+      // declared TYPE: rotateSecret claimed a created-response unconditionally,
+      // so the component could hand the envelope to the one-time secret modal
+      // with no compile error and crash on the absent webhook. The fix that
+      // bites is the union return type plus the caller's branch; this example
+      // pins the passthrough so a future `pick` cannot quietly swallow it.
+      const pending = {
+        pending: true,
+        deferred_operation_id: 'def-op-7',
+        action_category: 'system.disk_image_webhook_rotate_secret',
+        approval_request_id: 'appr-7',
+        message: 'Rotation parked awaiting approval.',
+      };
+      mockPost.mockResolvedValueOnce({ data: { success: true, data: pending } });
+
+      const result = await diskImageWebhooksApi.rotateSecret('wh-aaa');
+
+      expect(result).toEqual(pending);
+      expect((result as { secret_plaintext?: string }).secret_plaintext).toBeUndefined();
+    });
+  });
+
   describe('destroy(id)', () => {
     it('DELETE /system/disk_image_webhooks/:id', async () => {
       mockDelete.mockResolvedValueOnce({ data: { success: true } });
@@ -280,12 +306,35 @@ describe('diskImageWebhooksApi', () => {
       expect(mockDelete).toHaveBeenCalledWith('/system/disk_image_webhooks/wh-bbb');
     });
 
-    it('resolves to undefined (void) on success', async () => {
-      mockDelete.mockResolvedValueOnce({ data: { success: true } });
+    it('resolves to a deleted marker on the applied branch', async () => {
+      // Was `undefined`. destroy is GATED, so it now reports WHICH branch the
+      // server took; a caller cannot distinguish "revoked" from "parked
+      // awaiting approval" if the body is discarded (IMP-50d629fafd45).
+      // The shape the controller actually renders on the applied branch:
+      // render_success(message: "Webhook revoked"). extractGated discards that
+      // payload and substitutes the marker, which is what `Deleted` is for.
+      mockDelete.mockResolvedValueOnce({
+        data: { success: true, data: { message: 'Webhook revoked' } },
+      });
 
       const result = await diskImageWebhooksApi.destroy('wh-aaa');
 
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ deleted: true });
+    });
+
+    it('passes the pending-approval envelope through instead of claiming success', async () => {
+      const pending = {
+        pending: true,
+        deferred_operation_id: 'def-op-9',
+        action_category: 'system.disk_image_webhook_revoke',
+        approval_request_id: 'appr-9',
+        message: 'Revoke parked awaiting approval.',
+      };
+      mockDelete.mockResolvedValueOnce({ data: { success: true, data: pending } });
+
+      const result = await diskImageWebhooksApi.destroy('wh-aaa');
+
+      expect(result).toEqual(pending);
     });
 
     it('propagates API errors to the caller', async () => {
