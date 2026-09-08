@@ -18,6 +18,7 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
+import { ResponsiveListContainer } from '../shared/ResponsiveListContainer';
 import type {
   AcmeDnsCredentialSummary,
   AcmeDnsCredentialStatus,
@@ -187,14 +188,23 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
           </Button>
         </header>
 
-        {!loading && credentials.length === 0 && (
-          <div className="p-12 text-center text-theme-secondary text-sm">
-            No DNS credentials configured yet. Add one to enable automatic Let's Encrypt
-            issuance via the DNS-01 challenge.
-          </div>
-        )}
-
-        {credentials.length > 0 && (
+        {/* Header stays OUTSIDE the container: it carries the count summary and
+            the primary action, which must stay reachable when the list is
+            empty — the container's empty branch replaces everything it wraps. */}
+        <ResponsiveListContainer
+          loading={loading}
+          totalCount={credentials.length}
+          filteredCount={credentials.length}
+          emptyState={{
+            icon: KeyRound,
+            title: 'No DNS credentials configured yet',
+            description:
+              "Add one to enable automatic Let's Encrypt issuance via the DNS-01 challenge.",
+          }}
+        >
+        {/* Body, not Desktop: the Desktop slot is `hidden md:block`, which would
+            blank this table on narrow screens. Body renders at every width. */}
+        <ResponsiveListContainer.Body>
           <table className="w-full text-sm">
             <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
               <tr>
@@ -232,7 +242,8 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
               ))}
             </tbody>
           </table>
-        )}
+        </ResponsiveListContainer.Body>
+        </ResponsiveListContainer>
       </div>
 
       <AcmeDnsCredentialModal
