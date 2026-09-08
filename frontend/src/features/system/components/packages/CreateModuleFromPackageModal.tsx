@@ -1,4 +1,6 @@
 import { FC, useEffect, useState, useMemo } from 'react';
+import { Boxes } from 'lucide-react';
+import { Modal } from '@/shared/components/ui/Modal';
 import {
   packagesApi,
   type ResolveDependenciesPreview,
@@ -100,8 +102,6 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
     return preview.required_packages.length + transitiveExtra;
   }, [preview, selectedRecommends]);
 
-  if (!open) return null;
-
   const formatSize = (b: number): string => {
     if (b < 1024) return `${b} B`;
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
@@ -152,12 +152,14 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-4xl bg-theme-surface rounded-lg shadow-xl p-6 max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg font-semibold text-theme-primary">Create Module from Package</h2>
-            <p className="text-sm text-theme-secondary mt-0.5">
+    <Modal
+      isOpen={open}
+      onClose={onClose}
+      title="Create Module from Package"
+      icon={<Boxes className="w-6 h-6" />}
+      maxWidth="4xl"
+      subtitle={
+        <>
               {packageName} <span className="opacity-60">·</span> {repository.name} <span className="opacity-60">·</span>{' '}
               <span className={suggestionApplied ? 'text-theme-info-fg' : ''}>
                 {effectiveArchitectures.join(', ')}
@@ -174,11 +176,9 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
                   </span>
                 </>
               )}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-theme-secondary hover:text-theme-primary">×</button>
-        </div>
-
+        </>
+      }
+    >
         {suggestionApplied && suggestion!.rationale.length > 0 && (
           <details className="mb-3 text-xs">
             <summary className="cursor-pointer text-theme-info-fg hover:underline">
@@ -329,7 +329,6 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
             Cannot proceed: {preview.errors.join('; ')}
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 };

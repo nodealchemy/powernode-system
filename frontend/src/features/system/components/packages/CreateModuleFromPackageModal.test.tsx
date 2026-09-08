@@ -532,7 +532,7 @@ describe('CreateModuleFromPackageModal', () => {
   // Cancel button
   // ---------------------------------------------------------------------------
 
-  it('calls onClose when the × button is clicked', async () => {
+  it('calls onClose when the shared Modal close button is clicked', async () => {
     mockPost
       .mockResolvedValueOnce(envelope(PREVIEW_EMPTY))
       .mockResolvedValueOnce(envelope(SUGGESTION_FALLBACK));
@@ -540,8 +540,8 @@ describe('CreateModuleFromPackageModal', () => {
     const onClose = jest.fn();
     renderModal({ onClose });
 
-    // × button is always rendered
-    fireEvent.click(screen.getByText('×'));
+    // The core Modal shell always renders its labelled close control.
+    fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
