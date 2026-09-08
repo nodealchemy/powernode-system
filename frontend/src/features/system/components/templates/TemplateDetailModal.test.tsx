@@ -13,6 +13,21 @@ const mockGetNodes = jest.fn();
 const mockGetTemplateModules = jest.fn();
 const mockUnassignModuleFromTemplate = jest.fn();
 
+const mockLoggerWarn = jest.fn();
+jest.mock('@/shared/utils/logger', () => {
+  const stub = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: jest.fn(),
+    apiStart: jest.fn(),
+    apiComplete: jest.fn(),
+    apiError: jest.fn(),
+    child: jest.fn(() => stub),
+  };
+  return { ...jest.requireActual('@/shared/utils/logger'), logger: stub };
+});
+
 jest.mock('@system/features/system/services/systemApi', () => ({
   systemApi: {
     getTemplate: (...args: unknown[]) => mockGetTemplate(...args),
@@ -347,6 +362,51 @@ describe('TemplateDetailModal', () => {
         expect(screen.getAllByText('Ubuntu Base').length).toBeGreaterThan(0)
       );
       expect(mockAddNotification).not.toHaveBeenCalled();
+    });
+
+    // IMP-1f4b84af602c — "non-critical" still means reported. These two
+    // failures leave a tab silently empty, so the only trace is the log entry;
+    // it must go through the shared logger, not console.warn, which the
+    // frontend console guards baseline and which is routed nowhere in
+    // production.
+    it('reports a getNodes failure through the shared logger, as a message not an error object', async () => {
+      mockGetTemplate.mockResolvedValue(TEMPLATE);
+      mockGetNodes.mockRejectedValue(new Error('Nodes failed'));
+      mockGetTemplateModules.mockResolvedValue({ modules: [] });
+
+      renderModal();
+
+      await waitFor(() =>
+        expect(mockLoggerWarn).toHaveBeenCalledWith(
+          expect.stringContaining('template nodes'),
+          expect.objectContaining({ error: 'Nodes failed' }),
+        )
+      );
+
+      // logger.warn JSON.stringify()s its context, and the real error here is an
+      // AxiosError carrying the session bearer token in `config.headers`.
+      // Handing it the object would print the token.
+      const [, context] = mockLoggerWarn.mock.calls[0];
+      expect(context.error).not.toBeInstanceOf(Error);
+      expect(typeof context.error).toBe('string');
+    });
+
+    it('reports a getTemplateModules failure through the shared logger, as a message not an error object', async () => {
+      mockGetTemplate.mockResolvedValue(TEMPLATE);
+      mockGetNodes.mockResolvedValue({ nodes: [], meta: DEFAULT_META });
+      mockGetTemplateModules.mockRejectedValue(new Error('Modules failed'));
+
+      renderModal();
+
+      await waitFor(() =>
+        expect(mockLoggerWarn).toHaveBeenCalledWith(
+          expect.stringContaining('template modules'),
+          expect.objectContaining({ error: 'Modules failed' }),
+        )
+      );
+
+      const [, context] = mockLoggerWarn.mock.calls[0];
+      expect(typeof context.error).toBe('string');
     });
   });
 

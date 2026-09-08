@@ -2,6 +2,7 @@ import { useCallback, useRef, useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '@/shared/services';
 import { useWebSocket } from '@/shared/hooks/useWebSocket';
+import { logger } from '@/shared/utils/logger';
 import type { SystemTask } from '@system/features/system/types/system.types';
 
 // WebSocket event types for System channel (mirrors backend SystemChannel broadcasts)
@@ -291,9 +292,8 @@ export const useSystemWebSocket = ({
 
     // Only subscribe if user has an account
     if (!user?.account?.id) {
-      if (process.env.NODE_ENV === 'development') {
-        console.warn('[SystemWebSocket] Cannot subscribe: user account not available');
-      }
+      // logger gates on the environment itself, so no NODE_ENV check here.
+      logger.warn('[SystemWebSocket] Cannot subscribe: user account not available');
       return;
     }
 
