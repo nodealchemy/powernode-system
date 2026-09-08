@@ -46,7 +46,7 @@ const WEBHOOK_A: SystemDiskImageWebhook = {
   received_count: 42,
   last_rotated_at: '2026-05-01T08:00:00Z',
   created_by_id: 'user-1',
-  webhook_url_path: '/hooks/disk_image/abcdef',
+  webhook_url_path: '/api/v1/system/webhooks/disk_image/built/wh-aaa',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-06-01T10:00:00Z',
 };
@@ -58,7 +58,7 @@ const WEBHOOK_B: SystemDiskImageWebhook = {
   status: 'disabled',
   secret_preview: 'efgh5678',
   received_count: 0,
-  webhook_url_path: '/hooks/disk_image/ghijkl',
+  webhook_url_path: '/api/v1/system/webhooks/disk_image/built/wh-bbb',
   created_at: '2026-02-01T00:00:00Z',
   updated_at: '2026-02-01T00:00:00Z',
 };
@@ -66,7 +66,7 @@ const WEBHOOK_B: SystemDiskImageWebhook = {
 const CREATED_RESPONSE: SystemDiskImageWebhookCreatedResponse = {
   disk_image_webhook: WEBHOOK_A,
   secret_plaintext: 'supersecretplaintextvalue123456',
-  webhook_url: 'https://powernode.example.com/hooks/disk_image/abcdef',
+  webhook_url: 'https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-aaa',
   note: 'Store this secret securely — it will not be shown again.',
 };
 
@@ -78,7 +78,17 @@ const ROTATED_RESPONSE: SystemDiskImageWebhookCreatedResponse = {
     updated_at: '2026-06-05T12:00:00Z',
   },
   secret_plaintext: 'rotated_plaintext_secret_value789',
-  webhook_url: 'https://powernode.example.com/hooks/disk_image/abcdef',
+  // FABRICATED, and deliberately left visible. rotate_secret renders only
+  // disk_image_webhook + secret_plaintext + note — it does NOT send
+  // webhook_url (disk_image_webhooks_controller.rb, rotate_secret's
+  // on_proceed), even though the shared response type marks it required and
+  // CiWebhooksTab renders `Webhook URL: ${createdSecret.webhook_url}` for the
+  // rotate result too. In production that line reads "Webhook URL: undefined"
+  // after a rotation. Reported separately rather than fixed here: the repair
+  // is a server-side render change, outside this task. The path shape below
+  // is canonical so the contract guard still means something; the FIELD's
+  // presence is what is not server-backed.
+  webhook_url: 'https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-aaa',
   note: 'Old secret revoked. Update the CI secret store before the next webhook fires.',
 };
 
@@ -228,7 +238,7 @@ describe('diskImageWebhooksApi', () => {
 
       expect(result.secret_plaintext).toBe('supersecretplaintextvalue123456');
       expect(result.disk_image_webhook).toEqual(WEBHOOK_A);
-      expect(result.webhook_url).toBe('https://powernode.example.com/hooks/disk_image/abcdef');
+      expect(result.webhook_url).toBe('https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-aaa');
       expect(result.note).toBeTruthy();
     });
 
@@ -314,7 +324,7 @@ describe('diskImageWebhooksApi', () => {
 
       expect(result.secret_plaintext).toBe('rotated_plaintext_secret_value789');
       expect(result.disk_image_webhook.id).toBe('wh-aaa');
-      expect(result.webhook_url).toBe('https://powernode.example.com/hooks/disk_image/abcdef');
+      expect(result.webhook_url).toBe('https://powernode.example.com/api/v1/system/webhooks/disk_image/built/wh-aaa');
       expect(result.note).toBeTruthy();
     });
 
@@ -344,6 +354,31 @@ describe('diskImageWebhooksApi', () => {
       await expect(diskImageWebhooksApi.rotateSecret('nonexistent')).rejects.toThrow(
         'Webhook not found',
       );
+    });
+  });
+
+  // ── Fixture / server agreement ────────────────────────────────────────────
+  //
+  // The serializer derives webhook_url_path from the webhook's OWN id
+  // (`.../built/#{@webhook.id}`), so a fixture whose path names a different id
+  // than its `id` field is describing a response the server cannot produce.
+  // Both fixtures here did exactly that — wh-aaa carried `.../abcdef` — on top
+  // of using a path shape that matches no route.
+  //
+  // The prefix itself is pinned against the serializer in
+  // diskImageWebhookPath.contract.test.ts; this pins the tail.
+  describe('fixture integrity', () => {
+    it.each([
+      ['WEBHOOK_A', WEBHOOK_A],
+      ['WEBHOOK_B', WEBHOOK_B],
+    ])('%s derives its webhook_url_path from its own id', (_name, webhook) => {
+      expect(webhook.webhook_url_path).toMatch(new RegExp(`/${webhook.id}$`));
+    });
+
+    it('builds the created-response absolute URL from the same path', () => {
+      expect(
+        CREATED_RESPONSE.webhook_url.endsWith(CREATED_RESPONSE.disk_image_webhook.webhook_url_path),
+      ).toBe(true);
     });
   });
 });
