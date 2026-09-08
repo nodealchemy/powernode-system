@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown, Download } from 'lucide-react';
+import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown, Download, Layers } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -23,6 +23,7 @@ import { BootImageDriftBadge } from './BootImageDriftBadge';
 import { EditNodeModal } from './EditNodeModal';
 import { CreateInstanceModal } from './CreateInstanceModal';
 import { EditInstanceModal } from './EditInstanceModal';
+import { ApplyTemplateModal } from './ApplyTemplateModal';
 
 interface NodeDetailModalProps {
   /** Node ID to display */
@@ -103,6 +104,12 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   const canDeleteInstances = hasPermission('system.instances.delete');
   const canUpdateNode = hasPermission('system.nodes.update');
   const canUpdateModules = hasPermission('system.modules.update');
+
+  // Apply-template drill-down. The shared Modal listens for Escape on
+  // `document` rather than on its own subtree, so this modal stands down for
+  // the whole time a Modal is stacked above it — not only while that modal's
+  // own confirmation is up, which would still let one Escape press close both.
+  const [showApplyTemplateModal, setShowApplyTemplateModal] = useState(false);
 
   // Per-(node, module) assignment toggle (IMP-3e9620967632). Assignment
   // rows arrive embedded on the node-scoped module listing; enable/disable
@@ -242,6 +249,13 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
 
   // Handle instance action completion
   const handleInstanceActionComplete = useCallback(() => {
+    fetchNodeData();
+    onNodeUpdated?.();
+  }, [fetchNodeData, onNodeUpdated]);
+
+  // Apply-template completion: the applied plan creates (and may purge) module
+  // assignments, so the Modules tab and the parent list are both refetched.
+  const handleTemplateApplied = useCallback(() => {
     fetchNodeData();
     onNodeUpdated?.();
   }, [fetchNodeData, onNodeUpdated]);
@@ -1156,6 +1170,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         subtitle={node?.node_template_name ? `Template: ${node.node_template_name}` : undefined}
         icon={<Server className="w-6 h-6" />}
         size="4xl"
+        closeOnEscape={!showApplyTemplateModal}
         footer={
           <div className="flex items-center gap-3">
             {canUpdateNode && node && (
@@ -1164,6 +1179,17 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                 onClick={() => setShowEditModal(true)}
               >
                 Edit Node
+              </Button>
+            )}
+            {/* apply_template requires system.modules.update, and there is
+                nothing to apply on a node with no template bound. */}
+            {canUpdateModules && node?.node_template_id && (
+              <Button
+                variant="secondary"
+                onClick={() => setShowApplyTemplateModal(true)}
+              >
+                <Layers className="w-4 h-4 mr-2" />
+                Apply Template
               </Button>
             )}
             <Button variant="ghost" onClick={onClose}>
@@ -1205,6 +1231,14 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         isOpen={showCreateInstanceModal}
         onClose={() => setShowCreateInstanceModal(false)}
         onInstanceCreated={handleInstanceCreated}
+      />
+
+      {/* Apply Template Modal */}
+      <ApplyTemplateModal
+        node={node}
+        isOpen={showApplyTemplateModal}
+        onClose={() => setShowApplyTemplateModal(false)}
+        onApplied={handleTemplateApplied}
       />
 
       {/* Edit Instance Modal */}

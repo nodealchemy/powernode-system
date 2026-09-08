@@ -149,6 +149,30 @@ export const nodesApi = {
   },
 
   /**
+   * Re-apply the node's template: materializes any TemplateModule the node is
+   * missing, and — only when `purge_stale` is set — removes assignments the
+   * template no longer carries.
+   *
+   * Both flags are always sent explicitly rather than omitted. The backend
+   * casts them with ActiveModel::Type::Boolean, where a missing key and a
+   * `false` both read as false today, but a destructive flag should never
+   * depend on that equivalence holding.
+   *
+   * `dry_run: true` computes the same plan and persists nothing, which is what
+   * makes the mandatory preview step real rather than advisory.
+   */
+  applyTemplate: async (
+    id: string,
+    options: { dry_run?: boolean; purge_stale?: boolean } = {}
+  ): Promise<TemplateApplyResult> => {
+    const response = await apiClient.post<ApiEnvelope<TemplateApplyResult>>(
+      `/system/nodes/${id}/apply_template`,
+      { dry_run: options.dry_run ?? false, purge_stale: options.purge_stale ?? false }
+    );
+    return extractData(response);
+  },
+
+  /**
    * Download the per-instance claim-by-ID boot config (identity.cfg) for the
    * generic-image fleet flow. Triggers a browser save using the filename from
    * the backend's Content-Disposition. Valid only for physical, unclaimed
@@ -175,3 +199,15 @@ export const nodesApi = {
     URL.revokeObjectURL(url);
   },
 };
+
+/** Outcome of POST /system/nodes/:id/apply_template, for a dry run or a real apply. */
+export interface TemplateApplyResult {
+  dry_run: boolean;
+  created_count: number;
+  skipped_count: number;
+  purged_count: number;
+  warnings: string[];
+  errors: string[];
+  created: { node_module_id: string; source_template_module_id: string | null }[];
+  purged_module_ids: string[];
+}

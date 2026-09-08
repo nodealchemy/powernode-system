@@ -120,6 +120,7 @@ interface RenderOpts {
   onDelete?: jest.Mock;
   onCreate?: jest.Mock;
   onDuplicate?: jest.Mock;
+  onClone?: jest.Mock;
   searchParams?: string;
 }
 
@@ -129,6 +130,7 @@ function renderList(opts: RenderOpts = {}) {
   const onDelete = opts.onDelete ?? jest.fn();
   const onCreate = opts.onCreate ?? jest.fn();
   const onDuplicate = opts.onDuplicate ?? jest.fn();
+  const onClone = opts.onClone ?? jest.fn();
 
   const url = opts.searchParams ? `/?${opts.searchParams}` : '/';
 
@@ -150,6 +152,7 @@ function renderList(opts: RenderOpts = {}) {
         onDelete={onDelete}
         onCreate={onCreate}
         onDuplicate={onDuplicate}
+        onClone={onClone}
       />
     </Router>,
   );
@@ -361,6 +364,35 @@ describe('TemplateList', () => {
 
     fireEvent.click(screen.getByTitle('Delete Template'));
     expect(onDelete).toHaveBeenCalledWith(tpl.id);
+  });
+
+  it('calls onClone when the Clone button is clicked', async () => {
+    const tpl = makeTemplate();
+    mockGet.mockResolvedValue(listEnvelope([tpl]));
+    const onClone = jest.fn();
+
+    renderList({ onClone });
+
+    await waitFor(() => expect(screen.getAllByText('ubuntu-base').length).toBeGreaterThan(0));
+
+    fireEvent.click(
+      screen.getByTitle('Clone Template (deep copy, including module assignments)'),
+    );
+    expect(onClone).toHaveBeenCalledWith(tpl);
+  });
+
+  // Clone is the server-side deep copy; Duplicate only prefills the create
+  // form. Both must remain reachable and separately wired.
+  it('renders Clone and Duplicate as separate row actions', async () => {
+    mockGet.mockResolvedValue(listEnvelope([makeTemplate()]));
+    renderList();
+
+    await waitFor(() => expect(screen.getAllByText('ubuntu-base').length).toBeGreaterThan(0));
+
+    expect(screen.getByTitle('Duplicate Template')).toBeInTheDocument();
+    expect(
+      screen.getByTitle('Clone Template (deep copy, including module assignments)'),
+    ).toBeInTheDocument();
   });
 
   it('calls onDuplicate when the Duplicate button is clicked', async () => {
