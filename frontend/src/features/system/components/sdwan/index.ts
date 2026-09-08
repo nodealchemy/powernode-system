@@ -1,8 +1,9 @@
 // SDWAN feature components — slices 3 + 4.5 + 6 of the SDWAN plan.
 
 export { NetworkList } from './NetworkList';
-export { NetworkCreateModal } from './NetworkCreateModal';
-export { NetworkEditModal } from './NetworkEditModal';
+// One form component per resource with a nullable entity prop — the shape used
+// everywhere else in the app. Replaces the NetworkCreate/NetworkEdit pair.
+export { NetworkFormModal } from './NetworkFormModal';
 // Phase O6 follow-up — modal-based detail view replacing row-click
 // page navigate; the page route stays for direct URL access.
 export { NetworkDetailModal } from './NetworkDetailModal';
@@ -10,8 +11,7 @@ export { PeerList } from './PeerList';
 export { PeerAttachModal } from './PeerAttachModal';
 export { PeerEditModal } from './PeerEditModal';
 export { FirewallRuleList } from './FirewallRuleList';
-export { FirewallRuleCreateModal } from './FirewallRuleCreateModal';
-export { FirewallRuleEditModal } from './FirewallRuleEditModal';
+export { FirewallRuleFormModal } from './FirewallRuleFormModal';
 export { SdwanTopology } from './SdwanTopology';
 // Slice 4.5 — user VPN UI
 export { AccessTab } from './AccessTab';

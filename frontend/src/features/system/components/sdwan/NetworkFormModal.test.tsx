@@ -1,6 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { NetworkCreateModal } from './NetworkCreateModal';
+import { BrowserRouter } from 'react-router-dom';
+import { NetworkFormModal } from './NetworkFormModal';
+import type { SdwanNetwork } from '../../types/sdwan.types';
 
 // =============================================================================
 // Mocks
@@ -69,9 +71,11 @@ jest.mock('@/shared/components/ui/Button', () => ({
 
 // sdwanApi is the direct import the component uses.
 const mockCreateNetwork = jest.fn();
+const mockUpdateNetwork = jest.fn();
 jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   sdwanApi: {
     createNetwork: (...args: unknown[]) => mockCreateNetwork(...args),
+    updateNetwork: (...args: unknown[]) => mockUpdateNetwork(...args),
   },
 }));
 
@@ -110,11 +114,13 @@ function renderModal({
   onClose = jest.fn(),
   onCreated = jest.fn(),
 }: RenderProps = {}) {
+  // network={null} IS create mode — the whole point of the collapse.
   return render(
-    <NetworkCreateModal
+    <NetworkFormModal
       isOpen={isOpen}
+      network={null}
       onClose={onClose}
-      onCreated={onCreated}
+      onSaved={onCreated}
     />,
   );
 }
@@ -136,21 +142,55 @@ function getCancelButton() {
 }
 
 function getAcceptRadio() {
-  return screen.getByRole('radio', { name: /allow all by default/i });
+  return screen.getByRole('radio', { name: /accept all/i });
 }
 
 function getDropRadio() {
-  return screen.getByRole('radio', { name: /drop all by default/i });
+  return screen.getByRole('radio', { name: /drop all/i });
 }
 
 // =============================================================================
 // Tests
 // =============================================================================
 
-describe('NetworkCreateModal', () => {
+const BASE_NETWORK: SdwanNetwork = {
+  id: 'net-abc',
+  name: 'prod-overlay',
+  slug: 'prod-overlay',
+  status: 'active',
+  cidr_64: 'fd00::/64',
+  description: 'Production WireGuard overlay',
+  peer_count: 3,
+  settings: { firewall_default_policy: 'accept' },
+  created_at: '2026-01-01T00:00:00Z',
+};
+
+const renderEditModal = (
+  props: Partial<React.ComponentProps<typeof NetworkFormModal>> = {}
+) => {
+  const onClose = jest.fn();
+  const onSaved = jest.fn();
+
+  render(
+    <BrowserRouter>
+      <NetworkFormModal
+        isOpen={true}
+        network={BASE_NETWORK}
+        onClose={onClose}
+        onSaved={onSaved}
+        {...props}
+      />
+    </BrowserRouter>
+  );
+
+  return { onClose, onSaved };
+};
+
+describe('NetworkFormModal — create mode (network=null)', () => {
   beforeEach(() => {
     mockAddNotification.mockReset();
     mockCreateNetwork.mockReset();
+    mockUpdateNetwork.mockReset();
   });
 
   // ---------------------------------------------------------------------------
@@ -214,7 +254,7 @@ describe('NetworkCreateModal', () => {
     expect(getDescriptionTextarea()).toHaveValue('');
   });
 
-  it('initialises the firewall policy to "accept" (Allow all)', () => {
+  it('initialises the firewall policy to "accept" (Accept all)', () => {
     renderModal();
     expect(getAcceptRadio()).toBeChecked();
     expect(getDropRadio()).not.toBeChecked();
@@ -796,6 +836,529 @@ describe('NetworkCreateModal', () => {
       expect.objectContaining({ type: 'success' }),
     );
     expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe('NetworkFormModal — edit mode (network given)', () => {
+  beforeEach(() => {
+    mockUpdateNetwork.mockReset();
+    mockAddNotification.mockReset();
+  });
+
+  // ──── Null / closed guard ─────────────────────────────────────────────────
+
+  // network={null} no longer renders nothing — it IS create mode. The create
+  // half above covers that path; here we only assert the two modes are the same
+  // component and that create mode carries no Status select.
+  it('renders create mode, not an empty tree, when the network prop is null', () => {
+    render(
+      <BrowserRouter>
+        <NetworkFormModal
+          isOpen={true}
+          network={null}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+    expect(screen.getByTestId('modal-title')).toHaveTextContent('Create SDWAN network');
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when isOpen is false', () => {
+    const { container } = render(
+      <BrowserRouter>
+        <NetworkFormModal
+          isOpen={false}
+          network={BASE_NETWORK}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  // ──── Initial render + field population ──────────────────────────────────
+
+  it('shows modal title as "Edit <network name>"', () => {
+    renderEditModal();
+    expect(screen.getByText('Edit prod-overlay')).toBeInTheDocument();
+  });
+
+  it('populates name field from network prop', () => {
+    renderEditModal();
+    expect(screen.getByDisplayValue('prod-overlay')).toBeInTheDocument();
+  });
+
+  it('populates description field from network prop', () => {
+    renderEditModal();
+    expect(screen.getByDisplayValue('Production WireGuard overlay')).toBeInTheDocument();
+  });
+
+  it('populates status select from network prop', () => {
+    renderEditModal();
+    const statusSelect = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(statusSelect.value).toBe('active');
+  });
+
+  it('pre-selects "Accept all" firewall policy radio from network settings', () => {
+    renderEditModal();
+    const acceptRadio = screen.getByRole('radio', { name: /accept all/i }) as HTMLInputElement;
+    expect(acceptRadio.checked).toBe(true);
+  });
+
+  it('pre-selects "Drop all" radio when network settings has drop policy', () => {
+    renderEditModal({
+      network: {
+        ...BASE_NETWORK,
+        settings: { firewall_default_policy: 'drop' },
+      },
+    });
+    const dropRadio = screen.getByRole('radio', { name: /drop all/i }) as HTMLInputElement;
+    expect(dropRadio.checked).toBe(true);
+  });
+
+  it('defaults firewall policy to "accept" when settings is absent', () => {
+    renderEditModal({
+      network: { ...BASE_NETWORK, settings: undefined },
+    });
+    const acceptRadio = screen.getByRole('radio', { name: /accept all/i }) as HTMLInputElement;
+    expect(acceptRadio.checked).toBe(true);
+  });
+
+  it('renders empty description when network has no description', () => {
+    renderEditModal({
+      network: { ...BASE_NETWORK, description: undefined },
+    });
+    // The textarea has no htmlFor/aria-label — query all textboxes and find
+    // the one that is a <textarea> element (i.e. the description field).
+    const textboxes = screen.getAllByRole('textbox');
+    const textarea = textboxes.find(
+      (el) => el.tagName.toLowerCase() === 'textarea'
+    ) as HTMLTextAreaElement | undefined;
+    expect(textarea).toBeTruthy();
+    expect(textarea!.value).toBe('');
+  });
+
+  // ──── Status select options ───────────────────────────────────────────────
+
+  it('shows all four status options', () => {
+    renderEditModal();
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toEqual(['registered', 'active', 'suspended', 'archived']);
+  });
+
+  it('shows suspended-network hint text', () => {
+    renderEditModal();
+    expect(
+      screen.getByText(/suspended networks compile a default-deny ruleset/i)
+    ).toBeInTheDocument();
+  });
+
+  // ──── Validation: name required ───────────────────────────────────────────
+
+  it('disables Save button when name is cleared', () => {
+    renderEditModal();
+    const nameInput = screen.getByDisplayValue('prod-overlay');
+    fireEvent.change(nameInput, { target: { value: '' } });
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+  });
+
+  it('disables Save button when name is whitespace only', () => {
+    renderEditModal();
+    const nameInput = screen.getByDisplayValue('prod-overlay');
+    fireEvent.change(nameInput, { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+  });
+
+  it('enables Save button when name is non-empty', () => {
+    renderEditModal();
+    expect(screen.getByRole('button', { name: /save changes/i })).not.toBeDisabled();
+  });
+
+  // ──── Successful submit ───────────────────────────────────────────────────
+
+  it('calls sdwanApi.updateNetwork with the id and payload on submit', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce({ ...BASE_NETWORK });
+
+    const { onSaved, onClose } = renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    expect(mockUpdateNetwork).toHaveBeenCalledWith(BASE_NETWORK.id, {
+      name: 'prod-overlay',
+      description: 'Production WireGuard overlay',
+      status: 'active',
+      settings: { firewall_default_policy: 'accept' },
+    });
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mockAddNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+  });
+
+  it('sends trimmed name in the payload', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal();
+
+    const nameInput = screen.getByDisplayValue('prod-overlay');
+    fireEvent.change(nameInput, { target: { value: '  trimmed-name  ' } });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { name: string }];
+    expect(payload.name).toBe('trimmed-name');
+  });
+
+  it('sends description as undefined when textarea is blank', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal({ network: { ...BASE_NETWORK, description: undefined } });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { description: unknown }];
+    expect(payload.description).toBeUndefined();
+  });
+
+  it('sends trimmed description in the payload', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal();
+
+    const descField = screen.getByDisplayValue('Production WireGuard overlay');
+    fireEvent.change(descField, { target: { value: '  new description  ' } });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { description: string }];
+    expect(payload.description).toBe('new description');
+  });
+
+  it('sends selected status in the payload', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal();
+
+    const statusSelect = screen.getByRole('combobox');
+    fireEvent.change(statusSelect, { target: { value: 'suspended' } });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { status: string }];
+    expect(payload.status).toBe('suspended');
+  });
+
+  it('sends updated firewall policy when "Drop all" is selected', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal();
+
+    const dropRadio = screen.getByRole('radio', { name: /drop all/i });
+    fireEvent.click(dropRadio);
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { settings: { firewall_default_policy: string } }];
+    expect(payload.settings.firewall_default_policy).toBe('drop');
+  });
+
+  it('merges existing settings keys when updating firewall policy', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal({
+      network: {
+        ...BASE_NETWORK,
+        settings: { firewall_default_policy: 'accept', custom_key: 'preserved' },
+      },
+    });
+
+    const dropRadio = screen.getByRole('radio', { name: /drop all/i });
+    fireEvent.click(dropRadio);
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [
+      string,
+      { settings: Record<string, unknown> }
+    ];
+    expect(payload.settings.custom_key).toBe('preserved');
+    expect(payload.settings.firewall_default_policy).toBe('drop');
+  });
+
+  it('sends settings: { firewall_default_policy: "accept" } when network has no prior settings', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal({ network: { ...BASE_NETWORK, settings: undefined } });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() => expect(mockUpdateNetwork).toHaveBeenCalledTimes(1));
+
+    const [, payload] = mockUpdateNetwork.mock.calls[0] as [string, { settings: { firewall_default_policy: string } }];
+    expect(payload.settings.firewall_default_policy).toBe('accept');
+  });
+
+  // ──── Success notification message content ───────────────────────────────
+
+  it('includes the network name in the success notification', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce(BASE_NETWORK);
+
+    renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'success',
+          message: 'Network "prod-overlay" updated',
+        })
+      )
+    );
+  });
+
+  // ──── Error handling ──────────────────────────────────────────────────────
+
+  it('shows error notification when API rejects with an Error', async () => {
+    mockUpdateNetwork.mockRejectedValueOnce(new Error('Network unreachable'));
+
+    const { onSaved, onClose } = renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Network unreachable' })
+      )
+    );
+
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows generic "Update failed" message when API rejects with a non-Error', async () => {
+    mockUpdateNetwork.mockRejectedValueOnce('oops');
+
+    renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Update failed' })
+      )
+    );
+  });
+
+  // ──── Submitting state ────────────────────────────────────────────────────
+
+  it('shows "Saving…" text on the button while submitting', async () => {
+    let resolvePut!: (v: unknown) => void;
+    mockUpdateNetwork.mockReturnValueOnce(
+      new Promise((res) => { resolvePut = res; })
+    );
+
+    renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/saving…/i)).toBeInTheDocument()
+    );
+
+    // Resolve to avoid act() warnings
+    resolvePut(BASE_NETWORK);
+    await waitFor(() =>
+      expect(screen.queryByText(/saving…/i)).not.toBeInTheDocument()
+    );
+  });
+
+  it('disables all form controls while submitting', async () => {
+    let resolvePut!: (v: unknown) => void;
+    mockUpdateNetwork.mockReturnValueOnce(
+      new Promise((res) => { resolvePut = res; })
+    );
+
+    renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/saving…/i)).toBeInTheDocument()
+    );
+
+    // All inputs/selects/textareas should be disabled
+    expect(screen.getByDisplayValue('prod-overlay')).toBeDisabled();
+    expect(screen.getByRole('combobox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
+    // Both radios should be disabled
+    screen.getAllByRole('radio').forEach((r) => expect(r).toBeDisabled());
+
+    resolvePut(BASE_NETWORK);
+    await waitFor(() =>
+      expect(screen.queryByText(/saving…/i)).not.toBeInTheDocument()
+    );
+  });
+
+  it('does not re-submit if form is submitted while already submitting', async () => {
+    let resolvePut!: (v: unknown) => void;
+    mockUpdateNetwork.mockReturnValue(
+      new Promise((res) => { resolvePut = res; })
+    );
+
+    renderEditModal();
+
+    const form = screen.getByRole('button', { name: /save changes/i }).closest('form')!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    await waitFor(() =>
+      expect(screen.getByText(/saving…/i)).toBeInTheDocument()
+    );
+
+    expect(mockUpdateNetwork).toHaveBeenCalledTimes(1);
+
+    resolvePut(BASE_NETWORK);
+    await waitFor(() =>
+      expect(screen.queryByText(/saving…/i)).not.toBeInTheDocument()
+    );
+  });
+
+  // ──── Cancel button ───────────────────────────────────────────────────────
+
+  it('calls onClose when Cancel is clicked and leaves the edit fields seeded', () => {
+    const { onClose } = renderEditModal();
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // handleClose resets only in create mode. Blanking an edit form on close is
+    // the regression the collapse had to avoid: the seeding effect keys on the
+    // network's identity, so a reopened form would stay empty.
+    expect(screen.getByDisplayValue('prod-overlay')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Production WireGuard overlay')).toBeInTheDocument();
+  });
+
+  // ──── Re-initialisation when network prop changes ─────────────────────────
+
+  it('updates form fields when network prop changes', () => {
+    const { rerender } = render(
+      <BrowserRouter>
+        <NetworkFormModal
+          isOpen={true}
+          network={BASE_NETWORK}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+
+    expect(screen.getByDisplayValue('prod-overlay')).toBeInTheDocument();
+
+    const newNetwork: SdwanNetwork = {
+      ...BASE_NETWORK,
+      id: 'net-xyz',
+      name: 'dev-overlay',
+      description: 'Dev network',
+      status: 'registered',
+      settings: { firewall_default_policy: 'drop' },
+    };
+
+    rerender(
+      <BrowserRouter>
+        <NetworkFormModal
+          isOpen={true}
+          network={newNetwork}
+          onClose={jest.fn()}
+          onSaved={jest.fn()}
+        />
+      </BrowserRouter>
+    );
+
+    expect(screen.getByDisplayValue('dev-overlay')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Dev network')).toBeInTheDocument();
+    const statusSelect = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(statusSelect.value).toBe('registered');
+    const dropRadio = screen.getByRole('radio', { name: /drop all/i }) as HTMLInputElement;
+    expect(dropRadio.checked).toBe(true);
+  });
+
+  // ──── Pending-approval branch (IMP-87ec6f651f07) ──────────────────────────
+
+  it('shows the pending-approval notification (not success) and skips onSaved when the update is parked', async () => {
+    mockUpdateNetwork.mockResolvedValueOnce({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.network_update',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+
+    const { onSaved, onClose } = renderEditModal();
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: /save changes/i }).closest('form')!
+    );
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        })
+      )
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+    expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 });

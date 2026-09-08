@@ -9,10 +9,9 @@ import {
   PeerAttachModal,
   PeerEditModal,
   FirewallRuleList,
-  FirewallRuleCreateModal,
-  FirewallRuleEditModal,
+  FirewallRuleFormModal,
   SdwanTopology,
-  NetworkEditModal,
+  NetworkFormModal,
   AccessTab,
   NetworkVipsTab,
   NetworkRoutingTab,
@@ -53,7 +52,7 @@ const TAB_LABELS: Record<TabKey, string> = {
  *
  * Per-tab action buttons render in the modal header (operator clicks
  * Edit network / Attach peer / Add rule / etc.). Nested modals
- * (PeerAttachModal, FirewallRuleCreateModal, PeerEditModal, etc.)
+ * (PeerAttachModal, FirewallRuleFormModal, PeerEditModal, etc.)
  * stack on top via the Modal component's portal — z-index handled by
  * the portal layer.
  *
@@ -311,14 +310,15 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
         onSaved={triggerRefresh}
       />
 
-      <FirewallRuleCreateModal
+      <FirewallRuleFormModal
         isOpen={showAddRule}
         networkId={display.id}
+        rule={null}
         onClose={() => setShowAddRule(false)}
-        onCreated={triggerRefresh}
+        onSaved={triggerRefresh}
       />
 
-      <FirewallRuleEditModal
+      <FirewallRuleFormModal
         isOpen={ruleToEdit !== null}
         networkId={display.id}
         rule={ruleToEdit}
@@ -326,7 +326,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
         onSaved={triggerRefresh}
       />
 
-      <NetworkEditModal
+      <NetworkFormModal
         isOpen={showEditNetwork}
         network={display}
         onClose={() => setShowEditNetwork(false)}

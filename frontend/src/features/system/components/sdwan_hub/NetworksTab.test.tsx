@@ -9,7 +9,7 @@ import type { SdwanNetwork } from '@system/features/system/types/sdwan.types';
 // NetworksTab imports:
 //   - usePermissions from '@/shared/hooks/usePermissions'
 //   - useNotifications from '@/shared/hooks/useNotifications'
-//   - NetworkList, NetworkCreateModal, NetworkDetailModal from '@system/features/system/components/sdwan'
+//   - NetworkList, NetworkFormModal, NetworkDetailModal from '@system/features/system/components/sdwan'
 //   - sdwanApi from '@system/features/system/services/api/sdwanApi'
 //   - Modal from '@/shared/components/ui/Modal'  (real — delete confirm dialog)
 //   - Button from '@/shared/components/ui/Button'  (real)
@@ -127,16 +127,16 @@ jest.mock('@system/features/system/components/sdwan', () => ({
     );
   },
 
-  NetworkCreateModal: (props: Record<string, unknown>) => {
+  NetworkFormModal: (props: Record<string, unknown>) => {
     mockCapturedCreateModalProps = props;
     return props.isOpen ? (
       <div data-testid="create-modal">
         <button
           data-testid="trigger-created"
           onClick={() => {
-            if (typeof props.onCreated === 'function') {
+            if (typeof props.onSaved === 'function') {
               // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-              (props.onCreated as Function)();
+              (props.onSaved as Function)();
             }
           }}
         >
@@ -260,7 +260,7 @@ describe('NetworksTab', () => {
     expect(screen.getByTestId('network-list')).toBeInTheDocument();
   });
 
-  it('does NOT render NetworkCreateModal initially', () => {
+  it('does NOT render the network form modal initially', () => {
     renderTab();
     expect(screen.queryByTestId('create-modal')).not.toBeInTheDocument();
   });
@@ -296,10 +296,10 @@ describe('NetworksTab', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // NetworkCreateModal open / close
+  // NetworkFormModal (create mode) open / close
   // ---------------------------------------------------------------------------
 
-  it('openCreate handle opens the NetworkCreateModal', async () => {
+  it('openCreate handle opens the network form modal in create mode', async () => {
     const onActionsReady = jest.fn();
     renderTab({ onActionsReady });
 
@@ -313,7 +313,7 @@ describe('NetworksTab', () => {
     expect(mockCapturedCreateModalProps.isOpen).toBe(true);
   });
 
-  it('closes NetworkCreateModal when the modal fires onClose', async () => {
+  it('closes the network form modal when it fires onClose', async () => {
     const onActionsReady = jest.fn();
     renderTab({ onActionsReady });
 
@@ -331,7 +331,7 @@ describe('NetworksTab', () => {
     );
   });
 
-  it('increments refreshKey when NetworkCreateModal fires onCreated', async () => {
+  it('increments refreshKey when the network form modal fires onSaved', async () => {
     const onActionsReady = jest.fn();
     renderTab({ onActionsReady });
 
