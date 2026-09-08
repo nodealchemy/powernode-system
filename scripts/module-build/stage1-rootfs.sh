@@ -49,7 +49,13 @@
 #      signature (5xx/429 on a fetch, connection errors, Hash Sum mismatch);
 #      any other failure (unknown package, keyring, disk) fails at once.
 #      Before a retry the partial /tmp/fat is removed and the mirror is
-#      re-probed.
+#      re-probed. The .debs apt had already fetched and verified are NOT
+#      thrown away with it: they are harvested into a job-local resume
+#      cache (/tmp/stage1-apt-cache, or the persistent cache when
+#      STAGE1_APT_CACHE_DIR is in effect) and seeded back into the next
+#      run's apt archive dir, so a retry resumes where the last run
+#      stopped instead of re-downloading the whole package set. apt
+#      re-verifies every seeded file against the index hashes.
 #   3. Every wait shares ONE deadline, STAGE1_MIRROR_WAIT_MAX seconds from
 #      the moment this script starts. Worst case for a dead mirror is that
 #      budget spent probing, then a clear failure naming the mirror URL and
@@ -101,6 +107,15 @@
 #                                (Acquire::Retries, default 10) — rides out an
 #                                origin that 5xx's individual index/package
 #                                fetches behind a backend whose probe is 200.
+#   STAGE1_APT_TIMEOUT           apt's transport timeout in seconds
+#                                (Acquire::http::Timeout; https inherits it;
+#                                default 30). Bounds how long ONE fetch
+#                                waits on a backend that stops answering:
+#                                a pinned backend that dies mid-run costs at
+#                                most STAGE1_APT_RETRIES x this before apt
+#                                fails the run and the retry loop re-probes
+#                                and re-pins (apt's own default of 120s made
+#                                that 20 minutes per attempt).
 #   STAGE1_RETRY_PAUSE           Seconds paused before each mmdebstrap retry,
 #                                multiplied by the attempt number (default 30:
 #                                30s, 60s, 90s ...); counts against
@@ -157,8 +172,11 @@
 #         /tmp/stage1-hosts (the per-job hosts file carrying the backend
 #         pin) and /tmp/stage1-hosts.orig (backup of /etc/hosts, only in
 #         the in-place fallback),
-#         /tmp/stage1-apt-cache-{seed,harvest}.sh (only when
-#         STAGE1_APT_CACHE_DIR is in effect)
+#         /tmp/stage1-apt-cache-{seed,harvest}.sh (always generated; the
+#         mmdebstrap hooks are passed only when STAGE1_APT_CACHE_DIR is in
+#         effect, and the seed hook alone on a retry otherwise),
+#         /tmp/stage1-apt-cache/archives (the job-local resume cache,
+#         populated only after a transient mmdebstrap failure)
 #
 # Exit: non-zero on any mmdebstrap/dpkg-query failure (set -euo pipefail
 # propagates the first one); 2 with a message naming the mirror URL and the
@@ -214,6 +232,7 @@ done
 MIRROR_WAIT_MAX="${STAGE1_MIRROR_WAIT_MAX:-900}"
 MMDEBSTRAP_ATTEMPTS="${STAGE1_MMDEBSTRAP_ATTEMPTS:-5}"
 APT_RETRIES="${STAGE1_APT_RETRIES:-10}"
+APT_TIMEOUT="${STAGE1_APT_TIMEOUT:-30}"
 RETRY_PAUSE="${STAGE1_RETRY_PAUSE:-30}"
 SNAPSHOT_BASE_URL_OVERRIDE="${STAGE1_SNAPSHOT_BASE_URL:-}"
 APT_CACHE_DIR="${STAGE1_APT_CACHE_DIR:-}"
@@ -223,6 +242,8 @@ APT_CACHE_DIR="${STAGE1_APT_CACHE_DIR:-}"
   || die "STAGE1_MMDEBSTRAP_ATTEMPTS must be a positive integer, got '${MMDEBSTRAP_ATTEMPTS}'"
 [[ "$APT_RETRIES" =~ ^[0-9]+$ ]] \
   || die "STAGE1_APT_RETRIES must be a non-negative integer, got '${APT_RETRIES}'"
+[[ "$APT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || die "STAGE1_APT_TIMEOUT must be a positive integer number of seconds, got '${APT_TIMEOUT}'"
 [[ "$RETRY_PAUSE" =~ ^[0-9]+$ ]] \
   || die "STAGE1_RETRY_PAUSE must be a non-negative integer number of seconds, got '${RETRY_PAUSE}'"
 BACKEND_PIN="${STAGE1_BACKEND_PIN:-1}"
@@ -504,29 +525,66 @@ resolve_snapshot_base_url() {
   SNAPSHOT_BASE_URL="$u"
 }
 
-# --- persistent apt cache (opt-in) -----------------------------------------
-# Populates cache_hook_args with the mmdebstrap flags that seed/harvest the
-# cache, or leaves it empty (default) so the mmdebstrap command line is
-# exactly the historical one.
+# --- apt .deb cache ---------------------------------------------------------
+# Two scopes share one seed/harvest mechanism:
+#   * persistent (opt-in, STAGE1_APT_CACHE_DIR): cache_hook_args carries the
+#     mmdebstrap flags that seed before and harvest after EVERY run;
+#   * job-local resume (default): nothing is passed on the first run, so the
+#     mmdebstrap command line is exactly the historical one. After a
+#     transient failure the .debs that run had already fetched and verified
+#     are harvested into RESUME_CACHE_DIR, and the seed hook alone is added
+#     to the retry so it resumes from them instead of starting over.
+# CACHE_PATH is the directory the generated scripts operate on ("" = none).
+RESUME_CACHE_DIR=/tmp/stage1-apt-cache/archives
 cache_hook_args=()
+CACHE_PATH=""
 setup_apt_cache() {
-  [ -n "$APT_CACHE_DIR" ] || return 0
+  if setup_persistent_apt_cache; then
+    return 0
+  fi
+  if ! mkdir -p "$RESUME_CACHE_DIR" 2>/dev/null || [ ! -w "$RESUME_CACHE_DIR" ]; then
+    log "WARNING: resume cache directory ${RESUME_CACHE_DIR} is not writable — a retried mmdebstrap run will start its downloads over"
+    return 0
+  fi
+  write_cache_scripts "$RESUME_CACHE_DIR"
+}
+# setup_persistent_apt_cache — returns 0 with cache_hook_args populated when
+# STAGE1_APT_CACHE_DIR is in effect, 1 (after logging why) otherwise.
+setup_persistent_apt_cache() {
+  [ -n "$APT_CACHE_DIR" ] || return 1
   if [ "$APT_SNAPSHOT" = "none" ]; then
     log "STAGE1_APT_CACHE_DIR is set but apt_snapshot=none — cache disabled (live-mirror content is not immutable; no safe cache key)"
-    return 0
+    return 1
   fi
   case "$APT_CACHE_DIR" in
     /*) ;;
-    *) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' is not an absolute path — cache disabled"; return 0 ;;
+    *) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' is not an absolute path — cache disabled"; return 1 ;;
   esac
   case "$APT_CACHE_DIR" in
-    *[[:space:]\'\"\\]*) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' contains whitespace or quoting characters — cache disabled"; return 0 ;;
+    *[[:space:]\'\"\\]*) log "WARNING: STAGE1_APT_CACHE_DIR='${APT_CACHE_DIR}' contains whitespace or quoting characters — cache disabled"; return 1 ;;
   esac
   local cache="${APT_CACHE_DIR}/${APT_SNAPSHOT}/archives"
   if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
     log "WARNING: apt cache directory ${cache} is missing or not writable — cache disabled"
-    return 0
+    return 1
   fi
+  write_cache_scripts "$cache"
+  # --skip=essential/unlink keeps the essential-set .debs in the chroot's
+  # archive dir until the customize hook has copied them out; mmdebstrap's
+  # final cleanup (apt-get clean) still removes them from the produced
+  # rootfs, so the bootstrapped tree is identical with or without the cache.
+  cache_hook_args=(
+    --skip=essential/unlink
+    --setup-hook=/tmp/stage1-apt-cache-seed.sh
+    --customize-hook=/tmp/stage1-apt-cache-harvest.sh
+  )
+  log "apt cache enabled: ${cache}"
+  return 0
+}
+# write_cache_scripts DIR — generates the seed/harvest scripts against DIR.
+write_cache_scripts() {
+  local cache="$1"
+  CACHE_PATH="$cache"
   # Both hooks run on the HOST side of mmdebstrap (root mode executes hooks
   # outside the chroot with the chroot path as $1), which is where the cache
   # directory is visible. Plain cp rather than mmdebstrap's rsync-based
@@ -583,16 +641,28 @@ done
 echo "[stage-1] apt cache: harvested \$n new .deb(s) into \$cache"
 EOF
   chmod +x /tmp/stage1-apt-cache-seed.sh /tmp/stage1-apt-cache-harvest.sh
-  # --skip=essential/unlink keeps the essential-set .debs in the chroot's
-  # archive dir until the customize hook has copied them out; mmdebstrap's
-  # final cleanup (apt-get clean) still removes them from the produced
-  # rootfs, so the bootstrapped tree is identical with or without the cache.
-  cache_hook_args=(
-    --skip=essential/unlink
-    --setup-hook=/tmp/stage1-apt-cache-seed.sh
-    --customize-hook=/tmp/stage1-apt-cache-harvest.sh
-  )
-  log "apt cache enabled: ${cache}"
+}
+# harvest_partial_fetch — after a failed mmdebstrap run, copy the .debs apt
+# had already completed (archives/*.deb; apt verifies a file's hash before
+# moving it out of archives/partial/, so nothing half-written is taken) into
+# CACHE_PATH so the retry can resume from them. Best effort.
+harvest_partial_fetch() {
+  [ -n "$CACHE_PATH" ] || return 0
+  [ -d /tmp/fat/var/cache/apt/archives ] || return 0
+  /tmp/stage1-apt-cache-harvest.sh /tmp/fat \
+    || log "WARNING: could not harvest the partial fetch into ${CACHE_PATH} (ignored — the retry starts its downloads over)"
+}
+# enable_resume_seed — job-local scope only (the persistent cache already
+# seeds every run): from the second attempt on, seed the retry from what the
+# failed runs fetched.
+enable_resume_seed() {
+  [ "${#cache_hook_args[@]}" -eq 0 ] || return 0
+  [ -n "$CACHE_PATH" ] || return 0
+  case " ${mmdebstrap_args[*]} " in
+    *" --setup-hook=/tmp/stage1-apt-cache-seed.sh "*) return 0 ;;
+  esac
+  mmdebstrap_args=(--setup-hook=/tmp/stage1-apt-cache-seed.sh "${mmdebstrap_args[@]}")
+  log "retry resumes from the .deb(s) harvested into ${CACHE_PATH}"
 }
 
 # ---------------------------------------------------------------------------
@@ -715,8 +785,9 @@ setup_apt_cache
 
 # The content-determining arguments (suite, variant, components, --include,
 # keyring, base URL) are the original inline step's. Acquire::Retries is
-# apt's own per-fetch transport retry, layered under the probe/retry loop
-# below; it cannot change which packages resolve.
+# apt's own per-fetch transport retry and Acquire::http::Timeout bounds each
+# of those tries; both are layered under the probe/retry loop below and
+# cannot change which packages resolve.
 # shellcheck disable=SC2054  # the commas are inside single --components= / --include= words, not element separators
 mmdebstrap_args=(
   --mode=root
@@ -728,6 +799,7 @@ mmdebstrap_args=(
   --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
   --aptopt='Acquire::http::Pipeline-Depth "0"'
   --aptopt="Acquire::Retries \"${APT_RETRIES}\""
+  --aptopt="Acquire::http::Timeout \"${APT_TIMEOUT}\""
   noble /tmp/fat
   "$base_url"
 )
@@ -738,6 +810,7 @@ while :; do
   wait_for_mirror "$probe_url"
   if [ "$attempt" -gt 1 ]; then
     reset_fat_dir
+    enable_resume_seed
   fi
   log "mmdebstrap attempt ${attempt}/${MMDEBSTRAP_ATTEMPTS} against ${base_url}${PINNED_IP:+ (backend ${PINNED_IP})}"
   rm -f "$MMDEBSTRAP_LOG"
@@ -757,6 +830,7 @@ while :; do
   if [ "$attempt" -ge "$MMDEBSTRAP_ATTEMPTS" ]; then
     die "mmdebstrap failed ${MMDEBSTRAP_ATTEMPTS} times against ${base_url} with a transient-mirror signature each time (last exit ${rc}; last probe result: ${MIRROR_LAST_CODE}) — giving up. Re-run the batch once the mirror recovers, or set STAGE1_SNAPSHOT_BASE_URL to an alternate mirror of the SAME snapshot tree."
   fi
+  harvest_partial_fetch
   # A degraded origin answers the probe with 200 and then 5xx's individual
   # index/package fetches, so an immediate retry tends to hit the same
   # condition. Pause (30s, 60s, 90s ... by default) before re-probing; the

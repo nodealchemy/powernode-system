@@ -52,6 +52,7 @@ cleanup() {
   [ -n "$tmproot" ] && rm -rf "$tmproot"
   rm -rf /tmp/fat /tmp/hooks /tmp/package_spec.txt /tmp/stage1-mmdebstrap.log \
          /tmp/stage1-apt-cache-seed.sh /tmp/stage1-apt-cache-harvest.sh /tmp/stage1-selftest.packages.txt
+  rm -rf /tmp/stage1-apt-cache
 }
 trap cleanup EXIT
 
@@ -136,7 +137,15 @@ case "$outcome" in
     rm -f /tmp/fat/var/cache/apt/archives/*.deb
     echo "I: success"; exit 0 ;;
   transient)
-    mkdir -p /tmp/fat/partial
+    # apt got one .deb through (hash-verified, moved out of partial/) and
+    # was mid-way through another when the mirror died.
+    mkdir -p /tmp/fat/partial /tmp/fat/var/cache/apt/archives/partial
+    setup=""
+    for a in "$@"; do case "$a" in --setup-hook=*) setup=${a#--setup-hook=};; esac; done
+    [ -n "$setup" ] && "$setup" /tmp/fat
+    ls /tmp/fat/var/cache/apt/archives > "$MM_ARCHIVES_SEEN"
+    echo partial-fetched > /tmp/fat/var/cache/apt/archives/resumed_1.0_amd64.deb
+    echo half > /tmp/fat/var/cache/apt/archives/partial/half_0.1_amd64.deb
     echo "Err:1 https://snapshot.invalid/ubuntu/20260415T000000Z noble InRelease"
     echo "  503 Service Unavailable [IP: 0.0.0.0 443]"
     echo "E: apt-get update --error-on=any -oAPT::Status-Fd=<\$fd> ... failed: process exited with 100"
@@ -156,7 +165,7 @@ printf "ca-certificates\t20240203\tall\n"'
 OUT=""; RC=0
 run_stage1() {
   local codes="$1" outcomes="$2"; shift 2
-  rm -rf /tmp/fat /tmp/stage1-mmdebstrap.log /tmp/stage1-apt-cache-*.sh
+  rm -rf /tmp/fat /tmp/stage1-mmdebstrap.log /tmp/stage1-apt-cache-*.sh /tmp/stage1-apt-cache
   echo 1000 > "$FAKE_CLOCK"; : > "$SLEEP_LOG"; : > "$CURL_LOG"; : > "$MM_LOG"; : > "$MM_ARCHIVES_SEEN"; : > "$MM_HOSTS_SEEN"
   [ -n "${KEEP_BACKENDS:-}" ] || { : > "$GETENT_ADDRS"; : > "$CURL_IP_CODES"; }
   # shellcheck disable=SC2086  # intentional word-splitting: one line per space-separated code/outcome
@@ -189,6 +198,7 @@ assert_match 'https://snapshot\.ubuntu\.com/ubuntu/20260415T000000Z/dists/noble/
 assert_match ' noble /tmp/fat https://snapshot\.ubuntu\.com/ubuntu/20260415T000000Z/$' "$(cat "$MM_LOG")" "mmdebstrap base_url is the pinned snapshot"
 assert_match '--include=ca-certificates,jq,curl ' "$(cat "$MM_LOG")" "package_spec still drives --include"
 assert_match "--aptopt=Acquire::Retries \"10\"" "$(cat "$MM_LOG")" "apt transport retries enabled (default 10)"
+assert_match "--aptopt=Acquire::http::Timeout \"30\"" "$(cat "$MM_LOG")" "apt transport timeout bounded (default 30s)"
 assert_no_match '--setup-hook|--customize-hook|--skip=' "$(cat "$MM_LOG")" "no cache hooks by default"
 assert_eq "ca-certificates	20240203	all" "$(cat /tmp/stage1-selftest.packages.txt)" "provenance capture unchanged"
 
@@ -220,6 +230,16 @@ assert_eq 0 "$RC" "transient mmdebstrap failure -> retried to success"
 assert_eq 2 "$(mm_calls)" "transient mmdebstrap failure -> two mmdebstrap runs"
 assert_match 'attempt 1 failed .*transient-mirror signature' "$OUT" "retry reason is logged"
 assert_match 'succeeded on attempt 2' "$OUT" "success attempt is logged"
+
+# --- 5b. a retry resumes from the .debs the failed run already fetched -----
+assert_no_match '--setup-hook' "$(sed -n 1p "$MM_LOG")" "first run: historical command line, no cache hook"
+assert_match '^--setup-hook=/tmp/stage1-apt-cache-seed\.sh ' "$(sed -n 2p "$MM_LOG")" "retry: seeded from the job-local resume cache"
+assert_no_match '--customize-hook|--skip=' "$(sed -n 2p "$MM_LOG")" "retry: harvest is host-side, no customize hook without a persistent cache"
+assert_match 'apt cache: harvested 1 new \.deb\(s\) into /tmp/stage1-apt-cache/archives' "$OUT" "completed .deb harvested after the transient failure"
+assert_match 'resumed_1\.0_amd64\.deb' "$(cat "$MM_ARCHIVES_SEEN")" "retry found the harvested .deb in its apt archive dir"
+assert_eq "absent" "$([ -e /tmp/stage1-apt-cache/archives/half_0.1_amd64.deb ] && echo present || echo absent)" "a half-downloaded file in partial/ is never harvested"
+assert_match 'retry resumes from the \.deb\(s\) harvested into /tmp/stage1-apt-cache/archives' "$OUT" "resume is logged"
+assert_match "--aptopt=Acquire::http::Timeout \"12\"" "$(run_stage1 "200" "ok" STAGE1_APT_TIMEOUT=12; cat "$MM_LOG")" "STAGE1_APT_TIMEOUT overrides the apt timeout"
 
 # --- 6. deterministic mmdebstrap failure is NOT retried ---------------------
 run_stage1 "200" "fatal ok"
@@ -268,6 +288,11 @@ assert_eq "fetched" "$(cat "$CACHE/20260415T000000Z/archives/newpkg_2.0_amd64.de
 assert_eq "cached" "$(cat "$CACHE/20260415T000000Z/archives/oldpkg_1.0_amd64.deb")" "pre-existing cache entry left untouched"
 assert_match 'apt cache: seeded 1 ' "$OUT" "seed count logged"
 assert_match 'apt cache: harvested 1 ' "$OUT" "harvest count logged"
+run_stage1 "200" "transient ok" STAGE1_APT_CACHE_DIR="$CACHE"
+assert_eq 0 "$RC" "persistent cache + transient failure -> exit 0"
+assert_eq "partial-fetched" "$(cat "$CACHE/20260415T000000Z/archives/resumed_1.0_amd64.deb" 2>/dev/null)" "partial fetch harvested into the PERSISTENT cache when one is in effect"
+assert_eq 1 "$(sed -n 2p "$MM_LOG" | grep -o -- '--setup-hook=' | wc -l | tr -d ' ')" "persistent cache retry carries exactly one seed hook"
+assert_no_match '/tmp/stage1-apt-cache/archives' "$OUT" "job-local resume cache unused when the persistent cache is in effect"
 
 run_stage1 "200" "ok" STAGE1_APT_CACHE_DIR="$tmproot/does-not-exist/nested"
 assert_eq 0 "$RC" "creatable cache dir -> created and used"
@@ -375,6 +400,9 @@ assert_eq 2 "$RC" "non-numeric STAGE1_MIRROR_WAIT_MAX -> exit 2 before any work"
 assert_eq 0 "$(mm_calls)" "non-numeric STAGE1_MIRROR_WAIT_MAX -> mmdebstrap never runs"
 run_stage1 "200" "ok" STAGE1_BACKEND_PIN=maybe
 assert_eq 2 "$RC" "bad STAGE1_BACKEND_PIN -> exit 2 before any work"
+run_stage1 "200" "ok" STAGE1_APT_TIMEOUT=0
+assert_eq 2 "$RC" "zero STAGE1_APT_TIMEOUT -> exit 2 before any work"
+assert_eq 0 "$(mm_calls)" "zero STAGE1_APT_TIMEOUT -> mmdebstrap never runs"
 
 echo
 if [ "$failures" -eq 0 ]; then echo "all passed"; else echo "$failures failure(s)"; fi
