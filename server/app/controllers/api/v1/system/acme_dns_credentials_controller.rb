@@ -40,8 +40,17 @@ module Api
           render_success(
             credentials: creds.map { |c| serialize(c) },
             count: creds.count,
+            # `production_ready` says whether the provider is wired end-to-end
+            # through the on-node issuer. It ships from the registry so the UI
+            # gates on a backend fact rather than a frontend literal — enabling
+            # a provider is then a backend change, not a frontend release.
             supported_providers: ::Acme::DnsProviderRegistry::PROVIDERS.map { |slug, meta|
-              { slug: slug, required_fields: meta[:required_fields], description: meta[:description] }
+              {
+                slug: slug,
+                required_fields: meta[:required_fields],
+                description: meta[:description],
+                production_ready: meta[:production_ready] == true
+              }
             }
           )
         end

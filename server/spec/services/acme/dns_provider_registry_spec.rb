@@ -86,6 +86,36 @@ RSpec.describe Acme::DnsProviderRegistry, type: :service do
     end
   end
 
+  describe ".production_ready?" do
+    it "is true for cloudflare, the only provider wired through the on-node agent" do
+      expect(described_class.production_ready?("cloudflare")).to be true
+    end
+
+    it "is false for every provider the registry has not marked ready" do
+      not_ready = described_class::PROVIDERS.keys - [ "cloudflare" ]
+      not_ready.each do |slug|
+        expect(described_class.production_ready?(slug)).to be(false), "expected #{slug} not to be production ready"
+      end
+    end
+
+    it "is symbol/string indifferent" do
+      expect(described_class.production_ready?(:cloudflare)).to be true
+    end
+
+    it "is false for an unknown slug rather than raising" do
+      expect(described_class.production_ready?("megacorp-dns")).to be false
+    end
+  end
+
+  describe "PROVIDERS readiness declaration" do
+    it "declares production_ready on every entry, so readiness is never inferred from absence" do
+      described_class::PROVIDERS.each do |slug, meta|
+        expect(meta).to have_key(:production_ready), "#{slug} is missing :production_ready"
+        expect([ true, false ]).to include(meta[:production_ready])
+      end
+    end
+  end
+
   describe ".all_slugs" do
     it "lists every known provider" do
       expect(described_class.all_slugs).to match_array(

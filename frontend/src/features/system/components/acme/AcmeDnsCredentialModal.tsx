@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyRound, AlertCircle, X, ExternalLink, ShieldCheck } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
@@ -30,16 +30,6 @@ interface ProviderHelp {
   fieldLabels?: Record<string, string>;
   fieldPlaceholders?: Record<string, string>;
 }
-
-// Providers verified end-to-end through the on-node ACME issuer
-// (extensions/system/agent/internal/acme/issuer.go). The backend API may
-// advertise more providers; only these are wired through the on-node
-// agent today. The rest are scaffolded — gate them in the UI so operators
-// don't configure a credential that silently fails at first issuance.
-const PRODUCTION_READY_PROVIDERS: AcmeDnsProvider[] = ['cloudflare'];
-
-const isProductionReady = (slug: AcmeDnsProvider): boolean =>
-  PRODUCTION_READY_PROVIDERS.includes(slug);
 
 const PROVIDER_HELP: Record<AcmeDnsProvider, ProviderHelp> = {
   cloudflare: {
@@ -156,16 +146,37 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
   supportedProviders,
 }) => {
   const { addNotification } = useNotifications();
+  // Readiness is a backend fact (Acme::DnsProviderRegistry#production_ready?),
+  // carried on each supported-providers entry. The UI never decides which
+  // providers work — a deployment that wires a new one on the agent gets it
+  // selectable with no frontend release.
+  const isProductionReady = (slug: AcmeDnsProvider): boolean =>
+    supportedProviders.some((p) => p.slug === slug && p.production_ready);
+
+  // Open on a provider the operator can actually use. When the backend reports
+  // none ready the form is replaced by an empty state, so the fallback here is
+  // only ever a placeholder for a select that is never rendered.
+  const firstReady = supportedProviders.find((p) => p.production_ready)?.slug;
+  const noReadyProviders = firstReady === undefined;
+  const defaultProvider: AcmeDnsProvider =
+    firstReady ?? supportedProviders[0]?.slug ?? 'cloudflare';
+
   const [name, setName] = useState('');
-  const [provider, setProvider] = useState<AcmeDnsProvider>('cloudflare');
+  const [provider, setProvider] = useState<AcmeDnsProvider>(defaultProvider);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Read through a ref so a refetch that changes the advertised providers
+  // cannot re-run this effect and wipe a half-typed token: the reset belongs
+  // to OPENING the modal, not to the prop.
+  const defaultProviderRef = useRef(defaultProvider);
+  defaultProviderRef.current = defaultProvider;
+
   useEffect(() => {
     if (!isOpen) return;
     setName('');
-    setProvider('cloudflare');
+    setProvider(defaultProviderRef.current);
     setCredentials({});
     setSubmitting(false);
     setError(null);
@@ -181,8 +192,13 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
 
   const valid = useMemo(() => {
     if (!name.trim()) return false;
+    // A provider the backend has not marked ready must never be submittable:
+    // the row would be accepted and then fail at first issuance. The select
+    // already disables it; this closes the same hole on the submit path.
+    if (!isProductionReady(provider)) return false;
     return requiredFields.every((f) => (credentials[f] ?? '').trim().length > 0);
-  }, [name, requiredFields, credentials]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, requiredFields, credentials, provider, supportedProviders]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -237,6 +253,21 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
         </div>
       }
     >
+      {noReadyProviders ? (
+        <div className="p-3 bg-theme-warning-bg text-theme-warning-fg rounded flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div className="text-sm">
+            <p className="font-medium">No DNS provider is usable on this deployment yet.</p>
+            <p className="mt-1 text-xs">
+              The backend advertises {supportedProviders.length} provider
+              {supportedProviders.length === 1 ? '' : 's'}, but none is wired
+              through the on-node ACME issuer, so a credential saved here would
+              fail at first issuance. Enable one on the agent and reopen this
+              form.
+            </p>
+          </div>
+        </div>
+      ) : (
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
           <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
@@ -281,14 +312,12 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
             disabled={submitting}
             className="w-full px-2 py-1.5 border border-theme rounded bg-theme-background-secondary text-theme-primary disabled:opacity-50 text-sm"
           >
-            {supportedProviders.map((p) => {
-              const ready = isProductionReady(p.slug);
-              return (
-                <option key={p.slug} value={p.slug} disabled={!ready}>
-                  {p.slug} — {p.description}{ready ? '' : ' (coming soon)'}
-                </option>
-              );
-            })}
+            {supportedProviders.map((p) => (
+              <option key={p.slug} value={p.slug} disabled={!p.production_ready}>
+                {p.slug} — {p.description}
+                {p.production_ready ? '' : ' (coming soon)'}
+              </option>
+            ))}
           </select>
           <p className="text-xs text-theme-secondary mt-1">
             Only providers wired through the on-node agent are currently
@@ -351,6 +380,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
           The token plaintext is stored in Vault and never echoed back. After saving, click "Test connectivity" on the row to verify the credential.
         </p>
       </form>
+      )}
     </Modal>
   );
 };
