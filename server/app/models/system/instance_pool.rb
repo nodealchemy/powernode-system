@@ -61,6 +61,8 @@ module System
     # === Associations ===
     belongs_to :account
     belongs_to :node_template, class_name: "System::NodeTemplate"
+    # Inherited from the template on create (Environment campaign, incr. 1).
+    belongs_to :environment, class_name: "Ai::Environment"
     belongs_to :provider_region,
                class_name: "System::ProviderRegion",
                optional: true
@@ -72,6 +74,11 @@ module System
              class_name: "System::NodeInstance",
              foreign_key: :instance_pool_id,
              dependent: :nullify
+
+    before_validation :inherit_environment_from_template, on: :create
+    validate :node_template_belongs_to_account
+    validate :environment_belongs_to_account
+    scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
@@ -237,5 +244,27 @@ module System
         errors.add(:target_size, "must be >= min_size")
       end
     end
+    def inherit_environment_from_template
+      return if environment_id.present?
+
+      self.environment = node_template&.environment || (account && ::Ai::Environment.default_for(account))
+    end
+
+    # A pool on another tenant's template was never refused before the
+    # environment was inherited through it; refuse it by name so the message
+    # says what is actually wrong.
+    def node_template_belongs_to_account
+      return if node_template.nil? || account_id.nil? || node_template.account_id == account_id
+
+      errors.add(:node_template, "must belong to the pool's account")
+    end
+
+    def environment_belongs_to_account
+      return if environment.nil? || account_id.nil? || environment.account_id == account_id
+      return if errors[:node_template].any? # already reported at the cause
+
+      errors.add(:environment, "must belong to the pool's account")
+    end
+
   end
 end

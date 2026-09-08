@@ -108,7 +108,11 @@ FactoryBot.define do
   # System::Node
   factory :system_node, class: "System::Node" do
     association :account
-    association :node_template, factory: :system_node_template
+    # Same account as the node. The bare association gave the template a
+    # FRESH account, which nothing validated until the node started inheriting
+    # the template's environment (Environment campaign, incr. 1) and refusing
+    # one that belongs to another tenant.
+    node_template { association :system_node_template, account: account }
     sequence(:name) { |n| "Node #{n}" }
     enabled { true }
     config { {} }

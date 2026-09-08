@@ -20,6 +20,13 @@ module System
     # Associations
     belongs_to :account
     belongs_to :node_platform, class_name: "System::NodePlatform"
+    # Which plane this template composes for (Environment campaign, incr. 1).
+    # Core owns the noun; every fleet row hangs off the template's value.
+    # ALWAYS present: a creator that says nothing gets the account's default
+    # environment, so there is no template the gate cannot place. The refusals
+    # are for the two ways a value can be WRONG — cleared after creation, or
+    # borrowed from another account.
+    belongs_to :environment, class_name: "Ai::Environment"
     has_many :nodes, class_name: "System::Node", dependent: :restrict_with_error
 
     # Module associations (Release 3)
@@ -28,6 +35,11 @@ module System
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :account_id }
+    validate  :environment_belongs_to_account
+
+    before_validation :inherit_default_environment, on: :create
+
+    scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # Config accessors
     store_accessor :config
@@ -79,6 +91,20 @@ module System
     # Virtual attribute set by pgvector's nearest_neighbors scope.
     def neighbor_distance
       self[:neighbor_distance]
+    end
+
+    private
+
+    def inherit_default_environment
+      return if environment_id.present? || account.nil?
+
+      self.environment = ::Ai::Environment.default_for(account)
+    end
+
+    def environment_belongs_to_account
+      return if environment.nil? || account_id.nil? || environment.account_id == account_id
+
+      errors.add(:environment, "must belong to the template's account")
     end
   end
 end

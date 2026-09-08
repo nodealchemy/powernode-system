@@ -55,6 +55,10 @@ module System
     HEARTBEAT_STALE_AFTER = 5.minutes
 
     belongs_to :account
+    # The plane a CHILD peer runs (prod for a spawned production hub). A
+    # platform peer we merely federate with carries none. Environment
+    # campaign, increment 1; the spawn path (prod-plane campaign) writes it.
+    belongs_to :environment, class_name: "Ai::Environment", optional: true
 
     # Phase 3a — push every platform-peer status transition to the operator
     # dashboard the moment it commits. Acceptance, enrollment, activation,

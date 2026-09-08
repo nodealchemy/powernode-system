@@ -2752,7 +2752,9 @@ end
     end
 
     it "scopes to current account — refuses to drain other-account instances" do
-      other_node = create(:system_node, account: create(:account), node_template: template, name: "other")
+      # The other account gets its own template: a node on another tenant's
+      # template is exactly the cross-account shape the environment check refuses.
+      other_node = create(:system_node, account: create(:account), name: "other")
       other = create(:system_node_instance, :running, node: other_node)
       r = call("system_drain_instance", instance_id: other.id)
       expect(r[:success]).to be false
@@ -2786,7 +2788,7 @@ end
     end
 
     it "scopes to current account" do
-      other_node = create(:system_node, account: create(:account), node_template: template, name: "other-silent")
+      other_node = create(:system_node, account: create(:account), name: "other-silent")
       other_silent = create(:system_node_instance, :running, node: other_node, last_heartbeat_at: 10.minutes.ago)
       r = call("system_get_silent_instances")
       ids = r[:data][:instances].map { |i| i[:id] }

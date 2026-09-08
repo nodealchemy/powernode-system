@@ -58,8 +58,17 @@ module System
     # Associations
     belongs_to :account
     belongs_to :node_template, class_name: "System::NodeTemplate"
+    # Inherited from the template on create (Environment campaign, incr. 1);
+    # overridable per node, never blank.
+    belongs_to :environment, class_name: "Ai::Environment"
     belongs_to :worker, optional: true
     has_many :node_instances, class_name: "System::NodeInstance", dependent: :destroy
+
+    before_validation :inherit_environment_from_template, on: :create
+    validate :node_template_belongs_to_account
+    validate :environment_belongs_to_account
+
+    scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # Module associations (Release 3)
     has_many :node_module_assignments, class_name: "System::NodeModuleAssignment", dependent: :destroy
@@ -240,5 +249,30 @@ module System
       digest = OpenSSL::Digest::SHA256.digest(pub_pem)
       "SHA256:#{Base64.strict_encode64(digest).delete('=')}"
     end
+    # Template first. A template that is itself unsaved (built alongside the
+    # node) has not inherited yet, so read through to the account default —
+    # the same value the template will resolve to.
+    def inherit_environment_from_template
+      return if environment_id.present?
+
+      self.environment = node_template&.environment || (account && ::Ai::Environment.default_for(account))
+    end
+
+    # A node on another tenant's template was never refused before the
+    # environment was inherited through it; refuse it by name so the message
+    # says what is actually wrong.
+    def node_template_belongs_to_account
+      return if node_template.nil? || account_id.nil? || node_template.account_id == account_id
+
+      errors.add(:node_template, "must belong to the node's account")
+    end
+
+    def environment_belongs_to_account
+      return if environment.nil? || account_id.nil? || environment.account_id == account_id
+      return if errors[:node_template].any? # already reported at the cause
+
+      errors.add(:environment, "must belong to the node's account")
+    end
+
   end
 end

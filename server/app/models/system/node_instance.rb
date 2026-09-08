@@ -113,6 +113,9 @@ module System
     # parent Node so callers can omit it; a validation check keeps the
     # two in sync.
     belongs_to :account
+    # Denormalised from the node on create so every fleet query can filter by
+    # plane without a join (Environment campaign, incr. 1).
+    belongs_to :environment, class_name: "Ai::Environment"
     belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
     belongs_to :provider_instance_type, class_name: "System::ProviderInstanceType", optional: true
     # Slice 7 — optional pool membership.
@@ -137,6 +140,9 @@ module System
     has_many :provider_volumes, class_name: "System::ProviderVolume"
 
     before_validation :inherit_account_from_node
+    before_validation :inherit_environment_from_node, on: :create
+    validate :environment_belongs_to_account
+    scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # IMP-231f17d71dfa — a presumed-dead verdict is scoped to ONE error episode.
     #
@@ -1647,6 +1653,23 @@ module System
     # Inherit account_id from the parent Node when unset. Callers can
     # create NodeInstance with just `node:` and skip `account:`; this
     # callback fills it in before validation runs.
+    # Node first; an unsaved node has not inherited from its template yet, and
+    # an unsaved template has not resolved either — read through to the account
+    # default, which is what both will resolve to.
+    def inherit_environment_from_node
+      return if environment_id.present?
+
+      owner = account || node&.account
+      self.environment = node&.environment || node&.node_template&.environment ||
+                         (owner && ::Ai::Environment.default_for(owner))
+    end
+
+    def environment_belongs_to_account
+      return if environment.nil? || account_id.nil? || environment.account_id == account_id
+
+      errors.add(:environment, "must belong to the instance's account")
+    end
+
     def inherit_account_from_node
       self.account_id ||= node&.account_id
     end
