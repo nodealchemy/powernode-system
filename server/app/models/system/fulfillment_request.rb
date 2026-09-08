@@ -199,10 +199,31 @@ module System
       self
     end
 
-    # sha256 over the canonical frozen plan. Lets an auditor prove the plan that
-    # executed is the plan that was approved without storing a second copy.
+    # sha256 over the CANONICAL frozen plan: keys deep-sorted before hashing.
+    # Lets an auditor prove the plan that executed is the plan that was approved
+    # without storing a second copy.
+    #
+    # The canonicalisation is load-bearing, not tidiness. `plan.to_json` follows
+    # Ruby's insertion order in memory and Postgres's jsonb order (length, then
+    # bytes) after a reload, so the SAME plan digested before and after the row
+    # round-trips produced two different values. Every operator path reads a
+    # persisted row, so the digest shown in the UI and the one on the approval
+    # FleetEvent did agree. The autonomous path did not: FulfillCapabilityRequest
+    # calls approve_by! on the object create_composed! returned, before its
+    # reload, so those events carried a digest nothing could reproduce.
+    #
+    # ARRAY order is preserved deliberately: hop and gap lists are replayed in
+    # sequence, so two plans differing only in element order are different
+    # plans. Only object keys are sorted.
+    #
+    # ALGORITHM CHANGE (IMP-09837d6cf5ff): digests emitted BEFORE this hashed
+    # `plan.to_json` in whatever key order the caller happened to hold, so a
+    # `system.fulfillment_approved` event predating it CANNOT be reproduced by
+    # this method. A mismatch on an old event is the algorithm, not tampering.
+    # Nothing stores a digest — there is no digest column, and it is computed
+    # on demand at exactly two sites — so no data needed migrating.
     def plan_digest
-      ::Digest::SHA256.hexdigest((plan || {}).to_json)
+      ::Digest::SHA256.hexdigest(canonical_json(plan || {}))
     end
 
     # --- recording helpers (the orchestrator's persistence seam) ---
@@ -288,6 +309,32 @@ module System
     rescue StandardError => e
       Rails.logger.warn("[FulfillmentRequest] approved event emit failed: #{e.class}: #{e.message}")
     end
+
+    # Deep-sorts object keys and leaves arrays alone, then serializes. Kept here
+    # so the digest's definition sits beside the method that documents it.
+    #
+    # `transform_keys(&:to_s)` is defensive, not the load-bearing part: an
+    # attribute assignment already round-trips the plan through
+    # ActiveRecord::Type::Json#cast, which stringifies keys, so this method
+    # normally sees strings on both sides. It matters for a hash that mixes key
+    # types anyway, where a bare `.sort` on the pairs raises
+    # "comparison of Array with Array failed", and it collapses a "a"/:a pair
+    # the same last-wins way jsonb would.
+    def canonical_json(value)
+      ::JSON.generate(deep_sort_keys(value))
+    end
+
+    def deep_sort_keys(value)
+      case value
+      when ::Hash
+        value.transform_keys(&:to_s).sort.to_h.transform_values { |v| deep_sort_keys(v) }
+      when ::Array
+        value.map { |element| deep_sort_keys(element) }
+      else
+        value
+      end
+    end
+    private :canonical_json, :deep_sort_keys
 
     def summary
       {
