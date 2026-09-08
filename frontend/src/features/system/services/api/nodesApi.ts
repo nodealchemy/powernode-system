@@ -173,6 +173,82 @@ export const nodesApi = {
   },
 
   /**
+   * Read the instance's Claude Code credential INDEX CARD — id, kind,
+   * presence and timestamps. The plaintext is never in this response: the
+   * controller's serializer deliberately omits it and the Vault path both.
+   *
+   * A 404 means "no credential configured", which is an ordinary state, so it
+   * becomes `null`. Nothing else is swallowed — in particular a 403 says the
+   * caller may not READ the credential, and reporting that as "not configured"
+   * would tell the operator the opposite of the truth.
+   */
+  getClaudeCodeCredential: async (
+    nodeId: string,
+    instanceId: string
+  ): Promise<ClaudeCodeCredential | null> => {
+    try {
+      const response = await apiClient.get<ApiEnvelope<{ credential: ClaudeCodeCredential }>>(
+        `/system/nodes/${nodeId}/node_instances/${instanceId}/claude_code_credential`
+      );
+      return extractData(response).credential;
+    } catch (error) {
+      // Only the CREDENTIAL's own 404 means "not configured". set_node and
+      // set_instance render 404 too, and so does a wrong path — collapsing
+      // those into `null` would offer a Set button that then fails, and would
+      // hide a genuinely missing instance.
+      const { status, data } = (error as {
+        response?: { status?: number; data?: { error?: string } };
+      })?.response ?? {};
+      if (status === 404 && /credential/i.test(data?.error ?? '')) return null;
+      throw error;
+    }
+  },
+
+  /**
+   * Create the credential. WRITE-ONLY by construction: the payload carries the
+   * plaintext one way and the response carries only the index card back, so
+   * there is no round trip a caller could read a secret out of.
+   *
+   * Exactly one of `api_key` / `oauth` selects the kind, matching the
+   * controller's own rule; sending both is refused server-side.
+   */
+  setClaudeCodeCredential: async (
+    nodeId: string,
+    instanceId: string,
+    payload: ClaudeCodeCredentialPayload
+  ): Promise<ClaudeCodeCredential> => {
+    const response = await apiClient.post<ApiEnvelope<{ credential: ClaudeCodeCredential }>>(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/claude_code_credential`,
+      payload
+    );
+    return extractData(response).credential;
+  },
+
+  /**
+   * Replace the stored secret in place. The server refuses a rotation that
+   * changes the KIND, because the old kind's Vault entry lives under a
+   * different type path and would be orphaned — that switch is a delete plus a
+   * create.
+   */
+  rotateClaudeCodeCredential: async (
+    nodeId: string,
+    instanceId: string,
+    payload: ClaudeCodeCredentialPayload
+  ): Promise<ClaudeCodeCredential> => {
+    const response = await apiClient.post<ApiEnvelope<{ credential: ClaudeCodeCredential }>>(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/claude_code_credential/rotate`,
+      payload
+    );
+    return extractData(response).credential;
+  },
+
+  deleteClaudeCodeCredential: async (nodeId: string, instanceId: string): Promise<void> => {
+    await apiClient.delete(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/claude_code_credential`
+    );
+  },
+
+  /**
    * Download the per-instance claim-by-ID boot config (identity.cfg) for the
    * generic-image fleet flow. Triggers a browser save using the filename from
    * the backend's Content-Disposition. Valid only for physical, unclaimed
@@ -210,4 +286,59 @@ export interface TemplateApplyResult {
   errors: string[];
   created: { node_module_id: string; source_template_module_id: string | null }[];
   purged_module_ids: string[];
+}
+
+/**
+ * The credential index card. Everything the operator surface may know about a
+ * stored secret: that it exists, which kind it is, and when it last changed.
+ * There is deliberately no field here that could hold plaintext or the Vault
+ * path — the controller's serializer omits both.
+ */
+export interface ClaudeCodeCredential {
+  id: string;
+  node_instance_id: string;
+  credential_kind: 'api_key' | 'oauth';
+  configured: boolean;
+  created_at: string;
+  /** Also the rotation timestamp: a rotate writes to Vault and touches the row. */
+  updated_at: string;
+}
+
+/**
+ * The claudeAiOauth object out of ~/.claude/.credentials.json. `expiresAt` is
+ * epoch MILLISECONDS — the server rejects an epoch-seconds value rather than
+ * storing a credential that expires in 1970.
+ */
+export interface ClaudeCodeOauthPayload {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  refreshTokenExpiresAt?: number;
+  scopes?: string[];
+  subscriptionType?: string;
+  [key: string]: unknown;
+}
+
+/** Exactly one of the two, matching the controller's kind selection. */
+export type ClaudeCodeCredentialPayload =
+  | { api_key: string; oauth?: never }
+  | { oauth: ClaudeCodeOauthPayload; api_key?: never };
+
+/**
+ * The operator-facing text out of a rejected API call.
+ *
+ * `apiClient` rejects with the raw AxiosError, whose `.message` is only
+ * "Request failed with status code 422" — the server's own sentence lives in
+ * the error envelope. Reading `err.message` therefore throws away exactly the
+ * field-level feedback these endpoints are careful to produce (and, for the
+ * credential endpoints, are careful to write naming FIELDS rather than values).
+ *
+ * Local rather than core's getErrorMessage: `@/shared/services/errorHandler` is
+ * not in the host-app allowlist, so importing it would pass tsc and jest and
+ * then break the extension's module build.
+ */
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  const serverMessage = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  if (typeof serverMessage === 'string' && serverMessage.trim()) return serverMessage;
+  return error instanceof Error && error.message ? error.message : fallback;
 }

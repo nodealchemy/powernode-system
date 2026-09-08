@@ -8,3 +8,4 @@ export { EditInstanceModal } from './EditInstanceModal';
 export { NodeInstanceControls } from './NodeInstanceControls';
 export { BootImageDriftBadge } from './BootImageDriftBadge';
 export { ApplyTemplateModal } from './ApplyTemplateModal';
+export { ClaudeCodeCredentialPanel } from './ClaudeCodeCredentialPanel';
