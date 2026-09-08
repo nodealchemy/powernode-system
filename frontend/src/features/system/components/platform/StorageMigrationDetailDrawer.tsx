@@ -12,6 +12,7 @@ import type {
   StorageMigrationDetail,
   StorageMigrationAuditEntry,
 } from '../../types/storageMigration.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 const TERMINAL: ReadonlyArray<string> = ['completed', 'failed', 'cancelled'];
 
@@ -258,10 +259,7 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-          </div>
+          <ErrorAlert message={error} />
         )}
 
         {loading && <div className="p-6 text-sm text-theme-secondary">Loading…</div>}

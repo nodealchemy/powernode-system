@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Network as NetworkIcon, AlertTriangle } from 'lucide-react';
+import { Network as NetworkIcon } from 'lucide-react';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import type { SdwanNetwork } from '@system/features/system/types/sdwan.types';
 import { NetworkVipsTab } from '../sdwan/vips/NetworkVipsTab';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * NetworkVipPicker — a per-network selector that renders the existing
@@ -59,10 +60,7 @@ export const NetworkVipPicker: React.FC<NetworkVipPickerProps> = ({ readOnly = f
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
-        <AlertTriangle className="w-4 h-4" />
-        <span>{error}</span>
-      </div>
+      <ErrorAlert message={error} />
     );
   }
 

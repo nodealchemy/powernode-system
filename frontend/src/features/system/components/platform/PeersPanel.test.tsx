@@ -272,8 +272,7 @@ describe('PeersPanel', () => {
       await waitFor(() =>
         expect(screen.getByText('Connection refused')).toBeInTheDocument(),
       );
-      const errorBanner = screen.getByText('Connection refused').closest('div')!;
-      const closeBtn = errorBanner.querySelector('button[type="button"]')!;
+      const closeBtn = screen.getByRole('button', { name: /dismiss/i });
       fireEvent.click(closeBtn);
       await waitFor(() =>
         expect(screen.queryByText('Connection refused')).not.toBeInTheDocument(),

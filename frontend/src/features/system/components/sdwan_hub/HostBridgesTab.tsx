@@ -13,6 +13,7 @@ import { CreateHostBridgeModal } from './CreateHostBridgeModal';
 import type {
   SdwanHostBridge,
 } from '@system/features/system/types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 // Phase O6 — read-only operator view of allocated SDWAN host bridges
 // (now with inline manage actions). Allocation happens through the
@@ -162,7 +163,7 @@ export const HostBridgesTab: React.FC = () => {
     return (
       <div>
         {header}
-        <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
+        <ErrorAlert message={error} />
         {createModal}
       </div>
     );

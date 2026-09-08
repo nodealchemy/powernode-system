@@ -15,6 +15,7 @@ import type {
 import { AccessGrantCreateModal } from './AccessGrantCreateModal';
 import { UserDeviceIssueModal } from './UserDeviceIssueModal';
 import { BootstrapUrlModal } from './BootstrapUrlModal';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface AccessTabProps {
   networkId: string;
@@ -132,7 +133,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
   const uncountedGrants = Object.keys(deviceErrorsByGrant).length;
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading access state…</div>;
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <div className="space-y-4">

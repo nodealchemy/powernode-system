@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Globe,
-  AlertCircle,
   X,
   Plus,
   Trash2,
@@ -20,6 +19,8 @@ import type {
   DnsRecord,
   DnsRecordType,
 } from '../../types/dns.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
+import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 
 /**
  * DNS record management modal. Opened from AcmeDnsCredentialsPanel —
@@ -231,7 +232,9 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
         )}
 
         {loadingRecords ? (
-          <div className="p-8 text-center text-theme-secondary text-sm">Loading records…</div>
+          <div className="flex justify-center p-8">
+            <LoadingSpinner size="lg" />
+          </div>
         ) : records.length === 0 ? (
           <div className="p-8 text-center text-theme-secondary text-sm border border-theme rounded">
             No DNS records on this zone yet.
@@ -493,10 +496,7 @@ const AddRecordForm: React.FC<{
       </div>
 
       {error && (
-        <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-xs rounded">
-          <AlertCircle className="w-3 h-3" />
-          <span className="flex-1">{error}</span>
-        </div>
+        <ErrorAlert message={error} />
       )}
 
       <div className="grid grid-cols-12 gap-2">

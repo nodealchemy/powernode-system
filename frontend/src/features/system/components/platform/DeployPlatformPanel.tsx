@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Rocket } from 'lucide-react';
+import { Rocket } from 'lucide-react';
 import apiClient from '@/shared/services/apiClient';
 import { logger } from '@/shared/utils/logger';
 import type { ChatCard } from '@/shared/types/ai';
 import { PlatformDeploymentWizardCard } from '@/features/ai/provisioning/PlatformDeploymentWizardCard';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Standalone deploy panel — fetches the wizard payload from
@@ -67,10 +68,7 @@ export const DeployPlatformPanel: React.FC = () => {
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4" />
-        {error}
-      </div>
+      <ErrorAlert message={error} />
     );
   }
 

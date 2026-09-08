@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Globe2,
-  AlertCircle,
   X,
   Plus,
   Trash2,
@@ -23,6 +22,7 @@ import type {
   CreateCapabilityRequest,
   FederationCapability,
 } from '../../types/capability.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Per-peer FederationCapability management modal. Mirrors the layout of
@@ -179,13 +179,7 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
     >
       <div className="space-y-4">
         {error && (
-          <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
-            <AlertCircle className="w-4 h-4" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
+          <ErrorAlert message={error} onClose={() => setError(null)} />
         )}
 
         {showAddForm && (
@@ -381,13 +375,7 @@ const AddCapabilityForm: React.FC<AddCapabilityFormProps> = ({ peerId, onAdded, 
       </div>
 
       {error && (
-        <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-xs rounded">
-          <AlertCircle className="w-3 h-3" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
+        <ErrorAlert message={error} onClose={() => setError(null)} />
       )}
 
       <Field label="Resource Kind *">

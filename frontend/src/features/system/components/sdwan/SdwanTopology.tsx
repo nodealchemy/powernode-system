@@ -4,6 +4,7 @@ import '@xyflow/react/dist/style.css';
 import { Globe, Server } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import type { SdwanTopologyResponse, SdwanCompiledPeerView, SdwanPeer } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface SdwanTopologyProps {
   networkId: string;
@@ -66,7 +67,7 @@ export const SdwanTopology: React.FC<SdwanTopologyProps> = ({ networkId, refresh
   const { nodes, edges } = useMemo(() => buildFlow(data, peersById), [data, peersById]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading topology…</div>;
-  if (error)   return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error)   return <ErrorAlert message={error} />;
   if (!data || data.peer_count === 0) {
     return (
       <div className="p-12 text-center text-theme-secondary text-sm">

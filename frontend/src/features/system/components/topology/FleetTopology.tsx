@@ -18,6 +18,7 @@ import {
   loadFleetTopology,
   type FleetTopologySnapshot,
 } from './fleetTopologyData';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * FleetTopology — @xyflow/react containment graph of the fleet
@@ -144,7 +145,7 @@ export const FleetTopology: React.FC<FleetTopologyProps> = ({
   }
   if (error && !snapshot) {
     return (
-      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
+      <ErrorAlert message={error} />
     );
   }
   if (!snapshot) {

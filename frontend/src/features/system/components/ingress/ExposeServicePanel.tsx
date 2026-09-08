@@ -10,6 +10,7 @@ import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi'
 import { sdwanApi } from '../../services/api/sdwanApi';
 import type { AcmeDnsCredentialSummary } from '../../types/acme.types';
 import type { SdwanNetwork, SdwanPeer } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
  * Expose Service tab — an approval-gated wizard for publishing a service
@@ -359,8 +360,8 @@ export const ExposeServicePanel: React.FC = () => {
         </header>
 
         {concierge.error && (
-          <div className="px-4 py-2 bg-theme-danger-bg text-theme-danger-fg text-xs border-b border-theme">
-            {concierge.error}
+          <div className="px-4 pt-4">
+            <ErrorAlert message={concierge.error} />
           </div>
         )}
 

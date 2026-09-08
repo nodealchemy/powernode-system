@@ -4,6 +4,7 @@ import { EntityLink } from '@/shared/components/entity';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import { ResponsiveListContainer } from '../../shared/ResponsiveListContainer';
 import type { SdwanPortMapping, SdwanPeer } from '../../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 interface PortMappingListProps {
   networkId: string;
@@ -66,7 +67,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
     return `${peerId.slice(0, 8)}${p.publicly_reachable ? ' (hub)' : ''}`;
   };
 
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
 
   return (
     <ResponsiveListContainer

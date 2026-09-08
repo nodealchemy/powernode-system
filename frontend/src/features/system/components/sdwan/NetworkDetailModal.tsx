@@ -25,6 +25,8 @@ import type {
   SdwanPeer,
   SdwanFirewallRule,
 } from '../../types/sdwan.types';
+import ErrorAlert from '@/shared/components/ui/ErrorAlert';
+import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 
 interface NetworkDetailModalProps {
   network: SdwanNetwork | null;
@@ -243,10 +245,12 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
 
           {/* Loading / error overlay for the underlying detail fetch */}
           {loading && !detail && (
-            <div className="p-8 text-center text-theme-secondary">Loading network…</div>
+            <div className="flex justify-center p-8">
+              <LoadingSpinner size="lg" />
+            </div>
           )}
           {error && (
-            <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
+            <ErrorAlert message={error} />
           )}
 
           {/* Tab content */}
