@@ -9,8 +9,19 @@ module System
   # keep the controller under the size budget; the method bodies are an
   # exact move — no behavior change.
   class NodeModuleNodeApiSerializer
-    def initialize(node_module)
+    # `environment`: the plane of the instance being served (incr. 4). The
+    # version a node sees is NodeModule#served_version_for(environment) — a
+    # pinned environment's pin, else the module's current version. nil keeps
+    # the fleet-global read for callers that have no instance in hand.
+    def initialize(node_module, environment: nil)
       @module = node_module
+      @environment = environment
+    end
+
+    def served_version(mod)
+      return @served_version if defined?(@served_version)
+
+      @served_version = mod.served_version_for(@environment)
     end
 
     # Index summary shape (formerly ModulesController#serialize_module).
@@ -73,14 +84,14 @@ module System
         # has a blob to mount" (reconcile.go: `if !mod.HasDataFile { continue }`).
         # Truthy iff the current version has been published in at least
         # one supported format (composefs / squashfs).
-        has_data_file: mod.current_version&.artifacts.present? || false,
-        current_version: mod.current_version_number,
+        has_data_file: served_version(mod)&.artifacts.present? || false,
+        current_version: served_version(mod)&.version_number,
         dependencies: mod.dependencies.map(&:id)
       }
     end
 
     def serialize_module_full(mod)
-      artifact = mod.current_version&.artifact
+      artifact = served_version(mod)&.artifact
 
       serialize_module(mod).merge(
         description: mod.description,
@@ -135,7 +146,7 @@ module System
         # artifacts: full hash so the agent (or operator
         # inspecting the API) can see what's published. Useful
         # for diagnostics; the agent reads `digest` directly.
-        artifacts: mod.current_version&.artifacts || {},
+        artifacts: served_version(mod)&.artifacts || {},
         puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
       )
     end

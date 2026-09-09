@@ -279,7 +279,10 @@ module System
         decls = self.class.declarations(mod)
         next if decls.empty?
 
-        version = mod.current_version
+        # The version THIS instance's plane serves (incr. 4): a pinned
+        # environment restarts onto its pin, never onto a publish it has not
+        # been promoted to.
+        version = mod.served_version_for(@instance.environment)
         next if version.nil?
 
         digest = version.oci_digest

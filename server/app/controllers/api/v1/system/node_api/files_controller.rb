@@ -42,7 +42,7 @@ module Api
           def module_file
             module_id = params[:id]
             node_module = node_modules.find(module_id)
-            artifact = node_module.current_version&.artifact
+            artifact = node_module.served_version_for(current_instance.environment)&.artifact
             return render_not_found("ModuleArtifact") unless artifact
 
             stream_erofs_blob(node_module, artifact)

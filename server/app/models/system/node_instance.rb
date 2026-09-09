@@ -635,8 +635,12 @@ module System
       # `node` is a required belongs_to — no nil branch here on purpose: a
       # rescue-to-empty would report "no drift" for a broken row, which is the
       # failure mode this method was written to end.
+      # The version this instance's PLANE is served (Environment campaign,
+      # incr. 4): a pinned plane's pin, else current_version — the same read
+      # the node API answers, so a pinned instance is not "mismatched" merely
+      # because a publish moved the fleet-global pointer.
       assigned = node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
-        digest = m.current_version&.oci_digest
+        digest = m.served_version_for(environment)&.oci_digest
         acc[m.id] = digest if digest
       end
       running = running_module_digests || {}

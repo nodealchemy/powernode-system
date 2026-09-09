@@ -50,7 +50,7 @@ module Api
             end
 
             render_success(
-              modules: resolved_modules.map { |m| ::System::NodeModuleNodeApiSerializer.new(m).summary },
+              modules: resolved_modules.map { |m| ::System::NodeModuleNodeApiSerializer.new(m, environment: current_instance.environment).summary },
               count: resolved_modules.size,
               # The node's operator-facing name (e.g. "ops-hub") — the agent
               # persists this and applies it as the hostname (etcidentity), so a
@@ -108,7 +108,7 @@ module Api
           # id/name/digest), tripping writeCache's "nil or empty ID" guard
           # and starving the reconciler of any actionable data.
           def show
-            render_success(**::System::NodeModuleNodeApiSerializer.new(@module).full)
+            render_success(**::System::NodeModuleNodeApiSerializer.new(@module, environment: current_instance.environment).full)
           end
 
           # GET /api/v1/system/node_api/modules/:id/download
@@ -133,11 +133,11 @@ module Api
           # Enforcement on the node is an operator opt-in, DEFAULT OFF —
           # see agent/internal/verify/doc.go.
           def download
-            artifact = @module.current_version&.artifact
+            artifact = @module.served_version_for(current_instance.environment)&.artifact
             return render_error("Module has no published artifact") unless artifact
 
             render_success(
-              file: ::System::NodeModuleNodeApiSerializer.new(@module).file_payload(artifact),
+              file: ::System::NodeModuleNodeApiSerializer.new(@module, environment: current_instance.environment).file_payload(artifact),
               oci:  {
                 ref:                artifact["oci_ref"],
                 digest:             artifact["oci_digest"],
