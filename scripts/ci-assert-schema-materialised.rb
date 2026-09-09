@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# Fails when a migration is recorded as applied but the table it creates does
-# not exist — the "stamped-without-created" state, which is UNREPAIRABLE by
-# db:migrate and invisible to every other check.
+# Fails when a migration is recorded as applied but the schema object it
+# declares does not exist — the "stamped-without-created" state, which is
+# UNREPAIRABLE by db:migrate and invisible to every other check.
 #
 # Run from powernode-platform/server after the test DB is prepared:
 #   bundle exec rails runner ../extensions/system/scripts/ci-assert-schema-materialised.rb
@@ -28,6 +28,18 @@
 # raises, because create_table hits the table schema:load already made. So for
 # public extensions the schema.rb must simply be correct — and this asserts it.
 
+# COLUMNS TOO, since IMP-01a07e0f. This scanned create_table/drop_table alone,
+# which meant a migration that only ADDS A COLUMN was never covered — and it is
+# stamped by the identical mechanism and hits the identical wall: the table
+# exists, so the guard passed, while the column never reached any schema-built
+# database. 50 of the tree's 114 migrations add a column that way.
+#
+# The scan itself lives in SchemaMaterialisationAudit so it can be tested
+# against fixture migrations (server/spec/scripts/schema_materialisation_audit_spec.rb).
+# A scan that has silently drifted reports "0 missing" in the same words as one
+# that is working, so the derivation needs an oracle of its own.
+require_relative "schema_materialisation_audit"
+
 MIGRATION_GLOBS = [ "db/migrate/*.rb", "../extensions/*/server/db/migrate/*.rb" ].freeze
 
 files = MIGRATION_GLOBS.flat_map { |g| Dir.glob(g) }
@@ -36,30 +48,48 @@ files = MIGRATION_GLOBS.flat_map { |g| Dir.glob(g) }
 abort("ci-assert-schema-materialised: no migrations matched #{MIGRATION_GLOBS.inspect} " \
       "(cwd=#{Dir.pwd}) — this guard's derivation has drifted and would pass vacuously") if files.empty?
 
-# Replay the migration set to get the tables it claims should exist. Order
-# matters: a table created then dropped must not be expected.
-expected = {}
-files.each do |f|
-  src = File.read(f)
-  src.scan(/^\s*create_table[ (]+[:"]([a-z0-9_]+)/) { |(t)| expected[t] = f }
-  src.scan(/^\s*drop_table[ (]+[:"]([a-z0-9_]+)/)   { |(t)| expected.delete(t) }
-end
+audit = SchemaMaterialisationAudit.new(files)
+expected_tables, expected_columns = audit.expectations
 
 abort("ci-assert-schema-materialised: parsed 0 create_table across #{files.size} " \
-      "migrations — the scan has drifted") if expected.empty?
+      "migrations — the scan has drifted") if expected_tables.empty?
+abort("ci-assert-schema-materialised: parsed 0 column additions across #{files.size} " \
+      "migrations — the column scan has drifted") if expected_columns.empty?
 
 conn   = ActiveRecord::Base.connection
 actual = conn.tables.to_set
-missing = expected.reject { |t, _| actual.include?(t) }
 
-puts "ci-assert-schema-materialised: #{files.size} migrations, #{expected.size} tables expected, " \
-     "#{actual.size} present, #{missing.size} missing"
+missing_tables = expected_tables.reject { |t, _| actual.include?(t) }
 
-unless missing.empty?
-  warn "\nSTAMPED WITHOUT CREATED — these migrations are recorded applied but their table is absent."
-  warn "db:migrate CANNOT repair this; the schema.rb dump is missing the table.\n\n"
-  missing.each { |t, f| warn "  #{t}\n      created by #{f}" }
-  warn "\nRemedy: on a scratch DB, DELETE the version from schema_migrations, run db:migrate so"
-  warn "the migration actually executes, dump, and commit the table into schema.rb.\n"
-  exit 1
+# Columns are only asked about for tables that exist: a missing table already
+# fails above, and reporting each of its columns as well would bury the one
+# line that names the cause.
+columns_by_table = {}
+missing_columns = expected_columns.reject do |key, _|
+  table, column = key.split(".", 2)
+  next true unless actual.include?(table)
+
+  (columns_by_table[table] ||= conn.columns(table).map(&:name).to_set).include?(column)
 end
+
+# The skipped count is printed on the PASSING line as well. A guard that
+# quietly covers less than it appears to is the shape of the defect this
+# exists to catch, so its own coverage is stated every run.
+puts "ci-assert-schema-materialised: #{files.size} migrations, " \
+     "#{expected_tables.size} tables expected (#{missing_tables.size} missing), " \
+     "#{expected_columns.size} columns expected (#{missing_columns.size} missing), " \
+     "#{actual.size} tables present, #{audit.skipped.size} statement(s) not parseable"
+
+audit.skipped.each { |line| puts "  not parsed (non-literal argument): #{line}" }
+
+if missing_tables.empty? && missing_columns.empty?
+  exit 0
+end
+
+warn "\nSTAMPED WITHOUT CREATED — these migrations are recorded applied but what they declare is absent."
+warn "db:migrate CANNOT repair this; the schema.rb dump is missing them.\n\n"
+missing_tables.each { |t, f| warn "  table  #{t}\n      created by #{f}" }
+missing_columns.each { |key, f| warn "  column #{key}\n      added by #{f}" }
+warn "\nRemedy: on a scratch DB, DELETE the version from schema_migrations, run db:migrate so"
+warn "the migration actually executes, dump, and commit the result into schema.rb.\n"
+exit 1
