@@ -116,59 +116,67 @@ RSpec.describe "SystemFleetTool release verb gating (HIER-P2B-ENG)" do
     include_examples "a fully armed release gate", "system_promote_module_version", "release.promote"
 
     let!(:version) { version_with_digest(1) }
+    # Environment campaign, increment 4b: a promotion names the plane it
+    # promotes INTO and moves that plane's PIN. staging is the bottom pinned
+    # rung, so the version it takes is the module's current version.
+    let(:staging) { account.environments.find_by!(slug: "staging") }
 
-    before { seed_release_rows! }
+    before do
+      seed_release_rows!
+      node_module.promote_to_version!(version)
+    end
 
-    it "parks the promotion: state unchanged, one pending operation anchored to the version" do
+    def promote(**rest)
+      call("system_promote_module_version", **{ module_id: node_module.id, environment: "staging" }.merge(rest))
+    end
+
+    it "parks the promotion: the pin is unwritten, one pending operation anchored to the module" do
       trust!(:monitored)
 
-      result = call("system_promote_module_version", module_version_id: version.id, target_state: "staging")
+      result = promote
 
       expect(result[:success]).to be(true)
       expect(result[:data][:pending]).to be(true)
       expect(result[:data][:action_category]).to eq("release.promote")
-      expect(version.reload.promotion_state).to eq("built")
+      expect(node_module.served_version_for(staging)).to be_nil
       expect(pending_ops.count).to eq(1)
-      expect(pending_ops.first.source_id).to eq(version.id)
+      expect(pending_ops.first.source_id).to eq(node_module.id)
     end
 
     it "keeps parking at AUTONOMOUS trust — the release rows carry no trust unlock" do
       trust!(:autonomous)
 
-      result = call("system_promote_module_version", module_version_id: version.id, target_state: "staging")
-
-      expect(result[:data][:pending]).to be(true)
-      expect(version.reload.promotion_state).to eq("built")
+      expect(promote[:data][:pending]).to be(true)
+      expect(node_module.served_version_for(staging)).to be_nil
     end
 
     it "promotes on approval, replayed as the original principal" do
       trust!(:monitored)
-      call("system_promote_module_version", module_version_id: version.id, target_state: "staging")
+      promote
 
       operation = approve_and_replay!(pending_ops.first)
 
       expect(operation.status).to eq("completed")
-      expect(version.reload.promotion_state).to eq("staging")
+      expect(node_module.served_version_for(staging)).to eq(version)
     end
 
-    it "keeps the inline error for a foreign or unknown version and parks nothing" do
+    it "keeps the inline error for a foreign or unknown module and parks nothing" do
       trust!(:monitored)
-      foreign = create(:system_node_module_version, node_module: create(:system_node_module, account: create(:account)))
+      foreign = create(:system_node_module, account: create(:account))
 
       [ foreign.id, SecureRandom.uuid ].each do |id|
-        result = call("system_promote_module_version", module_version_id: id, target_state: "staging")
-        expect(result[:success]).to be(false)
+        expect(promote(module_id: id)[:success]).to be(false)
       end
       expect(pending_ops).to be_empty
     end
 
-    it "keeps the inline error for an illegal transition and parks nothing" do
+    it "keeps the inline error for a refused rung and parks nothing" do
       trust!(:monitored)
 
-      result = call("system_promote_module_version", module_version_id: version.id, target_state: "live")
-
-      expect(result[:success]).to be(false)
-      expect(result[:error]).to include("cannot transition from built to live")
+      # A following plane is never promoted into, and a version no rung below
+      # serves is a skip — both refused before anything is parked.
+      expect(promote(environment: "dev")[:error]).to include("follows publishes")
+      expect(promote(version_id: version_with_digest(2).id)[:error]).to match(/not the current version/)
       expect(pending_ops).to be_empty
     end
   end

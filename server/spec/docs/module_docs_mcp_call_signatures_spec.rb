@@ -299,9 +299,13 @@ module ModuleDocsMcpCallSignatures
       system_acme_create_dns_credential system_acme_get_certificate system_acme_provision_certificate
       system_acme_provision_certificate system_acme_renew_certificate system_acme_revoke_certificate
     ],
+    # Environment campaign increment 4b: the promote examples went from THREE
+    # (built -> staging -> blessed -> live, a decorative ladder that is now
+    # deleted) to TWO — one per pinned rung, staging then prod. Deliberate
+    # deletion of one call site, not a rename.
     "docs/runbooks/module-authoring.md" => %w[
       system_assign_module_to_template system_list_module_versions system_promote_module_version
-      system_promote_module_version system_promote_module_version system_validate_module_manifest
+      system_promote_module_version system_validate_module_manifest
     ],
     "docs/runbooks/template-authoring.md" => %w[
       system_assign_module_to_template system_compose_preview_template system_create_template
@@ -310,11 +314,13 @@ module ModuleDocsMcpCallSignatures
     "docs/runbooks/vault-credential-restoration.md" => %w[
       create_learning system_rotate_vault_transit_pepper
     ],
+    # Same increment-4b deletion as module-authoring.md above: three ladder
+    # promotes became two plane promotes.
     "docs/tutorials/02-first-module.md" => %w[
       list_gitea_workflow_runs system_assign_module_to_template system_create_node
       system_delete_module system_drift_report system_get_instance
       system_list_module_versions system_promote_module_version system_promote_module_version
-      system_promote_module_version system_provision_instance system_terminate_instance
+      system_provision_instance system_terminate_instance
       system_unassign_module_from_template system_validate_module_manifest
     ],
     # IMP-72df91c7b9db dropped the `recent_events` token: Step 4's
@@ -1951,6 +1957,11 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # call site against a closed value set or a nested schema" at the bottom of
   # this file.
   describe "declared schema (closed value sets and nested keys)" do
+    # A SYNTHETIC schema, not read from any tool: these examples test the
+    # CHECKER (does it evaluate a closed value set?), so the sample must stay
+    # fixed even as real declarations change. It happens to be the shape the
+    # deleted `target_state` parameter had (Environment campaign, increment 4b),
+    # which is why the name survives here and nowhere else.
     promotion = { "target_state" => { "type" => "string", "enum" => %w[built staging blessed live retired] } }
     selector  = { "src_selector" => { "type" => "object", "properties" => {
       "peer_id" => { "type" => "string" },

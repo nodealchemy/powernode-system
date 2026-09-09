@@ -33,8 +33,7 @@ RAILS_ENV=development bin/rails runner '
         .first
       next unless artifact
       puts [mod.name, arch, artifact.size_bytes, artifact.built_at,
-            artifact.node_module_version.version_number,
-            artifact.node_module_version.promotion_state].join("\t")
+            artifact.node_module_version.version_number].join("\t")
     end
   end
 '

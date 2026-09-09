@@ -91,30 +91,44 @@ The webhook receiver at `POST /webhooks/gitea/module` ingests the artifact
 into a new `NodeModuleVersion` row + `ModuleArtifact` row(s) — one
 artifact per architecture.
 
-**Promotion lifecycle** (`NodeModuleVersion#promote_to!`):
-`built → staging → blessed → live → retired`, gated by `PromotionCriteria`
-(N successful instances run version V for ≥ M minutes). This ladder is a
-platform-side label: it does **not** determine what a node receives. The
-node-facing download resolves `NodeModule#current_version_id`
-(`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`),
-which the promotion path never writes — publishing writes it, and
-`system_rollback_module_version` repoints it forward or back. Exposed to
-operators via `POST /api/v1/system/node_module_versions/:id/promote`
-(body: `target_state`) and rollback via
-`POST /api/v1/system/node_modules/:id/rollback` (body: optional
-`target_version_id`, `changelog`).
+**The promotion ladder is made of ENVIRONMENTS**, not of labels on a version
+row. A version row carries no lifecycle state at all — the five-rung
+`built → staging → blessed → live → retired` label was deleted in the
+Environment campaign (increment 4b) because no node-facing surface read it and
+it was free to disagree with what the fleet ran. See
+[docs/design/promotion-ladder-semantics.md](design/promotion-ladder-semantics.md).
+
+What a node is served is `NodeModule#served_version_for(environment)`:
+
+- a **FOLLOWING** plane (`Ai::Environment#auto_promote_on_publish` true — dev,
+  ci, ops by default) serves `NodeModule#current_version_id`, so a publish
+  reaches it immediately;
+- a **PINNED** plane (staging, prod by default) serves its
+  `System::ModuleEnvironmentPin` and nothing else, so a publish cannot reach
+  it. Flipping a plane to pinned freezes every module where it stands.
+
+A promotion moves ONE pinned plane's pin — `NodeModule#promote_in_environment!`,
+one rung at a time, where the rung below is the nearest lower PINNED plane
+(`Ai::Environment#ladder_predecessor`). It is gated in the TARGET plane, so
+prod parks for a person, and it consults `PromotionCriteria` (N healthy
+instances on the rung below ran this digest for ≥ M minutes) as an ADVISORY:
+the verdict rides in the response and an override is audited, but the promotion
+is never refused on those grounds. Exposed via
+`POST /api/v1/system/node_module_versions/:id/promote` (body: `environment`) and
+`system_promote_module_version`; rollback via
+`POST /api/v1/system/node_modules/:id/rollback` (fleet-global pointer) or
+`system_rollback_module_version` with `environment:` (one pin, downward only).
 
 ```mermaid
-stateDiagram-v2
-    [*] --> built: CI publishes signed OCI artifact
-    built --> staging: operator promote_to!(:staging)
-    staging --> blessed: PromotionCriteria met<br/>(N instances × M min)<br/>+ operator promote
-    blessed --> live: operator promote_to!(:live)<br/>(often require_approval)
-    live --> retired: superseded by newer live version<br/>or operator demote
-    retired --> [*]
-    staging --> retired: rollback via promote_to!(:retired)
-    blessed --> retired: rollback path
-    live --> blessed: rollback (operator)<br/>via NodeModule#rollback
+flowchart LR
+    CI[CI publishes signed OCI artifact] --> PUB[publish: current_version_id moves]
+    PUB --> DEV[dev · following]
+    PUB --> CIE[ci · following]
+    PUB --> OPS[ops · following]
+    DEV --> STG[staging · pinned]
+    STG --> PROD[prod · pinned]
+    STG -. "promote_in_environment! + PromotionCriteria" .-> STG
+    PROD -. "gated: parks for a person" .-> PROD
 ```
 
 **Module assignment materialization** — how `NodeModule` rows end up

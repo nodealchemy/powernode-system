@@ -88,7 +88,10 @@ RSpec.describe "ModuleOciIngestService trigger docs vs. what actually calls it" 
     let(:doc) { self.class.read(ext_root, "docs/runbooks/module-authoring.md") }
 
     let(:mechanism_para) do
-      doc[/^The (?:Gitea webhook|platform's `ModuleOciIngestService`).*?built`\.(?: .*)?$/] ||
+      # Anchored on the row the paragraph says gets created. It used to anchor
+      # on "in `promotion_state: built`." — increment 4b deleted that column, so
+      # the anchor moved to the sentence's durable half.
+      doc[/^The (?:Gitea webhook|platform's `ModuleOciIngestService`).*?`NodeModuleVersion` row\.(?: .*)?$/] ||
         raise("could not locate the ModuleOciIngestService mechanism paragraph in module-authoring.md")
     end
 
@@ -144,7 +147,7 @@ RSpec.describe "ModuleOciIngestService trigger docs vs. what actually calls it" 
       # (8KB+), which made the "to match(/webhook/i)" assertion below
       # near-vacuous — "webhook" appears later in the tutorial regardless
       # of what this paragraph says. Caught by independent review.
-      doc[/^\*\*Expected outcome:\*\* ~5[\s\S]*?built`\.[^\n]*/] ||
+      doc[/^\*\*Expected outcome:\*\* ~5[\s\S]*?`NodeModuleVersion` row\.[^\n]*/] ||
         raise("could not locate the Step 7 expected-outcome paragraph in 02-first-module.md")
     end
 

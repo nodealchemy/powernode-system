@@ -1,9 +1,14 @@
 # Promotion-ladder semantics: what `promotion_state` is for
 
-**Status:** decided (option **(c)**, below) · **Task:** IMP-c7d618b0b72f · **Date:** 2026-09-02
+**Status: SUPERSEDED — the ladder was DELETED.** Environment campaign increment 4b,
+2026-09-09. `promotion_state` and its four timestamp columns no longer exist; option
+**(a)** was chosen in the form this note did not consider, and every question §6 left
+open is answered. Read [§7](#7-resolution-the-ladder-was-deleted-increment-4b) first,
+then §1 for the measurements, which still hold and are why the ladder went.
+
+**Original status:** decided (option **(c)**, below) · **Task:** IMP-c7d618b0b72f ·
+**Date:** 2026-09-02
 **Scope:** `System::NodeModuleVersion#promotion_state` and its two consumers.
-**Not decided here:** option **(a)** — making the ladder gate the fleet pointer. See
-[What this does not decide](#what-this-does-not-decide).
 
 `System::NodeModuleVersion` carries a five-rung ladder — `built → staging → blessed →
 live → retired` (`server/app/models/system/node_module_version.rb:103-109`) — and
@@ -376,3 +381,66 @@ that the input set was unreachable.
   this decision, and §3.1's bound is correct regardless of provenance.
 * **Whether `live`/`retired` should be derived columns or dropped.** (c) says they *mean*
   history; it does not migrate them to be computed from `current_version_id`.
+
+---
+
+## 7. Resolution: the ladder was DELETED (increment 4b)
+
+**Date:** 2026-09-09 · **Campaign:** Environment as a first-class noun (01a082a3-f402)
+· **Operator ruling:** "Replace it" (2026-09-08)
+
+This note framed the choice as three ways to interpret a five-rung label on a version
+row. The campaign changed the premise: what a version is *to* is not a property of the
+version at all, it is a property of an **environment**. So the label is gone and the
+question it stood in for is answered per plane.
+
+### What replaced it
+
+| Question | Before | Now |
+|---|---|---|
+| What does a node run? | `NodeModule#current_version_id`, whatever the label said | `NodeModule#served_version_for(environment)` — `current_version_id` for a FOLLOWING plane, `System::ModuleEnvironmentPin` for a PINNED one |
+| What is a "promotion"? | `promote_to!` advancing a label | `NodeModule#promote_in_environment!` writing one plane's pin, which its nodes converge on |
+| Which promotions are legal? | `PROMOTION_TRANSITIONS` between labels | `NodeModule#ladder_refusal` — one PINNED rung at a time, never into a following plane, never an unmountable artifact |
+| Is there evidence for it? | `PromotionCriteria` gated on `target_state == "blessed"` | the same `PromotionCriteria`, measured on the rung BELOW the target plane |
+| Who may do it? | anyone; the label had no gate | the target plane's own autonomy policy (prod is seeded supervised, so it parks for a person) |
+
+`System::Fleet::PromotionCriteria` and `System::Fleet::ManualPromotionAdvisory` survive
+unchanged in substance — they were the only load-bearing parts. `ModulePromotionService`
+is deleted: its whole body was criteria plus `promote_to!`.
+
+### The §6 questions, answered
+
+* **Option (a) — should the ladder gate the pointer?** Effectively yes, for pinned
+  planes, and it needed no new gate on `current_version_id`: a pinned plane serves its
+  pin and nothing else, so a publish cannot reach it. Following planes still take
+  whatever is published, which is what makes dev and CI useful.
+* **The bootstrap `live` rows.** Moot — `AccountBootstrapService` no longer writes a
+  state, and the column is gone.
+* **Artifact usability in the rollout gate.** Closed. Both CVE-lane lookups now admit
+  only versions passing `NodeModuleVersion#rollback_usable?`, the test this note filed.
+* **Who wrote the null-digest `live` rows.** Still unestablished, and now unanswerable
+  from the data — the rows are gone with the column. It no longer matters: nothing reads
+  a label, and the recency + usability bounds hold regardless of provenance.
+* **Whether `live`/`retired` should be derived or dropped.** Dropped
+  (`20260909010000_drop_node_module_version_promotion_ladder`).
+
+### One thing this note got right and is worth keeping
+
+§1.3's finding — *the pointer does not wait for the ladder* — is why the ladder had to
+go rather than be wired up. A label that the actuator ignores is not a weak gate, it is
+a **misleading** one: it reads like an answer to "what runs?" and is free to disagree.
+The replacement cannot drift the same way, because the pin **is** what the plane serves.
+
+### Also deleted with it
+
+The CVE remediation lane's attestation condition. It required
+`promotion_state IN (blessed, live)` before planning a rolling upgrade — a label no
+ordinary build ever carried, so the lane found a target for nothing built through the
+normal pipeline. Its natural translation ("require the version to be pinned somewhere")
+is **unreachable by construction**: the bottom pinned rung can only be promoted to what
+is already current, so every pin sits at a version that was current at some point, and
+"newer than current AND pinned" is the empty set. Encoding it would have re-created a
+permanently dead lane wearing a gate. The lane now admits any newer mountable version;
+the human gate is the approval on the plan, which never self-executes
+(`RollingModuleUpgradeExecutor` declares `requires_approval` and returns
+`executed: false`).

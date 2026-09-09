@@ -148,7 +148,7 @@ whole difference. No equivalent lane exists for modules.
 | Requirement | How |
 |---|---|
 | Existing fleet ≥10 NodeInstances assigned a common module (e.g., `nginx 1.24.0`) | Provision via Tutorial 01 + assign via Tutorial 02 pattern |
-| New version (`nginx 1.26.0`) published, plus the version id you will target | Tutorial 02 step 6–8. `promotion_state` is not checked by `RollingModuleUpgradeExecutor` — it accepts any version id present in the module's version list, so a `built` version is a valid target. It does not check `oci_digest` either — it only copies that into the plan as `target_oci_digest` — so verify the target carries one yourself before moving the pointer |
+| New version (`nginx 1.26.0`) published, plus the version id you will target | Tutorial 02 step 6–8. `RollingModuleUpgradeExecutor` accepts any version id present in the module's version list — nothing has to have been promoted onto it first. It does not check `oci_digest` either — it only copies that into the plan as `target_oci_digest` — so verify the target carries one yourself before moving the pointer |
 | Operator permission `system.fleet_rolling_upgrade` (often paired with approval rights) | Default for admin users |
 
 ## Step 1 — Identify the upgrade target
@@ -156,8 +156,8 @@ whole difference. No equivalent lane exists for modules.
 ```javascript
 platform.system_list_module_versions({ module_id: "<nginx-module-id>" })
 // → { versions: [
-//      { id: "v-1.24.0", promotion_state: "live", ... },
-//      { id: "v-1.26.0", promotion_state: "blessed", ... }
+//      { id: "v-1.24.0", current: true, pinned_in: [], ... },
+//      { id: "v-1.26.0", current: false, pinned_in: [], ... }
 //    ] }
 
 platform.system_list_instances({ template_id: "<edge-template>" })
@@ -166,7 +166,7 @@ platform.system_list_instances({ template_id: "<edge-template>" })
 
 **Expected outcome:** confirm 50 instances running v1.24.0, and v1.26.0
 present in this list — being in the list is what makes it a valid target,
-not its `promotion_state`. Check it carries an `oci_digest`.
+not whether anything has been promoted onto it. Check it carries an `oci_digest`.
 
 ## Step 2 — Plan the upgrade (dry-run via the executor)
 
@@ -322,7 +322,7 @@ Despite the name, this is the **sanctioned writer of `current_version_id`**
 (it calls `NodeModule#promote_to_version!`) and it imposes no direction — it
 moves the pointer forward as readily as backward, subject only to the
 `rollback_usable?` check above. `system_promote_module_version` will **not**
-do this; it advances `promotion_state` only.
+do this; it moves ONE pinned environment's pin.
 
 Note that `promote_to_version!` also arms `RestartAfterUpdate`, so services
 provided by that module restart as instances converge.

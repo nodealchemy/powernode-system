@@ -123,8 +123,6 @@ RSpec.describe "Extension MCP tool parameter enum/items declarations" do
   # declaration that merely exists cannot pass for a correct one.
   def positive_control_expectations
     [
-      [ "Ai::Tools::SystemFleetTool", "system_promote_module_version", "target_state",
-       ::System::NodeModuleVersion::PROMOTION_STATES ],
       [ "Ai::Tools::SystemFleetTool", "system_update_instance_pool", "status",
        ::System::InstancePool::STATUSES ],
       [ "Ai::Tools::SdwanTool", "system_sdwan_create_firewall_rule", "firewall_action",

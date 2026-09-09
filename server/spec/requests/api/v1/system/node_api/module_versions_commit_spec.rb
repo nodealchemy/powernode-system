@@ -54,7 +54,6 @@ RSpec.describe "Api::V1::System::NodeApi::ModuleVersions#create", type: :request
     expect(response).to have_http_status(:ok)
     body = JSON.parse(response.body)
     expect(body["success"]).to be true
-    expect(body.dig("data", "version", "promotion_state")).to eq("built")
     expect(body.dig("data", "version", "id")).to be_present
 
     version = System::NodeModuleVersion.find(body.dig("data", "version", "id"))

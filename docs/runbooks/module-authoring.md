@@ -130,7 +130,7 @@ file belongs in a base-os build.
 | **NodeModule** | A reusable userspace component (e.g., nginx, k3s-server). Has a category + variety. | `NodeModule` |
 | **NodeModuleCategory** | Ordered grouping (network=60, container runtimes=70, userland=90+). A platform-side DB row, **not** a manifest key — see note below. | `NodeModuleCategory` |
 | **Module variety** | `subscription` (always-on) / `config` (overrides another module's config) / `instance` (per-instance customization) | enum on `NodeModule` |
-| **NodeModuleVersion** | A specific build of a module. State column is `promotion_state`: `built → staging → blessed → live`, with `retired` as the terminal/rollback state | `NodeModuleVersion` |
+| **NodeModuleVersion** | A specific build of a module. It carries no lifecycle state: what runs where is a fact about each environment — `NodeModule#current_version_id` for a FOLLOWING plane, a `ModuleEnvironmentPin` for a PINNED one | `NodeModuleVersion` |
 | **manifest.yaml** | Authoring-time spec describing module identity + composition rules | YAML at the root of module-repo |
 | **package_spec** | Debian packages installed into the module's rootfs by the builder stage (`mmdebstrap` for platform modules, apt in the Containerfile for third-party repos) | YAML field |
 | **file_spec** | rsync-glob patterns determining which files from the rootfs/ tree end up in the module artifact | YAML field |
@@ -377,7 +377,7 @@ jobs:
 4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
 5. **Cosign signing**: static-key signing — Gitea Actions isn't on Sigstore Fulcio's trusted-issuer list, so keyless certs would never verify server-side. The `assemble` job signs with `POWERNODE_COSIGN_PRIVATE_KEY`, a Gitea Actions secret you add to your repo (ask your platform operator for the value — it's the private half of the platform's `POWERNODE_COSIGN_PUBLIC_KEY`). Keyless/Fulcio signing only applies to modules actually built on a Fulcio-trusted CI (e.g. GitHub Actions), not this Gitea template.
 
-The Gitea webhook (`POST /api/v1/system/webhooks/gitea/module`) is what triggers ingestion — there is no polling timer. `GiteaModuleController` verifies the HMAC and calls `System::ModulePublicationProcessor.process!`, either inline (dev) or via the worker's `System::ProcessModulePublicationJob` calling back to the worker API (production default, `POWERNODE_WEBHOOK_INGEST_MODE=async`). The processor calls `ModuleOciIngestService.ingest!`, which verifies the Cosign signature and creates a `NodeModuleVersion` row in `promotion_state: built`. By default that means `cosign verify` against the platform's static `POWERNODE_COSIGN_PUBLIC_KEY`; the `NodeModule`'s `cosign_identity_regexp` / `cosign_issuer_regexp` (set on the DB row, not the manifest) only come into play on the keyless fallback path, for modules signed by a genuinely Fulcio-trusted issuer.
+The Gitea webhook (`POST /api/v1/system/webhooks/gitea/module`) is what triggers ingestion — there is no polling timer. `GiteaModuleController` verifies the HMAC and calls `System::ModulePublicationProcessor.process!`, either inline (dev) or via the worker's `System::ProcessModulePublicationJob` calling back to the worker API (production default, `POWERNODE_WEBHOOK_INGEST_MODE=async`). The processor calls `ModuleOciIngestService.ingest!`, which verifies the Cosign signature and creates a `NodeModuleVersion` row. By default that means `cosign verify` against the platform's static `POWERNODE_COSIGN_PUBLIC_KEY`; the `NodeModule`'s `cosign_identity_regexp` / `cosign_issuer_regexp` (set on the DB row, not the manifest) only come into play on the keyless fallback path, for modules signed by a genuinely Fulcio-trusted issuer.
 
 ## Phase 6 — Verify publication ✅
 
@@ -385,29 +385,28 @@ The Gitea webhook (`POST /api/v1/system/webhooks/gitea/module`) is what triggers
 // Every module verb takes the module's UUID, never its name. Resolve it once —
 // system_list_modules returns { id, name, ... } for the account's catalog.
 platform.system_list_module_versions({ module_id: "<module-id>" })
-// → { versions: [{ id, module_id, version_number, promotion_state: "built", current, oci_digest, ... }] }
+// → { versions: [{ id, module_id, version_number, current, pinned_in: [], oci_digest, ... }] }
 ```
 
-The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`. `built` is the freshly-ingested state; promote through `staging → blessed → live`, demote/rollback to `retired`. Promotion advances that ladder and at most one timestamp column; it does not change which version the fleet serves.
+`current: true` marks the version the FOLLOWING planes serve (dev, ci, ops by default — they take whatever is published); `pinned_in` names the PINNED planes serving it (staging, prod by default — they serve only what was promoted into them, and nothing at all of a module never promoted there).
 
-Promote through the lifecycle:
+Walk the ladder of PLANES, one rung at a time. The rung below is the nearest lower pinned plane; when none sits below, the version must be what the following planes already run.
 
 ```javascript
-// built → staging (visible to operators; can be assigned to test instances)
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "staging" })
+// Into the bottom pinned rung. Consults PromotionCriteria (N healthy instances
+// on the rung below ran this digest for the dwell) and WARNS without refusing —
+// read promotion_criteria / promotion_criteria_warning in the response.
+platform.system_promote_module_version({ module_id: "<module-id>", environment: "staging" })
 
-// staging → blessed (passes operator review)
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "blessed" })
-
-// blessed → live (the last ladder rung; gated by require_approval policy).
-// This does NOT roll the version out — use system_rollback_module_version to
-// repoint current_version_id. There is no batched alternative: the pointer is
-// per-module, so the rollout is FLEET-ATOMIC (rolling_module_upgrade only
-// SIZES it and executes nothing). See tutorials/06-rolling-upgrade.md.
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "live" })
+// Onward. prod is seeded supervised, so this PARKS for an operator: the reply
+// carries { pending: true } and a deferred_operation_id, and nothing is
+// promoted until someone approves. Do not retry it.
+platform.system_promote_module_version({ module_id: "<module-id>", environment: "prod", version_id: "<version-id>" })
 ```
 
-The `module_promotion_sensor` warns if a version has been in `staging` more than 24 h without operator action.
+A promotion moves that one plane's pin and arms `RestartAfterUpdate` for the version, so that plane's nodes restart onto it once they have materialised it. It does NOT move `current_version_id` — publishing does that, and `system_rollback_module_version` without `environment:` repoints it. There is no batched alternative for the pointer: it is per-module, so a fleet-global move is FLEET-ATOMIC (`rolling_module_upgrade` only SIZES it and executes nothing). See tutorials/06-rolling-upgrade.md.
+
+The `module_promotion_sensor` raises `system.module_promotion_ready` when a pinned plane falls behind the rung below it AND the criteria pass, so an eligible promotion is offered rather than waited for.
 
 ## Phase 7 — Assign to a Template ✅
 
@@ -511,11 +510,9 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 
 ### Why the agent isn't pulling
 
-No node-facing surface consults `promotion_state`, so promoting a version cannot change
-what an agent receives. `promotion_state` is a ladder the *platform* reads for its own
-decisions (the `module_promotion_sensor`, the staging check in
-`DecisionEngine#apply_module_promotion`, CVE remediation's candidate filter, compliance
-counts); `NodeModule#current_version_id` is what a node in a FOLLOWING environment
+What an agent receives depends on ITS PLANE, and on nothing carried by the version row
+(the decorative `promotion_state` ladder was deleted in the Environment campaign,
+increment 4b). `NodeModule#current_version_id` is what a node in a FOLLOWING environment
 (`auto_promote_on_publish` true — dev, ci, ops by default) is served. A node in a PINNED
 environment (staging, prod by default) is served that environment's pin instead
 (`NodeModule#served_version_for(environment)`) — and NOTHING of a module that has never been

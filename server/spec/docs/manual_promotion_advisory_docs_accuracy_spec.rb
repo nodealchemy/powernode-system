@@ -177,7 +177,7 @@ RSpec.describe "PromotionCriteria-is-exercised prose vs. the manual promote path
 
     it "catalogues every key the emitter writes into the override payload" do
       # Sanity: the derivation found the real hash, not an empty match.
-      expect(override_payload_keys).to include("module_name", "version_number", "target_state", "actor_id")
+      expect(override_payload_keys).to include("module_name", "version_number", "environment", "actor_id")
 
       override_payload_keys.each do |key|
         expect(override_paragraph).to include("`#{key}`"),

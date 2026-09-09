@@ -29,7 +29,7 @@ What this unblocks:
 
 Dev mode auto-unseals with an in-memory backend and prints a root token to
 the journal. Publishing a module **auto-promotes it fleet-wide** (the
-built → staging → blessed ladder is decorative — see the module plane's
+per-version promotion ladder was decorative and is gone — see the module plane's
 promotion notes), so a self-unsealing Vault with a well-known root token
 would be one template assignment away from any node.
 

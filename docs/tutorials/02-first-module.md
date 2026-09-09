@@ -273,7 +273,7 @@ The workflow runs:
 **Expected outcome:** ~5–8 min runtime. Workflow shows `success`. Step 6's
 webhook triggers `System::ModulePublicationProcessor`, which calls
 `ModuleOciIngestService.ingest!` — there is no polling — and creates a
-`NodeModuleVersion` row in `promotion_state: built`. If the row is missing,
+`NodeModuleVersion` row. If the row is missing,
 check the repo's Gitea webhook deliveries and redeliver rather than waiting.
 
 ## Step 8 — Verify ingestion
@@ -286,29 +286,29 @@ platform.system_list_module_versions({ module_id: "<my-redis-module-id>" })
 //      id: "0199c8f1-...",              // UUIDv7, not a "v-<name>-<semver>" string
 //      module_id: "0199c8ee-...",
 //      version_number: 1,               // integer, not a semver string
-//      promotion_state: "built",
-//      current: false,                  // whether the FLEET serves this row
+//      current: false,                  // whether the FOLLOWING planes serve this row
+//      pinned_in: [],                   // the PINNED planes serving it (staging, prod, ...)
 //      oci_digest: "sha256:abc...",
-//      fsverity_root_hash: "sha256:def...",
-//      live_at: null,
-//      retired_at: null
+//      fsverity_root_hash: "sha256:def..."
 //    }] }
 ```
 
-**Expected outcome:** the version row exists and `promotion_state` is `built`. This response carries no signature field, so it is not where you confirm signing — check the `ModuleArtifact` rows / the build-batch surface instead. (Do not infer verification from the row existing: `ingest_native!` is unsigned by design, and outside production `ModuleOciIngestService` defaults to `LocalOciAdapter`, which reports every signature as verified.) Promote through `staging → blessed → live` as you verify the module behaves correctly. The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`:
+**Expected outcome:** the version row exists. This response carries no signature field, so it is not where you confirm signing — check the `ModuleArtifact` rows / the build-batch surface instead. (Do not infer verification from the row existing: `ingest_native!` is unsigned by design, and outside production `ModuleOciIngestService` defaults to `LocalOciAdapter`, which reports every signature as verified.)
+
+A version row carries no lifecycle label. What runs where is a fact about each ENVIRONMENT: dev, ci and ops FOLLOW publishes (they serve `current: true`), while staging and prod are PINNED and serve only what was promoted into them. So the ladder you walk is made of planes:
 
 ```javascript
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "staging" })
-// Test on a non-prod NodeInstance
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "blessed" })
-// Operator review passed; module is recommendable
-platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "live" })
-// Top of the ladder — note this does NOT put the version on the fleet
+// One rung at a time. staging is the bottom pinned rung, so it takes the
+// version the following planes already run.
+platform.system_promote_module_version({ module_id: "<module-id>", environment: "staging" })
+// Verified in staging? Promote the same version onward. prod is seeded
+// supervised, so this PARKS for an operator rather than promoting.
+platform.system_promote_module_version({ module_id: "<module-id>", environment: "prod", version_id: "<version-id>" })
 ```
 
-Promotion moves `promotion_state` and nothing else. It does **not** change which version a node is served: the node-facing download resolves `NodeModule#current_version_id`, which the promotion path never writes. Step 7's webhook is what moves it: `gitea_module#handle` runs `System::ModulePublicationProcessor`, which writes `current_version_id` by default. It withholds that write when the module sets `auto_promote` false or when the erofs layer is under the non-empty floor, emitting a high-severity `system.module_promotion_withheld` event naming the reason. (A third condition, a `System::CoreProvenanceGate` refusal, applies only to native builds — the gate is inert on this path.) `system_list_module_versions` marks the served row `current: true`; if no row carries it, repoint with `system_rollback_module_version({ module_id, version_id })`, which moves the pointer forward as well as back — though it refuses a target below that same floor. See [module-authoring.md](../runbooks/module-authoring.md#why-the-agent-isnt-pulling) for the full decision tree.
+A promotion moves that one plane's pin and nothing else. It does **not** change which version the FOLLOWING planes serve: they read `NodeModule#current_version_id`, which the promotion path never writes. Step 7's webhook is what moves it: `gitea_module#handle` runs `System::ModulePublicationProcessor`, which writes `current_version_id` by default. It withholds that write when the module sets `auto_promote` false or when the erofs layer is under the non-empty floor, emitting a high-severity `system.module_promotion_withheld` event naming the reason. (A third condition, a `System::CoreProvenanceGate` refusal, applies only to native builds — the gate is inert on this path.) `system_list_module_versions` marks the row the following planes serve `current: true` and names the pinned planes under `pinned_in`; if no row carries `current`, repoint with `system_rollback_module_version({ module_id, version_id })`, which moves the pointer forward as well as back — though it refuses a target below that same floor. See [module-authoring.md](../runbooks/module-authoring.md#why-the-agent-isnt-pulling) for the full decision tree.
 
-Promotion to `live` is often `require_approval` — check `module_promote_to_live` intervention policy. Demoting / rolling back uses the same MCP action with `to: "retired"` (no `archived` state — that's old documentation).
+Promoting into a protected plane is `require_approval` — check the `module_promote_to_live` intervention policy. To walk one pinned plane back, use `system_rollback_module_version` with `environment:` (downward only); to repoint the fleet, use it without.
 
 ## Step 9 — Assign to a Template + provision
 

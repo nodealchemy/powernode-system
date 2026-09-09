@@ -4,19 +4,20 @@ require "rails_helper"
 
 # IMP-d6826c872d88 — the MANUAL promote paths bypassed PromotionCriteria.
 #
-# After IMP-249aa98969bd the AUTOMATED lane (System::Fleet::ModulePromotionService,
-# reached from the DecisionEngine) gates staging→blessed on real dwell and
-# liveness. The two operator-driven twins — POST
+# Both operator-driven paths — POST
 # /api/v1/system/node_module_versions/:id/promote and the MCP
-# `system_promote_module_version` — called NodeModuleVersion#promote_to!
-# directly, so a human (or an agent over MCP) could bless a version no instance
-# had ever run, and the response said nothing about it.
+# `system_promote_module_version` — could pin a plane to a version no instance
+# on the rung below had ever run, and the response said nothing about it.
 #
 # Operator ruling D17 (2026-09-02): consult and WARN, never refuse. The manual
 # paths keep their authority; what they lose is the SILENCE. This class is the
-# single place that decides which target states are criteria-relevant, what the
-# result carries, and what lands in the audit log, so the two callers cannot
-# drift apart (or from the automated lane).
+# single place that decides when the criteria are relevant, what the result
+# carries, and what lands in the audit log, so the two callers cannot drift
+# apart (or from the automated lane in the DecisionEngine).
+#
+# Environment campaign, increment 4b: "relevant" used to mean a target state on
+# a decorative ladder. It now means a promotion INTO A PINNED PLANE — the one
+# step where "the rung below has run this and lived" has an answer.
 RSpec.describe System::Fleet::ManualPromotionAdvisory do
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
@@ -28,19 +29,24 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
            category: category, variety: "subscription", name: "advisory-mod")
   end
 
-  def version_in(state, number)
+  # A version that could actually be mounted, which #ladder_refusal requires:
+  # a recorded digest and an artifact clearing the publish floor.
+  def usable_version(number = 1, dig = digest)
     System::NodeModuleVersion.create!(
       node_module: mod, version_number: number,
       mask: [], file_spec: [], package_spec: [], config: {},
-      oci_digest: digest, promotion_state: state
+      oci_digest: dig,
+      artifacts: { "erofs" => { "oci_digest" => dig, "size" => 12_345_000 } }
     )
   end
 
-  def staging_version(number = 1)
-    version_in("staging", number)
-  end
+  let(:staging) { account.environments.find_by!(slug: "staging") }
+  let(:dev)     { account.environments.find_by!(slug: "dev") }
+  let!(:version) { usable_version }
 
-  let!(:version) { staging_version }
+  # staging is the bottom pinned rung, so the version it will take is the
+  # module's current one.
+  before { mod.promote_to_version!(version) }
 
   # Makes the version genuinely eligible: the thresholds drop to a one-instance
   # fleet with no dwell (both are documented operator overrides) and one live
@@ -63,8 +69,8 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
   end
 
   describe ".evaluate" do
-    it "does not consult the criteria for a target state the automated lane never gates" do
-      advisory = described_class.evaluate(version: version, target_state: "retired")
+    it "does not consult the criteria for a FOLLOWING plane, which is never promoted into" do
+      advisory = described_class.evaluate(version: version, environment: dev)
 
       expect(advisory.consulted?).to be false
       expect(advisory.warned?).to be false
@@ -73,7 +79,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     end
 
     it "reports the criteria verdict and warns when a manual promote outruns the evidence" do
-      advisory = described_class.evaluate(version: version, target_state: "blessed")
+      advisory = described_class.evaluate(version: version, environment: staging)
 
       expect(advisory.consulted?).to be true
       expect(advisory.warned?).to be true
@@ -81,12 +87,12 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
       fields = advisory.record!(source: "spec", actor_id: "user-1")
       expect(fields[:promotion_criteria][:eligible]).to be false
       expect(fields[:promotion_criteria][:reason]).to match(/running_count 0 < required/)
-      expect(fields[:promotion_criteria_warning]).to include("blessed")
+      expect(fields[:promotion_criteria_warning]).to include("staging")
       expect(fields[:promotion_criteria_warning]).to include("running_count 0 < required")
     end
 
     it "writes ONE auditable FleetEvent carrying the refusal reason and the actor" do
-      described_class.evaluate(version: version, target_state: "blessed")
+      described_class.evaluate(version: version, environment: staging)
                      .record!(source: "rest_promote", actor_id: "user-1", actor_type: "user")
 
       expect(override_events.count).to eq(1)
@@ -95,7 +101,8 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
       expect(event.source).to eq("rest_promote")
       expect(event.node_module_id).to eq(mod.id)
       expect(event.node_module_version_id).to eq(version.id)
-      expect(event.payload["target_state"]).to eq("blessed")
+      expect(event.payload["environment"]).to eq("staging")
+      expect(event.payload["environment_id"]).to eq(staging.id)
       expect(event.payload["reason"]).to match(/running_count 0 < required/)
       expect(event.payload["actor_id"]).to eq("user-1")
       expect(event.payload["actor_type"]).to eq("user")
@@ -106,7 +113,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     # can carry either, so an actor_id ALONE does not name who overrode the
     # criteria — which is the whole deliverable here.
     it "distinguishes an agent override from a human one" do
-      described_class.evaluate(version: version, target_state: "blessed")
+      described_class.evaluate(version: version, environment: staging)
                      .record!(source: "mcp_promote_module_version",
                               actor_id: "agent-1", actor_type: "agent")
 
@@ -119,7 +126,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     # present so an actor-less override reads as unknown, not as a payload that
     # predates the field.
     it "records an anonymous principal as unknown rather than dropping the keys" do
-      described_class.evaluate(version: version, target_state: "blessed")
+      described_class.evaluate(version: version, environment: staging)
                      .record!(source: "spec")
 
       payload = override_events.first.payload
@@ -129,7 +136,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     end
 
     it "refuses to record an actor_type it does not recognise" do
-      described_class.evaluate(version: version, target_state: "blessed")
+      described_class.evaluate(version: version, environment: staging)
                      .record!(source: "spec", actor_id: "x", actor_type: "root")
 
       expect(override_events.first.payload["actor_type"]).to eq(described_class::UNKNOWN_ACTOR)
@@ -138,7 +145,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     it "reports an eligible verdict without a warning or an event" do
       make_eligible!
 
-      advisory = described_class.evaluate(version: version, target_state: "blessed")
+      advisory = described_class.evaluate(version: version, environment: staging)
       expect(advisory.consulted?).to be true
       expect(advisory.warned?).to be false
 
@@ -151,56 +158,49 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     it "never blocks the promotion when the audit write itself fails" do
       allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_raise(StandardError, "sink down")
 
-      advisory = described_class.evaluate(version: version, target_state: "blessed")
+      advisory = described_class.evaluate(version: version, environment: staging)
       fields = nil
       expect { fields = advisory.record!(source: "spec") }.not_to raise_error
       expect(fields[:promotion_criteria][:eligible]).to be false
     end
   end
 
-  # EQUALITY ORACLE. The advisory exists to mirror the automated lane, and a
-  # comment saying so rots the moment either side changes. This drives
-  # ModulePromotionService — the automated lane itself — on an ineligible
-  # version and asserts that the states it REFUSES are exactly the states this
-  # advisory consults on. A gated set widened on one side and not the other
-  # fails here.
+  # EQUALITY ORACLE. The advisory exists to fire on exactly the promotions the
+  # ladder will accept, and a comment saying so rots the moment either side
+  # changes. So this computes the set THREE ways from three independent places
+  # and asserts they are the same set, over every environment in the account:
   #
-  # Scoped to EVERY promotion state, not to the three transitions legal from
-  # `staging`: "live" and "staging" are the two most likely widenings of
-  # GATED_TARGET_STATES (they are exactly the rungs the constant's comment
-  # reasons about excluding) and neither is reachable from `staging`, so a
-  # staging-scoped oracle would pin the intersection and stay green through
-  # both. Each target is driven from a source state that can legally reach it.
-  describe "the gated target-state set matches the automated lane" do
-    def source_state_reaching(target)
-      System::NodeModuleVersion::PROMOTION_TRANSITIONS
-        .find { |_source, allowed| allowed.include?(target) }&.first
-    end
+  #   1. the advisory consults (this class)
+  #   2. the plane is pinned  (Ai::Environment#follows_publish?, core)
+  #   3. NodeModule#ladder_refusal does not reject it AS A TARGET (the ext model)
+  #
+  # A set widened on one side and not the others fails here. Increment 4b
+  # replaced an oracle that drove the deleted ModulePromotionService over every
+  # decorative target state; the shape of the check is the part worth keeping.
+  describe "the set of criteria-relevant promotions matches the ladder" do
+    it "consults exactly the pinned planes, over EVERY environment" do
+      environments = account.environments.to_a
+      expect(environments.map(&:slug)).to include("dev", "staging", "ops", "prod")
 
-    it "consults exactly the states ModulePromotionService refuses on, over EVERY target state" do
-      targets = System::NodeModuleVersion::PROMOTION_STATES
-      number = 1
-
-      refused_by_automated_lane = targets.select do |target|
-        source = source_state_reaching(target)
-        expect(source).not_to(be_nil, "no legal source state reaches #{target}; widen the oracle")
-
-        number += 1
-        candidate = version_in(source, number)
-        result = System::Fleet::ModulePromotionService.promote!(version: candidate, target_state: target)
-        expect(result.error.to_s).not_to include("cannot transition")
-
-        !result.ok? && result.error.to_s.include?("not eligible")
+      consulted_by_advisory = environments.select do |env|
+        described_class.evaluate(version: version, environment: env).consulted?
       end
 
-      consulted_by_advisory = targets.select do |target|
-        described_class.evaluate(version: version, target_state: target).consulted?
+      pinned = environments.reject(&:follows_publish?)
+
+      # A version can be refused for reasons OTHER than the plane following
+      # publishes (a skipped rung), so this asks only whether the plane is a
+      # legal promotion TARGET at all.
+      accepted_as_target = environments.reject do |env|
+        mod.ladder_refusal(environment: env, version: version).to_s.include?("follows publishes")
       end
 
-      # Non-vacuity: an oracle where both sides are empty proves nothing.
-      expect(refused_by_automated_lane).to include("blessed")
-      expect(consulted_by_advisory).to match_array(refused_by_automated_lane)
-      expect(consulted_by_advisory).to match_array(System::Fleet::PromotionCriteria::GATED_TARGET_STATES)
+      # Non-vacuity: an oracle where every side is empty proves nothing.
+      expect(consulted_by_advisory).not_to be_empty
+      expect(consulted_by_advisory).to match_array(pinned)
+      expect(consulted_by_advisory).to match_array(accepted_as_target)
+      # And it is a STRICT subset — the following planes really are excluded.
+      expect(consulted_by_advisory.size).to be < environments.size
     end
   end
 
@@ -225,16 +225,16 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
       )
     end
 
-    def promote(target_state)
-      tool.execute(params: { action: "system_promote_module_version",
-                             module_version_id: version.id, target_state: target_state })
+    def promote(environment = "staging", **rest)
+      tool.execute(params: { action: "system_promote_module_version", module_id: mod.id,
+                             environment: environment, version_id: version.id }.merge(rest))
     end
 
     it "still promotes, but carries the verdict and a warning, and audits the override" do
-      r = promote("blessed")
+      r = promote
 
       expect(r[:success]).to be true
-      expect(version.reload.promotion_state).to eq("blessed")
+      expect(mod.served_version_for(staging)).to eq(version)
       expect(r.dig(:data, :promotion_criteria, :eligible)).to be false
       expect(r.dig(:data, :promotion_criteria_warning)).to match(/running_count 0 < required/)
 
@@ -260,8 +260,8 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
                            permissions: [ Ai::Tools::SystemFleetTool::REQUIRED_PERMISSION, "system.modules.update" ])
       user_tool = Ai::Tools::SystemFleetTool.new(account: account, user: user)
 
-      user_tool.execute(params: { action: "system_promote_module_version",
-                                  module_version_id: version.id, target_state: "blessed" })
+      user_tool.execute(params: { action: "system_promote_module_version", module_id: mod.id,
+                                  environment: "staging", version_id: version.id })
 
       event = override_events.first
       expect(event.payload["actor_type"]).to eq("user")
@@ -271,7 +271,7 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
     it "carries an eligible verdict with no warning when the evidence is there" do
       make_eligible!
 
-      r = promote("blessed")
+      r = promote
 
       expect(r[:success]).to be true
       expect(r.dig(:data, :promotion_criteria, :eligible)).to be true
@@ -280,22 +280,15 @@ RSpec.describe System::Fleet::ManualPromotionAdvisory do
       expect(override_events.count).to eq(0)
     end
 
-    it "leaves an ungated target state (retired) with no verdict and no event" do
-      r = promote("retired")
+    it "audits nothing when the ladder refused the promotion" do
+      # A version no rung below serves is a skip: refused before the pin moves,
+      # so there is no override to record.
+      newer = usable_version(2, "sha256:#{'c' * 64}")
 
-      expect(r[:success]).to be true
-      expect(version.reload.promotion_state).to eq("retired")
-      expect(r.dig(:data)).not_to have_key(:promotion_criteria)
-      expect(override_events.count).to eq(0)
-    end
-
-    it "audits nothing when the transition itself was refused" do
-      version.update!(promotion_state: "built")
-
-      r = promote("blessed")
+      r = promote("staging", version_id: newer.id)
 
       expect(r[:success]).to be false
-      expect(version.reload.promotion_state).to eq("built")
+      expect(mod.served_version_for(staging)).to be_nil
       expect(override_events.count).to eq(0)
     end
   end

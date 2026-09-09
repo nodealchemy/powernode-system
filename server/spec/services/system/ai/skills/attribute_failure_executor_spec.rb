@@ -50,24 +50,61 @@ RSpec.describe System::Ai::Skills::AttributeFailureExecutor do
       end
     end
 
-    context "with a recent live promotion" do
+    # Environment campaign, increment 4b: what changed a plane's served version
+    # depends on the kind of plane, so both halves are covered. The instance
+    # here sits in dev, a FOLLOWING plane, where the change is a publish.
+    context "with a recent publish in a following plane" do
       let!(:version) do
         v = System::NodeModuleVersion.create!(
           node_module: mod, version_number: 1,
           mask: [], file_spec: [], package_spec: [], config: {},
           oci_digest: "sha256:#{'a' * 64}",
-          live_at: 1.hour.ago
+          created_at: 1.hour.ago
         )
         node.node_modules << mod
+        mod.update_columns(current_version_id: v.id, current_version_number: v.version_number)
         v
       end
 
-      it "scores the promotion as a high-weight candidate" do
+      it "scores the publish as a high-weight candidate" do
         r = exec.execute(instance_id: instance.id)
-        cands = r[:data][:candidates]
-        promo = cands.find { |c| c[:kind] == "promotion" }
+        promo = r[:data][:candidates].find { |c| c[:kind] == "promotion" }
         expect(promo).to be_present
-        expect(promo[:score]).to be >= 12 # live promotion base weight
+        expect(promo[:score]).to be >= 12
+        expect(promo[:module_version_id]).to eq(version.id)
+        expect(promo[:reasons].join).to match(/published and served by dev/)
+      end
+
+      it "ignores a publish older than the window" do
+        version.update_column(:created_at, 30.days.ago)
+
+        r = exec.execute(instance_id: instance.id)
+        expect(r[:data][:candidates].find { |c| c[:kind] == "promotion" }).to be_nil
+      end
+    end
+
+    context "with a recent promotion into a PINNED plane" do
+      let(:staging) { account.environments.find_by!(slug: "staging") }
+      let!(:pinned_instance) do
+        template = create(:system_node_template, account: account, node_platform: platform, environment: staging)
+        pinned_node = create(:system_node, account: account, node_template: template, name: "pinned-node")
+        pinned_node.node_modules << mod
+        create(:system_node_instance, :running, node: pinned_node)
+      end
+
+      it "scores the pin write, not the publish" do
+        version = System::NodeModuleVersion.create!(
+          node_module: mod, version_number: 1, mask: [], file_spec: [], package_spec: [], config: {},
+          oci_digest: "sha256:#{'a' * 64}",
+          artifacts: { "erofs" => { "oci_digest" => "sha256:#{'a' * 64}", "size" => 12_345_000 } }
+        )
+        mod.promote_to_version!(version)
+        mod.promote_in_environment!(environment: staging, version: version)
+
+        r = exec.execute(instance_id: pinned_instance.id)
+        promo = r[:data][:candidates].find { |c| c[:kind] == "promotion" }
+        expect(promo).to be_present
+        expect(promo[:reasons].join).to match(/promoted into staging/)
       end
     end
 

@@ -127,7 +127,7 @@ RSpec.describe "Operator API — Module Build Batches", type: :request do
         runner_scope: "repo", build_task_id: task.id, runner_name: "builder-1"
       )
       version = create(:system_node_module_version, node_module: node_module, version_number: 1,
-                       config: { "git_tag" => "abc1234" }, promotion_state: "blessed")
+                       config: { "git_tag" => "abc1234" })
       artifact = ::System::ModuleArtifact.create!(
         node_module_version: version, oci_ref: "registry.example/powernode/mod-a:abc1234",
         oci_digest: "sha256:#{'a' * 64}", media_type: ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
@@ -158,7 +158,6 @@ RSpec.describe "Operator API — Module Build Batches", type: :request do
       expect(row.dig("artifact", "size_bytes")).to eq(12_345)
       expect(row.dig("artifact", "signed")).to eq(true)
       expect(row.dig("artifact", "version_number")).to eq(1)
-      expect(row.dig("artifact", "promotion_state")).to eq("blessed")
 
       # CRITICAL — the cosign bundle bytes themselves never leak.
       expect(response.body).not_to include("signed-bundle-bytes")

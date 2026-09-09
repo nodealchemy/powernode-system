@@ -8,6 +8,14 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
   let(:category)  { create(:system_node_module_category, account: account) }
   let(:template)  { create(:system_node_template, account: account, node_platform: platform) }
 
+  # A version is a rollout candidate only if it could actually be mounted:
+  # NodeModuleVersion#rollback_usable? wants a recorded digest and an artifact
+  # size clearing the publish floor (Environment campaign, increment 4b — the
+  # decorative promotion_state label this used to set is gone).
+  def usable_artifact(seed)
+    { "erofs" => { "oci_digest" => "sha256:#{seed * 64}", "size" => 12_345_000 } }
+  end
+
   let!(:openssl_mod) do
     create(:system_node_module, account: account, node_platform: platform,
            category: category, variety: "subscription", name: "openssl-base")
@@ -132,7 +140,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       let(:sensor) { ::System::CveOps::Sensors::CvePublishedSensor.new(account: account) }
       let!(:blessed) do
         create(:system_node_module_version, node_module: openssl_mod,
-               version_number: 2, promotion_state: "blessed")
+               version_number: 2, artifacts: usable_artifact("b"))
       end
       let!(:node) { create(:system_node, account: account, node_template: template, name: "n1") }
 
@@ -187,7 +195,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
     it "produces a rolling upgrade plan when a newer blessed version exists" do
       link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
       blessed = create(:system_node_module_version, node_module: openssl_mod,
-                       version_number: 2, promotion_state: "blessed")
+                       version_number: 2, artifacts: usable_artifact("b"))
       openssl_mod.update!(current_version: openssl_v1)
       node = create(:system_node, account: account, node_template: template, name: "n1")
       System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod, enabled: true, priority: 0)
@@ -244,19 +252,16 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       end
 
       # IMP-79a808789805 — excluding a plan from remediated_module_ids must not
-      # change the ENVELOPE of a mixed run. The promotion-blocked `failure`
-      # branch is gated on the run having produced nothing an operator can
-      # look at; a successful plan IS such an output (the tutorial tells the
-      # operator to execute it by hand), even though it is not evidence of
-      # work in flight. Without the `none? { ok }` clause on that gate, this
-      # run would return a bare `failure` whose message says no plan can be
-      # made, dropping the plan for openssl-base entirely.
-      it "keeps a mixed run a success and carries the plan when another module is promotion-blocked" do
+      # change the ENVELOPE of a mixed run: a successful plan IS an output an
+      # operator can act on (the tutorial tells them to execute it by hand),
+      # even though it is not evidence of work in flight. So a run that planned
+      # for one module and skipped another stays a success and carries both.
+      it "keeps a mixed run a success and carries the plan when another module is skipped" do
         link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
         create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "built")
+               version_number: 2, artifacts: usable_artifact("c"))
         blessed = create(:system_node_module_version, node_module: openssl_mod,
-                         version_number: 2, promotion_state: "blessed")
+                         version_number: 2, artifacts: usable_artifact("b"))
         openssl_mod.update!(current_version: openssl_v1)
         node = create(:system_node, account: account, node_template: template, name: "n-openssl")
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
@@ -277,37 +282,11 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         expect(r.dig(:data, :exposures_remediating)).to eq(0)
         expect(exposure.reload.state).to eq("open")
         expect(nginx_exposure.reload.state).to eq("open")
-        # The blocked module is still named, with the actionable reason.
-        expect(r.dig(:data, :skipped_reason)).to eq("candidate_version_not_promoted")
+        # The skipped module is still named, with the actionable reason: its
+        # usable v2 has no enabled assignment on any templated node.
+        expect(r.dig(:data, :skipped_reason)).to eq("no_enabled_template_assignment")
         expect(r.dig(:data, :skipped_modules).map { |m| m[:node_module_id] })
           .to include(nginx_mod.id)
-      end
-
-      # The other side of that gate, and the mutant-killer for it: the clause
-      # is `none? { ok }`, NOT `plans.empty?`. A run whose only plan FAILED has
-      # nothing to show either, so the promotion block must still fail loudly
-      # exactly as it did before IMP-79a808789805.
-      it "still fails loudly when the only rolling plan failed and another module is promotion-blocked" do
-        link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
-        create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "built")
-        create(:system_node_module_version, node_module: openssl_mod,
-               version_number: 2, promotion_state: "blessed")
-        openssl_mod.update!(current_version: openssl_v1)
-        node = create(:system_node, account: account, node_template: template, name: "n-openssl")
-        System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
-                                            enabled: true, priority: 0)
-        allow_any_instance_of(System::Ai::Skills::RollingModuleUpgradeExecutor)
-          .to receive(:execute).and_return({ success: false, error: "boom" })
-
-        r = executor.execute(cve_id: "CVE-2026-50001",
-                             affected_module_ids: [ openssl_mod.id, nginx_mod.id ],
-                             exposure_ids: [ exposure.id, nginx_exposure.id ])
-
-        expect(r[:success]).to be false
-        expect(r[:error]).to include("nginx-base")
-        expect(exposure.reload.state).to eq("open")
-        expect(nginx_exposure.reload.state).to eq("open")
       end
 
       it "reports no_candidate_version when no newer version of any kind exists" do
@@ -329,64 +308,45 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         expect(r.dig(:data, :skipped_reason)).to eq("no_current_version")
       end
 
-      it "fails loudly and names the module + unpromoted candidate when a fix is built but not promoted" do
+      # A newer MOUNTABLE version is now a rollout candidate on its own: the
+      # attestation the old lane demanded (promotion_state blessed/live) was a
+      # label no node saw and no ordinary build ever carried, and its natural
+      # replacement — "pinned in some environment" — is unreachable for a
+      # version newer than current (the bottom pinned rung only takes what is
+      # already current). What keeps the lane conservative is downstream: the
+      # plan requires approval and nothing actuates it.
+      it "plans for a newer usable version with no promotion of any kind" do
         candidate = create(:system_node_module_version, node_module: nginx_mod,
-                           version_number: 2, promotion_state: "built")
+                           version_number: 2, artifacts: usable_artifact("c"))
+        node = create(:system_node, account: account, node_template: template, name: "n-nginx")
+        System::NodeModuleAssignment.create!(node: node, node_module: nginx_mod, enabled: true, priority: 0)
 
         r = executor.execute(cve_id: "CVE-2026-50001",
                              affected_module_ids: [ nginx_mod.id ],
                              exposure_ids: [ nginx_exposure.id ])
 
-        expect(r[:success]).to be false
-        # The message is the operator surface, so it is the oracle. Asserting
-        # the candidate's id (obtainable only from the interpolation) rather
-        # than the word "built", which the surrounding literal also contains.
-        expect(r[:error]).to include("nginx-base")
-        expect(r[:error]).to include(candidate.id)
-        expect(r[:error]).to include("version 2 is built")
-
-        # A bare failure — no :data. #failure's **extra is the composition
-        # runner's rollback seam, not a diagnostics channel.
-        expect(r).not_to have_key(:data)
-
-        # The blocked lane must not fake in-flight response.
+        expect(r[:success]).to be true
+        plan = r.dig(:data, :rolling_upgrade_plans).find { |pl| pl[:node_module_id] == nginx_mod.id }
+        expect(plan[:target_version_id]).to eq(candidate.id)
+        expect(System::ModuleEnvironmentPin.where(node_module_id: nginx_mod.id)).to be_empty
+        # Still not a dispatch: the exposure stays open until something executes.
+        expect(plan[:executed]).to be false
         expect(nginx_exposure.reload.state).to eq("open")
       end
 
-      it "names the LEGAL next promotion rung, not blessed, for a built candidate" do
-        create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "built")
+      # The admission test is NodeModuleVersion#rollback_usable?, the same one
+      # the rollback path and the backlog sensor use. A newer row whose artifact
+      # could not be mounted is not a fix, and must not be offered as one.
+      it "does not offer a newer version whose artifact is unmountable" do
+        create(:system_node_module_version, node_module: nginx_mod, version_number: 2, artifacts: {})
+        node = create(:system_node, account: account, node_template: template, name: "n-nginx")
+        System::NodeModuleAssignment.create!(node: node, node_module: nginx_mod, enabled: true, priority: 0)
 
         r = executor.execute(cve_id: "CVE-2026-50001", affected_module_ids: [ nginx_mod.id ])
 
-        # promote_to!("blessed") from "built" raises InvalidTransition, so an
-        # instruction to promote straight to blessed is unfollowable.
-        expect(r[:error]).to include("next promotion step is staging")
-        expect(r[:error]).not_to include("promote it to blessed")
-      end
-
-      it "treats a staging candidate as promotable and points at blessed" do
-        create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "staging")
-
-        r = executor.execute(cve_id: "CVE-2026-50001", affected_module_ids: [ nginx_mod.id ])
-
-        expect(r[:success]).to be false
-        expect(r[:error]).to include("version 2 is staging")
-        expect(r[:error]).to include("next promotion step is blessed")
-      end
-
-      it "does not claim promotion releases the fix" do
-        create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "built")
-
-        r = executor.execute(cve_id: "CVE-2026-50001", affected_module_ids: [ nginx_mod.id ])
-
-        # Promotion advances promotion_state only; it does not move
-        # NodeModule#current_version_id. IMP-65bea54e4081 removed exactly this
-        # fabrication from the promote tool's description — do not re-mint it.
-        expect(r[:error]).to include("it does not change which version the fleet serves")
-        expect(r[:error]).not_to match(/release the fix:/)
+        expect(r[:success]).to be true
+        expect(r.dig(:data, :rolling_upgrade_plans)).to eq([])
+        expect(r.dig(:data, :skipped_reason)).to eq("no_candidate_version")
       end
 
       it "ignores an unpromoted version OLDER than the module's current version" do
@@ -396,7 +356,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         # #newer_blessed_version_for), so the fixture is a row CREATED before
         # the current version regardless of its version_number.
         stale = create(:system_node_module_version, node_module: nginx_mod,
-                       version_number: 2, promotion_state: "built")
+                       version_number: 2, artifacts: usable_artifact("c"))
         stale.update_column(:created_at, nginx_v1.created_at - 1.day)
 
         r = executor.execute(cve_id: "CVE-2026-50001", affected_module_ids: [ nginx_mod.id ])
@@ -407,7 +367,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
 
       it "reports no_enabled_template_assignment when a promoted fix exists but nothing runs it" do
         create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "blessed")
+               version_number: 2, artifacts: usable_artifact("b"))
 
         r = executor.execute(cve_id: "CVE-2026-50001",
                              affected_module_ids: [ nginx_mod.id ],
@@ -418,25 +378,24 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         expect(nginx_exposure.reload.state).to eq("open")
       end
 
-      it "prefers the promotion-blocked reason over a lower-priority skip" do
-        # SKIP_REASON_PRIORITY ordering: an actionable promotion block must win
-        # over a module that is merely unassigned.
+      it "prefers the higher-priority skip reason across modules" do
+        # SKIP_REASON_PRIORITY ordering: an unassigned module (actionable) wins
+        # over one with no candidate at all.
         create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "built")
+               version_number: 2, artifacts: usable_artifact("c"))
         other = create(:system_node_module, account: account, node_platform: platform,
                        category: category, variety: "subscription", name: "redis-base")
         other_v1 = create(:system_node_module_version, node_module: other, version_number: 1)
-        create(:system_node_module_version, node_module: other, version_number: 2,
-               promotion_state: "blessed")
         other.update!(current_version: other_v1)
 
         r = executor.execute(cve_id: "CVE-2026-50001",
                              affected_module_ids: [ other.id, nginx_mod.id ])
 
-        reasons = r[:error] ? nil : r.dig(:data, :skipped_modules).map { |m| m[:reason] }
-        expect(reasons).to be_nil, "expected the promotion block to fail the run, got #{reasons.inspect}"
-        expect(r[:success]).to be false
-        expect(r[:error]).to include("nginx-base")
+        expect(r[:success]).to be true
+        reasons = r.dig(:data, :skipped_modules).to_h { |m| [ m[:node_module_id], m[:reason] ] }
+        expect(reasons[nginx_mod.id]).to eq("no_enabled_template_assignment")
+        expect(reasons[other.id]).to eq("no_candidate_version")
+        expect(r.dig(:data, :skipped_reason)).to eq("no_enabled_template_assignment")
       end
 
       it "names a resolved module id that matches no NodeModule in this account" do
@@ -453,7 +412,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
 
       it "does not count a rolling upgrade plan that reported failure as a dispatch" do
         create(:system_node_module_version, node_module: nginx_mod,
-               version_number: 2, promotion_state: "blessed")
+               version_number: 2, artifacts: usable_artifact("b"))
         node = create(:system_node, account: account, node_template: template, name: "n-nginx")
         System::NodeModuleAssignment.create!(node: node, node_module: nginx_mod,
                                             enabled: true, priority: 0)
@@ -492,7 +451,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
         # exists for (flip the stub to `executed: false` and it must go red).
         link.destroy!
         create(:system_node_module_version, node_module: openssl_mod,
-               version_number: 2, promotion_state: "blessed")
+               version_number: 2, artifacts: usable_artifact("b"))
         openssl_mod.update!(current_version: openssl_v1)
         node = create(:system_node, account: account, node_template: template, name: "n1")
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,

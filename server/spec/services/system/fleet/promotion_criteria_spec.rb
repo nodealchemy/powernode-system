@@ -18,8 +18,7 @@ RSpec.describe System::Fleet::PromotionCriteria do
     System::NodeModuleVersion.create!(
       node_module: mod, version_number: 1,
       mask: [], file_spec: [], package_spec: [], config: {},
-      oci_digest: digest,
-      promotion_state: "staging"
+      oci_digest: digest
     )
   end
 

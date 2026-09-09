@@ -91,7 +91,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_list_modules` | List NodeModules |
 | `system_get_module` | Fetch a Module + its categories + dependencies |
 | `system_list_module_versions` | List versions of a module |
-| `system_promote_module_version` | Move a version through lifecycle states (built → staging → blessed → live). Advances `promotion_state` only — it does not change which version the fleet serves (`NodeModule#current_version_id`); check `promoted_to_current` in the response. Use `system_rollback_module_version` to repoint the fleet, forward or back |
+| `system_promote_module_version` | Promote a version INTO an environment: writes that pinned plane's pin, one rung at a time, gated in the target plane. Moves that plane's pin only — it does not change which version the FOLLOWING planes serve (`NodeModule#current_version_id`), which a publish moves. Use `system_rollback_module_version` with `environment:` to walk one pin back, or without it to repoint the fleet |
 | `system_validate_module_manifest` | Dry-run validation of a `manifest.yaml` payload against the manifest schema before publishing |
 
 #### Tasks

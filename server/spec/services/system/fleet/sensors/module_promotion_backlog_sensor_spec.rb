@@ -83,23 +83,28 @@ RSpec.describe System::Fleet::Sensors::ModulePromotionBacklogSensor do
       end
     end
 
-    # promotion_state is a SEPARATE, non-actuating track. A version at
-    # ladder-"live" that is not current_version_id is still a stall, and a
-    # version that IS current is not a stall however its ladder row reads.
-    context "actuation is current_version_id, never promotion_state" do
-      it "alarms for a candidate already marked promotion_state live" do
+    # The decorative promotion ladder this sensor deliberately never read was
+    # deleted in increment 4b, so there is no longer a second label that could
+    # disagree with the pointer. What remains is the invariant: the ONLY thing
+    # that clears this alarm is current_version_id moving — not a pin, not an
+    # event, not a label.
+    context "actuation is current_version_id and nothing else" do
+      it "still alarms for a candidate a PINNED plane has already been promoted onto" do
         make_current(usable_version(number: 5))
         candidate = usable_version(number: 6, created_at: 3.hours.ago)
-        candidate.update_columns(promotion_state: "live")
+        System::ModuleEnvironmentPin.create!(account_id: account.id, node_module: node_module,
+                                             environment: account.environments.find_by!(slug: "staging"),
+                                             node_module_version: candidate, promoted_at: Time.current)
 
         expect(sensor.sense.size).to eq(1)
       end
 
-      it "stays silent for a current version whose ladder row still says built" do
-        current = usable_version(number: 5)
-        current.update_columns(promotion_state: "built")
-        make_current(current)
+      it "stays silent once the pointer moves onto the candidate" do
+        make_current(usable_version(number: 5))
+        candidate = usable_version(number: 6, created_at: 3.hours.ago)
+        expect(sensor.sense.size).to eq(1)
 
+        make_current(candidate)
         expect(sensor.sense).to eq([])
       end
     end

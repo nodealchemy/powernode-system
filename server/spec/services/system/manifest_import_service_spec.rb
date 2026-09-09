@@ -101,7 +101,6 @@ RSpec.describe System::ManifestImportService, type: :service do
       expect(version).to be_a(System::NodeModuleVersion)
       expect(version.version_number).to eq(1)
       expect(version.changelog).to eq("Initial import")
-      expect(version.promotion_state).to eq("built")
       # Spec arrays on the version are base64-encoded
       decoded = version.protected_spec.map { |e| Base64.decode64(e) }
       expect(decoded).to include("/etc/demo/secret")

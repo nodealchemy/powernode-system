@@ -261,8 +261,12 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     it "declares neither lifecycle_class on create nor on update" do
       expect(defs.fetch("system_create_node").fetch(:parameters).keys)
         .to eq(%i[name template_id description enabled worker_id public_address allocate_public_ip config])
+      # `environment` joined this list in the Environment campaign (increment 1
+      # — placing a node in a plane). The enumeration stays EXACT so a new
+      # parameter has to be acknowledged here.
       expect(defs.fetch("system_update_node").fetch(:parameters).keys)
-        .to eq(%i[node_id name description enabled node_template_id worker_id public_address allocate_public_ip config])
+        .to eq(%i[node_id name description enabled node_template_id environment worker_id public_address
+                  allocate_public_ip config])
     end
 
     it "has exactly one where-clause in list_nodes, on node_template_id" do
@@ -273,11 +277,14 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       expect(body).to include("scope.where(node_template_id: params[:template_id])")
     end
 
-    it "serializes eight node keys, none of them lifecycle_class" do
+    it "serializes ten node keys, none of them lifecycle_class" do
       src = self.class.read(ext_root, "server/app/services/ai/tools/system_fleet_tool.rb")
       body = src[/def serialize_node\(n\)(.*?)\n      end\n/m, 1]
+      # environment_id / environment_slug joined in the Environment campaign
+      # (increment 1); the list stays EXACT for the same reason as above.
       expect(body.scan(/^\s{10}(\w+):/).flatten)
-        .to eq(%w[id name template_id worker_id ssh_key_fingerprint ssh_key_type enabled created_at])
+        .to eq(%w[id name template_id environment_id environment_slug worker_id ssh_key_fingerprint
+                  ssh_key_type enabled created_at])
     end
 
     # system_get_node is the read an operator would actually reach for, and it

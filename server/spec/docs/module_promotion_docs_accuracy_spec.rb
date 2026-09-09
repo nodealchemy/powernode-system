@@ -165,6 +165,7 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
     end
 
     it "says what promotion does not do, and names the action that moves the fleet" do
+      expect(promotion_sensor_block).to match(/A promotion is not a fleet-wide ship/i)
       expect(promotion_sensor_block).to include("current_version_id")
       expect(promotion_sensor_block).to include("system_rollback_module_version")
     end
@@ -177,7 +178,7 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
             raise("could not locate the system.module_promote_to_live policy row in FLEET_SENSORS.md")
 
       expect(row).not_to match(/promotes module across the fleet/i)
-      expect(row).to match(/does \*\*not\*\* change which version the fleet serves/i)
+      expect(row).to match(/does \*\*not\*\* change which version the FOLLOWING planes serve/i)
     end
   end
 
@@ -201,9 +202,7 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
     end
 
     it "says what RollingModuleUpgradeExecutor actually requires of the target version" do
-      # Not a bare /promotion_state/ — the file already prints that key in a
-      # sample response, so the loose form passed against the uncorrected doc.
-      expect(doc).to match(/`promotion_state` is not checked by/)
+      expect(doc).to match(/nothing has to have been promoted onto it first/i)
       expect(doc).to include("oci_digest")
     end
   end
@@ -225,13 +224,17 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
     let(:doc) { self.class.read(ext_root, "docs/ARCHITECTURE.md") }
 
     let(:promotion_lifecycle) do
-      doc[/\*\*Promotion lifecycle\*\*.*?```mermaid/m] ||
-        raise("could not locate the Promotion lifecycle paragraph in ARCHITECTURE.md")
+      doc[/\*\*The promotion ladder is made of ENVIRONMENTS\*\*.*?```mermaid/m] ||
+        raise("could not locate the promotion-ladder paragraph in ARCHITECTURE.md")
     end
 
-    it "says the ladder does not determine what a node receives" do
+    it "says what a node is served, per plane, and names the verbs that move each" do
+      expect(promotion_lifecycle).to include("served_version_for")
       expect(promotion_lifecycle).to include("current_version_id")
+      expect(promotion_lifecycle).to include("promote_in_environment!")
       expect(promotion_lifecycle).to include("system_rollback_module_version")
+      # The deleted ladder must not come back as prose either.
+      expect(promotion_lifecycle).not_to match(/built → staging → blessed → live → retired`?, gated/)
     end
   end
 
@@ -244,7 +247,7 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
     end
 
     it "qualifies the promote row so the table does not read as a ship action" do
-      expect(promote_row).to match(/does not change which version the fleet serves/i)
+      expect(promote_row).to match(/does not change which version the FOLLOWING planes serve/i)
       # Paired, like the other files: the qualifier alone leaves the row saying
       # what does NOT work with no pointer to what does.
       expect(promote_row).to include("system_rollback_module_version")

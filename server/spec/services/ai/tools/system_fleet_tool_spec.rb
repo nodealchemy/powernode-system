@@ -1651,91 +1651,36 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       _ = v2
     end
 
-    it "system_promote_module_version transitions through the lifecycle" do
-      r = call("system_promote_module_version", module_version_id: v1.id, target_state: "staging")
-      expect(r[:success]).to be true
-      expect(r.dig(:data, :version, :promotion_state)).to eq("staging")
-    end
-
-    it "system_promote_module_version rejects invalid transitions" do
-      r = call("system_promote_module_version", module_version_id: v1.id, target_state: "live")
+    # Environment campaign, increment 4b — a promotion names the environment it
+    # promotes INTO and writes that plane's pin. The ladder mechanics live in
+    # spec/services/ai/tools/system_fleet_ladder_spec.rb; these two pin the
+    # verb's CONTRACT here: it refuses without a plane, and it never moves the
+    # fleet-global pointer (that is a publish, not a promotion).
+    it "system_promote_module_version refuses without an environment to promote into" do
+      r = call("system_promote_module_version", module_id: mod.id, version_id: v1.id)
       expect(r[:success]).to be false
-      expect(r[:error]).to include("cannot transition from built to live")
+      expect(r[:error]).to include("environment is required")
     end
 
-    # IMP-65bea54e4081 — promotion advances the LADDER (NodeModuleVersion#
-    # promotion_state) and nothing else. The pointer the fleet actually reads is
-    # NodeModule#current_version_id (node_api/modules_controller#download
-    # resolves `@module.current_version&.artifact`); its sanctioned writer is
-    # NodeModule#promote_to_version!, which this verb does not call. These
-    # examples pin the DISCLOSURE of that split, not the split itself.
-    #
-    # The fixture deliberately makes a DIFFERENT row current: promote a version
-    # that already happens to be current and `current: false` /
-    # `promoted_to_current: false` would be asserted against a payload that
-    # could not have said anything else, so the example would pass vacuously.
-    it "system_promote_module_version reports that a promoted non-current version still does not serve the fleet" do
-      current = System::NodeModuleVersion.create!(
-        node_module: mod, version_number: 9, mask: [], file_spec: [], package_spec: [], config: {}
+    it "system_promote_module_version moves the plane's pin and leaves current_version_id alone" do
+      staging = account.environments.find_by!(slug: "staging")
+      # The ladder refuses a version nothing could mount, so the fixture needs a
+      # real artifact — v1 above is a bare row.
+      mountable = System::NodeModuleVersion.create!(
+        node_module: mod, version_number: 4, mask: [], file_spec: [], package_spec: [], config: {},
+        oci_digest: "sha256:#{'d' * 64}",
+        artifacts: { "erofs" => { "oci_digest" => "sha256:#{'d' * 64}", "size" => 12_345_000 } }
       )
-      mod.update_columns(current_version_id: current.id, current_version_number: current.version_number)
+      mod.promote_to_version!(mountable)
+      current_before = mod.reload.current_version_id
 
-      r = call("system_promote_module_version", module_version_id: v1.id, target_state: "staging")
+      r = call("system_promote_module_version", module_id: mod.id, environment: "staging", version_id: mountable.id)
 
-      expect(r[:success]).to be true
-      expect(r.dig(:data, :version, :promotion_state)).to eq("staging")
-      # The ladder moved; the served artifact did not.
-      expect(r.dig(:data, :version, :current)).to be false
-      expect(r.dig(:data, :promoted_to_current)).to be false
-      expect(r.dig(:data, :current_version_changed)).to be false
-      # And the payload names what IS served, so "promoted" cannot be read as
-      # "the fleet now runs this".
-      expect(r.dig(:data, :current_version_id)).to eq(current.id)
-      expect(mod.reload.current_version_id).to eq(current.id)
-      expect(mod.current_version_number).to eq(current.version_number)
-    end
-
-    # The counterpart: with the SAME code path, a version that is already the
-    # served one reports currency true. Without this, `current` /
-    # `promoted_to_current` could be hardcoded false and the example above would
-    # still pass.
-    it "system_promote_module_version reports currency true for the version the fleet already serves" do
-      mod.update_columns(current_version_id: v1.id, current_version_number: v1.version_number)
-
-      r = call("system_promote_module_version", module_version_id: v1.id, target_state: "staging")
-
-      expect(r[:success]).to be true
-      expect(r.dig(:data, :version, :current)).to be true
-      expect(r.dig(:data, :promoted_to_current)).to be true
-      # It was already current before the call — promotion did not move it there.
-      expect(r.dig(:data, :current_version_changed)).to be false
-      expect(r.dig(:data, :current_version_id)).to eq(v1.id)
-    end
-
-    # current_version_changed is the one field no fixture reachable through this
-    # verb can drive TRUE — promote_to! cannot move the pointer, which is the
-    # whole finding. Both examples above therefore assert it false, and survive
-    # a literal `current_version_changed: false` and the deletion of the
-    # node_module.reload. Moving the pointer from INSIDE the promotion is what
-    # separates a real before/after read from a constant.
-    #
-    # This pins the COMPUTATION only. It is not evidence that any production
-    # path moves current_version_id during a promote — none does.
-    it "system_promote_module_version computes current_version_changed from the pointer, not a constant" do
-      allow_any_instance_of(System::NodeModuleVersion).to receive(:promote_to!).and_wrap_original do |orig, *args|
-        orig.call(*args).tap do
-          mod.update_columns(current_version_id: v1.id, current_version_number: v1.version_number)
-        end
-      end
-
-      expect(mod.current_version_id).to be_nil
-      r = call("system_promote_module_version", module_version_id: v1.id, target_state: "staging")
-
-      expect(r[:success]).to be true
-      expect(r.dig(:data, :current_version_changed)).to be true
-      expect(r.dig(:data, :promoted_to_current)).to be true
-      expect(r.dig(:data, :current_version_id)).to eq(v1.id)
-      expect(r.dig(:data, :version, :current)).to be true
+      expect(r[:success]).to be(true), "promote failed: #{r[:error].inspect}"
+      expect(r.dig(:data, :environment)).to eq("staging")
+      expect(r.dig(:data, :version, :pinned_in)).to eq([ "staging" ])
+      expect(mod.served_version_for(staging)).to eq(mountable)
+      expect(mod.reload.current_version_id).to eq(current_before)
     end
   end
 

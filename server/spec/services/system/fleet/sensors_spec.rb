@@ -167,8 +167,7 @@ RSpec.describe "System::Fleet::Sensors" do
         System::NodeModuleVersion.create!(
           node_module: mod, version_number: 1,
           mask: [], file_spec: [], package_spec: [], config: {},
-          oci_digest: "sha256:#{'b' * 64}",
-          promotion_state: "staging"
+          oci_digest: "sha256:#{'b' * 64}"
         )
       end
 
