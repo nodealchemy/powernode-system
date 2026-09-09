@@ -194,6 +194,12 @@ module System
         id: id,
         name: name,
         status: status,
+        # A pool's plane, on the summary every list surface serializes. Nodes,
+        # instances and templates have reported theirs since the environment
+        # noun landed; the pool summary did not, so the one fleet object that
+        # PROVISIONS members into a plane was the one you could not read the
+        # plane of.
+        environment_slug: environment&.slug,
         lifecycle_class: lifecycle_class,
         target_size: target_size,
         min_size: min_size,
