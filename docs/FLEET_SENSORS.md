@@ -688,6 +688,24 @@ Action executors live at:
 
 - `extensions/system/server/app/services/system/ai/skills/*_executor.rb`
 
+**Which PLANE a remediation is gated in.** The policy lookup above is only the
+floor: `Ai::AutonomyGate` also resolves the environment of the action's subject
+(`System::EnvironmentResolver` — the extension's answer to core's
+`environment_resolver` seam) and the plane's rules can only ESCALATE the
+verdict, never relax it, so the same category parks for a person on a protected
+plane and proceeds in dev. The resolved plane and any escalation ride on the
+approval request (`environment: {id, slug, is_protected}`,
+`environment_escalation`).
+
+That makes an UNPLACEABLE subject a silent pass: no plane resolves ⇒ no overlay
+⇒ the pre-plane verdict. Every side-effectful binding therefore names its
+subject by a spelling the resolver can place — an instance, node, template or
+pool directly; an SDWAN peer or network, a virtual IP or an ACME certificate
+through the instances behind them; a federation peer by its own
+`environment_id`. `spec/lint/actuating_bindings_are_placeable_spec.rb` is the
+ratchet, and the one exemption it carries (`system.governance_gap`, which
+proposes a campaign and touches no fleet row) states its reason.
+
 ## Configuring Sensor Thresholds
 
 Sensor thresholds are **operator configuration**, resolved per account from
