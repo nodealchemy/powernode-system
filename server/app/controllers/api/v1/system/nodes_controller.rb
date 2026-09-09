@@ -4,7 +4,10 @@ module Api
   module V1
     module System
       class NodesController < BaseController
+        include ::System::EnvironmentFilterable
+
         before_action :set_account
+        before_action :set_environment_filter, only: [ :index ]
         before_action :set_node, only: [ :show, :update, :destroy, :apply_template ]
 
         def index
@@ -102,6 +105,7 @@ module Api
         end
 
         def apply_filters(scope)
+          scope = filter_by_environment(scope)
           scope = scope.enabled if params[:enabled] == "true"
           scope = scope.disabled if params[:enabled] == "false"
           scope = scope.where(node_template_id: params[:template_id]) if params[:template_id].present?

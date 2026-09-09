@@ -16,6 +16,9 @@ module Api
       # replenishment without going through the MCP execution layer.
       class InstancePoolsController < ApplicationController
         include ::System::GatedActions
+        include ::System::EnvironmentFilterable
+
+        before_action :set_environment_filter, only: [ :index ]
 
         # The two PATCH transitions #update routes through Ai::AutonomyGate
         # (IMP-24daa05e7a22), and the size columns a "raise" is measured on.
@@ -51,7 +54,9 @@ module Api
         # GET /api/v1/system/instance_pools
         def index
           authorize_read!
-          pools = ::System::InstancePool.for_account(current_account).order(:name)
+          pools = filter_by_environment(
+            ::System::InstancePool.for_account(current_account).includes(:environment).order(:name)
+          )
           pools = pools.where(status: params[:status].split(",")) if params[:status].present?
           render_success(pools: pools.map(&:to_summary), count: pools.count)
         end

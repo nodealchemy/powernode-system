@@ -4,7 +4,10 @@ module Api
   module V1
     module System
       class NodeTemplatesController < BaseController
+        include ::System::EnvironmentFilterable
+
         before_action :set_account
+        before_action :set_environment_filter, only: [ :index ]
         before_action :set_template, only: %i[show update destroy export clone]
 
         def index
@@ -206,6 +209,7 @@ module Api
         end
 
         def apply_filters(scope)
+          scope = filter_by_environment(scope)
           scope = scope.enabled if params[:enabled] == "true"
           scope = scope.disabled if params[:enabled] == "false"
           scope = scope.public_access if params[:public] == "true"
