@@ -117,6 +117,22 @@ module System
             # auto-promotes straight to the fleet, so a promote gate that lived
             # only on the staging->blessed ladder would be inert here.
             withhold_promotion_unsigned!(node_module, node_module_version, tag, unsigned_reason)
+          elsif (deferring_batch = self.class.deferring_batch_for(node_module))
+            # BATCH-ATOMIC PROMOTION, the hold side. This artifact is GOOD — it
+            # cleared every gate above — but a sibling in the same build batch
+            # is still building, and promoting alone is the shape of the
+            # 2026-08-28 outage (new extension against old core, ~19 minutes,
+            # control plane crash-looping). NativeModuleBuildOrchestrator
+            # promotes the whole set in #release_deferred_promotions! once every
+            # member lands, and holds all of them if any member fails.
+            #
+            # LAST in the chain deliberately: a deferred version is promoted
+            # later WITHOUT re-running these gates, so anything that would be
+            # refused must refuse here rather than enter the deferred set.
+            self.class.defer_promotion!(
+              node_module: node_module, version: node_module_version,
+              tag: tag, batch: deferring_batch, source: "module_publication_processor"
+            )
           else
             promote_current_version(node_module, node_module_version)
             # Read the STATE, not promote_to_version!'s return: that returns
@@ -384,6 +400,53 @@ module System
       # today's behaviour (promote), which is the pre-existing state.
       Rails.logger.warn("[ModulePublicationProcessor] deferring_batch_for failed (non-fatal): #{e.class}: #{e.message}")
       nil
+    end
+
+    # Stamp a good-but-held publication onto its batch. Shared by BOTH publish
+    # doors — this processor (the native build path) and the REST/CI receiver
+    # (Api::V1::System::ModulePublicationsController) — so the two cannot drift
+    # in what a deferral records. They did: the controller consulted
+    # .deferring_batch_for and the processor did not, which left the native
+    # path promoting member-by-member and #release_deferred_promotions! with an
+    # empty set to release.
+    #
+    # `source` names the door for the event stream; the caller is responsible
+    # for having cleared every promote gate first (see the chain in #process!).
+    def self.defer_promotion!(node_module:, version:, tag:, batch:, source:)
+      version.update_columns(deferred_promotion_batch_id: batch.id)
+      Rails.logger.info(
+        "[#{source}] #{node_module.name}@#{tag}: promotion DEFERRED to batch #{batch.id} " \
+        "(#{batch.planned_count} modules); version #{version.id} published and awaiting its siblings."
+      )
+      emit_promotion_deferred_event(node_module, version, tag, batch, source)
+      true
+    end
+
+    # A deferral is not a refusal and must not read as one: the artifact
+    # cleared every gate. Emitted so a batch that never completes leaves a
+    # queryable trace instead of only a log line — the same reason the
+    # withheld arm emits.
+    def self.emit_promotion_deferred_event(node_module, version, tag, batch, source)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account:                node_module.account,
+        kind:                   "system.module_promotion_deferred",
+        severity:               :low,
+        source:                 source,
+        node_module_id:         node_module.id,
+        node_module_version_id: version.id,
+        payload: {
+          module_name:    node_module.name,
+          version_number: version.version_number,
+          git_tag:        tag,
+          batch_id:       batch.id,
+          planned_count:  batch.planned_count,
+          reason:         "batch-atomic promotion: awaiting sibling modules in the same build batch"
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[#{source}] deferred event emit failed: #{e.class}: #{e.message}")
     end
 
     def auto_promote?(node_module)

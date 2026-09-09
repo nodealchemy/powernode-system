@@ -230,25 +230,20 @@ module Api
           # Sanctioned, not sole: five other sites write that column without
           # passing #promote_to_version! at all. See
           # spec/lint/node_module_current_version_write_seam_spec.rb.
-          deferring_batch = ::System::ModulePublicationProcessor.deferring_batch_for(node_module)
-
+          #
+          # GATE ORDER. Every refusal comes first, the batch-atomic hold LAST,
+          # because a deferred version is promoted later (by
+          # NativeModuleBuildOrchestrator#release_deferred_promotions!) WITHOUT
+          # re-running any of these gates — so anything that would be refused
+          # must refuse here rather than enter the deferred set. The hold used
+          # to sit ahead of the signature gate, which let an unsigned artifact
+          # be deferred and then promoted unguarded. Same order as
+          # ModulePublicationProcessor#process!, which is the other door.
           if !::System::ModulePublicationProcessor.auto_promote?(node_module)
             Rails.logger.info(
               "[ModulePublicationsController] #{module_name}@#{tag}: auto_promote is disabled for this " \
               "module; version #{version.id} published but NOT promoted."
             )
-          elsif deferring_batch && promotable_publish?(normalized)
-            # Held, not refused: this artifact is good, but a sibling in the
-            # same batch is still building and promoting alone is exactly the
-            # skew that took the control plane down on 2026-08-28. The
-            # orchestrator promotes the whole set when the batch completes.
-            version.update_columns(deferred_promotion_batch_id: deferring_batch.id)
-            Rails.logger.info(
-              "[ModulePublicationsController] #{module_name}@#{tag}: promotion DEFERRED to batch " \
-              "#{deferring_batch.id} (#{deferring_batch.planned_count} modules); version #{version.id} " \
-              "published and awaiting its siblings."
-            )
-            emit_promotion_deferred_event(node_module, version, tag, deferring_batch)
           elsif (unsigned_reason = ::System::Fleet::PromotionCriteria.signature_gate(version))
             # Opt-in (module_promotion_require_signature; DEFAULT OFF) — the
             # same gate the processor path applies. Published, not promoted.
@@ -257,14 +252,23 @@ module Api
               "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
             )
             emit_promotion_withheld_event(node_module, version, tag, unsigned_reason)
-          elsif promotable_publish?(normalized)
-            node_module.promote_to_version!(version)
-          else
+          elsif !promotable_publish?(normalized)
             Rails.logger.error(
               "[ModulePublicationsController] REFUSING to promote #{module_name}@#{tag}: " \
               "artifact is empty or below the non-empty floor. Version #{version.id} is " \
               "published but NOT current; the fleet keeps the previous version."
             )
+          elsif (deferring_batch = ::System::ModulePublicationProcessor.deferring_batch_for(node_module))
+            # Held, not refused: this artifact is good, but a sibling in the
+            # same batch is still building and promoting alone is exactly the
+            # skew that took the control plane down on 2026-08-28. The
+            # orchestrator promotes the whole set when the batch completes.
+            ::System::ModulePublicationProcessor.defer_promotion!(
+              node_module: node_module, version: version,
+              tag: tag, batch: deferring_batch, source: "ci_webhook"
+            )
+          else
+            node_module.promote_to_version!(version)
           end
 
           emit_published_event(node_module, version, tag)
@@ -368,32 +372,6 @@ module Api
             protected_spec: Array(node_module.protected_spec),
             config:         { "git_tag" => tag }
           )
-        end
-
-        # A deferral is not a refusal and must not read as one: the artifact
-        # cleared every gate. Emitted so a batch that never completes leaves a
-        # queryable trace instead of only a log line — the same reason the
-        # withheld arm emits.
-        def emit_promotion_deferred_event(node_module, version, tag, batch)
-          return unless defined?(::System::Fleet::EventBroadcaster)
-          ::System::Fleet::EventBroadcaster.emit!(
-            account:                node_module.account,
-            kind:                   "system.module_promotion_deferred",
-            severity:               :low,
-            source:                 "ci_webhook",
-            node_module_id:         node_module.id,
-            node_module_version_id: version.id,
-            payload: {
-              module_name:    node_module.name,
-              version_number: version.version_number,
-              git_tag:        tag,
-              batch_id:       batch.id,
-              planned_count:  batch.planned_count,
-              reason:         "batch-atomic promotion: awaiting sibling modules in the same build batch"
-            }
-          )
-        rescue StandardError => e
-          Rails.logger.warn "[ModulePublicationsController] deferred event emit failed: #{e.class}: #{e.message}"
         end
 
         def emit_promotion_withheld_event(node_module, version, tag, reason)

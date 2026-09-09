@@ -118,4 +118,82 @@ RSpec.describe "batch-atomic promotion" do
       }.not_to raise_error
     end
   end
+
+  # THE NATIVE BUILD DOOR. Both doors publish; only one asked whether a batch
+  # was in flight. The REST/CI receiver (module_publications_controller) called
+  # .deferring_batch_for; ModulePublicationProcessor#process! — the door
+  # NativeModuleBuildOrchestrator#finalize_success! goes through — did not, so
+  # every native batch promoted member-by-member as each build landed and
+  # #release_deferred_promotions! found an empty set to release. Observed on
+  # 2026-09-09: a two-module native batch promoted the extension at 20:38:10
+  # and hub-backend at 20:40:24, the same shape as the 2026-08-28 outage with
+  # a shorter fuse.
+  describe "System::ModulePublicationProcessor#process! (the native build door)" do
+    before do
+      System::ModuleOciIngestService.reset!
+      System::ManifestFetchService.reset!
+    end
+
+    let!(:core) do
+      create(:system_node_module, account: account, name: "powernode-hub-backend",
+                                  gitea_repo_full_name: "ipnode-acme/powernode-hub-backend")
+    end
+    let!(:ext) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+                                  gitea_repo_full_name: "ipnode-acme/powernode-extension-system")
+    end
+
+    it "defers promotion while a sibling in the same batch is still building" do
+      batch = batch_for([ core, ext ], status: "publishing")
+
+      result = System::ModulePublicationProcessor.process!(node_module: ext, tag: "native-abc1234")
+
+      expect(result.ok?).to be true
+      expect(ext.reload.current_version_id).to be_nil
+      expect(result.node_module_version.reload.deferred_promotion_batch_id).to eq(batch.id)
+    end
+
+    # End to end: the whole point of deferring is that the release makes the
+    # set current TOGETHER. A defer that never releases is an outage of its own.
+    it "promotes the deferred set together once the batch releases" do
+      batch = batch_for([ core, ext ], status: "publishing")
+
+      v_ext  = System::ModulePublicationProcessor.process!(node_module: ext, tag: "native-abc1234").node_module_version
+      v_core = System::ModulePublicationProcessor.process!(node_module: core, tag: "native-abc1234").node_module_version
+      expect([ ext.reload.current_version_id, core.reload.current_version_id ]).to all(be_nil)
+
+      System::NativeModuleBuildOrchestrator.new(batch: batch).send(:release_deferred_promotions!)
+
+      expect(ext.reload.current_version_id).to eq(v_ext.id)
+      expect(core.reload.current_version_id).to eq(v_core.id)
+    end
+
+    it "promotes immediately when no batch is in flight" do
+      result = System::ModulePublicationProcessor.process!(node_module: ext, tag: "native-abc1234")
+
+      expect(ext.reload.current_version_id).to eq(result.node_module_version.id)
+      expect(result.node_module_version.reload.deferred_promotion_batch_id).to be_nil
+    end
+
+    it "promotes immediately for a SINGLE-module batch — nothing to be atomic with" do
+      batch_for([ ext ], status: "publishing")
+
+      result = System::ModulePublicationProcessor.process!(node_module: ext, tag: "native-abc1234")
+
+      expect(ext.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    # promote: false is the shadow dual-run path. It must not stamp a deferral
+    # either: release_deferred_promotions! promotes what it finds, so a shadow
+    # version stamped here would be promoted by the batch that was never
+    # supposed to move current_version_id at all.
+    it "never defers a shadow (promote: false) publish" do
+      batch = batch_for([ core, ext ], status: "publishing")
+
+      result = System::ModulePublicationProcessor.process!(node_module: ext, tag: "native-abc1234", promote: false)
+
+      expect(result.node_module_version.reload.deferred_promotion_batch_id).to be_nil
+      expect(batch.reload).to be_present
+    end
+  end
 end

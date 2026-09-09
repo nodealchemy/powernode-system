@@ -20,16 +20,20 @@ require "tmpdir"
 # the guards that decide whether a version may become that pointer do NOT live
 # in the writer. They live in System::ModulePublicationProcessor:
 #
-#   auto_promote?              the per-module opt-out          (processor:100)
-#   promotable_artifact?       the non-empty artifact floor    (processor:102)
+#   auto_promote?              the per-module opt-out          (processor:107)
+#   promotable_artifact?       the non-empty artifact floor    (processor:109)
 #                              added after the 2026-08-07 empty-erofs incident
-#   core_verdict.refused?      the core-drift refusal          (processor:104)
-#   deferring_batch_for        the batch-atomic hold           (processor:358)
-#                              added after the core/extension promote-skew outage
+#   core_verdict.refused?      the core-drift refusal          (processor:111)
+#   signature_gate             the opt-in signature refusal    (processor:115)
+#   deferring_batch_for        the batch-atomic hold           (processor:120)
+#                              added after the core/extension promote-skew outage.
+#                              LAST in the chain, and a hold rather than a
+#                              refusal: the deferred set is promoted later
+#                              without re-running any gate above it.
 #
 # plus System::RestartAfterUpdate.arm!, which NodeModule#promote_to_version!
 # applies itself. A writer that reaches the column by another route gets none of
-# the four and, unless it goes through promote_to_version!, not the fifth either.
+# the five and, unless it goes through promote_to_version!, not the sixth either.
 #
 # WHAT THIS SPEC ACTUALLY FOUND. The finding that opened this task named four
 # writers. Re-deriving the set from the COLUMN rather than from the finding
