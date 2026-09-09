@@ -62,29 +62,16 @@ module System
       MIN_DWELL_MINUTES  = 0
       MAX_DWELL_MINUTES  = 60 * 24 * 30 # 30 days
 
-      # The promotion targets these criteria have anything to say about.
-      # `blessed` is the rung that claims "the fleet has run this and lived",
-      # which is exactly what #evaluate measures; `staging`/`built` are
-      # pre-evidence rungs and `retired`/`live` are operator decisions about a
-      # version that already cleared (or is being decommissioned regardless).
-      # System::Fleet::ModulePromotionService — the automated lane — refuses on
-      # this same set; System::Fleet::ManualPromotionAdvisory (the operator REST
-      # promote and its MCP twin) WARNS on it.
-      #
-      # This IS the single definition. IMP-d6826c872d88 introduced it as the
-      # shared NAME for the two manual paths while module_promotion_service.rb
-      # still carried its own `target_state == "blessed"` literal;
-      # IMP-bdb650b82c65 collapsed the service onto PromotionCriteria.gates?,
-      # and spec/services/system/fleet/module_promotion_service_spec.rb now
-      # stubs this constant and scans the service source for any surviving
-      # target-state literal. manual_promotion_advisory_spec.rb still drives
-      # the real service over every target state and asserts the states it
-      # refuses on are exactly the states this constant names.
-      GATED_TARGET_STATES = %w[blessed].freeze
-
       module_function
 
-      def evaluate(version:)
+      # Evidence that `version` is safe to promote INTO `environment`: healthy
+      # instances ON THE RUNG BELOW have been running this exact digest for the
+      # dwell time. The rung below is Ai::Environment#ladder_predecessor (the
+      # nearest lower PINNED plane); when there is none, the evidence comes
+      # from the FOLLOWING planes, which is where a published version lands.
+      # Passing no environment measures the whole account, which is what a
+      # caller with no target plane in hand can ask.
+      def evaluate(version:, environment: nil)
         digest = version.oci_digest
         return { eligible: false, reason: "no oci_digest on version" } if digest.blank?
 
@@ -95,10 +82,13 @@ module System
         required = required_count(version)
         dwell    = dwell_time(version)
 
-        running_instances = matching_instances(version, digest)
+        evidence_plane = evidence_environment(environment)
+        running_instances = matching_instances(version, digest, evidence_plane)
         running_count = running_instances.size
-        return { eligible: false, reason: "running_count #{running_count} < required #{required}",
-                 running_count: running_count, required_count: required } if running_count < required
+        where = evidence_plane ? " in #{evidence_plane.slug}" : ""
+        return { eligible: false, reason: "running_count #{running_count}#{where} < required #{required}",
+                 running_count: running_count, required_count: required,
+                 evidence_environment: evidence_plane&.slug } if running_count < required
 
         # Liveness: every qualifying instance must be heard from NOW. A stale
         # heartbeat means the platform is already treating this instance as
@@ -145,22 +135,34 @@ module System
           eligible: true,
           running_count: running_count,
           required_count: required,
-          dwell_time_minutes: (observed / 60.0).round(1)
+          dwell_time_minutes: (observed / 60.0).round(1),
+          evidence_environment: evidence_plane&.slug
         }
       end
 
-      # Does a promotion to this target state turn on these criteria at all?
-      def self.gates?(target_state)
-        GATED_TARGET_STATES.include?(target_state.to_s)
+      # Does promoting into this environment turn these criteria on at all?
+      # Only a PINNED plane is promoted into; a following plane serves whatever
+      # is published and is never a promotion target.
+      def self.gates?(environment)
+        environment.respond_to?(:follows_publish?) && !environment.follows_publish?
       end
 
-      # #evaluate for a criteria-relevant target state, nil otherwise — so a
-      # caller that promotes to any state can ask one question and get either a
-      # verdict or "not applicable", without restating the gated set.
-      def self.advisory(version:, target_state:)
-        return nil unless gates?(target_state)
+      # #evaluate for a criteria-relevant promotion, nil otherwise — so a
+      # caller can ask one question and get either a verdict or "not
+      # applicable", without restating when the criteria apply.
+      def self.advisory(version:, environment:)
+        return nil unless gates?(environment)
 
-        evaluate(version: version)
+        evaluate(version: version, environment: environment)
+      end
+
+      # The plane whose instances count as evidence for promoting into
+      # `environment`: the rung below, or nil for "the following planes"
+      # (a published version's first home) and for a caller with no target.
+      def self.evidence_environment(environment)
+        return nil if environment.nil?
+
+        environment.ladder_predecessor
       end
 
       # The opt-in signature gate: nil when it passes or is off, otherwise the
@@ -216,16 +218,25 @@ module System
         end
       end
 
-      def self.matching_instances(version, digest)
-        # Find instances whose running_module_digests JSONB contains digest
-        # at the matching module_id key. The digest comparison is exact —
-        # promotion is a digest-bound concept, not a version-number-bound one.
-        ::System::NodeInstance
-          .joins(node: :node_modules)
-          .where(system_node_modules: { id: version.node_module_id })
-          .where(status: "running")
-          .where("running_module_digests->>? = ?", version.node_module_id.to_s, digest)
-          .distinct
+      # Instances whose running_module_digests JSONB carries `digest` at the
+      # matching module_id key. The digest comparison is exact — promotion is a
+      # digest-bound concept, not a version-number-bound one.
+      #
+      # `evidence_plane` nil means the FOLLOWING planes (where a publish lands),
+      # not "anywhere": an instance already in a pinned plane is running what
+      # was promoted there, so counting it as evidence for promoting into that
+      # same ladder would let a plane vouch for itself.
+      def self.matching_instances(version, digest, evidence_plane = nil)
+        scope = ::System::NodeInstance
+                .joins(node: :node_modules)
+                .where(system_node_modules: { id: version.node_module_id })
+                .where(status: "running")
+                .where("running_module_digests->>? = ?", version.node_module_id.to_s, digest)
+                .distinct
+        return scope.where(environment_id: evidence_plane.id) if evidence_plane
+
+        following = ::Ai::Environment.where(account_id: version.node_module&.account_id, auto_promote_on_publish: true)
+        scope.where(environment_id: following.select(:id))
       end
     end
   end

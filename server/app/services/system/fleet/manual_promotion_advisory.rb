@@ -4,12 +4,10 @@ module System
   module Fleet
     # Consulted by the MANUAL promotion paths — the operator REST promote
     # (Api::V1::System::NodeModuleVersionsController#promote) and its MCP twin
-    # (Ai::Tools::SystemFleetTool#promote_module_version). Both call
-    # NodeModuleVersion#promote_to! directly rather than going through
-    # ModulePromotionService, so before IMP-d6826c872d88 neither one ever
-    # evaluated PromotionCriteria: a human — or an agent over MCP — could bless
-    # a version no instance had run for the dwell, and nothing in the response
-    # or the audit log said the automated lane would have refused it.
+    # (Ai::Tools::SystemFleetTool#promote_module_version). Both promote a
+    # version INTO a pinned environment; without this, a human — or an agent
+    # over MCP — could pin a plane to a version no instance on the rung below
+    # has ever run, with nothing in the response or the audit log saying so.
     #
     # This does NOT refuse. Operator ruling D17 (2026-09-02): consult and WARN.
     # The manual paths exist precisely to act when the evidence is not there
@@ -34,26 +32,26 @@ module System
       REST_SOURCE = "rest_promote"
       MCP_SOURCE  = "mcp_promote_module_version"
 
-      # Evaluate BEFORE the transition, so the verdict describes the state the
-      # operator actually decided against, and so a promote_to! that raises
-      # never leaves an override event behind (the caller only calls #record!
-      # once the promotion landed).
-      def self.evaluate(version:, target_state:)
-        new(version: version, target_state: target_state,
+      # Evaluate BEFORE the pin moves, so the verdict describes the state the
+      # operator actually decided against, and so a refused promotion never
+      # leaves an override event behind (the caller only calls #record! once
+      # the promotion landed).
+      def self.evaluate(version:, environment:)
+        new(version: version, environment: environment,
             criteria: ::System::Fleet::PromotionCriteria.advisory(
-              version: version, target_state: target_state
+              version: version, environment: environment
             ))
       end
 
-      attr_reader :version, :target_state, :criteria
+      attr_reader :version, :environment, :criteria
 
-      def initialize(version:, target_state:, criteria:)
-        @version      = version
-        @target_state = target_state.to_s
-        @criteria     = criteria
+      def initialize(version:, environment:, criteria:)
+        @version     = version
+        @environment = environment
+        @criteria    = criteria
       end
 
-      # Were the criteria relevant to this target state at all?
+      # Were the criteria relevant to this promotion at all?
       def consulted?
         !criteria.nil?
       end
@@ -64,8 +62,8 @@ module System
       end
 
       # Emits the audit event for an override and returns the fields the caller
-      # merges into its result payload. Returns {} for an ungated target state,
-      # so an untouched response shape stays untouched.
+      # merges into its result payload. Returns {} when the criteria do not
+      # apply, so an untouched response shape stays untouched.
       #
       # `actor_type` is REQUIRED alongside `actor_id` because a User id and an
       # Ai::Agent id are both bare UUIDs — an auditor reading the event cannot
@@ -97,7 +95,7 @@ module System
 
         fields.merge(
           promotion_criteria_warning:
-            "promoted to #{target_state} despite unmet promotion criteria: #{criteria[:reason]}"
+            "promoted into #{environment.slug} despite unmet promotion criteria: #{criteria[:reason]}"
         )
       end
 
@@ -116,7 +114,8 @@ module System
           payload: {
             module_name:    node_module&.name,
             version_number: version.version_number,
-            target_state:   target_state,
+            environment:      environment.slug,
+            environment_id:   environment.id,
             reason:         criteria[:reason],
             running_count:  criteria[:running_count],
             required_count: criteria[:required_count],
