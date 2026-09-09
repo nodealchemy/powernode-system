@@ -1624,8 +1624,17 @@ module Ai
                          "response. The seeded Release Manager row is require_approval whatever its trust " \
                          "tier; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
-              module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
-              target_state: { type: "string", required: true, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
+              environment: { type: "string", required: false,
+                             description: "THE LADDER (Environment campaign): slug or id of the environment to promote INTO. " \
+                                          "With it, module_id (+ optional version_id, default = what the predecessor rung " \
+                                          "serves) are used and module_version_id/target_state are ignored. One rung at a " \
+                                          "time: the version must already be what the next-lower environment serves; a " \
+                                          "following environment (auto_promote_on_publish true) cannot be promoted into. " \
+                                          "Gated in the TARGET plane — prod parks for a person." },
+              module_id: { type: "string", required: false, description: "With environment: the NodeModule to promote" },
+              version_id: { type: "string", required: false, description: "With environment: the version to pin there (default: the predecessor rung's served version)" },
+              module_version_id: { type: "string", required: false, description: "Legacy ladder: UUID of the NodeModuleVersion to promote" },
+              target_state: { type: "string", required: false, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
                              description: "Target promotion state — one of System::NodeModuleVersion::PROMOTION_STATES " \
                                           "(built | staging | blessed | live | retired). Which of them this version can " \
                                           "actually reach is governed by PROMOTION_TRANSITIONS from its current state; " \
@@ -2298,7 +2307,8 @@ module Ai
             description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion, and the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile. APPROVAL-GATED (release.rollback): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is repointed until an operator approves — do not retry and do not report the rollback as done on that response; without version_id the auto-selected target is pinned to the approval so the operator approves the version the card names. The seeded Release Manager row is require_approval whatever its trust tier; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               module_id:  { type: "string", required: true,  description: "System::NodeModule id to roll back" },
-              version_id: { type: "string", required: false, description: "Explicit System::NodeModuleVersion to roll back to. Omit to auto-select the most recent usable version." },
+              environment: { type: "string", required: false, description: "Roll back ONE pinned environment (slug or id) instead of the fleet-global pointer; requires version_id. Gated in that plane." },
+              version_id: { type: "string", required: false, description: "Explicit System::NodeModuleVersion to roll back to. Omit to auto-select the most recent usable version (fleet-global only)." },
               reason:     { type: "string", required: false, description: "Operator-supplied reason, recorded in the log line for audit" }
             }
           },
@@ -5212,6 +5222,8 @@ module Ai
       #                             so it states the delta, not causation)
       #   current_version_id      — what the fleet serves, whichever row that is.
       def promote_module_version(params)
+        return promote_module_version_in_environment(params) if params[:environment].present?
+
         version = ::System::NodeModuleVersion
                   .joins(:node_module)
                   .where(system_node_modules: { account_id: @account.id })
@@ -5279,7 +5291,68 @@ module Ai
       # transition lands, by the body, on the replay. Anchored to the version
       # row; the description carries the module, the version number and the
       # states (row values plus the requested target state).
+      # === The promotion ladder (Environment campaign, increment 4) ===
+      #
+      # `environment` given: promote `version_id` (default: the version the
+      # predecessor rung serves) into that plane — one rung, a pin write,
+      # gated in the TARGET plane (the packed params carry `environment`, which
+      # System::EnvironmentResolver reads as the explicit plane).
+      def promote_module_version_in_environment(params)
+        node_module, environment, version = ladder_target!(params)
+        pin = node_module.promote_in_environment!(environment: environment, version: version, actor: @user || @agent)
+        success_result(
+          promoted: true,
+          module_id: node_module.id,
+          module_name: node_module.name,
+          environment: environment.slug,
+          version: serialize_version(version.reload),
+          pinned_at: pin.promoted_at&.iso8601,
+          note: "nodes in #{environment.slug} converge on their next reconcile and restart once they have " \
+                "materialised v#{version.version_number} (restart_after_update)"
+        )
+      rescue ::System::NodeModule::LadderError, ArgumentError => e
+        error_result(e.message)
+      end
+
+      # Resolves (module, environment, version) for the ladder verbs and raises
+      # ArgumentError with the same message the body would refuse with, so the
+      # gate context parks nothing that could only be refused on replay.
+      def ladder_target!(params, direction: :up)
+        node_module = account_modules.find_by(id: params[:module_id].to_s)
+        raise ArgumentError, "module_id is required and must name a module in this account" unless node_module
+
+        environment = ::Ai::Environment.find_for_account(@account.id, params[:environment].to_s)
+        raise ArgumentError, "environment '#{params[:environment]}' not found in this account" unless environment
+
+        version =
+          if params[:version_id].present?
+            node_module.versions.find_by(id: params[:version_id].to_s)
+          elsif direction == :up
+            predecessor = environment.ladder_predecessor
+            predecessor ? node_module.served_version_for(predecessor) : node_module.current_version
+          end
+        raise ArgumentError, "version_id is required (no version could be inferred for #{environment.slug})" unless version
+
+        refusal = node_module.ladder_refusal(environment: environment, version: version, direction: direction)
+        raise ArgumentError, refusal if refusal
+
+        [ node_module, environment, version ]
+      end
+
+      def promote_module_version_in_environment_gate_context(params)
+        node_module, environment, version = ladder_target!(params)
+        pinned = params.merge(version_id: version.id)
+        deferred_tool_call_context(pinned).merge(
+          source_type: "System::NodeModule",
+          source_id: node_module.id,
+          description: "Promote module '#{node_module.name}' v#{version.version_number} into environment " \
+                       "#{environment.slug} (ladder rung #{environment.tier}); its nodes restart onto it"
+        )
+      end
+
       def promote_module_version_gate_context(params)
+        return promote_module_version_in_environment_gate_context(params) if params[:environment].present?
+
         version = ::System::NodeModuleVersion
                   .joins(:node_module)
                   .where(system_node_modules: { account_id: @account.id })
@@ -6781,6 +6854,11 @@ module Ai
 
       def serialize_module_full(m)
         serialize_module(m).merge(
+          # Environment campaign, incr. 4: what each pinned plane serves.
+          environment_pins: m.environment_pins.includes(:environment, :node_module_version).map do |p|
+            { environment_slug: p.environment.slug, version_id: p.node_module_version_id,
+              version_number: p.node_module_version.version_number, promoted_at: p.promoted_at&.iso8601 }
+          end,
           dependant: m.respond_to?(:dependant?) ? m.dependant? : false,
           parent_module_id: m.try(:parent_module_id),
           assignment_count: m.node_module_assignments.count,
@@ -6805,6 +6883,17 @@ module Ai
         }
       end
 
+      # Slugs of the pinned planes serving `version`; one pins query per
+      # module per call, not per version row.
+      def pinned_environment_slugs(version)
+        @pinned_slugs_by_module ||= {}
+        by_version = @pinned_slugs_by_module[version.node_module_id] ||=
+          ::System::ModuleEnvironmentPin.where(node_module_id: version.node_module_id).includes(:environment)
+                                        .group_by(&:node_module_version_id)
+                                        .transform_values { |pins| pins.map { |p| p.environment.slug }.sort }
+        by_version[version.id] || []
+      end
+
       def serialize_version(v)
         {
           id: v.id,
@@ -6818,6 +6907,8 @@ module Ai
           # publish can make a never-promoted version current. Without this
           # field a "live" version and the served version look the same here.
           current: v.current?,
+          # Environment campaign, incr. 4: the pinned planes serving this row.
+          pinned_in: pinned_environment_slugs(v),
           oci_digest: v.try(:oci_digest),
           fsverity_root_hash: v.try(:fsverity_root_hash),
           live_at: v.try(:live_at)&.iso8601,
@@ -8266,6 +8357,8 @@ module Ai
       # the REST route does not. The writer census is
       # spec/lint/node_module_current_version_write_seam_spec.rb.
       def rollback_module_version(params)
+        return rollback_module_version_in_environment(params) if params[:environment].present?
+
         module_id = params[:module_id].to_s
         return error_result("module_id is required") if module_id.blank?
 
@@ -8335,7 +8428,39 @@ module Ai
       # names and the replay repoints to that one even if the selection would
       # differ later. Anchored to the module row; the description carries the
       # current and target version NUMBERS (row values).
+      # Repoint ONE environment's pin to an earlier usable version (incr. 4);
+      # without `environment` the verb keeps its fleet-global meaning.
+      def rollback_module_version_in_environment(params)
+        return error_result("version_id is required for an environment rollback") if params[:version_id].blank?
+
+        node_module, environment, version = ladder_target!(params, direction: :down)
+        previous = node_module.served_version_for(environment)
+        node_module.rollback_in_environment!(environment: environment, version: version, actor: @user || @agent)
+        Rails.logger.warn(
+          "[SystemFleetTool] rolled back #{node_module.name} in #{environment.slug} from v#{previous&.version_number} " \
+          "to v#{version.version_number}#{params[:reason].present? ? " — #{params[:reason]}" : ""}"
+        )
+        success_result(
+          module_id: node_module.id, module_name: node_module.name, environment: environment.slug,
+          rolled_back_from_version_id: previous&.id, version: serialize_version(version.reload)
+        )
+      rescue ::System::NodeModule::LadderError, ArgumentError => e
+        error_result(e.message)
+      end
+
       def rollback_module_version_gate_context(params)
+        if params[:environment].present?
+          raise ArgumentError, "version_id is required for an environment rollback" if params[:version_id].blank?
+
+          node_module, environment, version = ladder_target!(params, direction: :down)
+
+          return deferred_tool_call_context(params.merge(version_id: version.id)).merge(
+            source_type: "System::NodeModule", source_id: node_module.id,
+            description: "Roll module '#{node_module.name}' back to v#{version.version_number} in environment " \
+                         "#{environment.slug} — repoints that plane's pin; its nodes converge on their next reconcile"
+          )
+        end
+
         module_id = params[:module_id].to_s
         raise ArgumentError, "module_id is required" if module_id.blank?
 
