@@ -119,6 +119,17 @@ is never refused on those grounds. Exposed via
 `POST /api/v1/system/node_modules/:id/rollback` (fleet-global pointer) or
 `system_rollback_module_version` with `environment:` (one pin, downward only).
 
+**A plane is also how you ASK about the fleet.** Every plane-bearing row reports
+its `environment_slug`, and the fleet-wide list surfaces take the plane as a
+filter (`environment`, slug or id): `system_list_nodes`,
+`system_list_instances`, `system_list_templates`,
+`system_list_instance_pools`, and on REST `GET /api/v1/system/nodes`,
+`/node_templates`, `/instance_pools`. A plane the account does not have is
+REFUSED (MCP error / 404), never dropped — a filter that silently disappears
+would answer "what is running in prod" with the whole fleet. Instances are not
+filterable over REST because their index is nested under a node, which already
+fixes one plane.
+
 ```mermaid
 flowchart LR
     CI[CI publishes signed OCI artifact] --> PUB[publish: current_version_id moves]
