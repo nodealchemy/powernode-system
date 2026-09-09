@@ -679,3 +679,49 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
     end
   end
 end
+
+# Environment campaign, increment 4 — a batch never exceeds the tightest
+# max_blast_radius among the planes it would reboot.
+RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor, "blast radius ceiling" do
+  let(:account) { create(:account) }
+  before { auto_execute_skill_policy!(account, described_class) }
+  let(:platform_record) { create(:system_node_platform, account: account) }
+  # staging: unprotected and trusted, so the reboot verb is not parked there
+  # and the CAP is what the example observes.
+  let(:staging)  { account.environments.find_by!(slug: "staging") }
+  let(:template) { create(:system_node_template, account: account, node_platform: platform_record, environment: staging) }
+  let(:user)     { create(:user, account: account) }
+  let(:agent)    { create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy") }
+  let(:executor) { described_class.new(account: account, agent: agent, user: user) }
+
+  before do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzKyqKWW5nHvyLMYqwP5xPeOXDwtz+sKlxGqKcvK9I5CDLQQRi8S6X8L6kqJMPj7pZ9nFNqnCwHGh/JFVRqZDjA==\n-----END PUBLIC KEY-----")
+    allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+    platform_record.update!(disk_image_git_sha: "target-sha", disk_image_oci_ref: "oki-ref")
+    System::DiskImagePublication.create!(
+      account: account, node_platform: platform_record, git_sha: "target-sha", arch: "amd64", oci_ref: "oki-ref",
+      sha256: "a" * 64, size_bytes: 1024, uki_oci_ref: "uki-ref", uki_sha256: "c" * 64, uki_cosign_bundle: "b",
+      status: "published", published_at: Time.current
+    )
+  end
+
+  it "caps the batch at the plane's max_blast_radius and reports the ceiling" do
+    drifted = 4.times.map do |i|
+      node = create(:system_node, account: account, node_template: template, name: "d#{i}")
+      create(:system_node_instance, :running, node: node, booted_image_git_sha: "old-#{i}")
+    end
+    staging.update!(max_blast_radius: 1)
+
+    r = executor.execute(instance_id: drifted.first.id, batch_pct: 100, dry_run: true)
+    expect(r[:success]).to be true
+    expect(r[:data][:total_drifted]).to eq(4)
+    expect(r[:data][:batch_size]).to eq(1)
+    expect(r[:data][:blast_radius_ceiling]).to eq(1)
+
+    staging.update!(max_blast_radius: nil)
+    r2 = executor.execute(instance_id: drifted.first.id, batch_pct: 100, dry_run: true)
+    expect(r2[:data][:batch_size]).to eq(4)
+    expect(r2[:data][:blast_radius_ceiling]).to be_nil
+  end
+end

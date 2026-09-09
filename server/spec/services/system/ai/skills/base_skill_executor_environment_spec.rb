@@ -74,6 +74,40 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor environment gate" do
     expect(ZzEnvRebootFixtureExecutor.performed).to eq([ dev_instance.id ])
   end
 
+  # Environment campaign, incr. 4: the auto-execute short-cut sees the
+  # blast-radius ceiling too, or a trusted plane with max_blast_radius 1 would
+  # auto-run a fleet-wide action.
+  it "parks an auto_approve skill in dev when its blast radius exceeds dev's ceiling" do
+    node_class = Class.new(System::Ai::Skills::BaseSkillExecutor) do
+      skill_descriptor(
+        name: "zz_env_node_reboot_fixture", description: "destructive fixture", category: "fleet",
+        requires_approval: true, action_category: "system.instance_reboot",
+        inputs: { node_id: { type: "string", required: true } }, outputs: {}
+      )
+
+      protected
+
+      def perform(node_id:)
+        success(node_id: node_id)
+      end
+    end
+    stub_const("ZzEnvNodeRebootFixtureExecutor", node_class)
+    dev = account.environments.find_by!(slug: "dev")
+    dev.update!(max_blast_radius: 2)
+    create(:system_node_instance, node: dev_instance.node, status: "running")
+
+    ok = ZzEnvNodeRebootFixtureExecutor.new(account: account, user: user).execute(node_id: dev_instance.node_id)
+    expect(ok[:success]).to be true
+    expect(ok.dig(:data, :pending)).to be_nil
+
+    dev.update!(max_blast_radius: 1)
+    parked = ZzEnvNodeRebootFixtureExecutor.new(account: account, user: user).execute(node_id: dev_instance.node_id)
+    expect(parked.dig(:data, :pending)).to be true
+    request = Ai::ApprovalRequest.find(parked.dig(:data, :approval_request_id))
+    expect(request.request_data["environment_escalation"]).to include("blast radius 2 exceeds")
+    expect(request.request_data["blast_radius"]).to eq(2)
+  end
+
   it "refuses a NESTED peer whose plane escalates, instead of proceeding under the parent's verdict" do
     result = ZzEnvComposerFixtureExecutor.new(account: account, user: user).execute(instance_id: ops_instance.id)
 

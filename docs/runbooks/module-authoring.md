@@ -506,7 +506,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 | Cosign signature rejected | Static-key mismatch (default path) — repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to the platform's `POWERNODE_COSIGN_PUBLIC_KEY`; only the keyless fallback checks `cosign_identity_regexp`/`cosign_issuer_regexp` | Confirm the repo's cosign key secret with your platform operator; for the keyless fallback, verify the signing CI's OIDC issuer matches your regexp |
 | Module shows in registry but no `NodeModuleVersion` row | Ingestion is webhook-triggered, not polled — the Gitea webhook delivery never reached the platform, or (async mode) the worker callback failed | Check the repo's Gitea webhook deliveries (repo → Settings → Webhooks → Recent Deliveries) and redeliver the failed one; check `journalctl -u 'powernode-*-rails.service' \| grep GiteaModule` for HMAC/lookup errors, and — when `POWERNODE_WEBHOOK_INGEST_MODE=async` (production default) — the worker's `System::ProcessModulePublicationJob` logs for ingest failures |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
-| Assignment to template succeeds but agent doesn't pull | The module's `current_version_id` does not point at a version carrying a mountable artifact. That pointer — **not** `promotion_state` — is what the node-facing download resolves (`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`) | [Why the agent isn't pulling](#why-the-agent-isnt-pulling), below. Promoting is **not** the fix |
+| Assignment to template succeeds but agent doesn't pull | The version the node's ENVIRONMENT is served does not carry a mountable artifact: `current_version_id` for a following environment, the environment's pin for a pinned one. That — **not** `promotion_state` — is what the node-facing download resolves (`NodeApi::ModulesController#download` reads `@module.served_version_for(current_instance.environment)&.artifact`) | [Why the agent isn't pulling](#why-the-agent-isnt-pulling), below. Promoting is **not** the fix |
 | fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the new tag's webhook delivery re-triggers ingestion — no need to wait |
 
 ### Why the agent isn't pulling
@@ -515,9 +515,16 @@ No node-facing surface consults `promotion_state`, so promoting a version cannot
 what an agent receives. `promotion_state` is a ladder the *platform* reads for its own
 decisions (the `module_promotion_sensor`, the staging check in
 `DecisionEngine#apply_module_promotion`, CVE remediation's candidate filter, compliance
-counts); `NodeModule#current_version_id` is what a node is served. Start by finding out
-what the pointer points at — `system_list_module_versions` marks the served row
-`current: true` — then match the cause:
+counts); `NodeModule#current_version_id` is what a node in a FOLLOWING environment
+(`auto_promote_on_publish` true — dev, ci, ops by default) is served. A node in a PINNED
+environment (staging, prod by default) is served that environment's pin instead
+(`NodeModule#served_version_for(environment)`) — and NOTHING of a module that has never been
+promoted into it. Flipping an environment to pinned freezes every module there at its
+current version; a publish never touches a pinned environment; only
+`system_promote_module_version` with `environment:` moves a pin, one pinned rung at a time
+(a following environment is not a rung). Start by finding out what the pointer points at —
+`system_list_module_versions` marks the served row `current: true` and lists the pinned
+environments under `pinned_in` — then match the cause:
 
 **1. The pointer was never moved onto your build.** Publishing writes it by default, but
 withholds it in several cases, and the two publish paths report differently:

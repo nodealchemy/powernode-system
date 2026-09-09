@@ -246,3 +246,23 @@ RSpec.describe System::BlastRadiusService, type: :service do
     end
   end
 end
+
+# Environment campaign, increment 4 — the trace reports the target's
+# instances by plane against each plane's ceiling.
+RSpec.describe System::BlastRadiusService, "environments", type: :service do
+  let(:account) { create(:account) }
+  let(:service) { described_class.new(account: account) }
+
+  it "breaks the target's instances down by environment with the ceiling verdict" do
+    ops = account.environments.find_by!(slug: "ops")
+    ops.update!(max_blast_radius: 1)
+    platform = create(:system_node_platform, account: account)
+    template = create(:system_node_template, account: account, node_platform: platform, environment: ops)
+    node = create(:system_node, account: account, node_template: template, name: "ops-hub")
+    2.times { create(:system_node_instance, node: node, status: "running") }
+
+    result = service.trace("ops-hub")
+    expect(result[:success]).to be true
+    expect(result[:environments]).to eq("ops" => { instance_count: 2, max_blast_radius: 1, exceeds_ceiling: true })
+  end
+end

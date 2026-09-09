@@ -57,7 +57,8 @@ RSpec.describe System::Ai::Skills::RollingModuleUpgradeExecutor do
     it "declares a fleet-atomic output shape, with no batch structure to size" do
       expect(described_class.descriptor[:outputs].keys)
         .to contain_exactly(:total_instances, :affected_instance_ids,
-                            :estimated_total_seconds, :circuit_breaker)
+                            :estimated_total_seconds, :circuit_breaker,
+                            :by_environment, :blast_radius_ceiling_exceeded)
     end
 
     it "states in its description that the upgrade is fleet-atomic" do
@@ -150,5 +151,36 @@ RSpec.describe System::Ai::Skills::RollingModuleUpgradeExecutor do
         expect(r[:error]).to match(/target_version_id not found/)
       end
     end
+  end
+end
+
+# Environment campaign, increment 4 — the fleet-atomic set is reported by
+# plane against each plane's max_blast_radius.
+RSpec.describe System::Ai::Skills::RollingModuleUpgradeExecutor, "by environment" do
+  let(:account)  { create(:account) }
+  let(:platform) { create(:system_node_platform, account: account) }
+  let(:category) { create(:system_node_module_category, account: account) }
+  let(:ops)      { account.environments.find_by!(slug: "ops") }
+  let(:template) { create(:system_node_template, account: account, node_platform: platform, environment: ops) }
+  let(:mod)      { create(:system_node_module, account: account, node_platform: platform, category: category, variety: "subscription", name: "hub-backend") }
+  let!(:target_version) do
+    System::NodeModuleVersion.create!(node_module: mod, version_number: 1, mask: [], file_spec: [], package_spec: [], config: {},
+                                      oci_digest: "sha256:#{'a' * 64}")
+  end
+  let(:exec) { described_class.new(account: account) }
+
+  it "names the plane whose share exceeds its ceiling" do
+    3.times { |i| create(:system_node_instance, :running, node: create(:system_node, account: account, node_template: template, name: "n#{i}")) }
+    ops.update!(max_blast_radius: 2)
+
+    d = exec.execute(template_id: template.id, module_id: mod.id, target_version_id: target_version.id)[:data]
+    expect(d[:total_instances]).to eq(3)
+    expect(d[:by_environment]).to eq("ops" => { instance_count: 3, max_blast_radius: 2, exceeds_ceiling: true })
+    expect(d[:blast_radius_ceiling_exceeded]).to be true
+
+    ops.update!(max_blast_radius: 3)
+    d2 = exec.execute(template_id: template.id, module_id: mod.id, target_version_id: target_version.id)[:data]
+    expect(d2[:by_environment]["ops"][:exceeds_ceiling]).to be false
+    expect(d2[:blast_radius_ceiling_exceeded]).to be false
   end
 end

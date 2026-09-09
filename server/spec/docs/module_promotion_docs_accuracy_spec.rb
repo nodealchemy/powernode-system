@@ -7,10 +7,13 @@ require "spec_helper"
 #
 # Promoting a NodeModuleVersion advances `promotion_state` and at most one
 # timestamp column. It does NOT change which artifact a node receives: the
-# node-facing download resolves NodeModule#current_version_id
-# (Api::V1::System::NodeApi::ModulesController#download reads
-# `@module.current_version&.artifact`; FilesController#module_file is
-# identical), and no node-facing surface reads promotion_state at all.
+# node-facing download resolves the version the node's ENVIRONMENT is served —
+# NodeModule#served_version_for(environment): the environment's pin, else
+# NodeModule#current_version_id (Environment campaign, increment 4;
+# Api::V1::System::NodeApi::ModulesController#download reads
+# `@module.served_version_for(current_instance.environment)&.artifact`;
+# FilesController#module_file is identical) — and no node-facing surface reads
+# promotion_state at all.
 #
 # Four docs taught the opposite — most sharply module-authoring.md's
 # troubleshooting row ("agents only pull `blessed`+", remedy: promote) and its
@@ -58,12 +61,12 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
       self.class.read(ext_root, "server/app/serializers/system/node_module_node_api_serializer.rb")
     end
 
-    it "resolves the artifact from NodeModule#current_version, not from a promotion state" do
+    it "resolves the artifact from the version the node's environment is served, not from a promotion state" do
       # Matched as an ASSIGNMENT, not a bare substring: a comment mentioning
-      # `current_version&.artifact` would satisfy the loose form while the code
-      # resolved something else.
-      expect(modules_controller).to match(/^\s*artifact = @module\.current_version&\.artifact$/)
-      expect(files_controller).to match(/^\s*artifact = node_module\.current_version&\.artifact$/)
+      # `served_version_for(...)&.artifact` would satisfy the loose form while
+      # the code resolved something else.
+      expect(modules_controller).to match(/^\s*artifact = @module\.served_version_for\(current_instance\.environment\)&\.artifact$/)
+      expect(files_controller).to match(/^\s*artifact = node_module\.served_version_for\(current_instance\.environment\)&\.artifact$/)
     end
 
     it "never consults promotion_state on any surface a node reads" do
