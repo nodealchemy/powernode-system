@@ -256,7 +256,7 @@ The instance heartbeats every 30 s. Per-tick:
 - Platform refreshes `last_heartbeat_at`
 - `instance_status_sensor` runs every 60 s; fires `system.instance_silent` if no heartbeat in 3 min (`InstanceStatusSensor::SILENT_THRESHOLD = 3.minutes`)
 - Module reconciler walks assigned modules; pulls + verifies + mounts updates if module versions changed
-- Task lease: agent claims any pending tasks for this instance via `worker_api/tasks` and runs them
+- Task lease: agent claims any pending tasks for this instance via `node_api/status/tasks` (served from `current_instance.tasks`) and runs them. NOT `worker_api/tasks` — that surface scopes through `node.worker_id`, which is NULL fleet-wide, so it resolves to the empty set and 404s for every task id.
 
 **Verify health:**
 
