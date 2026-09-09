@@ -195,15 +195,24 @@ RSpec.describe System::Executors::ExecuteTask do
       expect(card[:impact]).to eq("sync_modules on System::Node edge-lon-01")
     end
 
-    # The lifecycle dispatch shape — an operable with no account_id column of
-    # its own (NodeInstance's account flows through node), so the name lookup
-    # cannot depend on a uniform account_id.
-    it "names the instance for a NodeInstanceGating lifecycle dispatch" do
+    # The subject is the NAME LOOKUP against an operable with no account_id
+    # column of its own (a NodeInstance's account flows through its node), so it
+    # cannot depend on a uniform account_id. The COMMAND is incidental.
+    #
+    # It used to be `stop`, described as "a NodeInstanceGating lifecycle
+    # dispatch". That description stopped being true in campaign 01a0790b
+    # increment 1, when LIFECYCLE_EXECUTORS moved start/stop/reboot to
+    # Executors::ControlInstance and stopped minting a Task at all; `stop` then
+    # left System::Task::COMMANDS entirely. Previewing an ExecuteTask card for a
+    # command ExecuteTask can never insert is the very shape the retired-command
+    # guard exists to keep out of the gate, so the fixture uses a command this
+    # executor really does insert.
+    it "names the instance for a task dispatched at an instance" do
       instance = create(:system_node_instance, account: account, name: "web-1")
-      card = gated_card(command: "stop", operable_type: "System::NodeInstance",
+      card = gated_card(command: "restart", operable_type: "System::NodeInstance",
                         operable_id: instance.id, initiated_by_id: user.id)
 
-      expect(card[:impact]).to eq("stop on System::NodeInstance web-1")
+      expect(card[:impact]).to eq("restart on System::NodeInstance web-1")
     end
 
     it "reads 'on system' when no operable is named, but still names the command" do

@@ -96,7 +96,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 98,
+      line: 96,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -160,7 +160,7 @@ module GateComposedTaskCategories
     # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 297,
+      line: 312,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -184,7 +184,7 @@ module GateComposedTaskCategories
       # MOVED 614 -> 621 at the merge of campaign 01a0790b into develop.
       # RE-AUDITED — still the literal category on the MCP
       # system_terminate_instance arm, unchanged in shape.
-      line: 621,
+      line: 629,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —

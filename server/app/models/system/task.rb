@@ -58,8 +58,23 @@ module System
     # same commit; that registry has since been deleted outright (increment 3),
     # and the agent still registers `terminate` — harmlessly, since nothing can
     # mint one. The ledger example in the lint spec above records it.
+    # `start` and `stop` LEFT this list alongside `terminate`, for the same
+    # reason and with stronger evidence. The agent binds both to
+    # LifecycleHandler behind validateUnit (runtime/tasks/handlers/lifecycle.go
+    # :75,117-118), so a row without options["unit"] is ALWAYS refused on the
+    # node — and unlike `restart`, neither required a scope declaration, so the
+    # platform freely minted rows the agent could never run. A full census of
+    # this control plane (all 923 rows, walked to has_more:false) carries ZERO
+    # `start` and ZERO `stop`, so nothing is taken from a working path.
+    #
+    # The capability is UNCHANGED and lives on the provider plane, which is
+    # where it always actually worked: NodeInstanceGating::LIFECYCLE_EXECUTORS
+    # and the MCP verbs system_start_instance / system_stop_instance both route
+    # to System::Executors::ControlInstance. Both gate on system.task.start /
+    # system.task.stop, so those CATEGORIES outlive the commands here exactly as
+    # `terminate`'s does — see PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.
     COMMANDS = %w[
-      start stop restart reboot
+      restart reboot
       sync_modules apply_config
       ssh_command
       upgrade_boot_image
@@ -129,18 +144,37 @@ module System
     # executor. The other six are accepted by this validation and served to
     # nothing.
     #
-    # Left as-is rather than narrowed in increment 3: narrowing OPERABLE_TYPES
-    # is a contract change on POST /api/v1/system/tasks that needs its own
-    # red-first test and its own decision about pre-existing rows, not a rider
-    # on a deletion. Filed separately.
+    # NARROWED to the two node-scoped types (the filed follow-up the paragraph
+    # above asked for; offer 01a079f5-2322). The five provider types were
+    # accepted by this validation and served to nothing.
+    #
+    # THE DECISION ABOUT PRE-EXISTING ROWS, which is what that paragraph
+    # deferred: there are none to decide about. A full census of this control
+    # plane — all 923 System::Task rows that exist, walked to has_more:false —
+    # is 716 System::NodeInstance and 207 with a NULL operable, and ZERO of any
+    # other type. The nulls are PreservesTaskHistory's `dependent: :nullify`
+    # after an instance was reaped, and every one carries a node-agent command
+    # (apply_config 125, ci.module_build 79, sync_modules 3). Separately, the
+    # validation below is CHANGE-guarded, so even a row predating the census
+    # keeps saving and only a write that SETS or CHANGES the type is checked.
+    #
+    # THE CAPABILITY IS NOT REMOVED, it was never here: those resources are
+    # managed on the server/provider plane, which is where their operations
+    # actually run — System::CloudSyncService and worker_api/cloud_sync
+    # (ProviderRegion), worker_api/volumes_controller plus the system_*_volume /
+    # *_snapshot MCP verbs (ProviderVolume, ProviderVolumeSnapshot), the SDWAN
+    # surface (ProviderNetwork), and system_create_provider / *_update_provider
+    # (Provider). A System::Task is a message to the ON-NODE AGENT, and there is
+    # no agent on a Provider.
+    #
+    # System::Node stays, though the census shows it has never carried a row
+    # either: #on_node_liveness_answer models the Node shape explicitly (it fans
+    # out across node.node_instances and refuses only when EVERY one is
+    # refused), so removing the type would make that branch and its refusal path
+    # dead code — a cascade with its own risk, not a rider on this one.
     OPERABLE_TYPES = %w[
       System::Node
       System::NodeInstance
-      System::Provider
-      System::ProviderNetwork
-      System::ProviderRegion
-      System::ProviderVolume
-      System::ProviderVolumeSnapshot
     ].freeze
 
     # The two on-node reconcile commands: an agent polls its own pending rows
@@ -156,7 +190,7 @@ module System
     # only EMPIRICALLY true of these two. ExecutionDispatcher::COMMAND_REGISTRY
     # still maps both to server-side System::Runtime classes, and that arm is
     # dead for a DATA reason (System::Node#worker_id is NULL fleet-wide, so
-    # WorkerApi::TasksController#execute's #worker_operations scope is empty and
+    # WorkerApi::TasksController#execute's #worker_operations scope was empty and
     # every lookup 404s) rather than a structural one. Stated as a DATA STATE
     # deliberately, the way NodeInstance#on_node_dispatch_refusal states it:
     # worker_id is a permitted attribute on the node create/update MCP verbs, so

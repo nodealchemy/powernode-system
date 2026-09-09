@@ -141,9 +141,17 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
   # what makes a category a REAL gated operation rather than a name: it is the
   # class the gate replays on approval.
   it "declares no gated non-command that no executor actually gates" do
-    claimed = [ ::System::Executors::TerminateInstance ]
-              .select { |k| k.const_defined?(:ACTION_CATEGORY) }
-              .map { |k| k::ACTION_CATEGORY }
+    # BOTH constant forms, because one executor may gate several verbs.
+    # TerminateInstance gates one (ACTION_CATEGORY); ControlInstance gates
+    # start/stop/reboot (ACTION_CATEGORIES). Reading only the singular form
+    # would leave start and stop unclaimed the moment they moved out of
+    # COMMANDS — i.e. the guard would red on a correct change, which is how a
+    # guard gets deleted.
+    executors = [ ::System::Executors::TerminateInstance, ::System::Executors::ControlInstance ]
+    claimed = executors.flat_map { |k|
+      Array(k.const_defined?(:ACTION_CATEGORY) ? k::ACTION_CATEGORY : nil) +
+        Array(k.const_defined?(:ACTION_CATEGORIES) ? k::ACTION_CATEGORIES : nil)
+    }.compact
 
     unclaimed = gated_non_commands.map { |c| "system.task.#{c}" } - claimed
 
@@ -160,10 +168,14 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
   # unloaded, to_prepare removed) or a renamed COMMANDS would produce. The
   # pinned names predate this spec, so nothing added here can satisfy it.
   it "has real inputs on both sides" do
-    # 19 commands + 1 gated non-command (terminate) since increment 2.
-    expect(commands.size).to be >= 19
+    # 17 commands + 3 gated non-commands (terminate, start, stop). Was 19 + 1
+    # until start/stop moved to the exception set — the TOTAL is unchanged at
+    # 20, which is the number that matters: the move must not add or drop a
+    # registered category, only change which side of the split it sits on.
+    expect(commands.size).to be >= 17
     expect(registered_categories.size).to be >= 20
-    expect(gated_non_commands).to include("terminate")
+    expect(gated_non_commands).to include("terminate", "start", "stop")
+    expect(commands).not_to include("start", "stop")
     expect(registered_categories).to include("system.task.terminate", "system.task.ssh_command")
     expect(declared_verbs.fetch("upgrade_boot_image")).to eq("require_approval")
   end

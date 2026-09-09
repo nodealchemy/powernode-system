@@ -284,8 +284,23 @@ module System
       # for "terminate", so this value could have been changed to anything with
       # no effect and no failing test. That is dead configuration wearing the
       # costume of live configuration.
+      # Operations that are GATED without being System::Task commands. The
+      # category must outlive the command: both lifecycle surfaces compose
+      # "system.task.<verb>" (NodeInstanceGating#gate_or_execute), so dropping
+      # the key would strip an operator's tunable row from a capability that
+      # still works.
+      #
+      # The verbs here are UNCHANGED from what MANUAL_OPERATION_DEFAULT_VERBS
+      # already declared for them, deliberately: this move must not tighten or
+      # loosen any install. MANUAL_OPERATION_POLICIES prefers this hash, and
+      # each key is also kept in MANUAL_OPERATION_DEFAULT_VERBS because the
+      # vocabulary lint requires that hash to cover every gated operation —
+      # `terminate` has been in both since increment 2 and start/stop follow it.
       GATED_NON_COMMAND_OPERATIONS = {
-        "terminate" => "require_approval"
+        "terminate" => "require_approval",
+        # Executors::ControlInstance, not the agent — see System::Task::COMMANDS.
+        "start" => "auto_approve",
+        "stop" => "auto_approve"
       }.freeze
 
       MANUAL_OPERATION_POLICIES = (

@@ -255,28 +255,54 @@ RSpec.describe "POST /api/v1/system/tasks on-node liveness", type: :request do
     # (Runtime::SyncModules handles NodeInstance and Node and errors on the
     # rest) while loading every instance in the region on a request path. The
     # seam dispatches on class for this reason.
+    # THE PROPERTY MOVED DOWN A LEVEL, and this is a real trade, not a free win.
+    #
+    # It used to be asserted through the REST path: POST a ProviderRegion
+    # operable and expect :created, proving the seam dispatches ON CLASS rather
+    # than duck-typing across "anything that happens to have instances" — a bug
+    # caught by mutation, not by reading.
+    #
+    # Narrowing System::Task::OPERABLE_TYPES to [NodeInstance, Node] makes that
+    # POST a 422 at the model, so the REST route can no longer carry the
+    # experiment. The property is PRESERVED MORE STRONGLY (a region cannot reach
+    # the seam at all now) but it must still be pinned, or the next edit to
+    # #on_node_liveness_answer could reintroduce the fan-out with nothing
+    # objecting. So it is asserted directly against the seam, which is also
+    # where the mutation testing was aimed.
     it "does not fan out across an operable that merely happens to have instances" do
-      # IN THIS ACCOUNT, deliberately: a factory region with no account is
-      # refused by ExecuteTask#resolve_scoped as cross-account BEFORE the seam
-      # runs, so the example would pass against the duck-typed version it
-      # exists to reject — verified by mutation, which is how the first draft
-      # of this example was caught.
       region = create(:system_provider_region, account: account)
       create(:system_node_instance, node: dead_node, name: "r1", provider_region: region,
                                     status: "running", last_heartbeat_at: nil)
 
-      post "/api/v1/system/tasks",
-           params: {
-             task: {
-               command: "sync_modules",
-               operable_type: "System::ProviderRegion",
-               operable_id: region.id
-             }
-           }.to_json,
-           headers: auth_headers_for(user).merge("Content-Type" => "application/json")
+      # nil = "no reason to refuse", NOT "refused". A duck-typed implementation
+      # reaching for region.node_instances would answer with the dead instance's
+      # refusal string instead.
+      expect(
+        ::System::Task.undeliverable_on_node_refusal(command: "sync_modules", operable: region)
+      ).to be_nil
+      expect(
+        ::System::Task.dormant_on_node_reason(command: "sync_modules", operable: region)
+      ).to be_nil
+    end
 
-      expect(response).to have_http_status(:created)
-      expect(response.parsed_body["error"].to_s).not_to match(/unreachable|never reported/)
+    # The other half of the same move: the type the example above used is now
+    # refused by the endpoint outright, so an operator cannot mint a row for it.
+    it "refuses a provider-scoped operable at the request boundary" do
+      region = create(:system_provider_region, account: account)
+
+      expect {
+        post "/api/v1/system/tasks",
+             params: {
+               task: {
+                 command: "sync_modules",
+                 operable_type: "System::ProviderRegion",
+                 operable_id: region.id
+               }
+             }.to_json,
+             headers: auth_headers_for(user).merge("Content-Type" => "application/json")
+      }.not_to change { account.system_tasks.count }
+
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "does not refuse a node with no instances at all" do
@@ -312,12 +338,23 @@ RSpec.describe "POST /api/v1/system/tasks on-node liveness", type: :request do
   end
 
   describe "commands that are not on-node reconciles" do
-    # The gate is scoped to the two commands an AGENT must pull. A `stop`
-    # against a silent instance is actuated by the platform through the
-    # provider, so refusing it would break the one lane that still works when
-    # an agent is gone.
-    it "still accepts start for an instance whose agent went silent" do
-      expect { create_task(command: "start", instance: went_silent) }
+    # The gate is scoped to ON_NODE_RECONCILE_COMMANDS — the two commands an
+    # AGENT must pull — and refuses nothing else. `reboot` is the representative
+    # here, and the scoping is a RECORDED DECISION rather than an oversight:
+    # System::Task's own comment notes the agent-delegated commands are equally
+    # agent-pulled and that whether the gate should extend to them is a filed
+    # question, not an omission.
+    #
+    # It used to be `start`, on the reasoning that a stop/start against a silent
+    # instance is actuated by the platform through the provider so refusing it
+    # would break the one lane that still works. That reasoning is now enforced
+    # STRUCTURALLY rather than by this gate's scope: start and stop left
+    # System::Task::COMMANDS entirely and are gated on the provider plane
+    # through Executors::ControlInstance, so this endpoint refuses them outright
+    # (spec/requests/api/v1/system/tasks_retired_command_spec.rb) and neither is
+    # available as a representative any more.
+    it "still accepts reboot for an instance whose agent went silent" do
+      expect { create_task(command: "reboot", instance: went_silent) }
         .to change { account.system_tasks.count }.by(1)
 
       expect(response).to have_http_status(:created)

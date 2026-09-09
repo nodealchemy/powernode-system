@@ -80,6 +80,73 @@ RSpec.describe "POST /api/v1/system/tasks retired command", type: :request do
     end
   end
 
+  # `start` and `stop` join `terminate` as commands whose CATEGORY outlives the
+  # command (IMP-01a079f5-2322 follow-on). The reasoning is identical and the
+  # evidence is stronger:
+  #
+  #   * the agent — the sole actuator of a System::Task since increment 3 —
+  #     binds both to LifecycleHandler behind validateUnit
+  #     (runtime/tasks/handlers/lifecycle.go:75,117-118), so a row without
+  #     options["unit"] is ALWAYS refused on the node. Unlike `restart`, the
+  #     model required no scope declaration, so the platform minted rows the
+  #     agent could never run.
+  #   * a full census of the control plane — all 923 System::Task rows that
+  #     exist, walked to has_more:false — carries ZERO `start` and ZERO `stop`.
+  #     Nothing is being taken from a working path.
+  #   * the real capability is the PROVIDER plane:
+  #     Api::V1::System::NodeInstanceGating::LIFECYCLE_EXECUTORS routes both to
+  #     System::Executors::ControlInstance, and the MCP verbs
+  #     system_start_instance / system_stop_instance route to the same executor.
+  #     Both gate on system.task.start / system.task.stop, which is why those
+  #     categories stay declared in GATED_NON_COMMAND_OPERATIONS.
+  context "with a command that is gated here but actuated on the provider plane" do
+    %w[start stop].each do |command|
+      it "refuses #{command} without creating a task" do
+        expect { create_task(command) }.not_to change { account.system_tasks.count }
+
+        expect(response).to have_http_status(:unprocessable_content)
+      end
+
+      it "creates no deferred operation for #{command}" do
+        expect { create_task(command) }.not_to change { ::Ai::DeferredOperation.count }
+      end
+
+      # Same discriminator as terminate above: :blocked renders 422 too, so
+      # only "the gate was never entered" distinguishes a pre-gate refusal from
+      # a policy decision.
+      it "never reaches the autonomy gate for #{command}" do
+        expect(::Ai::AutonomyGate).not_to receive(:evaluate)
+
+        create_task(command)
+
+        expect(response).to have_http_status(:unprocessable_content)
+      end
+
+      # A refusal that does not say where the capability went is a capability
+      # an operator concludes was removed.
+      it "names the route that does #{command} an instance" do
+        create_task(command)
+
+        expect(response.body).to include("system_#{command}_instance")
+        expect(response.body).to include("System::Executors::ControlInstance")
+      end
+    end
+
+    # THE HALF THAT MUST NOT CHANGE. Removing the command must not remove the
+    # operator's control over the operation: both categories stay registered
+    # (PATCH /api/v1/system/autonomy refuses to save a row for an unregistered
+    # name) and stay declared with their existing auto_approve verb, so no
+    # install silently tightens or loosens.
+    it "keeps both categories registered and tunable" do
+      %w[system.task.start system.task.stop].each do |category|
+        expect(::Ai::InterventionPolicy.category_registered?(category)).to be(true),
+               "#{category} lost its registration; the provider-plane gate composes it"
+        expect(::System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES[category])
+          .to eq("auto_approve")
+      end
+    end
+  end
+
   # VACUITY GUARD. Every example above passes if the controller refuses
   # EVERYTHING, so one listed command must still get through to the gate.
   context "with a listed command" do

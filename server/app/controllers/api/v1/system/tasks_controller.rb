@@ -73,9 +73,7 @@ module Api
             return render_error(
               "Unsupported command: #{attrs[:command]}. This endpoint creates a System::Task, " \
               "and the platform executes only #{::System::Task::COMMANDS.size} commands. " \
-              "To destroy an instance use DELETE /api/v1/system/nodes/:node_id/node_instances/:id " \
-              "or the system_terminate_instance MCP verb, which route to " \
-              "System::Executors::TerminateInstance.",
+              "#{retired_command_redirect(attrs[:command].to_s)}",
               status: :unprocessable_content
             )
           end
@@ -228,6 +226,41 @@ module Api
         # It gates the constantize rather than following it, for the reason
         # ExecuteTask#resolve_operable gives: constantizing a caller-supplied
         # string to reach a validation is itself the thing to avoid.
+        # Where a refused command's capability actually lives.
+        #
+        # A refusal that does not name the working route reads as "the platform
+        # cannot do this any more", and an operator acts on that. Every key here
+        # left System::Task::COMMANDS because the AGENT could not actuate it,
+        # while the operation itself kept working on the provider plane — so the
+        # sentence has to carry them across.
+        #
+        # KEYED rather than one sentence: the terminate sentence was already
+        # here unconditionally, so when start/stop were retired they inherited
+        # it — telling an operator asking to stop a VM to go read about
+        # destroying one.
+        RETIRED_COMMAND_REDIRECTS = {
+          "terminate" => "To destroy an instance use " \
+                         "DELETE /api/v1/system/nodes/:node_id/node_instances/:id or the " \
+                         "system_terminate_instance MCP verb, which route to " \
+                         "System::Executors::TerminateInstance.",
+          "start" => "To start an instance use the instance lifecycle route or the " \
+                     "system_start_instance MCP verb, which route to " \
+                     "System::Executors::ControlInstance (the provider plane). A System::Task " \
+                     "start was executed by the on-node agent, which requires options[unit] " \
+                     "and cannot power on the machine it runs on.",
+          "stop" => "To stop an instance use the instance lifecycle route or the " \
+                    "system_stop_instance MCP verb, which route to " \
+                    "System::Executors::ControlInstance (the provider plane). A System::Task " \
+                    "stop was executed by the on-node agent, which requires options[unit] " \
+                    "and cannot power off the machine it runs on."
+        }.freeze
+
+        def retired_command_redirect(command)
+          RETIRED_COMMAND_REDIRECTS.fetch(command) do
+            "Supported commands: #{::System::Task::COMMANDS.join(', ')}."
+          end
+        end
+
         def on_node_target(attrs)
           return nil unless ::System::Task::ON_NODE_RECONCILE_COMMANDS.include?(attrs[:command].to_s)
           return nil unless ::System::Task::ON_NODE_LIVENESS_OPERABLE_TYPES.include?(attrs[:operable_type])

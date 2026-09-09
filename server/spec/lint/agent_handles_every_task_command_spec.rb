@@ -149,7 +149,11 @@ RSpec.describe "System::Task::COMMANDS vs the agent's handler registry", type: :
     # inert, but each one is a verb some caller might reasonably expect to work
     # through POST /api/v1/system/tasks, and none of these do.
     expect(agent_commands - ::System::Task::COMMANDS).to match_array(
-      %w[terminate provision deprovision sync custom]
+      # start/stop joined this ledger when they left COMMANDS: the agent still
+      # registers both (LifecycleHandler), but every such row failed
+      # validateUnit without options["unit"], and the working capability is
+      # Executors::ControlInstance on the provider plane.
+      %w[terminate provision deprovision sync custom start stop]
     )
   end
 end

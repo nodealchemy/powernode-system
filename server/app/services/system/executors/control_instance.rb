@@ -46,6 +46,32 @@ module System
     # perform. The audit record is the Ai::DeferredOperation / approval trail
     # the gate already writes.
     class ControlInstance < ::System::Executors::Base
+      # The gate categories this executor is the actor for.
+      #
+      # PLURAL, unlike TerminateInstance::ACTION_CATEGORY, because one executor
+      # gates three verbs: NodeInstanceGating::LIFECYCLE_EXECUTORS routes start,
+      # stop and reboot here and composes "system.task.<verb>" for each
+      # (node_instance_gating.rb:106).
+      #
+      # It exists to satisfy the oracle in
+      # spec/lib/powernode_system/system_task_category_vocabulary_spec.rb: a key
+      # in PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS must be CLAIMED by
+      # an executor, or that exception set is an unchecked back door into the
+      # registered vocabulary. start/stop are declared there (they left
+      # System::Task::COMMANDS), so without this they would be unclaimed.
+      #
+      # `reboot` is listed too even though it is still a Task command. It is
+      # genuinely dual-actuated — the agent's RebootHandler runs `systemctl
+      # reboot` INSIDE the guest, this executor power-cycles through the
+      # provider — and naming only two of the three verbs this class gates
+      # would make the constant a lie about its own dispatch table. The lint
+      # takes a set difference in one direction, so the extra entry is inert.
+      ACTION_CATEGORIES = %w[
+        system.task.start
+        system.task.stop
+        system.task.reboot
+      ].freeze
+
       # The three provider-plane lifecycle verbs. `terminate` is deliberately
       # ABSENT: it carries four controls that live only in ProvisioningService
       # (INV-1, SDWAN peer detach, deploy-key revocation, the terminate meter
