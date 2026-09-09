@@ -127,6 +127,16 @@ module PowernodeSystem
             #     the per-environment overlay in Ai::AutonomyGate. Nil ⇒ no
             #     overlay (core mode has no fleet rows to place).
             environment_resolver: "System::EnvironmentResolver",
+            #   * environment_promotion_mode_listener — called when an
+            #     environment's auto_promote_on_publish flips: pinned ⇒ freeze
+            #     every module's pin at its current version; following ⇒
+            #     drop the pins (Environment campaign, incr. 4).
+            environment_promotion_mode_listener: "System::ModuleEnvironmentPin::PromotionModeListener",
+            #   * blast_radius_estimator — how many instances a gated
+            #     operation's params touch, for the per-environment
+            #     max_blast_radius ceiling (Ai::EnvironmentResolution.blast_radius,
+            #     Environment campaign incr. 4). Same class, second entry point.
+            blast_radius_estimator: "System::EnvironmentResolver::BlastRadius",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }

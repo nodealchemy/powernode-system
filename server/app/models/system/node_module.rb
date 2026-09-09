@@ -89,8 +89,13 @@ module System
     scope :for_instance, ->(instance) { where(node_instance_id: instance) }
 
     # Versioning associations
+    # Declared BEFORE :versions so the pins go first on destroy (they reference versions; incr. 4).
+    has_many :environment_pins, class_name: "System::ModuleEnvironmentPin", dependent: :destroy,
+                                inverse_of: :node_module
     has_many :versions, class_name: "System::NodeModuleVersion", dependent: :destroy
     belongs_to :current_version, class_name: "System::NodeModuleVersion", optional: true
+    # The promotion ladder (Environment campaign, incr. 4): one pin per pinned
+    # environment. See System::ModuleEnvironmentPin.
 
     # Node assignments (which nodes have this module)
     has_many :node_module_assignments, class_name: "System::NodeModuleAssignment", dependent: :destroy
@@ -648,6 +653,112 @@ module System
       arm_restart_after_update!(version) if ARM_ON_TRANSITIONS.include?(transition)
       true
     end
+
+    # === The promotion ladder (Environment campaign, increment 4) ===
+
+    # The version this module serves to nodes in `environment`. A FOLLOWING
+    # environment (Ai::Environment#follows_publish?) serves current_version,
+    # exactly as before. A PINNED environment serves ONLY its pin — nil, i.e.
+    # nothing, until a version has been promoted into it. Pins are written by
+    # a promotion (#promote_in_environment!), a rollback, and the freeze that
+    # pins every module at its current version the moment an environment is
+    # flipped to pinned (System::ModuleEnvironmentPin::PromotionModeListener);
+    # a publish never touches a pinned plane.
+    def served_version_for(environment)
+      return current_version if environment.nil? || environment.follows_publish?
+
+      environment_pins.find_by(environment_id: environment.id)&.node_module_version
+    end
+
+    # Promote `version` into `environment` — one rung. Refuses a version that
+    # is not already what the predecessor rung serves (a skip), a following
+    # environment (it has no pin to move; it follows publishes), a version of
+    # another module, and an unmountable artifact. Arms restart_after_update
+    # for the version so the environment's nodes restart onto it once they
+    # have materialised it (the same per-instance digest check every promotion
+    # relies on; nodes elsewhere are unaffected because they never receive
+    # this version until their own plane is promoted).
+    #
+    # @return [System::ModuleEnvironmentPin]
+    # @raise [LadderError]
+    def promote_in_environment!(environment:, version:, actor: nil)
+      refusal = ladder_refusal(environment: environment, version: version)
+      raise LadderError, refusal if refusal
+
+      write_pin!(environment, version, actor)
+    end
+
+    # Repoint an environment's pin to an EARLIER usable version — the ladder's
+    # undo. A rollback goes DOWN: the target must be below what the plane
+    # serves; the predecessor rung is not consulted.
+    def rollback_in_environment!(environment:, version:, actor: nil)
+      refusal = ladder_refusal(environment: environment, version: version, direction: :down)
+      raise LadderError, refusal if refusal
+
+      write_pin!(environment, version, actor)
+    end
+
+    # Why `version` may not be promoted into (direction :up) or rolled back
+    # in (direction :down) `environment`, or nil when it may. Read by the
+    # gate context BEFORE an approval is parked, so a doomed step never asks
+    # a person to approve it.
+    #
+    # :up — the version must be what the predecessor rung serves: the nearest
+    # lower PINNED environment's pin, or, when no pinned environment sits
+    # below, the current version (what every following plane runs). That is
+    # the one-rung rule; skipping a pinned rung is refused.
+    # :down — the version must be strictly below what the plane serves now.
+    def ladder_refusal(environment:, version:, direction: :up)
+      return "environment is required" if environment.nil?
+      return "version is required" if version.nil?
+      return "version v#{version.version_number} belongs to a different module" if version.node_module_id != id
+      if environment.follows_publish?
+        return "environment #{environment.slug} follows publishes and cannot be promoted into or rolled back; " \
+               "pin it first (environment_update auto_promote_on_publish: false)"
+      end
+      return "v#{version.version_number} has no mountable artifact; it cannot be promoted anywhere" unless version.rollback_usable?
+
+      case direction
+      when :down then downward_refusal(environment, version)
+      else            upward_refusal(environment, version)
+      end
+    end
+
+    class LadderError < StandardError; end
+
+    private
+
+    def upward_refusal(environment, version)
+      predecessor = environment.ladder_predecessor
+      below = predecessor ? served_version_for(predecessor) : current_version
+      return nil if below&.id == version.id
+
+      rung = predecessor ? "what #{predecessor.slug} serves" : "the current version (what the following environments run)"
+      "v#{version.version_number} is not #{rung} (#{below ? "v#{below.version_number}" : 'nothing'}); " \
+        "#{predecessor ? 'promote it there first' : 'publish it first'} — the ladder is climbed one rung at a time"
+    end
+
+    def downward_refusal(environment, version)
+      serving = served_version_for(environment)
+      return "environment #{environment.slug} serves nothing yet; there is nothing to roll back" if serving.nil?
+      return nil if version.version_number < serving.version_number
+
+      "v#{version.version_number} is not below what #{environment.slug} serves (v#{serving.version_number}); " \
+        "a rollback goes down — promote instead"
+    end
+
+    def write_pin!(environment, version, actor)
+      pin = environment_pins.find_or_initialize_by(environment_id: environment.id)
+      pin.assign_attributes(account_id: account_id, node_module_version: version,
+                            promoted_by_id: actor.respond_to?(:id) ? actor.id : nil,
+                            promoted_by_type: actor.respond_to?(:id) ? actor.class.name : (actor.presence || "unknown"),
+                            promoted_at: Time.current)
+      pin.save!
+      arm_restart_after_update!(version)
+      pin
+    end
+
+    public
 
     # The newest version that could serve the fleet if promoted, excluding
     # whatever is current. This is deliberately NOT "the previous row": the

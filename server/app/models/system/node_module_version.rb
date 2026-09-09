@@ -17,6 +17,10 @@ module System
     belongs_to :node_module, class_name: "System::NodeModule"
     belongs_to :created_by, class_name: "User", optional: true
     has_many   :module_artifacts, class_name: "System::ModuleArtifact", dependent: :destroy
+    # The pinned planes serving this row (Environment campaign, incr. 4); the
+    # FK cascades on delete.
+    has_many   :environment_pins, class_name: "System::ModuleEnvironmentPin", dependent: :delete_all,
+                                  inverse_of: :node_module_version
 
     # === Validations ===
     validates :version_number, presence: true,
