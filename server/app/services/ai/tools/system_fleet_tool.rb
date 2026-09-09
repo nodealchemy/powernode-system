@@ -583,11 +583,19 @@ module Ai
       # system_drain_instance_pool and system_return_pooled_instance (all via
       # System::InstancePoolService#terminate_member) and system_reap_agent_fleet
       # (System::AgentFleetMissionService) — plus several skill executors that
-      # call the service below this chokepoint entirely. system_recycle_pool is
-      # mapped to system.instances.control, the SAME permission this action
-      # checks, so a caller holding exactly that credential can still destroy
-      # instances with no policy evaluation by naming a different verb. That is
-      # the next increment, not a claim this one already covers.
+      # call the service below this chokepoint entirely. Each is mapped to
+      # system.instances.control, the SAME permission this action checks, so a
+      # caller holding exactly that credential can still destroy instances with
+      # no policy evaluation by naming a different verb.
+      #
+      # PARTIALLY narrowed by the Environment campaign's increment 7, and only
+      # for one of the four: system_recycle_pool passes `actor:` by PRINCIPAL, so
+      # an agent calling it is subject to the pool plane's own escalation rules
+      # (InstancePoolService#plane_withholds_destruction) exactly as the 60s
+      # sweep is, while a real user is not. That is a plane consult, NOT a gate —
+      # nothing parks, nothing replays. drain, return_pooled_instance and
+      # reap_agent_fleet still evaluate no policy at all. Gate-routing them needs
+      # an executor + replay contract this increment does not own.
       #
       # system_destroy_instance is NOT declared here. It is a registry-row
       # cascade delete, not a provider terminate: no seeded action_category
@@ -7354,9 +7362,17 @@ module Ai
       # 60s in its 2-phase tick. Lets impatient operators (or AI agents
       # diagnosing a wedged pool) force the recycle phase without
       # waiting for the next tick.
+      # `actor:` is decided by the PRINCIPAL, not by the door: a real user
+      # forcing the phase is the person a plane's escalation exists to reach, so
+      # the plane does not withhold from them. An AGENT principal takes the
+      # :reaper branch and is withheld on a protected plane exactly as the 60s
+      # sweep is — the verb is not gate-routed yet (see the census above
+      # #declare_action), so this is the only place that distinction can be made.
       def recycle_pool(params)
         pool = ::System::InstancePool.where(account_id: @account.id).find(params[:id])
-        result = ::System::InstancePoolService.recycle_stale_members!(pool: pool)
+        result = ::System::InstancePoolService.recycle_stale_members!(
+          pool: pool, actor: user ? :operator : :reaper
+        )
         success_result(pool: pool.reload.to_summary, recycle_result: result)
       end
 
