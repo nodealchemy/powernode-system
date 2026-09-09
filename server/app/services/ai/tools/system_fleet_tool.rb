@@ -1078,6 +1078,7 @@ module Ai
             description: "List nodes for the current account, one page at a time (name order). Read count and has_more to tell a complete answer from a truncated one.",
             parameters: {
               template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to filter nodes by their bound template" },
+              **ENVIRONMENT_FILTER_PARAMETER,
               **PAGINATION_PARAMETERS
             }
           },
@@ -1240,10 +1241,11 @@ module Ai
 
           # === Instances ===
           "system_list_instances" => {
-            description: "List instances (filterable by node_id or template_id)",
+            description: "List instances, optionally narrowed by node_id, template_id, or the plane of the fleet they run on (environment).",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only that node's instances" },
               template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" },
+              **ENVIRONMENT_FILTER_PARAMETER,
               **PAGINATION_PARAMETERS
             }
           },
@@ -1524,6 +1526,7 @@ module Ai
             description: "List node templates for the current account, optionally narrowed by a name/description substring. For a purpose-based search ('something that serves web traffic') use system_discover_templates instead — this one is a literal filter.",
             parameters: {
               q: { type: "string", required: false, description: "Case-insensitive substring matched against template name OR description" },
+              **ENVIRONMENT_FILTER_PARAMETER,
               **PAGINATION_PARAMETERS
             }
           },
@@ -1998,8 +2001,8 @@ module Ai
 
           # === Slice 7 — pre-warmed instance pools ===
           "system_list_instance_pools" => {
-            description: "List instance pools for the current account with size + occupancy stats",
-            parameters: { **PAGINATION_PARAMETERS }
+            description: "List instance pools for the current account with size + occupancy stats, optionally narrowed to one plane of the fleet (environment).",
+            parameters: { **ENVIRONMENT_FILTER_PARAMETER, **PAGINATION_PARAMETERS }
           },
           "system_get_instance_pool" => {
             description: "Fetch a single instance pool with full member roster + counts",
@@ -2944,7 +2947,7 @@ module Ai
       # === Nodes ===
 
       def list_nodes(params)
-        scope = account_nodes
+        scope = narrow_to_environment(account_nodes, params)
         scope = scope.where(node_template_id: params[:template_id]) if params[:template_id].present?
         paginated_result(:nodes, scope, params, sort: :name, direction: :asc) { |n| serialize_node(n) }
       end
@@ -3871,8 +3874,12 @@ module Ai
 
       # === Instances ===
 
+      # The plane filter reads the INSTANCE's own environment_id, not its
+      # node's. They agree unless an operator has moved one row deliberately,
+      # and when they disagree the instance's own plane is the one its policy
+      # and its served module versions are resolved in.
       def list_instances(params)
-        scope = account_instances
+        scope = narrow_to_environment(account_instances, params)
         scope = scope.where(node_id: params[:node_id]) if params[:node_id].present?
         if params[:template_id].present?
           node_ids = account_nodes.where(node_template_id: params[:template_id]).pluck(:id)
@@ -4869,7 +4876,7 @@ module Ai
       # parameters at all, so an agent looking for one template had to pull the
       # whole catalog and filter client-side.
       def list_templates(params = {})
-        templates = account_templates.includes(:node_platform)
+        templates = narrow_to_environment(account_templates.includes(:node_platform), params)
         if (q = params[:q].to_s.strip).present?
           like = "%#{::ActiveRecord::Base.sanitize_sql_like(q)}%"
           templates = templates.where(
@@ -6934,8 +6941,10 @@ module Ai
       # ────────────────────────────────────────────────────────────────
 
       def list_instance_pools(params)
-        paginated_result(:pools, ::System::InstancePool.for_account(@account), params,
-                         sort: :name, direction: :asc, &:to_summary)
+        scope = narrow_to_environment(
+          ::System::InstancePool.for_account(@account).includes(:environment), params
+        )
+        paginated_result(:pools, scope, params, sort: :name, direction: :asc, &:to_summary)
       end
 
       def get_instance_pool(params)
