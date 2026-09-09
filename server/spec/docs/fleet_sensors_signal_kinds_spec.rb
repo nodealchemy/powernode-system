@@ -1,6 +1,12 @@
 # frozen_string_literal: true
 
-require "spec_helper"
+# rails_helper, not spec_helper: CORE_SETTING_KEYS below resolves core
+# constants (Ai::Mission) to hold each documented SiteSetting key to the
+# constant that declares it. Under spec_helper those constants are not
+# autoloadable, so this file passed only when some OTHER spec in the same
+# process had loaded Rails — run alone it errored with "uninitialized constant
+# Ai", i.e. the guard's verdict depended on what it was run beside.
+require "rails_helper"
 
 # IMP-e839dd0ffc05 — signal-kind fabrication across docs/FLEET_SENSORS.md.
 #
