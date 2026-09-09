@@ -4,7 +4,8 @@ require "rails_helper"
 
 # The janitor seam exists because SystemTaskReaperJob was INERT for five weeks
 # while reporting success every hour. Its list call went to
-# WorkerApi::TasksController, scoped through
+# WorkerApi::TasksController — since DELETED, along with its routes, as step 3
+# of knowledge 01a031f2 — scoped through
 # `System::Node.where(worker: current_worker)`, and `node.worker_id` is NULL on
 # every node that has ever existed — so the scope was the empty set and the
 # reaper's honest report of what it saw ("0 stuck tasks") was indistinguishable
@@ -38,11 +39,28 @@ RSpec.describe "Api::V1::System::WorkerApi::Janitor", type: :request do
   describe "visibility of a task on a worker-less node" do
     let!(:task) { stuck_task }
 
-    it "is INVISIBLE through the old worker-scoped tasks endpoint" do
-      get "/api/v1/system/worker_api/tasks", params: { status: "pending" }, headers: headers
+    # ASSERTED AGAINST THE SCOPE, not the endpoint, because the endpoint is
+    # gone: WorkerApi::TasksController and its routes were deleted as step 3 of
+    # knowledge 01a031f2. This is the SAME property the HTTP version pinned —
+    # the worker-scoped resolution that made the reaper inert — expressed at the
+    # level that actually caused it, so it survives the controller's removal.
+    #
+    # Kept rather than dropped with the controller: without it this file becomes
+    # a spec that only exercises the janitor, which "would pass just as happily
+    # if the bug had never existed, and would not notice its return" (the header
+    # above). The contrast between the two scopes IS the regression.
+    it "is INVISIBLE through the worker-scoped resolution the reaper used" do
+      node_ids = ::System::Node.where(worker: worker).pluck(:id)
+      instance_ids = ::System::NodeInstance.where(node_id: node_ids).pluck(:id)
 
-      expect(response).to have_http_status(:ok)
-      expect(JSON.parse(response.body).dig("data", "tasks")).to be_empty
+      worker_scoped = ::System::Task.where(
+        "(operable_type = 'System::Node' AND operable_id IN (?)) OR " \
+        "(operable_type = 'System::NodeInstance' AND operable_id IN (?))",
+        node_ids, instance_ids
+      )
+
+      expect(node_ids).to be_empty, "node.worker_id is the NULL column that made the scope empty"
+      expect(worker_scoped).not_to include(task)
     end
 
     it "is VISIBLE through the account-scoped janitor endpoint" do

@@ -33,9 +33,14 @@ Rails.application.routes.draw do
 
         # === Operator-facing CRUD ===
         # Public-facing tasks API: list/show/create/cancel/abort only.
-        # start/complete/fail stay worker-only via
-        # /api/v1/system/worker_api/tasks to keep AASM's single source
-        # of truth honest. Cancel is the user-initiated transition off a
+        # start/complete/fail are NOT here, to keep AASM's single source of
+        # truth honest — they belong to whoever is actually running the task.
+        # That used to read "worker-only via /api/v1/system/worker_api/tasks";
+        # those routes are gone (see the WorkerApi block below), and the honest
+        # statement is that the ON-NODE AGENT drives them through
+        # node_api/status/tasks/:id/{acknowledge,complete,fail}, with the
+        # janitor seam handling terminal reaping. Cancel is the user-initiated
+        # transition off a
         # pending/scheduled task; abort (IMP-8153d1952ff8) is the operator's
         # recourse on a wedged :running task, short of the hourly reaper.
         resources :tasks, only: %i[index show create] do
@@ -754,26 +759,33 @@ Rails.application.routes.draw do
             post "tasks/:id/reap",  to: "janitor#reap"
           end
 
-          resources :tasks, only: %i[index show] do
-            collection do
-              get :pending
-            end
-            member do
-              # `post :execute` was here until campaign 01a0790b increment 3.
-              # It resolved the task through #worker_operations, which scopes
-              # on System::Node.where(worker: current_worker) — and no node has
-              # ever had a worker — so it 404'd for every task id ever minted.
-              # The on-node agent, served every pending row ON ITS OWN
-              # INSTANCE by NodeApi::StatusController#pending_tasks (which
-              # reads current_instance.tasks, with no command filter), was the
-              # real actuator all along.
-              post :start
-              put :progress
-              post :complete
-              post :fail
-              post :events
-            end
-          end
+          # `resources :tasks` and Api::V1::System::WorkerApi::TasksController
+          # were REMOVED here. Every one of its actions resolved through
+          # #worker_operations, which scopes on
+          # System::Node.where(worker: current_worker) — and node.worker_id is
+          # NULL on every node that has ever existed (157/157 measured on live
+          # ops-hub 2026-08-24), with nothing in the tree assigning it. So the
+          # scope was the EMPTY SET: index/pending served nothing and
+          # show/start/progress/complete/fail/events 404'd for every task id.
+          # `create` was not even routed (`only: %i[index show]`).
+          #
+          # This is step 3 of the recorded decision in knowledge 01a031f2, "the
+          # node agent is the authoritative dispatch spine" — see
+          # JanitorController's header, which had already reached "the
+          # controller's nine remaining actions are dead too; removing them is
+          # filed separately". `post :execute` and the dispatch chain behind it
+          # went in campaign 01a0790b increment 3; this is the remainder.
+          #
+          # NOT retained as a no-op: the empty scope is a DATA state, not a
+          # structural one, so setting node.worker_id would have sprung the
+          # surface back to life — letting a worker with no dispatcher claim and
+          # complete tasks it never ran. The same decision explicitly rejects
+          # making that scope true.
+          #
+          # The live equivalents: the on-node agent uses
+          # node_api/status/tasks* (NodeApi::StatusController, reading
+          # current_instance.tasks), and SystemTaskReaperJob uses the janitor
+          # seam above.
           resources :nodes, only: %i[index show update] do
             member do
               put :ssh_keys

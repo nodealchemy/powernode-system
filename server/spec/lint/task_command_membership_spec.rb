@@ -70,7 +70,13 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
       "models/system/preserves_task_history_spec.rb" => [ 28 ],
-      "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 27 ],
+      # MOVED 27 -> 28 when that spec's header gained the note recording
+      # WorkerApi::TasksController's deletion. RE-AUDITED — still the
+      # `create(:system_task, ..., command: command, ...)` inside #stuck_task,
+      # whose `command:` keyword still defaults to the listed literal
+      # "sync_modules", and every caller in the file still takes that default
+      # or passes one.
+      "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 28 ],
       "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
       # `command` is a keyword param of the local #task_with helper (:955),
       # defaulting to "sync_modules". AUDITED by grepping every `task_with`
@@ -119,7 +125,14 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # what caught the error. RE-AUDITED — 498 is the
       # `::System::Task.create!(` head inside that heredoc, still synthetic
       # source handed to the scanner as a string, still constructing nothing.
-      "lint/on_node_task_producer_census_spec.rb" => [ 498 ],
+      #
+      # MOVED 498 -> 496 when Api::V1::System::WorkerApi::TasksController was
+      # deleted: its `#create` key left this census (net -2 lines above the
+      # site). RE-AUDITED — 496 is still the `::System::Task.create!(` head
+      # inside the <<~RUBY heredoc of the "FIRES on the variable shape a literal
+      # grep cannot see" example, still synthetic source handed to the scanner
+      # as a string, still constructing nothing.
+      "lint/on_node_task_producer_census_spec.rb" => [ 496 ],
       # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
       # here until increment 3 DELETED it, along with the
       # System::Runtime::ControlInstance class it covered and the server

@@ -4,7 +4,8 @@
 #
 # WHAT WENT WRONG BEFORE, AND WHY IT WAS INVISIBLE
 #
-# This job read /api/v1/system/worker_api/tasks, whose scope is
+# This job read /api/v1/system/worker_api/tasks — an endpoint since DELETED
+# along with its controller (step 3 of knowledge 01a031f2) — whose scope was
 # `System::Node.where(worker: current_worker)`. `node.worker_id` is NULL on
 # every node that has ever existed (157/157 on live ops-hub, 2026-08-24) and
 # nothing assigns it. The scope resolved to the empty set, so every hourly run

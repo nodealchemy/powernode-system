@@ -30,9 +30,11 @@ module Api
         # left untouched as vestigial, to retire under step 3 of that decision —
         # and step 3 has since landed: campaign 01a0790b increment 3 deleted
         # #execute, its route, and the whole dispatch chain behind it. The
-        # controller's nine remaining actions are dead too (no caller anywhere,
-        # and all unreachable through the same empty scope); removing them is
-        # filed separately.
+        # controller's nine remaining actions were dead too (no caller anywhere,
+        # and all unreachable through the same empty scope). That filed
+        # follow-up has since landed: TasksController and its `resources :tasks`
+        # block are GONE, and this janitor seam is the only worker-facing task
+        # surface left. See the WorkerApi routes block for the removal note.
         #
         # THE TENANCY ANCHOR IS THE PRINCIPAL, NEVER A PARAMETER
         #

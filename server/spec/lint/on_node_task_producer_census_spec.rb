@@ -220,15 +220,13 @@ RSpec.describe "on-node task producer census" do
       # design, and re-adding one would be a lie), but it means a FUTURE
       # System::Task producer added to this file is caught by the uncensused-
       # producer direction only, not by the ratchet.
-      "app/controllers/api/v1/system/worker_api/tasks_controller.rb#create" => {
-        disposition: :out_of_scope, sites: 1,
-        why: "`operable.tasks.build(operation_params)` — the worker-authenticated creation " \
-             "endpoint. Unresolvable (the command arrives in permitted params). Out of scope " \
-             "because its operable is resolved through #find_operable, which scopes to nodes " \
-             "this worker manages, and because the worker creates tasks it is itself about to " \
-             "execute rather than queueing work for a third party. If that changes it becomes " \
-             "the same shape as the ExecuteTask gap above."
-      }
+      #
+      # SAME SHAPE, SECOND INSTANCE: the key for
+      # app/controllers/api/v1/system/worker_api/tasks_controller.rb#create was
+      # removed when that controller was deleted. Its `create` was never even
+      # routed (`only: %i[index show]`), and every other action resolved through
+      # an empty #worker_operations scope. Step 3 of knowledge 01a031f2 — see
+      # the WorkerApi routes block for the full reasoning.
     }.freeze
 
     DISPOSITIONS = %i[gated acknowledged out_of_scope gap].freeze
