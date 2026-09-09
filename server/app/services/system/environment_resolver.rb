@@ -30,6 +30,20 @@ module System
     # for gating purposes.
     PEER_KEYS     = %w[peer_id sdwan_peer_id].freeze
     NETWORK_KEYS  = %w[network_id sdwan_network_id].freeze
+    # A VIP lives on ONE network, so it is placed exactly where an action on
+    # that network is placed. Sdwan::VipFailoverExecutor names only the VIP.
+    VIRTUAL_IP_KEYS = %w[virtual_ip_id sdwan_virtual_ip_id].freeze
+    # A certificate carries no plane and no instance. It resolves through what
+    # TERMINATES it: the services holding it as their local_certificate, then
+    # those services' VIPs (their own and their backends'), then those VIPs'
+    # networks. A cert fronting a static backend_host with no VIP anywhere
+    # resolves to nothing, which is honest — there is no fleet row to place.
+    CERTIFICATE_KEYS = %w[certificate_id acme_certificate_id].freeze
+    # A federation peer is the one SDWAN-adjacent row that carries an
+    # environment_id of its own (it represents a whole remote cell, not an
+    # instance in this one), so it is read directly. The column is optional:
+    # an unplaced peer still resolves to nothing.
+    FEDERATION_PEER_KEYS = %w[federation_peer_id].freeze
 
     def self.call(account:, params:)
       new(account, params).call
@@ -91,7 +105,10 @@ module System
         through_plural ||
         through_task_attributes ||
         through_peer ||
-        through_network
+        through_network ||
+        through_virtual_ip ||
+        through_certificate ||
+        through_federation_peer
     end
 
     # The blast radius of a params set: how many instances it touches. Core's
@@ -145,13 +162,54 @@ module System
                when "System::InstancePool" then live.where(instance_pool_id: ids).count
                end
       end
+      if (id = first.(PEER_KEYS)).present?
+        return live.where(id: ::Sdwan::Peer.where(account_id: account.id, id: id.to_s)
+                                           .select(:node_instance_id)).count
+      end
       if (id = first.(NETWORK_KEYS)).present?
         network = ::Sdwan::Network.where(account_id: account.id).find_by(id: id.to_s)
-        return network ? live.where(id: network.peers.select(:node_instance_id)).count : nil
+        return network ? instances_behind_networks(account, live, [ id ]) : nil
       end
+      if (id = first.(VIRTUAL_IP_KEYS)).present?
+        vip = ::Sdwan::VirtualIp.where(account_id: account.id).find_by(id: id.to_s)
+        return vip ? instances_behind_networks(account, live, [ vip.sdwan_network_id ]) : nil
+      end
+      if (id = first.(CERTIFICATE_KEYS)).present?
+        networks = certificate_network_ids(account, id.to_s)
+        return networks.empty? ? nil : instances_behind_networks(account, live, networks)
+      end
+      # DELIBERATELY unmeasured: FEDERATION_PEER_KEYS. A federation-peer
+      # remediation acts on the LINK to a remote cell, so counting local
+      # instances would name rows the action does not touch, and counting the
+      # remote cell's is not this account's to count. nil means "no ceiling
+      # applies" (Ai::EnvironmentResolution#blast_radius) — the peer's own
+      # plane still drives every other escalation rule, which is the part that
+      # protects the control plane here.
       nil
     rescue ActiveRecord::StatementInvalid
       nil
+    end
+
+    # The VIPs a certificate is terminated on, as network ids: services holding
+    # it as their local_certificate, then those services' own backend_vip plus
+    # every member backend's, then those VIPs' networks.
+    def self.certificate_network_ids(account, certificate_id)
+      services = ::Sdwan::Service.where(account_id: account.id, local_certificate_id: certificate_id)
+      vip_ids = services.pluck(:backend_vip_id) +
+                ::Sdwan::ServiceBackend.where(account_id: account.id,
+                                              sdwan_service_id: services.select(:id)).pluck(:backend_vip_id)
+      vip_ids = vip_ids.compact.uniq
+      return [] if vip_ids.empty?
+
+      ::Sdwan::VirtualIp.where(account_id: account.id, id: vip_ids).pluck(:sdwan_network_id).compact.uniq
+    end
+
+    def self.instances_behind_networks(account, live, network_ids)
+      ids = Array(network_ids).compact.map(&:to_s).reject(&:blank?)
+      return 0 if ids.empty?
+
+      live.where(id: ::Sdwan::Peer.where(account_id: account.id, sdwan_network_id: ids)
+                                  .select(:node_instance_id)).count
     end
 
     private
@@ -213,15 +271,54 @@ module System
       id = first_present(NETWORK_KEYS)
       return nil if id.blank?
 
-      network = ::Sdwan::Network.where(account_id: @account.id).find_by(id: id)
-      return nil unless network
+      return nil unless ::Sdwan::Network.where(account_id: @account.id).exists?(id: id)
 
-      environments = ::Ai::Environment.where(
-        id: ::System::NodeInstance.where(id: network.peers.select(:node_instance_id)).select(:environment_id)
-      ).to_a
-      strictest(environments)
+      strictest_across_networks([ id ])
     rescue ActiveRecord::StatementInvalid
       nil
+    end
+
+    def through_virtual_ip
+      id = first_present(VIRTUAL_IP_KEYS)
+      return nil if id.blank?
+
+      vip = ::Sdwan::VirtualIp.where(account_id: @account.id).find_by(id: id.to_s)
+      vip && strictest_across_networks([ vip.sdwan_network_id ])
+    rescue ActiveRecord::StatementInvalid
+      nil
+    end
+
+    def through_certificate
+      id = first_present(CERTIFICATE_KEYS)
+      return nil if id.blank?
+
+      strictest_across_networks(self.class.certificate_network_ids(@account, id.to_s))
+    rescue ActiveRecord::StatementInvalid
+      nil
+    end
+
+    def through_federation_peer
+      id = first_present(FEDERATION_PEER_KEYS)
+      return nil if id.blank?
+
+      ::System::FederationPeer.where(account_id: @account.id).includes(:environment)
+                              .find_by(id: id.to_s)&.environment
+    rescue ActiveRecord::StatementInvalid
+      nil
+    end
+
+    # An action reaching several networks is placed in the STRICTEST plane any
+    # of their peers' instances sits in — protected first, then highest tier.
+    def strictest_across_networks(network_ids)
+      ids = Array(network_ids).compact.map(&:to_s).reject(&:blank?)
+      return nil if ids.empty?
+
+      environments = ::Ai::Environment.where(
+        id: ::System::NodeInstance.where(
+          id: ::Sdwan::Peer.where(account_id: @account.id, sdwan_network_id: ids).select(:node_instance_id)
+        ).select(:environment_id)
+      ).to_a
+      strictest(environments)
     end
 
     def first_present(keys)
