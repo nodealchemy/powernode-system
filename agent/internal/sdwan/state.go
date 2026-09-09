@@ -195,10 +195,14 @@ type ObservedBgpSession struct {
 // network (compiler returned no script — usually a transient state during
 // network creation before the chain is initialized).
 type FirewallConf struct {
-	Table      string `json:"table"`     // "powernode_sdwan"
-	Chain      string `json:"chain"`     // "sdwan_<8-char-net-id>"
-	Interface  string `json:"interface"` // "wg-sdwan-<8-char-net-id>"
-	Policy     string `json:"policy"`    // "accept" | "drop"
+	Table string `json:"table"` // "powernode_sdwan"
+	Chain string `json:"chain"` // "sdwan_<8-char-net-id>"
+	// The DEVICE, and it is NOT the chain's namespace: "wg-sdwan-<short_id>",
+	// a per-host integer from Sdwan::HostVrfAssignment, while Chain above is
+	// "sdwan_<network_handle>". Believing these shared a suffix is what broke
+	// the orphan chain reap (IMP-01a07d31); never derive one from the other.
+	Interface  string `json:"interface"`
+	Policy     string `json:"policy"` // "accept" | "drop"
 	RuleCount  int    `json:"rule_count"`
 	Ruleset    string `json:"ruleset"` // full nft script
 	CompiledAt string `json:"compiled_at"`

@@ -33,6 +33,20 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
+// The nft namespace the SDWAN compilers own. Both chain families live in one
+// table, which is why a single listing answers for both (IMP-01a07d31).
+//
+// These MIRROR the platform: Sdwan::FirewallCompiler::TABLE and its
+// `sdwan_<handle>` chain, Sdwan::NatCompiler's `sdwan_nat_<handle>`. They are
+// PREFIXES only — never build a chain name by appending to them. The suffix is
+// the network handle, which the agent learns from the conf the platform sends
+// and cannot derive from anything local.
+const (
+	sdwanNftTable     = "powernode_sdwan"
+	filterChainPrefix = "sdwan_"
+	natChainPrefix    = "sdwan_nat_"
+)
+
 // Manager owns the reconcile loop. One per agent process.
 type Manager struct {
 	Client          *transport.Client
@@ -333,32 +347,16 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	}
 
 	// Reap orphan interfaces — those we have no desired config for.
-	// Also tear down their nft chains so policy doesn't linger.
 	if existing, err := m.Applier.ListSdwanInterfaces(ctx); err == nil {
 		for _, name := range existing {
 			if _, want := desiredNames[name]; !want {
 				_ = m.Applier.RemoveInterface(ctx, name)
-				// Best-effort chain teardown — name carries the network's
-				// 8-char short id (everything after "wg-sdwan-").
-				if len(name) > len("wg-sdwan-") {
-					netShort := name[len("wg-sdwan-"):]
-					if m.NftablesApplier != nil {
-						_ = m.NftablesApplier.RemoveChain(ctx, name, &FirewallConf{
-							Table: "powernode_sdwan",
-							Chain: "sdwan_" + netShort,
-						})
-					}
-					// Slice 7b — also reap the nat chain.
-					if m.NatApplier != nil {
-						_ = m.NatApplier.RemoveChain(ctx, name, &NatConf{
-							Table: "powernode_sdwan",
-							Chain: "sdwan_nat_" + netShort,
-						})
-					}
-				}
 			}
 		}
 	}
+
+	// Reap orphan nft chains, so a departed network's policy doesn't linger.
+	m.reapOrphanChains(ctx, desired)
 
 	// Slice 9b — apply the union of VIPs across all networks once, after
 	// per-network reconcile. Loopback is host-global; reconciling per
@@ -885,4 +883,94 @@ func countHealthyPeers(reports []PeerStatusReport) int {
 		}
 	}
 	return n
+}
+
+// reapOrphanChains deletes SDWAN chains the platform no longer asks for.
+//
+// IMP-01a07d31. This used to hang off the orphan-INTERFACE loop and derive the
+// chain from the interface name:
+//
+//	netShort := name[len("wg-sdwan-"):]        // "7"
+//	RemoveChain(..., Chain: "sdwan_"+netShort) // "sdwan_7"
+//
+// Those suffixes are different strings. The chain is `sdwan_<network_handle>`
+// (Sdwan::FirewallCompiler#net_short_id); the interface is
+// `wg-sdwan-<short_id>`, a small per-host integer from
+// Sdwan::HostVrfAssignment. FirewallCompiler's header states the rule
+// outright — "The chain suffix and the interface suffix are NOT the same
+// string; do not derive one from the other (IMP-54fdf40fbf9d)" — and this was
+// the same defect, fixed there and left standing here. Every reap named a
+// chain that never existed, nft answered "Object does not exist", and this
+// path swallows that by design, so it failed silently for as long as it
+// existed. It coincidentally hit only for a static-only network with no VRF
+// assignment, where the interface carries the handle too.
+//
+// It now derives NOTHING. Chains are reaped the way interfaces are: ACTUAL
+// (listed from the kernel) minus DESIRED (the names the platform sent, on
+// FirewallConf.Chain / NatConf.Chain). That needs no mapping between the two
+// namespaces, and it survives an agent restart — an in-memory iface→chain
+// pairing built at apply time would not, because an orphan is by definition
+// absent from the tick that would rebuild it.
+//
+// FAIL-SAFE on an incomplete payload. TopologyCompiler emits firewall AND nat
+// for every network, so a desired network missing one means the payload is
+// partial (an older platform, a truncated response). The desired set is then
+// unknowable, and reaping against an incomplete set would delete live policy —
+// so that family's reap is skipped for the tick. A chain left standing is
+// recoverable; a deleted one is an outage.
+func (m *Manager) reapOrphanChains(ctx context.Context, desired *DesiredConfig) {
+	if m.NftablesApplier == nil || desired == nil {
+		return
+	}
+
+	desiredChains := make(map[string]struct{}, len(desired.Networks)*2)
+	filterComplete, natComplete := true, true
+	for _, net := range desired.Networks {
+		if net.Firewall != nil && net.Firewall.Chain != "" {
+			desiredChains[net.Firewall.Chain] = struct{}{}
+		} else {
+			filterComplete = false
+		}
+		if net.Nat != nil && net.Nat.Chain != "" {
+			desiredChains[net.Nat.Chain] = struct{}{}
+		} else {
+			natComplete = false
+		}
+	}
+	if !filterComplete && !natComplete {
+		return
+	}
+
+	actual, err := m.NftablesApplier.ListChains(ctx, sdwanNftTable)
+	if err != nil {
+		// Could not look. Not the same as "nothing is there" — say nothing
+		// about the present rather than act on an answer we do not have.
+		return
+	}
+
+	for _, chain := range actual {
+		if _, want := desiredChains[chain]; want {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(chain, natChainPrefix):
+			// Ordered before the filter prefix: `sdwan_nat_` starts with
+			// `sdwan_`, so testing the filter prefix first would route every
+			// nat chain to the wrong applier.
+			if natComplete && m.NatApplier != nil {
+				_ = m.NatApplier.RemoveChain(ctx, "", &NatConf{
+					Table: sdwanNftTable, Chain: chain,
+				})
+			}
+		case strings.HasPrefix(chain, filterChainPrefix):
+			if filterComplete {
+				_ = m.NftablesApplier.RemoveChain(ctx, "", &FirewallConf{
+					Table: sdwanNftTable, Chain: chain,
+				})
+			}
+		}
+		// Anything else in the table belongs to someone else. The table is
+		// shared, and a reaper that deletes what it cannot attribute is worse
+		// than one that deletes nothing.
+	}
 }

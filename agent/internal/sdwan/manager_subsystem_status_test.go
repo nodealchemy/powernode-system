@@ -37,6 +37,9 @@ type fakeWgApplier struct {
 	readErr      error
 	applyErr     error
 	removed      []string
+	// existing is what the kernel reports back, which is how a test puts an
+	// ORPHAN in front of the reaper (IMP-01a07d31).
+	existing []string
 }
 
 func (f *fakeWgApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, peers []PeerConf, privateKey string) error {
@@ -61,7 +64,7 @@ func (f *fakeWgApplier) ReadActualState(ctx context.Context, name string) (*Actu
 }
 
 func (f *fakeWgApplier) ListSdwanInterfaces(ctx context.Context) ([]string, error) {
-	return nil, nil
+	return f.existing, nil
 }
 
 // togglingApplier stands in for any applier whose failure we want to turn
@@ -70,6 +73,11 @@ func (f *fakeWgApplier) ListSdwanInterfaces(ctx context.Context) ([]string, erro
 type togglingApplier struct {
 	err     error
 	failFor string
+	// chains is the kernel's answer to ListChains; removedChains records what
+	// the reaper asked to delete, BY CHAIN NAME — the whole subject of
+	// IMP-01a07d31 is which name it names.
+	chains        []string
+	removedChains []string
 }
 
 func (t *togglingApplier) ApplyRuleset(ctx context.Context, networkID string, fw *FirewallConf) error {
@@ -80,16 +88,29 @@ func (t *togglingApplier) ApplyRuleset(ctx context.Context, networkID string, fw
 }
 
 func (t *togglingApplier) RemoveChain(ctx context.Context, networkID string, fw *FirewallConf) error {
+	if fw != nil {
+		t.removedChains = append(t.removedChains, fw.Chain)
+	}
 	return nil
 }
 
-type togglingNat struct{ err error }
+func (t *togglingApplier) ListChains(ctx context.Context, table string) ([]string, error) {
+	return t.chains, nil
+}
+
+type togglingNat struct {
+	err           error
+	removedChains []string
+}
 
 func (t *togglingNat) ApplyRuleset(ctx context.Context, networkID string, nat *NatConf) error {
 	return t.err
 }
 
 func (t *togglingNat) RemoveChain(ctx context.Context, networkID string, nat *NatConf) error {
+	if nat != nil {
+		t.removedChains = append(t.removedChains, nat.Chain)
+	}
 	return nil
 }
 
