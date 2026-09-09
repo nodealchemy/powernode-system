@@ -379,7 +379,7 @@ will stop something.
 | Update pool — everything else | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` (no gate site reads it) | Size **decreases**, `min_size`, `description`, regions, metadata, `status: "paused"`/`"draining"` → `@pool.update!` inline, on **both** doors |
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
 | Drain | **Ungated** | `system.instance_pool_drain` → `require_approval` | `POST .../:id/drain` and `system_drain_instance_pool`, both on `InstancePoolService.drain!` — the declared `require_approval` has no gate site to enforce it |
-| Recycle stale | **Ungated** | *(no declared category at all)* | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members** |
+| Recycle stale | **Ungated, but PLANE-SCOPED for an autonomous caller** (Environment campaign, incr. 7) | measured as `system.instance_terminate` — consulted, not gated | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members**. The reaper (and an AGENT calling the MCP verb) now asks the pool's plane whether it would escalate a terminate there, and on a plane that would — protected (`ops`), supervised (`prod`), or listing the category in `approval_required_categories` — it withholds: members are flagged `pool_recycle_withheld_at`, one `system.pool.recycle_withheld_by_plane` event is emitted, and the summary reports `withheld_by_plane`. `dev` and `ci` churn exactly as before. A real USER forcing the phase through `system_recycle_pool` is not withheld — a person is what the escalation exists to reach |
 | Acquire | **Ungated** | `system.instance_pool_acquire` → `auto_approve` | `system_acquire_pooled_instance`, plus four internal callers, on `InstancePoolService.acquire!` |
 
 Two qualifications on the word "ungated", both of which shrink it further:
@@ -389,7 +389,11 @@ Two qualifications on the word "ungated", both of which shrink it further:
   `return if worker_authenticated?`, so the worker-JWT caller described below
   passes with neither a gate nor a permission check. That short-circuit is
   deliberate and load-bearing (the cron has no user), but it means the 60 s
-  path clears *both* controls, not just the gate.
+  path clears *both* controls, not just the gate. Since the Environment
+  campaign's increment 7 it meets one control of its own: the plane check in the
+  Recycle-stale row above. That is not a gate — a sweep with no principal has
+  nobody to park an approval for — it is the reaper declining to destroy where
+  the plane says a person decides.
 - **On MCP, three fleet verbs are gated.** `SystemFleetTool`'s `declare_action`
   calls carrying `action_category`/`executor_class`/`gate_context`/`on_proceed`
   — the quartet `BaseTool#gated_action?` reads — are
