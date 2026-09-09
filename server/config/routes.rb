@@ -160,9 +160,9 @@ Rails.application.routes.draw do
           resources :module_dependencies
         end
 
-        # NodeModuleVersion lifecycle — operator-driven AASM transitions
-        # through built → staging → blessed → live → retired. Body:
-        # { target_state: "<state>" }. See NodeModuleVersion::PROMOTION_TRANSITIONS.
+        # NodeModuleVersion promotion — moves a PINNED environment's pin onto
+        # this version, one rung at a time. Body: { environment: "<slug|id>" }.
+        # See System::NodeModule#ladder_refusal for the rules.
         resources :node_module_versions, only: [] do
           member { post :promote }
         end

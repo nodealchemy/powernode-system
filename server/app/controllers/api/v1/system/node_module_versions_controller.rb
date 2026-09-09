@@ -3,41 +3,60 @@
 module Api
   module V1
     module System
-      # Operator-facing endpoints on NodeModuleVersion. Currently exposes
-      # only the promotion transition (POST :id/promote) so operators can
-      # advance a version through the lifecycle (built → staging → blessed
-      # → live → retired) without rails console access.
+      # Operator-facing endpoints on NodeModuleVersion. Exposes the promotion
+      # step (POST :id/promote) so an operator can move a PINNED environment
+      # onto this version without rails console access.
       #
-      # The state machine itself lives on System::NodeModuleVersion#promote_to!.
-      # See PROMOTION_TRANSITIONS in that model for allowed transitions.
+      # Environment campaign, increment 4b: the decorative
+      # built → staging → blessed → live ladder this endpoint used to advance
+      # is gone. A promotion now names the environment it promotes INTO and
+      # writes that plane's pin (System::ModuleEnvironmentPin), which is what
+      # its nodes converge on. The rules live in
+      # System::NodeModule#ladder_refusal: one pinned rung at a time, never
+      # into a following plane, never an unmountable artifact.
+      #
+      # This endpoint is the OPERATOR path and is not gated by the autonomy
+      # policy — a signed-in human with system.modules.update decides. The
+      # agent-facing twin (system_promote_module_version) carries the gate and
+      # parks in a protected plane. Both consult PromotionCriteria through
+      # ManualPromotionAdvisory and WARN rather than refuse (operator ruling
+      # D17, 2026-09-02).
       class NodeModuleVersionsController < BaseController
         before_action :set_node_module_version, only: [ :promote ]
 
         # POST /api/v1/system/node_module_versions/:id/promote
-        # Body: { target_state: "staging|blessed|live|retired|built" }
+        # Body: { environment: "<slug or id>" }
         def promote
           require_permission("system.modules.update")
 
-          target_state = params[:target_state].to_s
-          if target_state.blank?
-            return render_error("target_state is required", 400)
+          slug = params[:environment].to_s
+          return render_error("environment is required", 400) if slug.blank?
+
+          environment = ::Ai::Environment.find_for_account(current_account.id, slug)
+          return render_error("environment '#{slug}' not found in this account", 404) if environment.nil?
+
+          node_module = @version.node_module
+          if (refusal = node_module.ladder_refusal(environment: environment, version: @version))
+            return render_error(refusal, 422)
           end
 
-          # IMP-d6826c872d88 — consult PromotionCriteria and WARN; never refuse.
-          # This endpoint is the operator's escape hatch (small fleets,
-          # incidents, rollbacks), so it keeps its authority; what it no longer
-          # does is promote past the evidence bar in silence. The verdict is
-          # computed BEFORE the transition and recorded only after it lands.
-          # See System::Fleet::ManualPromotionAdvisory (operator ruling D17).
+          # Consult PromotionCriteria and WARN; never refuse. The escape hatch
+          # keeps its authority (small fleets, incidents, rollbacks); what it
+          # does not do is promote past the evidence bar in silence. The verdict
+          # is computed BEFORE the pin moves and recorded only once it landed.
           advisory = ::System::Fleet::ManualPromotionAdvisory.evaluate(
-            version: @version, target_state: target_state
+            version: @version, environment: environment
           )
 
-          @version.promote_to!(target_state)
+          pin = node_module.promote_in_environment!(
+            environment: environment, version: @version, actor: current_user
+          )
 
           render_success(
             {
-              node_module_version: serialize_version(@version.reload)
+              node_module_version: serialize_version(@version.reload),
+              environment: environment.slug,
+              promoted_at: pin.promoted_at&.iso8601
             }.merge(
               advisory.record!(
                 source: ::System::Fleet::ManualPromotionAdvisory::REST_SOURCE,
@@ -49,10 +68,7 @@ module Api
               )
             )
           )
-        rescue ArgumentError => e
-          # Raised by promote_to! for unknown states.
-          render_error(e.message, 422)
-        rescue ::System::NodeModuleVersion::InvalidTransition => e
+        rescue ::System::NodeModule::LadderError => e
           render_error(e.message, 422)
         end
 
@@ -70,12 +86,8 @@ module Api
             id: version.id,
             node_module_id: version.node_module_id,
             version_number: version.version_number,
-            promotion_state: version.promotion_state,
             changelog: version.changelog,
-            staging_baked_at: version.staging_baked_at,
-            blessed_at: version.blessed_at,
-            live_at: version.live_at,
-            retired_at: version.retired_at,
+            pinned_in: version.pinned_environments.pluck(:slug).sort,
             created_at: version.created_at
           }
         end

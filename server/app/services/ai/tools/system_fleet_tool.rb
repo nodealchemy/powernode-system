@@ -1061,9 +1061,8 @@ module Ai
             module_version_id: { type: "string", required: false },
             module_name: { type: "string", required: false, description: "Module slug as CI publishes it (system_module_publish_target)" },
             gitea_repo: { type: "string", required: false, description: "OCI repo full name; defaults to powernode/<module_name> (system_module_publish_target)" },
-            target_state: { type: "string", required: false, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
-                            description: "Module promotion target — the set System::NodeModuleVersion#promote_to! accepts; " \
-                                         "which of them is reachable from the version's current state is governed by PROMOTION_TRANSITIONS" },
+            environment: { type: "string", required: false, description: "Environment slug or id (a plane of the fleet)" },
+            version_id: { type: "string", required: false },
             provider_id: { type: "string", required: false },
             provider_region_id: { type: "string", required: false },
             provider_instance_type_id: { type: "string", required: false },
@@ -1159,7 +1158,7 @@ module Ai
               node_platform_id: { type: "string", required: false, description: "UUID of a NodePlatform to retarget the template to" },
               admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
               config: { type: "object", required: false, description: "Template config hash (init_script, boot_mode, sdwan_network_id, …) — REPLACES the stored hash" },
-              environment: { type: "string", required: false, description: "Environment slug (dev|ci|staging|ops|prod, or an account-defined one) or Ai::Environment id to move the template into. Nodes, instances and pools created from the template inherit it; existing rows keep theirs. Unknown values are refused." }
+              environment: { type: "string", required: false, description: "Environment slug or Ai::Environment id to move the template into. The set is per-account and extensible, so it is NOT a closed enum — call environment_list for this account's planes (seeded: dev, ci, staging, ops, prod). Nodes, instances and pools created from the template inherit it; existing rows keep theirs. Unknown values are refused." }
             }
           },
           "system_delete_module" => {
@@ -1604,41 +1603,30 @@ module Ai
             }
           },
           "system_promote_module_version" => {
-            # IMP-65bea54e4081 — the description is the surface an agent reads
-            # BEFORE calling, so the ladder/pointer split has to be stated here
-            # too: correcting it only in the response teaches the caller after
-            # it has already acted on "promote" meaning "ship it".
-            description: "Promote a NodeModuleVersion through its lifecycle " \
-                         "(built | staging | blessed | live | retired). " \
-                         "Advances promotion_state ONLY — it does not change which version the fleet serves " \
-                         "(NodeModule#current_version_id); check promoted_to_current in the response. " \
-                         "Promoting to 'blessed' consults the same PromotionCriteria the automated lane " \
-                         "gates on (healthy instances actually running this version's digest, for the dwell) " \
-                         "and returns the verdict as `promotion_criteria`; an unmet verdict adds " \
-                         "`promotion_criteria_warning` and writes an auditable override event naming you. " \
-                         "This call is NEVER refused on those grounds — promoting anyway is permitted and " \
-                         "recorded — but read the warning before you treat a blessing as evidence-backed. " \
-                         "APPROVAL-GATED (release.promote): when policy requires approval this returns " \
-                         "{pending: true} with a deferred_operation_id and NOTHING is promoted until an " \
-                         "operator approves — do not retry and do not report the promotion as done on that " \
-                         "response. The seeded Release Manager row is require_approval whatever its trust " \
-                         "tier; a caller with no matching row meets the unmatched default and parks.",
+            description: "Promote a module version INTO an environment: writes that plane's pin " \
+                         "(System::ModuleEnvironmentPin), which is what its nodes converge on and restart " \
+                         "onto. One rung at a time — the version must already be what the next-lower PINNED " \
+                         "environment serves, or, when none sits below, the module's current version. A " \
+                         "FOLLOWING environment (auto_promote_on_publish true — dev, ci, ops by default) is " \
+                         "never promoted into: it serves whatever is published. Consults the same " \
+                         "PromotionCriteria the automated lane gates on (healthy instances on the rung below " \
+                         "actually running this digest, for the dwell) and returns the verdict as " \
+                         "`promotion_criteria`; an unmet verdict adds `promotion_criteria_warning` and writes " \
+                         "an auditable override event naming you. This call is NEVER refused on those grounds " \
+                         "— promoting anyway is permitted and recorded — but read the warning before you " \
+                         "treat a promotion as evidence-backed. APPROVAL-GATED (release.promote) IN THE TARGET " \
+                         "PLANE: when policy requires approval — prod is seeded supervised, so it always does " \
+                         "— this returns {pending: true} with a deferred_operation_id and NOTHING is promoted " \
+                         "until an operator approves; do not retry and do not report the promotion as done on " \
+                         "that response.",
             parameters: {
-              environment: { type: "string", required: false,
-                             description: "THE LADDER (Environment campaign): slug or id of the environment to promote INTO. " \
-                                          "With it, module_id (+ optional version_id, default = what the predecessor rung " \
-                                          "serves) are used and module_version_id/target_state are ignored. One rung at a " \
-                                          "time: the version must already be what the next-lower environment serves; a " \
-                                          "following environment (auto_promote_on_publish true) cannot be promoted into. " \
-                                          "Gated in the TARGET plane — prod parks for a person." },
-              module_id: { type: "string", required: false, description: "With environment: the NodeModule to promote" },
-              version_id: { type: "string", required: false, description: "With environment: the version to pin there (default: the predecessor rung's served version)" },
-              module_version_id: { type: "string", required: false, description: "Legacy ladder: UUID of the NodeModuleVersion to promote" },
-              target_state: { type: "string", required: false, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
-                             description: "Target promotion state — one of System::NodeModuleVersion::PROMOTION_STATES " \
-                                          "(built | staging | blessed | live | retired). Which of them this version can " \
-                                          "actually reach is governed by PROMOTION_TRANSITIONS from its current state; " \
-                                          "'built' is reachable only back out of 'staging'." }
+              environment: { type: "string", required: true,
+                             description: "Slug or id of the environment to promote INTO. Must be a pinned " \
+                                          "environment; gated in THAT plane." },
+              module_id: { type: "string", required: true, description: "The NodeModule to promote" },
+              version_id: { type: "string", required: false,
+                            description: "The version to pin there. Defaults to what the rung below serves " \
+                                         "(or the module's current version when no pinned rung sits below)." }
             }
           },
 
@@ -5178,41 +5166,23 @@ module Ai
         error_result(e.message)
       end
 
-      # IMP-65bea54e4081 — promotion advances the LADDER and nothing else.
-      # NodeModuleVersion#promote_to! writes promotion_state plus AT MOST one
-      # timestamp column (a staging->built step is a legal transition that
-      # stamps nothing); it does not touch NodeModule#current_version_id, which
-      # is the pointer the node-facing download resolves
-      # (Api::V1::System::NodeApi::ModulesController#download reads
-      # `@module.current_version&.artifact`). So `promoted: true` on its own
-      # says a label changed, and is indistinguishable from a fleet change.
+      # === The promotion verb (Environment campaign, increment 4b) ===
       #
-      # This verb deliberately does NOT call NodeModule#promote_to_version!:
-      # RestartAfterUpdate.arm! fires there, so making promotion move the
-      # pointer would restart services fleet-wide.
+      # A promotion moves ONE pinned environment's pin and nothing else. It
+      # does not touch NodeModule#current_version_id — that pointer is what the
+      # FOLLOWING planes serve, and moving it is a publish, not a promotion.
+      # The pin write arms RestartAfterUpdate for the version, so the promoted
+      # plane's nodes restart onto it once they have materialised it, and nodes
+      # in every other plane are untouched because they are never served this
+      # version until their own plane is promoted.
       #
-      # Whether it SHOULD is now DECIDED — no. See
-      # docs/design/promotion-ladder-semantics.md (IMP-c7d618b0b72f): the
-      # rungs are eligibility labels, `live`/`retired` are historical stamps,
-      # and current_version_id stays the sole actuator. So advancing a version
-      # to `live` here is a record that it was promoted, NOT a claim about what
-      # the fleet serves — which is why the fields below are read back from the
-      # row. The second question in that pair — whether publish should stop
-      # auto-promoting past the ladder (ModulePublicationProcessor defaults
-      # auto_promote? to true, so a never-staged version can become current) —
-      # is still open in that note's section 6; it changes every deployment and
-      # needs operator sign-off.
-      #
-      # promote_to_version! is the SANCTIONED writer of current_version_id and
-      # the only one that arms a restart — not the only writer. This comment
-      # previously named TWO others, then SIX; both counts went stale
-      # (IMP-b7abf6c777da took ModuleVersionService#create_version out of the
-      # set — an ordinary spec edit no longer moves the pointer). The
-      # executable census, which fails on any writer it does not list, is
-      # spec/lint/node_module_current_version_write_seam_spec.rb — read it
-      # rather than a count here, which is the kind of sentence that goes stale.
-      # That is why the fields below are read back from the row rather than
-      # inferred from which method ran.
+      # This replaced a verb that advanced a decorative
+      # built -> staging -> blessed -> live label: `promoted: true` used to mean
+      # a label had changed and was indistinguishable from a fleet change. The
+      # fields below are read back from the row for the same reason — what a
+      # plane serves is a fact about the plane, not about which method ran.
+      # current_version_id's write census is
+      # spec/lint/node_module_current_version_write_seam_spec.rb.
       #
       # What this reports, modelled on the REST publish path's
       # promoted_to_current (ModulePublicationsController#create):
@@ -5222,44 +5192,7 @@ module Ai
       #                             so it states the delta, not causation)
       #   current_version_id      — what the fleet serves, whichever row that is.
       def promote_module_version(params)
-        return promote_module_version_in_environment(params) if params[:environment].present?
-
-        version = ::System::NodeModuleVersion
-                  .joins(:node_module)
-                  .where(system_node_modules: { account_id: @account.id })
-                  .find(params[:module_version_id])
-        node_module = version.node_module
-        current_before = node_module.current_version_id
-
-        # IMP-d6826c872d88 — the twin of the operator REST promote, and it had
-        # the same hole: promote_to! straight through, PromotionCriteria never
-        # consulted, so an agent could bless a version no instance had run and
-        # read back an unqualified `promoted: true`. Consult and WARN (operator
-        # ruling D17) — the verdict rides in the result and an override lands in
-        # the audit log; the call is never refused on these grounds. Evaluated
-        # BEFORE the transition, recorded only once it has landed.
-        advisory = ::System::Fleet::ManualPromotionAdvisory.evaluate(
-          version: version, target_state: params[:target_state]
-        )
-
-        version.promote_to!(params[:target_state])
-
-        current_after = node_module.reload.current_version_id
-        success_result(
-          {
-            promoted: true,
-            promoted_to_current: current_after == version.id,
-            current_version_changed: current_after != current_before,
-            current_version_id: current_after,
-            version: serialize_version(version.reload)
-          }.merge(
-            advisory.record!(
-              source: ::System::Fleet::ManualPromotionAdvisory::MCP_SOURCE,
-              actor_id: promotion_actor_id,
-              actor_type: promotion_actor_type
-            )
-          )
-        )
+        promote_module_version_in_environment(params)
       end
 
       # Which principal is overriding the promotion criteria. SystemFleetTool
@@ -5282,11 +5215,10 @@ module Ai
         ::System::Fleet::ManualPromotionAdvisory::UNKNOWN_ACTOR
       end
 
-      # The gated promotion's context (HIER-P2B-ENG). Same account-scoped
-      # `find` as the body, and the transition probed against
-      # PROMOTION_TRANSITIONS with the message promote_to! would raise, so a
-      # foreign, unknown or illegal promotion keeps its inline error and parks
-      # nothing. The PromotionCriteria advisory is deliberately NOT evaluated
+      # The gated promotion's context (HIER-P2B-ENG). Runs the SAME
+      # #ladder_target! the body does — account-scoped lookups plus
+      # NodeModule#ladder_refusal — so a foreign, unknown or ladder-refused
+      # promotion keeps its inline error and parks nothing. The PromotionCriteria advisory is deliberately NOT evaluated
       # here: it is advisory (never a refusal) and is recorded once the
       # transition lands, by the body, on the replay. Anchored to the version
       # row; the description carries the module, the version number and the
@@ -5299,16 +5231,35 @@ module Ai
       # System::EnvironmentResolver reads as the explicit plane).
       def promote_module_version_in_environment(params)
         node_module, environment, version = ladder_target!(params)
+
+        # Consult PromotionCriteria and WARN, never refuse (operator ruling D17,
+        # 2026-09-02): the manual verbs exist to act when the evidence is not
+        # there — a two-instance fleet, an incident, a rollback. What they must
+        # not do is promote past the evidence bar in silence, so the verdict
+        # rides in the result and an override lands in the audit log. Evaluated
+        # BEFORE the pin moves, recorded only once it has landed.
+        advisory = ::System::Fleet::ManualPromotionAdvisory.evaluate(
+          version: version, environment: environment
+        )
+
         pin = node_module.promote_in_environment!(environment: environment, version: version, actor: @user || @agent)
         success_result(
-          promoted: true,
-          module_id: node_module.id,
-          module_name: node_module.name,
-          environment: environment.slug,
-          version: serialize_version(version.reload),
-          pinned_at: pin.promoted_at&.iso8601,
-          note: "nodes in #{environment.slug} converge on their next reconcile and restart once they have " \
-                "materialised v#{version.version_number} (restart_after_update)"
+          {
+            promoted: true,
+            module_id: node_module.id,
+            module_name: node_module.name,
+            environment: environment.slug,
+            version: serialize_version(version.reload),
+            pinned_at: pin.promoted_at&.iso8601,
+            note: "nodes in #{environment.slug} converge on their next reconcile and restart once they have " \
+                  "materialised v#{version.version_number} (restart_after_update)"
+          }.merge(
+            advisory.record!(
+              source: ::System::Fleet::ManualPromotionAdvisory::MCP_SOURCE,
+              actor_id: promotion_actor_id,
+              actor_type: promotion_actor_type
+            )
+          )
         )
       rescue ::System::NodeModule::LadderError, ArgumentError => e
         error_result(e.message)
@@ -5320,6 +5271,8 @@ module Ai
       def ladder_target!(params, direction: :up)
         node_module = account_modules.find_by(id: params[:module_id].to_s)
         raise ArgumentError, "module_id is required and must name a module in this account" unless node_module
+
+        raise ArgumentError, "environment is required: name the plane to promote into" if params[:environment].blank?
 
         environment = ::Ai::Environment.find_for_account(@account.id, params[:environment].to_s)
         raise ArgumentError, "environment '#{params[:environment]}' not found in this account" unless environment
@@ -5351,27 +5304,7 @@ module Ai
       end
 
       def promote_module_version_gate_context(params)
-        return promote_module_version_in_environment_gate_context(params) if params[:environment].present?
-
-        version = ::System::NodeModuleVersion
-                  .joins(:node_module)
-                  .where(system_node_modules: { account_id: @account.id })
-                  .find(params[:module_version_id])
-        target = params[:target_state].to_s
-        raise ArgumentError, "unknown state: #{target}" unless ::System::NodeModuleVersion::PROMOTION_STATES.include?(target)
-
-        allowed = ::System::NodeModuleVersion::PROMOTION_TRANSITIONS.fetch(version.promotion_state, [])
-        unless allowed.include?(target)
-          raise ArgumentError,
-                "cannot transition from #{version.promotion_state} to #{target} (allowed: #{allowed.join(', ').presence || 'none'})"
-        end
-
-        deferred_tool_call_context(params).merge(
-          source_type: "System::NodeModuleVersion",
-          source_id: version.id,
-          description: "Promote module '#{version.node_module.name}' v#{version.version_number} from " \
-                       "#{version.promotion_state} to #{target} on the promotion ladder"
-        )
+        promote_module_version_in_environment_gate_context(params)
       end
 
       # === Drift ===
@@ -6899,20 +6832,16 @@ module Ai
           id: v.id,
           module_id: v.node_module_id,
           version_number: v.version_number,
-          promotion_state: v.promotion_state,
-          # IMP-65bea54e4081 — promotion_state is the ladder; `current` is
-          # whether the fleet actually serves this row (NodeModuleVersion#
-          # current?, i.e. the module's current_version_id). The two are
-          # independent: nothing in the promotion path moves the pointer, and
-          # publish can make a never-promoted version current. Without this
-          # field a "live" version and the served version look the same here.
+          # `current` is whether the FOLLOWING planes serve this row (the
+          # module's current_version_id); `pinned_in` names the pinned planes
+          # serving it. Those are the only two senses in which a version is
+          # "the one that runs" — increment 4b deleted the decorative label
+          # that used to sit here and read like a third.
           current: v.current?,
           # Environment campaign, incr. 4: the pinned planes serving this row.
           pinned_in: pinned_environment_slugs(v),
           oci_digest: v.try(:oci_digest),
           fsverity_root_hash: v.try(:fsverity_root_hash),
-          live_at: v.try(:live_at)&.iso8601,
-          retired_at: v.try(:retired_at)&.iso8601
         }
       end
 
