@@ -1218,12 +1218,22 @@ module System
       candidates = pool.node_instances.where(pool_state: %w[warming ready errored]).pluck(:id)
       candidates.each_slice(200) do |batch|
         ::System::NodeInstance.where(id: batch).find_each do |member|
-          member.update_columns(
-            config: (member.config || {}).merge(
-              "pool_recycle_withheld_at" => now.iso8601,
-              "pool_recycle_withheld_reason" => reason
-            ),
-            updated_at: now
+          # THROUGH THE SEAM, not update_columns(config: <whole document>).
+          # This was a read-modify-write of the entire jsonb document: it
+          # re-serialises whatever `config` this object loaded, so any key
+          # another writer set between the load and the write is erased. The
+          # four telemetry writers are exactly the victims
+          # System::ConfigDocument exists to protect, and a withheld-recycle
+          # stamp — a diagnostic — must not be able to clobber them.
+          #
+          # #merge_config! writes the two keys IN POSTGRES against the current
+          # row (jsonb ||), so concurrent keys survive. `touch:` defaults true,
+          # which replaces the explicit `updated_at: now`; the stamp is now
+          # per-row rather than one batch value, which is if anything more
+          # accurate about when each member was actually marked.
+          member.merge_config!(
+            "pool_recycle_withheld_at" => now.iso8601,
+            "pool_recycle_withheld_reason" => reason
           )
         end
       end
