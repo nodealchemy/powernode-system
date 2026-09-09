@@ -1461,9 +1461,15 @@ RSpec.describe System::InstancePool, type: :model do
       expect(pool).not_to be_valid
     end
 
+    # The other tenant's pool needs the other tenant's TEMPLATE: a pool on a
+    # foreign template is refused by #node_template_belongs_to_account, because
+    # the environment is inherited through it (Environment campaign, incr. 1).
+    # Reusing this account's template made the fixture — not the uniqueness
+    # scope — the thing under test.
     it "name uniqueness scoped to account" do
       other = create(:account)
-      described_class.create!(account: other, node_template: node_template,
+      described_class.create!(account: other,
+                              node_template: create(:system_node_template, account: other),
                               name: "p1", target_size: 0, min_size: 0, max_size: 0,
                               lifecycle_class: "ephemeral")
       expect(pool).to be_valid
