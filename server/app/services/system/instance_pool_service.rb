@@ -29,6 +29,14 @@ module System
     class PoolAtMaxCapacityError < PoolError; end
     class InvalidPoolStateError < PoolError; end
 
+    # The category the reaper's destructive arms are MEASURED as. It is not
+    # gated here (the reaper is a 60s sweep with no principal, so it has nobody
+    # to park an approval for) — it is the category the plane's own rules are
+    # consulted under, and it names what actually happens: a provider terminate.
+    # Reusing the declared category rather than inventing a reaper-private one
+    # is what makes an operator's existing configuration apply here.
+    REAPER_ACTION_CATEGORY = "system.instance_terminate"
+
     # How long a dead pool member's DB records survive before the reaper
     # prunes them. Pool members are ephemeral (a CI builder lives minutes), so
     # a week is already generous for post-mortem inspection while keeping the
@@ -124,8 +132,8 @@ module System
       new(account: pool.account).drain!(pool: pool)
     end
 
-    def self.recycle_stale_members!(pool:)
-      new(account: pool.account).recycle_stale_members!(pool: pool)
+    def self.recycle_stale_members!(pool:, actor: :reaper)
+      new(account: pool.account).recycle_stale_members!(pool: pool, actor: actor)
     end
 
     def initialize(account:)
@@ -597,7 +605,34 @@ module System
     #     provider every 60s tick; once the cap is spent the member is
     #     abandoned LOUDLY (error log + high-severity FleetEvent) and never
     #     retried again.
-    def recycle_stale_members!(pool:)
+    # `actor:` says WHO is asking, because the answer differs by plane.
+    #
+    # :reaper (the default, and what the worker's 60s tick reaches through
+    # POST /instance_pools/:id/recycle_stale) is autonomous destruction. On a
+    # plane whose own rules escalate a terminate — protected, supervised, or
+    # listing the category outright — it does NOT happen: the members are
+    # flagged, one event is emitted, and the summary says the plane withheld it.
+    # The reaper cannot park an approval (no principal, no request to release),
+    # so the alternative to withholding is not "a person decides", it is "the
+    # sweep destroys a control-plane VM at 03:00 and the audit trail is a log
+    # line". A wedged pool on a protected plane is the conservative failure and
+    # it is visible three ways: the flag, the event, and the growing deficit.
+    #
+    # :operator is a PERSON forcing the phase (Ai::Tools::SystemFleetTool passes
+    # it only when it holds a real user). The plane check does not apply, and
+    # deliberately: a person is the thing the escalation exists to reach.
+    #
+    # NOT closed by this: an AGENT principal calling system_recycle_pool takes
+    # the :reaper branch here, but drain / return_pooled_instance /
+    # reap_agent_fleet still reach terminate_member with no policy evaluation at
+    # all (the census in Ai::Tools::SystemFleetTool names all four doors). Those
+    # need gate-routing with a replay contract, which is the next increment —
+    # this one stops the AUTONOMOUS lane from doing it unasked.
+    def recycle_stale_members!(pool:, actor: :reaper)
+      if actor.to_sym == :reaper && (withheld = plane_withholds_destruction(pool))
+        return withhold_recycle!(pool: pool, reason: withheld)
+      end
+
       # Seed-reload phase runs FIRST and OUTSIDE the FOR UPDATE transaction
       # below — power-cycling a PVE VM is a slow external API call (multiple
       # seconds per stop+start), and holding a row lock across it would
@@ -762,7 +797,7 @@ module System
           end
         end
 
-        # F1-10 — flag, never terminate: the claim may still back a live
+    # F1-10 — flag, never terminate: the claim may still back a live
         # workload. The config flag + FleetEvent surface the leak to the
         # operator; without them a consumer crash after acquire! leaked
         # the member forever while replenish! counted it against
@@ -1146,6 +1181,77 @@ module System
         }
       )
     end
+
+    # The plane's own escalation rules, asked as a QUESTION rather than as a
+    # gate: run the overlay over a permissive baseline and see whether the plane
+    # would have escalated a terminate here. Returns the reason string the
+    # overlay wrote, or nil when the plane leaves autonomous destruction alone
+    # (dev, ci — the planes whose pools exist to churn).
+    #
+    # The nil branch is defensive only: `belongs_to :environment` is required,
+    # so a persisted pool always has a plane. It is here so an unsaved or
+    # partially-built pool in a caller's test double cannot make the reaper
+    # raise on a plane lookup instead of doing its work.
+    private def plane_withholds_destruction(pool)
+      environment = pool.environment
+      return nil if environment.nil?
+
+      verdict = ::Ai::EnvironmentPolicyOverlay.apply(
+        { policy: "auto_approve" },
+        environment: environment,
+        action_category: REAPER_ACTION_CATEGORY
+      )
+      verdict[:environment_escalation].presence
+    rescue StandardError => e
+      # A failure to ASK is not permission to destroy. This mirrors
+      # Ai::EnvironmentResolution's stance that nil must not silently switch the
+      # protected-plane rules off.
+      "plane check failed: #{e.class}"
+    end
+
+    # The withheld tick: stamp every member the destructive arms would have
+    # taken, emit ONE event for the pool, and report it in the summary the
+    # caller logs. Flag-only, mirroring the claimed-stale arms — which were
+    # themselves demoted from auto-terminate after an incident.
+    private def withhold_recycle!(pool:, reason:)
+      now = Time.current
+      candidates = pool.node_instances.where(pool_state: %w[warming ready errored]).pluck(:id)
+      candidates.each_slice(200) do |batch|
+        ::System::NodeInstance.where(id: batch).find_each do |member|
+          member.update_columns(
+            config: (member.config || {}).merge(
+              "pool_recycle_withheld_at" => now.iso8601,
+              "pool_recycle_withheld_reason" => reason
+            ),
+            updated_at: now
+          )
+        end
+      end
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: pool.account,
+        kind: "system.pool.recycle_withheld_by_plane",
+        severity: :medium,
+        payload: {
+          pool_id: pool.id,
+          pool_name: pool.name,
+          environment_slug: pool.environment&.slug,
+          action_category: REAPER_ACTION_CATEGORY,
+          reason: reason,
+          withheld_member_count: candidates.size
+        },
+        source: "instance_pool_service"
+      )
+
+      Rails.logger.info(
+        "[InstancePoolService] plane withheld autonomous recycle in '#{pool.name}' " \
+        "(#{pool.environment&.slug}): #{reason}"
+      )
+
+      { withheld_by_plane: reason, withheld_members: candidates.size,
+        environment_slug: pool.environment&.slug }
+    end
+
 
     # Terminate one pool member, returning whether it actually happened.
     #
