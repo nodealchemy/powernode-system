@@ -63,7 +63,7 @@ module System
         created_at: @node_module.created_at,
         updated_at: @node_module.updated_at,
         # Latest version snapshot — used by the operator UI's per-node module
-        # detail view to surface version_number + promotion_state at a glance.
+        # detail view to surface the latest version at a glance.
         # Returns nil when the module has no versions yet (e.g. brand-new
         # module before its first publish round-trip).
         latest_version: latest_version_summary
@@ -92,10 +92,7 @@ module System
       {
         id: v.id,
         version_number: v.version_number,
-        promotion_state: v.promotion_state,
         oci_digest: v.oci_digest,
-        blessed_at: v.blessed_at,
-        live_at: v.live_at,
         created_at: v.created_at
       }
     end

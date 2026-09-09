@@ -7,11 +7,12 @@ module Api
         # Module version upload endpoint for the agent's commit CLI.
         # Accepts a base64-encoded tar.zst payload + sha256 + changelog,
         # runs defense-in-depth verification server-side, and creates
-        # a NodeModuleVersion at promotion_state: "built".
+        # a NodeModuleVersion row.
         #
-        # The platform's ModulePromotionService handles the canary →
-        # staging → blessed → live progression; agent commits land at
-        # "built" and require explicit operator promotion.
+        # A committed version is not served to anything by being committed: a
+        # following plane serves the module's current version and a pinned one
+        # serves its pin, so exposing this build takes a publish or a promotion
+        # into a plane (NodeModule#promote_in_environment!).
         #
         # Phase 4 of the agent stub implementation plan. Stub #13
         # (commit CLI) consumes this endpoint via --push.
@@ -20,7 +21,7 @@ module Api
 
           # POST /api/v1/system/node_api/modules/:id/versions
           # Body: { tar_b64, sha256, size_bytes, changelog }
-          # Returns: { version: { id, version_number, promotion_state } }
+          # Returns: { version: { id, version_number } }
           def create
             result = ::System::AgentModuleCommitService.call(
               node_module: @module,
@@ -40,7 +41,6 @@ module Api
               version: {
                 id: result.version.id,
                 version_number: result.version.version_number,
-                promotion_state: result.version.promotion_state,
                 data_file_name: result.version.data_file_name
               }
             )

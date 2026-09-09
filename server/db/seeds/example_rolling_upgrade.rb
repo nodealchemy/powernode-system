@@ -54,13 +54,15 @@ end
 puts "  ✅ Module: #{nginx_module.name}"
 
 v_old = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 1)
-v_old.assign_attributes(promotion_state: "live", changelog: "nginx 1.24.0") if v_old.new_record?
+v_old.assign_attributes(changelog: "nginx 1.24.0") if v_old.new_record?
 v_old.save!
 
 v_new = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 2)
-v_new.assign_attributes(promotion_state: "blessed", changelog: "nginx 1.26.0") if v_new.new_record?
+v_new.assign_attributes(changelog: "nginx 1.26.0") if v_new.new_record?
 v_new.save!
-puts "  ✅ Versions: v1 (live, nginx 1.24.0), v2 (blessed, nginx 1.26.0)"
+# v1 is what the fleet serves; v2 is the upgrade target the skill plans.
+nginx_module.promote_to_version!(v_old) if nginx_module.current_version_id.nil?
+puts "  ✅ Versions: v1 (served, nginx 1.24.0), v2 (candidate, nginx 1.26.0)"
 
 # ── Run the skill in plan mode ────────────────────────────────────────────
 

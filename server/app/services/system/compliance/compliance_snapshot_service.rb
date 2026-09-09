@@ -99,7 +99,6 @@ module System
               {
                 id: v.id,
                 version_number: v.version_number,
-                promotion_state: v.promotion_state,
                 oci_digest: v.oci_digest,
                 fsverity_root_hash: v.respond_to?(:fsverity_root_hash) ? v.fsverity_root_hash : nil
               }
@@ -292,8 +291,11 @@ module System
           instances: ::System::NodeInstance.where(account_id: account.id).count,
           running_instances: ::System::NodeInstance.where(account_id: account.id, status: "running").count,
           modules: ::System::NodeModule.where(account: account).count,
-          live_module_versions: ::System::NodeModuleVersion.joins(:node_module).where(system_node_modules: { account_id: account.id }, promotion_state: "live").count,
-          retired_module_versions: ::System::NodeModuleVersion.joins(:node_module).where(system_node_modules: { account_id: account.id }, promotion_state: "retired").count,
+          # What the fleet SERVES, not a per-version label (increment 4b
+          # deleted the decorative ladder): the modules a following plane runs,
+          # and the pins that hold a pinned plane on something else.
+          served_module_versions: ::System::NodeModule.where(account: account).where.not(current_version_id: nil).count,
+          pinned_module_versions: ::System::ModuleEnvironmentPin.where(account_id: account.id).count,
           active_certificates: defined?(::System::NodeCertificate) ? ::System::NodeCertificate.joins(node_instance: :node).where(system_nodes: { account_id: account.id }).where(revoked_at: nil).count : 0,
           open_cve_exposures: defined?(::System::CveExposure) ? ::System::CveExposure.joins(node_module_version: :node_module).where(system_node_modules: { account_id: account.id }).where(state: %w[open remediating]).count : 0
         }

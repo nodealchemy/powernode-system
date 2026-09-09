@@ -125,11 +125,9 @@ module System
       # build-timestamp + closure_id suffix for stable monotonicity across
       # parallel arch builds of the same closure.
       next_number = (mod.versions.maximum(:version_number) || 0) + 1
-      promotion_state = mod.auto_generated ? "blessed" : "built"
 
       version = mod.versions.create!(
         version_number:      next_number,
-        promotion_state:     promotion_state,
         changelog:           "Auto-built from #{closure_id} (#{arch})",
         oci_digest:          entry[:oci_digest],
         fsverity_root_hash:  entry[:fsverity_root_hash],

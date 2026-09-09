@@ -4,13 +4,12 @@ module System
   # Persists an agent-side module commit as a new NodeModuleVersion.
   # Receives the tar.zst body + sha256 + changelog from the agent's
   # commit CLI (Phase 4 of the agent stub implementation plan), runs
-  # defense-in-depth sha256 verification, creates the version row at
-  # promotion_state: "built", and emits a fleet event.
+  # defense-in-depth sha256 verification, creates the version row, and emits
+  # a fleet event.
   #
-  # The platform's existing ModulePromotionService handles promotion
-  # through canary → staging → blessed → live; agent commits land at
-  # "built" and require explicit operator/agent promotion to expose
-  # to live deployments.
+  # Committing does not expose the build to anything: a following plane serves
+  # the module's current version and a pinned plane serves its pin, so it takes
+  # a publish or a promotion into a plane to reach any node.
   class AgentModuleCommitService
     Result = Struct.new(:ok?, :error, :version, keyword_init: true)
 
@@ -44,7 +43,6 @@ module System
 
       version = ::System::NodeModuleVersion.create!(
         node_module: node_module,
-        promotion_state: "built",
         changelog: changelog.presence || "agent-committed at #{Time.current.iso8601}",
         data_file_name: build_data_file_name(node_module, computed),
         data_file_size: tar_bytes.bytesize,

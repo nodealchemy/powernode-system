@@ -99,8 +99,7 @@ module Api
             },
             node_module_version: version && {
               id: version.id,
-              version_number: version.version_number,
-              promotion_state: version.promotion_state
+              version_number: version.version_number
             },
             node_module: mod && {
               id: mod.id,

@@ -98,8 +98,6 @@ target_version = ::System::NodeModuleVersion.find_or_create_by!(
   version_number: 9999
 ) do |v|
   v.oci_digest = "sha256:#{SecureRandom.hex(32)}"
-  v.promotion_state = "live"
-  v.live_at = Time.current
 end
 h.ok("target version: #{target_version.version_number} (id=#{target_version.id[0, 8]})")
 

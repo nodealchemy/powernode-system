@@ -274,8 +274,7 @@ module System
           package_spec:    encoded.call(spec[:package_spec]),
           protected_spec:  encoded.call(spec[:protected_spec]),
           config:          {},
-          oci_digest:      "sha256:#{Digest::SHA256.hexdigest(spec[:digest_seed])}",
-          promotion_state: "live"
+          oci_digest:      "sha256:#{Digest::SHA256.hexdigest(spec[:digest_seed])}"
         )
         v.save!
 

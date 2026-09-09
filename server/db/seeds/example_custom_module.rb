@@ -66,24 +66,20 @@ mod.assign_attributes(
 mod.save!
 puts "  ✅ NodeModule: #{mod.name} (#{mod.previously_new_record? ? 'created' : 'updated'})"
 
-# ── Create v1 in `built` ──────────────────────────────────────────────────
+# ── Create v1 ─────────────────────────────────────────────────────────────
 
 v = ::System::NodeModuleVersion.find_or_initialize_by(node_module: mod, version_number: 1)
-v.assign_attributes(
-  promotion_state: "built",
-  changelog: "my-redis 0.1.0 — initial release"
-)
+v.assign_attributes(changelog: "my-redis 0.1.0 — initial release")
 v.save!
-puts "  ✅ NodeModuleVersion: v1 (promotion_state=built, 0.1.0)"
+puts "  ✅ NodeModuleVersion: v1 (0.1.0)"
 
-# ── Promote: built → staging → blessed → live ────────────────────────────
+# ── Make it what the fleet serves ─────────────────────────────────────────
+# The following planes (dev, ci, ops) serve NodeModule#current_version; a
+# pinned plane (staging, prod) serves only what was promoted into it, through
+# NodeModule#promote_in_environment!.
 
-%w[staging blessed live].each do |target_state|
-  next if v.promotion_state == target_state || v.promotion_state == "live"
-
-  v.update!(promotion_state: target_state)
-  puts "  ✅ Promoted v1 → #{target_state}"
-end
+mod.promote_to_version!(v)
+puts "  ✅ v1 is now the module's current version (served by every following plane)"
 
 # ── Show current dependency resolution ────────────────────────────────────
 # DependencyResolutionService takes (available_modules, options) positionally

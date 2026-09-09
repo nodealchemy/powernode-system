@@ -182,7 +182,6 @@ module System
 
       {
         version_number:  version.version_number,
-        promotion_state: version.promotion_state,
         oci_ref:      artifact&.oci_ref,
         oci_digest:   artifact&.oci_digest,
         size_bytes:   artifact&.size_bytes,

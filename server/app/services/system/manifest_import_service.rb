@@ -1127,8 +1127,7 @@ module System
         file_spec:       encoded.call(manifest["file_spec"]),
         package_spec:    encoded.call(manifest["package_spec"]),
         protected_spec:  encoded.call(manifest["protected_spec"]),
-        config: { "manifest_extras" => mod.config["manifest_extras"] || {} },
-        promotion_state: "built"
+        config: { "manifest_extras" => mod.config["manifest_extras"] || {} }
       )
       version.save!
       # Set BOTH the FK and the denormalized number so they never drift (imp
