@@ -298,11 +298,9 @@ module System
         },
         "system.module_promotion_ready" => {
           # skill: nil because there is no on-node task to dispatch — the
-          # remediation is a model-side state transition, actuated by the
-          # #apply_module_promotion entry in REMEDIATION_APPLIERS. The previous
-          # comment here read "ModulePromotionService is invoked directly",
-          # which was false: promote! had no call site anywhere in application
-          # code, so every approved promotion returned "no applier".
+          # remediation writes the target plane's pin, actuated by the
+          # #apply_module_promotion entry in REMEDIATION_APPLIERS. The nodes in
+          # that plane converge on their next reconcile.
           skill: nil,
           action_category: "system.module_promote_to_live"
         },
@@ -1994,15 +1992,15 @@ module System
         # RemediationValidator settles as `inconclusive` rather than scoring
         # it — see #apply_template_closure_drift.
         "system.template_closure_drift" => { method: :apply_template_closure_drift },
-        # IMP-41eb6ddbc490: staging→blessed was fully built for detection and
-        # gating and dead-ended here. ModulePromotionSensor found eligible
-        # versions and the binding routed them through require_approval, but
-        # ModulePromotionService.promote! had ZERO call sites in application
-        # code and this constant had no entry — so an operator could approve a
-        # promotion and apply_remediation! returned "no applier". Same class as
-        # IMP-555e29eeb4ab and IMP-83471cc28e1a above, and the reason the
-        # binding's "invoked directly" comment was wrong rather than merely
-        # imprecise.
+        # IMP-41eb6ddbc490: this lane was fully built for detection and gating
+        # and dead-ended here — ModulePromotionSensor found eligible versions
+        # and the binding routed them through require_approval, but the
+        # promotion executor had ZERO call sites in application code and this
+        # constant had no entry, so an operator could approve a promotion and
+        # apply_remediation! returned "no applier". Same class as
+        # IMP-555e29eeb4ab and IMP-83471cc28e1a above. Increment 4b re-pointed
+        # the applier at NodeModule#promote_in_environment!, which writes the
+        # pin the plane's nodes actually converge on.
         "system.module_promotion_ready" => { method: :apply_module_promotion },
         # IMP-4f7f7a0c9d33: the project.* adaptation lane (M2 adaptive
         # evolution). ProjectSloSensor emitted these, SIGNAL_BINDINGS gated
@@ -2388,22 +2386,25 @@ module System
       # when nothing currently runs the accessed canary — nothing to
       # terminate, so that's applied: false with a clear reason rather than
       # an error. Same applied/reason shape as the other appliers.
-      # Actuates an approved staging→blessed promotion.
+      # Actuates an approved promotion INTO a pinned environment (Environment
+      # campaign, increment 4b: the decorative staging→blessed ladder this used
+      # to advance is gone; the promotion now moves the plane's pin, which is
+      # what its nodes actually converge on).
       #
-      # RE-CHECKS THE STATE rather than trusting the signal. The approval gate
-      # carries a TTL, so the version can move between the sensor firing and an
-      # operator approving — and unlike the converge-style appliers above,
-      # re-promoting is not a harmless no-op, it is an invalid transition. The
-      # same reasoning the instance_reprovision applier documents about
-      # approvals outliving the state they were raised for.
+      # RE-CHECKS THE LADDER rather than trusting the signal. The approval gate
+      # carries a TTL, so the rung below can move between the sensor firing and
+      # an operator approving — NodeModule#ladder_refusal is the same check the
+      # manual verbs run, so an approval that outlived its rung is refused here
+      # instead of pinning a plane to a version no lower rung serves any more.
       #
-      # Eligibility is NOT re-checked here on purpose: ModulePromotionService
-      # #promote! re-evaluates PromotionCriteria itself for a blessed target,
-      # so the approved promotion passes the same gate a direct promotion
-      # would. Duplicating it here would let the two drift.
+      # Criteria are NOT re-evaluated: a small fleet's evidence can lapse
+      # between sense and approval, and refusing then would silently discard an
+      # approval a person granted. The ladder position is the invariant; the
+      # criteria were the reason to ask.
       def apply_module_promotion(signal, _skill_result)
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
-        id = payload["module_version_id"] || payload[:module_version_id]
+        fetch = ->(key) { payload[key.to_s] || payload[key.to_sym] }
+        id = fetch.(:module_version_id)
         return { applied: false, reason: "no module_version_id in payload" } if id.blank?
 
         version = ::System::NodeModuleVersion
@@ -2412,20 +2413,24 @@ module System
                   .find_by(id: id)
         return { applied: false, reason: "module version not found: #{id.inspect}" } unless version
 
-        unless version.promotion_state == "staging"
-          return { applied: false,
-                   reason: "version is #{version.promotion_state}, no longer staging — " \
-                           "the approval outlived the state it was raised for" }
+        environment = ::Ai::Environment.find_for_account(account.id, fetch.(:environment_id) || fetch.(:environment))
+        return { applied: false, reason: "no environment in payload to promote into" } if environment.nil?
+
+        node_module = version.node_module
+        if (refusal = node_module.ladder_refusal(environment: environment, version: version))
+          return { applied: false, reason: "#{refusal} — the approval outlived the ladder position it was raised for" }
         end
 
-        result = ::System::Fleet::ModulePromotionService.promote!(version: version, target_state: "blessed")
+        node_module.promote_in_environment!(environment: environment, version: version, actor: "decision_engine")
         {
-          applied: result.ok?,
+          applied: true,
           action: "module_promote_to_live",
           module_version_id: version.id,
-          promoted_to: (result.ok? ? "blessed" : nil),
-          reason: result.error
-        }.compact
+          module_id: node_module.id,
+          environment: environment.slug
+        }
+      rescue ::System::NodeModule::LadderError => e
+        { applied: false, action: "module_promote_to_live", reason: e.message }
       end
 
       def quarantine_honeypot_instance(signal, _skill_result)

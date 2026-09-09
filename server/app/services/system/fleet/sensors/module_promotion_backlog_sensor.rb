@@ -20,8 +20,7 @@ module System
       # can never CLEAR it. The only thing that clears this alarm is
       # `NodeModule#current_version_id` actually moving.
       #
-      # WHAT "RUNS" MEANS. `NodeModuleVersion#promotion_state` is NOT read here
-      # and must not be. Actuation is `NodeModule#current_version_id`, whose
+      # WHAT "RUNS" MEANS. Actuation is `NodeModule#current_version_id`, whose
       # SANCTIONED writer is `NodeModule#promote_to_version!` — sanctioned, not
       # sole: this comment used to quote that method's own "the platform's ONLY
       # choke point" claim, which was false. Other sites write the column too
@@ -30,12 +29,14 @@ module System
       # spec/lint/node_module_current_version_write_seam_spec.rb. That does not
       # weaken this sensor — it reads the COLUMN, so it sees every writer — but
       # it does mean a backlog can be cleared by something that ran no promotion
-      # guard at all. The
-      # built -> staging -> blessed -> live ladder is a separate track that
-      # writes nothing the agents materialize; a version can sit at ladder-live
-      # while the fleet runs something else entirely, and several versions of
-      # one module can be ladder-live at once. Reading promotion_state here
-      # would reproduce exactly the misreading this sensor exists to prevent.
+      # guard at all.
+      #
+      # A PIN IS NOT A CLEAR. `System::ModuleEnvironmentPin` is what a PINNED
+      # plane serves; this column is what the FOLLOWING planes serve. A plane
+      # promoted onto the candidate says nothing about them, so a pin must not
+      # suppress this alarm — and neither may the decorative per-version ladder
+      # that used to live here, which increment 4b deleted precisely because it
+      # read like an answer to "what runs?" and was free to disagree.
       #
       # SCOPE. Only versions NEWER than current can constitute a backlog, so the
       # scan is bounded by the backlog itself rather than by version history —
