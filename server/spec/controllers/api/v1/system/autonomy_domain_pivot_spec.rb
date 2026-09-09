@@ -172,7 +172,11 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
     seed_policy_rows!
     pivot = by_domain
 
-    expect(categories_in(pivot, "other")).to include("approval", "dev.pull_task")
+    # dev.multi_file_change replaced dev.pull_task as the representative static
+    # here when that dead category was removed (IMP-01a06aef); this example
+    # needs any core-owned static that lands in the catch-all, not that
+    # specific name.
+    expect(categories_in(pivot, "other")).to include("approval", "dev.multi_file_change")
     expect(categories_in(pivot, "project")).to include("project.adapt", "project.cost_control")
   end
 
