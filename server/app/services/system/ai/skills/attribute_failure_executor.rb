@@ -136,39 +136,75 @@ module System
             end
         end
 
+        # A change to what THIS INSTANCE'S PLANE serves, inside the window, is
+        # suspect. Increment 4b deleted the per-version ladder timestamps this
+        # used to read (live_at / blessed_at / retired_at): they recorded a
+        # label moving, which no node ever saw, so they could name a "change"
+        # nothing experienced and miss every change something did.
+        #
+        # What actually changes a plane's served version depends on the KIND of
+        # plane, so both are scored — reading only one would go silent for half
+        # the fleet:
+        #   PINNED plane   — a pin was written (ModuleEnvironmentPin#promoted_at)
+        #   FOLLOWING plane — a publish moved current_version_id onto a version
+        #                     created inside the window
         def score_promotion_changes(instance, since)
-          # A promotion of a module assigned to this node within the window
-          # is suspect; live promotion is the most-suspect (highest score).
+          environment = instance.environment
           assigned_module_ids = instance.node.node_modules.pluck(:id)
+          return [] if assigned_module_ids.empty?
 
-          ::System::NodeModuleVersion
-            .where(node_module_id: assigned_module_ids)
-            .where("live_at >= ? OR blessed_at >= ? OR retired_at >= ?", since, since, since)
-            .map do |v|
-              score = 0
-              reasons = []
-              if v.live_at && v.live_at >= since
-                score += 12
-                reasons << "promoted to live #{v.live_at.iso8601}"
-              end
-              if v.blessed_at && v.blessed_at >= since
-                score += 6
-                reasons << "promoted to blessed #{v.blessed_at.iso8601}"
-              end
-              if v.retired_at && v.retired_at >= since
-                score += 4
-                reasons << "retired #{v.retired_at.iso8601}"
-              end
-              {
-                kind: "promotion",
-                module_id: v.node_module_id,
-                module_version_id: v.id,
-                module_name: v.node_module&.name,
-                score: score,
-                reasons: reasons,
-                changed_at: (v.live_at || v.blessed_at || v.retired_at)&.iso8601
-              }
+          if environment && !environment.follows_publish?
+            pin_candidates(environment, assigned_module_ids, since)
+          else
+            publish_candidates(assigned_module_ids, since, environment)
+          end
+        end
+
+        def pin_candidates(environment, module_ids, since)
+          ::System::ModuleEnvironmentPin
+            .where(environment_id: environment.id, node_module_id: module_ids)
+            .where(promoted_at: since..)
+            .includes(:node_module, :node_module_version)
+            .map do |pin|
+              promotion_candidate(
+                module_id: pin.node_module_id, version: pin.node_module_version,
+                module_name: pin.node_module&.name, at: pin.promoted_at,
+                reason: "v#{pin.node_module_version&.version_number} promoted into #{environment.slug} " \
+                        "#{pin.promoted_at.iso8601}"
+              )
             end
+        end
+
+        # A following plane serves current_version, so the change it felt is a
+        # PUBLISH. There is no timestamp on the pointer itself; the version's
+        # own created_at is the honest proxy — a version that is current AND was
+        # created inside the window is one the plane started running inside it.
+        def publish_candidates(module_ids, since, environment)
+          ::System::NodeModule
+            .where(id: module_ids).where.not(current_version_id: nil)
+            .includes(:current_version)
+            .filter_map do |mod|
+              version = mod.current_version
+              next if version.nil? || version.created_at < since
+
+              promotion_candidate(
+                module_id: mod.id, version: version, module_name: mod.name, at: version.created_at,
+                reason: "v#{version.version_number} published and served by " \
+                        "#{environment&.slug || 'this plane'} #{version.created_at.iso8601}"
+              )
+            end
+        end
+
+        def promotion_candidate(module_id:, version:, module_name:, at:, reason:)
+          {
+            kind: "promotion",
+            module_id: module_id,
+            module_version_id: version&.id,
+            module_name: module_name,
+            score: 12,
+            reasons: [ reason ],
+            changed_at: at.iso8601
+          }
         end
 
         def score_event_correlations(instance, since)

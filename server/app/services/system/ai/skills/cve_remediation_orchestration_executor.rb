@@ -9,7 +9,7 @@ module System
       #   2. For each affected module with a PackageModuleLink: dispatch
       #      PackageModuleRefreshExecutor so the upstream-patched version
       #      gets materialized into a new NodeModuleVersion.
-      #   3. For each affected module that ALREADY has a blessed version
+      #   3. For each affected module that ALREADY has a promoted version
       #      newer than current_version: run RollingModuleUpgradeExecutor
       #      (one plan per template). That executor is PLAN-ONLY — it sizes
       #      the fleet-atomic pointer move and returns `executed: false`;
@@ -108,40 +108,27 @@ module System
         # priority reason present across the skipped modules, so an operator
         # reading one string is pointed at the thing they can actually do.
         #
-        #   candidate_version_not_promoted — a newer version EXISTS but sits
-        #     in built/staging. `newer_blessed_version_for` deliberately only
-        #     accepts blessed/live: promotion is a human gate, and this
-        #     executor's job is to make the gate VISIBLE, never to open it.
-        #   no_enabled_template_assignment — a promoted fix exists but
+        #   no_enabled_template_assignment — a usable fix exists but
         #     `templates_for` found no enabled assignment ON A NODE THAT
         #     BELONGS TO A TEMPLATE (it inner-joins node => node_template), so
         #     an enabled assignment on a template-less node lands here too.
         #   no_current_version — the module has no current_version, so
         #     "newer than current" is undefined.
-        #   no_candidate_version — no newer version of any kind exists yet;
-        #     a package refresh (step 2) may eventually create one.
+        #   no_candidate_version — no newer MOUNTABLE version exists yet: either
+        #     no newer row at all, or one whose artifact could not be mounted
+        #     (no recorded digest, or under the publish size floor). A package
+        #     refresh (step 2) may eventually create one.
         #   module_not_found — the id was resolved by triage but matches no
         #     NodeModule in THIS account. Without this entry such an id fell
         #     out of `find_each` and appeared in neither plans nor skips, so a
         #     wholly empty run still reported no reason at all.
         SKIP_REASON_PRIORITY = %w[
-          candidate_version_not_promoted
           no_enabled_template_assignment
           no_current_version
           no_candidate_version
           module_not_found
         ].freeze
 
-        # Promotion states a version can sit in while still being a plausible
-        # fix an operator could put on the path to blessed.
-        UNPROMOTED_STATES = %w[built staging].freeze
-
-        # The forward rungs of NodeModuleVersion::PROMOTION_TRANSITIONS, used
-        # to name the LEGAL next step rather than hardcoding one. `built` does
-        # NOT transition straight to blessed — promote_to!("blessed") from
-        # `built` raises InvalidTransition — so an operator instruction that
-        # says "promote to blessed" is unfollowable from the commonest state.
-        PROMOTION_LADDER = %w[staging blessed live].freeze
 
         protected
 
@@ -233,12 +220,6 @@ module System
           # there survives strip_control_keys and would displace a retried
           # step's genuine last_outputs. Everything an operator needs is in
           # the message.
-          nothing_to_show = !payload[:remediation_dispatched] &&
-                            rolling_upgrade_plans.none? { |p| p[:ok] }
-          if nothing_to_show && skipped_reason == "candidate_version_not_promoted"
-            return failure(promotion_blocked_message(skipped_modules))
-          end
-
           success(payload)
         end
 
@@ -282,7 +263,7 @@ module System
 
         # Returns { plans: [...], skipped: [...] }. Every module that yields
         # no plan lands in `skipped` with a machine-readable reason — the
-        # silent `next unless blessed` it replaces is what let an empty run
+        # silent `next unless promoted` it replaces is what let an empty run
         # look like a completed one (IMP-9b8d774298d5).
         def plan_rolling_upgrades(module_ids)
           return { plans: [], skipped: [] } if module_ids.empty?
@@ -297,8 +278,8 @@ module System
             .includes(:current_version, versions: :module_artifacts)
             .find_each do |mod|
               seen_ids << mod.id
-              blessed = newer_blessed_version_for(mod)
-              unless blessed
+              promoted = newer_promoted_version_for(mod)
+              unless promoted
                 skipped << skip_entry(mod)
                 next
               end
@@ -306,7 +287,7 @@ module System
               template_ids = templates_for(mod)
               if template_ids.empty?
                 skipped << skip_entry(mod, reason: "no_enabled_template_assignment",
-                                           target_version_id: blessed.id)
+                                           target_version_id: promoted.id)
                 next
               end
 
@@ -314,12 +295,12 @@ module System
                 plan = rolling_executor.execute(
                   template_id: template_id,
                   module_id: mod.id,
-                  target_version_id: blessed.id
+                  target_version_id: promoted.id
                 )
                 plans << {
                   node_module_id: mod.id,
                   template_id: template_id,
-                  target_version_id: blessed.id,
+                  target_version_id: promoted.id,
                   ok: plan[:success] == true,
                   # IMP-b948ea7fa382 — was batch_count, which the plan no
                   # longer returns. Module upgrades are fleet-atomic, so there
@@ -348,7 +329,7 @@ module System
           { plans: plans, skipped: skipped }
         end
 
-        # Classifies a module that produced no plan. When the blessed lookup
+        # Classifies a module that produced no plan. When the promoted lookup
         # came up empty, name the version an operator could promote to make it
         # non-empty — "a fix is built but not promoted" and "no fix exists
         # yet" are different operator messages and must not collapse.
@@ -363,50 +344,20 @@ module System
 
           return entry.merge(reason: "no_current_version") unless mod.current_version_id
 
-          candidate = unpromoted_candidate_for(mod)
-          return entry.merge(reason: "no_candidate_version") unless candidate
-
-          entry.merge(
-            reason: "candidate_version_not_promoted",
-            candidate_version_id: candidate.id,
-            candidate_version_number: candidate.version_number,
-            candidate_promotion_state: candidate.promotion_state,
-            # The LEGAL next rung, not the destination: from `built` the only
-            # forward move is `staging`.
-            next_promotion_state: next_promotion_step(candidate),
-            required_promotion_state: "blessed"
-          )
+          entry.merge(reason: "no_candidate_version")
         end
 
-        # Derived from the model's own transition table so it cannot drift
-        # from what promote_to! will actually accept.
-        def next_promotion_step(version)
-          allowed = ::System::NodeModuleVersion::PROMOTION_TRANSITIONS
-                      .fetch(version.promotion_state, [])
-          (PROMOTION_LADDER & allowed).first
-        end
-
-        # NOT a mirror of #newer_blessed_version_for, deliberately. That
-        # method's "newer" is only `where.not(id: current_version_id)` — it
-        # never compares against the current version's age — which is
-        # tolerable when the result is a target the operator never sees, and
-        # is NOT tolerable here: this result becomes an assertive instruction
-        # that names a version and fails the run. A stale `built` row left by
-        # an earlier build would otherwise be surfaced as "the fix", telling
-        # an operator to promote a downgrade. So this one is bounded to
-        # versions created after the current one, with a deterministic
-        # tiebreak for versions created in the same batch. (Narrowing this
-        # lookup only; the blessed/live filter is untouched.)
-        def unpromoted_candidate_for(mod)
-          current = mod.current_version
-          return nil unless current
-
+        # Newest first: versions of `mod` created after `current` that could
+        # actually be mounted. `rollback_usable?` is the same admission test the
+        # rollback path and the backlog sensor use — a recorded oci_digest and a
+        # promotable artifact size — so a half-published or empty artifact is
+        # never offered as a fix.
+        def usable_versions_after(mod, current)
           mod.versions
-             .where(promotion_state: UNPROMOTED_STATES)
              .where.not(id: current.id)
              .where("system_node_module_versions.created_at > ?", current.created_at)
              .order(created_at: :desc, id: :desc)
-             .first
+             .select(&:rollback_usable?)
         end
 
         # Modules for which an executor reports it actually did something —
@@ -437,64 +388,37 @@ module System
           (refreshed + executed).filter_map { |entry| entry[:node_module_id] }.uniq
         end
 
-        # Operator-facing and deliberately precise about what promotion does.
-        # Advancing promotion_state does NOT change which version the fleet
-        # serves (NodeModule#current_version_id) — it makes
-        # #newer_blessed_version_for non-nil so a LATER run of this
-        # orchestration can plan the rolling upgrade that ships it. Saying
-        # "promote to release the fix" would re-mint on this surface the same
-        # promote-means-ship claim IMP-65bea54e4081 removed from the
-        # system_promote_module_version tool description.
-        def promotion_blocked_message(skipped_modules)
-          blocked = skipped_modules.select { |m| m[:reason] == "candidate_version_not_promoted" }
-          detail = blocked.map do |m|
-            "#{m[:node_module_name]}: version #{m[:candidate_version_number]} " \
-              "is #{m[:candidate_promotion_state]}, next promotion step is " \
-              "#{m[:next_promotion_state] || 'none'} (version id=#{m[:candidate_version_id]})"
-          end.join("; ")
-
-          "cve remediation dispatched nothing: #{blocked.size} " \
-            "#{'module'.pluralize(blocked.size)} #{blocked.size == 1 ? 'has' : 'have'} a newer " \
-            "version that is not promoted to blessed/live, so no rolling upgrade can be " \
-            "planned. Promoting advances promotion_state only — it does not change which " \
-            "version the fleet serves; it is what lets a later run plan the upgrade. " \
-            "#{detail}. Exposures left open."
-        end
-
-        # The rollout gate: "is there a fix I may ship?" Bounded to versions
-        # created AFTER the served one, per the promotion-ladder decision in
-        # docs/design/promotion-ladder-semantics.md — `live` is a HISTORICAL
-        # stamp recording that a version was once promoted, not a statement
-        # that it is fit to ship now. Without the bound, `where.not(id:
-        # current_version_id)` excludes only the served row, so any older
-        # `live` row falls straight through and is returned as "the fix".
+        # The rollout gate: "is there a fix I may ship FLEET-WIDE?" — the newest
+        # version that is newer than what is served AND mountable.
         #
-        # That is not hypothetical. Read from the live control plane
-        # 2026-09-01, the unbounded query would have offered
-        # powernode-hub-frontend v20 and reverse-proxy-traefik v13 — both
-        # `live`, both `oci_digest: nil`, i.e. unmountable — as the remediation
-        # for their v26/v16 current versions, and powernode-hub-backend v79 as
-        # the fix for v87. Those stale `live` rows are OBSERVED; what wrote
-        # them is not established (no writer enumerated in the design note's
-        # section 1.2 produces that shape), which is filed there rather than
-        # guessed at here. The bound does not depend on their provenance: any
-        # `live` row older than what is served is a downgrade.
+        # The bound matters. Read from the live control plane 2026-09-01, an
+        # unbounded query would have offered powernode-hub-frontend v20 and
+        # reverse-proxy-traefik v13, both with `oci_digest: nil`, as the
+        # remediation for their v26/v16 current versions, and
+        # powernode-hub-backend v79 as the fix for v87. Any older version is a
+        # downgrade, and an unmountable one is not a fix at all.
         #
-        # This mirrors the bound #unpromoted_candidate_for already carries; the
-        # comment there recorded that it left "the blessed/live filter
-        # untouched", and this is that half. The filter itself is unchanged and
-        # deliberately so: restricting rollout to blessed/live material is the
-        # conservatism, not the bug.
-        def newer_blessed_version_for(mod)
+        # WHY THERE IS NO ATTESTATION CONDITION (increment 4b). This used to
+        # require `promotion_state IN (blessed, live)` — a hand-applied label no
+        # node ever saw, which in practice no ordinary build ever carried, so
+        # this lane found a target for nothing built through the normal pipeline.
+        # The obvious replacement — require the version to be pinned in some
+        # environment — is UNREACHABLE by construction: the bottom pinned rung
+        # can only be promoted to what is already current, so every pin sits at
+        # a version that was current at some point, and "newer than current AND
+        # pinned" is the empty set. Encoding it would have re-created a
+        # permanently dead lane wearing a gate.
+        #
+        # Dropping it opens nothing. What this executor produces is a PLAN:
+        # RollingModuleUpgradeExecutor declares requires_approval and returns
+        # `executed: false`, and nothing in the platform actuates it
+        # (IMP-79a808789805). The human gate is the approval on the pointer
+        # move, which is where it belongs — not a label on a row.
+        def newer_promoted_version_for(mod)
           current = mod.current_version
           return nil unless current
 
-          mod.versions
-             .where(promotion_state: %w[blessed live])
-             .where.not(id: current.id)
-             .where("system_node_module_versions.created_at > ?", current.created_at)
-             .order(created_at: :desc, id: :desc)
-             .first
+          usable_versions_after(mod, current).first
         end
 
         def templates_for(mod)

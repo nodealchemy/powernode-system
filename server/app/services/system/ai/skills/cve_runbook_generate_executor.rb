@@ -310,10 +310,12 @@ module System
               Two things this rollback is NOT, both of which earlier revisions
               of this runbook asserted:
 
-              - It is **not** `system_promote_module_version`. That advances a
-                version's `promotion_state` label and does not move
-                `current_version_id`, so repromoting the old version leaves the
-                fleet running the bad one.
+              - It is **not** `system_promote_module_version`. That moves ONE
+                environment's pin and does not move `current_version_id`, so
+                promoting the old version back into a plane leaves every
+                following plane running the bad one. Use the rollback verb
+                without `environment:` for the fleet-global pointer, or with
+                `environment:` to walk back a single pinned plane.
               - It is **not** pace-able. The rollback is **FLEET-ATOMIC** for
                 the same reason the upgrade was: `current_version_id` is a
                 per-module pointer. Every instance carrying the module reverts
