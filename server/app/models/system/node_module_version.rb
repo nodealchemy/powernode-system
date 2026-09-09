@@ -4,15 +4,6 @@ module System
   # Stores historical versions of node modules for rollback capability
   # Each version captures the complete state of a module at a point in time
   class NodeModuleVersion < BaseRecord
-    # === Constants ===
-    # Promotion lifecycle states (Golden Eclipse M0.M).
-    # built     — CI artifact landed, not yet exposed to runtime
-    # staging   — eligible for staging fleet, soaking
-    # blessed   — passed PromotionCriteria; can be assigned to live templates
-    # live      — currently the canonical version for live deployments
-    # retired   — superseded; kept for rollback/audit only
-    PROMOTION_STATES = %w[built staging blessed live retired].freeze
-
     # === Associations ===
     belongs_to :node_module, class_name: "System::NodeModule"
     belongs_to :created_by, class_name: "User", optional: true
@@ -27,18 +18,12 @@ module System
                                numericality: { only_integer: true, greater_than: 0 },
                                uniqueness: { scope: :node_module_id }
     validates :node_module, presence: true
-    validates :promotion_state, inclusion: { in: PROMOTION_STATES }
 
     # === Scopes ===
     scope :ordered, -> { order(version_number: :desc) }
     scope :by_version, -> { order(version_number: :asc) }
     scope :latest_first, -> { order(version_number: :desc) }
     scope :with_data_file, -> { where.not(data_file_name: nil) }
-    scope :built,    -> { where(promotion_state: "built") }
-    scope :staging,  -> { where(promotion_state: "staging") }
-    scope :blessed,  -> { where(promotion_state: "blessed") }
-    scope :live,     -> { where(promotion_state: "live") }
-    scope :retired,  -> { where(promotion_state: "retired") }
 
     # === Callbacks ===
     before_validation :set_version_number, on: :create
@@ -86,55 +71,27 @@ module System
       changelog.presence || "Version #{version_number}"
     end
 
-    # === Promotion lifecycle (Golden Eclipse M0.M) ===
-    # Column-only state machine for now. Full AASM with PromotionCriteria
-    # gates lands in M1 (the platform's standard promotion-criteria pattern).
+    # === Where this version RUNS (Environment campaign, increment 4) ===
+    # There is no per-version lifecycle label. A version either is what an
+    # environment serves or it is not, and that is a fact about the
+    # environment, not about the row: NodeModule#current_version_id for a
+    # following plane, System::ModuleEnvironmentPin for a pinned one. Read it
+    # through NodeModule#served_version_for(environment), and move it through
+    # NodeModule#promote_in_environment!.
     #
-    # That M1 intent -- the ladder GATING the fleet pointer -- was NOT adopted.
-    # See docs/design/promotion-ladder-semantics.md (IMP-c7d618b0b72f): the
-    # rungs are eligibility labels, `live`/`retired` are historical stamps, and
-    # NodeModule#current_version_id remains the sole actuator. Gating the
-    # pointer on this ladder is still an open option there, but it changes
-    # every deployment and needs operator sign-off -- do not read the paragraph
-    # above as a mandate to build it.
+    # The built -> staging -> blessed -> live -> retired ladder that used to
+    # live here was deleted in increment 4b. It was decorative: no node-facing
+    # surface read it, several versions of one module could sit at `live` at
+    # once, and a version could be `live` while the fleet ran something else.
+    # The evidence it claimed to gate on is real and survives as
+    # System::Fleet::PromotionCriteria, now attached to a promotion INTO a
+    # pinned environment — the one place where "the rung below has run this and
+    # lived" is a question with an answer.
 
-    PROMOTION_STATES.each do |state|
-      define_method(:"#{state}?") { promotion_state == state }
+    # The pinned environments serving this exact version.
+    def pinned_environments
+      ::Ai::Environment.where(id: environment_pins.select(:environment_id))
     end
-
-    # Promotes the version forward through the lifecycle. Stamps the
-    # appropriate timestamp column. Raises on invalid transitions.
-    PROMOTION_TRANSITIONS = {
-      "built"   => %w[staging retired],
-      "staging" => %w[blessed retired built],
-      "blessed" => %w[live retired],
-      "live"    => %w[retired],
-      "retired" => %w[]
-    }.freeze
-
-    def promote_to!(target_state)
-      target = target_state.to_s
-      raise ArgumentError, "unknown state: #{target}" unless PROMOTION_STATES.include?(target)
-
-      allowed = PROMOTION_TRANSITIONS.fetch(promotion_state, [])
-      unless allowed.include?(target)
-        raise InvalidTransition,
-              "cannot transition from #{promotion_state} to #{target} (allowed: #{allowed.join(', ').presence || 'none'})"
-      end
-
-      stamp = case target
-      when "staging" then :staging_baked_at
-      when "blessed" then :blessed_at
-      when "live"    then :live_at
-      when "retired" then :retired_at
-      end
-
-      attrs = { promotion_state: target }
-      attrs[stamp] = Time.current if stamp
-      update!(attrs)
-    end
-
-    class InvalidTransition < StandardError; end
 
     # === erofs artifact helpers ===
     # Module versions carry one artifact format — erofs (Enhanced
