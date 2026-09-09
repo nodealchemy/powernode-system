@@ -504,10 +504,13 @@ module System
         # it. FAIL CLOSED on any resolution error (policy OR plane).
         def resolved_policy_match(inputs = {})
           environment = ::Ai::EnvironmentResolution.resolve(account: @account, params: inputs)
+          # The blast-radius ceiling (incr. 4) is part of the verdict too, or
+          # the auto-execute short-cut would skip it.
+          blast_radius = environment && ::Ai::EnvironmentResolution.blast_radius(account: @account, params: inputs)
           ::Ai::InterventionPolicyService
             .new(account: @account)
             .resolve(action_category: self.class.action_category, agent: @agent, user: @user,
-                     environment: environment)
+                     environment: environment, blast_radius: blast_radius)
         rescue StandardError => e
           # FAIL CLOSED. An unresolvable policy is not permission — hand the
           # call to the gate, which parks it where an operator can see it.

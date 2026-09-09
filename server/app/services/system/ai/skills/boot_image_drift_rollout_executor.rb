@@ -65,7 +65,7 @@ module System
             batch_size: :integer, batch_count: :integer, halted: :boolean, halt_reason: :string,
             circuit_breaker: :object, batches: [ :object ],
             dispatched_task_ids: [ :string ], dispatch_errors: [ :object ],
-            self_managed_excluded: [ :string ]
+            self_managed_excluded: [ :string ], blast_radius_ceiling: :integer
           },
           requires_approval: true,
           # System::Fleet::DecisionEngine already gates this executor's tick-loop
@@ -122,6 +122,10 @@ module System
           halted = halt_reason.present?
 
           batch_size = [ (drifted.size * batch_pct / 100.0).ceil, 1 ].max
+          # Environment campaign, incr. 4: a batch never exceeds the tightest
+          # max_blast_radius among the planes it would reboot.
+          blast_radius_ceiling = drifted.filter_map { |i| i.environment&.max_blast_radius }.min
+          batch_size = [ batch_size, blast_radius_ceiling ].min if blast_radius_ceiling
           batches = drifted.each_slice(batch_size).each_with_index.map do |group, idx|
             { index: idx, instance_ids: group.map(&:id), size: group.size,
               estimated_seconds: group.size * ETA_PER_INSTANCE_SEC,
@@ -165,6 +169,7 @@ module System
             dispatched_task_ids: dispatched,
             dispatch_errors: errors,
             self_managed_excluded: self_managed.map(&:id),
+            blast_radius_ceiling: blast_radius_ceiling,
             requires_approval: true
           )
         end
@@ -182,7 +187,7 @@ module System
           account_instances
             .where(status: "running")
             .order(:id)
-            .includes(node: { node_template: :node_platform })
+            .includes(:environment, node: { node_template: :node_platform })
             .select { |i| i.node&.node_platform&.id == platform.id && i.boot_image_drifted? }
         end
 

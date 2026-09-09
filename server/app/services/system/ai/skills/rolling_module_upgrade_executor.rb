@@ -98,13 +98,29 @@ module System
             total_instances: :integer,
             affected_instance_ids: [ :string ],
             estimated_total_seconds: :integer,
-            circuit_breaker: :object
+            circuit_breaker: :object,
+            by_environment: :object,
+            blast_radius_ceiling_exceeded: :boolean
           }
         )
 
         binds_to "Fleet Autonomy", "concierge", "CVE Responder"
 
         protected
+
+        # { slug => { instance_count:, max_blast_radius:, exceeds_ceiling: } }
+        # from the listed rows (they carry environment_slug since incr. 1).
+        def plan_by_environment(instances)
+          slugs = instances.map { |i| i[:environment_slug].to_s }.reject(&:empty?)
+          envs = ::Ai::Environment.where(account_id: @account.id, slug: slugs.uniq).index_by(&:slug)
+          instances.group_by { |i| i[:environment_slug].to_s }.each_with_object({}) do |(slug, rows), out|
+            next if slug.empty?
+
+            ceiling = envs[slug]&.max_blast_radius
+            out[slug] = { instance_count: rows.size, max_blast_radius: ceiling,
+                          exceeds_ceiling: ceiling.present? && rows.size > ceiling }
+          end
+        end
 
         # `batch_pct` is deliberately NOT a keyword here. BaseSkillExecutor#execute
         # slices inputs to the keywords this signature declares, so a stale
@@ -147,10 +163,16 @@ module System
           # value: these are the instances that converge together the moment
           # current_version_id moves, which is the only blast radius there is.
           affected_instance_ids = instances.map { |i| i[:id] }
+          by_environment = plan_by_environment(instances)
 
           success(
             total_instances: instances.size,
             affected_instance_ids: affected_instance_ids,
+            # Environment campaign, incr. 4: the fleet-atomic set by plane,
+            # against each plane's max_blast_radius — a plane whose share
+            # exceeds its ceiling is named, and the gate parks on it.
+            by_environment: by_environment,
+            blast_radius_ceiling_exceeded: by_environment.any? { |_slug, row| row[:exceeds_ceiling] },
             estimated_total_seconds: instances.size * ETA_PER_INSTANCE_SEC,
             # status is "not_implemented", never "armed": there is no breaker to
             # arm. Both fields below are the caller's own arguments echoed back,

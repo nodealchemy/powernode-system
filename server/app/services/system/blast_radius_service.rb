@@ -101,8 +101,29 @@ module System
                 "operator-managed outside Powernode."
         },
         total_dependents: dependents.values.sum { |b| b[:count] || 0 },
+        # Environment campaign, incr. 4: the target's instances by plane,
+        # against each plane's max_blast_radius ceiling.
+        environments: environment_breakdown(instance_ids),
         caveats: Array(resolution[:caveats])
       }
+    end
+
+    # { slug => { instance_count:, max_blast_radius:, exceeds_ceiling: } }
+    def environment_breakdown(instance_ids)
+      return {} if instance_ids.empty?
+
+      counts = ::System::NodeInstance.where(id: instance_ids).group(:environment_id).count
+      envs = ::Ai::Environment.where(id: counts.keys).index_by(&:id)
+      counts.each_with_object({}) do |(env_id, count), out|
+        env = envs[env_id]
+        next if env.nil?
+
+        out[env.slug] = {
+          instance_count: count,
+          max_blast_radius: env.max_blast_radius,
+          exceeds_ceiling: env.max_blast_radius.present? && count > env.max_blast_radius
+        }
+      end
     end
 
     private

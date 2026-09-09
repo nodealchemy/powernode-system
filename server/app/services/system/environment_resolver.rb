@@ -11,6 +11,13 @@ module System
   # spellings the fleet tool, the controllers and the skill executors actually
   # use for their executor params.
   class EnvironmentResolver
+    # The callable core's blast_radius_estimator seam resolves to.
+    module BlastRadius
+      def self.call(account:, params:)
+        ::System::EnvironmentResolver.blast_radius(account: account, params: params)
+      end
+    end
+
     INSTANCE_KEYS = %w[instance_id node_instance_id].freeze
     NODE_KEYS     = %w[node_id].freeze
     TEMPLATE_KEYS = %w[template_id node_template_id].freeze
@@ -30,8 +37,24 @@ module System
 
     def initialize(account, params)
       @account = account
-      @params = (params || {}).to_h.with_indifferent_access
+      @params = self.class.flatten_params(params)
     end
+
+    # A gated tool action parks its params packed as
+    # {tool_class, action, tool_params: {...}} (Ai::Executors::DeferredToolCall);
+    # the subject ids live under tool_params. Read through them, with the
+    # top level winning on a clash.
+    def self.flatten_params(params)
+      base = (params || {}).to_h.with_indifferent_access
+      inner = base[:tool_params]
+      inner = inner.to_h.with_indifferent_access if inner.respond_to?(:to_h)
+      inner.is_a?(Hash) ? inner.merge(base) : base
+    end
+
+    # An explicit target plane on the params — the promotion verbs name the
+    # environment a version is promoted INTO. Combined with the subject's
+    # plane by #call (strictest wins).
+    ENVIRONMENT_KEYS = %w[environment environment_id environment_slug].freeze
 
     # Plural spellings the skill executors use (`instance_ids:` on the boot-
     # image drift rollout, rolling module upgrade, relocate workload, ...).
@@ -48,7 +71,19 @@ module System
       "System::Node"         => ::System::Node
     }.freeze
 
+    # An explicit plane is a FLOOR, never an override: the action is placed in
+    # the strictest of the named plane and the plane its subject sits in, so
+    # naming `environment: "dev"` on a prod instance still gates in prod.
     def call
+      explicit = explicit_environment
+      subject = subject_environment
+      return subject if explicit.nil?
+      return explicit if subject.nil?
+
+      strictest([ explicit, subject ])
+    end
+
+    def subject_environment
       lookup(INSTANCE_KEYS, ::System::NodeInstance) ||
         lookup(NODE_KEYS, ::System::Node) ||
         lookup(TEMPLATE_KEYS, ::System::NodeTemplate) ||
@@ -59,7 +94,77 @@ module System
         through_network
     end
 
+    # The blast radius of a params set: how many instances it touches. Core's
+    # `blast_radius_estimator` seam (Ai::EnvironmentResolution.blast_radius).
+    # Singular ids count 1 (an instance) or the live instances under a node /
+    # template / pool; plural ids count the matching rows; a network counts
+    # its peers' instances. nil when the params name nothing this extension
+    # can count.
+    def self.blast_radius(account:, params:)
+      p = flatten_params(params)
+      first = ->(keys) { keys.map { |k| p[k] }.find(&:present?) }
+      live = ::System::NodeInstance.where(account_id: account.id).where.not(status: "terminated")
+
+      if (id = first.(INSTANCE_KEYS)).present?
+        return live.where(id: id.to_s).count
+      end
+      if (module_id = p[:module_id]).present?
+        # The ladder verbs: every live instance in the named plane (or the
+        # whole account when none is named) whose node carries the module —
+        # by node assignment or through its template.
+        scope = live
+        if (env_key = first.(ENVIRONMENT_KEYS)).present?
+          env = ::Ai::Environment.find_for_account(account.id, env_key.to_s)
+          scope = env ? scope.where(environment_id: env.id) : scope.none
+        end
+        by_assignment = ::System::NodeModuleAssignment.where(node_module_id: module_id.to_s).select(:node_id)
+        by_template = ::System::Node.where(account_id: account.id,
+                                           node_template_id: ::System::TemplateModule.where(node_module_id: module_id.to_s).select(:node_template_id))
+                                    .select(:id)
+        return scope.where(node_id: by_assignment).or(scope.where(node_id: by_template)).count
+      end
+      if (id = first.(NODE_KEYS)).present?
+        return live.where(node_id: ::System::Node.where(account_id: account.id, id: id.to_s).select(:id)).count
+      end
+      if (id = first.(TEMPLATE_KEYS)).present?
+        nodes = ::System::Node.where(account_id: account.id, node_template_id: id.to_s).select(:id)
+        return live.where(node_id: nodes).count
+      end
+      if (id = first.(POOL_KEYS)).present?
+        return live.where(instance_pool_id: id.to_s).count
+      end
+      PLURAL_KEYS.each do |keys, model|
+        ids = Array(first.(keys)).map(&:to_s).reject(&:blank?)
+        next if ids.empty?
+
+        return case model.name
+               when "System::NodeInstance" then live.where(id: ids).count
+               when "System::Node" then live.where(node_id: ids).count
+               when "System::NodeTemplate"
+                 live.where(node_id: ::System::Node.where(account_id: account.id, node_template_id: ids).select(:id)).count
+               when "System::InstancePool" then live.where(instance_pool_id: ids).count
+               end
+      end
+      if (id = first.(NETWORK_KEYS)).present?
+        network = ::Sdwan::Network.where(account_id: account.id).find_by(id: id.to_s)
+        return network ? live.where(id: network.peers.select(:node_instance_id)).count : nil
+      end
+      nil
+    rescue ActiveRecord::StatementInvalid
+      nil
+    end
+
     private
+
+    def explicit_environment
+      value = first_present(ENVIRONMENT_KEYS)
+      return nil if value.blank?
+
+      # Named but unknown is FAIL CLOSED: falling through to the subject keys
+      # would gate the action in a plane the caller did not name.
+      ::Ai::Environment.find_for_account(@account.id, value.to_s) ||
+        raise(::Ai::EnvironmentResolution::ResolverError, "environment '#{value}' is not in this account")
+    end
 
     def through_plural
       PLURAL_KEYS.each do |keys, model|
