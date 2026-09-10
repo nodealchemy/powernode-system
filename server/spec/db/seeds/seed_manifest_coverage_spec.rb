@@ -111,6 +111,27 @@ module SeedManifestCoverage
   #
   # This is a DECLARATION of a known gap, not an exemption that makes it fine.
   # The equality below deletes an entry the moment its manifest lands.
+  #
+  # AUTHORING THE MANIFEST IS THE ONLY REMEDY, measured 2026-09-10 (IMP-01a05f3e).
+  # docker-engine, docker-engine-config, k3s-server and k3s-agent all carry a
+  # `package_spec`, which reads like a second producer: a module built FROM
+  # packages needs no modules/<slug>/ tree. Two things make that reading wrong,
+  # and both take a lookup to see:
+  #
+  #   - System::ModuleBuildPlannerService routes to EXCLUDED_PACKAGE_ORIGIN on
+  #     `mod.package_sourced?`, which is `package_module_link.present?` — a LINK
+  #     row, not a package_spec. None of these seeds create one, so they land in
+  #     EXCLUDED_NO_MANIFEST, which has no other builder.
+  #   - The on-instance builder that DOES read package_spec
+  #     (System::ModuleBuildService, "install packages, capture file spec") has
+  #     exactly one caller, POST /api/v1/internal/system/node_modules/:id/build
+  #     — and that route does not exist. Asked of Rails rather than grepped:
+  #     the controller constant loads, and the router reports ZERO
+  #     `internal/system` routes of any kind.
+  #
+  # So a package_spec on these rows is not a build path. Either author
+  # modules/<name>/, link the row to a package (system_create_module_from_package),
+  # or stop advertising it.
   UNBUILDABLE_OPERATOR_MODULES = {
     "gpu-nvidia-runtime" => GPU_NVIDIA_RUNTIME_LIFTED,
 
