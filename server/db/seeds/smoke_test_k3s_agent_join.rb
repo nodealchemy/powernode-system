@@ -96,13 +96,39 @@ if h.tier_at_least?("single")
 else
   h.step("Synth register_node_join + mark_node_ready for each agent (db tier)")
   agent_instances.each_with_index do |inst, idx|
+    # SYNTHETIC ON PURPOSE, and worth saying out loud (IMP-01a05e92):
+    # target_cluster_id here is a value NO AGENT EVER SENDS.
+    # k3sd.HandshakeRequest.TargetClusterID is documented as "NOT WIRED on the
+    # agent side: AgentManager.TargetClusterID has no producer, so this is
+    # always '' here, and there is nothing an operator can set on the module
+    # assignment to change that." handle_join_request forwards
+    # params[:target_cluster_id] straight through, so on a real fleet it is
+    # always nil — which is why an account with more than one non-error
+    # cluster cannot join a worker AT ALL (409 AmbiguousClusterError rather
+    # than auto-select). Passing it below exercises the service's resolution
+    # branch; it does not evidence a path the agent can take.
     join = ::System::KubernetesClusterProvisionerService.join_request!(
       node_instance: inst, target_cluster_id: cluster.id
     )
-    h.assert(join[:cluster_id] == cluster.id, "agent #{idx + 1}: join resolves to expected cluster")
+    h.assert(join[:cluster_id] == cluster.id,
+             "agent #{idx + 1}: join resolves to expected cluster (target supplied synthetically)")
 
+    # TARGETED, matching what the platform actually receives. phase=ready is
+    # the opposite case to join_request above: the agent DOES send its cached
+    # cluster_id (k3sd.HandshakeRequest.ClusterID, "Forwarded as
+    # target_cluster_id so the platform resolves the node's actual membership
+    # on every ready re-fire"), and handle_k3s_ready passes it through as
+    # target_cluster_id.
+    #
+    # This call used to omit it, which made the drill diverge from the real
+    # handler on the one call that CREATES the node row. On a single-cluster
+    # account resolve_membership_cluster! auto-selects and the assertions still
+    # passed, so the omission was invisible here — but auto-select REFUSES
+    # among multiple candidates, so the untargeted form exercises the branch
+    # that a second cluster in the account would never take.
     node_row = ::System::KubernetesClusterProvisionerService.register_node_join!(
-      node_instance: inst, role: "agent", k8s_version: "v1.30.5+k3s1"
+      node_instance: inst, role: "agent", k8s_version: "v1.30.5+k3s1",
+      target_cluster_id: cluster.id
     )
     h.assert(node_row.role == "agent", "agent #{idx + 1}: role=agent")
     h.assert(node_row.status == "joining", "agent #{idx + 1}: initial status=joining")
