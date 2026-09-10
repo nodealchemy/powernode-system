@@ -7,6 +7,13 @@ require "rails_helper"
 RSpec.describe System::Status::Contributors do
   let(:account) { create(:account) }
 
+  # Narrowly scoped: Rails itself calls Dir.glob constantly, so only this one
+  # pattern is replaced and everything else still hits the filesystem.
+  def stub_glob(paths)
+    allow(Dir).to receive(:glob).and_call_original
+    allow(Dir).to receive(:glob).with(described_class::CONTRIBUTOR_GLOB).and_return(paths)
+  end
+
   # The registry is process-global and the engine's to_prepare has already
   # populated it. Snapshot and restore so an example that unregisters a kind
   # cannot leak into the next file.
@@ -53,11 +60,43 @@ RSpec.describe System::Status::Contributors do
       expect(after_second["platform_subsystem"]).not_to equal(after_first["platform_subsystem"])
     end
 
+    it "skips a helper file that resolves to something which is not a contributor" do
+      # Core's contributors directory already holds two KIND-less helpers, and
+      # this directory is due nine more contributors. Without the filter the
+      # first shared helper dropped here would raise on ::KIND, the engine would
+      # rescue it, and the registry would hold ZERO extension kinds — one
+      # unrelated file removing every system kind from the plane.
+      stub_const("System::Status::Contributors::EnumConditions", Module.new)
+      stub_glob([ "/x/enum_conditions.rb", "/x/platform_subsystem_contributor.rb" ])
+
+      expect(described_class.contributor_classes)
+        .to eq([ System::Status::Contributors::PlatformSubsystemContributor ])
+    end
+
+    it "skips a subclass that has no KIND of its own, rather than letting it steal its parent's" do
+      variant = Class.new(System::Status::Contributors::PlatformSubsystemContributor)
+      stub_const("System::Status::Contributors::VariantContributor", variant)
+      stub_glob([ "/x/variant_contributor.rb" ])
+
+      # The hazard, stated: the subclass DOES answer ::KIND, inherited, and
+      # Registry.register is last-write-wins — so without const_defined?(.., false)
+      # it would silently overwrite its parent under the parent's key.
+      expect(variant::KIND).to eq("platform_subsystem")
+      expect(described_class.contributor_classes).to eq([])
+    end
+
+    it "still registers a real contributor alongside a skipped file" do
+      stub_const("System::Status::Contributors::EnumConditions", Module.new)
+      stub_glob([ "/x/enum_conditions.rb", "/x/platform_subsystem_contributor.rb" ])
+      Platform::Status::Registry.reset!
+
+      expect(described_class.register_all!).to eq([ "platform_subsystem" ])
+    end
+
     it "raises rather than shrugging when a contributor file cannot be resolved" do
       # No compat shim: a contributor that will not load is a deploy defect and
       # must not present as an empty, healthy-looking status plane.
-      allow(Dir).to receive(:glob).with(described_class::CONTRIBUTOR_GLOB)
-                                  .and_return([ "/nowhere/ghost_contributor.rb" ])
+      stub_glob([ "/nowhere/ghost_contributor.rb" ])
 
       expect { described_class.register_all! }.to raise_error(NameError)
     end
@@ -104,6 +143,34 @@ RSpec.describe System::Status::Contributors do
       expect(postgres.links.first["path"]).to eq("/app/system/compute/platform/health")
       expect(postgres.actions).to eq([])
       expect(postgres.conditions.map { |c| c["type"] }).to match_array(%w[Healthy Fresh])
+    end
+
+    it "moves observed_generation when a new snapshot is captured, and holds it when none is" do
+      subsystems = System::Platform::CompositeHealthProbe::SUBSYSTEMS.index_with { { "status" => "ok" } }
+      first_snapshot = System::PlatformHealthSnapshot.create!(
+        account: account, overall: "ok", captured_at: 1.minute.ago,
+        source: "spec", subsystems: subsystems
+      )
+
+      Platform::Status::SweepService.run_once!(account)
+      row = Platform::ComponentStatus.find_by(account_id: account.id,
+                                              component_kind: "platform_subsystem",
+                                              component_ref: "rails")
+      expect(row.observed_generation).to eq(first_snapshot.id)
+
+      # Re-swept against the SAME snapshot: nothing new was observed, so the
+      # generation must not move.
+      Platform::Status::SweepService.run_once!(account)
+      expect(row.reload.observed_generation).to eq(first_snapshot.id)
+
+      second_snapshot = System::PlatformHealthSnapshot.create!(
+        account: account, overall: "ok", captured_at: Time.current,
+        source: "spec", subsystems: subsystems
+      )
+
+      Platform::Status::SweepService.run_once!(account)
+      expect(row.reload.observed_generation).to eq(second_snapshot.id)
+      expect(second_snapshot.id).not_to eq(first_snapshot.id)
     end
 
     it "keeps last_transition_at across a sweep whose verdict did not change" do

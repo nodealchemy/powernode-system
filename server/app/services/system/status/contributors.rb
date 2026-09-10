@@ -37,9 +37,33 @@ module System
           end
         end
 
+        # Only the files that ARE contributors, mirroring core's twin registrar.
+        #
+        # Both filters are load-bearing and neither is defensive programming.
+        #
+        # `is_a?(Class)` + `const_defined?(:KIND, ...)`: this directory will hold
+        # ten contributors, and core needed a shared helper at two. The first
+        # lane to drop `contributors/enum_conditions.rb` here would otherwise
+        # send `::KIND` to a module, raise, and — because the engine rescues —
+        # leave the registry with ZERO extension kinds. One unrelated helper
+        # file would remove every system kind from the plane, with a log line as
+        # the only trace.
+        #
+        # The `false` on const_defined? is the sharper of the two: without it a
+        # SUBCLASS of a contributor inherits its parent's KIND and re-registers
+        # under it, and since Registry.register is last-write-wins the subclass
+        # would silently overwrite its parent with no error anywhere.
+        #
+        # `constantize`, not core's `safe_constantize`: a file that names a
+        # constant nothing defines is a genuine defect and must raise. Skipping
+        # is for files that resolve to something which is not a contributor,
+        # never for files that do not resolve at all.
         def contributor_classes
-          Dir.glob(CONTRIBUTOR_GLOB).sort.map do |path|
-            "#{name}::#{File.basename(path, '.rb').camelize}".constantize
+          Dir.glob(CONTRIBUTOR_GLOB).sort.filter_map do |path|
+            klass = "#{name}::#{File.basename(path, '.rb').camelize}".constantize
+            next unless klass.is_a?(Class) && klass.const_defined?(:KIND, false)
+
+            klass
           end
         end
 

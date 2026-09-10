@@ -69,6 +69,15 @@ module System
         # `NotObserved` (the probe asked and could not see) and from
         # `NoSnapshot` (nothing ever ran).
         REASON_ABSENT     = "SubsystemAbsent"
+        # Two tokens for "there is no snapshot", because the two cases have
+        # different fixes and only one of them resolves itself. The scheduled
+        # writer SKIPS an account with no clone of the agent the health-check
+        # skill is bound to, so that account will never get a snapshot no matter
+        # how long anyone waits; an account that simply has not been swept yet
+        # gets one on the next tick. A single token asserting the first cause
+        # would be a diagnosis this contributor never checked, and every new
+        # install would read it for its first fifteen minutes.
+        REASON_NO_CLONE    = "NoBoundAgentClone"
         REASON_NO_SNAPSHOT = "NoSnapshot"
         REASON_FRESH      = "SnapshotFresh"
         REASON_STALE      = "SnapshotStale"
@@ -96,7 +105,7 @@ module System
         # two absences are different facts and the conditions report them as
         # such.
         Subsystem = Struct.new(
-          :key, :entry, :captured_at, :snapshot_id, :stale_after_seconds,
+          :key, :entry, :captured_at, :snapshot_id, :stale_after_seconds, :absence,
           keyword_init: true
         ) do
           def snapshot? = captured_at.present?
@@ -112,6 +121,10 @@ module System
         def each_component(account)
           snapshot = latest_snapshot(account)
           stale_after = stale_after_seconds
+          # Resolved ONCE per sweep, not once per subsystem: it is a SkillBindings
+          # lookup plus a principal resolution, and thirteen of them per account
+          # per minute would be a real cost for one message.
+          absence = snapshot ? nil : snapshot_absence(account)
 
           PROBE::SUBSYSTEMS.each do |name|
             key = name.to_s
@@ -120,7 +133,8 @@ module System
               entry: snapshot && subsystem_entry(snapshot, key),
               captured_at: snapshot&.captured_at,
               snapshot_id: snapshot&.id,
-              stale_after_seconds: stale_after
+              stale_after_seconds: stale_after,
+              absence: absence
             )
           end
         end
@@ -206,7 +220,7 @@ module System
         # evidence, so the drawer shows what was actually observed (the
         # endpoint, the response time, the error class) and not a summary of it.
         def healthy_condition(record, now)
-          return no_snapshot_condition(HEALTHY, now) unless record.snapshot?
+          return no_snapshot_condition(record, HEALTHY, now) unless record.snapshot?
 
           entry = record.entry
           unless entry
@@ -234,7 +248,7 @@ module System
         end
 
         def fresh_condition(record, now)
-          return no_snapshot_condition(FRESH, now) unless record.snapshot?
+          return no_snapshot_condition(record, FRESH, now) unless record.snapshot?
 
           fresh = record.fresh?(now)
           age = (now - record.captured_at).to_i
@@ -255,20 +269,59 @@ module System
           )
         end
 
+        # Which of the two no-snapshot cases this account is in, resolved rather
+        # than assumed.
+        #
+        # `bound_agent_clone` is private on the scheduler, and it is reached by
+        # #send deliberately: it is a SkillBindings registration lookup followed
+        # by an AccountPrincipalResolver.existing call, and re-deriving that
+        # chain here would be a second answer to "who owns this skill" — the
+        # exact duplication that service's own doc records as a live
+        # mis-attribution bug. Reading its answer is right; copying its
+        # reasoning is not.
+        #
+        # A lookup that RAISES is its own third case. Reporting it as "no clone"
+        # would be the same unchecked diagnosis in a new place.
+        def snapshot_absence(account)
+          clone = SCHEDULE.new(account: account).send(:bound_agent_clone)
+          clone ? { cause: :not_yet_run } : { cause: :no_bound_agent_clone }
+        rescue StandardError => e
+          Rails.logger.warn("[#{self.class.name}] bound-clone lookup failed: #{e.class}: #{e.message}")
+          { cause: :unresolved, error: "#{e.class}: #{e.message}" }
+        end
+
         # The state the brief calls out and the one an empty screen would hide.
-        # The message names the attribution gap because that is the most common
-        # cause: the scheduled writer skips an account with no clone of the
-        # agent the health-check skill is bound to.
-        def no_snapshot_condition(type, now)
+        # The message names the case that actually applies, because "the
+        # scheduler skips accounts with no agent clone" is true of the platform
+        # and not necessarily of THIS account.
+        def no_snapshot_condition(record, type, now)
+          absence = record.absence || { cause: :unresolved }
+          evidence = { "interval_setting" => SCHEDULE::INTERVAL_SETTING,
+                       "cause" => absence[:cause].to_s }
+          evidence["error"] = absence[:error] if absence[:error].present?
+
           ::Platform::Status::Condition.build(
             type: type,
             status: ::Platform::Status::Condition::UNKNOWN,
-            reason: REASON_NO_SNAPSHOT,
-            message: "no platform health snapshot has ever been captured for this account — " \
-                     "the scheduled check skips an account with no clone of the agent it is bound to",
-            evidence: { "interval_setting" => SCHEDULE::INTERVAL_SETTING },
+            reason: absence[:cause] == :no_bound_agent_clone ? REASON_NO_CLONE : REASON_NO_SNAPSHOT,
+            message: absence_message(absence),
+            evidence: evidence,
             now: now
           )
+        end
+
+        def absence_message(absence)
+          case absence[:cause]
+          when :no_bound_agent_clone
+            "no platform health snapshot has ever been captured, and none will be: this account " \
+              "has no clone of the agent the scheduled check is bound to, so every tick skips it"
+          when :not_yet_run
+            "no platform health snapshot has been captured yet; the bound agent clone exists, so " \
+              "the next scheduled check should write one"
+          else
+            "no platform health snapshot has ever been captured, and whether the scheduled check " \
+              "can run for this account could not be determined (#{absence[:error]})"
+          end
         end
 
         def condition_status_for(status)

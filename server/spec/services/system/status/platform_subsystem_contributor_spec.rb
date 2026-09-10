@@ -152,20 +152,71 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
   end
 
   describe "an account with no snapshot" do
+    # The two cases have different fixes and only one resolves itself, so the
+    # contributor RESOLVES which applies rather than asserting the common one.
+    # Each arm is pinned on the reason token and the evidence cause — the
+    # FACTS — not on the prose.
+    def stub_bound_clone(returns: nil, raises: nil)
+      scheduler = instance_double(System::Platform::ScheduledHealthCheckService)
+      allow(System::Platform::ScheduledHealthCheckService)
+        .to receive(:new).with(account: account).and_return(scheduler)
+      if raises
+        allow(scheduler).to receive(:send).with(:bound_agent_clone).and_raise(raises)
+      else
+        allow(scheduler).to receive(:send).with(:bound_agent_clone).and_return(returns)
+      end
+    end
+
     it "emits one not_measured row per known subsystem, never zero rows" do
       expect(components.size).to eq(13)
 
       components.each do |record|
         expect(verdict(record)).to eq(Platform::ComponentStatus::NOT_MEASURED)
-        expect(condition(record, "Healthy")["reason"]).to eq("NoSnapshot")
-        expect(condition(record, "Fresh")["reason"]).to eq("NoSnapshot")
       end
     end
 
-    it "names the attribution gap that most often causes it" do
-      message = condition(components.first, "Healthy")["message"]
+    it "reports NoBoundAgentClone when the scheduler will never run for this account" do
+      stub_bound_clone(returns: nil)
 
-      expect(message).to include("no clone of the agent")
+      healthy = condition(components.first, "Healthy")
+
+      expect(healthy["reason"]).to eq("NoBoundAgentClone")
+      expect(healthy["evidence"]).to include("cause" => "no_bound_agent_clone")
+      expect(healthy["message"]).to include("none will be")
+    end
+
+    it "reports NoSnapshot when the clone exists and the check simply has not run" do
+      stub_bound_clone(returns: create(:ai_agent, account: account))
+
+      healthy = condition(components.first, "Healthy")
+      fresh = condition(components.first, "Fresh")
+
+      # The distinction is the whole fix: an install in its first fifteen
+      # minutes must not read as a structurally broken account.
+      expect(healthy["reason"]).to eq("NoSnapshot")
+      expect(healthy["evidence"]).to include("cause" => "not_yet_run")
+      expect(fresh["reason"]).to eq("NoSnapshot")
+    end
+
+    it "does not claim either cause when the lookup itself failed" do
+      stub_bound_clone(raises: RuntimeError.new("bindings unavailable"))
+
+      healthy = condition(components.first, "Healthy")
+
+      expect(healthy["reason"]).to eq("NoSnapshot")
+      expect(healthy["evidence"]).to include("cause" => "unresolved")
+      expect(healthy["evidence"]["error"]).to include("bindings unavailable")
+    end
+
+    it "resolves the cause once per sweep, not once per subsystem" do
+      scheduler = instance_double(System::Platform::ScheduledHealthCheckService)
+      allow(System::Platform::ScheduledHealthCheckService)
+        .to receive(:new).with(account: account).and_return(scheduler)
+      allow(scheduler).to receive(:send).with(:bound_agent_clone).and_return(nil)
+
+      components
+
+      expect(scheduler).to have_received(:send).with(:bound_agent_clone).once
     end
 
     it "leaves observed_at to the sweep, since the absence was learned now" do
