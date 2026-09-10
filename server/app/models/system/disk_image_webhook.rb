@@ -102,21 +102,27 @@ module System
       match = ::ActiveSupport::SecurityUtils.secure_compare(provided, expected)
       unless match
         # Diagnostic log on mismatch — helps debug CI/platform secret drift.
-        # Only logs prefixes of both signatures so the full HMAC isn't echoed.
+        #
+        # NO part of `expected` (IMP-01a04da0-77cc). It is the CORRECT HMAC for
+        # a body the unauthenticated caller chose, so even a 12-hex prefix put
+        # 48 bits of a valid MAC for attacker-picked input into a durable sink,
+        # on demand. The caller's own `provided` prefix and the body size are
+        # what distinguish "no/garbled signature" from "signed with another
+        # secret" or "body altered in transit"; an operator who holds the
+        # secret can recompute the expected MAC for any body they have.
         #
         # NO `secret_preview` (IMP-649bb8534eb7). It is the first 8 chars of the
         # HMAC secret, and this branch is reached on ANY signature mismatch —
         # i.e. it is driven by an unauthenticated caller, who can therefore
         # write an unbounded number of copies of a slice of the secret into a
-        # durable sink at will. Nothing was diagnosed by it that the two
-        # signature prefixes below do not already settle: a drifted secret
-        # shows up as provided != expected, and identifying WHICH secret the
+        # durable sink at will. Nothing was diagnosed by it that the provided
+        # prefix below does not already settle: a drifted secret shows up as
+        # a well-formed signature that fails, and identifying WHICH secret the
         # row holds is what the operator UI's own `secret_preview` column (and
         # the REST serializer) is for, behind authentication.
         ::Rails.logger.warn(
           "[DiskImageWebhook] signature mismatch webhook=#{id} label=#{label} " \
-          "provided=#{provided[0, 12]} expected=#{expected[0, 12]} " \
-          "body_bytes=#{raw_body.bytesize}"
+          "provided=#{provided[0, 12]} body_bytes=#{raw_body.bytesize}"
         )
       end
       match

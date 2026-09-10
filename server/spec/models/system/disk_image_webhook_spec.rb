@@ -70,7 +70,7 @@ RSpec.describe System::DiskImageWebhook, type: :model do
     # unauthenticated party that can reach the receiver can drive an unbounded
     # number of these writes into a durable sink. The operator-facing preview
     # already lives on the row and in the REST serializer; the log copy buys
-    # no diagnosis that provided=/expected= do not already give.
+    # no diagnosis that provided= does not already give.
     #
     # Split into two examples deliberately. Folding "the line was emitted" and
     # "the line is clean" into one example lets an absence assertion pass
@@ -83,10 +83,26 @@ RSpec.describe System::DiskImageWebhook, type: :model do
         webhook.verify_signature(body, "sha256=#{'0' * 64}")
       end
 
-      it "emits the drift diagnostic with both signature prefixes (non-vacuity control)" do
+      it "emits the drift diagnostic (non-vacuity control)" do
         line = emitted.find { |m| m.include?("[DiskImageWebhook] signature mismatch") }
         expect(line).not_to be_nil, "no signature-mismatch warn line was emitted at all"
-        expect(line).to include("provided=", "expected=", "body_bytes=")
+        expect(line).to include("provided=", "body_bytes=")
+      end
+
+      # IMP-01a04da0-77cc — the line also carried `expected=` + the first 12 hex
+      # chars (48 bits) of the CORRECT HMAC for the body the caller sent. The
+      # caller picks the body and gets a slice of a valid MAC for it written to
+      # a durable sink, as often as they like. The provided prefix + body size
+      # are what diagnose drift; an operator holding the secret can recompute
+      # the expected MAC themselves.
+      it "does not write any part of the correct signature into the log" do
+        line = emitted.find { |m| m.include?("[DiskImageWebhook] signature mismatch") }
+        expect(line).not_to be_nil, "no signature-mismatch warn line was emitted at all"
+        correct = OpenSSL::HMAC.hexdigest("SHA256", secret, body)
+
+        expect(line).not_to include("expected=")
+        leaked = line.scan(/\h{8,}/).select { |run| correct.include?(run[0, 8]) }
+        expect(leaked).to be_empty, "the mismatch log line contains a slice of the correct HMAC (value not echoed)"
       end
 
       it "does not write any slice of the secret into the log" do
