@@ -17,6 +17,15 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
+// testAttachStamp mirrors Reconciler.attachStamp for fixtures that seed a
+// "this module is already in sync" stamp (IMP-01a05efa). Computed the same way
+// production computes it — rendered unit bodies plus the agent version, empty
+// in tests — rather than restating a literal, so a fixture cannot claim
+// in-sync with a value the gate would never produce.
+func testAttachStamp(moduleID string, services []manifest.Service) string {
+	return lifecycle.RenderedServicesHash(moduleID, services, pivotAwareRootMode()) + "|"
+}
+
 var (
 	osMkdirAll  = os.MkdirAll
 	osWriteFile = os.WriteFile
@@ -187,7 +196,7 @@ func TestReconcilerRunOnceNoOpsWhenStateMatches(t *testing.T) {
 			{ID: "m1", Digest: "abc123", Priority: 100},
 		},
 		LastAttachedManifestHashes: map[string]string{
-			"m1": seedManifest.ServicesHash(),
+			"m1": testAttachStamp("m1", seedManifest.Services),
 		},
 	})
 
@@ -316,9 +325,9 @@ func TestReconcilerRunOnceReattachesOnManifestChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	freshHash := (&manifest.Manifest{Services: []manifest.Service{
+	freshHash := testAttachStamp("m1", []manifest.Service{
 		{Name: "qga", StartCommand: "/usr/sbin/qemu-ga", RestartPolicy: "always"},
-	}}).ServicesHash()
+	})
 	if state.LastAttachedManifestHashes["m1"] != freshHash {
 		t.Errorf("expected stored hash to update to freshHash=%s, got %s",
 			freshHash, state.LastAttachedManifestHashes["m1"])
@@ -718,7 +727,13 @@ func TestReconcilerHotReconcileCopiesChangedModuleOnPivotNode(t *testing.T) {
 	// Pre-seed real prior state (module m1 already attached at d1, with
 	// its (empty) services hash recorded) so this run is tick 2+, not the
 	// empty-state baseline tick.
-	emptyHash := (&manifest.Manifest{Services: []manifest.Service{}}).ServicesHash()
+	// A stamp the gate would actually PRODUCE for this module's (empty)
+	// service set, so m1 is in toAttach on its digest change alone. Seeding a
+	// literal manifest hash here instead put m1 in toReattach as well, and the
+	// documented consequence (see the `unmaterialized` comment in RunOnce) is
+	// that hotReconcileIfNeeded refuses it TWICE — which is a real property of
+	// a same-tick digest+services change, not what this example is about.
+	emptyHash := testAttachStamp("m1", nil)
 	if err := mount.SaveState(statePath, &mount.State{
 		AttachedModules:            []mount.Module{{ID: "m1", Digest: "d1", Priority: 100}},
 		LastAttachedManifestHashes: map[string]string{"m1": emptyHash},
@@ -791,7 +806,7 @@ func TestReconcilerHotReconcileSkipsAndWarnsWhenRebootRequired(t *testing.T) {
 	layout.Root = tmpRoot
 	layout = layout.Resolve()
 
-	emptyHash := (&manifest.Manifest{Services: []manifest.Service{}}).ServicesHash()
+	emptyHash := testAttachStamp("m1", nil)
 	if err := mount.SaveState(statePath, &mount.State{
 		AttachedModules:            []mount.Module{{ID: "m1", Digest: "d1", Priority: 100}},
 		LastAttachedManifestHashes: map[string]string{"m1": emptyHash},

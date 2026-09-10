@@ -82,6 +82,11 @@ type ReconcilerConfig struct {
 	// fleet refetches roughly every other tick rather than every tick, while
 	// still surfacing a republished module within ~2 cycles.
 	ManifestTTL time.Duration
+	// AgentVersion is mixed into the re-attach stamp (see attachStamp). Empty
+	// is allowed and simply contributes nothing — the rendered-output half of
+	// the stamp still does the work.
+	AgentVersion string
+
 	// DryRun, when true, computes the diff + plan but skips all
 	// mutations (no pull, no mount, no systemd action).
 	DryRun bool
@@ -435,7 +440,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		fresh := mf.ServicesHash()
+		fresh := r.attachStamp(mod.ID, mf)
 		if current.LastAttachedManifestHashes[mod.ID] != fresh {
 			toReattach = append(toReattach, mod)
 		}
@@ -625,7 +630,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
-		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
+		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
 			// The stamp above is what the reattach gate compares, so leaving
 			// it in place after a refused materialization tells the next tick
@@ -661,7 +666,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.noteUnconverged("reconciler:reattach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
-		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
+		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
 			// Same re-queue as the attach loop: a refused materialization must
 			// not leave a stamp claiming this manifest is materialized, and
@@ -1160,6 +1165,36 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 // silent no-op is the right behavior. The detach path below mirrors
 // this: it skips DetachServices when Services is empty without
 // surfacing anything to OnError.
+// attachStamp is the value the re-attach gate compares (IMP-01a05efa).
+//
+// TWO INPUTS, for two different failure modes:
+//
+//   - The RENDERED unit bodies (lifecycle.RenderedServicesHash), not the
+//     manifest. The unit body is not a function of the manifest alone — the
+//     root mode and the inverted dependency graph feed the renderer too — so a
+//     corrected RENDERER shipped in a new agent binary left the old
+//     manifest-hash stamp byte-identical, queued no module for re-attach, and
+//     never replaced the stale unit on disk.
+//
+//   - The AGENT VERSION, so a change in an input the render path does not
+//     cover still forces one pass. This is the belt to the rendered hash's
+//     braces: it re-attaches every module once per agent upgrade whether or
+//     not rendering changed.
+//
+// A false-positive re-attach is deliberately cheap and the design already
+// says so: attachModule is idempotent on its mount/cosign/fs-verity/policy
+// steps, each unit goes through writeIfChanged, daemon-reload runs only if
+// something was written, and an unchanged unit gets a start that is a no-op on
+// a running service. So paying one extra pass per agent upgrade buys the
+// guarantee that a renderer fix actually ships.
+func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string {
+	if mf == nil {
+		return ""
+	}
+	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
+		"|" + r.cfg.AgentVersion
+}
+
 func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest) {
 	if len(mf.Services) == 0 {
 		return
@@ -1171,7 +1206,24 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 	// pivoted host stamps RootDirectory=/sysroot — which switch_root
 	// already consumed — so the service never starts (the hub enrolls but
 	// runs no app modules).
-	if _, err := lifecycle.AttachServicesMode(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode()); err != nil {
+	//
+	// RestartChanged (IMP-01a05efa): a REWRITTEN unit body does not reach the
+	// running process by itself — `systemctl start` is a no-op on an active
+	// unit — so before this a corrected renderer replaced the file and the
+	// service kept running the old definition until something else restarted
+	// it. AttachServicesModeOpts restarts a unit only when its body actually
+	// changed on this pass AND it is currently active.
+	//
+	// FENCED ON THE SELF-HOSTED NODE, for the same reason and by the same
+	// invariant as filterUnsafeDetaches (selfhost.go): the services that
+	// answer this node's own reconcile endpoint are the ones it would be
+	// restarting, and a restart window there is self-inflicted on the one node
+	// that cannot be told to recover. Milder than the detach incident — a
+	// restarted service does come back — but the asymmetry is the same, so the
+	// new body lands on disk and takes effect at the next recompose, which is
+	// already the documented behaviour for composition changes.
+	opts := lifecycle.AttachOptions{RestartChanged: !r.selfHosted()}
+	if _, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts); err != nil {
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
 	}

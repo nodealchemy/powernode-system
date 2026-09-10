@@ -367,6 +367,9 @@ func (s *Service) Run(ctx context.Context) error {
 		ModulesClient:  client,
 		ManifestClient: client,
 		ManifestRoot:   manifest.DefaultRoot,
+		// Mixed into the re-attach stamp so an agent upgrade re-attaches each
+		// module once — see Reconciler.attachStamp.
+		AgentVersion: s.cfg.AgentVersion,
 		Puller: &oci.Puller{
 			Transport: client,
 			// BlobClient(), not `client`: blob bodies are unbounded and must not ride

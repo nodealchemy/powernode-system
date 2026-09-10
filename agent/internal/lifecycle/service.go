@@ -23,6 +23,8 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -72,8 +74,30 @@ func UnitPath(moduleID, svcName string) string {
 type AttachResult struct {
 	Unit    string
 	Started bool
-	Skipped bool  // already running with identical unit content
-	StepErr error // non-nil for the step that failed; preceding steps still ran
+	Skipped bool // already running with identical unit content
+	// Restarted is true when this pass REWROTE the unit body and restarted a
+	// running unit so the new body took effect (AttachOptions.RestartChanged).
+	// A plain `systemctl start` on a running unit is a no-op, so without this
+	// a corrected unit reaches the DISK and never the running process.
+	Restarted bool
+	StepErr   error // non-nil for the step that failed; preceding steps still ran
+}
+
+// AttachOptions carries the decisions the RECONCILER makes and the renderer
+// cannot: they depend on what kind of node this is, which lifecycle does not
+// know.
+type AttachOptions struct {
+	// RestartChanged: when a unit's body actually CHANGED on this pass and the
+	// unit is currently active, restart it instead of the no-op start.
+	//
+	// Off by default, and the reconciler leaves it off on a SELF-HOSTED node
+	// that runs services — the same invariant, and the same reason, as the
+	// detach fence in runtime/selfhost.go: restarting the services that answer
+	// the reconcile endpoint on the node that hosts them is a self-inflicted
+	// outage window on the one node that cannot be told to recover. There the
+	// new body lands on disk and takes effect at the next recompose, which is
+	// the documented behaviour for composition changes anyway.
+	RestartChanged bool
 }
 
 // AttachServices renders each unit in the cloud_init chroot mode
@@ -102,6 +126,13 @@ func AttachServices(ctx context.Context, runner mount.Runner, moduleID string, s
 //     reconcile loop; RootModeChroot there points every unit at a /sysroot
 //     that no longer exists and the service can't start.
 func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID string, services []manifest.Service, mode RootMode) ([]AttachResult, error) {
+	return AttachServicesModeOpts(ctx, runner, moduleID, services, mode, AttachOptions{})
+}
+
+// AttachServicesModeOpts is AttachServicesMode with the reconciler's
+// node-shape decisions (see AttachOptions). The zero AttachOptions is exactly
+// the pre-existing behaviour, so every other caller is unchanged.
+func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID string, services []manifest.Service, mode RootMode, opts AttachOptions) ([]AttachResult, error) {
 	if runner == nil {
 		return nil, errors.New("lifecycle.AttachServices: nil runner")
 	}
@@ -182,7 +213,26 @@ func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID strin
 	var startErrs []error
 	for i, svc := range ordered {
 		unitName := UnitName(moduleID, svc.Name)
-		if err := systemd.Action(ctx, runner, unitName, systemd.Start); err != nil {
+
+		// A REWRITTEN unit body does not reach the running process on its own:
+		// `systemctl start` is a no-op on an active unit, so before this the
+		// corrected body sat on disk until something else restarted the
+		// service. Restart only when BOTH are true — the body changed on this
+		// pass (Skipped is false) and the unit is actually active — so an
+		// unchanged unit is never disturbed and a deliberately stopped one
+		// stays stopped rather than being started by the back door.
+		//
+		// An is-active probe that ERRORS is treated as "not active": the
+		// fallback is the previous behaviour (a plain start), never an
+		// unasked-for restart of something whose state we could not read.
+		verb := systemd.Start
+		if opts.RestartChanged && !results[i].Skipped {
+			if active, err := systemd.IsActive(ctx, runner, unitName); err == nil && active {
+				verb = systemd.Restart
+			}
+		}
+
+		if err := systemd.Action(ctx, runner, unitName, verb); err != nil {
 			results[i].StepErr = err
 			startErrs = append(startErrs, fmt.Errorf("start %s: %w", unitName, err))
 			if len(dependents[svc.Name]) > 0 {
@@ -190,6 +240,7 @@ func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID strin
 			}
 			continue
 		}
+		results[i].Restarted = verb == systemd.Restart
 		results[i].Started = !results[i].Skipped // unchanged units still get started so a manual stop is corrected
 		if results[i].Skipped {
 			// Idempotent: systemctl start on a running unit is a no-op,
@@ -897,6 +948,51 @@ func topoSort(services []manifest.Service) ([]manifest.Service, error) {
 // doesn't exist or has different content. Returns true if a write
 // happened. Idempotent: a no-change attach skips daemon-reload + the
 // restart cycle, so a healthy module's reconcile tick is cheap.
+// RenderedServicesHash hashes what this agent would actually WRITE for a
+// module's units, rather than what its manifest says (IMP-01a05efa).
+//
+// THE DEFECT IT CLOSES. The reconciler's re-attach gate compared
+// manifest.Manifest.ServicesHash — a hash of manifest CONTENT. The unit body
+// is not a function of the manifest alone: RenderUnitModeGraph also folds in
+// the root mode (native vs chroot) and the INVERTED dependency graph, and it
+// is the renderer's own logic besides. So shipping a corrected renderer in a
+// new agent binary left every stamp byte-identical, no module was ever queued
+// for re-attach, and the stale unit body stayed on disk until something
+// unrelated changed the manifest or an operator ran
+// ClearAttachedManifestHashes by hand. The fix that keeps working is to stamp
+// the OUTPUT, so the gate flips exactly when the bytes we would write differ.
+//
+// Rendered through the SAME RenderUnitModeGraph + recoveryDependents path
+// AttachServicesModeOpts uses. If it drifts from that path this hash silently
+// stops describing the file, which is the failure it exists to prevent — so
+// there is a test that renders both ways and compares.
+//
+// Ordered by service NAME, not topologically: topoSort can fail (a dependency
+// cycle), and a hash that errors is a hash the caller has to have a fallback
+// for. Sorting by name is total, deterministic, and independent of the graph.
+func RenderedServicesHash(moduleID string, services []manifest.Service, mode RootMode) string {
+	if len(services) == 0 {
+		return ""
+	}
+
+	ordered := make([]manifest.Service, len(services))
+	copy(ordered, services)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
+
+	dependents := recoveryDependents(services)
+
+	h := sha256.New()
+	for _, svc := range ordered {
+		// The unit NAME is hashed alongside the body: a rename that leaves the
+		// body identical still writes a different file.
+		h.Write([]byte(UnitName(moduleID, svc.Name)))
+		h.Write([]byte{0})
+		h.Write([]byte(RenderUnitModeGraph(svc, moduleID, mode, dependents[svc.Name])))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func writeIfChanged(path, content string) (bool, error) {
 	existing, err := os.ReadFile(path)
 	if err == nil && string(existing) == content {
