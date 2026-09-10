@@ -2128,13 +2128,13 @@ module Ai
           # per-key unit; the read reports defaults/overrides/effective
           # separately so an operator can see which values they own.
           "system_get_sensor_config" => {
-            description: "Read fleet sensor thresholds for this account: the class-constant defaults, the stored overrides, and the effective values in use. Omit `sensor` to list every configurable sensor. All values are seconds or plain counts.",
+            description: "Read fleet sensor thresholds for this account across BOTH tunable stores: the SensorConfig store (defaults/overrides/effective, writable via system_update_sensor_config — `writable: true`) and the account ladder (account_ladder/account_ladder_effective, set on Account#settings or the named SiteSetting). Omit `sensor` to list every configurable sensor. All values are seconds or plain counts.",
             parameters: {
               sensor: { type: "string", required: false, description: "Sensor key (e.g. instance_status, instance_unrecoverable). Omit to list every configurable sensor." }
             }
           },
           "system_update_sensor_config" => {
-            description: "Set fleet sensor threshold overrides for this account. Partial merge — only supplied keys change; pass a key with null to drop the override and fall back to the platform default. Rejects keys the sensor does not declare and non-positive values. Example: { sensor: \"instance_status\", config: { silent_threshold_seconds: 600 } }.",
+            description: "Set fleet sensor threshold overrides for this account, in the SensorConfig store. Partial merge — only supplied keys change; pass a key with null to drop the override and fall back to the platform default. Rejects keys the sensor does not declare, non-positive values, and sensors whose thresholds live on the account ladder instead (system_get_sensor_config reports `writable` per sensor). Example: { sensor: \"instance_status\", config: { silent_threshold_seconds: 600 } }.",
             parameters: {
               sensor: { type: "string", required: true, description: "Sensor key to tune (see system_get_sensor_config for the list and each sensor's declared keys)" },
               config: { type: "object", required: true, description: "Threshold overrides to merge, e.g. { silent_threshold_seconds: 600 }. A null value removes that override." }
@@ -5899,26 +5899,70 @@ module Ai
       # restated here: a sensor absent from the tick registry never runs, so
       # accepting a tuning for it would store configuration that can never
       # take effect and would read, to an operator, exactly like one that did.
+      #
+      # Campaign 01a08c9b increment B4a WIDENED what "configurable" derives
+      # from. The predicate used to be `default_thresholds.present?`, which is
+      # one of the platform's TWO tunable stores; it listed five sensors while
+      # thirteen were tunable. The other eight resolve their windows through
+      # the account ladder (Account#settings -> SiteSetting -> constant) and
+      # were invisible here, so an operator who wanted a wider SDWAN flow
+      # window had no way to discover the key existed.
+      #
+      # BaseSensor.configurable? is now the single predicate and it spans both
+      # stores, still derived from what each sensor declares — a new tunable
+      # sensor appears in this verb without an edit here.
       def configurable_sensors
         ::System::Fleet::FleetAutonomyService::SENSORS.select do |klass|
-          klass.respond_to?(:default_thresholds) && klass.default_thresholds.present?
+          klass.respond_to?(:configurable?) && klass.configurable?
         end
       end
 
+      # One sensor's full tuning picture, both stores reported separately.
+      #
+      # They are NOT merged into one `defaults`/`effective` pair on purpose:
+      # they are written by different means and this verb can only write one of
+      # them. Collapsing them would tell an operator that
+      # `sdwan_service_health_flow_window_seconds` is settable through
+      # system_update_sensor_config, which it is not — `writable` says so, and
+      # `account_ladder[key][account_setting]` names where it does go.
       def sensor_config_view(klass)
-        {
+        view = {
           sensor: klass.sensor_key,
           sensor_class: klass.name.demodulize,
           defaults: klass.default_thresholds,
           overrides: ::System::Fleet::SensorConfig.config_for(account: @account, sensor: klass.sensor_key),
-          effective: klass.resolved_thresholds(account: @account)
+          effective: klass.resolved_thresholds(account: @account),
+          writable: klass.default_thresholds.present?
         }
+
+        ladder = klass.account_ladder_settings
+        return view if ladder.blank?
+
+        view.merge(
+          account_ladder: ladder,
+          account_ladder_effective: klass.resolved_account_ladder(account: @account)
+        )
       end
 
       def unknown_sensor_error(name)
         error_result(
           "Unknown sensor #{name.inspect}. Configurable sensors: " \
           "#{configurable_sensors.map(&:sensor_key).sort.join(', ')}"
+        )
+      end
+
+      # The write verb's own refusal for a sensor this verb cannot write.
+      #
+      # A read that lists thirteen sensors and a write that silently accepts
+      # five of them is worse than the gap it replaced, so the refusal names
+      # the store, every key, and where each one is actually set.
+      def unwritable_sensor_error(klass)
+        keys = klass.account_ladder_settings
+        error_result(
+          "#{klass.sensor_key} resolves its thresholds through the account ladder " \
+          "(Account#settings, then SiteSetting, then the constant), which this verb does not write. " \
+          "Set #{keys.map { |key, spec| "#{key} via Account#settings[#{spec['account_setting'].inspect}]" }.join('; ')}. " \
+          "system_get_sensor_config reports the effective values."
         )
       end
 
@@ -5940,6 +5984,7 @@ module Ai
         name = params[:sensor].to_s.strip
         klass = configurable_sensors.find { |k| k.sensor_key == name }
         return unknown_sensor_error(name) unless klass
+        return unwritable_sensor_error(klass) if klass.default_thresholds.blank?
 
         config = params[:config]
         return error_result("config object is required") unless config.is_a?(Hash) && config.present?

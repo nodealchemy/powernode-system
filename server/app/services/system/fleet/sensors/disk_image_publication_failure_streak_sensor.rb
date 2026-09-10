@@ -20,7 +20,25 @@ module System
       # branch DK1/DK2 for the registry-config + webhook chunks this
       # completes).
       class DiskImagePublicationFailureStreakSensor < BaseSensor
-        DEFAULT_STREAK_THRESHOLD = 3
+        # This sensor's rung of the account ladder (BaseSensor
+        # .account_ladder_settings). The prefix + DEFAULT_<KEY> pair is what
+        # makes the threshold DISCOVERABLE through system_get_sensor_config;
+        # before it, the only way to learn this was tunable was to read the
+        # source or FLEET_SENSORS.md.
+        #
+        # ACCOUNT_SETTING_PREFIX + "threshold" reproduces the key that is
+        # already stored — "disk_image_failure_streak_threshold" — so nothing
+        # an operator has configured moves.
+        #
+        # Deliberately NO SETTING_PREFIX: this threshold has never had a
+        # deployment-wide SiteSetting rung, and adding one as a side effect of
+        # making the sensor visible would change resolution for every account
+        # that has not set it.
+        ACCOUNT_SETTING_PREFIX = "disk_image_failure_streak"
+        DEFAULT_THRESHOLD      = 3
+        # Declared rather than clamped privately so the value the read verb
+        # REPORTS as effective is the value this sensor USES.
+        ACCOUNT_LADDER_BOUNDS  = { "threshold" => (1..20) }.freeze
 
         def sense
           account.system_node_platforms.find_each.flat_map do |platform|
@@ -59,9 +77,14 @@ module System
         # Configurable per-account so a platform under active/flaky
         # development can tolerate a longer run before paging the operator
         # (feedback: no hardcoded numeric caps — resolve via Account#settings).
+        #
+        # Resolved through the shared seam rather than by hand, which changes
+        # one edge: a stored 0 or a negative now reads as UNSET (the default 3)
+        # instead of clamping up to 1. That is the rule every other sensor on
+        # this ladder already applies, and "I cleared the field" should not
+        # mean "alarm on the first failure".
         def streak_threshold
-          configured = account.settings&.dig("disk_image_failure_streak_threshold")
-          configured.present? ? configured.to_i.clamp(1, 20) : DEFAULT_STREAK_THRESHOLD
+          @streak_threshold ||= self.class.resolved_account_ladder(account: account)["threshold"]
         end
       end
     end

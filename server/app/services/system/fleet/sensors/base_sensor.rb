@@ -68,6 +68,91 @@ module System
           default_thresholds[key.to_s]
         end
 
+        # ── The SECOND tunable store ─────────────────────────────────────
+        #
+        # .default_thresholds above is the SensorConfig ladder: one per-account
+        # row keyed by sensor_key, written by system_update_sensor_config.
+        # EIGHT sensors resolve their windows a different way — Account#settings,
+        # then a deployment-wide SiteSetting, then a constant — and declare that
+        # ladder with a pair of prefix constants plus one DEFAULT_<KEY> constant
+        # per tunable value.
+        #
+        # Nothing read those, so system_get_sensor_config listed five sensors
+        # while thirteen were tunable, and an operator looking for
+        # `sdwan_service_health_flow_window_seconds` concluded it was not
+        # configurable. That is the same defect IMP-ca485128072e was opened for
+        # (a documented key nothing implemented), one store over.
+        #
+        # DERIVED, NOT RESTATED. The keys come from the sensor's own DEFAULT_*
+        # constants (DEFAULT_FLOW_WINDOW_SECONDS -> "flow_window_seconds"), so a
+        # new tunable reaches the verb the moment the constant exists and no
+        # list has to be edited. What keeps that convention from drifting
+        # silently is the spec: it asserts this derived key set equals the
+        # literal suffixes the sensor's source passes to its own resolver, so a
+        # sensor that names a key one way and its constant another fails loudly
+        # instead of under-reporting.
+        #
+        # A sensor with no ACCOUNT_SETTING_PREFIX is not on this ladder and
+        # returns {} — the same "declares nothing, tunes nothing" rule the
+        # thresholds seam uses.
+        def self.account_ladder_settings
+          return {} unless const_defined?(:ACCOUNT_SETTING_PREFIX, false)
+
+          account_prefix = const_get(:ACCOUNT_SETTING_PREFIX)
+          site_prefix    = const_defined?(:SETTING_PREFIX, false) ? const_get(:SETTING_PREFIX) : nil
+
+          constants(false).grep(/\ADEFAULT_[A-Z0-9_]+\z/).sort.to_h do |const|
+            key = const.to_s.delete_prefix("DEFAULT_").downcase
+            [
+              key,
+              {
+                "default" => const_get(const),
+                "account_setting" => "#{account_prefix}_#{key}",
+                "site_setting" => site_prefix ? "#{site_prefix}.#{key}" : nil
+              }.compact
+            ]
+          end
+        end
+
+        # Bounds a sensor clamps a configured value into, keyed the same way.
+        # Declared rather than applied privately so the value this seam REPORTS
+        # as effective is the value the sensor USES — a read verb that reports
+        # 40 while the sensor clamps to 20 is a lie with a plausible source.
+        def self.account_ladder_bounds
+          const_defined?(:ACCOUNT_LADDER_BOUNDS, false) ? const_get(:ACCOUNT_LADDER_BOUNDS) : {}
+        end
+
+        # The ladder resolved for one account: Account#settings, then the
+        # deployment-wide SiteSetting, then the constant. Non-positive is
+        # treated as UNSET rather than as zero — a zero window would mark
+        # everything stale, which is exactly what an operator clearing a field
+        # does not mean.
+        def self.resolved_account_ladder(account:)
+          account_ladder_settings.to_h do |key, spec|
+            [ key, resolve_ladder_value(key, spec, account) ]
+          end
+        end
+
+        def self.resolve_ladder_value(key, spec, account)
+          raw = account&.settings&.dig(spec["account_setting"]).presence
+          raw ||= ::SiteSetting.get(spec["site_setting"]) if spec["site_setting"] && defined?(::SiteSetting)
+          value = raw.to_i
+          return spec["default"] unless value.positive?
+
+          bounds = account_ladder_bounds[key]
+          bounds ? value.clamp(bounds.min, bounds.max) : value
+        rescue StandardError => e
+          Rails.logger.warn("[#{name}] account-ladder #{key} fell back to its default: #{e.class}: #{e.message}")
+          spec["default"]
+        end
+        private_class_method :resolve_ladder_value
+
+        # True when an operator can tune anything about this sensor at all —
+        # through either store. The MCP catalog is derived from this.
+        def self.configurable?
+          default_thresholds.present? || account_ladder_settings.present?
+        end
+
         # Every declared key resolved at once — what the MCP read verb reports
         # and what an instance memoizes for one sense pass.
         #
