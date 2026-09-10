@@ -393,6 +393,65 @@ MOUNTED=("$BUILDENV/proc" "${MOUNTED[@]}")
 bind_mount /dev "$BUILDENV/dev"
 bind_mount /etc/resolv.conf "$BUILDENV/etc/resolv.conf"
 
+# --- 3b. persistent stage-1 apt cache (IMP-01a0813c) -----------------------
+# scripts/module-build/stage1-rootfs.sh has carried the whole mechanism for a
+# while and said so in its own docs: STAGE1_APT_CACHE_DIR seeds
+# <dir>/<apt_snapshot>/archives/*.deb into the chroot's apt archive before
+# mmdebstrap fetches anything and harvests every fetched .deb back afterwards.
+# Its note ended "the build chroot only sees what its caller mounts — a native
+# build needs module-forge-build.sh to bind-mount a persistent host directory
+# into the buildenv and export this variable; until it does, the variable is
+# unset there and this is a no-op." This is that caller; until now every native
+# build re-downloaded the same base packages from snapshot.ubuntu.com.
+#
+# WHY IT IS SAFE TO SHARE ACROSS JOBS. The key is the apt_snapshot timestamp
+# and snapshot content is IMMUTABLE, so an entry can never go stale; apt
+# re-verifies every cached file against the snapshot index's hashes and
+# re-fetches on mismatch; and the harvest hook writes to a temp name then
+# `mv -n`, so a concurrent job never observes a half-written .deb and never
+# clobbers an existing one. stage1 disables the cache itself when
+# apt_snapshot=none — a live rolling mirror has no safe cache key.
+#
+# OUTSIDE $JOB_ROOT, deliberately: cleanup() rm -rf's that tree on EVERY exit
+# path, so a cache under it would be wired correctly and still be empty on the
+# next build. It sits beside the per-job scratch under $JOB_BASE, which is the
+# roomy disk-backed filesystem this script already resolved for exactly this
+# class of data.
+#
+# Set MODULE_FORGE_APT_CACHE_DIR to relocate it, or to the empty string to turn
+# the cache off (the pre-IMP-01a0813c behaviour: no mount, variable unset).
+APT_CACHE_HOST="${MODULE_FORGE_APT_CACHE_DIR-$JOB_BASE/apt-cache}"
+APT_CACHE_CHROOT=/var/cache/module-forge-apt
+if [ -n "$APT_CACHE_HOST" ]; then
+  if mkdir -p "$APT_CACHE_HOST" 2>/dev/null && [ -w "$APT_CACHE_HOST" ]; then
+    # Bounded growth. Each apt_snapshot gets its own subdirectory, and the
+    # snapshot pin moves over time, so without this the cache accumulates one
+    # full package set per snapshot ever built here — on the same filesystem
+    # the build scratch needs, which is the ENOSPC failure the $JOB_BASE logic
+    # above exists to avoid.
+    #
+    # Pruned by DIRECTORY MTIME, which only advances when a .deb is harvested
+    # into it. A snapshot still in active use whose package set has stopped
+    # changing can therefore age out and be re-downloaded once. That costs a
+    # single cold build and nothing else — snapshot content is immutable, so a
+    # pruned entry is always re-fetchable and never wrong.
+    find "$APT_CACHE_HOST" -mindepth 1 -maxdepth 1 -type d \
+      -mtime "+${MODULE_FORGE_APT_CACHE_MAX_AGE_DAYS:-30}" -exec rm -rf {} + 2>/dev/null || true
+
+    bind_mount "$APT_CACHE_HOST" "$BUILDENV$APT_CACHE_CHROOT"
+    # The value stage1 reads must be the path INSIDE the chroot; the host path
+    # resolves to nothing once it is running under chroot. Inherited through
+    # the process environment, like the registry credentials below.
+    export STAGE1_APT_CACHE_DIR="$APT_CACHE_CHROOT"
+    log "stage-1 apt cache: ${APT_CACHE_HOST} -> ${APT_CACHE_CHROOT}"
+  else
+    # Never fatal: a build without the cache is correct, only slower.
+    log "WARNING: apt cache dir ${APT_CACHE_HOST} is not writable — stage-1 cache disabled for this job"
+  fi
+else
+  log "stage-1 apt cache disabled (MODULE_FORGE_APT_CACHE_DIR is empty)"
+fi
+
 # Content-addressed build skip — ON by default from here (019ff2aa). Reverse-
 # dependency expansion legitimately names modules whose own inputs did not
 # change (one agent/ edit plans 22), and rebuilding those costs real minutes.

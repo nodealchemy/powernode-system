@@ -154,13 +154,17 @@
 #                                the directory is missing or unwritable;
 #                                disabled when apt_snapshot is "none" (live
 #                                mirror content is not immutable, so there
-#                                is no safe cache key). NOTE: the build
-#                                chroot only sees what its caller mounts —
-#                                a native build needs module-forge-build.sh
-#                                to bind-mount a persistent host directory
-#                                into the buildenv and export this variable;
-#                                until it does, the variable is unset there
-#                                and this is a no-op.
+#                                is no safe cache key). The build chroot only
+#                                sees what its caller mounts: the native
+#                                builder does so since IMP-01a0813c
+#                                (module-forge-build.sh bind-mounts
+#                                $JOB_BASE/apt-cache at
+#                                /var/cache/module-forge-apt and exports this
+#                                variable naming the IN-CHROOT path — outside
+#                                the per-job scratch its cleanup deletes, and
+#                                turned off with MODULE_FORGE_APT_CACHE_DIR=
+#                                ""). A caller that mounts nothing still leaves
+#                                this unset, which is a no-op, not an error.
 #
 # Reads:  /tmp/package_spec.txt (produced by the workflow's untouched
 #         "Parse manifest" step)
