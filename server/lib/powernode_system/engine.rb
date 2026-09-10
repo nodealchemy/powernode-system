@@ -299,7 +299,7 @@ module PowernodeSystem
           permission "system.ingress.manage", "Compose reverse proxies + expose services publicly (SystemIngressTool)",
                      grant: { admin: true }
           permission "system.marketplace.read", "Browse the system node-module marketplace (CatalogPage MarketplaceTab)",
-                     grant: { admin: true, manager: true, member: true }
+                     grant: { admin: true, owner: true, manager: true, member: true }
 
           # ---------------------------------------------------------------
           # Platform dashboard (singular `platform`) — operator deploy/scale/health.
@@ -341,9 +341,9 @@ module PowernodeSystem
           # CVE exposure (was db/seeds/system_cve_permissions.rb).
           # ---------------------------------------------------------------
           permission "system.cve.read", "View CVE exposures across the fleet (severity, state, affected modules)",
-                     grant: { admin: true, manager: true, member: true }
+                     grant: { admin: true, owner: true, manager: true, member: true }
           permission "system.cve.manage", "Triage CVE exposures (mark remediating / resolved / wont_fix)",
-                     grant: { admin: true, manager: true }
+                     grant: { admin: true, owner: true, manager: true }
 
           # ---------------------------------------------------------------
           # Storage assignments + credentials (was db/seeds/system_storage_permissions.rb).
@@ -412,12 +412,13 @@ module PowernodeSystem
           resource :node_instance_credentials, actions: %i[read manage], grant: { admin: :all }
 
           # Storage assignments (storage seed).
-          # admin -> all; manager -> assignments {read,create,update,assign,rotate_credential}
-          # (NOT delete); member -> assignments read.
+          # admin -> all; owner + manager -> assignments {read,create,update,
+          # assign,rotate_credential} (NOT delete); member -> assignments read.
           resource :"storage.assignments",
                    actions: %i[read create update delete assign rotate_credential],
                    grant: {
                      admin: :all,
+                     owner: %i[read create update assign rotate_credential],
                      manager: %i[read create update assign rotate_credential],
                      member: %i[read]
                    }
@@ -495,6 +496,7 @@ module PowernodeSystem
         # exact defect this permission exists to fix — an operator watching a
         # runaway batch with no way to stop it.
         ::Permissions.register_role_permissions("admin", %w[system.module_builds.read system.module_builds.cancel])
+        ::Permissions.register_role_permissions("owner", %w[system.module_builds.read system.module_builds.cancel])
         ::Permissions.register_role_permissions("manager", %w[system.module_builds.read system.module_builds.cancel])
 
         # ---------------------------------------------------------------
@@ -559,6 +561,11 @@ module PowernodeSystem
           system.ci_runner_leases.read
           system.ci_runner_leases.create
           system.ci_runner_leases.update
+        ])
+        ::Permissions.register_role_permissions("owner", %w[
+          system.ci_workers.read
+          system.disk_image_webhooks.read
+          system.ci_runner_leases.read
         ])
         ::Permissions.register_role_permissions("manager", %w[
           system.ci_workers.read
