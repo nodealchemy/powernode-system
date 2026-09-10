@@ -137,6 +137,26 @@ module PowernodeSystem
             #     max_blast_radius ceiling (Ai::EnvironmentResolution.blast_radius,
             #     Environment campaign incr. 4). Same class, second entry point.
             blast_radius_estimator: "System::EnvironmentResolver::BlastRadius",
+            #   * control_plane_role — the dual-plane standby fence
+            #     (Platform::Status::SweepRunner.control_plane_active?, campaign
+            #     01a08c9b increment A2). RCP v2 runs two ops-hub planes with a
+            #     qnetd witness and exactly one may actuate; core cannot name
+            #     the quorum reader, so it resolves this key and calls `active?`
+            #     on whatever answers.
+            #
+            #     REGISTERED BECAUSE THE NIL DEFAULT IS THE DANGEROUS ONE HERE.
+            #     Core documents nil as "inert, sweep normally", which is right
+            #     for core mode and wrong for a dual-plane deployment: the fence
+            #     would silently permit both planes. The class is the object —
+            #     ExtensionRegistry.provider constantizes and returns the class
+            #     itself, and ControlPlaneRole.active? is a class method whose
+            #     keywords all default, so no adapter is needed.
+            #
+            #     Still inert on a single-plane deployment, but by the gate's own
+            #     arming rule rather than by absence: ControlPlaneRole#armed?
+            #     reads the control_plane_role_coordinator SiteSetting and
+            #     returns :inert until an operator sets it.
+            control_plane_role: "System::Autonomy::ControlPlaneRole",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }
