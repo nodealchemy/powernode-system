@@ -6,6 +6,7 @@ import type { PeerStatus } from '../../types/peer.types';
 import type { ChildPeerStatus } from '../../types/spawn.types';
 import type { IngressRouteStatus } from '../../services/api/ingressApi';
 import type { AcmeCertificateStatus, AcmeDnsCredentialStatus } from '../../types/acme.types';
+import type { Verdict } from '@/shared/types/platformStatus';
 
 // Compile-time coverage for the status unions StatusBadge is expected to know.
 //
@@ -37,6 +38,23 @@ const _coversIngressRoute: CoveredBy<IngressRouteStatus> = true;
 const _coversAcmeCertificate: CoveredBy<AcmeCertificateStatus> = true;
 const _coversAcmeDnsCredential: CoveredBy<AcmeDnsCredentialStatus> = true;
 
+// The component status plane's six verdicts (design §4.1), which this
+// extension renders wherever a fleet surface shows a component's status.
+//
+// THE TYPE COMES FROM CORE, THE COLOURS DO NOT. Extensions may depend on core;
+// core may never depend on an extension. So importing core's `Verdict` union is
+// allowed and is strictly better than restating the six strings here: a copy
+// would go stale the moment core adds a seventh verdict, and this assertion —
+// whose entire job is to notice that — would keep passing. What stays
+// extension-side is the MAPPING: StatusBadge's vocabulary is this extension's,
+// its table imports eight extension unions above, and core must not take a
+// dependency on any of it. Hence the type import and nothing else; core's
+// VerdictBadge component is deliberately not imported here.
+//
+// A verdict added to core's ladder without an entry in STATUS_VARIANTS fails
+// HERE, at extension tsc, naming the verdict.
+const _coversPlatformVerdict: CoveredBy<Verdict> = true;
+
 // Referenced so the declarations are not flagged as unused; the assertion is
 // the type annotation, not the value.
 export const STATUS_UNION_COVERAGE = [
@@ -48,4 +66,5 @@ export const STATUS_UNION_COVERAGE = [
   _coversIngressRoute,
   _coversAcmeCertificate,
   _coversAcmeDnsCredential,
+  _coversPlatformVerdict,
 ] as const;

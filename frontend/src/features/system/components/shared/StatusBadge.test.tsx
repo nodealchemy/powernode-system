@@ -35,6 +35,11 @@ describe('statusVariant', () => {
     ['bootstrapping', 'info'],
     ['paused', 'info'],
     [
+      'held',
+      'info',
+      'The component status plane\'s operator-intent verdict — cordoned, paused, drained (design §4.1). Beside `paused`, which is the same concept under an older name. NOT amber: `suspended` four blocks down is amber and means "needs attention", the opposite polarity, and rev 1 of the design called this verdict `suspended` before catching that collision.',
+    ],
+    [
       'proposed',
       'info',
       'PeerStatusPill rendered this grey (background-tertiary) and sdwan/FederationPeerList rendered it info; it is an opening move, not a null state, so info wins.',
@@ -62,6 +67,11 @@ describe('statusVariant', () => {
     ],
     ['renewing', 'info'],
     ['running', 'primary'],
+    [
+      'progressing',
+      'primary',
+      'An in-flight remediation or provisioning (design §4.1). Beside `running` for the same reason: work actually happening, not a queue position, and the saturated fill is what separates the two from the pale informational states.',
+    ],
 
     // --- needs attention, not yet broken ---
     [
@@ -124,6 +134,13 @@ describe('statusVariant', () => {
 
     // --- drafted, not yet acting ---
     ['planning', 'outline'],
+
+    // --- absent measurement ---
+    [
+      'not_measured',
+      'outline',
+      'The sweep could not obtain a reading (design §4.1). Deliberately NOT grey beside `unknown`: `unknown` is inert, while `not_measured` is a gap an operator should close, ranking above `progressing` on the verdict ladder. Filed grey it would sit among `deleted`, `archived` and `disabled` and never be looked at. Shares `outline` with core\'s VerdictBadge so the verdict reads the same on the status page and on a fleet tab.',
+    ],
   ];
 
   it.each(CASES)('maps %s to the %s variant', (status, variant) => {
@@ -144,6 +161,32 @@ describe('statusVariant', () => {
   it('is case-insensitive, because backends disagree on casing', () => {
     expect(statusVariant('ACTIVE')).toBe('success');
     expect(statusVariant('Failed')).toBe('danger');
+  });
+
+  // The component status plane's six verdicts, asserted as a SET rather than
+  // relying on their six rows above. The rows say what each maps to; this says
+  // that all six are known at all, which is the property C1 owes the status
+  // page — a verdict missing from the table falls through to `secondary` and
+  // renders grey, and a grey `down` is worse than no badge.
+  describe('component status verdicts (design §4.1)', () => {
+    const VERDICTS = ['ok', 'held', 'progressing', 'not_measured', 'degraded', 'down'];
+
+    it.each(VERDICTS)('knows %s rather than falling through to the default', (verdict) => {
+      // Both arms: the table HAS the key, and the lookup does not return the
+      // fallback. Checking only the key would pass for an entry whose value was
+      // literally 'secondary'; checking only the variant would pass for a
+      // verdict that happened to be spelled like an unrelated status.
+      expect(Object.keys(STATUS_VARIANTS)).toContain(verdict);
+      expect(statusVariant(verdict)).not.toBe('secondary');
+    });
+
+    it('does not render not_measured as the inert grey that unknown gets', () => {
+      // These two are the pair most easily collapsed — both mean "no value" in
+      // casual reading. They are different answers: `unknown` is a value nobody
+      // needs, `not_measured` is a reading nobody took.
+      expect(statusVariant('unknown')).toBe('secondary');
+      expect(statusVariant('not_measured')).toBe('outline');
+    });
   });
 });
 

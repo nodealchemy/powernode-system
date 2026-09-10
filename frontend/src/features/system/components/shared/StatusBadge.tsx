@@ -56,6 +56,14 @@ export const STATUS_VARIANTS = {
   registered: 'info',
   bootstrapping: 'info',
   paused: 'info',
+  // OPERATOR INTENT — cordoned, paused, drained, on hold. The component status
+  // plane's `held` verdict (design §4.1), which rev 1 of that design called
+  // `suspended` before noticing that `suspended` already lives four rows down
+  // in this very table meaning "needs attention", with the opposite polarity.
+  // It sits beside `paused` because that is the same concept under an older
+  // name. It is emphatically NOT amber: a planned drain that renders as a
+  // problem teaches an operator to ignore amber.
+  held: 'info',
   // PeerStatusPill rendered `proposed` grey and sdwan/FederationPeerList
   // rendered it info. It is an opening move rather than a null state, so info.
   proposed: 'info',
@@ -79,6 +87,11 @@ export const STATUS_VARIANTS = {
   issuing: 'info',
   renewing: 'info',
   running: 'primary',
+  // An in-flight remediation or provisioning (design §4.1). Beside `running`
+  // and for the same reason: it is work actually happening, not a queue
+  // position, and the saturated fill is what separates the two from the pale
+  // informational states above.
+  progressing: 'primary',
 
   // Needs attention, not yet broken.
   // Four maps said warning; sdwan/PeerList said info and
@@ -130,6 +143,19 @@ export const STATUS_VARIANTS = {
 
   // Drafted, not yet acting.
   planning: 'outline',
+
+  // AN ABSENT MEASUREMENT (design §4.1) — the sweep could not obtain a
+  // reading. It is NOT `unknown` two blocks up, and the difference is the
+  // whole point: `unknown` is an inert grey for a value nobody needs, while
+  // `not_measured` is a gap an operator should close, ranking above
+  // `progressing` on the verdict ladder for exactly that reason. Filed grey it
+  // would sit among `deleted`, `archived` and `disabled` and never be looked
+  // at. It shares `outline` with core's VerdictBadge, so the same verdict
+  // reads the same on the status page and on a fleet tab; the two tables are
+  // separate on purpose (this one must not import core's status vocabulary,
+  // and core must not learn this one's), which is what makes the agreement
+  // worth stating here rather than assuming.
+  not_measured: 'outline',
 } as const satisfies Record<string, BadgeVariant>;
 
 /** Every status this table knows. */
