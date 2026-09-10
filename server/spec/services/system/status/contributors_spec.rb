@@ -173,6 +173,79 @@ RSpec.describe System::Status::Contributors do
       expect(second_snapshot.id).not_to eq(first_snapshot.id)
     end
 
+    # Increment B2 — the three fleet kinds, through the same sweep, with no
+    # edit to the registrar or the engine.
+    describe "the B2 fleet kinds" do
+      let(:node) { create(:system_node, account: account) }
+
+      it "registers all three without the registrar naming any of them" do
+        expect(described_class.kinds)
+          .to include("node", "node_instance", "instance_pool", "platform_subsystem")
+      end
+
+      it "writes a row per node, instance and pool, with their edges" do
+        template = create(:system_node_template, account: account)
+        pool = System::InstancePool.create!(account: account, node_template: template,
+                                            name: "b2-pool", target_size: 1)
+        instance = create(:system_node_instance, account: account, node: node,
+                                                 status: "running", last_heartbeat_at: Time.current,
+                                                 instance_pool_id: pool.id, pool_state: "ready")
+
+        Platform::Status::SweepService.run_once!(account)
+
+        rows = Platform::ComponentStatus.where(account_id: account.id)
+                                        .index_by { |row| [ row.component_kind, row.component_ref ] }
+
+        node_row = rows[[ "node", node.id.to_s ]]
+        instance_row = rows[[ "node_instance", instance.id.to_s ]]
+        pool_row = rows[[ "instance_pool", pool.id.to_s ]]
+
+        expect(node_row).to be_present
+        expect(pool_row).to be_present
+        expect(instance_row.verdict).to eq(Platform::ComponentStatus::OK)
+        expect(instance_row.dependencies).to eq([
+          { "kind" => "node", "ref" => node.id.to_s, "relation" => "hosts" },
+          { "kind" => "instance_pool", "ref" => pool.id.to_s, "relation" => "backs" }
+        ])
+        expect(instance_row.actions.map { |a| a["key"] })
+          .to include("reboot", "terminate")
+      end
+
+      it "reverse-walks those edges into the node's impact" do
+        instance = create(:system_node_instance, account: account, node: node,
+                                                 status: "running", last_heartbeat_at: Time.current)
+        Platform::Status::SweepService.run_once!(account)
+
+        node_row = Platform::ComponentStatus.find_by(account_id: account.id,
+                                                     component_kind: "node",
+                                                     component_ref: node.id.to_s)
+
+        impact = Platform::Status::Rollup.impact(node_row)
+
+        # The direction check: the instance declares `hosts` toward the node, so
+        # the node's impact contains the instance and not the other way round.
+        expect(impact[:components].map(&:component_ref)).to include(instance.id.to_s)
+      end
+
+      it "reaps a terminated instance's row rather than leaving a permanent down" do
+        instance = create(:system_node_instance, account: account, node: node, status: "running",
+                                                 last_heartbeat_at: Time.current)
+        Platform::Status::SweepService.run_once!(account)
+        expect(Platform::ComponentStatus.where(component_kind: "node_instance",
+                                               component_ref: instance.id.to_s)).to exist
+
+        instance.update_column(:status, "terminated")
+        # Past the reap window: the contributor stops yielding it and the sweep
+        # ages the row out.
+        Platform::Status::SweepService.run_once!(
+          account, now: Time.current + Platform::Status::SweepService.reap_after_seconds + 60
+        )
+
+        expect(Platform::ComponentStatus.where(component_kind: "node_instance",
+                                               component_ref: instance.id.to_s)).not_to exist
+      end
+    end
+
     it "keeps last_transition_at across a sweep whose verdict did not change" do
       System::PlatformHealthSnapshot.create!(
         account: account, overall: "ok", captured_at: Time.current, source: "spec",

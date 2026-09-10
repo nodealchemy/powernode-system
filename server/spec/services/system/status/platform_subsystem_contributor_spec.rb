@@ -36,17 +36,18 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
   describe "the component set" do
     it "is exactly the probe's declared subsystems, derived not restated" do
       expect(components.map(&:key)).to eq(keys)
-      expect(components.size).to eq(13)
+      expect(components.size).to eq(probe::SUBSYSTEMS.size)
     end
 
     it "emits a subsystem the probe adds, with no edit to the contributor" do
       # The whole point of deriving from SUBSYSTEMS. Both arms: the invented
       # key appears, and it disappears again when the constant no longer
       # carries it.
+      baseline = probe::SUBSYSTEMS.size
       stub_const("#{probe}::SUBSYSTEMS", (probe::SUBSYSTEMS + [ :quantum_link ]).freeze)
 
       expect(components.map(&:key)).to include("quantum_link")
-      expect(components.size).to eq(14)
+      expect(components.size).to eq(baseline + 1)
     end
 
     it "uses the subsystem key as the ref, stable across sweeps" do
@@ -168,7 +169,7 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
     end
 
     it "emits one not_measured row per known subsystem, never zero rows" do
-      expect(components.size).to eq(13)
+      expect(components.size).to eq(probe::SUBSYSTEMS.size)
 
       components.each do |record|
         expect(verdict(record)).to eq(Platform::ComponentStatus::NOT_MEASURED)
