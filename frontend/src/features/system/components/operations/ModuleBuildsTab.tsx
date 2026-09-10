@@ -3,7 +3,7 @@ import { Hammer } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useAuth } from '@/shared/hooks/useAuth';
-import { wsManager } from '@/shared/services/WebSocketManager';
+import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { moduleBuildsApi } from '@system/features/system/services/api/moduleBuildsApi';
 import { BatchList } from './BatchList';
 import { BatchDetailModal } from './BatchDetailModal';
@@ -73,9 +73,8 @@ export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady
   // ModuleBuildParityService / NativeModuleBuildOrchestrator emit_event
   // calls) triggers a refetch rather than trying to patch individual rows
   // from the event payload.
-  useEffect(() => {
-    if (!accountId) return;
-    const unsubscribe = wsManager.subscribe({
+  useWsSubscription(
+    {
       channel: 'SystemFleetChannel',
       params: { account_id: accountId },
       onMessage: (data: unknown) => {
@@ -84,10 +83,9 @@ export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady
           void refresh();
         }
       },
-      onError: () => {},
-    });
-    return () => unsubscribe();
-  }, [accountId, refresh]);
+    },
+    { enabled: !!accountId, deps: [accountId, refresh] }
+  );
 
   return (
     <div className="space-y-4">

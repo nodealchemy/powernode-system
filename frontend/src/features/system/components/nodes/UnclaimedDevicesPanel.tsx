@@ -4,7 +4,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { wsManager } from '@/shared/services/WebSocketManager';
+import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { unclaimedDevicesApi } from '@system/features/system/services/api/unclaimedDevicesApi';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -67,9 +67,8 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
   // Live updates via SystemFleetChannel — when the agent calls /node_api/claim
   // and PhysicalEnrollmentService emits system.physical_device_discovered, we
   // refresh so the operator sees new devices in real time.
-  useEffect(() => {
-    if (!accountId) return;
-    const unsubscribe = wsManager.subscribe({
+  useWsSubscription(
+    {
       channel: 'SystemFleetChannel',
       params: { account_id: accountId },
       onMessage: (data: unknown) => {
@@ -78,10 +77,9 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
           void refresh();
         }
       },
-      onError: () => {},
-    });
-    return () => unsubscribe();
-  }, [accountId, refresh]);
+    },
+    { enabled: !!accountId, deps: [accountId, refresh] }
+  );
 
   const visibleDevices = useMemo(() => {
     return devices.filter((d) => !d.claimed_at);

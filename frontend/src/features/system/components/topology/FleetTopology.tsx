@@ -10,7 +10,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import './FleetTopology.css';
 import { useAuth } from '@/shared/hooks/useAuth';
-import { wsManager } from '@/shared/services/WebSocketManager';
+import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { FLEET_NODE_TYPES } from './FleetTopologyNodes';
 import { buildFleetFlow } from './fleetTopologyLayout';
 import {
@@ -109,10 +109,8 @@ export const FleetTopology: React.FC<FleetTopologyProps> = ({
     }, REFETCH_DEBOUNCE_MS);
   }, []);
 
-  useEffect(() => {
-    if (!accountId) return;
-
-    const unsubscribe = wsManager.subscribe({
+  useWsSubscription(
+    {
       channel: 'SystemFleetChannel',
       params: { account_id: accountId },
       onMessage: (data: unknown) => {
@@ -122,10 +120,18 @@ export const FleetTopology: React.FC<FleetTopologyProps> = ({
           scheduleRefetch();
         }
       },
-    });
+    },
+    { enabled: !!accountId, deps: [accountId, scheduleRefetch] }
+  );
 
+  // Companion cleanup, kept as its own effect (rather than folded into
+  // useWsSubscription's generic contract) since it clears state the
+  // subscription doesn't own: a pending debounced refetch must not survive
+  // a resubscribe (accountId change) or unmount, matching the original raw
+  // wsManager.subscribe effect's combined cleanup exactly. Deps mirror the
+  // subscription's so this cleanup fires at the same points.
+  useEffect(() => {
     return () => {
-      unsubscribe();
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
         debounceRef.current = null;

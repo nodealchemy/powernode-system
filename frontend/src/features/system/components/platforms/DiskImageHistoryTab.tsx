@@ -16,7 +16,7 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { wsManager } from '@/shared/services/WebSocketManager';
+import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { diskImagePublicationsApi } from '@system/features/system/services/api/diskImagePublicationsApi';
 import type {
@@ -94,9 +94,8 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
   useEffect(() => { void refresh(); }, [refresh]);
 
   // Live updates via SystemFleetChannel.
-  useEffect(() => {
-    if (!accountId) return;
-    const unsubscribe = wsManager.subscribe({
+  useWsSubscription(
+    {
       channel: 'SystemFleetChannel',
       params: { account_id: accountId },
       onMessage: (data: unknown) => {
@@ -107,10 +106,9 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform, onConfirmOpenCh
           void refresh();
         }
       },
-      onError: () => {},
-    });
-    return () => unsubscribe();
-  }, [accountId, platform.id, refresh]);
+    },
+    { enabled: !!accountId, deps: [accountId, platform.id, refresh] }
+  );
 
   const handleRollback = useCallback(async (publication: SystemDiskImagePublication) => {
     setRollingBackId(publication.id);

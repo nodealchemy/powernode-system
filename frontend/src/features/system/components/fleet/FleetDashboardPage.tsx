@@ -5,7 +5,7 @@ import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { wsManager } from '@/shared/services/WebSocketManager';
+import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
@@ -39,7 +39,7 @@ const QUICK_KIND_FILTERS: Array<{ label: string; match: string }> = [
 //   - Bottom-left: pending decisions queue
 //   - Bottom-right: correlation chain viewer (click an event → see its tick)
 //
-// Live updates land via wsManager.subscribe('SystemFleetChannel'). Initial
+// Live updates land via useWsSubscription('SystemFleetChannel'). Initial
 // backlog comes from POST /system/fleet/signals so the operator sees
 // recent state on page load before live events start arriving.
 const MAX_EVENT_BUFFER = 200;
@@ -84,10 +84,8 @@ export function FleetDashboardPage(): React.JSX.Element {
   }, [refreshBacklog]);
 
   // Live subscription to SystemFleetChannel — pushes new events to the head of the buffer.
-  useEffect(() => {
-    if (!accountId) return;
-
-    const unsubscribe = wsManager.subscribe({
+  useWsSubscription(
+    {
       channel: 'SystemFleetChannel',
       params: { account_id: accountId },
       onMessage: (data: unknown) => {
@@ -100,13 +98,10 @@ export function FleetDashboardPage(): React.JSX.Element {
       },
       onError: (err: string) => {
         addNotification({ type: 'warning', message: `Fleet channel error: ${err}` });
-      }
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, [accountId, addNotification]);
+      },
+    },
+    { enabled: !!accountId, deps: [accountId, addNotification] }
+  );
 
   // Counters derived from buffer + a short-window rate
   const counters = useMemo(() => {
