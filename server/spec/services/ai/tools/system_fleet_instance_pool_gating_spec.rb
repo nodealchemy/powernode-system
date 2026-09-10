@@ -55,7 +55,7 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
   end
 
   def update!(attrs)
-    tool.execute(params: { action: "system_update_instance_pool", id: pool.id }.merge(attrs))
+    tool.execute(params: { action: "system_update_instance_pool", pool_id: pool.id }.merge(attrs))
   end
 
   def create!(attrs = {})
@@ -288,7 +288,7 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
   # ungated while every symbol-keyed spec above stayed green.
   describe "the shape MCP actually calls with" do
     def indifferent_update!(attrs)
-      tool.execute(params: { action: "system_update_instance_pool", id: pool.id }
+      tool.execute(params: { action: "system_update_instance_pool", pool_id: pool.id }
                              .merge(attrs).with_indifferent_access)
     end
 
@@ -467,7 +467,7 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
 
     it "returns an error envelope without creating a deferred operation" do
       response = tool.execute(params: { action: "system_update_instance_pool",
-                                        id: other_pool.id, target_size: 4 })
+                                        pool_id: other_pool.id, target_size: 4 })
 
       expect(response[:success]).to be(false)
       expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty

@@ -47,7 +47,7 @@ RSpec.describe "SystemFleetTool volume-snapshot delete gating (IMP-e025722ef14e)
   end
 
   def delete!(id = snapshot.id)
-    tool.execute(params: { action: "system_delete_volume_snapshot", id: id }.with_indifferent_access)
+    tool.execute(params: { action: "system_delete_volume_snapshot", snapshot_id: id }.with_indifferent_access)
   end
 
   def latest_deferred

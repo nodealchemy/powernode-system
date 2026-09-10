@@ -194,7 +194,7 @@ RSpec.describe "Volume restore copy swap (IMP-e025722ef14e)" do
     let(:tool) { described_class.new(account: account, user: operator) }
 
     def restore!(params = {})
-      tool.execute(params: { action: "system_restore_volume_snapshot", id: snapshot.id }
+      tool.execute(params: { action: "system_restore_volume_snapshot", snapshot_id: snapshot.id }
                              .merge(params).with_indifferent_access)
     end
 

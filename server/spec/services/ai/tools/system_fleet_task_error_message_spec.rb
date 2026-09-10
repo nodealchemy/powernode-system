@@ -42,7 +42,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "task error_message serialization" do
   end
 
   def get_task(task)
-    tool.execute(params: { action: "system_get_task", id: task.id })
+    tool.execute(params: { action: "system_get_task", task_id: task.id })
   end
 
   def listed(task)

@@ -378,7 +378,7 @@ RSpec.describe "Volume snapshot data protection (APO-5 / DR-2)" do
         snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
                                                         status: "error", external_id: "s1")
 
-        result = call("system_restore_volume_snapshot", id: snap.id)
+        result = call("system_restore_volume_snapshot", snapshot_id: snap.id)
 
         expect(result[:success]).to be(false)
         expect(adapter).not_to have_received(:restore_volume_snapshot)
@@ -408,7 +408,7 @@ RSpec.describe "Volume snapshot data protection (APO-5 / DR-2)" do
           snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
                                                           status: "completed", external_id: "s1")
 
-          result = call("system_delete_volume_snapshot", id: snap.id)
+          result = call("system_delete_volume_snapshot", snapshot_id: snap.id)
 
           expect(result[:success]).to be(true)
           expect(adapter).to have_received(:delete_volume_snapshot).with("s1")
@@ -422,7 +422,7 @@ RSpec.describe "Volume snapshot data protection (APO-5 / DR-2)" do
           snap = create(:system_provider_volume_snapshot, account: account, volume: volume,
                                                           status: "completed", external_id: "s1")
 
-          result = call("system_delete_volume_snapshot", id: snap.id)
+          result = call("system_delete_volume_snapshot", snapshot_id: snap.id)
 
           expect(result[:success]).to be(false)
           expect(snap.reload.status).to eq("error")

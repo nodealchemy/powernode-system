@@ -47,17 +47,16 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(list[:parameters].keys).to include(:status, :node_instance_id, :active_only)
 
       # `migration_id` since IMP-01a07042 — these five were among the 28 actions
-      # declaring a bare `id` against 93 siblings declaring `<noun>_id`. `id`
-      # remains DECLARED and accepted (required: false), which is what keeps a
-      # caller written against the old schema working; both halves are asserted
-      # because dropping either one silently breaks somebody.
+      # declaring a bare `id` against 93 siblings declaring `<noun>_id`. The
+      # interim `id` alias was removed by IMP-01a08c71, so it must be ABSENT.
       expect(defs.fetch("system_get_storage_migration")[:parameters][:migration_id][:required]).to be true
-      expect(defs.fetch("system_get_storage_migration")[:parameters][:id][:required]).to be false
+      expect(defs.fetch("system_get_storage_migration")[:parameters]).not_to have_key(:id)
       expect(defs.fetch("system_approve_storage_migration")[:parameters][:migration_id][:required]).to be true
 
       cancel = defs.fetch("system_cancel_storage_migration")
       expect(cancel[:parameters][:migration_id][:required]).to be true
-      expect(cancel[:parameters].keys).to include(:reason, :id)
+      expect(cancel[:parameters].keys).to include(:reason)
+      expect(cancel[:parameters]).not_to have_key(:id)
 
       progress = defs.fetch("system_report_storage_migration_progress")
       expect(progress[:parameters][:migration_id][:required]).to be true
@@ -159,14 +158,14 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       # in system_fleet_instance_pool_gating_spec.rb.
       it "tunes min/max/target size" do
         auto_approve_policy!
-        r = call("system_update_instance_pool", id: pool.id, min_size: 0, max_size: 8, target_size: 4)
+        r = call("system_update_instance_pool", pool_id: pool.id, min_size: 0, max_size: 8, target_size: 4)
         expect(r[:success]).to be true
         pool.reload
         expect([ pool.min_size, pool.max_size, pool.target_size ]).to eq([ 0, 8, 4 ])
       end
 
       it "surfaces a validation error without raising" do
-        r = call("system_update_instance_pool", id: pool.id, min_size: 10, max_size: 2)
+        r = call("system_update_instance_pool", pool_id: pool.id, min_size: 10, max_size: 2)
         expect(r[:success]).to be false
         expect(r[:error]).to be_present
       end
@@ -179,7 +178,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
           status: "active", provider_region: create(:system_provider_region),
           provider_instance_type: create(:system_provider_instance_type)
         )
-        r = call("system_update_instance_pool", id: foreign.id, target_size: 9)
+        r = call("system_update_instance_pool", pool_id: foreign.id, target_size: 9)
         expect(r[:success]).to be false
         expect(foreign.reload.target_size).to eq(1)
       end
@@ -307,7 +306,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       create(:system_node_instance, account: account,
              config: { "storage_volume" => { "volume_id" => nfs_volume.id, "transport" => "nfs" } })
 
-      r = call("system_delete_volume", id: nfs_volume.id)
+      r = call("system_delete_volume", volume_id: nfs_volume.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to match(/attached/i)
@@ -315,7 +314,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "allows deletion of an unreferenced network-FS volume" do
-      r = call("system_delete_volume", id: nfs_volume.id)
+      r = call("system_delete_volume", volume_id: nfs_volume.id)
 
       expect(r[:success]).to be true
       expect(System::ProviderVolume.exists?(nfs_volume.id)).to be false
@@ -326,7 +325,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       block_volume = create(:system_provider_volume, :attached, account: account,
                             node_instance: block_instance)
 
-      r = call("system_delete_volume", id: block_volume.id)
+      r = call("system_delete_volume", volume_id: block_volume.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to match(/attached/i)
@@ -2622,7 +2621,7 @@ end
     end
 
     it "aborts a running task" do
-      r = call("system_abort_task", id: running_task.id, reason: "operator abort")
+      r = call("system_abort_task", task_id: running_task.id, reason: "operator abort")
       expect(r[:success]).to be true
       expect(r[:data][:aborted]).to be true
       expect(r[:data][:task][:status]).to eq("aborted")
@@ -2634,7 +2633,7 @@ end
         account: account, command: "sync_modules", status: "pending",
         operable_type: "System::Node", operable_id: node.id
       )
-      r = call("system_abort_task", id: pending_task.id)
+      r = call("system_abort_task", task_id: pending_task.id)
       expect(r[:success]).to be false
       expect(pending_task.reload.status).to eq("pending")
     end
@@ -2644,7 +2643,7 @@ end
         account: account,
         user: create(:user, account: account, permissions: %w[system.infra_tasks.read])
       )
-      r = denied.execute(params: { action: "system_abort_task", id: running_task.id })
+      r = denied.execute(params: { action: "system_abort_task", task_id: running_task.id })
       expect(r[:success]).to be false
       expect(r[:error]).to include("permission denied")
     end
@@ -2660,7 +2659,7 @@ end
     end
 
     it "fetches a single task scoped to the account" do
-      r = call("system_get_task", id: task.id)
+      r = call("system_get_task", task_id: task.id)
       expect(r[:success]).to be true
       expect(r[:data][:task][:id]).to eq(task.id)
       expect(r[:data][:task][:command]).to eq("apply_config")
@@ -2669,7 +2668,7 @@ end
     end
 
     it "returns not-found error for an unknown id" do
-      r = call("system_get_task", id: SecureRandom.uuid)
+      r = call("system_get_task", task_id: SecureRandom.uuid)
       expect(r[:success]).to be false
     end
 
@@ -2678,7 +2677,7 @@ end
         account: create(:account), command: "sync_modules", status: "pending",
         operable_type: "System::Node", operable_id: node.id
       )
-      r = call("system_get_task", id: other_task.id)
+      r = call("system_get_task", task_id: other_task.id)
       expect(r[:success]).to be false
     end
 
@@ -2687,7 +2686,7 @@ end
         account: account,
         user: create(:user, account: account, permissions: %w[system.nodes.read])
       )
-      r = denied.execute(params: { action: "system_get_task", id: task.id })
+      r = denied.execute(params: { action: "system_get_task", task_id: task.id })
       expect(r[:success]).to be false
       expect(r[:error]).to include("permission denied")
     end
@@ -3217,7 +3216,7 @@ end
           provider_region: provider_region,
           provider_instance_type: provider_instance_type
         )
-        r = call("system_delete_instance_pool", id: empty_pool.id)
+        r = call("system_delete_instance_pool", pool_id: empty_pool.id)
         expect(r[:success]).to be true
         expect(r[:data][:deleted]).to be true
         expect(::System::InstancePool.where(id: empty_pool.id)).to be_empty
@@ -3229,7 +3228,7 @@ end
                instance_pool_id: pool.id, pool_state: "ready",
                provider_region: provider_region,
                provider_instance_type: provider_instance_type)
-        r = call("system_delete_instance_pool", id: pool.id)
+        r = call("system_delete_instance_pool", pool_id: pool.id)
         expect(r[:success]).to be false
         expect(r[:error]).to include("drain first")
       end
@@ -3243,7 +3242,7 @@ end
           provider_region: provider_region,
           provider_instance_type: provider_instance_type
         )
-        r = call("system_delete_instance_pool", id: other_pool.id)
+        r = call("system_delete_instance_pool", pool_id: other_pool.id)
         expect(r[:success]).to be false
       end
     end
@@ -3687,7 +3686,7 @@ end
                 sync_run: instance_of(::System::GitopsSyncRun))
           .and_return(result)
 
-        r = call("system_gitops_sync_repository", id: repo.id)
+        r = call("system_gitops_sync_repository", repository_id: repo.id)
         expect(r[:success]).to be true
         expect(r[:data][:diff_count]).to eq(0)
         expect(r[:data][:synced_revision]).to eq("abc123")
@@ -3697,7 +3696,7 @@ end
         other_repo = ::System::GitopsRepository.create!(
           account: create(:account), name: "other", repo_url: "https://example.com/other.git", branch: "main"
         )
-        r = call("system_gitops_sync_repository", id: other_repo.id)
+        r = call("system_gitops_sync_repository", repository_id: other_repo.id)
         expect(r[:success]).to be false
       end
 
@@ -3715,7 +3714,7 @@ end
         )
         allow(::System::Gitops::Reconciler).to receive(:reconcile!).and_return(result)
 
-        r = call("system_gitops_sync_repository", id: repo.id)
+        r = call("system_gitops_sync_repository", repository_id: repo.id)
 
         expect(r[:success]).to be true
         # Not merely "the key exists" — a nil under the right key is the same
@@ -3741,7 +3740,7 @@ end
         allow(::System::Gitops::DesiredStateParser).to receive(:parse!).and_return(parse_result)
         allow(::System::Gitops::DiffEngine).to receive(:diff!).and_return(diff_result)
 
-        expect { @r = call("system_gitops_sync_repository", id: repo.id) }
+        expect { @r = call("system_gitops_sync_repository", repository_id: repo.id) }
           .to change { ::System::GitopsSyncRun.where(gitops_repository_id: repo.id).count }.by(1)
 
         run = ::System::GitopsSyncRun.find(@r[:data][:sync_run_id])
@@ -3764,7 +3763,7 @@ end
         allow(::System::Gitops::RepoSyncService).to receive(:sync!)
           .and_return(double(ok?: false, work_tree_path: nil, commit_sha: nil, error: "clone refused: bad deploy key"))
 
-        r = call("system_gitops_sync_repository", id: repo.id)
+        r = call("system_gitops_sync_repository", repository_id: repo.id)
 
         expect(r[:success]).to be false
         expect(r[:error]).to eq("clone refused: bad deploy key")
@@ -3786,7 +3785,7 @@ end
           .and_return(double(ok?: true, desired_state: double, error: nil))
         allow(::System::Gitops::DiffEngine).to receive(:diff!).and_return(double(ok?: true, diffs: [], error: nil))
 
-        synced = call("system_gitops_sync_repository", id: repo.id)
+        synced = call("system_gitops_sync_repository", repository_id: repo.id)
         fetched = call("system_gitops_get_sync_run", sync_run_id: synced[:data][:sync_run_id])
 
         expect(fetched[:success]).to be true
@@ -3842,7 +3841,7 @@ end
         # Critically — Reconciler should NOT be invoked (no proposals opened)
         expect(::System::Gitops::Reconciler).not_to receive(:reconcile!)
 
-        r = call("system_gitops_get_drift_report", id: repo.id)
+        r = call("system_gitops_get_drift_report", repository_id: repo.id)
         expect(r[:success]).to be true
         expect(r[:data][:drift]).to be false
         expect(r[:data][:synced_revision]).to eq("abc123")
@@ -4299,7 +4298,7 @@ end
 
     it "system_delete_provider deletes the provider" do
       provider = create(:system_provider, account: account)
-      r = call("system_delete_provider", id: provider.id)
+      r = call("system_delete_provider", provider_id: provider.id)
 
       expect(r[:success]).to be true
       expect(System::Provider.find_by(id: provider.id)).to be_nil
@@ -4307,7 +4306,7 @@ end
 
     it "system_delete_provider scopes to the current account" do
       other = create(:system_provider) # different account
-      r = call("system_delete_provider", id: other.id)
+      r = call("system_delete_provider", provider_id: other.id)
 
       expect(r[:success]).to be false
       expect(System::Provider.find_by(id: other.id)).to be_present
@@ -4387,21 +4386,21 @@ end
       end
 
       it "fetches one connection with its non-secret config" do
-        r = call("system_get_provider_connection", id: connection.id)
+        r = call("system_get_provider_connection", connection_id: connection.id)
         expect(r[:success]).to be true
         cfg = r[:data][:provider_connection][:config] || r[:data][:provider_connection]["config"]
         expect(cfg).to include("default_node" => "pve1")
       end
 
       it "merge-updates config: sets one key, keeps the rest, nil deletes" do
-        r = call("system_update_provider_connection", id: connection.id,
+        r = call("system_update_provider_connection", connection_id: connection.id,
                  config: { "snippets_storage" => "shared-nfs", "default_storage" => nil })
         expect(r[:success]).to be true
         expect(connection.reload.config).to eq("default_node" => "pve1", "snippets_storage" => "shared-nfs")
       end
 
       it "updates scalar attributes and refuses credential or provider changes by construction" do
-        r = call("system_update_provider_connection", id: connection.id, name: "renamed", enabled: false)
+        r = call("system_update_provider_connection", connection_id: connection.id, name: "renamed", enabled: false)
         expect(r[:success]).to be true
         expect(connection.reload).to have_attributes(name: "renamed", enabled: false)
         params = described_class.action_definitions
@@ -4411,8 +4410,8 @@ end
 
       it "scopes every verb to the current account" do
         foreign = create(:system_provider_connection) # different account
-        expect(call("system_get_provider_connection", id: foreign.id)[:success]).to be false
-        expect(call("system_update_provider_connection", id: foreign.id, name: "x")[:success]).to be false
+        expect(call("system_get_provider_connection", connection_id: foreign.id)[:success]).to be false
+        expect(call("system_update_provider_connection", connection_id: foreign.id, name: "x")[:success]).to be false
         listed = call("system_list_provider_connections")[:data][:provider_connections].map { |c| c[:id] || c["id"] }
         expect(listed).not_to include(foreign.id)
       end
@@ -4484,7 +4483,7 @@ end
     end
 
     it "requests a revert on a reachable (failed) migration" do
-      r = call("system_revert_storage_migration_binding", id: failed_migration.id, reason: "diverged mount")
+      r = call("system_revert_storage_migration_binding", migration_id: failed_migration.id, reason: "diverged mount")
       expect(r[:success]).to be true
       expect(r[:data][:storage_migration][:metadata]["revert_status"]).to eq("requested")
     end
@@ -4495,19 +4494,19 @@ end
         role: "postgres", status: "syncing",
         source_subpath: "deployments/test2/postgres", target_subpath: "deployments/test2/postgres", plan: {}
       )
-      r = call("system_revert_storage_migration_binding", id: active.id)
+      r = call("system_revert_storage_migration_binding", migration_id: active.id)
       expect(r[:success]).to be false
       expect(r[:error]).to match(/Cannot revert binding/)
     end
 
     it "requests cleanup immediately, bypassing the grace window" do
-      r = call("system_cleanup_storage_migration", id: failed_migration.id, immediate: true)
+      r = call("system_cleanup_storage_migration", migration_id: failed_migration.id, immediate: true)
       expect(r[:success]).to be true
       expect(r[:data][:storage_migration][:metadata]["cleanup_status"]).to eq("requested")
     end
 
     it "refuses cleanup within the (default 24h) grace window without immediate: true" do
-      r = call("system_cleanup_storage_migration", id: failed_migration.id)
+      r = call("system_cleanup_storage_migration", migration_id: failed_migration.id)
       expect(r[:success]).to be false
       expect(r[:error]).to match(/grace window/i)
     end
@@ -4517,8 +4516,8 @@ end
         account: account,
         user: create(:user, account: account, permissions: %w[system.platform.read])
       )
-      revert_result = denied.execute(params: { action: "system_revert_storage_migration_binding", id: failed_migration.id })
-      cleanup_result = denied.execute(params: { action: "system_cleanup_storage_migration", id: failed_migration.id })
+      revert_result = denied.execute(params: { action: "system_revert_storage_migration_binding", migration_id: failed_migration.id })
+      cleanup_result = denied.execute(params: { action: "system_cleanup_storage_migration", migration_id: failed_migration.id })
       expect(revert_result[:error]).to include("permission denied")
       expect(cleanup_result[:error]).to include("permission denied")
     end
@@ -4538,7 +4537,7 @@ end
       defn = described_class.action_definitions.fetch("system_cleanup_storage_migration")
       expect(defn[:requires_approval]).to be true
 
-      r = call("system_cleanup_storage_migration", id: failed_migration.id, immediate: true)
+      r = call("system_cleanup_storage_migration", migration_id: failed_migration.id, immediate: true)
       expect(r[:success]).to be true # ran immediately — no approval step intervened
     end
   end
@@ -5865,7 +5864,7 @@ end
     end
 
     it "emits system_get_instance_pool one level deep" do
-      r = call("system_get_instance_pool", id: pool.id)
+      r = call("system_get_instance_pool", pool_id: pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool)
       expect(r[:data][:pool][:id]).to eq(pool.id)
@@ -5887,21 +5886,21 @@ end
     # Same, and target_size 2 -> 3 is the raise that parks.
     it "emits system_update_instance_pool one level deep" do
       auto_approve_policy!
-      r = call("system_update_instance_pool", id: pool.id, target_size: 3)
+      r = call("system_update_instance_pool", pool_id: pool.id, target_size: 3)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool)
       expect(r[:data][:pool][:target_size]).to eq(3)
     end
 
     it "emits system_drain_instance_pool one level deep" do
-      r = call("system_drain_instance_pool", id: empty_pool.id)
+      r = call("system_drain_instance_pool", pool_id: empty_pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool, :drain_result)
       expect(r[:data][:pool][:status]).to eq("draining")
     end
 
     it "emits system_replenish_instance_pool one level deep" do
-      r = call("system_replenish_instance_pool", id: pool.id)
+      r = call("system_replenish_instance_pool", pool_id: pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool, :replenish_result)
       expect(r[:data][:replenish_result][:provisioned]).to eq(0)
@@ -5910,7 +5909,7 @@ end
     # One of the three verbs that were already correct — pinned so a future
     # "make them consistent" edit cannot regress it in the other direction.
     it "leaves the already-correct system_recycle_pool sibling one level deep" do
-      r = call("system_recycle_pool", id: pool.id)
+      r = call("system_recycle_pool", pool_id: pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool, :recycle_result)
     end

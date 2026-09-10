@@ -1658,11 +1658,11 @@ module Ai
           },
           "system_get_task" => {
             description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, timestamps, and error_message — the full stored failure reason (16 KB cap, vs 300 chars on system_list_tasks), REDACTED of credential-shaped tokens since it carries raw build/shell output. Not-found errors when the id is unknown or belongs to another account.",
-            parameters: { task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for task_id — accepted so existing callers keep working." } }
+            parameters: { task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" } }
           },
           "system_cancel_task" => {
             description: "Cancel a pending task",
-            parameters: { task_id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" }, id: { type: "string", required: false, description: "Deprecated alias for task_id — accepted so existing callers keep working." } }
+            parameters: { task_id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" } }
           },
           # IMP-8153d1952ff8 — the abort AASM event (legal from :running) was
           # exposed only to the worker dispatch chain, leaving a wedged
@@ -1672,7 +1672,6 @@ module Ai
             description: "Abort a running task (operator recourse on a wedged provision/build/ssh task — errors once the task has already left :running)",
             parameters: {
               task_id: { type: "string", required: true, description: "UUID of the running System::Task to abort" },
-              id: { type: "string", required: false, description: "Deprecated alias for task_id — accepted so existing callers keep working." },
               reason: { type: "string", required: false, description: "Optional reason recorded on the task's error_message/audit events" }
             }
           },
@@ -1744,7 +1743,7 @@ module Ai
           },
           "system_get_volume" => {
             description: "Get full detail on a single storage volume — backing config (NFS server + export path / block device id), attachment state, ACL, capacity.",
-            parameters: { volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to fetch (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for volume_id — accepted so existing callers keep working." } }
+            parameters: { volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to fetch (account-scoped)" } }
           },
           "system_create_volume" => {
             description: "Register a new ProviderVolume. For NFS, pass transport=nfs + nfs_server + nfs_export_path. For block, pass volume_type_id. The platform records the row; on-node mounting happens at attach time.",
@@ -1766,7 +1765,6 @@ module Ai
             description: "Update a ProviderVolume's mutable fields: name, description, size_gb, status.",
             parameters: {
               volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to update (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for volume_id — accepted so existing callers keep working." },
               name: { type: "string", required: false, description: "New display name for the volume" },
               description: { type: "string", required: false, description: "New free-text description for the volume" },
               size_gb: { type: "integer", required: false, description: "New volume capacity in gigabytes" },
@@ -1775,7 +1773,7 @@ module Ai
           },
           "system_delete_volume" => {
             description: "Delete a ProviderVolume row. Refuses to delete if currently attached.",
-            parameters: { volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to delete (must be detached)" }, id: { type: "string", required: false, description: "Deprecated alias for volume_id — accepted so existing callers keep working." } }
+            parameters: { volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to delete (must be detached)" } }
           },
           "system_attach_volume" => {
             description: "Attach a ProviderVolume to a NodeInstance. For block: assigns next free /dev/vdX. For NFS pools: records the per-deployment binding without flipping pool status.",
@@ -1812,13 +1810,12 @@ module Ai
           },
           "system_delete_volume_snapshot" => {
             description: "Delete a volume snapshot at the provider and drop its row. DESTROYS a restore point. APPROVAL-GATED (system.volume_snapshot_delete): when policy requires approval this returns {pending: true} with an approval_request_id and NOTHING is deleted until an operator approves — do not report the snapshot as deleted on that response. Refuses when the provider cannot confirm the delete, so the row is never dropped while the provider-side snapshot may survive.",
-            parameters: { snapshot_id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to delete (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for snapshot_id — accepted so existing callers keep working." } }
+            parameters: { snapshot_id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to delete (account-scoped)" } }
           },
           "system_restore_volume_snapshot" => {
             description: "Restore a volume from one of its snapshots. Read restored_in_place in the result: true means the source volume was rolled back and every write since the snapshot is DISCARDED; false means the provider copied the snapshot into a NEW volume (returned as restored_volume) and the source volume is UNCHANGED. On a copy restore pass swap_into_place:true to have the platform detach the source from its instance and attach the copy at the same device (swapped:true in the result); by default both volumes are left where they are and you attach the copy yourself. Only a 'completed' snapshot can be restored; a provider with no restore primitive refuses.",
             parameters: {
               snapshot_id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to restore from (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for snapshot_id — accepted so existing callers keep working." },
               swap_into_place: { type: "boolean", required: false, description: "Copy-restore only: detach the source volume from its instance and attach the restored copy at the same device. Off by default. Ignored on an in-place restore and when the source is not attached (see swap_skipped)" }
             }
           },
@@ -1864,22 +1861,19 @@ module Ai
           "system_get_storage_migration" => {
             description: "Fetch one storage migration with full details (plan, progress bytes, status history).",
             parameters: {
-              migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to fetch (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." }
+              migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to fetch (account-scoped)" }
             }
           },
           "system_approve_storage_migration" => {
             description: "Approve a planned storage migration so the on-node agent may begin the sync. Errors unless the migration can transition to 'approved'.",
             parameters: {
-              migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to approve" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." }
+              migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to approve" }
             }
           },
           "system_cancel_storage_migration" => {
             description: "Cancel a storage migration before sync starts (allowed in planned/approved/preparing; errors once the sync is in progress or the migration is terminal).",
             parameters: {
               migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to cancel" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." },
               reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" }
             }
           },
@@ -1887,7 +1881,6 @@ module Ai
             description: "Report sync progress for a storage migration (called by the on-node agent). Optionally advances status; records bytes copied/total/verified and a note.",
             parameters: {
               migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to report progress for" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." },
               status: { type: "string", required: false, description: "Optional phase transition (must be legal from the current status)" },
               bytes_copied: { type: "integer", required: false, description: "Bytes copied so far" },
               bytes_total: { type: "integer", required: false, description: "Total bytes to copy" },
@@ -1908,7 +1901,6 @@ module Ai
             requires_approval: true,
             parameters: {
               migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to revert" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." },
               reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" }
             }
           },
@@ -1920,7 +1912,6 @@ module Ai
             requires_approval: true,
             parameters: {
               migration_id: { type: "string", required: true, description: "UUID of the StorageMigration to clean up" },
-              id: { type: "string", required: false, description: "Deprecated alias for migration_id — accepted so existing callers keep working." },
               reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" },
               immediate: { type: "boolean", required: false, description: "Skip the cleanup grace window and clean up now" }
             }
@@ -2023,7 +2014,7 @@ module Ai
           },
           "system_get_instance_pool" => {
             description: "Fetch a single instance pool with full member roster + counts",
-            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to fetch (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." } }
+            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to fetch (account-scoped)" } }
           },
           "system_create_instance_pool" => {
             description: "Create a new pre-warmed instance pool. Reaper will provision target_size warming members on next tick. " \
@@ -2060,7 +2051,6 @@ module Ai
                          "is refused — send them as separate calls.",
             parameters: {
               pool_id: { type: "string", required: true, description: "UUID of the InstancePool to update (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." },
               description: { type: "string", required: false, description: "New free-text description for the pool" },
               target_size: { type: "integer", required: false, description: "New target number of warm+ready members" },
               min_size: { type: "integer", required: false, description: "New lower bound on pool size" },
@@ -2076,7 +2066,7 @@ module Ai
           },
           "system_drain_instance_pool" => {
             description: "Mark a pool draining: terminate ready members, halt replenishment. Claimed members keep running.",
-            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to drain (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." } }
+            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to drain (account-scoped)" } }
           },
           "system_acquire_pooled_instance" => {
             description: "Atomically claim the oldest ready member from a pool. Returns the NodeInstance immediately (no provision wait), plus the claim record that carries the caller attribution. Read claims back with system_recent_signals filtered on kind system.pool.claimed / system.pool.released, or on the returned claim id as correlation_id.",
@@ -2099,11 +2089,11 @@ module Ai
           },
           "system_replenish_instance_pool" => {
             description: "Manually trigger replenishment of a pool — provisions warming members up to target_size. Normally the reaper does this every 60s; this is for impatient operators.",
-            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to replenish (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." } }
+            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to replenish (account-scoped)" } }
           },
           "system_recycle_pool" => {
             description: "Recycle stale members of a pool: warming members past warming_timeout_seconds become errored, ready members past ready_ttl_seconds become draining. Returns counts of transitions made. Normally the reaper does this every 60s before replenish; this is for impatient operators or for unwedging a pool that's stuck with zombie warming members blocking the deficit calculation.",
-            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to recycle stale members for (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." } }
+            parameters: { pool_id: { type: "string", required: true, description: "UUID of the InstancePool to recycle stale members for (account-scoped)" } }
           },
 
           # === Gap remediation slice 1 (Phase 4) ===
@@ -2212,7 +2202,7 @@ module Ai
           },
           "system_delete_instance_pool" => {
             description: "Destroy an empty InstancePool row. Errors when pool still has members — drain first via system_drain_instance_pool, then delete.",
-            parameters: { pool_id: { type: "string", required: true, description: "UUID of the empty InstancePool to delete (account-scoped)" }, id: { type: "string", required: false, description: "Deprecated alias for pool_id — accepted so existing callers keep working." } }
+            parameters: { pool_id: { type: "string", required: true, description: "UUID of the empty InstancePool to delete (account-scoped)" } }
           },
           "system_module_mark_canary" => {
             description: "Mark a NodeModule as a honeypot canary (config['honeypot']['canary'] = true). Canary modules are decoys — any access triggers a high-severity FleetEvent via honeypot_access_sensor. Idempotent — re-marking is a no-op. RESTRICTED BY DESIGN: placing a decoy is an autonomy decision, so this takes the worker-only system.fleet.autonomy grant; clearing one via system_unmark_module_canary needs only system.modules.update.",
@@ -2355,8 +2345,7 @@ module Ai
           "system_gitops_sync_repository" => {
             description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. The reconcile runs SYNCHRONOUSLY — `diff_count`, `proposal_ids` and `diff_summary` are already final when this returns, so there is nothing to poll for. Returns `sync_run_id`: the id of the GitopsSyncRun this call finalized, for passing to system_gitops_get_sync_run to re-read the full record (timings, diff_summary, error_message) later. A reconcile that FAILED (clone/pull refused, fleet.yaml did not parse, diff raised) returns success: false with the reason in `error` and the same fields — sync_run_id included — under `data`; do not conclude the fleet matches the repository on that response. When this control plane is not permitted to actuate — standby: not elected, or the quorum gate itself errored — the call refuses BEFORE starting the reconcile: success: false, refusal_code `standby_control_plane`, retryable: false (a retry against THIS plane cannot succeed), and no sync run is created. A success response carries a non-nil `error` only for a `partial` run, where the per-tick proposal cap truncated the proposal set (diff_count exceeds proposal_ids.length).",
             parameters: {
-              repository_id: { type: "string", required: true, description: "GitopsRepository id" },
-              id: { type: "string", required: false, description: "Deprecated alias for repository_id — accepted so existing callers keep working." }
+              repository_id: { type: "string", required: true, description: "GitopsRepository id" }
             }
           },
           "system_gitops_get_sync_run" => {
@@ -2368,8 +2357,7 @@ module Ai
           "system_gitops_get_drift_report" => {
             description: "Compute current drift between a repository's desired state and live platform state — without opening proposals. Read-only diagnostic. Use before sync to preview what would change.",
             parameters: {
-              repository_id: { type: "string", required: true, description: "GitopsRepository id" },
-              id: { type: "string", required: false, description: "Deprecated alias for repository_id — accepted so existing callers keep working." }
+              repository_id: { type: "string", required: true, description: "GitopsRepository id" }
             }
           },
           "system_gitops_list_repositories" => {
@@ -2379,8 +2367,7 @@ module Ai
           "system_gitops_get_repository" => {
             description: "Read one registered GitOps repository's configuration and last-sync state: repo_url, branch, path_prefix, auto_apply, enabled, last_status/last_error/last_synced_at, and the credential contract — `vault_credential_path` (the Vault KV path the sync reads) and `required_credential_keys` (the key NAMES that path must carry for this remote's scheme). Key names and the path only, never credential values. To check whether that path actually resolves and holds those keys, use the REST probe POST /api/v1/admin_settings/vault/test { path:, required_keys: } — there is deliberately no MCP verb for it.",
             parameters: {
-              repository_id: { type: "string", required: true, description: "GitopsRepository id (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for repository_id — accepted so existing callers keep working." }
+              repository_id: { type: "string", required: true, description: "GitopsRepository id (account-scoped)" }
             }
           },
 
@@ -2408,15 +2395,13 @@ module Ai
           "system_get_provider" => {
             description: "Fetch a single provider with full config hash (used to inspect routed-mode host_node_instance_id wiring etc.).",
             parameters: {
-              provider_id: { type: "string", required: true, description: "System::Provider id" },
-              id: { type: "string", required: false, description: "Deprecated alias for provider_id — accepted so existing callers keep working." }
+              provider_id: { type: "string", required: true, description: "System::Provider id" }
             }
           },
           "system_update_provider" => {
             description: "Update a provider — supports name + enabled + config. Config is merge-updated (existing keys preserved unless explicitly nilled). Use this to set host_node_instance_id on a routed-mode QEMU provider, swap the bridge_name, etc.",
             parameters: {
               provider_id: { type: "string", required: true, description: "System::Provider id" },
-              id: { type: "string", required: false, description: "Deprecated alias for provider_id — accepted so existing callers keep working." },
               name: { type: "string", required: false, description: "New display name for the provider" },
               enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the provider" },
               config: { type: "object", required: false, description: "Hash of config keys to merge. nil values delete the corresponding key." }
@@ -2435,8 +2420,7 @@ module Ai
           "system_delete_provider" => {
             description: "Delete a provider record. CASCADES: the provider's regions, connections, instance types, volume types and networks are destroyed with it — decommission instances first.",
             parameters: {
-              provider_id: { type: "string", required: true, description: "System::Provider id" },
-              id: { type: "string", required: false, description: "Deprecated alias for provider_id — accepted so existing callers keep working." }
+              provider_id: { type: "string", required: true, description: "System::Provider id" }
             }
           },
           "system_create_provider_connection" => {
@@ -2462,15 +2446,13 @@ module Ai
           "system_get_provider_connection" => {
             description: "Fetch one ProviderConnection with its full non-secret config — the place to read per-connection, deployment-local wiring such as default_node, default_storage, snippets_storage, snippets_local_path, cidata_transport. Credentials are never included.",
             parameters: {
-              connection_id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for connection_id — accepted so existing callers keep working." }
+              connection_id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" }
             }
           },
           "system_update_provider_connection" => {
             description: "Update a ProviderConnection — name, description, endpoint_url, enabled, config. Config is merge-updated (existing keys preserved; a key passed with an explicit nil value is deleted), so set one key such as snippets_storage without re-sending the rest. Deployment-local wiring belongs HERE, never as a default in source. NO credential parameters are accepted (BYOC ProviderCredential flow only). The provider cannot be changed through this verb.",
             parameters: {
               connection_id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" },
-              id: { type: "string", required: false, description: "Deprecated alias for connection_id — accepted so existing callers keep working." },
               name: { type: "string", required: false, description: "New display name" },
               description: { type: "string", required: false, description: "Free-text description" },
               endpoint_url: { type: "string", required: false, description: "Provider API endpoint URL for this connection" },
@@ -5385,7 +5367,7 @@ module Ai
       end
 
       def cancel_task(params)
-        target_id = resolved_id(params, :task_id)
+        target_id = params[:task_id].presence
         task = ::System::Task.where(account: @account).find(target_id)
         if task.respond_to?(:cancel!) && task.may_cancel?
           task.cancel!
@@ -5399,7 +5381,7 @@ module Ai
       # Mirrors cancel_task's may_x?/bang shape; the abort AASM event was
       # already legal from :running, just unexposed on this surface.
       def abort_task(params)
-        target_id = resolved_id(params, :task_id)
+        target_id = params[:task_id].presence
         task = ::System::Task.where(account: @account).find(target_id)
         if task.respond_to?(:abort!) && task.may_abort?
           task.abort!(params[:reason])
@@ -5413,7 +5395,7 @@ module Ai
       # Not-found bubbles to the shared ActiveRecord::RecordNotFound rescue
       # in #call, which renders the standard error_result.
       def get_task(params)
-        target_id = resolved_id(params, :task_id)
+        target_id = params[:task_id].presence
         task = ::System::Task.where(account: @account).find(target_id)
         success_result(task: serialize_task(task, full_error: true))
       end
@@ -5713,7 +5695,7 @@ module Ai
       end
 
       def get_volume(params)
-        target_id = resolved_id(params, :volume_id)
+        target_id = params[:volume_id].presence
         v = ::System::ProviderVolume.includes(:volume_type, :node_instance).find_by(
           id: target_id, account: @account
         )
@@ -5757,7 +5739,7 @@ module Ai
       end
 
       def update_volume(params)
-        target_id = resolved_id(params, :volume_id)
+        target_id = params[:volume_id].presence
         v = ::System::ProviderVolume.find_by(id: target_id, account: @account)
         return error_result("Volume not found") unless v
 
@@ -5771,7 +5753,7 @@ module Ai
       end
 
       def delete_volume(params)
-        target_id = resolved_id(params, :volume_id)
+        target_id = params[:volume_id].presence
         v = ::System::ProviderVolume.find_by(id: target_id, account: @account)
         return error_result("Volume not found") unless v
         # Block-volume attach: recorded on the row FK by attach_to!.
@@ -6091,14 +6073,14 @@ module Ai
       end
 
       def get_storage_migration(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
         success_result(storage_migration: serialize_storage_migration(m, full: true))
       end
 
       def approve_storage_migration(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
         return error_result("Cannot approve in status=#{m.status}") unless m.can_transition_to?("approved")
@@ -6113,7 +6095,7 @@ module Ai
       end
 
       def cancel_storage_migration(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
         return error_result("Already terminal (#{m.status}) — nothing to cancel") if m.terminal?
@@ -6126,7 +6108,7 @@ module Ai
 
       # Called by the on-node agent during sync to surface progress.
       def report_storage_migration_progress(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
 
@@ -6157,7 +6139,7 @@ module Ai
       # (migration.Runner#stepRevert) picks it up on its next poll tick
       # and reports back via node_api's revert_complete.
       def revert_storage_migration_binding(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
         m.revert_binding!(reason: params[:reason], user: @user)
@@ -6171,7 +6153,7 @@ module Ai
       # via Account#settings override → SiteSetting global default →
       # DEFAULT_CLEANUP_GRACE_HOURS (config-driven-config convention).
       def cleanup_storage_migration(params)
-        target_id = resolved_id(params, :migration_id)
+        target_id = params[:migration_id].presence
         m = ::System::StorageMigration.find_by(id: target_id, account: @account)
         return error_result("Migration not found") unless m
         immediate = ActiveModel::Type::Boolean.new.cast(params[:immediate])
@@ -6295,7 +6277,7 @@ module Ai
       end
 
       def delete_volume_snapshot(params)
-        target_id = resolved_id(params, :snapshot_id)
+        target_id = params[:snapshot_id].presence
         snapshot = find_volume_snapshot(target_id)
         return error_result("Snapshot not found") unless snapshot
 
@@ -6318,7 +6300,7 @@ module Ai
       # description names the restore point the operator is being asked to
       # destroy: row values, never caller-supplied ones.
       def delete_volume_snapshot_gate_context(params)
-        snapshot = find_volume_snapshot(params[:id])
+        snapshot = find_volume_snapshot(params[:snapshot_id])
         raise ActiveRecord::RecordNotFound, "Snapshot not found" unless snapshot
 
         deferred_tool_call_context(params).merge(
@@ -6330,7 +6312,7 @@ module Ai
       end
 
       def restore_volume_snapshot(params)
-        target_id = resolved_id(params, :snapshot_id)
+        target_id = params[:snapshot_id].presence
         snapshot = find_volume_snapshot(target_id)
         return error_result("Snapshot not found") unless snapshot
 
@@ -6643,27 +6625,6 @@ module Ai
 
       def account_modules
         ::System::NodeModule.where(account: @account)
-      end
-
-      # The id an action's target is named by.
-      #
-      # 28 actions here declared a bare `id` while 93 siblings declared
-      # `<noun>_id` (IMP-01a07042). Nothing was broken about any one of them —
-      # each read the key its own inputSchema advertised — but a caller
-      # pattern-matching across the catalog guesses `provider_id`, and the
-      # bare-`id` actions answered that guess with ActiveRecord's own
-      # "Couldn't find System::Provider without an ID", which names neither the
-      # key it wanted nor the key it got.
-      #
-      # The canonical name is now `<noun>_id`. `id` stays ACCEPTED and declared
-      # (required: false) so every existing caller and cached client schema
-      # keeps working — a rename that breaks the callers it is tidying up for
-      # is not an improvement.
-      #
-      # Returns nil when neither key is present; each caller's existing
-      # not-found path then reports it, now against a named parameter.
-      def resolved_id(params, canonical)
-        params[canonical].presence || params[:id].presence
       end
 
       def account_instances
@@ -7009,7 +6970,7 @@ module Ai
       end
 
       def get_instance_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.for_account(@account).find(target_id)
         success_result(
           pool: pool.to_summary.merge(
@@ -7072,7 +7033,7 @@ module Ai
       # #call for the ungated payloads and through the DeferredToolCall replay
       # for the approved ones — one writer either way.
       def update_instance_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.for_account(@account).find(target_id)
         attrs = instance_pool_update_attributes(params)
         return error_result("no mutable fields supplied") if attrs.empty?
@@ -7208,7 +7169,7 @@ module Ai
       # the error envelope the pre-gate arm produced rather than as an approval
       # card naming another tenant's pool, or one that could only ever fail.
       def instance_pool_update_gate_decision(params)
-        pool  = ::System::InstancePool.for_account(@account).find(params[:id])
+        pool  = ::System::InstancePool.for_account(@account).find(params[:pool_id])
         attrs = instance_pool_update_attributes(params)
         categories = gated_pool_update_categories(pool, attrs)
 
@@ -7298,7 +7259,7 @@ module Ai
       #     for an unrecorded pair rather than guessing) and anchors the
       #     operation to the pool the way InstancePoolsController#update does.
       def instance_pool_update_gate_context(params)
-        pool  = ::System::InstancePool.for_account(@account).find(params[:id])
+        pool  = ::System::InstancePool.for_account(@account).find(params[:pool_id])
         attrs = instance_pool_update_attributes(params)
 
         replay_params = params.except(
@@ -7347,7 +7308,7 @@ module Ai
       def instance_pool_update_description(params)
         return nil unless routed_action_name(params) == POOL_UPDATE_ACTION
 
-        pool = ::System::InstancePool.for_account(@account).find_by(id: params[:id])
+        pool = ::System::InstancePool.for_account(@account).find_by(id: params[:pool_id])
         return nil if pool.nil?
 
         attrs = instance_pool_update_attributes(params)
@@ -7368,7 +7329,7 @@ module Ai
       end
 
       def drain_instance_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.for_account(@account).find(target_id)
         result = ::System::InstancePoolService.drain!(pool: pool)
         success_result(pool: pool.reload.to_summary, drain_result: result)
@@ -7425,7 +7386,7 @@ module Ai
       # sweep is — the verb is not gate-routed yet (see the census above
       # #declare_action), so this is the only place that distinction can be made.
       def recycle_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.where(account_id: @account.id).find(target_id)
         result = ::System::InstancePoolService.recycle_stale_members!(
           pool: pool, actor: user ? :operator : :reaper
@@ -7434,7 +7395,7 @@ module Ai
       end
 
       def replenish_instance_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.for_account(@account).find(target_id)
         result = ::System::InstancePoolService.replenish!(pool: pool)
         success_result(pool: pool.reload.to_summary, replenish_result: result)
@@ -7893,7 +7854,7 @@ module Ai
       # (operator must drain first). Idempotent: returns success when the pool
       # is already drained + has zero members.
       def delete_instance_pool(params)
-        target_id = resolved_id(params, :pool_id)
+        target_id = params[:pool_id].presence
         pool = ::System::InstancePool.for_account(@account).find(target_id)
 
         member_count = pool.node_instances.count
@@ -8681,7 +8642,7 @@ module Ai
       end
 
       def gitops_sync_repository(params)
-        target_id = resolved_id(params, :repository_id)
+        target_id = params[:repository_id].presence
         repo = ::System::GitopsRepository.where(account_id: @account.id).find(target_id)
 
         # Create the run HERE and hand it to the reconciler, mirroring the
@@ -8778,7 +8739,7 @@ module Ai
       end
 
       def gitops_get_drift_report(params)
-        target_id = resolved_id(params, :repository_id)
+        target_id = params[:repository_id].presence
         repo = ::System::GitopsRepository.where(account_id: @account.id).find(target_id)
 
         # Run the reconcile pipeline up through diff, but DO NOT open proposals.
@@ -8833,7 +8794,7 @@ module Ai
       end
 
       def gitops_get_repository(params)
-        target_id = resolved_id(params, :repository_id)
+        target_id = params[:repository_id].presence
         repo = ::System::GitopsRepository.where(account_id: @account.id).find(target_id)
 
         success_result(repository: serialize_gitops_repository(repo))
@@ -8958,7 +8919,7 @@ module Ai
       end
 
       def get_provider(params)
-        target_id = resolved_id(params, :provider_id)
+        target_id = params[:provider_id].presence
         provider = ::System::Provider.where(account_id: @account.id).find(target_id)
         success_result(provider: serialize_provider(provider))
       end
@@ -8968,7 +8929,7 @@ module Ai
       # that key is deleted from the stored config. This keeps callers
       # from having to re-send the entire config on every update.
       def update_provider(params)
-        target_id = resolved_id(params, :provider_id)
+        target_id = params[:provider_id].presence
         provider = ::System::Provider.where(account_id: @account.id).find(target_id)
 
         attrs = {}
@@ -9020,7 +8981,7 @@ module Ai
       # types/volume types/networks (model-level dependent: :destroy) —
       # the definition warns agents to decommission instances first.
       def delete_provider(params)
-        target_id = resolved_id(params, :provider_id)
+        target_id = params[:provider_id].presence
         provider = ::System::Provider.where(account_id: @account.id).find(target_id)
 
         if provider.destroy
@@ -9099,7 +9060,7 @@ module Ai
       end
 
       def get_provider_connection(params)
-        target_id = resolved_id(params, :connection_id)
+        target_id = params[:connection_id].presence
         connection = ::System::ProviderConnection.where(account_id: @account.id).find(target_id)
         success_result(provider_connection: ::System::ProviderConnectionSerializer.new(connection).as_json)
       end
@@ -9110,7 +9071,7 @@ module Ai
       # REST twin re-runs the APO-7 SDK refusal on a provider swap; here the
       # swap is simply not offered).
       def update_provider_connection(params)
-        target_id = resolved_id(params, :connection_id)
+        target_id = params[:connection_id].presence
         connection = ::System::ProviderConnection.where(account_id: @account.id).find(target_id)
 
         attrs = {}

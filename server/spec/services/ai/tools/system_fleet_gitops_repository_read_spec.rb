@@ -68,7 +68,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
 
   describe "system_gitops_get_repository" do
     it "returns the serializer's projection for a repository this caller did not create" do
-      r = call("system_gitops_get_repository", id: repo.id)
+      r = call("system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:success]).to be true
       expect(r[:data][:repository]).to eq(tool.send(:serialize_gitops_repository, repo))
@@ -78,7 +78,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
     # can now see WHICH path it is configured with and WHICH key names that path
     # must carry, without having created the repository.
     it "carries the credential contract added by IMP-0f914db2c7cf" do
-      r = call("system_gitops_get_repository", id: repo.id)
+      r = call("system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:data][:repository][:vault_credential_path])
         .to eq("secret/data/powernode/gitops/deploy")
@@ -87,7 +87,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
 
     # A closed key set, not a denylist — see the header note.
     it "returns key NAMES and configuration only, never credential material" do
-      r = call("system_gitops_get_repository", id: repo.id)
+      r = call("system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:data][:repository].keys).to match_array(
         %i[id name repo_url branch path_prefix vault_credential_path
@@ -110,7 +110,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
         repo_url: "https://git.example.test/other.git", branch: "main"
       )
 
-      r = call("system_gitops_get_repository", id: other.id)
+      r = call("system_gitops_get_repository", repository_id: other.id)
 
       expect(r[:success]).to be false
       expect(r[:error].to_s).not_to include("Unknown action")
@@ -188,7 +188,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
     it "declares both action contracts" do
       defs = described_class.action_definitions
 
-      expect(defs.fetch("system_gitops_get_repository")[:parameters][:id][:required]).to be true
+      # `repository_id` since IMP-01a07042; the interim `id` alias is gone
+      # (IMP-01a08c71), so the target has exactly one name.
+      get_repo = defs.fetch("system_gitops_get_repository")[:parameters]
+      expect(get_repo[:repository_id][:required]).to be true
+      expect(get_repo).not_to have_key(:id)
       expect(defs).to have_key("system_gitops_list_repositories")
     end
 
@@ -244,7 +248,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
     it "admits the admin role" do
       gated = described_class.new(account: account, user: admin)
 
-      expect(gated.execute(params: { action: "system_gitops_get_repository", id: repo.id })[:success]).to be true
+      expect(gated.execute(params: { action: "system_gitops_get_repository", repository_id: repo.id })[:success]).to be true
     end
 
     # The permission gate runs BEFORE the dispatch case, and required_perm_for

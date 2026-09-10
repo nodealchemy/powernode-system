@@ -114,7 +114,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps read audience (IMP-b1191457a0
   # ---------------------------------------------------------------------------
   describe "system_gitops_get_repository" do
     it "refuses a principal holding only system.modules.read, disclosing no Vault path" do
-      r = call_as(module_reader, "system_gitops_get_repository", id: repo.id)
+      r = call_as(module_reader, "system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:success]).to be false
       expect(r.to_s).not_to include(vault_path)
@@ -122,14 +122,14 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps read audience (IMP-b1191457a0
     end
 
     it "admits a principal holding system.gitops.read" do
-      r = call_as(gitops_reader, "system_gitops_get_repository", id: repo.id)
+      r = call_as(gitops_reader, "system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:success]).to be true
       expect(r[:data][:repository][:vault_credential_path]).to eq(vault_path)
     end
 
     it "admits the real admin role" do
-      expect(call_as(admin, "system_gitops_get_repository", id: repo.id)[:success]).to be true
+      expect(call_as(admin, "system_gitops_get_repository", repository_id: repo.id)[:success]).to be true
     end
   end
 

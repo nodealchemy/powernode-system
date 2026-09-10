@@ -40,7 +40,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps sync refusal contract (IMP-8c
   end
 
   def sync(id = repo.id)
-    tool.execute(params: { action: "system_gitops_sync_repository", id: id })
+    tool.execute(params: { action: "system_gitops_sync_repository", repository_id: id })
   end
 
   def reconciler_result(**overrides)
