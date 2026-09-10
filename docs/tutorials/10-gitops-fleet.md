@@ -306,7 +306,7 @@ parameter that changes it.
 
 ```javascript
 platform.system_gitops_sync_repository({
-  id: "gitops-repo-1"          // the GitopsRepository id
+  repository_id: "gitops-repo-1"          // the GitopsRepository id
 })
 // → { success: true, data: { repository_id, sync_run_id, ok: true, diff_count,
 //     proposal_ids, synced_revision, diff_summary, error } }
@@ -467,7 +467,7 @@ To make any fleet change:
 ## Verification
 
 ```javascript
-platform.system_gitops_get_drift_report({ id: "gitops-repo-1" })
+platform.system_gitops_get_drift_report({ repository_id: "gitops-repo-1" })
 // → { repository_id, synced_revision, drift: false, diff_count: 0, diffs: [] }
 //   (when reality matches git; read-only — opens no proposals)
 ```
@@ -639,7 +639,7 @@ read the error:
 
   ```javascript
   platform.system_gitops_list_repositories({})
-  platform.system_gitops_get_repository({ id: "gitops-repo-1" })
+  platform.system_gitops_get_repository({ repository_id: "gitops-repo-1" })
   ```
 
   Both MCP verbs return the one projection, so the credential contract cannot

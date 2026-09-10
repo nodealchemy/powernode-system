@@ -93,8 +93,8 @@ recording a volume — see Failure modes.
 Confirm both volumes exist and the target is distinct:
 
 ```javascript
-platform.system_get_volume({ id: "<source-volume-id>" })
-platform.system_get_volume({ id: "<target-volume-id>" })
+platform.system_get_volume({ volume_id: "<source-volume-id>" })
+platform.system_get_volume({ volume_id: "<target-volume-id>" })
 // → each: { volume: { id, name, status, volume_type: { volume_type }, ... } }
 ```
 
@@ -136,7 +136,7 @@ Approval is the gate that authorizes the on-node agent to begin. It is only lega
 from `planned`.
 
 ```javascript
-platform.system_approve_storage_migration({ id: "<migration-id>" })
+platform.system_approve_storage_migration({ migration_id: "<migration-id>" })
 // → { storage_migration: { id, status: "approved", approved_at, ... } }
 ```
 
@@ -157,23 +157,23 @@ rsync may drive these transitions; the same call is what the agent uses.)
 ```javascript
 // Advance approved → preparing
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", status: "preparing", note: "mounting target + snapshot"
+  migration_id: "<migration-id>", status: "preparing", note: "mounting target + snapshot"
 })
 
 // Advance preparing → syncing and report bytes as the rsync runs
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", status: "syncing",
+  migration_id: "<migration-id>", status: "syncing",
   bytes_copied: 1048576, bytes_total: 53687091200, note: "rsync started"
 })
 
 // Subsequent progress pings (no status change — just byte counters)
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", bytes_copied: 26843545600, bytes_total: 53687091200
+  migration_id: "<migration-id>", bytes_copied: 26843545600, bytes_total: 53687091200
 })
 
 // Advance syncing → verifying
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", status: "verifying", bytes_verified: 53687091200,
+  migration_id: "<migration-id>", status: "verifying", bytes_verified: 53687091200,
   note: "checksum verify"
 })
 ```
@@ -181,7 +181,7 @@ platform.system_report_storage_migration_progress({
 Watch progress at any time:
 
 ```javascript
-platform.system_get_storage_migration({ id: "<migration-id>" })
+platform.system_get_storage_migration({ migration_id: "<migration-id>" })
 // → { storage_migration: { status, bytes_copied, bytes_total, bytes_verified,
 //        audit_log: [ ... ], plan: { ... }, ... } }
 
@@ -205,11 +205,11 @@ post-restart agent boots and heartbeat fetches mount the **new** home.
 
 ```javascript
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", status: "cutover", note: "switching binding"
+  migration_id: "<migration-id>", status: "cutover", note: "switching binding"
 })
 
 platform.system_report_storage_migration_progress({
-  id: "<migration-id>", status: "completed", note: "cutover landed"
+  migration_id: "<migration-id>", status: "completed", note: "cutover landed"
 })
 // → { storage_migration: { status: "completed", completed_at, ... } }
 ```
@@ -244,7 +244,7 @@ already-source binding is a no-op), or when `status: "completed"` **and**
 
 ```javascript
 platform.system_revert_storage_migration_binding({
-  id: "<migration-id>", reason: "cutover failed mid-remount, node diverged"
+  migration_id: "<migration-id>", reason: "cutover failed mid-remount, node diverged"
 })
 // → { storage_migration: { metadata: { revert_status: "requested", ... }, ... } }
 ```
@@ -267,12 +267,12 @@ most useful forensic evidence while triaging *why* the migration failed.
 // Within the grace window (default 24h after failed_at/cancelled_at), this
 // is refused unless you pass immediate: true.
 platform.system_cleanup_storage_migration({
-  id: "<migration-id>", reason: "triaged, safe to remove partial copy"
+  migration_id: "<migration-id>", reason: "triaged, safe to remove partial copy"
 })
 // → error: "Cleanup grace window not yet elapsed — 19h remaining (pass immediate: true to override)"
 
 platform.system_cleanup_storage_migration({
-  id: "<migration-id>", reason: "triaged, safe to remove partial copy", immediate: true
+  migration_id: "<migration-id>", reason: "triaged, safe to remove partial copy", immediate: true
 })
 // → { storage_migration: { metadata: { cleanup_status: "requested", ... }, ... } }
 ```
@@ -300,7 +300,7 @@ A migration can be cancelled **only** while `planned`, `approved`, or `preparing
 
 ```javascript
 platform.system_cancel_storage_migration({
-  id: "<migration-id>", reason: "wrong target volume selected"
+  migration_id: "<migration-id>", reason: "wrong target volume selected"
 })
 // → { storage_migration: { status: "cancelled", cancelled_at, ... } }
 ```

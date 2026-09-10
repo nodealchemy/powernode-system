@@ -46,15 +46,21 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       list = defs.fetch("system_list_storage_migrations")
       expect(list[:parameters].keys).to include(:status, :node_instance_id, :active_only)
 
-      expect(defs.fetch("system_get_storage_migration")[:parameters][:id][:required]).to be true
-      expect(defs.fetch("system_approve_storage_migration")[:parameters][:id][:required]).to be true
+      # `migration_id` since IMP-01a07042 — these five were among the 28 actions
+      # declaring a bare `id` against 93 siblings declaring `<noun>_id`. `id`
+      # remains DECLARED and accepted (required: false), which is what keeps a
+      # caller written against the old schema working; both halves are asserted
+      # because dropping either one silently breaks somebody.
+      expect(defs.fetch("system_get_storage_migration")[:parameters][:migration_id][:required]).to be true
+      expect(defs.fetch("system_get_storage_migration")[:parameters][:id][:required]).to be false
+      expect(defs.fetch("system_approve_storage_migration")[:parameters][:migration_id][:required]).to be true
 
       cancel = defs.fetch("system_cancel_storage_migration")
-      expect(cancel[:parameters][:id][:required]).to be true
-      expect(cancel[:parameters].keys).to include(:reason)
+      expect(cancel[:parameters][:migration_id][:required]).to be true
+      expect(cancel[:parameters].keys).to include(:reason, :id)
 
       progress = defs.fetch("system_report_storage_migration_progress")
-      expect(progress[:parameters][:id][:required]).to be true
+      expect(progress[:parameters][:migration_id][:required]).to be true
       expect(progress[:parameters].keys).to include(:status, :bytes_copied, :bytes_total, :bytes_verified, :note)
     end
 

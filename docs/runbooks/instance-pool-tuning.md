@@ -59,7 +59,7 @@ agent posts `phase=ready`; then it flips to `pool_state: "ready"`.
 **Verify:**
 
 ```javascript
-platform.system_get_instance_pool({ id: "<pool-id>" })
+platform.system_get_instance_pool({ pool_id: "<pool-id>" })
 // → { pool: { id, name, status: "active", lifecycle_class, target_size,
 //             min_size, max_size, ready_count, warming_count, claimed_count,
 //             errored_count, deficit, last_replenished_at,
@@ -291,7 +291,7 @@ Worked example: peak 4 claims/min, warmup 90 s, reaper 60 s →
 To wind down a pool (e.g., load is gone, or you're switching templates):
 
 ```javascript
-platform.system_drain_instance_pool({ id: "<pool-id>" })
+platform.system_drain_instance_pool({ pool_id: "<pool-id>" })
 // → { pool: { ..., status: "draining" },
 //      drain_result: { drained: <ready_terminated>,
 //                      terminate_failed: <provider terminate did NOT land>,
@@ -339,7 +339,7 @@ as standalone" mode; drain always terminates the ready members.
 ## Phase 5 — Decommission a pool ✅
 
 ```javascript
-platform.system_delete_instance_pool({ id: "<pool-id>" })
+platform.system_delete_instance_pool({ pool_id: "<pool-id>" })
 // → { deleted: true, pool_id, pool_name }   // the row is gone; cannot be undone
 ```
 
