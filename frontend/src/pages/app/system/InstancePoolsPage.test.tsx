@@ -186,6 +186,15 @@ describe('InstancePoolsPage', () => {
     expect(within(row).queryByLabelText(/drain web-warm/i)).not.toBeInTheDocument();
     expect(within(row).queryByLabelText(/recycle stale members of web-warm/i)).not.toBeInTheDocument();
     expect(within(row).queryByLabelText(/^delete web-warm/i)).not.toBeInTheDocument();
+
+    // InstancePoolCard.tsx (the mobile card sibling) gates the same five
+    // actions behind its own `canControl` prop — cover it too (C12 review R1).
+    const card = screen.getByTestId('pool-card-pool-a');
+    expect(within(card).queryByLabelText(/edit web-warm/i)).not.toBeInTheDocument();
+    expect(within(card).queryByLabelText(/replenish web-warm/i)).not.toBeInTheDocument();
+    expect(within(card).queryByLabelText(/drain web-warm/i)).not.toBeInTheDocument();
+    expect(within(card).queryByLabelText(/recycle stale members of web-warm/i)).not.toBeInTheDocument();
+    expect(within(card).queryByLabelText(/^delete web-warm/i)).not.toBeInTheDocument();
   });
 
   it('opens the Create Pool modal when the header action is clicked', async () => {
