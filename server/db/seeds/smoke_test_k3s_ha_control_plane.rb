@@ -1,23 +1,42 @@
 # frozen_string_literal: true
 
-# K3s full-lifecycle smoke — Phase 2: HA control plane.
+# K3s full-lifecycle smoke — Phase 2: VIP failover drill.
 #
-# Reads the site cluster from /tmp/smoke-k3s-state.json (phase 1's
-# output) + adds 2 more k3s-server NodeInstances to form a 3-server
-# HA control plane. Then exercises slice 3 VIP failover by calling
-# Sdwan::VirtualIp#failover! synthetically.
+# WHAT THIS IS NOT (IMP-01a05dce). It does NOT form an HA control plane, and
+# nothing on this node ever will: K3s HA is NOT IMPLEMENTED and is parked
+# rather than queued (docs/runbooks/multi-cluster-k3s.md Phase 4). Assigning
+# `k3s-server` to a second NodeInstance bootstraps a SEPARATE cluster.
+#
+# The agent has no path to join an existing cluster as a server, which is
+# checkable rather than a matter of opinion: k3sd.BootstrapConfig
+# (agent/internal/k3sd/applier.go) carries CNI knobs ONLY — no server URL and
+# no join token — and ServerManager's state machine
+# (agent/internal/k3sd/server_manager.go) has no join branch at all; its
+# step 5 is "cluster NOT yet bootstrapped → Bootstrap", i.e. always its own.
+# The phase=join_request handshake exists for k3s-AGENT (worker) only.
+#
+# So `register_node_join!(role: "server")` below is a call the agent CANNOT
+# make. This file used to describe itself as building "a 3-server HA control
+# plane" and a green run read as evidence of one. It is a PLATFORM-SIDE drill:
+# what it really exercises is the VirtualIp bookkeeping — failover candidates,
+# #failover!, and the VirtualIpAssignment rows — which is real, is worth
+# keeping, and is all a green run here attests to. Same reading as the note
+# already carried by docs/SMOKE_TEST.md's Pass 9 table.
 #
 # Tier semantics:
-#   db (default): operator-driven — register_node_join! + mark_node_ready!
-#                 + synthetic VirtualIp#failover!. No VMs.
-#   single+:      agent-driven — boot 2 more VMs, agents POST phase=join;
-#                 platform calls register_node_join! + mark_node_ready!.
-#   site+ + SMOKE_K3S_VIP_REAL_FAILOVER=1: terminate bootstrap peer
-#                 + wait for SDWAN Manager autonomy to trigger failover
-#                 (opt-in only — too brittle for default smoke).
+#   db (default): platform-side — register_node_join! + mark_node_ready!
+#                 called directly at the service layer + synthetic
+#                 VirtualIp#failover!. No VMs.
+#   single+:      REFUSED, immediately and by name. There is no agent-driven
+#                 server join to wait for, so the previous 600s
+#                 `wait_until(cluster.node_count >= 3)` could only ever end in
+#                 an uninformative timeout — ten minutes spent proving the
+#                 capability gap this header now states in one line.
+#   db + SMOKE_K3S_VIP_REAL_FAILOVER=1: mark the bootstrap node stopped and
+#                 fire the sensor_failover path (opt-in).
 #
 # Asserts:
-#   - cluster.node_count == 3 (3 servers, 0 agents at this phase)
+#   - cluster.node_count == 3 — three ROWS the platform wrote, not a quorum
 #   - Sdwan::VirtualIp.failover_holder_peer_ids has the 2 new peers
 #   - After failover!, holder_peer_ids includes a peer from failover candidates
 #   - bootstrap_events records the failover (via mark_node_ready entries)
@@ -90,11 +109,18 @@ h.checkpoint("ready to register HA servers")
 
 # ── Tier-branched node join ─────────────────────────────────────────
 if h.tier_at_least?("single")
-  h.step("Wait for agent-driven joins to bring cluster.node_count to 3")
-  h.wait_until(timeout: 600, label: "cluster.node_count >= 3") do
-    cluster.reload
-    cluster.node_count >= 3
-  end
+  # No wait, because there is nothing to wait FOR. A k3s-server agent cannot
+  # join an existing cluster (see the header): the 600s poll this replaces
+  # could only ever time out, and a timeout names the symptom rather than the
+  # cause. Refuse with the cause.
+  h.step("Agent-driven HA join at tier #{h.current_tier}")
+  h.fail_with(
+    "K3s HA is NOT IMPLEMENTED — a k3s-server agent has no join path (k3sd.BootstrapConfig " \
+    "carries no server URL or join token, and ServerManager has no join branch), so a second " \
+    "k3s-server bootstraps a SEPARATE cluster. There is no agent-driven server join to observe " \
+    "at this tier. Run this phase at SMOKE_K3S_LEVEL=db for the platform-side VIP failover drill; " \
+    "see docs/runbooks/multi-cluster-k3s.md Phase 4."
+  )
 else
   h.step("Synth join + mark_ready for each HA server (db tier)")
   ha_instances.each_with_index do |inst, idx|
@@ -109,7 +135,10 @@ else
 end
 
 cluster.reload
-h.assert(cluster.node_count == 3, "cluster.node_count == 3 (got #{cluster.node_count})")
+# Three ROWS, written by the two register_node_join! calls above plus phase 1's
+# bootstrap node. Not a formed quorum — no etcd member joined anything.
+h.assert(cluster.node_count == 3,
+         "cluster.node_count == 3 platform-side rows (got #{cluster.node_count})")
 
 # ── Verify VIP failover candidates populated ────────────────────────
 h.step("Verify VIP failover_holder_peer_ids populated with HA peers")
@@ -186,6 +215,7 @@ h.state_write(
   "site_#{site}_vip_primary_after_failover" => new_primary
 )
 
-puts "\n  ✅ Phase 2 (Site #{site.upcase} HA) complete"
-puts "  cluster.node_count=#{cluster.node_count} (3 servers); VIP failover validated"
+puts "\n  ✅ Phase 2 (Site #{site.upcase} VIP failover drill) complete"
+puts "  cluster.node_count=#{cluster.node_count} platform-side rows; VIP failover bookkeeping validated"
+puts "  NOTE: no HA control plane was formed — K3s HA is not implemented (runbooks/multi-cluster-k3s.md Phase 4)"
 puts "  Next: smoke_test_k3s_agent_join.rb"

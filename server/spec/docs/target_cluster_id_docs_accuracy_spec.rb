@@ -1240,12 +1240,24 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     #     `server/db/seeds/k3s_modules.rb:14,78-81`.
     #
     #     Also NOT a doc: `server/db/seeds/smoke_test_k3s_ha_control_plane.rb`
-    #     is why this survived. At the db tier it calls `register_node_join!`
-    #     directly with no target on a single-cluster account (:98-107),
-    #     synthesizing the call ServerManager never makes, and then asserts two
-    #     failover candidates (:114-123) — a green synthetic proof of a
-    #     capability that does not exist. At the site tier it waits 600s for
-    #     `node_count >= 3` (:91-96), which cannot happen.
+    #     is why this survived. At the db tier it called `register_node_join!`
+    #     directly with no target on a single-cluster account, synthesizing the
+    #     call ServerManager never makes, and then asserted two failover
+    #     candidates — a green synthetic proof of a capability that does not
+    #     exist. At the site tier it waited 600s for `node_count >= 3`, which
+    #     cannot happen.
+    #
+    #     CLOSED by IMP-01a05dce: the seed now says in its own header that K3s
+    #     HA is not implemented and cites the checkable reason (k3sd
+    #     .BootstrapConfig carries no server URL or join token; ServerManager
+    #     has no join branch); the site+ arm refuses immediately by name
+    #     instead of timing out; and the node_count assertion says "platform-
+    #     side rows", not a quorum. The drill is kept because the VirtualIp
+    #     bookkeeping it exercises IS real — what changed is that a green run
+    #     no longer reads as evidence of an HA control plane. Line numbers are
+    #     deliberately dropped here rather than re-pinned: this paragraph is a
+    #     record of what the spec found, and a citation that drifts is worse
+    #     than one that names the file alone.
     #
     #     NOTHING WAS FILED for any of these as of that commit. Stated plainly
     #     because the Phase 3 deferral above names IMP-a5f236e8cc56, and an
