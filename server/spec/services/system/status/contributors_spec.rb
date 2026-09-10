@@ -178,6 +178,25 @@ RSpec.describe System::Status::Contributors do
     describe "the B2 fleet kinds" do
       let(:node) { create(:system_node, account: account) }
 
+      # Design §5.4 ruling: a fleet kind already has an escalation path with its
+      # own claim (SignalState.claim_notification!, keyed by fleet fingerprint
+      # and invisible to core), so core's A7 escalation must stay OFF for it or
+      # one outage pages twice, claimed in two places, neither aware of the
+      # other.
+      it "opts every fleet kind out of core escalation, and leaves platform_subsystem in" do
+        fleet_kinds = described_class.kinds - [ "platform_subsystem" ]
+        expect(fleet_kinds).to include("node", "node_instance", "instance_pool")
+
+        fleet_kinds.each do |kind|
+          expect(Platform::Status::Registry.fetch(kind).escalates?)
+            .to be(false), "#{kind} would double-notify"
+        end
+
+        # The other arm: platform_subsystem has NO fleet lane of its own, so
+        # core is the only thing that would ever page for it.
+        expect(Platform::Status::Registry.fetch("platform_subsystem").escalates?).to be(true)
+      end
+
       it "registers all three without the registrar naming any of them" do
         expect(described_class.kinds)
           .to include("node", "node_instance", "instance_pool", "platform_subsystem")

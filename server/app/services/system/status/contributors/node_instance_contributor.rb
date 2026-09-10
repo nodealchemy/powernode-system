@@ -66,6 +66,14 @@ module System
 
         def account_scoped? = true
 
+        # Fleet kinds keep their lane's escalation (design §5.4). This one is
+        # already escalated by InstanceStatusSensor / InstanceUnrecoverableSensor, which claims through
+        # SignalState.claim_notification! — so leaving core's A7 escalation on
+        # would page twice for one outage, claimed in two places, neither aware
+        # of the other. The claim is fleet-side and keyed by fleet fingerprint;
+        # core cannot see it. Owner: system.instance_silent and system.instance_unrecoverable.
+        def escalates? = false
+
         def each_component(account)
           return if account.blank?
 
