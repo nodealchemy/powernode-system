@@ -10,12 +10,14 @@
 # engineering floors (release.build_dispatch and the two refine categories —
 # the seam's CATEGORIES) through Ai::Engineering::ReleaseDispatchFloorSeeder
 # behind a `defined?` probe (IMP-99988ef54942 — absence-only; a core tree
-# without the seam is a named skip, never a boot failure), and finally
+# without the seam is a named skip, never a boot failure), then attaches the
+# AGENT HIERARCHY (HIER-P1, IMP-01a089d3 — System::Governance::HierarchyReconciler
+# over the teams pass's accounts), and finally
 # reconciles the CANONICAL TEAMS (HIER-P4, IMP-01a06cd4 —
 # Ai::Teams::CanonicalTeamReconciler, membership only, over
 # `reconcilable_accounts` rather than every account).
 #
-# FOUR PASSES, matching `rails system:governance:reconcile`
+# FIVE PASSES, matching `rails system:governance:reconcile`
 # (extensions/system/server/lib/tasks/governance_reconcile.rake) step for step.
 # That task's header has always claimed the two doors carry the same steps; it
 # grew the team pass and this file did not, so until IMP-01a06cd4 the claim was
@@ -171,12 +173,57 @@ begin
       warn "[governance-reconcile] engineering-floors: core seam not present (module skew) — skipped"
     end
 
+    # Agent hierarchy (HIER-P1, IMP-01a089d3). Every declared system agent's
+    # lineage edge under System Concierge, plus the delegation rows that go
+    # with it (System::Governance::HierarchyReconciler). Same reason as every
+    # pass above: its only writer was db/seeds/system_agent_hierarchy.rb, and
+    # `db:seed` is first-boot only, so an identity declared after an install's
+    # first boot never got its edge unless a governance-gap offer was
+    # materialised by hand. Edges are effectively GLOBAL (a unique parent/child
+    # index); the per-account half is the delegation rows, so the write set is
+    # the canonical-teams pass's `reconcilable_accounts`, never every tenant.
+    # It runs BEFORE that pass because a team's manager delegates along these
+    # rows. `drift` taken first names the edges this boot actually attached.
+    # ALWAYS prints its own summary line, attached=0 policies_written=0 in the
+    # steady state.
+    if defined?(::Ai::Teams::CanonicalTeamReconciler)
+      begin
+        hier_accounts = ::Ai::Teams::CanonicalTeamReconciler.reconcilable_accounts
+        hier_attached = 0
+        hier_written = 0
+        hier_skipped = 0
+        hier_accounts.find_each do |account|
+          hierarchy = ::System::Governance::HierarchyReconciler.new(account: account)
+          missing_edges = hierarchy.drift.missing_edges
+          result = hierarchy.reconcile!
+          hier_attached += missing_edges.size
+          hier_written += result.policies_written
+          hier_skipped += result.skipped.size
+          if missing_edges.any?
+            warn "[governance-reconcile]   account #{account.id} hierarchy attached: #{missing_edges.join(', ')}"
+          end
+          if result.skipped.any?
+            # A declared identity this install never seeded: permanent until
+            # someone acts, so it is named, like a skipped policy set.
+            warn "[governance-reconcile]   account #{account.id} hierarchy SKIPPED (agent absent): " \
+                 "#{result.skipped.join(', ')}"
+          end
+        end
+        warn "[governance-reconcile] hierarchy accounts=#{hier_accounts.count} attached=#{hier_attached} " \
+             "policies_written=#{hier_written} skipped=#{hier_skipped}"
+      rescue StandardError => e
+        failed << { account_id: '(hierarchy)', error: "#{e.class}: #{e.message}" }
+        warn "[governance-reconcile] hierarchy reconcile failed (non-fatal): #{e.class}: #{e.message}"
+      end
+    else
+      warn '[governance-reconcile] hierarchy: core teams seam not present (module skew) — skipped'
+    end
+
     # Canonical teams (HIER-P4, IMP-01a06cd4). The per-account materialisation
     # of every canonical Ai::TeamTemplate ("System Operations", "Platform
     # Engineering") — team, members, roles and lead repaired to the template on
     # the account's EXECUTING PRINCIPALS (ruling 8). Membership only: lineage
-    # edges and delegation rows keep their own writers, and a missing edge stays
-    # reported by `drift` until the hierarchy seed runs.
+    # edges and delegation rows keep their own writer (the hierarchy pass above).
     #
     # Same reason as every pass above: `db:seed` is first-boot only, so a seat
     # added to a team seed after an install's first boot — or a seat an operator
@@ -231,7 +278,7 @@ begin
     # ALWAYS printed, including the created=0 steady state — the one line an
     # operator greps. It CLOSES the run rather than opening it so that
     # `failed=` covers the whole reconcile: the per-account loop above and
-    # every step below it (skill bindings, engineering floors, canonical teams).
+    # every step below it (skill bindings, engineering floors, hierarchy, canonical teams).
     # Printed before the
     # steps it read failed=0 while the banner below said RECONCILE FAILED and
     # the FleetEvent carried the step, which is the one place the three must

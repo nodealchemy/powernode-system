@@ -13,12 +13,12 @@
 # the already-initialized branches. It is idempotent and creates absence only.
 #
 # It carries the same steps as the hub image's per-boot governance-reconcile.rb
-# — declared policy rows, skill bindings, canonical teams and core's
-# account-wide engineering floors — so the two doors converge the same rows
+# — declared policy rows, skill bindings, core's account-wide engineering
+# floors, the agent hierarchy and canonical teams — so the two doors converge the same rows
 # rather than only the ones the boot script happens to have grown.
 namespace :system do
   namespace :governance do
-    desc "Create declared governance policy rows this database is missing (absence only; never overwrites) and reconcile skill bindings"
+    desc "Create declared governance policy rows this database is missing (absence only; never overwrites) and reconcile skill bindings, the agent hierarchy and canonical teams"
     task reconcile: :environment do
       accounts = ::Account.all
       total = 0
@@ -78,12 +78,35 @@ namespace :system do
         puts "  ⚠️  engineering floors: core seam not present (tree skew) — skipped"
       end
 
+      # Agent hierarchy (HIER-P1, IMP-01a089d3): every declared system agent's
+      # lineage edge under System Concierge, plus the delegation rows that go
+      # with it (System::Governance::HierarchyReconciler). Its only writer used
+      # to be the first-boot-only seed, so an identity declared after an
+      # install's first boot never got its edge. Edges are effectively GLOBAL (a
+      # unique parent/child index); the per-account half is the delegation rows,
+      # so the write set is the canonical-teams one below: the primary account
+      # plus any account holding a canonical team, never Account.all. It runs
+      # BEFORE the teams pass because a team's manager delegates along these
+      # rows. `drift` taken first names the edges this run actually attaches
+      # (reconcile!'s own `attached` counts every edge it ensures).
+      hierarchy_changes = 0
+      ::Ai::Teams::CanonicalTeamReconciler.reconcilable_accounts.find_each do |account|
+        hierarchy = ::System::Governance::HierarchyReconciler.new(account: account)
+        missing_edges = hierarchy.drift.missing_edges
+        result = hierarchy.reconcile!
+        hierarchy_changes += missing_edges.size + result.policies_written
+        puts "  [#{account.id}] hierarchy attached: #{missing_edges.join(', ')}" if missing_edges.any?
+        puts "  [#{account.id}] hierarchy wrote #{result.policies_written} delegation row(s)" if result.policies_written.positive?
+        puts "  [#{account.id}] hierarchy skipped (agent absent): #{result.skipped.join(', ')}" if result.skipped.any?
+      end
+      puts(hierarchy_changes.zero? ? "✅ Agent hierarchy already in sync" \
+                                   : "✅ Agent hierarchy reconciled #{hierarchy_changes} edge(s)/row(s)")
+
       # Canonical teams (HIER-P4): the per-account materialisation of every
       # canonical Ai::TeamTemplate ("System Operations", "Platform
       # Engineering") — team, members, roles and lead repaired to the template
       # on the account's executing principals. Membership only: lineage edges
-      # and delegation rows keep their writers above; a missing edge stays
-      # reported by `drift` until the hierarchy seed runs.
+      # and delegation rows keep their writers above (the hierarchy pass).
       #
       # NOT Account.all: materialising a canonical team MINTS an account
       # principal per seat, so a walk over every account would create two teams
@@ -108,7 +131,7 @@ namespace :system do
       puts(team_changes.zero? ? "✅ Canonical teams already in sync" : "✅ Canonical teams reconciled on #{team_changes} account-team(s)")
     end
 
-    desc "Report declared governance rows and skill bindings missing from this database (read-only; exits 1 on drift)"
+    desc "Report declared governance rows, skill bindings, agent hierarchy and canonical teams missing from this database (read-only; exits 1 on drift)"
     task drift: :environment do
       drifted = false
 
@@ -139,6 +162,21 @@ namespace :system do
         drifted = true
         warn "  skill bindings MISSING #{bindings.missing.size}: #{bindings.missing.join(', ')}" if bindings.missing.any?
         warn "  skill bindings STALE #{bindings.stale.size}: #{bindings.stale.join(', ')}" if bindings.stale.any?
+      end
+
+      # Agent hierarchy (IMP-01a089d3): read over the SAME accounts the
+      # reconcile pass writes. Reading every account would report delegation
+      # rows no reconcile ever writes, a drift line nothing can clear. Drifted
+      # by the reconciler's own rule (DriftReport#drifted?): a declared identity
+      # this install never seeded is drift, not a neutral outcome.
+      ::Ai::Teams::CanonicalTeamReconciler.reconcilable_accounts.find_each do |account|
+        report = ::System::Governance::HierarchyReconciler.new(account: account).drift
+        next unless report.drifted?
+
+        drifted = true
+        warn "  [#{account.id}] hierarchy MISSING lineage edges: #{report.missing_edges.join(', ')}" if report.missing_edges.any?
+        warn "  [#{account.id}] hierarchy MISSING delegation rows: #{report.missing_policies.join(', ')}" if report.missing_policies.any?
+        warn "  [#{account.id}] hierarchy SKIPPED (agent absent): #{report.skipped.join(', ')}" if report.skipped.any?
       end
 
       # Canonical teams (HIER-P4): where the template, the lineage forest, the
