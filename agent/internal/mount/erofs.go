@@ -1,24 +1,3 @@
-// Package mount implements the agent's on-node read-only filesystem +
-// overlayfs union machinery. Each platform module is published as a
-// single erofs image (Enhanced Read-Only File System) and loop-mounted
-// at attach time; the union of all attached modules forms /sysroot via
-// overlayfs.
-//
-// erofs as the canonical lower-layer format:
-//   - In Linux mainline since 5.4 (Nov 2019). Every distro we'd target
-//     ships it enabled: Ubuntu 20.04+, Debian 11+, Rocky/Alma 9+,
-//     Fedora 36+, Amazon Linux 2023, Alpine. No kernel-build choice
-//     to negotiate the way composefs did.
-//   - Production-proven on Android (default /system FS since 11),
-//     ChromeOS, and Steam Deck.
-//   - Native fs-verity integration, faster random-access reads than
-//     squashfs, tail-packing + chunked layout deduplicate identical
-//     content within one image.
-//
-// The earlier dual-format machinery (composefs + squashfs) was
-// removed when we converged on erofs as the single canonical format.
-// See powernode.composefs_ubuntu_kernel_gap in MCP memory for the
-// decision context.
 package mount
 
 import (

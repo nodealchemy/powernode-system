@@ -1,13 +1,3 @@
-// Package agent_peer implements the NodeInstance-as-Agent peer registration
-// protocol. After enrollment, the agent self-announces to the platform with
-// its declared capabilities, skills, and addresses. The platform creates a
-// System::NodeInstancePeer row (auto-disabled until operator activation).
-//
-// Re-announcement is triggered when capabilities change (module attach/
-// detach, hardware delta detected). The platform deduplicates by
-// node_instance_id.
-//
-// Reference: comprehensive stabilization sweep P6; Golden Eclipse F-3.
 package agent_peer
 
 import (

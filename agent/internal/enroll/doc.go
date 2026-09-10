@@ -25,9 +25,17 @@
 //
 // # Key types
 //
-//	EnrollRequest    — { Identity, AgentVersion, RequestedSANs }
-//	Client           — wraps the HTTP exchange + TLS pinning
-//	Storage          — handles atomic file writes + permission management
+//	Client            — wraps the HTTP exchange + TLS pinning
+//	EnrollRequest /   — the wire types for POST /node_api/enroll
+//	EnrollResponse
+//	Keypair           — the locally generated Ed25519 pair (GenerateKeypair);
+//	                    BuildCSR turns it into the CSR that is posted
+//	EnrolledIdentity  — cert + chain + key, as persisted by Save
+//	PKIPaths          — where those land; PathsUnder for an explicit dir,
+//	                    ResolveDefaultPKIPaths for the host-dependent default
+//
+// Persistence is a set of functions over PKIPaths (storage.go) rather than a
+// Storage object.
 //
 // Server-side counterpart: extensions/system/server/app/controllers/api/v1/
 // system/node_api/enrollment_controller.rb + node_enrollment_service.rb.

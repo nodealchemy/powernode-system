@@ -1,8 +1,3 @@
-// Package transport builds the mTLS HTTP client the agent uses for every
-// post-enrollment call to the platform. Loads cert + key + CA bundle
-// from the on-disk PKI directory written by the enroll package.
-//
-// Reference: Golden Eclipse plan M2.E + M0.P (mTLS in node_api/base_controller).
 package transport
 
 import (

@@ -18,12 +18,21 @@
 //
 // # Key types
 //
-//	Config            — { PlatformURL, AgentVersion, HeartbeatInterval, PKIDir, ... }
-//	Service           — orchestrates the tick loop; lifecycle: New → Run(ctx) → Cancel
-//	ReconcilerState   — persisted between restarts at /var/lib/powernode-agent/reconciler.json
+//	Config       — { PlatformURL, AgentVersion, HeartbeatInterval, PKIDir, ... }
+//	Service      — orchestrates the tick loop; New(cfg) then Run(ctx), which
+//	               returns when the caller's context is cancelled
+//	Reconciler   — the module reconcile pass, configured by ReconcilerConfig
+//	               and reporting SyncResult
+//	Heartbeater  — the status post; HeartbeatPayload / HeartbeatResponse
+//	CertRotator  — mTLS renewal (see internal/transport for why it lives here)
+//	LKGCapturer  — captures the last-known-good assignment set; BootLKG /
+//	               LKGModule are its persisted shape
 //
-// Reconciler state cache (per recent commit cff010a) survives across agent
-// restarts — avoids re-doing module pulls on quick service restart.
+// Attach state itself is NOT owned by this package: it is mount.State,
+// persisted at mount.StatePath (/persist/var/lib/powernode/state.json). Its
+// LastAttachedManifestHashes map is what lets a restart skip re-pulling
+// modules whose manifest has not changed. There is no ReconcilerState type
+// and no /var/lib/powernode-agent/reconciler.json.
 //
 // Server-side counterparts:
 //   - heartbeat:        extensions/system/server/app/controllers/api/v1/system/node_api/status_controller.rb

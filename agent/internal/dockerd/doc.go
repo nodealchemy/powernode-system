@@ -34,14 +34,43 @@
 //
 // # Key types
 //
-//	Manager       — orchestrates the state machine via Tick
-//	Applier       — interface for the side-effect path (install + config + systemd)
-//	ShellApplier  — production implementation; uses apt + systemctl shellouts
-//	Handshake     — client for /api/v1/system/node_api/runtime/handshake
+//	Manager        — orchestrates the state machine via Tick
+//	DaemonApplier  — the side-effect seam (install + daemon.json + systemd)
+//	ShellApplier   — production implementation; apt + systemctl shellouts
+//	Client         — typed client for the handshake endpoint; the wire types
+//	                 are HandshakeRequest, ReadyAck, StoppedAck and
+//	                 HandshakeError, with Phase naming the phase constant
+//	DaemonConfig   — the daemon.json the applier writes
+//	DaemonPaths    — where on disk it writes; DefaultPaths in production
+//	RuntimeEnsurer — optional isolation runtimes (KataRuntimeEnsurer,
+//	                 GvisorRuntimeEnsurer, composed by CompositeRuntimeEnsurer)
+//
+// The install + config + systemd work is NOT in a separate package: applier.go
+// and shell_applier.go are in this one, alongside the wire protocol.
 //
 // Slice 10 (config-variety daemon.json overrides) is applied here: child
 // modules with higher effective_priority have their daemon.json contributions
 // merged into the base config.
+//
+// # Handshake phases
+//
+// The protocol surface (POST /api/v1/system/node_api/runtime/handshake) is
+// defined platform-side in runtime_controller.rb; this package is the typed Go
+// client for it.
+//
+//	wants_cert: agent generates an Ed25519 keypair, builds a CSR with
+//	            CN = "docker-daemon-<node_instance_id>", POSTs the CSR.
+//	            Platform returns the CA-signed leaf cert + CA chain.
+//	            Idempotent — repeated calls re-issue cleanly, so cert
+//	            rotation rides the same code path.
+//
+//	ready:      agent reports dockerd is up, with observed version. Platform
+//	            flips the managed Devops::DockerHost row from `pending` to
+//	            `connected`. Sent once per dockerd start.
+//
+//	stopped:    agent reports dockerd is no longer listening (clean shutdown,
+//	            module unassignment). Platform flips the host to
+//	            `disconnected`. Sent best-effort during teardown.
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // docker_daemon_provisioner_service.rb handles platform-side bookkeeping.

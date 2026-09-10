@@ -16,10 +16,14 @@
 //
 // # Key types
 //
-//	Registrar     — registers + de-registers the NodeInstance as a peer at
-//	                runtime startup / shutdown
-//	Capabilities  — declared capability set (SSH, kubectl, docker, etc.)
-//	Manifest      — full peer manifest posted to /api/v1/system/node_api/peer
+//	Registrar        — registers + de-registers the NodeInstance as a peer at
+//	                   runtime startup / shutdown; built by New
+//	AnnouncePayload  — the announcement body posted to the platform, carrying
+//	                   Capabilities, its ResourceLimits and the declared Skill
+//	                   set; capped at MaxAnnounceBodyBytes
+//	AnnounceResponse — what the platform returns
+//	Capabilities     — declared capability set (SSH, kubectl, docker, etc.)
+//	HTTPClient       — the transport seam, so tests need no live platform
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // peer_agent_mirror.rb (mirrors the agent registration into Ai::Agent rows

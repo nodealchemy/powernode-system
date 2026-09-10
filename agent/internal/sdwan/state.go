@@ -1,16 +1,3 @@
-// Package sdwan implements the agent-side SDWAN reconciler.
-//
-// On each heartbeat tick the Manager pulls /node_api/config/sdwan,
-// diffs the desired per-network interface configs against the kernel's
-// actual state (read via `wg show`), applies the differences via shell
-// commands, and reports observed state back to /status/sdwan.
-//
-// The reconciler is *idempotent* — applying the same desired state twice
-// is a no-op. Drift detection is delegated to the platform's fleet
-// autonomy sensors (slice 5); the agent's job is just to make actual
-// match desired.
-//
-// Slice 1 of the SDWAN plan.
 package sdwan
 
 import "time"

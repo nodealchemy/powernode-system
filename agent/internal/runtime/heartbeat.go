@@ -1,8 +1,3 @@
-// Package runtime is the agent's long-lived service mode: heartbeat,
-// task lease, cert rotation, and reconciliation. Each runs in its own
-// goroutine; service.Run() ties them together.
-//
-// Reference: Golden Eclipse plan M2.E.
 package runtime
 
 import (

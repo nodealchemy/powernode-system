@@ -1,39 +1,45 @@
-// Package sdwan applies SDWAN configuration on a NodeInstance: WireGuard
-// peers, nftables rules, NAT, FRR (iBGP) configuration.
+// Package sdwan implements the agent-side SDWAN reconciler: WireGuard peers,
+// VRFs, host bridges, nftables firewall + NAT, virtual IPs, and FRR (iBGP)
+// configuration.
 //
-// The platform owns the *desired* SDWAN state; this package observes the
-// *actual* state and reconciles. Each tick:
+// The platform owns the DESIRED state; this package observes the ACTUAL state
+// and makes actual match desired. Each heartbeat tick, Manager.Tick:
 //
-//  1. Fetch desired config from /api/v1/system/node_api/sdwan
-//  2. Diff against current wg + nft + FRR state (FrrObserver)
-//  3. Apply deltas via wg-quick (peer config), nft (firewall rules),
-//     iptables-translate (NAT for legacy port mappings), and vtysh (FRR config)
-//  4. Post results back to the platform
+//  1. GET  /api/v1/system/node_api/config/sdwan   → DesiredConfig
+//  2. Reads the kernel's actual state (`wg show`, FrrObserver over
+//     `vtysh -c "show running-config"`) into ActualInterfaceState /
+//     ActualPeerState
+//  3. Applies the differences through the applier seams below
+//  4. POST /api/v1/system/node_api/status/sdwan   ← observed state
 //
-// # Sub-modules
-//
-//   - manager.go          orchestrates the reconcile loop
-//   - frr_applier.go      builds frr.conf from platform desired state
-//   - frr_observer.go     parses `vtysh -c "show running-config"` for diff
-//   - nftables_applier.go builds nft ruleset from FirewallRule rows
-//   - nat_applier.go      port mapping nft rules
-//
-// # Slice support
-//
-//   - Slice 3 — first-class VIPs (holder negotiation client-side)
-//   - Slice 9 a-f — static subnet routing, iBGP, route policies (FRR config
-//     compilation done platform-side; agent applies the
-//     precomputed frr.conf)
-//   - Slice 10 — daemon.json overrides for dockerd peer addresses
-//   - Slice 11 — federation peer support (in active sweep; stubs present)
+// Reconciliation is IDEMPOTENT — applying the same desired state twice is a
+// no-op. Drift detection belongs to the platform's fleet autonomy sensors; the
+// agent only converges.
 //
 // # Key types
 //
-//	Manager     — top-level reconcile orchestrator; called from runtime.Tick
-//	Config      — desired state from platform: peers + rules + routes
-//	Snapshot    — observed state: current wg + nft + FRR
-//	Diff        — { peers_to_add, peers_to_remove, rules_to_apply, ... }
+//	Manager               — the reconcile orchestrator, called from the
+//	                        runtime tick; holds one applier per subsystem
+//	DesiredConfig         — the platform's compiled intent, mirroring
+//	                        Sdwan::TopologyCompiler#compile_for_peer;
+//	                        DesiredNetworkConfig per overlay network, plus
+//	                        DesiredVRF / DesiredBridge / DesiredVip /
+//	                        DesiredIpfix / DesiredOvnControl
+//	ActualInterfaceState  — what `wg show` reports for one interface
+//	ActualPeerState       — what it reports for one peer
+//	BgpConf / BgpNeighbor — the FRR side of the desired state
 //
-// Server-side counterpart: extensions/system/server/app/services/sdwan/* +
+// There is no Config, Snapshot or Diff type: desired state is DesiredConfig,
+// observed state is the Actual* structs, and the difference is computed inside
+// each applier rather than materialised as a diff object.
+//
+// # Applier seams
+//
+// Every subsystem is an interface so tests can assert command shape without
+// root: WgApplier, NftablesApplier, NatApplier, VipApplier, VRFApplier,
+// BridgeApplier, FrrApplier and FrrObserver. Their shell implementations live
+// in the correspondingly named *_applier.go files.
+//
+// Server-side counterpart: extensions/system/server/app/services/sdwan/* and
 // app/controllers/api/v1/system/node_api/sdwan_controller.rb.
 package sdwan

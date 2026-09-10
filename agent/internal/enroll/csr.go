@@ -1,14 +1,3 @@
-// Package enroll handles the bootstrap-token → mTLS cert exchange against
-// the platform's /api/v1/system/node_api/enroll endpoint.
-//
-// Flow:
-//  1. Generate an Ed25519 keypair locally (private key never leaves the node)
-//  2. Build a self-signed CSR with CN = expected mtls_subject
-//  3. POST { bootstrap_token, csr_pem, agent_version, dmi_uuid } to /enroll
-//  4. Verify platform's TLS cert against the supplied CA bundle (from identity)
-//  5. On success, persist cert + chain + private key to /persist/var/lib/powernode/pki/
-//
-// Reference: Golden Eclipse plan M2.C; M0.O EnrollmentController contract.
 package enroll
 
 import (

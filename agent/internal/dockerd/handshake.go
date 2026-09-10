@@ -1,30 +1,3 @@
-// Package dockerd implements the agent side of the Phase B Docker daemon
-// auto-registration protocol. The protocol surface (POST
-// /api/v1/system/node_api/runtime/handshake) is defined platform-side
-// in extensions/system/server/.../runtime_controller.rb; this package is
-// the typed Go client for it.
-//
-// Three phases keyed by `phase`:
-//
-//	wants_cert: agent generates an Ed25519 keypair, builds a CSR with
-//	            CN = "docker-daemon-<node_instance_id>", POSTs the CSR.
-//	            Platform returns the CA-signed leaf cert + CA chain.
-//	            Idempotent — repeated calls re-issue cleanly so cert
-//	            rotation rides the same code path.
-//
-//	ready:      agent reports dockerd is up, observed version. Platform
-//	            flips the managed Devops::DockerHost row from `pending`
-//	            to `connected`. Sent once per dockerd start.
-//
-//	stopped:    agent reports dockerd is no longer listening (clean
-//	            shutdown, module unassignment). Platform flips host to
-//	            `disconnected`. Sent best-effort during teardown.
-//
-// systemctl integration, daemon.json writing, file persistence, and
-// systemd unit lifecycle live in a sibling package
-// (internal/runtime/docker_daemon, future slice). This package is
-// strictly the wire protocol — testable in isolation against an
-// httptest server.
 package dockerd
 
 import (

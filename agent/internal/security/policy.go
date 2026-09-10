@@ -1,12 +1,3 @@
-// Package security applies a module's manifest.yaml `security:` block on
-// the running node: capability dropping, SELinux/AppArmor profile loading,
-// seccomp filter compilation, egress allowlist enforcement.
-//
-// Each operation uses the mount.Runner abstraction so unit tests can verify
-// command shape without root or kernel features.
-//
-// Reference: Golden Eclipse plan Security Architecture (Module-Level Security);
-// module manifest.yaml security block schema.
 package security
 
 import (

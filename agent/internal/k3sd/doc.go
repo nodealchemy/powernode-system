@@ -23,11 +23,24 @@
 //
 // # Key types
 //
-//	ServerManager     — state machine for k3s-server role
-//	AgentManager      — state machine for k3s-agent role
-//	Applier           — interface for shellout side effects
-//	ShellApplier      — production impl; uses apt + systemctl + curl
-//	Handshake         — client for /api/v1/system/node_api/runtime/handshake
+//	ServerManager       — state machine for the k3s-server role
+//	AgentManager        — state machine for the k3s-agent role
+//	ServerApplier /     — the shellout seams, one per role; the production
+//	AgentApplier          implementations are ShellServerApplier and
+//	                      ShellAgentApplier (apt + systemctl + curl)
+//	Client              — typed client for the handshake endpoint; the wire
+//	                      types are HandshakeRequest, JoinRequestPayload,
+//	                      BootstrapAck, ReadyAck, StoppedAck and
+//	                      HandshakeError, with Phase naming the phase constant
+//	BootstrapConfig     — CNI knobs only, fetched via BootstrapConfigAPI
+//	                      (HTTPBootstrapConfigClient); it carries NO server URL
+//	                      or join token
+//	AgentJoinConfig     — what the agent applier writes into the systemd
+//	                      drop-in after a successful join_request
+//	BootstrapState      — persisted across restarts (persistence.go)
+//
+// applier.go and shell_applier.go are in THIS package, not a sibling: the
+// install + config + systemd work never moved out.
 //
 // Multi-cluster (use case 3 in USE_CASE_MATRIX.md): JoinRequest carries a
 // target_cluster_id discriminator, and the platform validates that the target
@@ -51,6 +64,27 @@
 // NodeInstance bootstraps a SEPARATE cluster, which then refuses every later
 // worker join. Losing the bootstrap server is an outage until it is restored.
 // K3s HA is PARKED, not queued. See docs/USE_CASE_MATRIX.md, Use Case 2.
+//
+// # Handshake phases
+//
+// Shared with the docker daemon flow (POST
+// /api/v1/system/node_api/runtime/handshake) but with K3s-specific phases:
+//
+//	bootstrap     (k3s-server only) — a fresh K3s cluster came up. Body
+//	              carries the captured kubeconfig + server/agent join tokens.
+//	              Platform creates a Devops::KubernetesCluster row.
+//
+//	join_request  (k3s-agent only) — asks the platform for the cluster's
+//	              api_endpoint + agent_token. See Multi-cluster above for why
+//	              target_cluster_id is always empty on this phase.
+//
+//	ready         (both) — the kubelet is up; platform flips the
+//	              KubernetesNode to status=active. The agent DOES send its
+//	              cached ClusterID here, forwarded as target_cluster_id, so
+//	              membership resolves on every ready re-fire.
+//
+//	stopped       (both) — clean shutdown; platform flips the node to
+//	              status=disconnected.
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // kubernetes_cluster_provisioner_service.rb.
