@@ -424,12 +424,41 @@ module System
           if errored_instances.any?
             recs << "#{errored_instances.size} NodeInstance(s) in error status — terminate + replace, or check container_logs for the failure cause."
           end
+          # AN UNREADABLE SOURCE IS NOT AN ALL-CLEAR.
+          #
+          # All three collectors swallow every exception and return []. Their
+          # sizes are summed into `findings`, so a database, federation-model or
+          # NodeInstance failure made findings zero and fired the all-clear
+          # below — an exception rendered to the operator as "no platform stress
+          # detected", with three empty arrays that look exactly like a healthy
+          # fleet. `measured:` is what lets a caller tell health from blindness
+          # by reading one key rather than inferring it from emptiness.
+          if unreadable.any?
+            recs << "#{unreadable.size} source(s) could not be read — this is NOT an all-clear. " \
+                    "Findings below are a lower bound."
+
+            return success(
+              action: "failover_check",
+              data: {
+                total_findings: findings,
+                measured: false,
+                unreadable: unreadable,
+                stale_peers: stale_peers,
+                degraded_peers: degraded_peers,
+                errored_instances: errored_instances,
+                generated_at: Time.current.iso8601
+              },
+              recommendations: recs
+            )
+          end
+
           recs << "No platform stress detected — all peers reachable, no errored instances." if findings.zero?
 
           success(
             action: "failover_check",
             data: {
               total_findings: findings,
+              measured: true,
               stale_peers: stale_peers,
               degraded_peers: degraded_peers,
               errored_instances: errored_instances,
@@ -439,14 +468,26 @@ module System
           )
         end
 
+        # Sources this run could not read. Memoized rather than set in an
+        # initializer so the executor's constructor signature stays the base
+        # class's.
+        def unreadable
+          @unreadable ||= []
+        end
+
+        def unreadable!(source, error)
+          unreadable << { source: source, error: error.class.name }
+          []
+        end
+
         def stale_federation_peers
           return [] unless defined?(::System::FederationPeer)
           ::System::FederationPeer
             .where(account: @account, peer_kind: "platform")
             .heartbeat_stale
             .map { |p| { id: p.id, url: p.remote_instance_url, last_heartbeat_at: p.last_heartbeat_at&.iso8601 } }
-        rescue StandardError
-          []
+        rescue StandardError => e
+          unreadable!("stale_federation_peers", e)
         end
 
         def degraded_federation_peers
@@ -454,18 +495,23 @@ module System
           ::System::FederationPeer
             .where(account: @account, peer_kind: "platform", status: "degraded")
             .map { |p| { id: p.id, url: p.remote_instance_url, status: p.status } }
-        rescue StandardError
-          []
+        rescue StandardError => e
+          unreadable!("degraded_federation_peers", e)
         end
 
         def errored_instances_for_account
+          # The guard its two neighbours already have. Without it core mode
+          # NameErrors and the rescue swallows it, so "this deployment has no
+          # fleet" and "the query blew up" were the same answer.
+          return [] unless defined?(::System::NodeInstance)
+
           ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: @account.id })
             .where(status: "error")
             .map { |i| { id: i.id, name: i.name, node_id: i.node_id } }
-        rescue StandardError
-          []
+        rescue StandardError => e
+          unreadable!("errored_instances_for_account", e)
         end
 
         # IMP-8c0f0fe9a8cf: severity was "info", which is NOT in

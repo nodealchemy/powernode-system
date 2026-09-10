@@ -20,6 +20,64 @@ RSpec.describe System::Ai::Skills::PlatformResilienceExecutor do
     end
   end
 
+  # Design §8 row A7, extension half. All three failover_check collectors
+  # swallowed every exception and returned []; findings is their sum, so any
+  # exception made findings zero and fired the all-clear. An unreadable source
+  # was reported to the operator as a healthy fleet.
+  describe "failover_check refuses an all-clear it cannot support" do
+    let(:all_clear) { "No platform stress detected" }
+
+    def check
+      exec.execute(gated: true, action: "failover_check")
+    end
+
+    it "reports measured: true with the all-clear when every source read clean and empty" do
+      result = check
+
+      expect(result[:success]).to be(true)
+      expect(result[:data][:data][:measured]).to be(true)
+      expect(result[:data][:data][:total_findings]).to eq(0)
+      expect(result[:data][:recommendations].join(" ")).to include(all_clear)
+    end
+
+    it "reports measured: false with the all-clear ABSENT when a source could not be read" do
+      # Asserting only this arm would pass with the all-clear string deleted
+      # outright, which is why the arm above exists.
+      allow(::System::NodeInstance).to receive(:joins).and_raise(ActiveRecord::StatementInvalid, "pg down")
+
+      result = check
+      data = result[:data][:data]
+
+      expect(data[:measured]).to be(false)
+      expect(data[:unreadable].map { |u| u[:source] }).to eq([ "errored_instances_for_account" ])
+      expect(data[:unreadable].first[:error]).to eq("ActiveRecord::StatementInvalid")
+      expect(result[:data][:recommendations].join(" ")).not_to include(all_clear)
+      expect(result[:data][:recommendations].join(" ")).to include("NOT an all-clear")
+    end
+
+    it "still reports the findings it did read, as a lower bound" do
+      create(:system_node_instance, node: node, account: account, status: "error")
+      allow(::System::FederationPeer).to receive(:where).and_raise(ActiveRecord::StatementInvalid, "pg down")
+
+      data = check[:data][:data]
+
+      expect(data[:measured]).to be(false)
+      expect(data[:total_findings]).to eq(1)
+      expect(data[:unreadable].map { |u| u[:source] })
+        .to match_array(%w[stale_federation_peers degraded_federation_peers])
+    end
+
+    it "counts a real finding as measured, so blindness and stress stay distinguishable" do
+      create(:system_node_instance, node: node, account: account, status: "error")
+
+      data = check[:data][:data]
+
+      expect(data[:measured]).to be(true)
+      expect(data[:total_findings]).to eq(1)
+      expect(data).not_to have_key(:unreadable)
+    end
+  end
+
   describe "drain_instance" do
     let(:instance) { create(:system_node_instance, node: node, account: account, status: "running") }
 
