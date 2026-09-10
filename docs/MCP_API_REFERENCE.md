@@ -153,7 +153,6 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 - `system.packages.{view,search}` — catalog read access (search covers both `search` and `discover`)
 - `system.package_modules.{view,create,refresh}` — materialization + provenance
 - `system.packages.embed` (worker-only) — embedding writeback
-- `system.packages.reembed` (operator) — manual re-embed campaigns
 
 #### Architecture catalog
 

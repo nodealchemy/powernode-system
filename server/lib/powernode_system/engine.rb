@@ -293,7 +293,6 @@ module PowernodeSystem
                      grant: { admin: true, system_worker: true }
           permission "system.packages.embed", "Lease + write package embeddings (worker)",
                      grant: { system_worker: true }
-          permission "system.packages.reembed", "Manually re-embed a package repository's catalog (operator)", grant: {}
           permission "system.ingress.read", "View ingress / reverse-proxy / public-exposure state (SystemIngressTool floor)",
                      grant: { admin: true }
           permission "system.ingress.manage", "Compose reverse proxies + expose services publicly (SystemIngressTool)",
