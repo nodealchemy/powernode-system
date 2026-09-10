@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown, Download, Layers } from 'lucide-react';
+import { Server, Cpu, Box, Activity, Layers } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
-import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
-import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
-import { resolveOperableType } from '@system/features/system/entityRegistry';
 import {
   useSystemWebSocket,
   type OperationProgressPayload,
@@ -18,13 +15,14 @@ import {
   type NodeUpdatePayload
 } from '@system/features/system/hooks/useSystemWebSocket';
 import type { SystemNode, SystemNodeInstance, SystemNodeModule, SystemTask } from '@system/features/system/types/system.types';
-import NodeInstanceControls from './NodeInstanceControls';
-import { BootImageDriftBadge } from './BootImageDriftBadge';
 import { EditNodeModal } from './EditNodeModal';
 import { CreateInstanceModal } from './CreateInstanceModal';
 import { EditInstanceModal } from './EditInstanceModal';
 import { ApplyTemplateModal } from './ApplyTemplateModal';
-import { ClaudeCodeCredentialPanel } from './ClaudeCodeCredentialPanel';
+import { NodeInfoTab } from './NodeInfoTab';
+import { NodeInstancesTab } from './NodeInstancesTab';
+import { NodeModulesTab } from './NodeModulesTab';
+import { NodeOperationsTab } from './NodeOperationsTab';
 
 interface NodeDetailModalProps {
   /** Node ID to display */
@@ -42,6 +40,15 @@ interface NodeDetailModalProps {
  *
  * Displays node information, instances, modules, and operations
  * with real-time WebSocket updates for operation progress.
+ *
+ * C12 (component-status-plane campaign): the four tabs used to be
+ * defined inline as nested closures in this file (1287 lines total).
+ * Split onto section components — NodeInfoTab, NodeInstancesTab,
+ * NodeModulesTab, NodeOperationsTab — each taking the state/handlers it
+ * needs as props; the two pure status-badge helpers moved to
+ * nodeDetailHelpers.tsx. This file is now purely the orchestrator: data
+ * fetching, WebSocket wiring, mutation handlers, and composing the
+ * TabContainer + the four drill-down modals.
  */
 export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   nodeId,
@@ -76,6 +83,14 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
     if (next.has(id)) { next.delete(id); } else { next.add(id); }
     setter(next);
   }, []);
+  const toggleExpandedModule = useCallback(
+    (id: string) => toggleExpanded(expandedModuleIds, setExpandedModuleIds, id),
+    [toggleExpanded, expandedModuleIds],
+  );
+  const toggleExpandedInstance = useCallback(
+    (id: string) => toggleExpanded(expandedInstanceIds, setExpandedInstanceIds, id),
+    [toggleExpanded, expandedInstanceIds],
+  );
 
   // Arm-and-confirm pattern for destructive actions in this view (currently
   // disassociate public IP). First click arms the action with a 5s window;
@@ -368,787 +383,13 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
     }
   }, [nodeId, addNotification]);
 
-  // Status badge variant
-  const getStatusBadge = (status?: string, enabled?: boolean) => {
-    if (enabled === false) {
-      return <Badge variant="secondary">Disabled</Badge>;
-    }
-    // Status values come from System::NodeInstance::STATUSES:
-    //   pending | provisioning | starting | running | stopping | stopped |
-    //   rebooting | terminated | error
-    switch (status) {
-      case 'running':
-        return <Badge variant="success" dot pulse>Running</Badge>;
-      case 'stopped':
-        return <Badge variant="secondary">Stopped</Badge>;
-      case 'pending':
-        return <Badge variant="warning" dot pulse>Pending</Badge>;
-      case 'provisioning':
-        return <Badge variant="info" dot pulse>Provisioning</Badge>;
-      case 'starting':
-        return <Badge variant="info" dot pulse>Starting</Badge>;
-      case 'stopping':
-        return <Badge variant="warning" dot pulse>Stopping</Badge>;
-      case 'rebooting':
-        return <Badge variant="warning" dot pulse>Rebooting</Badge>;
-      case 'terminated':
-        return <Badge variant="secondary">Terminated</Badge>;
-      case 'error':
-      case 'failed':
-        return <Badge variant="danger">Failed</Badge>;
-      default:
-        return enabled ? <Badge variant="success">Enabled</Badge> : <Badge variant="secondary">Unknown</Badge>;
-    }
-  };
-
-  // Operation status badge
-  const getOperationStatusBadge = (status: SystemTask['status']) => {
-    switch (status) {
-      case 'pending':
-        return <Badge variant="warning">Pending</Badge>;
-      case 'scheduled':
-        return <Badge variant="info">Scheduled</Badge>;
-      case 'running':
-        return <Badge variant="primary" dot pulse>Running</Badge>;
-      case 'complete':
-        return <Badge variant="success">Complete</Badge>;
-      case 'failed':
-        return <Badge variant="danger">Failed</Badge>;
-      case 'aborted':
-      case 'cancelled':
-        return <Badge variant="secondary">{status.charAt(0).toUpperCase() + status.slice(1)}</Badge>;
-      default:
-        return <Badge variant="default">{status}</Badge>;
-    }
-  };
-
-  // Tab content components
-  const InfoTab = () => (
-    <div className="space-y-6">
-      {/* Basic Info */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm text-theme-secondary">Name</label>
-            <p className="text-theme-primary font-medium">{node?.name}</p>
-          </div>
-          <div>
-            <label className="text-sm text-theme-secondary">Description</label>
-            <p className="text-theme-primary">{node?.description || '-'}</p>
-          </div>
-          <div>
-            <label className="text-sm text-theme-secondary">Status</label>
-            <div className="mt-1">{getStatusBadge(node?.status, node?.enabled)}</div>
-          </div>
-          <div>
-            <label className="text-sm text-theme-secondary">Template</label>
-            {node?.node_template_id ? (
-              <p>
-                <EntityLink
-                  type="node_template"
-                  id={node.node_template_id}
-                  label={node.node_template_name || node.node_template_id}
-                />
-              </p>
-            ) : (
-              <p className="text-theme-primary">{node?.node_template_name || '-'}</p>
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          {node?.public_address && (
-            <div>
-              <label className="text-sm text-theme-secondary flex items-center gap-2">
-                <Globe className="w-4 h-4" />
-                Public Address
-              </label>
-              <div className="flex items-center gap-2 mt-1">
-                <code className="text-theme-primary bg-theme-surface-hover px-2 py-1 rounded font-mono text-sm">
-                  {node.public_address}
-                </code>
-                <button
-                  onClick={() => copyToClipboard(node.public_address!, 'address')}
-                  className="p-1 text-theme-secondary hover:text-theme-primary rounded"
-                  title="Copy address"
-                >
-                  {copiedField === 'address' ? <Check className="w-4 h-4 text-theme-success-fg" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          )}
-          <div>
-            <label className="text-sm text-theme-secondary flex items-center gap-2">
-              <Shield className="w-4 h-4" />
-              Allocate Public IP
-            </label>
-            <p className="text-theme-primary">{node?.allocate_public_ip ? 'Yes' : 'No'}</p>
-          </div>
-          <div>
-            <label className="text-sm text-theme-secondary flex items-center gap-2">
-              <Cpu className="w-4 h-4" />
-              Instances
-            </label>
-            <p className="text-theme-primary">{node?.instance_count ?? instances.length}</p>
-          </div>
-          <div>
-            <label className="text-sm text-theme-secondary flex items-center gap-2">
-              <Clock className="w-4 h-4" />
-              Created
-            </label>
-            <p className="text-theme-primary">
-              {node?.created_at ? new Date(node.created_at).toLocaleString() : '-'}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Configuration */}
-      {node?.config && Object.keys(node.config).length > 0 && (
-        <div>
-          <label className="text-sm text-theme-secondary flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4" />
-            Configuration
-          </label>
-          <pre className="bg-theme-surface-hover rounded-lg p-4 text-sm text-theme-primary overflow-x-auto">
-            {JSON.stringify(node.config, null, 2)}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-
-  const InstancesTab = () => (
-    <div className="space-y-4">
-      {/* Header with Add button */}
-      {canCreateInstances && (
-        <div className="flex justify-end">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setShowCreateInstanceModal(true)}
-          >
-            <Plus className="w-4 h-4 mr-1" />
-            Add Instance
-          </Button>
-        </div>
-      )}
-
-      {instances.length === 0 ? (
-        <div className="text-center py-8 text-theme-secondary">
-          <Cpu className="w-12 h-12 mx-auto mb-3 opacity-50" />
-          <p>No instances found</p>
-          {canCreateInstances && (
-            <p className="text-sm mt-2">Click "Add Instance" to create one</p>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {instances.map(instance => {
-            const expanded = expandedInstanceIds.has(instance.id);
-            const primaryIp = instance.public_ip_address || instance.private_ip_address || instance.vpn_ip_address;
-            return (
-            <div
-              key={instance.id}
-              className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-info-border/50 transition-colors"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleExpanded(expandedInstanceIds, setExpandedInstanceIds, instance.id)}
-                  className="flex items-center gap-3 min-w-0 flex-1 text-left hover:opacity-90 transition-opacity"
-                >
-                  {expanded ? <ChevronDown className="w-4 h-4 text-theme-secondary flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-theme-secondary flex-shrink-0" />}
-                  <h4 className="font-medium text-theme-primary truncate">{instance.name}</h4>
-                  {getStatusBadge(instance.status)}
-                  <Badge variant="outline" size="xs">{instance.variety}</Badge>
-                  <BootImageDriftBadge instance={instance} />
-                  {primaryIp && (
-                    <code className="hidden md:inline text-xs text-theme-secondary font-mono truncate">{primaryIp}</code>
-                  )}
-                </button>
-                {/* Actions — compact icon buttons so the name has room to breathe */}
-                <div className="flex items-center gap-1 ml-2 flex-shrink-0">
-                  {instance.variety === 'physical' && !instance.claimed && (
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadBootConfig(instance)}
-                      disabled={bootConfigInFlight === instance.id}
-                      title="Download claim-by-ID boot config (identity.cfg) — drop on the device's BOOT partition"
-                      className="p-1.5 text-theme-secondary hover:text-theme-primary hover:bg-theme-surface rounded transition-colors disabled:opacity-50"
-                    >
-                      {bootConfigInFlight === instance.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                    </button>
-                  )}
-                  {canUpdateInstances && (
-                    <button
-                      type="button"
-                      onClick={() => setEditInstance(instance)}
-                      title="Edit Instance"
-                      className="p-1.5 text-theme-secondary hover:text-theme-primary hover:bg-theme-surface rounded transition-colors"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
-                  )}
-                  {canDeleteInstances && (
-                    <button
-                      type="button"
-                      onClick={() => setDeleteInstanceConfirm(instance)}
-                      title="Delete Instance"
-                      className="p-1.5 text-theme-secondary hover:text-theme-error-fg hover:bg-theme-surface rounded transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                  {canControlInstances && (
-                    <NodeInstanceControls
-                      instance={instance}
-                      onActionComplete={handleInstanceActionComplete}
-                      compact
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Expanded body — IPs, agent runtime metadata, identity, audit */}
-              {expanded && (
-                <div className="mt-3 pt-3 border-t border-theme space-y-3">
-                  {instance.variety === 'physical' && !instance.claimed && (
-                    <div className="text-xs text-theme-secondary bg-theme-surface rounded p-2 border border-theme">
-                      <span className="font-semibold text-theme-primary">Claim-by-ID provisioning:</span> download this
-                      instance's boot config (the <Download className="inline w-3 h-3" /> button above), copy it to the
-                      device's <code>BOOT</code> partition as <code>identity.cfg</code>, then boot — the device claims as
-                      this instance and auto-enrolls. The file carries no secret and is single-use (download is disabled
-                      once claimed). Runbook: <code>fleet-imaging-claim-by-id.md</code>.
-                    </div>
-                  )}
-                  {/* IP Addresses with copy buttons + associate/disassociate */}
-                  <div>
-                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Network</label>
-                    <div className="flex flex-wrap gap-2">
-                      {instance.private_ip_address && (
-                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                          <span className="text-xs text-theme-secondary">Private:</span>
-                          <code className="text-sm text-theme-primary font-mono">{instance.private_ip_address}</code>
-                          <button
-                            onClick={() => copyInstanceIp(instance.private_ip_address!, 'private', instance.id)}
-                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                            title="Copy IP"
-                          >
-                            {copiedField === `${instance.id}-private` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                        </div>
-                      )}
-                      {instance.public_ip_address && (
-                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                          <span className="text-xs text-theme-secondary">Public:</span>
-                          <code className="text-sm text-theme-primary font-mono">{instance.public_ip_address}</code>
-                          <button
-                            onClick={() => copyInstanceIp(instance.public_ip_address!, 'public', instance.id)}
-                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                            title="Copy IP"
-                          >
-                            {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                          {canControlInstances && instance.variety === 'cloud' && (() => {
-                            const key = `disassociate:${instance.id}`;
-                            const armed = armedAction === key;
-                            return (
-                              <button
-                                onClick={() => armOrFire(key, () => handleIpAction(instance, 'disassociate'))}
-                                disabled={ipActionInFlight !== null}
-                                className={`ml-1 p-0.5 rounded disabled:opacity-50 ${armed ? 'text-theme-error-fg font-medium' : 'text-theme-secondary hover:text-theme-error-fg'}`}
-                                title={armed ? 'Click again to confirm release' : 'Release public IP'}
-                              >
-                                {ipActionInFlight === `${instance.id}-disassociate`
-                                  ? <Loader2 className="w-3 h-3 animate-spin" />
-                                  : armed ? <span className="text-xs px-1">Confirm?</span> : <Unlink className="w-3 h-3" />}
-                              </button>
-                            );
-                          })()}
-                        </div>
-                      )}
-                      {!instance.public_ip_address && instance.variety === 'cloud' && canControlInstances && (
-                        <button
-                          onClick={() => handleIpAction(instance, 'associate')}
-                          disabled={ipActionInFlight !== null}
-                          className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme text-xs text-theme-secondary hover:text-theme-primary hover:border-theme-info-border disabled:opacity-50"
-                          title="Allocate and associate a public IP"
-                        >
-                          {ipActionInFlight === `${instance.id}-associate`
-                            ? <Loader2 className="w-3 h-3 animate-spin" />
-                            : <Link2 className="w-3 h-3" />}
-                          <span>Associate Public IP</span>
-                        </button>
-                      )}
-                      {instance.vpn_ip_address && (
-                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                          <span className="text-xs text-theme-secondary">VPN:</span>
-                          <code className="text-sm text-theme-primary font-mono">{instance.vpn_ip_address}</code>
-                          <button
-                            onClick={() => copyInstanceIp(instance.vpn_ip_address!, 'vpn', instance.id)}
-                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                            title="Copy IP"
-                          >
-                            {copiedField === `${instance.id}-vpn` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                        </div>
-                      )}
-                      {!instance.private_ip_address && !instance.public_ip_address && !instance.vpn_ip_address && (
-                        <span className="text-sm text-theme-tertiary italic">No IP addresses assigned</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                  {instance.description && (
-                    <div className="col-span-full">
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
-                      <p className="text-theme-primary">{instance.description}</p>
-                    </div>
-                  )}
-                  {instance.agent_version && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Agent Version</label>
-                      <p className="text-theme-primary font-mono text-xs">{instance.agent_version}</p>
-                    </div>
-                  )}
-                  {instance.last_heartbeat_at && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Heartbeat</label>
-                      <p className="text-theme-primary text-xs">{new Date(instance.last_heartbeat_at).toLocaleString()}</p>
-                    </div>
-                  )}
-                  {instance.architecture && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Architecture</label>
-                      <p className="text-theme-primary font-mono">{instance.architecture}</p>
-                    </div>
-                  )}
-                  {instance.mac_address && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">MAC</label>
-                      <p className="text-theme-primary font-mono text-xs">{instance.mac_address}</p>
-                    </div>
-                  )}
-                  {instance.boot_id && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Boot ID</label>
-                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.boot_id}>{instance.boot_id}</p>
-                    </div>
-                  )}
-                  {instance.booted_image_git_sha && (
-                    <div>
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Boot Image</label>
-                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.booted_image_git_sha}>
-                        {instance.booted_image_git_sha.slice(0, 12)}
-                      </p>
-                      {instance.boot_image_drifted && (
-                        <div className="mt-1">
-                          <BootImageDriftBadge instance={instance} />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {instance.mtls_subject && (
-                    <div className="col-span-full">
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">mTLS Subject</label>
-                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.mtls_subject}>{instance.mtls_subject}</p>
-                    </div>
-                  )}
-                  <div>
-                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
-                    <p className="text-theme-primary text-xs">{new Date(instance.created_at).toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
-                    <p className="text-theme-primary text-xs">{new Date(instance.updated_at).toLocaleString()}</p>
-                  </div>
-                  </div>
-
-                  {/* Claude Code credential — write-only. Mounted only while the
-                      row is expanded so the status GET is one request per
-                      instance the operator actually opened, and the panel gates
-                      itself on system.node_instance_credentials.read. */}
-                  {nodeId && (
-                    <ClaudeCodeCredentialPanel
-                      nodeId={nodeId}
-                      instanceId={instance.id}
-                      onNestedDialogChange={setCredentialDialogOpen}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          );
-          })}
-        </div>
-      )}
-
-      {/* Delete Instance Confirmation */}
-      {deleteInstanceConfirm && (
-        <Modal
-          isOpen
-          onClose={() => setDeleteInstanceConfirm(null)}
-          title="Delete Instance"
-          icon={<Trash2 className="w-6 h-6" />}
-          maxWidth="md"
-          footer={
-            <>
-              <Button
-                variant="ghost"
-                onClick={() => setDeleteInstanceConfirm(null)}
-                disabled={deletingInstance}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                onClick={handleDeleteInstance}
-                disabled={deletingInstance}
-              >
-                {deletingInstance ? 'Deleting...' : 'Delete'}
-              </Button>
-            </>
-          }
-        >
-          <p className="text-theme-secondary">
-            Are you sure you want to delete <strong>{deleteInstanceConfirm.name}</strong>? This action cannot be undone.
-          </p>
-        </Modal>
-      )}
-    </div>
-  );
-
-  const ModulesTab = () => (
-    <div className="space-y-4">
-      {modules.length === 0 ? (
-        <div className="text-center py-8 text-theme-secondary">
-          <Box className="w-12 h-12 mx-auto mb-3 opacity-50" />
-          <p>No modules assigned</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {modules.map(module => {
-            const expanded = expandedModuleIds.has(module.id);
-            const v = module.latest_version;
-            return (
-              <div
-                key={module.id}
-                className="bg-theme-surface-hover rounded-lg border border-theme overflow-hidden"
-              >
-                {/* Header — clickable */}
-                <button
-                  type="button"
-                  onClick={() => toggleExpanded(expandedModuleIds, setExpandedModuleIds, module.id)}
-                  className="w-full flex items-center justify-between p-3 hover:bg-theme-surface transition-colors text-left"
-                >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    {expanded ? <ChevronDown className="w-4 h-4 text-theme-secondary flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-theme-secondary flex-shrink-0" />}
-                    <Box className="w-5 h-5 text-theme-secondary flex-shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-theme-primary truncate">{module.name}</p>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        {module.category_name && (
-                          <span className="text-xs text-theme-secondary">{module.category_name}</span>
-                        )}
-                        {module.parent_module_name && (
-                          <span className="text-xs text-theme-tertiary">↳ inherits from {module.parent_module_name}</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {v?.version_number && (
-                      <Badge variant="outline" size="xs">v{v.version_number}</Badge>
-                    )}
-                    {v?.promotion_state && (
-                      <Badge variant={v.promotion_state === 'live' ? 'success' : v.promotion_state === 'blessed' ? 'info' : 'secondary'} size="xs">
-                        {v.promotion_state}
-                      </Badge>
-                    )}
-                    <Badge variant="outline" size="xs">{module.variety}</Badge>
-                    <Badge variant={module.enabled ? 'success' : 'secondary'} size="xs">
-                      {module.enabled ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                    {module.node_assignment && (
-                      <Badge variant={module.node_assignment.enabled ? 'success' : 'warning'} size="xs">
-                        {module.node_assignment.enabled ? 'On this node' : 'Off this node'}
-                      </Badge>
-                    )}
-                  </div>
-                </button>
-                {/* Expanded body */}
-                {expanded && (
-                  <div className="px-4 pb-4 pt-2 border-t border-theme bg-theme-surface space-y-3">
-                    {module.node_assignment && (
-                      <div className="flex items-center justify-between gap-3 p-2 rounded-lg border border-theme">
-                        <div className="text-sm min-w-0">
-                          <p className="font-medium text-theme-primary">
-                            {module.node_assignment.enabled ? 'Enabled on this node' : 'Disabled on this node'}
-                          </p>
-                          <p className="text-xs text-theme-tertiary">
-                            Per-node toggle — the module stays attached; disabling keeps
-                            priority/config but stops it composing into this node.
-                          </p>
-                        </div>
-                        {canUpdateModules && (
-                          <Button
-                            size="sm"
-                            variant={module.node_assignment.enabled ? 'ghost' : 'outline'}
-                            disabled={togglingAssignmentId === module.node_assignment.id}
-                            onClick={() => handleToggleAssignment(module)}
-                            title={module.node_assignment.enabled ? 'Disable on this node' : 'Enable on this node'}
-                          >
-                            {module.node_assignment.enabled ? 'Disable on this node' : 'Enable on this node'}
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                    {module.description && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
-                        <p className="text-sm text-theme-primary">{module.description}</p>
-                      </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Priority</label>
-                        <p className="text-theme-primary font-mono">{module.priority}</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public</label>
-                        <p className="text-theme-primary">{module.public ? 'Yes' : 'No'}</p>
-                      </div>
-                      {(module.node_platform_id || module.node_platform_name) && (
-                        <div>
-                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
-                          {module.node_platform_id ? (
-                            <EntityLink
-                              type="node_platform"
-                              id={module.node_platform_id}
-                              label={module.node_platform_name || module.node_platform_id}
-                            />
-                          ) : (
-                            <p className="text-theme-primary">{module.node_platform_name}</p>
-                          )}
-                        </div>
-                      )}
-                      {(module.category_id || module.category_name) && (
-                        <div>
-                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Category</label>
-                          {module.category_id ? (
-                            <EntityLink
-                              type="node_module_category"
-                              id={module.category_id}
-                              label={module.category_name || module.category_id}
-                            />
-                          ) : (
-                            <p className="text-theme-primary">{module.category_name}</p>
-                          )}
-                        </div>
-                      )}
-                      {(module.parent_module_id || module.parent_module_name) && (
-                        <div>
-                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Parent Module</label>
-                          {module.parent_module_id ? (
-                            <EntityLink
-                              type="node_module"
-                              id={module.parent_module_id}
-                              label={module.parent_module_name || module.parent_module_id}
-                            />
-                          ) : (
-                            <p className="text-theme-primary">{module.parent_module_name}</p>
-                          )}
-                        </div>
-                      )}
-                      {module.copy_path_name && (
-                        <div>
-                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Copy Path</label>
-                          <p className="text-theme-primary">{module.copy_path_name}</p>
-                        </div>
-                      )}
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Reboot Required</label>
-                        <p className="text-theme-primary">{module.reboot_required ? 'Yes' : 'No'}</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Locked</label>
-                        <p className="text-theme-primary">{module.lock_spec ? 'Yes' : 'No'}</p>
-                      </div>
-                    </div>
-
-                    {/* Lifecycle hooks */}
-                    {(module.init_start || module.init_stop || module.init_restart) && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Lifecycle Hooks</label>
-                        <div className="space-y-1 text-sm font-mono">
-                          {module.init_start && <div><span className="text-theme-tertiary">start:</span> <code className="text-theme-primary">{module.init_start}</code></div>}
-                          {module.init_stop && <div><span className="text-theme-tertiary">stop:</span> <code className="text-theme-primary">{module.init_stop}</code></div>}
-                          {module.init_restart && <div><span className="text-theme-tertiary">restart:</span> <code className="text-theme-primary">{module.init_restart}</code></div>}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Spec text fields — show only when populated */}
-                    {module.file_spec_text && module.file_spec_text.length > 0 && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">File Spec</label>
-                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.file_spec_text}</pre>
-                      </div>
-                    )}
-                    {module.package_spec_text && module.package_spec_text.length > 0 && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Package Spec</label>
-                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.package_spec_text}</pre>
-                      </div>
-                    )}
-                    {module.dependency_spec_text && module.dependency_spec_text.length > 0 && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Dependency Spec</label>
-                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.dependency_spec_text}</pre>
-                      </div>
-                    )}
-                    {module.protected_spec_text && module.protected_spec_text.length > 0 && (
-                      <div>
-                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Protected Spec</label>
-                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.protected_spec_text}</pre>
-                      </div>
-                    )}
-
-                    {/* Version metadata */}
-                    {v && (
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        {v.version_number && (
-                          <div>
-                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Version</label>
-                            <p className="text-theme-primary font-mono">v{v.version_number}</p>
-                          </div>
-                        )}
-                        {v.oci_digest && (
-                          <div>
-                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">OCI Digest</label>
-                            <p className="text-theme-primary font-mono text-xs truncate" title={v.oci_digest}>{v.oci_digest}</p>
-                          </div>
-                        )}
-                        {v.blessed_at && (
-                          <div>
-                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Blessed</label>
-                            <p className="text-theme-primary text-xs">{new Date(v.blessed_at).toLocaleString()}</p>
-                          </div>
-                        )}
-                        {v.live_at && (
-                          <div>
-                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Live Since</label>
-                            <p className="text-theme-primary text-xs">{new Date(v.live_at).toLocaleString()}</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Counts row */}
-                    <div className="flex items-center gap-4 pt-2 text-xs text-theme-secondary border-t border-theme">
-                      <span><span className="font-semibold">{module.assignments_count ?? 0}</span> assignment(s)</span>
-                      <span><span className="font-semibold">{module.dependencies_count ?? 0}</span> dependencies</span>
-                      <span><span className="font-semibold">{module.dependents_count ?? 0}</span> dependents</span>
-                      <span className="ml-auto">Updated {new Date(module.updated_at).toLocaleString()}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-
-  const OperationsTab = () => (
-    <div className="space-y-4">
-      {operations.length === 0 ? (
-        <div className="text-center py-8 text-theme-secondary">
-          <Activity className="w-12 h-12 mx-auto mb-3 opacity-50" />
-          <p>No operations found</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {operations.map(operation => {
-            const operableType = operation.operable_type
-              ? resolveOperableType(operation.operable_type)
-              : undefined;
-            return (
-            <div
-              key={operation.id}
-              className="bg-theme-surface-hover rounded-lg p-4 border border-theme"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3">
-                    <h4 className="font-medium text-theme-primary">{operation.command}</h4>
-                    {getOperationStatusBadge(operation.status)}
-                  </div>
-                  {operation.description && (
-                    <p className="text-sm text-theme-secondary mt-1">{operation.description}</p>
-                  )}
-                  {/* Progress bar for running operations */}
-                  {operation.status === 'running' && (
-                    <div className="mt-2">
-                      <div className="flex items-center justify-between text-xs text-theme-secondary mb-1">
-                        <span>Progress</span>
-                        <span>{operation.progress}%</span>
-                      </div>
-                      <div className="w-full bg-theme-background-secondary rounded-full h-2">
-                        <div
-                          className="bg-theme-interactive-primary h-2 rounded-full transition-all duration-300"
-                          style={{ width: `${operation.progress}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                  {/* Error message */}
-                  {operation.status === 'failed' && operation.error_message && (
-                    <p className="text-sm text-theme-danger-fg mt-2">{operation.error_message}</p>
-                  )}
-                  <div className="flex items-center gap-4 mt-2 text-xs text-theme-secondary">
-                    {operation.started_at && (
-                      <span>Started: {new Date(operation.started_at).toLocaleString()}</span>
-                    )}
-                    {operation.completed_at && (
-                      <span>Completed: {new Date(operation.completed_at).toLocaleString()}</span>
-                    )}
-                  </div>
-                  {operation.operable_id && operation.operable_type && (
-                    <div className="flex items-center gap-2 mt-2 text-xs text-theme-secondary">
-                      <span>Target:</span>
-                      {operableType ? (
-                        <EntityLink
-                          type={operableType}
-                          id={operation.operable_id}
-                          label={operation.operable_type}
-                          className="text-xs"
-                        />
-                      ) : (
-                        <span className="text-theme-primary">{operation.operable_type}</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-
   // Build tabs array
   const tabs: Tab[] = [
     {
       id: 'info',
       label: 'Information',
       icon: <Server className="w-4 h-4" />,
-      content: <InfoTab />
+      content: <NodeInfoTab node={node} instances={instances} copiedField={copiedField} onCopy={copyToClipboard} />
     }
   ];
 
@@ -1158,7 +399,35 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       label: 'Instances',
       icon: <Cpu className="w-4 h-4" />,
       badge: instances.length,
-      content: <InstancesTab />
+      content: (
+        <NodeInstancesTab
+          nodeId={nodeId}
+          instances={instances}
+          expandedInstanceIds={expandedInstanceIds}
+          onToggleExpand={toggleExpandedInstance}
+          canCreateInstances={canCreateInstances}
+          canUpdateInstances={canUpdateInstances}
+          canDeleteInstances={canDeleteInstances}
+          canControlInstances={canControlInstances}
+          onAddInstance={() => setShowCreateInstanceModal(true)}
+          onEditInstance={setEditInstance}
+          onInstanceActionComplete={handleInstanceActionComplete}
+          bootConfigInFlight={bootConfigInFlight}
+          onDownloadBootConfig={handleDownloadBootConfig}
+          copiedField={copiedField}
+          onCopyIp={copyInstanceIp}
+          armedAction={armedAction}
+          onArmOrFire={armOrFire}
+          ipActionInFlight={ipActionInFlight}
+          onIpAction={handleIpAction}
+          onCredentialDialogChange={setCredentialDialogOpen}
+          deleteInstanceConfirm={deleteInstanceConfirm}
+          onDeleteRequest={setDeleteInstanceConfirm}
+          onDeleteCancel={() => setDeleteInstanceConfirm(null)}
+          deletingInstance={deletingInstance}
+          onConfirmDelete={handleDeleteInstance}
+        />
+      )
     });
   }
 
@@ -1168,7 +437,16 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       label: 'Modules',
       icon: <Box className="w-4 h-4" />,
       badge: modules.length,
-      content: <ModulesTab />
+      content: (
+        <NodeModulesTab
+          modules={modules}
+          expandedModuleIds={expandedModuleIds}
+          onToggleExpand={toggleExpandedModule}
+          canUpdateModules={canUpdateModules}
+          togglingAssignmentId={togglingAssignmentId}
+          onToggleAssignment={handleToggleAssignment}
+        />
+      )
     });
   }
 
@@ -1178,7 +456,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       label: 'Operations',
       icon: <Activity className="w-4 h-4" />,
       badge: operations.filter(op => ['pending', 'running'].includes(op.status)).length || undefined,
-      content: <OperationsTab />
+      content: <NodeOperationsTab operations={operations} />
     });
   }
 
