@@ -428,8 +428,20 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
   # NOT in the pattern: a dozen agent seeds name it in a `puts` line saying who
   # writes their rows, so it would flag files that write nothing — its one call
   # site is the pinned exception below.
+  # A SEAM that REACHES policy rows counts even when it neither names the model
+  # nor writes a row itself (IMP-01a06cd4). Ai::Teams::CanonicalTeamReconciler
+  # mints the account's principal per seat, and minting runs
+  # Ai::Agents::AccountPrincipalResolver#follow_on_moves! →
+  # #rehome_intervention_policies!, an `update_all` on ai_agent_id. So
+  # system_operations_team_seed.rb could MOVE a reconciled row while matching
+  # none of the terms above — the same shape as the
+  # ReleaseDispatchFloorSeeder hole, and the reason this pattern names seams
+  # rather than write verbs. Both names are listed: the seed calls the
+  # reconciler, but a future seed may call the resolver directly.
   let(:policy_touch) do
-    /Ai::InterventionPolicy|Ai::Engineering::ReleaseDispatchFloorSeeder|upsert_(operator_)?policies!|clean_stale_(operator_)?policies!/
+    /Ai::InterventionPolicy|Ai::Engineering::ReleaseDispatchFloorSeeder|
+     Ai::Teams::CanonicalTeamReconciler|Ai::Agents::AccountPrincipalResolver|
+     upsert_(operator_)?policies!|clean_stale_(operator_)?policies!/x
   end
 
   # file => why it is allowed to touch the model.
@@ -444,7 +456,18 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       # account-wide engineering floors, CORE rows with one core seam
       # (IMP-99988ef54942). Pinned here so the lint keeps the file in view
       # rather than leaving it silently uncovered.
-      "system_governance_policy_reconcile.rb" => :calls_the_two_absence_only_seams
+      "system_governance_policy_reconcile.rb" => :calls_the_two_absence_only_seams,
+      # Declares NO policy row. It materialises the "System Operations"
+      # canonical team, and the principal each seat is minted through may
+      # RE-HOME an already-declared row onto the account's clone
+      # (AccountPrincipalResolver#rehome_intervention_policies!) — a move of a
+      # row the reconciler declared, never a declaration. Pinned so the row
+      # oracle below EXECUTES it against a reconciled database: on a database
+      # the single writer has already reconciled, every row already sits on the
+      # acting principal, so the re-home's scope is empty and the seed leaves
+      # every row untouched. If that ever stops being true, the seed is moving
+      # reconciled rows and this example is where it shows.
+      "system_operations_team_seed.rb" => :mints_principals_that_may_rehome
     }
   end
 
