@@ -29,12 +29,58 @@ module System
       CONTRIBUTOR_GLOB = File.expand_path("contributors/*.rb", __dir__).freeze
 
       class << self
+        # The outcome of the LAST registration attempt in this process.
+        #
+        # It exists because the failure is otherwise invisible. The registry has
+        # one consumer — the sweep — and nothing compares the registered kinds
+        # against an expected set, so a swallowed registration failure produces
+        # a sweep that returns normally with a shorter summary, zero errors, and
+        # a screen with fewer components. That is indistinguishable from "this
+        # fleet has no system components". CompositeHealthProbe reads this and
+        # turns it into a subsystem entry, so an empty plane shows up as a red
+        # tile rather than as one log line nobody greps.
+        #
+        # nil means registration has not run in this process — a real third
+        # state, distinct from "ran and failed", and the probe reports it as
+        # not_measured rather than as either.
+        attr_reader :last_result
+
         # @return [Array<String>] the kinds registered, in file order.
         def register_all!
-          contributor_classes.map do |klass|
+          kinds = contributor_classes.map do |klass|
             ::Platform::Status::Registry.register(klass::KIND, klass.new)
             klass::KIND
           end
+
+          @last_result = { ok: true, kinds: kinds, at: Time.current }
+          kinds
+        rescue StandardError => e
+          # Recorded and RE-RAISED. Swallowing here would move the silence one
+          # level down rather than remove it; the engine's own rescue is what
+          # keeps a broken contributor from crash-looping boot.
+          @last_result = {
+            ok: false, at: Time.current,
+            error_class: e.class.name, message: e.message,
+            deploy_defect: deploy_defect?(e)
+          }
+          raise
+        end
+
+        # A registration failure that means the DEPLOY is wrong rather than the
+        # runtime: a core without Platform::Status::Registry (the promote-skew
+        # shape — a new extension against an old core), or the schema-defect
+        # class the probe already distinguishes elsewhere. Named separately
+        # because an operator does something different about each.
+        def deploy_defect?(error)
+          return true if error.is_a?(NameError) && error.message.include?("Platform::Status")
+          return false unless defined?(::System::DeployDefect)
+
+          ::System::DeployDefect.schema?(error)
+        end
+
+        # Spec seam. Never call this from application code.
+        def reset_last_result!
+          @last_result = nil
         end
 
         # Only the files that ARE contributors, mirroring core's twin registrar.

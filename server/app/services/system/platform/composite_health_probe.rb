@@ -82,6 +82,7 @@ module System
         acme
         sdwan
         federation
+        status_contributors
       ].freeze
 
       SETTING_PREFIX = "system.platform_health"
@@ -477,6 +478,55 @@ module System
           silent_count: silent_count,
           silence_threshold_seconds: silence,
           by_status: by_status
+        }
+      end
+
+      # Did this extension's status contributors reach the core registry.
+      #
+      # WHY THIS IS A SUBSYSTEM AND NOT A LOG LINE. Registration happens in the
+      # engine's to_prepare, which rescues so a broken contributor cannot
+      # crash-loop boot. The consequence of that rescue is an EMPTY status
+      # plane, and the empty plane is invisible: the sweep returns normally with
+      # a shorter summary and zero errors, which reads exactly like a fleet that
+      # has no system components. This entry is what makes the silence visible.
+      #
+      # A DEPLOY DEFECT IS DISTINGUISHED, the same way #persist distinguishes
+      # one: a core without Platform::Status::Registry (a new extension promoted
+      # ahead of core) is not a runtime condition an operator retries, it is a
+      # skew they roll back, and the entry says so.
+      def probe_status_contributors
+        unless defined?(::System::Status::Contributors)
+          return { status: NOT_MEASURED, reason: "status contributor registrar not loaded" }
+        end
+
+        result = ::System::Status::Contributors.last_result
+
+        # Never ran in this process. Distinct from "ran and failed", and from
+        # "ran and worked" — this is the case where we have not looked.
+        if result.nil?
+          return { status: NOT_MEASURED,
+                   reason: "status contributor registration has not run in this process",
+                   observed_via: "System::Status::Contributors.last_result" }
+        end
+
+        if result[:ok]
+          return {
+            status: OK,
+            observed_via: "System::Status::Contributors.last_result",
+            registered_kinds: Array(result[:kinds]),
+            registered_kind_count: Array(result[:kinds]).size,
+            registered_at: result[:at]&.iso8601
+          }
+        end
+
+        {
+          status: DOWN,
+          reason: result[:deploy_defect] ? "RegistrationFailed (deploy defect)" : "RegistrationFailed",
+          observed_via: "System::Status::Contributors.last_result",
+          error: "#{result[:error_class]}: #{result[:message]}",
+          error_class: result[:error_class],
+          deploy_defect: result[:deploy_defect] ? true : false,
+          failed_at: result[:at]&.iso8601
         }
       end
 
