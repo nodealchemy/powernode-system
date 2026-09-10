@@ -26,9 +26,14 @@ jest.mock('@/shared/services/apiClient', () => ({
   },
 }));
 
+// Configurable so a deny-arm test can prove `canControl` actually gates the
+// five row/card action buttons (C12 review F2: a pinned-true mock let all
+// five `canControl` gates in InstancePoolRow.tsx be deleted with zero test
+// failures).
+let mockHasPermission = jest.fn(() => true);
 jest.mock('@/shared/hooks/usePermissions', () => ({
   usePermissions: () => ({
-    hasPermission: () => true,
+    hasPermission: (...args: unknown[]) => mockHasPermission(...args),
   }),
 }));
 
@@ -115,6 +120,7 @@ const renderPage = () =>
 
 describe('InstancePoolsPage', () => {
   beforeEach(() => {
+    mockHasPermission = jest.fn(() => true);
     mockGet.mockReset();
     mockPost.mockReset();
     mockPatch.mockReset();
@@ -161,6 +167,25 @@ describe('InstancePoolsPage', () => {
     expect(screen.getAllByText('spot-fleet').length).toBeGreaterThan(0);
 
     expect(mockGet).toHaveBeenCalledWith('/system/instance_pools', { params: {} });
+  });
+
+  it('hides the Edit/Replenish/Drain/Recycle/Delete row actions without control or create permission (C12 review F2)', async () => {
+    // canControl = hasPermission('system.instances.control') ||
+    //              hasPermission('system.instances.create'); both must be
+    // denied to prove the gate, not just one arm of the OR.
+    mockHasPermission = jest.fn(
+      (perm: string) => perm !== 'system.instances.control' && perm !== 'system.instances.create',
+    );
+    mockGet.mockResolvedValue(listResponse([POOL_A]));
+
+    renderPage();
+
+    const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+    expect(within(row).queryByLabelText(/edit web-warm/i)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/replenish web-warm/i)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/drain web-warm/i)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/recycle stale members of web-warm/i)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/^delete web-warm/i)).not.toBeInTheDocument();
   });
 
   it('opens the Create Pool modal when the header action is clicked', async () => {

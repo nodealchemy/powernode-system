@@ -35,8 +35,13 @@ jest.mock('@system/features/system/services/systemApi', () => ({
   },
 }));
 
+// Configurable so deny-arm tests can prove a permission gate actually gates
+// something, rather than just proving the allow-arm renders (C12 review F1:
+// a pinned-true mock let all 7 gates in NodeInstancesTab be deleted with
+// zero test failures).
+let mockHasPermission = jest.fn(() => true);
 jest.mock('@/shared/hooks/usePermissions', () => ({
-  usePermissions: () => ({ hasPermission: () => true }),
+  usePermissions: () => ({ hasPermission: (...args: unknown[]) => mockHasPermission(...args) }),
 }));
 
 const mockAddNotification = jest.fn();
@@ -194,10 +199,12 @@ jest.mock('./ApplyTemplateModal', () => ({
   },
 }));
 
-// NodeInstanceControls — blank stub so we don't need its own deps
+// NodeInstanceControls — inert stub so we don't need its own deps, but
+// rendered as a marker (not null) so a deny-arm test can assert the
+// canControlInstances gate actually removes it.
 jest.mock('./NodeInstanceControls', () => ({
   __esModule: true,
-  default: () => null,
+  default: () => <div data-testid="instance-controls-stub" />,
 }));
 
 // EntityLink — render plain text so tests can assert on it
@@ -395,6 +402,7 @@ const clickTab = (label: string) => {
 describe('NodeDetailModal', () => {
   beforeEach(() => {
     capturedWsOptions = {};
+    mockHasPermission = jest.fn(() => true);
     mockGetNode.mockReset();
     mockGetNodeInstances.mockReset();
     mockGetNodeModules.mockReset();
@@ -563,6 +571,34 @@ describe('NodeDetailModal', () => {
     it('shows "Add Instance" button when canCreateInstances', async () => {
       await openInstancesTab();
       await waitFor(() => expect(screen.getByText('Add Instance')).toBeInTheDocument());
+    });
+
+    it('hides "Add Instance" button without system.instances.create (C12 review F1)', async () => {
+      mockHasPermission = jest.fn((perm: string) => perm !== 'system.instances.create');
+      await openInstancesTab();
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+      expect(screen.queryByText('Add Instance')).not.toBeInTheDocument();
+    });
+
+    it('hides the Edit Instance button without system.instances.update (C12 review F1)', async () => {
+      mockHasPermission = jest.fn((perm: string) => perm !== 'system.instances.update');
+      await openInstancesTab();
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+      expect(screen.queryByTitle('Edit Instance')).not.toBeInTheDocument();
+    });
+
+    it('hides the Delete Instance button without system.instances.delete — the mutant C12 review F1 caught', async () => {
+      mockHasPermission = jest.fn((perm: string) => perm !== 'system.instances.delete');
+      await openInstancesTab();
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+      expect(screen.queryByTitle('Delete Instance')).not.toBeInTheDocument();
+    });
+
+    it('hides instance controls without system.instances.control (C12 review F1)', async () => {
+      mockHasPermission = jest.fn((perm: string) => perm !== 'system.instances.control');
+      await openInstancesTab();
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+      expect(screen.queryByTestId('instance-controls-stub')).not.toBeInTheDocument();
     });
 
     it('opens CreateInstanceModal when "Add Instance" is clicked', async () => {

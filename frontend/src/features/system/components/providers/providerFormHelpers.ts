@@ -49,28 +49,32 @@ export interface ProviderFormData {
   // local_qemu:
   network_mode: '' | 'user' | 'network' | 'bridge' | 'routed';
   bridge_name: string;
-  // proxmox: connection + lifecycle defaults.
+  // proxmox: connection + lifecycle defaults. endpoint + verify_ssl drive
+  // adapter authentication; default_* are used by create_instance when the
+  // caller doesn't specify them.
   proxmox_endpoint: string;
   proxmox_verify_ssl: 'true' | 'false';
   proxmox_default_node: string;
   proxmox_default_storage: string;
   proxmox_default_bridge: string;
-  // aws:
+  // aws: typical regional defaults. Region is also in the AWS credentials
+  // schema; the General-tab value writes to Provider.config["default_region"]
+  // and acts as the fallback when a connection doesn't override it.
   aws_default_region: string;
   aws_default_vpc_id: string;
   aws_default_subnet_id: string;
-  // gcp:
+  // gcp: project_id is required for any GCP API call.
   gcp_project_id: string;
   gcp_default_region: string;
   gcp_default_zone: string;
-  // azure:
+  // azure: subscription_id often differs per-tenant; common to set once.
   azure_subscription_id: string;
   azure_default_location: string;
-  // openstack:
+  // openstack: Keystone v3 endpoint + project + region are the minimum.
   openstack_auth_url: string;
   openstack_default_project: string;
   openstack_default_region: string;
-  // digitalocean / vultr:
+  // digitalocean / vultr: just a default region slug.
   digitalocean_default_region: string;
   vultr_default_region: string;
 }
