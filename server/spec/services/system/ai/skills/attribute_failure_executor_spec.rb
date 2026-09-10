@@ -22,6 +22,7 @@ RSpec.describe System::Ai::Skills::AttributeFailureExecutor do
       d = described_class.descriptor
       expect(d[:name]).to eq("attribute_failure")
       expect(d.dig(:inputs, :instance_id, :required)).to be true
+      expect(d[:outputs].keys).to include(:confidence, :confidence_state, :confidence_detail)
     end
   end
 
@@ -165,6 +166,76 @@ RSpec.describe System::Ai::Skills::AttributeFailureExecutor do
         top = r[:data][:top_candidate]
         expect(top[:feedback]).to eq("downweighted_by_prior_rejection")
         expect(top[:score]).to eq(4) # 5 * 0.7 = 3.5 → rounded 4
+      end
+    end
+
+    # The shared confidence rule (Platform::Investigation::Confidence). The
+    # executor used to report a candidate's SHARE of the total score, which is
+    # 1.0 for every lone candidate — an attribution with nothing to compare
+    # against, reported as certainty. Each context pins BOTH what the old
+    # rule would have said and what the shared rule says instead.
+    describe "confidence" do
+      context "with one candidate from one evidence class" do
+        before do
+          System::NodeModuleAssignment.create!(node: node, node_module: mod, enabled: true, priority: 0)
+        end
+
+        it "is capped at the single-source ceiling, not reported as 1.0" do
+          data = exec.execute(instance_id: instance.id)[:data]
+          expect(data[:candidates].size).to eq(1)
+
+          expect(data[:confidence]).not_to eq(1.0)
+          expect(data[:confidence]).to eq(Platform::Investigation::Confidence::SINGLE_SOURCE_CEILING)
+          expect(data[:confidence_state]).to eq("measured")
+          expect(data[:confidence_detail]).to include(
+            share: 1.0, candidates: 1, evidence_classes: 1,
+            ceiling: Platform::Investigation::Confidence::SINGLE_SOURCE_CEILING
+          )
+        end
+      end
+
+      context "with two candidates" do
+        let(:other_mod) do
+          create(:system_node_module, account: account, node_platform: platform,
+                 category: category, variety: "subscription", name: "other-mod")
+        end
+
+        before do
+          System::NodeModuleAssignment.create!(node: node, node_module: mod, enabled: true, priority: 0)
+          System::NodeModuleAssignment.create!(node: node, node_module: other_mod, enabled: true, priority: 0)
+          # A confirmed attribution for `mod` lifts its score 5 → 8, so the two
+          # candidates carry unequal weight and the split is visible.
+          Ai::CompoundLearning.create!(
+            account_id: account.id, ai_agent_team_id: nil, title: "Past confirmation", content: "test",
+            category: "discovery", scope: "team", status: "active",
+            tags: [ "fleet", "attribution", "module:#{mod.id}", "kind:assignment_change", "outcome:confirmed" ],
+            confidence_score: 0.7, importance_score: 0.7
+          )
+        end
+
+        it "splits by score share, discounted by the evidence behind the winner" do
+          data = exec.execute(instance_id: instance.id)[:data]
+          scores = data[:candidates].map { |c| c[:score] }
+          expect(scores).to eq([ 8, 5 ])
+
+          share = 8.0 / 13
+          expect(data[:confidence_detail]).to include(share: share.round(3), candidates: 2, ceiling: nil)
+          expect(data[:confidence]).to eq((share * Platform::Investigation::Confidence.class_factor(1)).round(3))
+          # The old share-of-total number is not what is reported.
+          expect(data[:confidence]).not_to eq(share.round(3))
+        end
+      end
+
+      context "with no evidence at all" do
+        it "is not_measured with no number, never 0.0" do
+          data = exec.execute(instance_id: instance.id)[:data]
+          expect(data[:candidates]).to be_empty
+
+          expect(data[:confidence]).to be_nil
+          expect(data[:confidence]).not_to eq(0.0)
+          expect(data[:confidence_state]).to eq("not_measured")
+          expect(data[:confidence_detail]).to include(state: "not_measured", value: nil)
+        end
       end
     end
   end

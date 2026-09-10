@@ -35,6 +35,8 @@ module System
             candidates: [ :object ],
             top_candidate: :object,
             confidence: :decimal,
+            confidence_state: :string,
+            confidence_detail: :object,
             reasoning: :string
           }
         )
@@ -73,12 +75,23 @@ module System
           merged = merged.sort_by { |c| -c[:score] }
 
           top = merged.first
-          confidence = top.nil? ? 0.0 : (top[:score] / [ merged.sum { |c| c[:score] }.to_f, 1.0 ].max).round(3)
+
+          # The shared confidence rule, not a share of the total: a lone
+          # candidate always holds 100% of the total, so share alone reported
+          # certainty for every failure where only one place was looked at.
+          # A candidate's evidence class is its kind (the path that surfaced
+          # it). `confidence` is nil when nothing was measured — never 0.0,
+          # which would claim "looked and found nothing".
+          scored = ::Platform::Investigation::Confidence.for(
+            merged.map { |c| { score: c[:score], evidence_classes: Array(c[:evidence_classes]).presence || [ c[:kind] ] } }
+          )
 
           success(
             candidates: merged.first(10),
             top_candidate: top,
-            confidence: confidence,
+            confidence: scored[:value],
+            confidence_state: scored[:state],
+            confidence_detail: scored,
             reasoning: build_reasoning(instance, merged, top, since)
           )
         end
