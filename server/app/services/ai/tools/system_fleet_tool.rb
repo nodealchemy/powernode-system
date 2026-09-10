@@ -5932,7 +5932,7 @@ module Ai
           defaults: klass.default_thresholds,
           overrides: ::System::Fleet::SensorConfig.config_for(account: @account, sensor: klass.sensor_key),
           effective: klass.resolved_thresholds(account: @account),
-          writable: klass.default_thresholds.present?
+          writable: klass.threshold_writable?
         }
 
         ladder = klass.account_ladder_settings
@@ -5984,7 +5984,7 @@ module Ai
         name = params[:sensor].to_s.strip
         klass = configurable_sensors.find { |k| k.sensor_key == name }
         return unknown_sensor_error(name) unless klass
-        return unwritable_sensor_error(klass) if klass.default_thresholds.blank?
+        return unwritable_sensor_error(klass) unless klass.threshold_writable?
 
         config = params[:config]
         return error_result("config object is required") unless config.is_a?(Hash) && config.present?

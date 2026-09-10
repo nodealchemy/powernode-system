@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "tmpdir"
 
 # Campaign 01a08c9b increment B4a — system_get_sensor_config derives its
 # catalog from what sensors DECLARE, across both tunable stores.
@@ -81,18 +82,26 @@ RSpec.describe Ai::Tools::SystemFleetTool, "sensor config derivation" do
       /resolved_account_ladder\([^)]*\)\["([a-z0-9_]+)"\]/
     ].freeze
 
+    # Located through Ruby itself rather than a hand-built path: the previous
+    # form hardcoded the parent-repo layout and the extension slug from inside
+    # the extension, and raised (rather than failed) if either moved.
+    def sensor_source_path(klass)
+      Object.const_source_location(klass.name)&.first
+    end
+
     def suffixes_read_by(klass)
-      path = Rails.root.join(
-        "../extensions/system/server/app/services/system/fleet/sensors",
-        "#{klass.name.demodulize.underscore}.rb"
-      )
+      path = sensor_source_path(klass)
+      raise "no source location for #{klass}" if path.blank?
+
       source = File.read(path)
 
       RESOLVER_PATTERNS.flat_map { |pattern| source.scan(pattern) }.flatten.uniq.sort
     end
 
-    it "matches, sensor by sensor" do
-      mismatches = account_ladder_sensors.filter_map do |klass|
+    # THE oracle, extracted so both arms below run the same code the real
+    # sensors run.
+    def mismatches_for(classes)
+      classes.filter_map do |klass|
         declared = klass.account_ladder_settings.keys.sort
         read     = suffixes_read_by(klass)
         next if declared == read
@@ -100,14 +109,13 @@ RSpec.describe Ai::Tools::SystemFleetTool, "sensor config derivation" do
         "#{klass.sensor_key}: declares #{declared.inspect} but its source reads #{read.inspect} " \
           "(recognised resolver shapes: #{RESOLVER_PATTERNS.map(&:source).inspect})"
       end
-
-      expect(mismatches).to eq([])
     end
 
-    it "would notice a sensor whose constant and suffix disagree" do
-      # The failing arm, proved on a stand-in rather than by breaking a real
-      # sensor: the derivation must be sensitive to the constant's NAME, not
-      # just its presence.
+    it "matches, sensor by sensor" do
+      expect(mismatches_for(account_ladder_sensors)).to eq([])
+    end
+
+    it "derives the key from the constant's NAME, not merely its presence" do
       stand_in = Class.new(System::Fleet::Sensors::BaseSensor) do
         const_set(:ACCOUNT_SETTING_PREFIX, "stand_in")
         const_set(:SETTING_PREFIX, "system.stand_in")
@@ -119,6 +127,53 @@ RSpec.describe Ai::Tools::SystemFleetTool, "sensor config derivation" do
         .to include("account_setting" => "stand_in_window_seconds",
                     "site_setting" => "system.stand_in.window_seconds",
                     "default" => 42)
+    end
+
+    # THE RED ARM of the mismatch loop above. Without it, a suffixes_read_by
+    # that silently returned the declared set — or [] against an empty declared
+    # set — would pass, and the loop would be a check that cannot fail.
+    it "reports a sensor whose declared key and source literal disagree" do
+      Dir.mktmpdir do |dir|
+        source = File.join(dir, "drifted_sensor.rb")
+        # Constant says `window_seconds`; the resolver reads `windows_seconds`.
+        # Exactly the drift the convention has no runtime defence against.
+        File.write(source, <<~RUBY)
+          DEFAULT_WINDOW_SECONDS = 42
+          def window_seconds = setting_seconds("windows_seconds", DEFAULT_WINDOW_SECONDS)
+        RUBY
+
+        drifted = Class.new(System::Fleet::Sensors::BaseSensor) do
+          const_set(:ACCOUNT_SETTING_PREFIX, "drifted")
+          const_set(:DEFAULT_WINDOW_SECONDS, 42)
+        end
+        stub_const("System::Fleet::Sensors::DriftedSensor", drifted)
+        allow(self).to receive(:sensor_source_path).with(drifted).and_return(source)
+
+        mismatches = mismatches_for([ drifted ])
+
+        expect(mismatches.size).to eq(1)
+        expect(mismatches.first).to include("declares [\"window_seconds\"]")
+        expect(mismatches.first).to include("source reads [\"windows_seconds\"]")
+      end
+    end
+
+    it "reports nothing for a sensor whose declared key and source literal agree" do
+      Dir.mktmpdir do |dir|
+        source = File.join(dir, "aligned_sensor.rb")
+        File.write(source, <<~RUBY)
+          DEFAULT_WINDOW_SECONDS = 42
+          def window_seconds = setting_seconds("window_seconds", DEFAULT_WINDOW_SECONDS)
+        RUBY
+
+        aligned = Class.new(System::Fleet::Sensors::BaseSensor) do
+          const_set(:ACCOUNT_SETTING_PREFIX, "aligned")
+          const_set(:DEFAULT_WINDOW_SECONDS, 42)
+        end
+        stub_const("System::Fleet::Sensors::AlignedSensor", aligned)
+        allow(self).to receive(:sensor_source_path).with(aligned).and_return(source)
+
+        expect(mismatches_for([ aligned ])).to eq([])
+      end
     end
 
     it "returns nothing for a sensor with no ladder prefix" do
@@ -182,6 +237,53 @@ RSpec.describe Ai::Tools::SystemFleetTool, "sensor config derivation" do
     it "keeps the stored key an operator already uses" do
       expect(klass.account_ladder_settings["threshold"]["account_setting"])
         .to eq("disk_image_failure_streak_threshold")
+    end
+
+    # THE ONE BEHAVIOUR CHANGE this increment makes, asserted in both
+    # directions because it moves the sensor's sensitivity DOWN (a stored 0
+    # used to clamp up to 1 and alarm on the first failed publication; it now
+    # reads as unset and needs three). The direction that hides a problem is
+    # the direction that has to be pinned.
+    it "treats a stored 0 as unset, not as a clamp up to 1" do
+      account.update!(settings: { "disk_image_failure_streak_threshold" => 0 })
+
+      expect(klass.new(account: account).send(:streak_threshold)).to eq(klass::DEFAULT_THRESHOLD)
+      expect(klass::DEFAULT_THRESHOLD).to eq(3)
+    end
+
+    it "treats a negative and a non-numeric stored value the same way" do
+      [ -5, "not a number" ].each do |stored|
+        account.update!(settings: { "disk_image_failure_streak_threshold" => stored })
+
+        expect(klass.new(account: account).send(:streak_threshold))
+          .to eq(klass::DEFAULT_THRESHOLD), "stored #{stored.inspect} did not read as unset"
+      end
+    end
+
+    it "still honours a legitimate in-range value" do
+      # The other arm: "unset" must not swallow a real tuning.
+      account.update!(settings: { "disk_image_failure_streak_threshold" => 7 })
+
+      expect(klass.new(account: account).send(:streak_threshold)).to eq(7)
+    end
+  end
+
+  # F12 — a sensor that DECLARES bounds but resolves privately would make the
+  # read verb report a clamped value the sensor does not use, which is exactly
+  # the lie the declared-bounds design exists to prevent. Today only one sensor
+  # declares bounds; this keeps the next one honest.
+  describe "declared bounds are only declared by sensors that resolve through the shared seam" do
+    it "holds for every sensor declaring ACCOUNT_LADDER_BOUNDS" do
+      offenders = registry.select { |klass| klass.account_ladder_bounds.present? }.reject do |klass|
+        path = Object.const_source_location(klass.name)&.first
+        path.present? && File.read(path).include?("resolved_account_ladder")
+      end
+
+      expect(offenders.map(&:sensor_key)).to eq([])
+    end
+
+    it "finds at least one sensor declaring bounds, so the check is not vacuous" do
+      expect(registry.select { |klass| klass.account_ladder_bounds.present? }).to be_present
     end
   end
 

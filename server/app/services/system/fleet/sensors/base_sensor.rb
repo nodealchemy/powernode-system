@@ -150,7 +150,19 @@ module System
         # True when an operator can tune anything about this sensor at all —
         # through either store. The MCP catalog is derived from this.
         def self.configurable?
-          default_thresholds.present? || account_ladder_settings.present?
+          threshold_writable? || account_ladder_settings.present?
+        end
+
+        # True when system_update_sensor_config can WRITE this sensor's
+        # thresholds — i.e. they live in the SensorConfig store it owns.
+        #
+        # One predicate, two call sites, on purpose: the read verb's
+        # `writable` flag and the write verb's refusal used to be the same
+        # expression written twice, which is a pair that agrees until someone
+        # edits one of them. The listing predicate got a home in
+        # .configurable?; writability gets the same.
+        def self.threshold_writable?
+          default_thresholds.present?
         end
 
         # Every declared key resolved at once — what the MCP read verb reports
