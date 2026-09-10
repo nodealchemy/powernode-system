@@ -7,6 +7,28 @@
 # system_create_node action" are NOT checked — table names, class names and
 # file names all match the bare system_* pattern and would swamp the signal.
 #
+# MEASURED, so the next reader does not have to re-litigate it (IMP-01a05ec2,
+# 2026-09-10). Over every .md under docs/ excluding .verify/:
+#
+#     258  bare verbs that never appear prefixed
+#      75  of those, unknown to the registry
+#       0  of those 75, appearing in CALL-SITE shape (verb followed by `(`)
+#      17  bare verbs that DO appear in call-site shape
+#       0  of those 17, unknown to the registry
+#
+# So dropping the prefix requirement would add 75 unknowns and not one of them
+# a real undefined verb: the 75 are `docker_daemon_provisioner_service`,
+# `system_capacity_manager_agent_seed_spec`, `system_agent_hierarchy` and their
+# kind — classes, seeds and spec filenames. And the 17 call-site-shaped bare
+# references are every one of them REGISTERED; they are the corpus's prose
+# convention for naming a verb with its argument shape
+# (`system_get_instance({ instance_id: })`), not broken call sites.
+#
+# The prefix is therefore load-bearing and stays. Widening it would need the
+# registry to distinguish a verb from a class name, which is the paired change
+# no one has made — and until it exists, widening trades a signal that works
+# for one that cannot.
+#
 # COMMENT-FRAMED REFERENCES ARE SCANNED (changed 2026-09-01, IMP-2b09c9f22bae).
 # This script used to drop every line opening with `//`, `#` or `>` before
 # matching, on the stated ground that those are "aspirational annotations,
