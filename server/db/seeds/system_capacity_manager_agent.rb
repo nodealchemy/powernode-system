@@ -211,25 +211,14 @@ puts "  ℹ️  Capacity Manager policies: written by System::Governance::Policy
      "(#{System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-capacity_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Capacity Manager Actions"
-)
-capacity_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Capacity Manager Actions",
+  label: "Capacity Manager",
   timeout_hours: 4,
   steps: [ {
-    "name" => "Capacity Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Capacity Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if capacity_chain.new_record? || capacity_chain.changed?
-  capacity_chain.save!
-  puts "  ✅ Capacity Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Capacity Manager Approval Chain: already up to date"
-end

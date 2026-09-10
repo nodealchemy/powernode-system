@@ -107,25 +107,14 @@ puts "  ℹ️  SDWAN Manager policies: written by System::Governance::PolicyRec
      "(#{System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-sdwan_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "SDWAN Manager Actions"
-)
-sdwan_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "SDWAN Manager Actions",
+  label: "SDWAN Manager",
   timeout_hours: 4,
   steps: [ {
-    "name" => "SDWAN Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "SDWAN Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if sdwan_chain.new_record? || sdwan_chain.changed?
-  sdwan_chain.save!
-  puts "  ✅ SDWAN Manager Approval Chain: created/updated"
-else
-  puts "  ✅ SDWAN Manager Approval Chain: already up to date"
-end

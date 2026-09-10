@@ -77,12 +77,33 @@ module System
       # @param account_name [String] preferred account name (defaults to
       #   "Powernode Admin"). Falls back to Account.first if not found.
       # @return [Hash] { account:, creator:, provider: }
+      # DEGRADES, NEVER RAISES (IMP-01a06b99). This used to raise on a missing
+      # account, user or provider, which meant that on a fresh install with no
+      # accounts yet the 13 canonical system-agent seeds wrote NOTHING — not
+      # even the global agent DEFINITION, which needs none of the three. The
+      # roster came up short and Ai::ClaudeExport::AgentSkeletonSync had no
+      # canonical rows to export.
+      #
+      # Core settled this for its own agents in IMP-6cda93db7f31
+      # (server/db/seeds/ai_utility_agents_seed.rb:6-11): a global agent row
+      # takes an optional creator and provider, so it is written regardless and
+      # the account-keyed extras are skipped until setup completes. This is the
+      # same decision, carried across to the extension, which never got it.
+      #
+      # The split it enforces is the one the DEFINITION/POLICY note on
+      # #find_or_initialize_global_agent already describes: the definition is
+      # global and unconditional; trust score and approval chain are per-account
+      # operational config. Both writers here return early on a nil account
+      # rather than each seed guarding, so a seed cannot forget.
+      #
+      # Nil is returned per-key rather than as a bare nil context, so a caller
+      # reading ctx[:creator] on a fresh install gets nil (which
+      # Ai::Agent#creator accepts) instead of a NoMethodError.
+      #
+      # @return [Hash] { account:, creator:, provider: } — any value may be nil
       def bootstrap_admin_context!(preferred_provider_types: [], account_name: "Powernode Admin")
         account = admin_account(account_name: account_name)
-        raise "agent_setup_helpers: no Account exists — seed accounts first" unless account
-
-        creator = account.users.find_by(email: "admin@powernode.org") || account.users.first
-        raise "agent_setup_helpers: account #{account.id} has no users — seed users first" unless creator
+        creator = account && (account.users.find_by(email: "admin@powernode.org") || account.users.first)
 
         provider = preferred_provider_types
           .map(&:to_s)
@@ -90,8 +111,11 @@ module System
           .first
         provider ||= ::Ai::Provider.where(is_active: true).order(priority_order: :asc).first
         provider ||= ::Ai::Provider.first
-        raise "agent_setup_helpers: no Ai::Provider exists — seed ai providers first " \
-              "(preferred=#{preferred_provider_types.inspect})" unless provider
+
+        if account.nil?
+          puts "  ℹ️  No Account yet — seeding the GLOBAL agent definition only; " \
+               "trust score and approval chain are written when the account seeds run."
+        end
 
         { account: account, creator: creator, provider: provider }
       end
@@ -111,6 +135,47 @@ module System
       # @return [Account, nil] nil when no account exists at all
       def admin_account(account_name: "Powernode Admin")
         Account.find_by(name: account_name) || Account.first
+      end
+
+      # Idempotent upsert for an agent's approval chain — the second half of the
+      # per-account operational config, alongside #ensure_trust_score!.
+      #
+      # EXTRACTED from 11 near-identical inline blocks (IMP-01a06b99). They
+      # differed only in name, label, timeout_hours and steps; everything else
+      # — trigger_type, status, is_sequential, timeout_action, the
+      # save-only-if-changed guard and the two puts lines — was copied verbatim
+      # into each seed. That is 11 places to remember, and the fresh-install gap
+      # this fix closes is exactly the kind of thing that gets remembered in ten
+      # of them.
+      #
+      # Returns nil without writing when `account` is nil: Ai::ApprovalChain
+      # belongs_to :account with no `optional: true`, so there is nothing
+      # sensible to write before an account exists.
+      #
+      # @param label [String] human name for the puts line (e.g. "CVE Responder")
+      # @return [Ai::ApprovalChain, nil]
+      def ensure_approval_chain!(account:, name:, label:, steps:, timeout_hours:,
+                                 trigger_type: "autonomy_action", status: "active",
+                                 is_sequential: true, timeout_action: "reject")
+        return nil if account.nil?
+
+        chain = ::Ai::ApprovalChain.find_or_initialize_by(account: account, name: name)
+        chain.assign_attributes(
+          trigger_type: trigger_type,
+          status: status,
+          is_sequential: is_sequential,
+          timeout_action: timeout_action,
+          timeout_hours: timeout_hours,
+          steps: steps
+        )
+
+        if chain.new_record? || chain.changed?
+          chain.save!
+          puts "  ✅ #{label} Approval Chain: created/updated"
+        else
+          puts "  ✅ #{label} Approval Chain: already up to date"
+        end
+        chain
       end
 
       # Raised when a seed's canonical agent collides with an ACCOUNT-scoped
@@ -174,7 +239,13 @@ module System
       # @param overall [Float] aggregate trust score [0.0, 1.0]
       # @param dimensions [Hash{Symbol=>Float}] per-dimension scores —
       #   keys: :reliability, :cost_efficiency, :safety, :quality, :speed
+      # Per-ACCOUNT operational config, so it is skipped entirely when no account
+      # exists (IMP-01a06b99). Ai::AgentTrustScore belongs_to :account with no
+      # `optional: true`, so a nil account raises on save — and the global agent
+      # definition this accompanies is perfectly valid without one.
       def ensure_trust_score!(account:, agent:, tier:, overall:, dimensions: {})
+        return nil if account.nil?
+
         defaults = { reliability: 0.70, cost_efficiency: 0.70, safety: 0.85, quality: 0.70, speed: 0.70 }
         merged = defaults.merge(dimensions)
 

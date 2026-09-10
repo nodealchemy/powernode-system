@@ -134,25 +134,14 @@ puts "  ℹ️  Disk Image Manager policies: written by System::Governance::Poli
      "(#{System::Governance::PolicyDeclarations::DISK_IMAGE_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-disk_image_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Disk Image Manager Actions"
-)
-disk_image_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Disk Image Manager Actions",
+  label: "Disk Image Manager",
   timeout_hours: 12,
   steps: [ {
-    "name" => "Image Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Image Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if disk_image_chain.new_record? || disk_image_chain.changed?
-  disk_image_chain.save!
-  puts "  ✅ Disk Image Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Disk Image Manager Approval Chain: already up to date"
-end

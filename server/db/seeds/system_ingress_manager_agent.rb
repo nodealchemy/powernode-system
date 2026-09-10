@@ -288,25 +288,14 @@ puts "  ℹ️  Ingress Manager policies: written by System::Governance::PolicyR
 # Exposure changes are operator-visible and reversible (unexpose is ungated),
 # so the chain mirrors the SDWAN Manager's 4h window rather than the
 # security-grade 8h — a publish request that waits half a day is stale.
-ingress_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Ingress Manager Actions"
-)
-ingress_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Ingress Manager Actions",
+  label: "Ingress Manager",
   timeout_hours: 4,
   steps: [ {
-    "name" => "Ingress Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Ingress Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if ingress_chain.new_record? || ingress_chain.changed?
-  ingress_chain.save!
-  puts "  ✅ Ingress Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Ingress Manager Approval Chain: already up to date"
-end

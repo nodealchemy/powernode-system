@@ -165,25 +165,14 @@ puts "  ℹ️  Supply Chain Manager policies: written by System::Governance::Po
      "(#{System::Governance::PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-supply_chain_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Supply Chain Manager Actions"
-)
-supply_chain_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Supply Chain Manager Actions",
+  label: "Supply Chain Manager",
   timeout_hours: 8,  # a package audit spans business hours; reject, never auto-proceed
   steps: [ {
-    "name" => "Supply Chain Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Supply Chain Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if supply_chain_chain.new_record? || supply_chain_chain.changed?
-  supply_chain_chain.save!
-  puts "  ✅ Supply Chain Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Supply Chain Manager Approval Chain: already up to date"
-end

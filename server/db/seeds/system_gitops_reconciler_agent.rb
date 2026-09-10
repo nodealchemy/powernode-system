@@ -156,27 +156,16 @@ puts "  ℹ️  GitOps Reconciler policies: written by System::Governance::Polic
 # Single-step chain for GitOps require_approval actions (apply proposal /
 # register repository). Surfaces in the same operator approval UI via
 # source_type="system_gitops_reconciler" — no UI changes needed.
-gitops_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "GitOps Reconciler Actions"
-)
-gitops_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
-  timeout_hours: 8, # a declarative apply can wait for a reviewer within the workday
+  name: "GitOps Reconciler Actions",
+  label: "GitOps Reconciler",
+  timeout_hours: 8,  # a declarative apply can wait for a reviewer within the workday
   steps: [ {
-    "name" => "GitOps Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "GitOps Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if gitops_chain.new_record? || gitops_chain.changed?
-  gitops_chain.save!
-  puts "  ✅ GitOps Reconciler Approval Chain: created/updated"
-else
-  puts "  ✅ GitOps Reconciler Approval Chain: already up to date"
-end
 
 puts "  Done seeding GitOps Reconciler agent."

@@ -93,25 +93,14 @@ puts "  ℹ️  CVE Responder policies: written by System::Governance::PolicyRec
      "(#{System::Governance::PolicyDeclarations::CVE_RESPONDER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-cve_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "CVE Responder Actions"
-)
-cve_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "CVE Responder Actions",
+  label: "CVE Responder",
   timeout_hours: 8,  # CVE response often spans business days
   steps: [ {
-    "name" => "Security Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Security Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if cve_chain.new_record? || cve_chain.changed?
-  cve_chain.save!
-  puts "  ✅ CVE Responder Approval Chain: created/updated"
-else
-  puts "  ✅ CVE Responder Approval Chain: already up to date"
-end

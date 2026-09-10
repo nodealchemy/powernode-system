@@ -234,25 +234,14 @@ puts "  ℹ️  Storage Manager policies: written by System::Governance::PolicyR
      "(#{System::Governance::PolicyDeclarations::STORAGE_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
-storage_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Storage Manager Actions"
-)
-storage_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
-  timeout_hours: 8, # a restore or a snapshot delete can wait for a reviewer within the workday
+  name: "Storage Manager Actions",
+  label: "Storage Manager",
+  timeout_hours: 8,  # a restore or a snapshot delete can wait for a reviewer within the workday
   steps: [ {
-    "name" => "Storage Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Storage Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if storage_chain.new_record? || storage_chain.changed?
-  storage_chain.save!
-  puts "  ✅ Storage Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Storage Manager Approval Chain: already up to date"
-end

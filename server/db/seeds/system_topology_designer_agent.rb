@@ -319,25 +319,14 @@ puts "  ℹ️  System Topology Designer policies: written by System::Governance
 # is operator/Concierge-driven design work that can wait for a reviewer within
 # the workday, so the timeout matches the GitOps Reconciler's rather than the
 # SDWAN Manager's 4h remediation window.
-topology_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Topology Designer Actions"
-)
-topology_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Topology Designer Actions",
+  label: "Topology Designer",
   timeout_hours: 8,
   steps: [ {
-    "name" => "Topology Operator Approval",
-    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Topology Operator Approval",
+      "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+      "required_approvals" => 1
+    } ]
 )
-if topology_chain.new_record? || topology_chain.changed?
-  topology_chain.save!
-  puts "  ✅ Topology Designer Approval Chain: created/updated"
-else
-  puts "  ✅ Topology Designer Approval Chain: already up to date"
-end

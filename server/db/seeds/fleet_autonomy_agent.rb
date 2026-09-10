@@ -104,25 +104,14 @@ puts "  ℹ️  Fleet Autonomy policies: written by System::Governance::PolicyRe
 # queue UI surfaces fleet requests via source_type="system_fleet" without UI
 # changes.
 
-fleet_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Fleet Autonomy Actions"
-)
-fleet_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Fleet Autonomy Actions",
+  label: "Fleet",
   timeout_hours: 4,
   steps: [ {
-    "name" => "Fleet Operator Approval",
-    "approvers" => [ "*" ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Fleet Operator Approval",
+      "approvers" => [ "*" ],
+      "required_approvals" => 1
+    } ]
 )
-if fleet_chain.new_record? || fleet_chain.changed?
-  fleet_chain.save!
-  puts "  ✅ Fleet Approval Chain: created/updated"
-else
-  puts "  ✅ Fleet Approval Chain: already up to date"
-end

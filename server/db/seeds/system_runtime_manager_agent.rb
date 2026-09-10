@@ -118,27 +118,16 @@ puts "  ℹ️  Runtime Manager policies: written by System::Governance::PolicyR
 # the same operator approval UI as Fleet Autonomy via
 # source_type="system_runtime_manager" — no UI changes needed.
 
-runtime_chain = Ai::ApprovalChain.find_or_initialize_by(
+System::Seeds::AgentSetupHelpers.ensure_approval_chain!(
   account: admin_account,
-  name: "Runtime Manager Actions"
-)
-runtime_chain.assign_attributes(
-  trigger_type: "autonomy_action",
-  status: "active",
-  is_sequential: true,
-  timeout_action: "reject",
+  name: "Runtime Manager Actions",
+  label: "Runtime Manager",
   timeout_hours: 4,
   steps: [ {
-    "name" => "Runtime Operator Approval",
-    "approvers" => [ "*" ],
-    "required_approvals" => 1
-  } ]
+      "name" => "Runtime Operator Approval",
+      "approvers" => [ "*" ],
+      "required_approvals" => 1
+    } ]
 )
-if runtime_chain.new_record? || runtime_chain.changed?
-  runtime_chain.save!
-  puts "  ✅ Runtime Manager Approval Chain: created/updated"
-else
-  puts "  ✅ Runtime Manager Approval Chain: already up to date"
-end
 
 puts "  Done seeding Runtime Manager agent."
