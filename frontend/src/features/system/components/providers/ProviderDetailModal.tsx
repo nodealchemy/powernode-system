@@ -1,29 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Cloud,
-  MapPin,
-  Server,
-  Settings,
-  Globe,
-  Lock,
-  CheckCircle,
-  XCircle,
-  Plus,
-  Edit2,
-  Trash2,
-  RefreshCw,
-  DownloadCloud,
-  Cpu,
-  Layers,
-  ChevronDown,
-  ChevronRight
-} from 'lucide-react';
+import { Cloud, MapPin, Server, Settings, Cpu } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
-import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
-import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -39,7 +19,12 @@ import type {
   SystemProviderInstanceType,
   SystemProviderAvailabilityZone
 } from '@system/features/system/types/system.types';
-import type { ProviderCatalogSummary } from '@system/features/system/services/api/providersApi';
+import { providerTypeLabels, summariseCatalog } from './providerDetailHelpers';
+import { ProviderInfoTab } from './ProviderInfoTab';
+import { ProviderRegionsTab } from './ProviderRegionsTab';
+import { ProviderInstanceTypesTab } from './ProviderInstanceTypesTab';
+import { ProviderConnectionsTab } from './ProviderConnectionsTab';
+import { ProviderConfigTab } from './ProviderConfigTab';
 
 interface ProviderDetailModalProps {
   providerId: string | null;
@@ -50,44 +35,18 @@ interface ProviderDetailModalProps {
 
 type TabId = 'info' | 'regions' | 'instance_types' | 'connections' | 'config';
 
-const providerTypeLabels: Record<string, string> = {
-  aws: 'Amazon Web Services',
-  openstack: 'OpenStack',
-  gcp: 'Google Cloud Platform',
-  azure: 'Microsoft Azure',
-  digitalocean: 'DigitalOcean',
-  custom: 'Custom Provider'
-};
-
-const CATALOG_RESOURCE_LABELS: Array<[keyof ProviderCatalogSummary, string]> = [
-  ['regions', 'regions'],
-  ['availability_zones', 'availability zones'],
-  ['instance_types', 'instance types'],
-  ['volume_types', 'volume types']
-];
-
-/**
- * One-line summary of a catalog sync. Reports the total per resource and, when
- * anything was created, how many of those are new — an operator running this to
- * pick up a newly released instance type wants that number, and "0 new" on a
- * repeat sync is the signal that nothing changed upstream.
- *
- * `total` is absent on the availability-zone phase (synced per region, so the
- * service reports only created/updated); derive it rather than printing NaN.
- */
-function summariseCatalog(catalog: ProviderCatalogSummary): string {
-  return CATALOG_RESOURCE_LABELS.map(([key, label]) => {
-    const counts = catalog?.[key];
-    if (!counts) return `${label} 0`;
-    const total = counts.total ?? counts.created + counts.updated;
-    return counts.created > 0
-      ? `${label} ${total} (${counts.created} new)`
-      : `${label} ${total}`;
-  }).join(', ');
-}
-
 /**
  * ProviderDetailModal - Modal for viewing provider details with tabs
+ *
+ * C12 (component-status-plane campaign): the five tab bodies used to be
+ * inline `render*Tab` functions in this file (1183 lines total). Split onto
+ * section components — ProviderInfoTab, ProviderRegionsTab,
+ * ProviderInstanceTypesTab, ProviderConnectionsTab, ProviderConfigTab —
+ * each taking the state/handlers it needs as props; the pure
+ * `providerTypeLabels` map and `summariseCatalog` helper moved to
+ * providerDetailHelpers.ts. This file is now the orchestrator: data
+ * fetching, mutation handlers, and composing TabContainer + the four
+ * drill-down form modals + the two delete confirmations.
  */
 export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
   providerId,
@@ -281,6 +240,16 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
     setEditZone(null);
   }, [providerId]);
 
+  const handleAddInstanceType = useCallback(() => {
+    setEditInstanceType(null);
+    setShowInstanceTypeModal(true);
+  }, []);
+
+  const handleEditInstanceType = useCallback((instanceType: SystemProviderInstanceType) => {
+    setEditInstanceType(instanceType);
+    setShowInstanceTypeModal(true);
+  }, []);
+
   const handleDeleteInstanceType = useCallback(
     async (instanceType: SystemProviderInstanceType) => {
       if (!providerId) return;
@@ -347,6 +316,16 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
     },
     [expandedRegionId, loadZones]
   );
+
+  const handleAddZone = useCallback((regionId: string) => {
+    setEditZone(null);
+    setZoneModalRegionId(regionId);
+  }, []);
+
+  const handleEditZone = useCallback((regionId: string, zone: SystemProviderAvailabilityZone) => {
+    setEditZone(zone);
+    setZoneModalRegionId(regionId);
+  }, []);
 
   const handleDeleteZone = useCallback(
     async (regionId: string, zone: SystemProviderAvailabilityZone) => {
@@ -460,532 +439,6 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
     { id: 'config', label: 'Configuration', icon: <Settings className="w-4 h-4" /> }
   ];
 
-  const renderInfoTab = () => {
-    if (!provider) return null;
-
-    return (
-      <div className="space-y-6">
-        {/* Basic Info */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-theme-secondary mb-1">Name</label>
-              <p className="text-theme-primary font-medium">{provider.name}</p>
-            </div>
-            <div>
-              <label className="block text-sm text-theme-secondary mb-1">Description</label>
-              <p className="text-theme-primary">{provider.description || '—'}</p>
-            </div>
-          </div>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-theme-secondary mb-1">Provider Type</label>
-              <p className="text-theme-primary">
-                {providerTypeLabels[provider.provider_type] || provider.provider_type}
-              </p>
-            </div>
-            <div>
-              <label className="block text-sm text-theme-secondary mb-1">Resources</label>
-              <div className="flex items-center gap-4 text-theme-primary">
-                <span>{provider.region_count || 0} regions</span>
-                <span>{provider.connection_count || 0} connections</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Status Badges */}
-        <div className="flex flex-wrap gap-4 pt-4 border-t border-theme">
-          <div className="flex items-center gap-2">
-            {provider.enabled ? (
-              <CheckCircle className="w-5 h-5 text-theme-success-fg" />
-            ) : (
-              <XCircle className="w-5 h-5 text-theme-error-fg" />
-            )}
-            <span className="text-theme-primary">
-              {provider.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {provider.public ? (
-              <Globe className="w-5 h-5 text-theme-info-fg" />
-            ) : (
-              <Lock className="w-5 h-5 text-theme-secondary" />
-            )}
-            <span className="text-theme-primary">
-              {provider.public ? 'Public' : 'Private'}
-            </span>
-          </div>
-        </div>
-
-        {/* Timestamps */}
-        <div className="grid grid-cols-2 gap-4 pt-4 border-t border-theme text-sm">
-          <div>
-            <span className="text-theme-secondary">Created:</span>
-            <span className="ml-2 text-theme-primary">
-              {new Date(provider.created_at).toLocaleString()}
-            </span>
-          </div>
-          <div>
-            <span className="text-theme-secondary">Updated:</span>
-            <span className="ml-2 text-theme-primary">
-              {new Date(provider.updated_at).toLocaleString()}
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderRegionsTab = () => {
-    return (
-      <div className="space-y-4">
-        {/* Header with Add button */}
-        {canManageRegions && (
-          <div className="flex justify-end">
-            <Button variant="primary" size="sm" onClick={handleAddRegion}>
-              <Plus className="w-4 h-4 mr-2" />
-              Add Region
-            </Button>
-          </div>
-        )}
-
-        {regions.length === 0 ? (
-          <div className="text-center py-12">
-            <MapPin className="w-12 h-12 text-theme-tertiary mx-auto mb-4" />
-            <p className="text-theme-secondary">No regions configured</p>
-            <p className="text-sm text-theme-tertiary mt-1">
-              Add regions to define deployment locations
-            </p>
-          </div>
-        ) : (
-          regions.map(region => (
-            <div
-              key={region.id}
-              className="bg-theme-background rounded-lg p-4 border border-theme"
-            >
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <h4 className="font-medium text-theme-primary">{region.name}</h4>
-                  {region.region_code && (
-                    <p className="text-sm text-theme-secondary">{region.region_code}</p>
-                  )}
-                  {region.provider_id && (
-                    <p className="text-xs text-theme-secondary mt-1">
-                      Provider:{' '}
-                      <EntityLink
-                        type="provider"
-                        id={region.provider_id}
-                        label={region.provider_name || region.provider_id}
-                        className="text-xs"
-                      />
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleRegionZones(region)}
-                    className="flex items-center gap-1 text-sm text-theme-secondary hover:text-theme-primary"
-                    aria-expanded={expandedRegionId === region.id}
-                    title="Show availability zones"
-                    data-testid={`region-zones-toggle-${region.id}`}
-                  >
-                    {expandedRegionId === region.id ? (
-                      <ChevronDown className="w-4 h-4" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4" />
-                    )}
-                    {region.zone_count || 0} zones • {region.instance_type_count || 0} instance types
-                  </button>
-                  {canManageRegions && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleEditRegion(region)}
-                      title="Edit region"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                  {canDeleteRegions && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setRegionToDelete(region)}
-                      title="Delete region"
-                      className="text-theme-error-fg hover:text-theme-error-fg"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {region.description && (
-                <p className="text-sm text-theme-secondary mt-2">{region.description}</p>
-              )}
-              {region.endpoint_url && (
-                <p className="text-xs text-theme-tertiary mt-2 font-mono">
-                  {region.endpoint_url}
-                </p>
-              )}
-
-              {expandedRegionId === region.id && (
-                <div
-                  className="mt-3 pt-3 border-t border-theme"
-                  data-testid={`region-zones-${region.id}`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <h5 className="text-sm font-medium text-theme-primary flex items-center gap-2">
-                      <Layers className="w-4 h-4" />
-                      Availability zones
-                    </h5>
-                    {canManageRegions && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setEditZone(null);
-                          setZoneModalRegionId(region.id);
-                        }}
-                        title={
-                          hasCloudConnection
-                            ? 'Add availability zone (manual override)'
-                            : 'Add availability zone'
-                        }
-                      >
-                        <Plus className="w-4 h-4 mr-1" />
-                        Add Zone
-                      </Button>
-                    )}
-                  </div>
-
-                  {zonesLoading ? (
-                    <LoadingSpinner size="sm" />
-                  ) : zones.length === 0 ? (
-                    <p className="text-sm text-theme-tertiary">
-                      No availability zones in this region
-                    </p>
-                  ) : (
-                    <ul className="space-y-1">
-                      {zonesTotal > zones.length && (
-                        <li className="text-xs text-theme-warning-fg">
-                          Showing {zones.length} of {zonesTotal} zones — narrow the
-                          catalog or use the API for the rest.
-                        </li>
-                      )}
-                      {zones.map(zone => (
-                        <li
-                          key={zone.id}
-                          className="flex items-center justify-between gap-2 text-sm"
-                          data-testid={`availability-zone-${zone.id}`}
-                        >
-                          <span className="text-theme-primary">
-                            {zone.name}{' '}
-                            <span className="font-mono text-theme-secondary">
-                              {zone.zone_code}
-                            </span>
-                          </span>
-                          <span className="flex items-center gap-2">
-                            <Badge
-                              variant={zone.status === 'available' ? 'success' : 'warning'}
-                              size="xs"
-                            >
-                              {zone.status}
-                            </Badge>
-                            {canUpdateRegions && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  setEditZone(zone);
-                                  setZoneModalRegionId(region.id);
-                                }}
-                                title="Edit availability zone"
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                            {canDeleteRegions && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleDeleteZone(region.id, zone)}
-                                title="Delete availability zone"
-                                className="text-theme-error-fg hover:text-theme-error-fg"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-    );
-  };
-
-  const renderInstanceTypesTab = () => {
-    return (
-      <div className="space-y-4">
-        {hasCloudConnection && (
-          <p className="text-xs text-theme-warning-fg bg-theme-background rounded-lg p-3 border border-theme">
-            This provider has a cloud connection, so instance types are normally
-            populated by Sync catalog. Writes here are a manual override.
-          </p>
-        )}
-
-        {canManageInstanceTypes && (
-          <div className="flex justify-end">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => {
-                setEditInstanceType(null);
-                setShowInstanceTypeModal(true);
-              }}
-              title={
-                hasCloudConnection
-                  ? 'Add instance type (manual override)'
-                  : 'Add instance type'
-              }
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Instance Type
-            </Button>
-          </div>
-        )}
-
-        {instanceTypesLoading ? (
-          <div className="flex justify-center py-12">
-            <LoadingSpinner size="lg" />
-          </div>
-        ) : instanceTypes.length === 0 ? (
-          <div className="text-center py-12">
-            <Cpu className="w-12 h-12 text-theme-tertiary mx-auto mb-4" />
-            <p className="text-theme-secondary">No instance types configured</p>
-            <p className="text-sm text-theme-tertiary mt-1">
-              Declare the shapes this provider can hand out
-            </p>
-          </div>
-        ) : (
-          <>
-          {instanceTypesTotal > instanceTypes.length && (
-            <p className="text-xs text-theme-warning-fg">
-              Showing {instanceTypes.length} of {instanceTypesTotal} instance types —
-              narrow the catalog or use the API for the rest.
-            </p>
-          )}
-          {instanceTypes.map(instanceType => (
-            <div
-              key={instanceType.id}
-              className="bg-theme-background rounded-lg p-4 border border-theme"
-              data-testid={`instance-type-${instanceType.id}`}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <h4 className="font-medium text-theme-primary">{instanceType.name}</h4>
-                  <p className="text-xs text-theme-tertiary font-mono mt-1">
-                    {instanceType.instance_type_code}
-                  </p>
-                  <p className="text-sm text-theme-secondary mt-1">
-                    {instanceType.vcpus ?? '—'} vCPU • {instanceType.memory_mb ?? '—'} MB
-                    {' • '}
-                    {instanceType.storage_gb ?? '—'} GB
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={instanceType.enabled ? 'success' : 'secondary'} size="xs">
-                    {instanceType.enabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                  {canUpdateInstanceTypes && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setEditInstanceType(instanceType);
-                        setShowInstanceTypeModal(true);
-                      }}
-                      title="Edit instance type"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                  {canDeleteInstanceTypes && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeleteInstanceType(instanceType)}
-                      title="Delete instance type"
-                      className="text-theme-error-fg hover:text-theme-error-fg"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {instanceType.description && (
-                <p className="text-sm text-theme-secondary mt-2">{instanceType.description}</p>
-              )}
-            </div>
-          ))}
-          </>
-        )}
-      </div>
-    );
-  };
-
-  const renderConnectionsTab = () => {
-    return (
-      <div className="space-y-4">
-        {/* Header with Add button */}
-        {canManageConnections && (
-          <div className="flex justify-end">
-            <Button variant="primary" size="sm" onClick={handleAddConnection}>
-              <Plus className="w-4 h-4 mr-2" />
-              Add Connection
-            </Button>
-          </div>
-        )}
-
-        {connections.length === 0 ? (
-          <div className="text-center py-12">
-            <Server className="w-12 h-12 text-theme-tertiary mx-auto mb-4" />
-            <p className="text-theme-secondary">No connections configured</p>
-            <p className="text-sm text-theme-tertiary mt-1">
-              Add connections to authenticate with this provider
-            </p>
-          </div>
-        ) : (
-          connections.map(connection => (
-            <div
-              key={connection.id}
-              className="bg-theme-background rounded-lg p-4 border border-theme"
-            >
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <h4 className="font-medium text-theme-primary">{connection.name}</h4>
-                  {connection.endpoint_url && (
-                    <p className="text-xs text-theme-tertiary font-mono mt-1">
-                      {connection.endpoint_url}
-                    </p>
-                  )}
-                  {connection.provider_id && (
-                    <p className="text-xs text-theme-secondary mt-1">
-                      Provider:{' '}
-                      <EntityLink
-                        type="provider"
-                        id={connection.provider_id}
-                        label={connection.provider_name || connection.provider_id}
-                        className="text-xs"
-                      />
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="success" size="xs">Active</Badge>
-                  {canTestConnections && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleTestConnection(connection)}
-                      disabled={testingConnection === connection.id}
-                      title="Test connection"
-                    >
-                      {testingConnection === connection.id ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="w-4 h-4" />
-                      )}
-                    </Button>
-                  )}
-                  {canSyncCatalog && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleSyncCatalog(connection)}
-                      disabled={syncingCatalog === connection.id}
-                      title="Sync catalog"
-                    >
-                      <DownloadCloud
-                        className={`w-4 h-4 ${syncingCatalog === connection.id ? 'animate-pulse' : ''}`}
-                      />
-                    </Button>
-                  )}
-                  {canManageConnections && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleEditConnection(connection)}
-                      title="Edit connection"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                  {canDeleteConnections && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setConnectionToDelete(connection)}
-                      title="Delete connection"
-                      className="text-theme-error-fg hover:text-theme-error-fg"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {connection.description && (
-                <p className="text-sm text-theme-secondary mt-2">{connection.description}</p>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-    );
-  };
-
-  const renderConfigTab = () => {
-    if (!provider) return null;
-
-    const hasConfig = provider.config && Object.keys(provider.config).length > 0;
-    const hasCapabilities = provider.capabilities && Object.keys(provider.capabilities).length > 0;
-
-    return (
-      <div className="space-y-6">
-        {/* Config */}
-        <div>
-          <h4 className="font-medium text-theme-primary mb-2">Configuration</h4>
-          {hasConfig ? (
-            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme font-mono">
-              {JSON.stringify(provider.config, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-theme-secondary text-sm">No configuration defined</p>
-          )}
-        </div>
-
-        {/* Capabilities */}
-        <div>
-          <h4 className="font-medium text-theme-primary mb-2">Capabilities</h4>
-          {hasCapabilities ? (
-            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme font-mono">
-              {JSON.stringify(provider.capabilities, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-theme-secondary text-sm">No capabilities defined</p>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   // Six dialogs can sit on top of this one: the region / instance-type /
   // availability-zone / connection forms and the two delete confirmations.
   // Each is a core Modal registering Escape on `document`, so this one stands
@@ -1042,11 +495,58 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
               </div>
             ) : provider ? (
               <>
-                {activeTab === 'info' && renderInfoTab()}
-                {activeTab === 'regions' && renderRegionsTab()}
-                {activeTab === 'instance_types' && renderInstanceTypesTab()}
-                {activeTab === 'connections' && renderConnectionsTab()}
-                {activeTab === 'config' && renderConfigTab()}
+                {activeTab === 'info' && <ProviderInfoTab provider={provider} />}
+                {activeTab === 'regions' && (
+                  <ProviderRegionsTab
+                    regions={regions}
+                    canManageRegions={canManageRegions}
+                    canUpdateRegions={canUpdateRegions}
+                    canDeleteRegions={canDeleteRegions}
+                    hasCloudConnection={hasCloudConnection}
+                    expandedRegionId={expandedRegionId}
+                    zones={zones}
+                    zonesLoading={zonesLoading}
+                    zonesTotal={zonesTotal}
+                    onAddRegion={handleAddRegion}
+                    onEditRegion={handleEditRegion}
+                    onDeleteRegionRequest={setRegionToDelete}
+                    onToggleRegionZones={handleToggleRegionZones}
+                    onAddZone={handleAddZone}
+                    onEditZone={handleEditZone}
+                    onDeleteZone={handleDeleteZone}
+                  />
+                )}
+                {activeTab === 'instance_types' && (
+                  <ProviderInstanceTypesTab
+                    instanceTypes={instanceTypes}
+                    instanceTypesLoading={instanceTypesLoading}
+                    instanceTypesTotal={instanceTypesTotal}
+                    hasCloudConnection={hasCloudConnection}
+                    canManageInstanceTypes={canManageInstanceTypes}
+                    canUpdateInstanceTypes={canUpdateInstanceTypes}
+                    canDeleteInstanceTypes={canDeleteInstanceTypes}
+                    onAddInstanceType={handleAddInstanceType}
+                    onEditInstanceType={handleEditInstanceType}
+                    onDeleteInstanceType={handleDeleteInstanceType}
+                  />
+                )}
+                {activeTab === 'connections' && (
+                  <ProviderConnectionsTab
+                    connections={connections}
+                    canManageConnections={canManageConnections}
+                    canDeleteConnections={canDeleteConnections}
+                    canTestConnections={canTestConnections}
+                    canSyncCatalog={canSyncCatalog}
+                    testingConnection={testingConnection}
+                    syncingCatalog={syncingCatalog}
+                    onAddConnection={handleAddConnection}
+                    onEditConnection={handleEditConnection}
+                    onDeleteRequest={setConnectionToDelete}
+                    onTestConnection={handleTestConnection}
+                    onSyncCatalog={handleSyncCatalog}
+                  />
+                )}
+                {activeTab === 'config' && <ProviderConfigTab provider={provider} />}
               </>
             ) : (
               <div className="text-center py-12">
