@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Cpu, Cloud, Server, Zap, Loader2, RefreshCw } from 'lucide-react';
+import { Cpu, Cloud, Server, Zap, RefreshCw } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { FormField } from '@/shared/components/ui/FormField';
-import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -18,6 +17,15 @@ import type {
   SystemProviderNetwork,
   SystemProviderNetworkSubnet
 } from '@system/features/system/types/system.types';
+import {
+  CATALOG_LABELS,
+  type CatalogField,
+  type CreateInstanceFormData,
+  type CreateInstanceFormErrors,
+} from './createInstanceHelpers';
+import { CreateInstanceCloudFields } from './CreateInstanceCloudFields';
+import { CreateInstancePhysicalFields } from './CreateInstancePhysicalFields';
+import { CreateInstanceNetworkFields } from './CreateInstanceNetworkFields';
 
 interface CreateInstanceModalProps {
   /** The node to create an instance for */
@@ -30,65 +38,19 @@ interface CreateInstanceModalProps {
   onInstanceCreated?: (instance: SystemNodeInstance) => void;
 }
 
-interface FormData {
-  name: string;
-  variety: 'cloud' | 'physical' | 'dynamic';
-  description: string;
-  private_ip_address: string;
-  public_ip_address: string;
-  vpn_ip_address: string;
-  // Cloud-specific fields
-  provider_connection_id: string;
-  provider_region_id: string;
-  provider_instance_type_id: string;
-  provider_availability_zone_id: string;
-  provider_network_id: string;
-  provider_network_subnet_id: string;
-  // Physical-specific fields (Path C claim flow)
-  // Plan: docs/plans/wondrous-yawning-anchor.md
-  node_platform_id: string;
-  mac_address: string;            // optional pre-binding for known devices
-}
-
-/**
- * The catalogs this form loads. Each one is a cascading select, and each used
- * to end in `.catch(() => setX([]))` — so a dead provider connection, a 403 or
- * a network blip rendered exactly like an empty catalog and the operator was
- * left with "no regions" and no diagnosis (IMP-a78aa727d1d8).
- */
-type CatalogField =
-  | 'platforms'
-  | 'connections'
-  | 'regions'
-  | 'instanceTypes'
-  | 'zones'
-  | 'networks'
-  | 'subnets';
-
-/** What the inline hint calls each one. */
-const CATALOG_LABELS: Record<CatalogField, string> = {
-  platforms: 'platforms',
-  connections: 'provider connections',
-  regions: 'regions',
-  instanceTypes: 'instance sizes',
-  zones: 'availability zones',
-  networks: 'networks',
-  subnets: 'subnets'
-};
-
-interface FormErrors {
-  name?: string;
-  variety?: string;
-  provider_connection_id?: string;
-  provider_region_id?: string;
-  provider_instance_type_id?: string;
-}
-
 /**
  * CreateInstanceModal - Modal for creating new node instances
  *
  * Provides a form to create instances with name, variety,
  * cloud provider configuration (cascading selects), and IP address settings.
+ *
+ * C12 (component-status-plane campaign): the cloud cascading-select block,
+ * the physical claim-flow block, and the IP address block used to be inline
+ * JSX in this file (922 lines total). Split onto section components —
+ * CreateInstanceCloudFields, CreateInstancePhysicalFields,
+ * CreateInstanceNetworkFields — with the shared form-data/catalog types
+ * moved to createInstanceHelpers.ts. This file is now the orchestrator: all
+ * cascading-catalog load/retry logic, validation, and submit handling.
  */
 export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   node,
@@ -100,7 +62,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
 
   // State
   const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState<FormData>({
+  const [formData, setFormData] = useState<CreateInstanceFormData>({
     name: '',
     variety: 'cloud',
     description: '',
@@ -122,7 +84,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   // operator's account in the platform dropdown).
   const [platforms, setPlatforms] = useState<SystemNodePlatform[]>([]);
   const [loadingPlatforms, setLoadingPlatforms] = useState(false);
-  const [errors, setErrors] = useState<FormErrors>({});
+  const [errors, setErrors] = useState<CreateInstanceFormErrors>({});
 
   // Cascading dropdown data
   const [connections, setConnections] = useState<SystemProviderConnection[]>([]);
@@ -393,7 +355,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
 
   // Form validation
   const validate = useCallback((): boolean => {
-    const newErrors: FormErrors = {};
+    const newErrors: CreateInstanceFormErrors = {};
 
     if (!formData.name.trim()) {
       newErrors.name = 'Name is required';
@@ -427,10 +389,10 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   }, [formData]);
 
   // Handle field change
-  const handleChange = useCallback((field: keyof FormData, value: string) => {
+  const handleChange = useCallback((field: keyof CreateInstanceFormData, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
     // Clear error when field is edited
-    if (errors[field as keyof FormErrors]) {
+    if (errors[field as keyof CreateInstanceFormErrors]) {
       setErrors(prev => ({ ...prev, [field]: undefined }));
     }
   }, [errors]);
@@ -567,353 +529,45 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
 
         {/* Cloud Provider Configuration - Cascading Selects */}
         {formData.variety === 'cloud' && (
-          <div className="space-y-4 p-4 bg-theme-background rounded-lg border border-theme">
-            <h3 className="text-sm font-medium text-theme-primary flex items-center gap-2">
-              <Cloud className="w-4 h-4" />
-              Cloud Provider Configuration
-            </h3>
-
-            {/* Provider Connection */}
-            <div>
-              <label htmlFor="provider-connection" className="block text-sm font-medium text-theme-secondary mb-1">
-                Provider Connection <span className="text-theme-danger-fg">*</span>
-              </label>
-              <div className="relative">
-                <select
-                  id="provider-connection"
-                  value={formData.provider_connection_id}
-                  onChange={(e) => handleChange('provider_connection_id', e.target.value)}
-                  className={`
-                    w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-                    focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_connection_id ? 'border-theme-danger-border' : 'border-theme'}
-                  `}
-                  disabled={submitting || loadingConnections}
-                >
-                  <option value="">Select a provider connection...</option>
-                  {connections.map(conn => (
-                    <option key={conn.id} value={conn.id}>
-                      {conn.name} ({conn.provider_name})
-                    </option>
-                  ))}
-                </select>
-                {loadingConnections && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('connections')}
-              {errors.provider_connection_id && (
-                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_connection_id}</p>
-              )}
-            </div>
-
-            {/* Region */}
-            <div>
-              <label htmlFor="provider-region" className="block text-sm font-medium text-theme-secondary mb-1">
-                Region <span className="text-theme-danger-fg">*</span>
-              </label>
-              <div className="relative">
-                <select
-                  id="provider-region"
-                  value={formData.provider_region_id}
-                  onChange={(e) => handleChange('provider_region_id', e.target.value)}
-                  className={`
-                    w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-                    focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_region_id ? 'border-theme-danger-border' : 'border-theme'}
-                  `}
-                  disabled={submitting || !formData.provider_connection_id || loadingRegions}
-                >
-                  <option value="">Select a region...</option>
-                  {regions.map(region => (
-                    <option key={region.id} value={region.id}>
-                      {region.name} ({region.region_code})
-                    </option>
-                  ))}
-                </select>
-                {loadingRegions && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('regions')}
-              {errors.provider_region_id && (
-                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_region_id}</p>
-              )}
-            </div>
-
-            {/* Instance Type */}
-            <div>
-              <label htmlFor="provider-instance-type" className="block text-sm font-medium text-theme-secondary mb-1">
-                Instance Size <span className="text-theme-danger-fg">*</span>
-              </label>
-              <div className="relative">
-                <select
-                  id="provider-instance-type"
-                  value={formData.provider_instance_type_id}
-                  onChange={(e) => handleChange('provider_instance_type_id', e.target.value)}
-                  className={`
-                    w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-                    focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_instance_type_id ? 'border-theme-danger-border' : 'border-theme'}
-                  `}
-                  disabled={submitting || !formData.provider_region_id || loadingInstanceTypes}
-                >
-                  <option value="">Select an instance size...</option>
-                  {instanceTypes.map(type => (
-                    <option key={type.id} value={type.id}>
-                      {type.display_name || type.name}
-                    </option>
-                  ))}
-                </select>
-                {loadingInstanceTypes && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('instanceTypes')}
-              {errors.provider_instance_type_id && (
-                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_instance_type_id}</p>
-              )}
-            </div>
-
-            {/* Availability Zone */}
-            <div>
-              <label htmlFor="availability-zone" className="block text-sm font-medium text-theme-secondary mb-1">
-                Availability Zone
-              </label>
-              <div className="relative">
-                <select
-                  id="availability-zone"
-                  value={formData.provider_availability_zone_id}
-                  onChange={(e) => handleChange('provider_availability_zone_id', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-                  disabled={submitting || !formData.provider_region_id || loadingZones}
-                >
-                  <option value="">Auto-select (any zone)</option>
-                  {availabilityZones.filter(z => z.operational).map(zone => (
-                    <option key={zone.id} value={zone.id}>
-                      {zone.name} ({zone.zone_code}) - {zone.status}
-                    </option>
-                  ))}
-                </select>
-                {loadingZones && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('zones')}
-            </div>
-
-            {/* Network */}
-            <div>
-              <label htmlFor="provider-network" className="block text-sm font-medium text-theme-secondary mb-1">
-                Network
-              </label>
-              <div className="relative">
-                <select
-                  id="provider-network"
-                  value={formData.provider_network_id}
-                  onChange={(e) => handleChange('provider_network_id', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-                  disabled={submitting || !formData.provider_region_id || loadingNetworks}
-                >
-                  <option value="">Default network</option>
-                  {networks.map(network => (
-                    <option key={network.id} value={network.id}>
-                      {network.name} ({network.cidr_block})
-                    </option>
-                  ))}
-                </select>
-                {loadingNetworks && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('networks')}
-            </div>
-
-            {/* Subnet */}
-            {formData.provider_network_id && (
-              <div>
-                <label htmlFor="provider-subnet" className="block text-sm font-medium text-theme-secondary mb-1">
-                  Subnet
-                </label>
-                <div className="relative">
-                  <select
-                    id="provider-subnet"
-                    value={formData.provider_network_subnet_id}
-                    onChange={(e) => handleChange('provider_network_subnet_id', e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
-                    disabled={submitting || loadingSubnets}
-                  >
-                    <option value="">Auto-select subnet</option>
-                    {subnets.map(subnet => (
-                      <option key={subnet.id} value={subnet.id}>
-                        {subnet.name} ({subnet.cidr_block}) {subnet.is_public ? '(Public)' : '(Private)'}
-                      </option>
-                    ))}
-                  </select>
-                  {loadingSubnets && (
-                    <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                  )}
-                </div>
-                {renderLoadError('subnets')}
-              </div>
-            )}
-          </div>
+          <CreateInstanceCloudFields
+            formData={formData}
+            errors={errors}
+            submitting={submitting}
+            connections={connections}
+            regions={regions}
+            instanceTypes={instanceTypes}
+            availabilityZones={availabilityZones}
+            networks={networks}
+            subnets={subnets}
+            loadingConnections={loadingConnections}
+            loadingRegions={loadingRegions}
+            loadingInstanceTypes={loadingInstanceTypes}
+            loadingZones={loadingZones}
+            loadingNetworks={loadingNetworks}
+            loadingSubnets={loadingSubnets}
+            onChange={handleChange}
+            renderLoadError={renderLoadError}
+          />
         )}
 
         {/* Physical Device Configuration (Path C claim flow) */}
-        {/* Plan: docs/plans/wondrous-yawning-anchor.md */}
         {formData.variety === 'physical' && (
-          <div className="space-y-4 p-4 bg-theme-background rounded-lg border border-theme">
-            <h3 className="text-sm font-medium text-theme-primary flex items-center gap-2">
-              <Server className="w-4 h-4" />
-              Physical Device Configuration
-            </h3>
-            <p className="text-xs text-theme-secondary">
-              The instance will be created in a pending state. Flash the platform&apos;s
-              disk image onto an SD card / USB stick and plug the device in — it will
-              poll the platform and surface in the &ldquo;Unclaimed Devices&rdquo; panel for you to
-              claim.
-            </p>
-
-            <div>
-              <label htmlFor="instance-platform" className="block text-sm font-medium text-theme-secondary mb-1">
-                Platform <span className="text-theme-danger-fg">*</span>
-              </label>
-              <div className="relative">
-                <select
-                  id="instance-platform"
-                  value={formData.node_platform_id}
-                  onChange={(e) => handleChange('node_platform_id', e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-                    focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
-                  disabled={submitting || loadingPlatforms}
-                >
-                  <option value="">Select a platform...</option>
-                  {platforms.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}{p.architecture_name ? ` (${p.architecture_name})` : ''}
-                    </option>
-                  ))}
-                </select>
-                {loadingPlatforms && (
-                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
-                )}
-              </div>
-              {renderLoadError('platforms')}
-              {formData.node_platform_id && (
-                <div className="mt-1">
-                  <EntityLink
-                    type="node_platform"
-                    id={formData.node_platform_id}
-                    label="View platform details"
-                    className="text-xs"
-                  />
-                </div>
-              )}
-              <p className="mt-1 text-xs text-theme-tertiary">
-                Determines which generic disk image to flash. RPi 4 → ubuntu-24.04-rpi4;
-                generic UEFI arm64 SBC → ubuntu-24.04-arm64-uefi.
-              </p>
-            </div>
-
-            <div>
-              <label htmlFor="instance-mac" className="block text-sm font-medium text-theme-secondary mb-1">
-                MAC address (optional pre-binding)
-              </label>
-              <input
-                id="instance-mac"
-                type="text"
-                value={formData.mac_address}
-                onChange={(e) => handleChange('mac_address', e.target.value)}
-                placeholder="aa:bb:cc:dd:ee:ff"
-                className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary font-mono
-                  focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
-                disabled={submitting}
-              />
-              <p className="mt-1 text-xs text-theme-tertiary">
-                Leave blank for the standard claim flow (operator confirms in Unclaimed Devices
-                panel). If you know the device&apos;s MAC, set it here for deterministic auto-binding.
-              </p>
-            </div>
-
-            <div>
-              <label htmlFor="instance-description" className="block text-sm font-medium text-theme-secondary mb-1">
-                Description / notes
-              </label>
-              <input
-                id="instance-description"
-                type="text"
-                value={formData.description}
-                onChange={(e) => handleChange('description', e.target.value)}
-                placeholder="e.g. Pi 4 in network closet rack 2"
-                className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
-                  focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
-                disabled={submitting}
-              />
-            </div>
-          </div>
+          <CreateInstancePhysicalFields
+            formData={formData}
+            submitting={submitting}
+            platforms={platforms}
+            loadingPlatforms={loadingPlatforms}
+            onChange={handleChange}
+            renderLoadError={renderLoadError}
+          />
         )}
 
         {/* IP Addresses */}
-        <div className="space-y-4">
-          <h3 className="text-sm font-medium text-theme-primary">Network Configuration</h3>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Private IP */}
-            <div>
-              <label htmlFor="instance-private-ip" className="block text-sm font-medium text-theme-secondary mb-1">
-                Private IP
-              </label>
-              <input
-                id="instance-private-ip"
-                type="text"
-                value={formData.private_ip_address}
-                onChange={(e) => handleChange('private_ip_address', e.target.value)}
-                placeholder="10.0.0.1"
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary font-mono text-sm"
-                disabled={submitting}
-              />
-            </div>
-
-            {/* Public IP */}
-            <div>
-              <label htmlFor="instance-public-ip" className="block text-sm font-medium text-theme-secondary mb-1">
-                Public IP
-              </label>
-              <input
-                id="instance-public-ip"
-                type="text"
-                value={formData.public_ip_address}
-                onChange={(e) => handleChange('public_ip_address', e.target.value)}
-                placeholder="203.0.113.1"
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary font-mono text-sm"
-                disabled={submitting}
-              />
-            </div>
-
-            {/* VPN IP */}
-            <div>
-              <label htmlFor="instance-vpn-ip" className="block text-sm font-medium text-theme-secondary mb-1">
-                VPN IP
-              </label>
-              <input
-                id="instance-vpn-ip"
-                type="text"
-                value={formData.vpn_ip_address}
-                onChange={(e) => handleChange('vpn_ip_address', e.target.value)}
-                placeholder="172.16.0.1"
-                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary font-mono text-sm"
-                disabled={submitting}
-              />
-            </div>
-          </div>
-
-          <p className="text-xs text-theme-secondary">
-            {formData.variety === 'cloud'
-              ? 'IP addresses are typically assigned automatically by the provider. Leave empty for automatic assignment.'
-              : 'Specify IP addresses for this instance. Leave empty if not applicable.'}
-          </p>
-        </div>
+        <CreateInstanceNetworkFields
+          formData={formData}
+          submitting={submitting}
+          onChange={handleChange}
+        />
       </form>
     </Modal>
   );
