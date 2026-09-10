@@ -163,6 +163,56 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
     expect(declared_verbs.values.uniq - ::Ai::InterventionPolicy::POLICIES).to be_empty
   end
 
+  # THE VALUE, NOT ONLY THE KEY (IMP-01a07c0a). Every other example in this
+  # file reads GATED_NON_COMMAND_OPERATIONS.keys; none reads what those keys
+  # are declared AT.
+  #
+  # The offer that prompted these called that value "dead configuration wearing
+  # the costume of live configuration" — a near-verbatim quote of the source
+  # comment at policy_declarations.rb:281-286, which describes a state an
+  # earlier increment ALREADY FIXED by making GATED_NON_COMMAND_OPERATIONS
+  # authoritative through .fetch. Measured by mutation on 2026-09-10, against
+  # that hash specifically, every value is live and already caught:
+  #
+  #   terminate -> auto_approve   system_fleet_terminate_gating_spec:64
+  #   start/stop -> block         policy_reconciler_spec:74, :310, :330 and
+  #                               tasks_retired_command_spec:140
+  #
+  # These examples are kept anyway, because those oracles are INDIRECT. Two are
+  # about the reconciler's behaviour, one about retired commands, and
+  # policy_reconciler_spec:310 pins the verb mix as a COUNT ("20 rows in a
+  # 5/5/10 split") — a count cannot distinguish one changed verb from two
+  # changed in opposite directions. A direct per-key assertion on the RESOLVED
+  # hash says what the seed writes, in the file whose subject is that
+  # vocabulary, and survives any refactor of the specs that currently catch it
+  # by side effect.
+  #
+  # ASSERTED ON MANUAL_OPERATION_POLICIES, the resolved hash the seed writes,
+  # never on either input. Both inputs carry "require_approval" for terminate,
+  # so pinning either alone cannot say which one won — which is precisely the
+  # hazard :281-286 describes.
+  #
+  # A NOTE ON MEASURING THIS: the first attempt at the mutation above edited
+  # the `"start" => "auto_approve"` pair in MANUAL_OPERATION_DEFAULT_VERBS,
+  # which appears EARLIER in the file and is the input .fetch falls back to —
+  # so it correctly changed nothing and read as "unpinned". Mutate inside the
+  # GATED_NON_COMMAND_OPERATIONS block, or the answer is about the wrong hash.
+  it "pins the verb each gated non-command actually resolves to" do
+    resolved = ::System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES
+
+    expect(resolved.fetch("system.task.terminate")).to eq("require_approval")
+    expect(resolved.fetch("system.task.start")).to eq("auto_approve")
+    expect(resolved.fetch("system.task.stop")).to eq("auto_approve")
+  end
+
+  # The set is small and destructive-adjacent, so it is pinned WHOLE rather than
+  # key by key: a fourth key added here would otherwise arrive with its verb
+  # unasserted.
+  it "pins the gated non-command set itself, so a new key cannot arrive unasserted" do
+    expect(::System::Governance::PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS)
+      .to eq("terminate" => "require_approval", "start" => "auto_approve", "stop" => "auto_approve")
+  end
+
   # Vacuity guard. The two set-difference examples above both pass on empty
   # inputs, which is precisely what an engine that never ran (extension
   # unloaded, to_prepare removed) or a renamed COMMANDS would produce. The
