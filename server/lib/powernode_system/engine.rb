@@ -750,6 +750,36 @@ module PowernodeSystem
       end
     end
 
+    # Component-status contributors (campaign 01a08c9b increment B1, design
+    # §4.4). Core's Platform::Status::Registry never names an extension; the
+    # extension registers itself, and this is the one call it makes.
+    # System::Status::Contributors derives the set from the files under
+    # `app/services/system/status/contributors/`, so a new kind is a new file
+    # and never an edit here.
+    #
+    # `config.to_prepare`, not `after_initialize`, for the reason the two
+    # blocks above give: the registry is core state keyed by a contributor
+    # INSTANCE, and a dev-mode reload replaces the contributor classes while
+    # leaving the registry holding their unloaded predecessors. to_prepare
+    # re-registers after every reload; registration is last-write-wins on the
+    # kind, so re-running it replaces rather than accumulates.
+    #
+    # NO `defined?` GUARD on the core constant. This extension requires a core
+    # carrying increment A1 (Platform::Status::Registry); letting it boot
+    # against an older core would be a compatibility shim whose only visible
+    # effect is a status plane with no kinds and nothing saying why. The rescue
+    # below is the same failure posture every sibling block here uses — it
+    # keeps a broken contributor from crash-looping boot — and it logs at
+    # ERROR, because an empty status plane is a silent outage otherwise.
+    initializer "powernode_system.status_contributors", after: :load_config_initializers do
+      config.to_prepare do
+        ::System::Status::Contributors.register_all!
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not register status contributors " \
+                           "(the component status plane will report no system kinds): #{e.class}: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry (Phase 5 — Action Category Registry).
     #
