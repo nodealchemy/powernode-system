@@ -79,6 +79,10 @@ jest.mock('@system/features/system/components/fleet/DispatchLatencyTile', () => 
   DispatchLatencyTile: () => <div data-testid="dispatch-tile">DispatchLatencyTile</div>,
 }));
 
+jest.mock('@system/features/system/components/fleet/RemediationEffectivenessTile', () => ({
+  RemediationEffectivenessTile: () => <div data-testid="remediation-tile">RemediationEffectivenessTile</div>,
+}));
+
 jest.mock('@system/features/system/components/fleet/AttributionFeedbackButton', () => ({
   AttributionFeedbackButton: () => (
     <div data-testid="attribution-btn">AttributionFeedbackButton</div>
@@ -584,6 +588,15 @@ describe('FleetDashboardPage — counter tiles', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('dispatch-tile')).toBeInTheDocument(),
+    );
+  });
+
+  it('renders the RemediationEffectivenessTile stub', async () => {
+    mockPost.mockResolvedValue(signalsResponse([]));
+    renderDashboard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('remediation-tile')).toBeInTheDocument(),
     );
   });
 

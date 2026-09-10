@@ -10,6 +10,7 @@ import { useAuth } from '@/shared/hooks/useAuth';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 import { DispatchLatencyTile } from './DispatchLatencyTile';
+import { RemediationEffectivenessTile } from './RemediationEffectivenessTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
 import { BootReplayModal } from './boot-replay/BootReplayModal';
 
@@ -219,9 +220,11 @@ export function FleetDashboardPage(): React.JSX.Element {
         <HoneypotCanaryTile />
       </div>
 
-      {/* Phase 10.7 polish — dispatch pipeline metrics tile (Phase 10.5 backend). */}
-      <div className="px-4">
+      {/* Phase 10.7 polish — dispatch pipeline metrics tile (Phase 10.5 backend),
+          beside remediation effectiveness (IMP-01a05ae8). */}
+      <div className="px-4 grid grid-cols-1 md:grid-cols-2 gap-3">
         <DispatchLatencyTile />
+        <RemediationEffectivenessTile />
       </div>
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 p-4 overflow-hidden">

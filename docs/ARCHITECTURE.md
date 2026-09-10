@@ -518,6 +518,7 @@ Notable non-CRUD endpoints:
 - `POST /fleet/signals` — recent FleetEvent log
 - `POST /fleet/attribute_failure` — AttributeFailureExecutor wrapper
 - `POST /fleet/attribution_feedback` — confirm/reject attribution
+- `GET /fleet/remediation_outcomes` — remediation effectiveness per signal kind + the fingerprints DecisionEngine is escalating as stuck (`system.fleet.read`)
 - `POST /node_modules/:id/mark_canary` + `unmark_canary` — honeypot toggle
 
 ### 2. Worker token (`/api/v1/system/worker_api/*`)

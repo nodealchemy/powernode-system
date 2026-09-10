@@ -143,7 +143,85 @@ module Api
           end
         end
 
+        # GET /api/v1/system/fleet/remediation_outcomes
+        # Params: { window_days? } — 1..90, default 7.
+        #
+        # IMP-01a05ae8 — the operator read surface for RemediationOutcome, the
+        # ground truth for whether an autonomous remediation actually cleared its
+        # signal. Until this it was read only by the autonomy internals.
+        #
+        # Per signal_kind over the window: counts by status, and an effectiveness
+        # rate = mean RemediationOutcome#effectiveness_score over SETTLED rows.
+        # Pending and inconclusive rows carry no score, so a kind with nothing
+        # settled reports nil rather than a misleading 0%.
+        #
+        # `stuck` is the set of fingerprints the DecisionEngine is escalating as
+        # stuck right now, computed with the engine's own ineffective_streak and
+        # STUCK_STREAK_THRESHOLD so it cannot become a rival definition. It is
+        # not windowed, because the engine's streak is not.
+        def remediation_outcomes
+          require_permission("system.fleet.read")
+
+          account = current_user.account
+          window_days = (params[:window_days] || 7).to_i.clamp(1, 90)
+          since = window_days.days.ago
+          windowed = ::System::Fleet::RemediationOutcome.where(account: account, acted_at: since..)
+
+          counts = windowed.group(:signal_kind, :status).count
+          scores = Hash.new { |h, k| h[k] = [] }
+          windowed.where(status: %w[effective ineffective]).select(:id, :signal_kind, :status)
+                  .find_each { |outcome| scores[outcome.signal_kind] << outcome.effectiveness_score }
+
+          kinds = counts.keys.map(&:first).uniq.sort.map do |kind|
+            by_status = counts.each_with_object({}) { |((k, status), n), acc| acc[status] = n if k == kind }
+            outcome_summary(by_status, scores[kind]).merge(signal_kind: kind)
+          end
+          total_by_status = counts.each_with_object(Hash.new(0)) { |((_, status), n), acc| acc[status] += n }
+
+          render_success(
+            window_days: window_days,
+            since: since.iso8601,
+            kinds: kinds,
+            totals: outcome_summary(total_by_status, scores.values.flatten),
+            stuck: stuck_remediations(account)
+          )
+        end
+
         private
+
+        STUCK_CANDIDATE_LIMIT = 200
+        private_constant :STUCK_CANDIDATE_LIMIT
+
+        def outcome_summary(by_status, scores)
+          ::System::Fleet::RemediationOutcome::STATUSES.index_with { |s| by_status.fetch(s, 0) }.merge(
+            settled: scores.size,
+            effectiveness_rate: scores.empty? ? nil : (scores.sum / scores.size).round(4)
+          )
+        end
+
+        # Only a fingerprint with at least `threshold` ineffective rows can have
+        # a streak that long, so that is the cheap pre-filter; the verdict is
+        # the engine's own RemediationOutcome.ineffective_streak.
+        def stuck_remediations(account)
+          threshold = ::System::Fleet::DecisionEngine::STUCK_STREAK_THRESHOLD
+          candidates = ::System::Fleet::RemediationOutcome
+            .where(account: account, status: "ineffective")
+            .group(:fingerprint)
+            .having("COUNT(*) >= ?", threshold)
+            .order(Arel.sql("MAX(validated_at) DESC NULLS LAST"))
+            .limit(STUCK_CANDIDATE_LIMIT)
+            .pluck(:fingerprint, Arel.sql("MAX(signal_kind)"), Arel.sql("MAX(validated_at)"))
+
+          fingerprints = candidates.filter_map do |fingerprint, signal_kind, last_validated_at|
+            streak = ::System::Fleet::RemediationOutcome.ineffective_streak(account: account, fingerprint: fingerprint)
+            next if streak < threshold
+
+            { fingerprint: fingerprint, signal_kind: signal_kind, streak: streak,
+              last_validated_at: last_validated_at&.iso8601 }
+          end
+
+          { threshold: threshold, fingerprints: fingerprints }
+        end
 
         # Group boot events into phases for the Boot Replay timeline.
         # Returns a Hash<phase_label, {first_at, last_at, count}>.

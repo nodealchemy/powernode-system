@@ -40,6 +40,38 @@ export interface AttributionResult {
   reasoning: string;
 }
 
+// IMP-01a05ae8 — GET /system/fleet/remediation_outcomes. effectiveness_rate is
+// effective / (effective + ineffective); null when nothing has settled yet.
+export interface RemediationStatusCounts {
+  pending: number;
+  effective: number;
+  ineffective: number;
+  inconclusive: number;
+  settled: number;
+  effectiveness_rate: number | null;
+}
+
+export interface RemediationKindSummary extends RemediationStatusCounts {
+  signal_kind: string;
+}
+
+// A fingerprint the DecisionEngine is escalating as stuck right now (its
+// consecutive-ineffective streak has reached the threshold).
+export interface StuckRemediation {
+  fingerprint: string;
+  signal_kind: string;
+  streak: number;
+  last_validated_at: string | null;
+}
+
+export interface RemediationOutcomesSummary {
+  window_days: number;
+  since: string;
+  kinds: RemediationKindSummary[];
+  totals: RemediationStatusCounts;
+  stuck: { threshold: number; fingerprints: StuckRemediation[] };
+}
+
 export const fleetApi = {
   // Fetch recent fleet events. Initial backlog before subscribing live.
   recentSignals: async (params: {
@@ -60,6 +92,14 @@ export const fleetApi = {
     const response = await apiClient.post<ApiEnvelope<AttributionResult>>(
       '/system/fleet/attribute_failure',
       { instance_id: instanceId, lookback_hours: lookbackHours }
+    );
+    return extractData(response);
+  },
+
+  // Remediation effectiveness per signal kind + currently stuck fingerprints.
+  remediationOutcomes: async (windowDays = 7): Promise<RemediationOutcomesSummary> => {
+    const response = await apiClient.get<ApiEnvelope<RemediationOutcomesSummary>>(
+      `/system/fleet/remediation_outcomes?window_days=${encodeURIComponent(String(windowDays))}`
     );
     return extractData(response);
   },

@@ -2,7 +2,7 @@
 
 require "rails_helper"
 
-# IMP-27a8654e7c04 — WHICH principals can reach the four operator-facing fleet
+# IMP-27a8654e7c04 — WHICH principals can reach the five operator-facing fleet
 # endpoints. Written so the next reader does not have to re-derive it.
 #
 # Every other spec for these endpoints grants the permission synthetically
@@ -45,12 +45,14 @@ RSpec.describe "system fleet endpoint authorization", type: :request do
       post "/api/v1/system/fleet/attribution_feedback",
            params: { instance_id: instance.id, candidate_kind: "module", confirmed: true }.to_json,
            headers: headers_for(user)
+    when :remediation_outcomes
+      get "/api/v1/system/fleet/remediation_outcomes", headers: headers_for(user)
     end
 
     response.status == 403 ? :refused : :reached
   end
 
-  ENDPOINTS = %i[boot_replay signals attribute_failure attribution_feedback].freeze
+  ENDPOINTS = %i[boot_replay signals attribute_failure attribution_feedback remediation_outcomes].freeze
 
   # ── The grant-all rule ───────────────────────────────────────────────────
   #
@@ -145,7 +147,7 @@ RSpec.describe "system fleet endpoint authorization", type: :request do
   #   system.fleet.autonomy  "Fleet autonomy decision making (worker)"  grant: { system_worker: true }
   #   system.fleet.read      "View fleet / concierge state"             grant: { admin: true }
   #
-  # These four endpoints read fleet state; none of them makes an autonomy
+  # These five endpoints read fleet state; none of them makes an autonomy
   # decision. Pinned so a future edit cannot quietly re-point them at the
   # worker permission, and so the two stay distinguishable.
   describe "the fleet permission catalog" do

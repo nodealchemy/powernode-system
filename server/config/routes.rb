@@ -523,6 +523,8 @@ Rails.application.routes.draw do
         post "fleet/attribution_feedback",   to: "fleet#attribution_feedback"
         # Boot replay timeline — comprehensive stabilization sweep P7.1.
         get  "fleet/boot_replay",            to: "fleet#boot_replay"
+        # Remediation effectiveness + stuck fingerprints — IMP-01a05ae8.
+        get  "fleet/remediation_outcomes",   to: "fleet#remediation_outcomes"
 
         # === Module Marketplace (M-FE-2 — comprehensive sweep P7.2) ===
         # Browse-side catalog. Lists modules with trust tier badges and
