@@ -1,0 +1,329 @@
+# Signal kind → operator runbook.
+#
+# Campaign 01a08c9b ("Component status plane"), increment B4a; design §5.2
+# (docs/reference/component-status-plane-design-2026-09-10.md in the core repo).
+#
+# WHAT THIS IS FOR
+# ----------------
+# The remediation front door (Platform::RemediationRouter) attaches a runbook
+# to whatever it is about to offer an operator. Core's
+# Platform::Runbook::Registry (increment A5) is keyed by signal kind and loads
+# this file through System::Runbooks::Catalog. The mapping lives in the
+# extension because the extension owns the kinds: every key here must be bound
+# in System::Fleet::DecisionEngine::SIGNAL_BINDINGS, and every bound kind must
+# appear here. Both arms are asserted by
+# server/spec/services/system/runbooks/catalog_spec.rb — a new binding fails
+# that spec until it is given an entry, and an entry for a kind that no longer
+# exists fails it too.
+#
+# SCHEMA
+# ------
+# <signal.kind>:
+#   doc: "<extension-relative path>#<anchor>"   # e.g. docs/runbooks/foo.md#bar
+# OR
+#   not_documented: true
+#   reason: "<what a runbook would have to say>"
+#
+# Exactly one of `doc:` / `not_documented:` per entry; no other keys.
+#
+# Paths are relative to the EXTENSION root (extensions/system/), not the core
+# repo root — the extension is a submodule with its own checkout and a
+# parent-anchored path resolves to nothing there.
+#
+# Anchors follow GitHub's heading-slug rule, reproduced in
+# System::Runbooks::Catalog.slug: downcase, trim, drop everything that is not
+# a letter/digit/space/hyphen/underscore, then map each space to a hyphen —
+# one for one, with no collapsing and no re-trim. That is why an anchor for a
+# heading like "Phase 4 — Run ✅" is `phase-4--run-`: the em dash and the emoji
+# vanish and the spaces around them do not. The spec resolves every anchor
+# against the file's real headings (code fences excluded), so a hand-tidied
+# anchor is a failure, not a nicety.
+#
+# `not_documented` is a DECISION, not a TODO: it says a reader was sent to the
+# 26 hand-authored runbooks and none of them addresses this kind. The reason
+# names what a runbook would need to cover, so the gap is a writable brief.
+
+# ── Instance lifecycle ────────────────────────────────────────────────────
+system.instance_silent:
+  doc: "docs/runbooks/node-provisioning.md#per-state-error-recovery"
+
+system.instance_state_drifted:
+  doc: "docs/runbooks/node-provisioning.md#per-state-error-recovery"
+
+system.instance_unrecoverable:
+  not_documented: true
+  reason: >-
+    No runbook covers the disaster-recovery REPLACE composite that
+    ReplaceInstanceExecutor performs (pool acquire → volume detach/attach →
+    SDWAN re-enrol → VIP holder move, with the reap parked behind a second
+    approval on system.instance_reap). node-provisioning.md documents a fresh
+    provision and a decommission, never the swap of a dead instance for a live
+    one, and the operator question here is which of those five steps already
+    landed before the failure.
+
+# ── Module and template convergence ───────────────────────────────────────
+system.module_drift:
+  doc: "docs/runbooks/node-provisioning.md#phase-4--run-"
+
+system.config_drift:
+  doc: "docs/runbooks/template-authoring.md#phase-5--apply-the-template-to-a-node-"
+
+system.template_closure_drift:
+  doc: "docs/runbooks/template-authoring.md#phase-5--apply-the-template-to-a-node-"
+
+system.module_promotion_ready:
+  doc: "docs/runbooks/module-authoring.md#phase-6--verify-publication-"
+
+system.module_promotion_stalled:
+  doc: "docs/runbooks/module-authoring.md#phase-6--verify-publication-"
+
+system.module_verify_failed:
+  doc: "docs/runbooks/module-signature-verification.md#things-that-will-bite"
+
+system.module_verify_not_measured:
+  doc: "docs/runbooks/module-signature-verification.md#step-2--audit-fleet-wide-measure"
+
+# ── Boot images ───────────────────────────────────────────────────────────
+system.boot_image_drift:
+  doc: "docs/runbooks/ops-hub-boot-image-reprovision.md#path-a--preserve-persist-recommended"
+
+system.boot_image_stale:
+  doc: "docs/runbooks/disk-image-ci.md#phase-3--trigger-a-build-"
+
+system.boot_image_staleness_not_measured:
+  not_documented: true
+  reason: >-
+    A runbook would have to name the three SiteSettings BootImageStalenessSensor
+    reads (source repo, branch, content paths) and give the operator a way to
+    tell an unset repo, a revoked git credential and a renamed path apart —
+    all three produce "cannot measure", and the whole point of the kind is that
+    they must not read as "the image is current".
+
+system.disk_image_publication_failure_streak:
+  doc: "docs/runbooks/disk-image-ci.md#troubleshooting"
+
+system.node_lkg_unarmed:
+  not_documented: true
+  reason: >-
+    Nothing documents the last-known-good boot slot from the operator's side:
+    what arms an LKG, why /persist/var/lib/powernode is the real target, and
+    what an unarmed node loses on the next bad image. ops-hub-boot-image-reprovision.md
+    covers re-provisioning one host, not the fleet-wide LKG invariant.
+
+system.node_lkg_stale:
+  not_documented: true
+  reason: >-
+    Same gap as system.node_lkg_unarmed, one state over: a runbook would have to
+    say how old an armed LKG may be before it is a liability rather than a
+    safety net, and how to re-capture one without rebooting the node.
+
+# ── Certificates and credentials ──────────────────────────────────────────
+system.cert_expiring:
+  not_documented: true
+  reason: >-
+    A runbook would have to say what the platform CANNOT do here: a node's mTLS
+    identity key never leaves the node, so re-issue needs a CSR the agent
+    generates and there is no platform-side rotate. The operator procedure is
+    an agent-side re-enrol, and no runbook describes it —
+    acme-issuance.md covers Traefik-terminated ACME certs, a different store
+    with a different remediation.
+
+system.acme_cert_expiring:
+  doc: "docs/runbooks/acme-issuance.md#step-4--renew-manual-or-automatic"
+
+system.sdwan_credential_expiring:
+  not_documented: true
+  reason: >-
+    SDWAN membership credentials appear in no runbook. One would have to give
+    the not_after window, the agent's refresh-before-expiry loop, and the
+    operator-visible difference between "the agent will refresh on its next
+    reconcile" (advisory) and "re-issue now" (urgent).
+
+system.sdwan_credential_refresh_stalled:
+  not_documented: true
+  reason: >-
+    The escalation half of the gap above: a runbook would have to say how to
+    confirm that no newer revision exists for a (peer, network) pair, and what
+    an operator does when SdwanCredentialRefreshExecutor keeps failing —
+    re-issue, or detach the peer.
+
+# ── SDWAN topology and reachability ───────────────────────────────────────
+system.sdwan_peer_drift:
+  doc: "docs/runbooks/sdwan-network-setup.md#troubleshooting"
+
+system.sdwan_hub_unreachable:
+  doc: "docs/runbooks/sdwan-network-setup.md#troubleshooting"
+
+system.sdwan_vip_unreachable:
+  doc: "docs/runbooks/federation-troubleshooting.md#symptom-federated-peer-cant-reach-a-service-vip"
+
+system.sdwan_portmap_orphaned:
+  doc: "docs/runbooks/sdwan-network-setup.md#phase-4--port-mappings-inbound-traffic-"
+
+system.sdwan_service_silent:
+  doc: "docs/runbooks/publish-service.md#troubleshooting"
+
+system.sdwan_user_device_config_stale:
+  doc: "docs/runbooks/sdwan-network-setup.md#phase-7--user-devices-wireguard-vpn-"
+
+system.sdwan_bgp_session_unhealthy:
+  doc: "docs/runbooks/sdwan-network-setup.md#phase-8--ibgp--frr-routing-slice-9c-"
+
+system.sdwan_bgp_session_stale:
+  doc: "docs/runbooks/sdwan-network-setup.md#phase-8--ibgp--frr-routing-slice-9c-"
+
+system.sdwan_bgp_observation_unattributable:
+  not_documented: true
+  reason: >-
+    A runbook would have to explain the observation-quality kinds the BGP sensor
+    emits alongside its health kinds: what makes a session observation
+    unattributable (a peering whose FRR report names no peer this account owns)
+    and why that is an operator problem rather than a session problem.
+
+system.sdwan_bgp_observation_not_measured:
+  not_documented: true
+  reason: >-
+    Its silence counterpart — a runbook would have to say how to tell "no FRR
+    report arrived" from "the session is fine", and which of the two the
+    absence of a BGP alarm actually means.
+
+system.sdwan_ovn_deployment_degraded:
+  doc: "docs/runbooks/federation-troubleshooting.md#symptom-tenant-isolation-slice-half-built-partial"
+
+system.sdwan_ovn_activation_stalled:
+  doc: "docs/runbooks/federation-troubleshooting.md#symptom-tenant-isolation-slice-half-built-partial"
+
+system.sdwan_apply_failed:
+  not_documented: true
+  reason: >-
+    No runbook covers the on-node SDWAN apply arc. One would have to say where
+    an apply result is reported, how to read a failed apply against the compiled
+    intent that produced it, and when a re-compile is the answer instead of a
+    re-apply.
+
+system.sdwan_apply_not_measured:
+  not_documented: true
+  reason: >-
+    The freshness half of the gap above: a runbook would have to give the
+    report-freshness and heartbeat windows the sensor resolves, so an operator
+    can tell a node that reported nothing from a node that reported success.
+
+# ── Federation ────────────────────────────────────────────────────────────
+system.federation_peer_liveness:
+  doc: "docs/runbooks/federation-troubleshooting.md#symptom-peer-flapped-to-degraded-by-the-liveness-loop-not-the-sweep"
+
+# ── Supply chain ──────────────────────────────────────────────────────────
+system.cve_critical_published:
+  doc: "docs/runbooks/cve-response.md#phase-1--cve-ingest-"
+
+system.module_critical_upgrade_ready:
+  doc: "docs/runbooks/cve-response.md#phase-5--approval-"
+
+system.package_drift_pressure:
+  not_documented: true
+  reason: >-
+    A runbook would have to separate the two things this kind is confused for:
+    the remediation is a package REPOSITORY metadata sync, not a module refresh,
+    and the operator's real decision is whether the drifted package carries an
+    unresolved CVE exposure. vendored-binary-bump.md covers binaries the repo
+    vendors, which is a different supply chain.
+
+# ── Storage ───────────────────────────────────────────────────────────────
+system.storage_assignment_drift:
+  doc: "docs/runbooks/storage-migration.md#failure-modes"
+
+system.volume_snapshot_due:
+  not_documented: true
+  reason: >-
+    Per-project snapshot schedules appear in no runbook. One would have to give
+    the resolution ladder for snapshot_interval_hours (template → account →
+    SiteSetting → off), and say that a zero means "off" rather than "every
+    tick".
+
+system.volume_snapshot_prunable:
+  not_documented: true
+  reason: >-
+    The retention half of the gap above: a runbook would have to state the
+    retention rule a prunable snapshot has outlived, and make explicit that
+    pruning is destructive and separately gated.
+
+# ── GitOps ────────────────────────────────────────────────────────────────
+system.gitops.drift_detected:
+  doc: "docs/runbooks/gitops-reconciliation.md#step-3--review-proposals"
+
+# ── Platform / control plane ──────────────────────────────────────────────
+system.task_backlog_stuck:
+  not_documented: true
+  reason: >-
+    A runbook would have to say what the task janitor reaps, why the sensor
+    reads the backlog property rather than the reaper's own success report, and
+    what an operator does about a backlog the janitor is failing to drain.
+
+system.replica_lag_unsafe:
+  not_documented: true
+  reason: >-
+    Nothing documents the Postgres replica the promote-replica lane protects.
+    A runbook would have to give the max_lag_bytes SiteSetting, what a lag
+    reading of "not measured" means, and the data-loss decision an operator is
+    actually being asked to make.
+
+system.honeypot_access:
+  not_documented: true
+  reason: >-
+    No security runbook exists in this set. One would have to say what a
+    honeypot endpoint is, what a hit does and does not prove, and the
+    containment step an operator takes before anything is torn down.
+
+system.capability_gap:
+  doc: "docs/runbooks/governance-gaps.md#what-an-offer-means"
+
+system.governance_gap:
+  doc: "docs/runbooks/governance-gaps.md#a-fleetgovernance_gap_stuck-event"
+
+system.slo_violation:
+  not_documented: true
+  reason: >-
+    Deliberately none: SloViolationSensor is DORMANT by decision
+    (IMP-6355c5adc382) — nothing in the repo creates a System::Slo::Definition,
+    so the kind cannot fire. A runbook here would document a path no operator
+    can reach; the reachable one is system.project_slo_violation.
+
+# ── Projects / missions ───────────────────────────────────────────────────
+system.project_slo_violation:
+  not_documented: true
+  reason: >-
+    The project telemetry plane has no runbook. One would have to give the SLO
+    resolution ladder (mission → template → account → SiteSetting), where
+    System::ProjectMetric rows come from, and what an operator changes when a
+    mission keeps breaching.
+
+system.project_drift:
+  not_documented: true
+  reason: >-
+    Same plane, different question: a runbook would have to say what a project's
+    declared shape is, what drifted from it, and whether the answer is to move
+    the declaration or the fleet.
+
+system.project_cost_breach:
+  not_documented: true
+  reason: >-
+    A runbook would have to name the budget the mission breached, where it is
+    configured, and the two operator answers (raise the budget or stop the
+    work) — including that no budget may be hard-coded.
+
+system.project_target_unmeasurable:
+  not_documented: true
+  reason: >-
+    The not-measured arm of the project plane: a runbook would have to say that
+    an unmeasurable target is distinct from a met one, name the collector that
+    should have produced the metric, and give the check for "the collector ran
+    and found nothing" versus "the collector never ran".
+
+# ── Out of scope for this platform ────────────────────────────────────────
+system.trading_pressure_observed:
+  not_documented: true
+  reason: >-
+    The trading extension is out of scope for this deployment, so no operator
+    runbook is owed. A runbook would only be written alongside that extension,
+    and would have to describe a market-pressure response this repo does not
+    perform.
