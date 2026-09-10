@@ -2064,6 +2064,30 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       user_tool.execute(params: { action: action }.merge(rest))
 end
 
+    # IMP-01a07b6c. THE DOOR, not the dispatcher: INV-1 was enforced only on
+    # the fleet drift-rollout executor's plan-time partition, and this verb
+    # reached System::BootImage::UpgradeDispatcher.dispatch! directly with no
+    # fence — so an operator could queue an upgrade-and-REBOOT of the node
+    # running this control plane. Asserted here as well as on the dispatcher
+    # because a fence only matters at the surfaces callers actually use, and
+    # this verb reshapes the dispatcher's Result before returning it.
+    it "refuses to upgrade the node hosting this control plane (INV-1)" do
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("INV-1")
+    end
+
+    it "queues no task on that refusal" do
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      expect {
+        call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+      }.not_to change(System::Task, :count)
+    end
+
     it "rejects upgrades for instances from other accounts (access control)" do
       other_account = create(:account)
       other_node = create(:system_node, account: other_account)

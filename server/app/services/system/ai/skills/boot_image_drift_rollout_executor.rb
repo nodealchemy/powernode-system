@@ -23,14 +23,17 @@ module System
         # self-detach class System::Compliance::RcpInvariantScanner reports as
         # "blocked at the actuator".
         #
-        # It was NOT blocked, because nothing downstream of here carries a
-        # fence: UpgradeDispatcher.dispatch! has none, the System::Task it
-        # writes has none, and ExecutionDispatcher has none — the whole path
-        # from this planner to the on-node handler is unfenced. (The fences
-        # that do exist — ProvisioningService, PlatformResilienceExecutor,
-        # DecisionEngine's own reboot/converge lanes, ReplicaReconciler — sit on
-        # OTHER paths this rollout never enters.) Plan time is therefore the
-        # only seam where INV-1 can be enforced for a boot-image rollout.
+        # Downstream of here the System::Task this planner writes still carries
+        # no fence, and neither does ExecutionDispatcher. UpgradeDispatcher DOES
+        # now, as of IMP-01a07b6c — it had none when this comment was written,
+        # which is how the MCP verb system_upgrade_boot_image reached it
+        # unfenced while this planner was the only door that checked.
+        #
+        # The plan-time exclusion below is kept anyway, and is not redundant
+        # with it: excluding at PLAN time means the batch an operator is shown
+        # never lists the plane's own node, and the exclusion is REPORTED in
+        # self_managed_excluded. A dispatch-time refusal would come after the
+        # operator had already been told the node would be rebooted.
         # Inert until an operator configures SiteSetting `self_hosting_node_id`.
         include ::System::Autonomy::SelfManagementFence
 

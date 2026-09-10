@@ -63,6 +63,98 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
   end
 
   describe ".dispatch!" do
+    # IMP-01a07b6c. INV-1 (no self-management) was enforced on ONE of the two
+    # doors into this dispatcher. BootImageDriftRolloutExecutor partitions the
+    # self-hosting node out at PLAN time and reports it in
+    # self_managed_excluded; the MCP verb system_upgrade_boot_image called
+    # dispatch! directly (system_fleet_tool.rb:3866) with no fence at all, so an
+    # operator could queue an upgrade-and-REBOOT of the very node running this
+    # control plane — the single fault the whole RCP campaign traces back to.
+    #
+    # Fixed HERE rather than in the verb, which is this class's own stated
+    # design: "Both the operator MCP action and the fleet drift-rollout
+    # executor go through here so the FAIL-CLOSED guards live in exactly ONE
+    # place — no caller can ever queue an unverifiable boot image." INV-1 is
+    # the same kind of claim about the same chokepoint, and adding it to the
+    # verb would have left the next caller unfenced too.
+    describe "the INV-1 self-management fence" do
+      before do
+        setup_platform
+        setup_publication
+        # The cosign key the verifiability chain needs, so the SURVIVAL
+        # examples below reach a real dispatch rather than a guard.
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+      end
+
+      it "refuses to upgrade the node hosting this control plane" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+
+        result = described_class.dispatch!(instance: instance, source: "mcp_upgrade_boot_image")
+
+        expect(result.ok?).to be false
+        expect(result.reason).to match(/INV-1/)
+        expect(result.upgraded).to be false
+        expect(result.task).to be_nil
+      end
+
+      it "queues no task at all for that node" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+
+        expect {
+          described_class.dispatch!(instance: instance, source: "mcp_upgrade_boot_image")
+        }.not_to change(System::Task, :count)
+      end
+
+      # `force` exists to skip the already-current short-circuit and the
+      # in-flight dedup. INV-1 is an architectural gate, not a convenience one:
+      # an operator who can pass force: true is exactly the caller this refusal
+      # is for.
+      it "is not bypassable with force" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+
+        result = described_class.dispatch!(
+          instance: instance, source: "mcp_upgrade_boot_image", force: true
+        )
+
+        expect(result.ok?).to be false
+        expect(result.reason).to match(/INV-1/)
+      end
+
+      # Runs BEFORE the cosign/UKI chain. "You may not act on this node at all"
+      # precedes "is the image verifiable" — and a reason naming a missing UKI
+      # would send an operator to republish an image that was never the problem.
+      it "refuses before the verifiability guards, so the reason names the real cause" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+        platform_record.update!(disk_image_git_sha: nil)
+
+        result = described_class.dispatch!(instance: instance, source: "mcp_upgrade_boot_image")
+
+        expect(result.reason).to match(/INV-1/)
+        expect(result.reason).not_to match(/no promoted disk image/)
+      end
+
+      # The SURVIVAL half. The fence is nil-safe and inert by default, and a
+      # dispatcher that refused every node would pass every example above.
+      it "dispatches normally for any other node" do
+        other_node = create(:system_node, account: account, node_template: template)
+        SiteSetting.set("self_hosting_node_id", other_node.id)
+
+        result = described_class.dispatch!(instance: instance, source: "mcp_upgrade_boot_image")
+
+        expect(result.ok?).to be true
+        expect(result.upgraded).to be true
+      end
+
+      it "dispatches normally when no self-hosting node is configured" do
+        result = described_class.dispatch!(instance: instance, source: "mcp_upgrade_boot_image")
+
+        expect(result.ok?).to be true
+        expect(result.upgraded).to be true
+      end
+    end
+
     describe "fail-closed guards" do
       it "returns err when instance has no resolvable platform" do
         # Create a mock instance with node returning nil for node_platform

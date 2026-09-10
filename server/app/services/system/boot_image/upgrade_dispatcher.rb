@@ -15,6 +15,20 @@ module System
     # no UKI cosign bundle. Then: no-op when already current (unless force),
     # and in-flight dedup (unless force).
     class UpgradeDispatcher
+      # INV-1 (no self-management) belongs HERE for the same reason the cosign
+      # chain does: this is the one place both doors pass through. It used to be
+      # enforced on only one of them — BootImageDriftRolloutExecutor partitions
+      # the self-hosting node out at PLAN time and reports it in
+      # self_managed_excluded, while the MCP verb system_upgrade_boot_image
+      # called .dispatch! directly with no fence, so an operator could queue an
+      # upgrade-and-REBOOT of the node running this control plane
+      # (IMP-01a07b6c). That is the single fault the RCP campaign traces every
+      # hard failure back to: "ops-hub is its own control plane."
+      #
+      # Adding the check to the verb instead would have fenced one caller and
+      # left the next one to rediscover this.
+      include ::System::Autonomy::SelfManagementFence
+
       Result = Struct.new(:upgraded, :task, :reason, :already_current, :deduplicated, :target_git_sha,
                           keyword_init: true) do
         def ok? = reason.nil?
@@ -162,6 +176,27 @@ module System
       end
 
       def dispatch!
+        # FIRST, ahead of the verifiability chain and ahead of `force`.
+        #
+        # Ordering is not cosmetic: "you may not act on this node at all"
+        # precedes "is this image verifiable", and a refusal naming a missing
+        # UKI would send an operator to republish an image that was never the
+        # problem. `force` skips the already-current short-circuit and the
+        # in-flight dedup — it is a convenience lever, and INV-1 is an
+        # architectural gate, so it must not reach past this.
+        #
+        # Returns a refusal Result rather than raising SelfManagementViolation,
+        # matching every other guard in this class: both callers already handle
+        # `reason`, and a raise would need rescuing at each of them — which is
+        # the per-caller handling this fix exists to remove.
+        if self_managed_target?(@instance)
+          return err(
+            "refusing to upgrade the boot image of node #{@instance.node_id.inspect} — it is " \
+            "this control plane's own hosting node (INV-1: no self-management). Upgrade it " \
+            "out-of-band from the consensus group."
+          )
+        end
+
         platform = @instance.node&.node_platform
         # The UKI pins + cosign bundle come from the promoted PUBLICATION ROW
         # (single source of truth), NOT the NodePlatform.disk_image_uki_* columns:
