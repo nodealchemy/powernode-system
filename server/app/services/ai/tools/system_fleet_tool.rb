@@ -6909,7 +6909,7 @@ module Ai
           # Environment campaign, incr. 4: the pinned planes serving this row.
           pinned_in: pinned_environment_slugs(v),
           oci_digest: v.try(:oci_digest),
-          fsverity_root_hash: v.try(:fsverity_root_hash),
+          fsverity_root_hash: v.try(:fsverity_root_hash)
         }
       end
 
