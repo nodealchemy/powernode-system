@@ -303,8 +303,11 @@ module Api
         #
         # Narrow by design: a NON-BLANK value is an operator supplying a path
         # in the belief it authenticates something — the actual harm. A blank
-        # or nil value expresses "no auth", is a harmless no-op, and passes
-        # (persisting nothing, now that the permit is gone).
+        # or nil value expresses "no auth", is a harmless no-op, and passes.
+        #
+        # The column itself is gone (IMP-01a05afd), so nothing could persist
+        # it now even if the permit came back. This guard stays: it is what
+        # tells the operator the field does nothing, instead of a silent drop.
         #
         # `Rails.env.local?` is true for development AND test, so under test the
         # setting is `:log`, not `:raise`. The spec that asserts a blank value

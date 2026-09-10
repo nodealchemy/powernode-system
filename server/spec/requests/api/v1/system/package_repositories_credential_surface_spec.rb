@@ -87,11 +87,9 @@ RSpec.describe "/api/v1/system/package_repositories credential surface", type: :
       expect(repo.name).to eq("auth-apt")
     end
 
-    # Load-bearing for the PERMIT REMOVAL specifically (distinct from the 422
-    # guard): a blank value passes the guard, so if `:vault_credential_path`
-    # were still in the `permit(...)` list the empty string would be persisted
-    # and this expectation would see "" instead of nil.
-    it "accepts a blank vault_credential_path but never persists it" do
+    # A blank value passes the guard ("no auth" is a harmless no-op) and there
+    # is nowhere left to put it: IMP-01a05afd dropped the column.
+    it "accepts a blank vault_credential_path, which has nowhere to persist" do
       params = { package_repository: base_attrs.merge(vault_credential_path: "") }
 
       post "/api/v1/system/package_repositories", params: params.to_json,
@@ -99,7 +97,20 @@ RSpec.describe "/api/v1/system/package_repositories credential surface", type: :
 
       expect(response).to have_http_status(:created)
       repo = System::PackageRepository.find(json_response_data["package_repository"]["id"])
-      expect(repo.vault_credential_path).to be_nil
+      expect(repo.attributes).not_to have_key("vault_credential_path")
+    end
+  end
+
+  # IMP-01a05afd — the column itself is gone, not just unreachable. Both arms:
+  # the SAME-named column on system_gitops_repositories is live (the GitOps
+  # sync reads Vault through it), so a drop aimed at the wrong table fails here.
+  describe "the column" do
+    it "no longer exists on system_package_repositories" do
+      expect(System::PackageRepository.column_names).not_to include("vault_credential_path")
+    end
+
+    it "still exists on system_gitops_repositories, where it is read" do
+      expect(System::GitopsRepository.column_names).to include("vault_credential_path")
     end
   end
 
@@ -128,9 +139,8 @@ RSpec.describe "/api/v1/system/package_repositories credential surface", type: :
                                                               headers: auth_headers_for(user_a)
 
       expect(response).to have_http_status(:unprocessable_content)
-      # Row-level assertions — these fail if the guard renders without halting.
+      # Row-level assertion — this fails if the guard renders without halting.
       expect(repo.reload.description).to eq("before")
-      expect(repo.vault_credential_path).to be_nil
     end
 
     it "still updates normally when the field is absent" do
