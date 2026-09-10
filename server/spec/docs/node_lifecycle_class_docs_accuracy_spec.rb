@@ -18,10 +18,11 @@ require "yaml"
 #     so the wrong call succeeds and teaches the wrong model.
 #   * NOT READABLE. `serialize_node` emits eight keys and none is
 #     `lifecycle_class`; no serializer under server/app/serializers/ mentions it.
-#   * NOT FILTERABLE. `system_list_nodes` declares exactly one FILTER
-#     parameter, `template_id` (alongside the shared `limit`/`cursor` page
-#     controls, which select a POSITION, not a subset), and `list_nodes` has
-#     exactly one where-clause.
+#   * NOT FILTERABLE. `system_list_nodes` declares exactly two FILTER
+#     parameters, `template_id` and `environment` (alongside the shared
+#     `limit`/`cursor` page controls, which select a POSITION, not a subset).
+#     `list_nodes` applies them in one where-clause and one
+#     `narrow_to_environment` call respectively; neither is `lifecycle_class`.
 #   * AND, SINCE IMP-19843220ac68, NOT WRITTEN EITHER — but "nothing sets it"
 #     is still a sentence to write carefully, because it was wrong twice
 #     before. Until that change `InstancePoolService#provision_warming_member!`
@@ -248,11 +249,17 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     # `include` check. The page controls are cited from their one definition
     # rather than restated, so this stays an equality oracle on the FILTER
     # surface while APO-8b's `limit`/`cursor` ride along — those select a
-    # position in the result, not a subset of it, which is why the doc row
-    # below can still call template_id the only filter.
-    it "declares exactly template_id on system_list_nodes — no status, no lifecycle_class" do
+    # position in the result, not a subset of it.
+    #
+    # It earned its keep: the environment-plane campaign added `environment` as
+    # a second real filter, and this example is what reported it, while the
+    # doc-row example below went on passing because that row still CONTAINED
+    # the words it was asked to look for. A doc assertion can only catch a doc
+    # that stopped saying something; only the code-side equality catches a doc
+    # that stopped being true.
+    it "declares exactly template_id and environment on system_list_nodes — no status, no lifecycle_class" do
       params = defs.fetch("system_list_nodes").fetch(:parameters)
-      expect(params.keys).to eq([ :template_id, *Ai::Tools::BaseTool::PAGINATION_PARAMETERS.keys ])
+      expect(params.keys).to eq([ :template_id, :environment, *Ai::Tools::BaseTool::PAGINATION_PARAMETERS.keys ])
     end
 
     # POSITIVE enumeration, not `not_to include(:lifecycle_class)`: a rename of
@@ -269,12 +276,17 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
                   allocate_public_ip config])
     end
 
-    it "has exactly one where-clause in list_nodes, on node_template_id" do
+    # Both filters, pinned where they are APPLIED rather than where they are
+    # declared: a parameter that reaches :parameters but never narrows the
+    # relation is a filter in name only, and that is not distinguishable from
+    # a working one at the declaration site.
+    it "applies exactly its two declared filters in list_nodes" do
       src = self.class.read(ext_root, "server/app/services/ai/tools/system_fleet_tool.rb")
       body = src[/def list_nodes\(params\)(.*?)\n      end\n/m, 1]
       expect(body).not_to be_nil, "list_nodes not found — the filter claim below is unpinned"
       expect(body.scan(/\.where\(/).length).to eq(1)
       expect(body).to include("scope.where(node_template_id: params[:template_id])")
+      expect(body).to include("narrow_to_environment(account_nodes, params)")
     end
 
     it "serializes ten node keys, none of them lifecycle_class" do
@@ -546,11 +558,17 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       expect(offenders).to be_empty
     end
 
-    it "names template_id as the only system_list_nodes filter" do
+    # Names BOTH filters. The previous form asked only that the row match
+    # /only filter/i, which stayed green through the addition of a second one:
+    # a phrase the row still contained said nothing about whether it was still
+    # true. Enumerate what the surface declares instead.
+    it "names both system_list_nodes filters and no third" do
       row = doc.lines.find { |l| l.start_with?("| `system_list_nodes`") }
       expect(row).not_to be_nil
       expect(row).to include("template_id")
-      expect(row).to match(/only filter/i)
+      expect(row).to include("environment")
+      expect(row).to match(/two FILTERS/)
+      expect(row).to match(/lifecycle_class/)
     end
   end
 

@@ -68,7 +68,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 
 | Action | What it does | Audience |
 |---|---|---|
-| `system_list_nodes` | List Node rows, one page at a time (`limit` / `cursor`). `template_id` is the only FILTER it declares — there is no status or `lifecycle_class` filter, and an undeclared key is dropped silently, so filtering by one returns the unfiltered list with no error | operator, agent |
+| `system_list_nodes` | List Node rows, one page at a time (`limit` / `cursor`). It declares exactly two FILTERS, `template_id` and `environment` — there is no status and no `lifecycle_class` filter, and an undeclared key is dropped silently, so filtering by one returns the unfiltered list with no error. `environment` fails closed: a plane this account does not have is an error, never a silent whole-fleet answer | operator, agent |
 | `system_get_node` | Fetch a Node by id | operator, agent |
 | `system_create_node` | Create a Node row (no provider VM yet) | operator, agent |
 | `system_list_instances` | List NodeInstance rows | operator, agent |
