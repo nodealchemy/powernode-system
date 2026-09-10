@@ -27,6 +27,33 @@ const redirectTo = (to: string): ComponentType<unknown> =>
     return React.createElement(Navigate, { to, replace: true });
   } as ComponentType<unknown>;
 
+// C10 review FIX-2: a splat redirect built from `redirectTo` closes over a
+// CONSTANT target, so the `*` is discarded and every old sub-path collapses
+// to the same destination. That is fine when no old sub-path has a single
+// clean equivalent (e.g. /system/federation/monitor — its content split
+// three ways, see PlatformInfraTab.tsx and SdwanHubPage.tsx), but wrong for
+// /system/federation/control, which has an exact new home
+// (ServiceDeliveryPage's Peers tab).
+//
+// Reads `window.location.pathname` directly rather than `useLocation()` so
+// this stays a plain function — callable directly (as register.test.ts
+// does) or mounted by the router — with no Router-context dependency
+// either way. Locates `matchSegment` by NAME rather than assuming a fixed
+// prefix, so it does not need to know what this route is mounted under
+// (`/app/system/federation/control` vs a bare `/system/federation/control`
+// in a future remount both resolve the same way).
+const redirectBySubpath = (
+  matchSegment: string,
+  subpathTargets: Record<string, string>,
+  fallback: string,
+): ComponentType<unknown> =>
+  function LegacySubpathRedirect() {
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    const rest = segments[segments.indexOf(matchSegment) + 1];
+    const to = (rest && subpathTargets[rest]) || fallback;
+    return React.createElement(Navigate, { to, replace: true });
+  } as ComponentType<unknown>;
+
 const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverviewPage'));
 // Drill-down pages still routed standalone (no tab equivalent).
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
@@ -116,8 +143,19 @@ export function register(): void {
 
     // FederationHubPage (the Phase 3 standalone multi-site hub) was merged
     // into ServiceDeliveryPage (fe-dupes.md §10 item 16). Old
-    // /system/federation deep-links redirect to the merged page.
-    { path: '/system/federation/*', component: redirectTo('/app/system/service-delivery') },
+    // /system/federation deep-links redirect to the merged page — /control
+    // has an exact equivalent (the Peers tab); every other sub-path
+    // (including bare /system/federation and /monitor, whose content split
+    // three ways) lands on the page root, which forwards to the operator's
+    // first accessible tab.
+    {
+      path: '/system/federation/*',
+      component: redirectBySubpath(
+        'federation',
+        { control: '/app/system/service-delivery/peers' },
+        '/app/system/service-delivery',
+      ),
+    },
 
     // Service Delivery — federated service catalog (Offerings +
     // Subscriptions + Catalog Browser + Children + Fulfillment) plus, since

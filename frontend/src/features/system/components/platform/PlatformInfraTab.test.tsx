@@ -13,6 +13,15 @@ import { PlatformInfraTab } from './PlatformInfraTab';
 // redirects) without triggering child API calls.
 // =============================================================================
 
+// Configurable so both-arms tests can prove the C10 review FIX-1 gates on
+// PeerLivenessMonitor / NetworkVipPicker actually gate something (they are
+// real JSX checks inside PeersTab/DiscoveryTab, independent of the
+// best-effort tab strip).
+let mockHasPermission = jest.fn(() => true);
+jest.mock('@/shared/hooks/usePermissions', () => ({
+  usePermissions: () => ({ hasPermission: (...args: unknown[]) => mockHasPermission(...args) }),
+}));
+
 jest.mock('./PlatformOverviewCards', () => ({
   PlatformOverviewCards: () => <div data-testid="platform-overview-cards" />,
 }));
@@ -95,6 +104,11 @@ function renderAt(path: string) {
 // =============================================================================
 
 describe('PlatformInfraTab', () => {
+  beforeEach(() => {
+    mockHasPermission = jest.fn(() => true);
+  });
+
+
   // ── Overview cards ──────────────────────────────────────────────────────────
 
   it('always renders the PlatformOverviewCards header', () => {
@@ -200,15 +214,30 @@ describe('PlatformInfraTab', () => {
     expect(screen.getByTestId('service-subscriptions-panel')).toBeInTheDocument();
   });
 
-  it('renders PeerLivenessMonitor and PeersPanel for /peers route', () => {
+  it('renders PeerLivenessMonitor and PeersPanel for /peers route when system.peers.read is held', () => {
     renderAt(`${BASE}/peers`);
     expect(screen.getByTestId('peer-liveness-monitor')).toBeInTheDocument();
     expect(screen.getByTestId('peers-panel')).toBeInTheDocument();
   });
 
-  it('renders NetworkVipPicker for /discovery route', () => {
+  it('hides PeerLivenessMonitor but keeps PeersPanel without system.peers.read (C10 review FIX-1)', () => {
+    mockHasPermission = jest.fn((perm: string) => perm !== 'system.peers.read');
+    renderAt(`${BASE}/peers`);
+    expect(screen.queryByTestId('peer-liveness-monitor')).not.toBeInTheDocument();
+    // PeersPanel is unaffected — it already rendered unconditionally on the
+    // old page's Compute/Platform/Peers sub-tab (review §3, FIX-1 mitigation).
+    expect(screen.getByTestId('peers-panel')).toBeInTheDocument();
+  });
+
+  it('renders NetworkVipPicker for /discovery route when system.sdwan.vips.manage is held', () => {
     renderAt(`${BASE}/discovery`);
     expect(screen.getByTestId('network-vip-picker')).toBeInTheDocument();
+  });
+
+  it('hides NetworkVipPicker without system.sdwan.vips.manage (C10 review FIX-1)', () => {
+    mockHasPermission = jest.fn((perm: string) => perm !== 'system.sdwan.vips.manage');
+    renderAt(`${BASE}/discovery`);
+    expect(screen.queryByTestId('network-vip-picker')).not.toBeInTheDocument();
   });
 
   it('renders ChildrenPanel for /children route', () => {

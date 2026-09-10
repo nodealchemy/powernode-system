@@ -159,17 +159,41 @@ describe('registered routes', () => {
   // FederationHubPage was merged into ServiceDeliveryPage (fe-dupes.md §10
   // item 16); old /system/federation deep-links now redirect, ungated (the
   // destination page enforces its own tab-level permissions).
-  it('registers /system/federation/* as an ungated redirect to /app/system/service-delivery', () => {
+  //
+  // C10 review FIX-2: the redirect used to close over a constant target, so
+  // every old sub-path collapsed onto the same destination even where one
+  // had an exact new home. /control now branches to the Peers tab; every
+  // other sub-path (monitor, or bare /federation) still lands on the page
+  // root, since their content split across multiple destinations with no
+  // single equivalent.
+  describe('/system/federation/* — sub-path-aware redirect', () => {
     const { Navigate } = jest.requireActual('react-router-dom') as typeof import('react-router-dom');
-    const r = routes.find((x) => x.path === '/system/federation/*');
-    expect(r).toBeDefined();
-    expect(r!.permission).toBeUndefined();
 
-    const RedirectComponent = r!.component as () => React.ReactElement;
-    const el = RedirectComponent();
-    expect(el.type).toBe(Navigate);
-    expect((el.props as { to: string; replace: boolean }).to).toBe('/app/system/service-delivery');
-    expect((el.props as { to: string; replace: boolean }).replace).toBe(true);
+    const renderAt = (pathname: string) => {
+      window.history.pushState({}, '', pathname);
+      const r = routes.find((x) => x.path === '/system/federation/*');
+      expect(r).toBeDefined();
+      expect(r!.permission).toBeUndefined();
+      const RedirectComponent = r!.component as () => React.ReactElement;
+      return RedirectComponent();
+    };
+
+    it('sends /system/federation (bare) to the page root', () => {
+      const el = renderAt('/app/system/federation');
+      expect(el.type).toBe(Navigate);
+      expect((el.props as { to: string; replace: boolean }).to).toBe('/app/system/service-delivery');
+      expect((el.props as { to: string; replace: boolean }).replace).toBe(true);
+    });
+
+    it('sends /system/federation/monitor to the page root (content split three ways, no single equivalent)', () => {
+      const el = renderAt('/app/system/federation/monitor');
+      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery');
+    });
+
+    it('sends /system/federation/control to the Peers tab, its exact new home', () => {
+      const el = renderAt('/app/system/federation/control');
+      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery/peers');
+    });
   });
 
   it('registers /system/ingress/* gated on system.ingress.read', () => {

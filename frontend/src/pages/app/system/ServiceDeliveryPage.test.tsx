@@ -90,12 +90,14 @@ describe('ServiceDeliveryPage', () => {
     const subscriptions = screen.getByRole('link', { name: /Subscriptions/i });
     const catalog = screen.getByRole('link', { name: /Catalog Browser/i });
     const children = screen.getByRole('link', { name: /Children/i });
+    const fulfillment = screen.getByRole('link', { name: /Fulfillment/i });
     const peers = screen.getByRole('link', { name: /Peers/i });
 
     expect(offerings).toHaveAttribute('href', '/app/system/service-delivery/offerings');
     expect(subscriptions).toHaveAttribute('href', '/app/system/service-delivery/subscriptions');
     expect(catalog).toHaveAttribute('href', '/app/system/service-delivery/catalog');
     expect(children).toHaveAttribute('href', '/app/system/service-delivery/children');
+    expect(fulfillment).toHaveAttribute('href', '/app/system/service-delivery/fulfillment');
     expect(peers).toHaveAttribute('href', '/app/system/service-delivery/peers');
   });
 

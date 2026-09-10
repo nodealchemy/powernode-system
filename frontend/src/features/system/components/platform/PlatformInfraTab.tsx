@@ -9,7 +9,7 @@ import {
   Activity,
   Rocket,
 } from 'lucide-react';
-// usePermissions removed (was unused) — see PlatformInfraTab body comment.
+import { usePermissions } from '@/shared/hooks/usePermissions';
 import { ChildrenPanel } from '@system/features/system/components/federation/ChildrenPanel';
 import { ServiceOfferingsPanel } from '@system/features/system/components/federation/ServiceOfferingsPanel';
 import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
@@ -79,9 +79,15 @@ const TABS: TabSpec[] = [
 const BASE_PATH = '/app/system/compute/platform';
 
 export const PlatformInfraTab: React.FC = () => {
-  // hasPermission destructure was removed (TS6133: unused). The
-  // `accessible` const below is unconditional — tab-level panels
-  // remain responsible for surfacing forbidden API responses.
+  // The tab STRIP stays best-effort (see `accessibleTabs` below) — every
+  // operator sees every tab regardless of permission. That is deliberate
+  // for the six original sub-tabs. It is NOT the gate for the two panels
+  // relocated from FederationHubPage inside the Peers/Discovery tabs
+  // (`PeerLivenessMonitor`, `NetworkVipPicker`): those carried a REAL JSX
+  // `{cond && …}` gate on the old page, and C10 review FIX-1 found the
+  // relocation had silently dropped it, exposing peer liveness + the VIP
+  // list to any `system.platform.read` holder. `PeersTab`/`DiscoveryTab`
+  // below restore that real gate locally, independent of the tab strip.
   const location = useLocation();
 
   // Permission gate is best-effort — the plan lists permissions that
@@ -157,16 +163,28 @@ const ServicesTab: React.FC = () => (
   </div>
 );
 
-const PeersTab: React.FC = () => (
-  <div className="space-y-6">
-    {/* Real-time liveness (SystemFleetChannel), relocated from
-        FederationHubPage's Monitor tab — complements, not replaces, the
-        operator peer list + revoke controls below. */}
-    <PeerLivenessMonitor />
-    <PeersPanel />
-  </div>
-);
-const DiscoveryTab: React.FC = () => <NetworkVipPicker />;
+const PeersTab: React.FC = () => {
+  const { hasPermission } = usePermissions();
+  return (
+    <div className="space-y-6">
+      {/* Real-time liveness (SystemFleetChannel), relocated from
+          FederationHubPage's Monitor tab — complements, not replaces, the
+          operator peer list + revoke controls below. Real gate (C10 review
+          FIX-1): the old page required system.peers.read to render this;
+          the relocation had dropped that check. */}
+      {hasPermission('system.peers.read') && <PeerLivenessMonitor />}
+      <PeersPanel />
+    </div>
+  );
+};
+const DiscoveryTab: React.FC = () => {
+  const { hasPermission } = usePermissions();
+  // Real gate (C10 review FIX-1): the old FederationHubPage required
+  // system.sdwan.vips.manage to render the VIP list/picker in both its
+  // Monitor (read-only) and Control (full) modes; the relocation had
+  // dropped that check, leaving only the (inert) tab-strip permission.
+  return hasPermission('system.sdwan.vips.manage') ? <NetworkVipPicker /> : null;
+};
 const MigrationsTab: React.FC = () => (
   <div className="space-y-6">
     <MigrationsPanel />

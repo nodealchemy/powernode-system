@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import {
   Server,
   Network as NetworkIcon,
@@ -8,6 +8,7 @@ import {
   ClipboardCheck,
   MessageSquare,
   ShieldCheck,
+  Layers,
 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
@@ -164,6 +165,21 @@ const PeersTab: React.FC<{ hasPermission: (permission: string) => boolean }> = (
             expiry, peer health and drift, migration chains.
           </p>
           <FederationGovernancePanel />
+          {/* A stalled-chain finding surfaces here, but the controls that act on
+              one (advance / run / cancel) live on the platform migrations tab —
+              beside the single-hop migrations they envelope (IMP-ffc2de6bd175).
+              Restored per C10 review FIX-3: this shortcut was dropped with
+              FederationHubPage; the destination survived, but nothing pointed
+              an operator at it from here. */}
+          <div className="mt-3">
+            <Link
+              to="/app/system/compute/platform/migrations"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-theme bg-theme-surface text-sm text-theme-primary hover:bg-theme-surface-hover transition-colors"
+            >
+              <span className="text-theme-secondary"><Layers className="w-4 h-4" /></span>
+              Migrations & chains
+            </Link>
+          </div>
         </section>
       )}
     </div>
