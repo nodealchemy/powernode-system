@@ -117,8 +117,11 @@ module System
       # walk it, and neither calls write_policy for it.
 
       ROOT_DELEGATION  = { inheritance_policy: "moderate",     max_depth: 3 }.freeze
+      # allowed_delegate_types is filled in by .child_delegation, not here: core
+      # E4 made an EMPTY list mean NONE rather than "unrestricted", and an empty
+      # literal here is what began refusing sibling delegation.
       CHILD_DELEGATION = { inheritance_policy: "conservative", max_depth: 2,
-                           allowed_delegate_types: [], allowed_actions: [] }.freeze
+                           allowed_actions: [] }.freeze
       SPAWN_REASON = "seed"
 
       Result = Struct.new(:attached, :policies_written, :skipped, keyword_init: true) do
@@ -142,8 +145,24 @@ module System
           ROOT_DELEGATION.merge(allowed_delegate_types: system_agent_types, allowed_actions: [])
         end
 
+        # A system domain agent may delegate to its SIBLINGS.
+        #
+        # This used to pass an empty allowed_delegate_types, which meant
+        # "unrestricted" until core E4 (f4ce7fff3) gave an empty list its
+        # obvious meaning: NONE. Under the new semantics the same literal
+        # refused every hand-off inside the domain — a Fleet Autonomy signal
+        # that needs the CVE Responder is the point of having a hierarchy, and
+        # it came back "Delegate type 'monitor' not in allowed types".
+        #
+        # Ruled: siblings are allowed. Enumerated the same way root_delegation
+        # enumerates its reach — DERIVED from system_agent_types, so a new
+        # system agent of a new type widens both without a second edit and
+        # without a literal list to fall out of date.
+        #
+        # max_depth stays 2. Widening WHO a child may hand to is not widening
+        # HOW FAR the chain may run.
         def child_delegation(_agent_key)
-          CHILD_DELEGATION
+          CHILD_DELEGATION.merge(allowed_delegate_types: system_agent_types)
         end
       end
 

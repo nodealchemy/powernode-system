@@ -174,7 +174,12 @@ RSpec.describe "system_supply_chain_manager_agent seed" do
       expect(policy).to be_present
       expect(policy.inheritance_policy).to eq("conservative")
       expect(policy.max_depth).to eq(2)
-      expect(policy.allowed_delegate_types).to eq([])
+      # Was `eq([])`. Core E4 gave an empty list its obvious meaning — NONE —
+      # so the empty literal stopped meaning "unrestricted" and started
+      # refusing every sibling hand-off. Ruled: a domain agent may delegate to
+      # its siblings, enumerated from system_agent_types.
+      expect(policy.allowed_delegate_types)
+        .to eq(System::Governance::HierarchyReconciler.system_agent_types)
     end
 
     it "is no longer reported as an absent child by the hierarchy drift report" do

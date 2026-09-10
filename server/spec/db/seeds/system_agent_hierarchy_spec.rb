@@ -222,12 +222,52 @@ RSpec.describe "system_agent_hierarchy seed" do
       end
     end
 
-    it "gives a domain agent conservative/depth-2 and leaves its delegate types open (it is a leaf)" do
+    # RULED (core E4 review): a domain agent may hand off to its SIBLINGS. The
+    # list used to be empty, which meant "unrestricted" until core E4 gave an
+    # empty list its obvious meaning (NONE) — at which point the same literal
+    # refused every hand-off inside the domain. Enumerated, and derived from
+    # system_agent_types the way the Concierge's reach is, so a new system agent
+    # of a new type widens both with no literal to fall out of date.
+    it "gives a domain agent conservative/depth-2 and enumerates its sibling types" do
       fleet = policy_for(agent("Fleet Autonomy"))
       expect(fleet.inheritance_policy).to eq("conservative")
       expect(fleet.max_depth).to eq(2)
-      expect(fleet.allowed_delegate_types).to eq([])
+      expect(fleet.allowed_delegate_types)
+        .to eq(System::Governance::HierarchyReconciler.system_agent_types)
+      expect(fleet.allowed_delegate_types).to include(agent("CVE Responder").agent_type)
       expect(fleet.delegatable_actions).to eq([])
+    end
+
+    it "refuses a delegate whose type is not a system agent's" do
+      # The other arm: enumerating siblings must not become "anything goes".
+      system_types = System::Governance::HierarchyReconciler.system_agent_types
+      # Derived, not picked: a valid Ai::Agent type that no system agent carries.
+      outsider_type = (%w[code_assistant data_analyst image_generator content_generator] - system_types).first
+      expect(outsider_type).to be_present
+
+      outsider = create(:ai_agent, account: account, agent_type: outsider_type,
+                                   name: "Outside Specialist")
+      authority = Ai::Autonomy::DelegationAuthorityService.new(account: account)
+
+      result = authority.validate_delegation(
+        delegator: agent("Fleet Autonomy"), delegate: outsider,
+        task: { action_type: "execute" }
+      )
+
+      expect(result[:allowed]).to be(false)
+    end
+
+    # Live rows were seeded under the OLD semantics, where [] meant
+    # unrestricted. They must be repaired by the reconciler rather than left
+    # refusing every hand-off until someone notices.
+    it "widens a pre-existing policy row that still carries the empty list" do
+      fleet = agent("Fleet Autonomy")
+      policy_for(fleet).update!(allowed_delegate_types: [])
+
+      System::Governance::HierarchyReconciler.new(account: account).reconcile!
+
+      expect(policy_for(fleet).reload.allowed_delegate_types)
+        .to eq(System::Governance::HierarchyReconciler.system_agent_types)
     end
 
     # The column's vocabulary is Ai::Agent#agent_type (allows_delegate_type?),
