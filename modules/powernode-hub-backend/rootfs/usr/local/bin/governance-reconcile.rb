@@ -10,7 +10,17 @@
 # engineering floors (release.build_dispatch and the two refine categories —
 # the seam's CATEGORIES) through Ai::Engineering::ReleaseDispatchFloorSeeder
 # behind a `defined?` probe (IMP-99988ef54942 — absence-only; a core tree
-# without the seam is a named skip, never a boot failure).
+# without the seam is a named skip, never a boot failure), and finally
+# reconciles the CANONICAL TEAMS (HIER-P4, IMP-01a06cd4 —
+# Ai::Teams::CanonicalTeamReconciler, membership only, over
+# `reconcilable_accounts` rather than every account).
+#
+# FOUR PASSES, matching `rails system:governance:reconcile`
+# (extensions/system/server/lib/tasks/governance_reconcile.rake) step for step.
+# That task's header has always claimed the two doors carry the same steps; it
+# grew the team pass and this file did not, so until IMP-01a06cd4 the claim was
+# false and a drifted canonical team was repaired only by an operator running
+# the task by hand. Keep them in step: a pass added to one belongs in the other.
 #
 # WHY AT BOOT: `db:seed` is first-boot only (rails-start.sh gates it behind the
 # durable .db-initialized marker), so a policy row added to a seed after an
@@ -161,10 +171,68 @@ begin
       warn "[governance-reconcile] engineering-floors: core seam not present (module skew) — skipped"
     end
 
+    # Canonical teams (HIER-P4, IMP-01a06cd4). The per-account materialisation
+    # of every canonical Ai::TeamTemplate ("System Operations", "Platform
+    # Engineering") — team, members, roles and lead repaired to the template on
+    # the account's EXECUTING PRINCIPALS (ruling 8). Membership only: lineage
+    # edges and delegation rows keep their own writers, and a missing edge stays
+    # reported by `drift` until the hierarchy seed runs.
+    #
+    # Same reason as every pass above: `db:seed` is first-boot only, so a seat
+    # added to a team seed after an install's first boot — or a seat an operator
+    # removed by hand — was converged ONLY by someone running
+    # `rails system:governance:reconcile`. That task has carried this pass since
+    # HIER-P4 and its own header claimed the boot runner did too; it did not,
+    # and the two doors are now the same four steps.
+    #
+    # NOT Account.all. Materialising a canonical team MINTS an account principal
+    # per seat, so a walk over every account would create two teams and up to
+    # twenty agent rows in every tenant on every boot. The write set is
+    # `reconcilable_accounts` — the accounts that already hold a canonical team,
+    # plus the primary account the seeds materialise in — exactly the set the
+    # rake task writes. `drift` stays free to read every account.
+    #
+    # `defined?` because hub-backend and the core tree are separate modules that
+    # can skew by one deploy, like the engineering floors above. ALWAYS prints
+    # its own summary line, changed=0 in the steady state.
+    if defined?(::Ai::Teams::CanonicalTeamReconciler)
+      begin
+        team_accounts = ::Ai::Teams::CanonicalTeamReconciler.reconcilable_accounts
+        team_changed = 0
+        team_skipped = 0
+        team_accounts.find_each do |account|
+          ::Ai::Teams::CanonicalTeamReconciler.reconcile_all!(account: account).each do |team|
+            if team.changed?
+              team_changed += 1
+              warn "[governance-reconcile]   account #{account.id} team #{team.template.slug}: " \
+                   "#{team.created ? 'materialised' : 'present'}, +#{team.members_added} " \
+                   "-#{team.members_removed} ~#{team.members_updated} member(s)"
+            end
+            next if team.skipped.empty?
+
+            # A skipped seat is a seat the template declares that this install
+            # cannot fill — its canonical is absent. Named for the same reason a
+            # skipped policy set is: permanent until someone acts.
+            team_skipped += team.skipped.size
+            warn "[governance-reconcile]   account #{account.id} team #{team.template.slug} " \
+                 "SKIPPED seat(s): #{team.skipped.join(', ')}"
+          end
+        end
+        warn "[governance-reconcile] canonical-teams accounts=#{team_accounts.count} " \
+             "changed=#{team_changed} skipped_seats=#{team_skipped}"
+      rescue StandardError => e
+        failed << { account_id: "(canonical-teams)", error: "#{e.class}: #{e.message}" }
+        warn "[governance-reconcile] canonical-teams reconcile failed (non-fatal): #{e.class}: #{e.message}"
+      end
+    else
+      warn "[governance-reconcile] canonical-teams: core seam not present (module skew) — skipped"
+    end
+
     # ALWAYS printed, including the created=0 steady state — the one line an
     # operator greps. It CLOSES the run rather than opening it so that
     # `failed=` covers the whole reconcile: the per-account loop above and
-    # every step below it (skill bindings, engineering floors). Printed before the
+    # every step below it (skill bindings, engineering floors, canonical teams).
+    # Printed before the
     # steps it read failed=0 while the banner below said RECONCILE FAILED and
     # the FleetEvent carried the step, which is the one place the three must
     # agree.
