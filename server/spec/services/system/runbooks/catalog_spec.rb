@@ -56,6 +56,16 @@ RSpec.describe System::Runbooks::Catalog do
       end
     end
 
+    it "contains every shipped doc path inside the extension root" do
+      # The other arm of the containment check: a real entry must resolve, not
+      # merely fail to escape.
+      catalog.entries.keys.select { |kind| catalog.documented?(kind) }.each do |kind|
+        path = catalog.resolved_path(kind).to_s
+
+        expect(path).to start_with("#{described_class::EXTENSION_ROOT}/")
+      end
+    end
+
     it "distinguishes an unknown kind from a not_documented one" do
       not_documented = catalog.entries.find { |_kind, entry| entry["not_documented"] }&.first
       expect(not_documented).to be_present
@@ -152,6 +162,28 @@ RSpec.describe System::Runbooks::Catalog do
       catalog_with(->(entries) { entries[kind]["not_documeted"] = true }) do |mutated|
         expect(mutated.validate(bound_kinds: bound_kinds))
           .to include(a_string_matching(/#{Regexp.escape(kind)}.*unknown key/))
+      end
+    end
+
+    it "rejects a doc path that walks out of the extension root" do
+      kind = catalog.entries.keys.find { |k| catalog.documented?(k) }
+
+      catalog_with(->(entries) { entries[kind]["doc"] = "../../../../etc/passwd#anything" }) do |mutated|
+        expect(mutated.validate(bound_kinds: bound_kinds))
+          .to include(a_string_matching(/#{Regexp.escape(kind)}.*escapes the extension root/))
+        # And the seam A5 reads through refuses it too, rather than handing
+        # back a path outside the extension for someone else to open.
+        expect(mutated.resolved_path(kind)).to be_nil
+      end
+    end
+
+    it "rejects an absolute doc path, which Pathname#join would otherwise honour" do
+      kind = catalog.entries.keys.find { |k| catalog.documented?(k) }
+
+      catalog_with(->(entries) { entries[kind]["doc"] = "/etc/passwd#anything" }) do |mutated|
+        expect(mutated.validate(bound_kinds: bound_kinds))
+          .to include(a_string_matching(/#{Regexp.escape(kind)}.*escapes the extension root/))
+        expect(mutated.resolved_path(kind)).to be_nil
       end
     end
 

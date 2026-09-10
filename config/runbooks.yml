@@ -66,7 +66,17 @@ system.module_drift:
   doc: "docs/runbooks/node-provisioning.md#phase-4--run-"
 
 system.config_drift:
-  doc: "docs/runbooks/template-authoring.md#phase-5--apply-the-template-to-a-node-"
+  not_documented: true
+  reason: >-
+    No runbook covers INTENT drift — a NodeModuleAssignment edited but never
+    dispatched — and the two anchors that look like they do are both a
+    different operation. template-authoring.md's apply-the-template section
+    states in its own bullets that "existing assignments are never modified",
+    which is exactly the class of change this fires on; node-provisioning.md's
+    run phase names drift_remediate, the RUNNING-drift lane this sensor's own
+    doc distinguishes itself from. A runbook would have to name the applier
+    (apply_config, dispatched to a NodeInstance) and how to tell an assignment
+    nobody applied from one whose apply failed.
 
 system.template_closure_drift:
   doc: "docs/runbooks/template-authoring.md#phase-5--apply-the-template-to-a-node-"
@@ -119,14 +129,7 @@ system.node_lkg_stale:
 
 # ── Certificates and credentials ──────────────────────────────────────────
 system.cert_expiring:
-  not_documented: true
-  reason: >-
-    A runbook would have to say what the platform CANNOT do here: a node's mTLS
-    identity key never leaves the node, so re-issue needs a CSR the agent
-    generates and there is no platform-side rotate. The operator procedure is
-    an agent-side re-enrol, and no runbook describes it —
-    acme-issuance.md covers Traefik-terminated ACME certs, a different store
-    with a different remediation.
+  doc: "docs/runbooks/vault-credential-restoration.md#troubleshooting"
 
 system.acme_cert_expiring:
   doc: "docs/runbooks/acme-issuance.md#step-4--renew-manual-or-automatic"
@@ -155,7 +158,7 @@ system.sdwan_hub_unreachable:
   doc: "docs/runbooks/sdwan-network-setup.md#troubleshooting"
 
 system.sdwan_vip_unreachable:
-  doc: "docs/runbooks/federation-troubleshooting.md#symptom-federated-peer-cant-reach-a-service-vip"
+  doc: "docs/runbooks/sdwan-network-setup.md#troubleshooting"
 
 system.sdwan_portmap_orphaned:
   doc: "docs/runbooks/sdwan-network-setup.md#phase-4--port-mappings-inbound-traffic-"
@@ -230,7 +233,16 @@ system.package_drift_pressure:
 
 # ── Storage ───────────────────────────────────────────────────────────────
 system.storage_assignment_drift:
-  doc: "docs/runbooks/storage-migration.md#failure-modes"
+  not_documented: true
+  reason: >-
+    StorageAssignment reconciliation has no runbook. storage-migration.md's
+    failure-modes table is about StorageMigration — a different model with a
+    different lifecycle — and its chown section covers exactly one of the
+    causes that leaves an assignment stuck (ownership), not the pending /
+    provisioning / degraded / failed states this sensor watches. A runbook
+    would have to say what reconciles an assignment, how long each state may
+    legitimately hold, and how to tell an agent that never answered from one
+    that answered with a failure.
 
 system.volume_snapshot_due:
   not_documented: true
@@ -278,7 +290,7 @@ system.capability_gap:
   doc: "docs/runbooks/governance-gaps.md#what-an-offer-means"
 
 system.governance_gap:
-  doc: "docs/runbooks/governance-gaps.md#a-fleetgovernance_gap_stuck-event"
+  doc: "docs/runbooks/governance-gaps.md#reviewing-an-offer"
 
 system.slo_violation:
   not_documented: true

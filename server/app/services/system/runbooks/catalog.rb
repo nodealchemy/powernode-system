@@ -19,8 +19,16 @@ module System
     # repo-relative. The extension is a submodule with its own checkout; a path
     # anchored at the parent repo root resolves to nothing when the extension
     # is cloned on its own, and the parent root is not knowable from inside the
-    # engine. #resolved_path turns an entry into an absolute path against
-    # EXTENSION_ROOT, and that is the only place the two are joined.
+    # engine.
+    #
+    # .contained_path is the ONE place an entry's path is joined to
+    # EXTENSION_ROOT, and it is where containment is enforced. Pathname#join is
+    # NOT a containment operation: an absolute argument discards the base
+    # entirely ("/etc/passwd" stays "/etc/passwd") and a leading "../.." walks
+    # out of the root. So the joined path is compared against the root and
+    # rejected when it escapes. #resolved_path is the seam core's A5 registry
+    # hands to a file read, and without the check an escaping path that happens
+    # to name a real file would validate clean and then be read.
     class Catalog
       EXTENSION_ROOT = Pathname.new(File.expand_path("../../../../..", __dir__)).freeze
       DEFAULT_PATH   = EXTENSION_ROOT.join("config", "runbooks.yml").freeze
@@ -72,6 +80,17 @@ module System
         end
       end
 
+      # The absolute path an entry's doc names, or nil when it escapes
+      # EXTENSION_ROOT. The single join point; see the class doc for why
+      # Pathname#join alone is not containment.
+      def self.contained_path(doc)
+        file = EXTENSION_ROOT.join(doc.to_s.split("#", 2).first.to_s).cleanpath
+        return nil unless file.to_s == EXTENSION_ROOT.to_s ||
+                          file.to_s.start_with?("#{EXTENSION_ROOT}#{File::SEPARATOR}")
+
+        file
+      end
+
       def initialize(path: DEFAULT_PATH)
         @path = Pathname.new(path)
         @entries = read_entries
@@ -91,12 +110,14 @@ module System
       end
 
       # Absolute path of an entry's doc, anchor stripped. nil for a
-      # not_documented entry or an unknown kind.
+      # not_documented entry, an unknown kind, or a path that escapes the
+      # extension root — a caller must never be handed a path to read that
+      # #validate would have refused.
       def resolved_path(signal_kind)
         doc = self.for(signal_kind)&.dig("doc")
         return nil if doc.blank?
 
-        EXTENSION_ROOT.join(doc.split("#", 2).first)
+        self.class.contained_path(doc)
       end
 
       # Both arms of the coverage question, as a list of human-readable
@@ -170,7 +191,12 @@ module System
           return [ "#{kind}: doc #{doc.inspect} carries no #anchor" ]
         end
 
-        file = EXTENSION_ROOT.join(file_part)
+        file = self.class.contained_path(file_part)
+        if file.nil?
+          return [ "#{kind}: doc path #{file_part.inspect} escapes the extension root; " \
+                   "a doc path is relative to the extension and may not be absolute or walk out of it" ]
+        end
+
         return [ "#{kind}: doc file #{file_part} does not exist" ] unless file.file?
 
         slugs = self.class.heading_slugs(file)
