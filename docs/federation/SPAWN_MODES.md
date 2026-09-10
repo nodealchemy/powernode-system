@@ -17,7 +17,7 @@ already federated with its parent. This contrasts with **out-of-band
 peering**, where two pre-existing platforms manually exchange tokens.
 
 Spawning is a first-class operation in Powernode. The operator clicks
-**Spawn Platform** from `/app/system/federation` → Children tab, picks
+**Spawn Platform** from `/app/system/service-delivery` → Children tab, picks
 a mode, and the platform handles the rest: NodeInstance provisioning,
 single-use acceptance token generation, virtio-fw-cfg payload
 injection, and (per mode) the auto-issuance of cross-peer grants or
@@ -194,7 +194,7 @@ are federating with a platform you did not spawn.
 
 ## Spawn flow (operator's perspective)
 
-1. **Open the dashboard.** Navigate to `/app/system/federation` and
+1. **Open the dashboard.** Navigate to `/app/system/service-delivery` and
    open the **Children** tab.
 
 2. **Click "Spawn Platform".** The modal opens.
@@ -261,8 +261,8 @@ to `autonomous_peer`.
 
 Mechanics:
 
-1. Child operator navigates to `/app/system/federation` → Grants
-   editor.
+1. Child operator navigates to `/app/system/service-delivery` → Peers
+   tab, opens the peer's **Grants** editor.
 2. Filters by `resource_kind: managed_child_operator`, finds the
    grant.
 3. Clicks **Revoke** with an optional reason.

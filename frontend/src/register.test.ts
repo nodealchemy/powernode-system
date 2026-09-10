@@ -156,11 +156,20 @@ describe('registered routes', () => {
     expect(r!.permission).toBeUndefined();
   });
 
-  // Permission-gated hub routes
-  it('registers /system/federation/* gated on system.peers.read', () => {
+  // FederationHubPage was merged into ServiceDeliveryPage (fe-dupes.md §10
+  // item 16); old /system/federation deep-links now redirect, ungated (the
+  // destination page enforces its own tab-level permissions).
+  it('registers /system/federation/* as an ungated redirect to /app/system/service-delivery', () => {
+    const { Navigate } = jest.requireActual('react-router-dom') as typeof import('react-router-dom');
     const r = routes.find((x) => x.path === '/system/federation/*');
     expect(r).toBeDefined();
-    expect(r!.permission).toBe('system.peers.read');
+    expect(r!.permission).toBeUndefined();
+
+    const RedirectComponent = r!.component as () => React.ReactElement;
+    const el = RedirectComponent();
+    expect(el.type).toBe(Navigate);
+    expect((el.props as { to: string; replace: boolean }).to).toBe('/app/system/service-delivery');
+    expect((el.props as { to: string; replace: boolean }).replace).toBe(true);
   });
 
   it('registers /system/ingress/* gated on system.ingress.read', () => {
@@ -290,8 +299,13 @@ describe('registered nav sections', () => {
     expect(systemSection.permissions).toEqual([]);
   });
 
-  it('registers 13 nav items', () => {
-    expect(items).toHaveLength(13);
+  // 12, not 13 — the 'Federation' nav item was removed when FederationHubPage
+  // merged into ServiceDeliveryPage (fe-dupes.md §10 item 16): a separate nav
+  // entry pointing at the same destination as 'Service Delivery' would be
+  // redundant. Old /system/federation deep-links still redirect (see the
+  // route registration tests above).
+  it('registers 12 nav items', () => {
+    expect(items).toHaveLength(12);
   });
 
   // Verify every item individually
@@ -310,12 +324,15 @@ describe('registered nav sections', () => {
     { label: 'Operations',        path: '/app/system/operations',     icon: 'Activity',        order: 6 },
     { label: 'Instance Pools',    path: '/app/system/instance-pools', icon: 'Droplet',         order: 7 },
     { label: 'SDWAN',             path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 8 },
-    { label: 'Federation',        path: '/app/system/federation',     icon: 'Share2',          order: 9, permission: 'system.peers.read' },
     { label: 'Service Delivery',  path: '/app/system/service-delivery', icon: 'Workflow',      order: 10 },
     { label: 'ACME',              path: '/app/system/acme',           icon: 'KeyRound',        order: 11 },
     { label: 'Ingress',           path: '/app/system/ingress',        icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
     { label: 'My VPN',            path: '/app/system/my-vpn',         icon: 'Smartphone',      order: 13 },
   ];
+
+  it('does not register a "Federation" nav item (merged into Service Delivery)', () => {
+    expect(items.find((i) => i.label === 'Federation')).toBeUndefined();
+  });
 
   it.each(expectedItems)(
     'nav item "%s" has correct path, icon, order, and permission',
@@ -339,10 +356,10 @@ describe('registered nav sections', () => {
     expect(orders).toEqual(sorted);
   });
 
-  it('only Federation and Ingress items carry a permission gate', () => {
+  it('only Ingress carries a permission gate', () => {
     const gated = items.filter((i) => i.permission !== undefined);
-    expect(gated).toHaveLength(2);
-    expect(gated.map((i) => i.label).sort()).toEqual(['Federation', 'Ingress']);
+    expect(gated).toHaveLength(1);
+    expect(gated.map((i) => i.label).sort()).toEqual(['Ingress']);
   });
 });
 

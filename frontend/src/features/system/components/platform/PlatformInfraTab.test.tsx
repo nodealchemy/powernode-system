@@ -21,6 +21,14 @@ jest.mock('./PeersPanel', () => ({
   PeersPanel: () => <div data-testid="peers-panel" />,
 }));
 
+jest.mock('./PeerLivenessMonitor', () => ({
+  PeerLivenessMonitor: () => <div data-testid="peer-liveness-monitor" />,
+}));
+
+jest.mock('./NetworkVipPicker', () => ({
+  NetworkVipPicker: () => <div data-testid="network-vip-picker" />,
+}));
+
 jest.mock('./HealthPanel', () => ({
   HealthPanel: () => <div data-testid="health-panel" />,
 }));
@@ -96,9 +104,9 @@ describe('PlatformInfraTab', () => {
 
   // ── Tab nav bar ─────────────────────────────────────────────────────────────
 
-  it('renders all 7 tab labels in the nav bar', () => {
+  it('renders all 8 tab labels in the nav bar', () => {
     renderAt(`${BASE}/services`);
-    const expectedLabels = ['Services', 'Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy'];
+    const expectedLabels = ['Services', 'Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy', 'Service Discovery'];
     for (const label of expectedLabels) {
       expect(screen.getByRole('link', { name: new RegExp(label, 'i') })).toBeInTheDocument();
     }
@@ -115,6 +123,7 @@ describe('PlatformInfraTab', () => {
       ['Scaling', `${BASE}/scaling`],
       ['Health', `${BASE}/health`],
       ['Deploy', `${BASE}/deploy`],
+      ['Service Discovery', `${BASE}/discovery`],
     ];
 
     for (const [label, href] of expectations) {
@@ -167,9 +176,15 @@ describe('PlatformInfraTab', () => {
     expect(link.className).toContain('border-theme-info-border');
   });
 
+  it('marks the Service Discovery tab as active when the URL ends with /discovery', () => {
+    renderAt(`${BASE}/discovery`);
+    const link = screen.getByRole('link', { name: /service discovery/i });
+    expect(link.className).toContain('border-theme-info-border');
+  });
+
   it('does not mark inactive tabs with the active border class', () => {
     renderAt(`${BASE}/services`);
-    const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy'];
+    const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy', 'Service Discovery'];
     for (const label of inactiveTabs) {
       const link = screen.getByRole('link', { name: new RegExp(label, 'i') });
       expect(link.className).not.toContain('border-theme-info-border');
@@ -185,9 +200,15 @@ describe('PlatformInfraTab', () => {
     expect(screen.getByTestId('service-subscriptions-panel')).toBeInTheDocument();
   });
 
-  it('renders PeersPanel for /peers route', () => {
+  it('renders PeerLivenessMonitor and PeersPanel for /peers route', () => {
     renderAt(`${BASE}/peers`);
+    expect(screen.getByTestId('peer-liveness-monitor')).toBeInTheDocument();
     expect(screen.getByTestId('peers-panel')).toBeInTheDocument();
+  });
+
+  it('renders NetworkVipPicker for /discovery route', () => {
+    renderAt(`${BASE}/discovery`);
+    expect(screen.getByTestId('network-vip-picker')).toBeInTheDocument();
   });
 
   it('renders ChildrenPanel for /children route', () => {
@@ -248,16 +269,16 @@ describe('PlatformInfraTab', () => {
 
   // ── All tabs visible regardless of permissions ───────────────────────────────
 
-  it('shows all 7 tabs without permission gating (best-effort model)', () => {
+  it('shows all 8 tabs without permission gating (best-effort model)', () => {
     renderAt(`${BASE}/services`);
     // The component comment states permissions are best-effort — all tabs are
     // rendered unconditionally and panels surface forbidden API responses.
     const links = screen.getAllByRole('link');
     const tabLinks = links.filter((l) =>
-      /services|peers|children|migrations|scaling|health|deploy/i.test(l.textContent ?? ''),
+      /services|peers|children|migrations|scaling|health|deploy|service discovery/i.test(l.textContent ?? ''),
     );
-    // 7 distinct tab links should always be present
+    // 8 distinct tab links should always be present
     const tabKeys = new Set(tabLinks.map((l) => l.getAttribute('href')));
-    expect(tabKeys.size).toBe(7);
+    expect(tabKeys.size).toBe(8);
   });
 });

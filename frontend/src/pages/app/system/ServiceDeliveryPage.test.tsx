@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import ServiceDeliveryPage from './ServiceDeliveryPage';
 
@@ -25,6 +25,20 @@ jest.mock('@system/features/system/components/federation_hub/CatalogBrowserTab',
 }));
 jest.mock('@system/features/system/components/federation_hub/ChildrenTab', () => ({
   ChildrenTab: () => <div data-testid="children-tab">children</div>,
+}));
+jest.mock('@system/features/system/components/federation_hub/FulfillmentTab', () => ({
+  FulfillmentTab: () => <div data-testid="fulfillment-tab">fulfillment</div>,
+}));
+// Merged in from FederationHubPage (fe-dupes.md §10 item 16).
+jest.mock('@system/features/system/components/platform/PeerControlPanel', () => ({
+  PeerControlPanel: () => <div data-testid="peer-control-panel">peer control</div>,
+}));
+jest.mock('@system/features/system/components/sdwan/FederationGovernancePanel', () => ({
+  FederationGovernancePanel: () => <div data-testid="governance-panel">governance</div>,
+}));
+jest.mock('@system/features/system/components/concierge/ConciergePanel', () => ({
+  ConciergePanel: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="concierge-panel">concierge</div> : null,
 }));
 
 const mockHasPermission = jest.fn();
@@ -69,18 +83,20 @@ describe('ServiceDeliveryPage', () => {
     mockHasPermission.mockReturnValue(true);
   });
 
-  it('renders the four tab links under the /app/system/service-delivery path', () => {
+  it('renders the six tab links under the /app/system/service-delivery path', () => {
     renderAt('/app/system/service-delivery/offerings');
 
     const offerings = screen.getByRole('link', { name: /Offerings/i });
     const subscriptions = screen.getByRole('link', { name: /Subscriptions/i });
     const catalog = screen.getByRole('link', { name: /Catalog Browser/i });
     const children = screen.getByRole('link', { name: /Children/i });
+    const peers = screen.getByRole('link', { name: /Peers/i });
 
     expect(offerings).toHaveAttribute('href', '/app/system/service-delivery/offerings');
     expect(subscriptions).toHaveAttribute('href', '/app/system/service-delivery/subscriptions');
     expect(catalog).toHaveAttribute('href', '/app/system/service-delivery/catalog');
     expect(children).toHaveAttribute('href', '/app/system/service-delivery/children');
+    expect(peers).toHaveAttribute('href', '/app/system/service-delivery/peers');
   });
 
   it('marks the active tab from the /service-delivery/<tab> path segment', () => {
@@ -148,5 +164,53 @@ describe('ServiceDeliveryPage', () => {
     expect(nav?.className).toContain('flex-wrap');
     expect(nav?.className).toContain('items-center');
     expect(nav?.className).toContain('gap-1');
+  });
+
+  // ---------------------------------------------------------------------------
+  // fe-dupes.md §10 item 16 — FederationHubPage merge
+  //
+  // FederationHubPage's federation control surfaces (peer control, governance
+  // findings) and its "Ask Concierge" action moved here. Its non-federation
+  // content (peer liveness, topology, OVN isolation, service discovery) moved
+  // to ComputePage's Platform tab instead — see PlatformInfraTab.test.tsx.
+  // ---------------------------------------------------------------------------
+
+  it('renders PeerControlPanel and FederationGovernancePanel on the Peers tab', () => {
+    renderAt('/app/system/service-delivery/peers');
+
+    expect(screen.getByTestId('service-delivery-peers-tab')).toBeInTheDocument();
+    expect(screen.getByTestId('peer-control-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('governance-panel')).toBeInTheDocument();
+  });
+
+  it('hides the governance section without system.sdwan.federation.read', () => {
+    mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.federation.read');
+
+    renderAt('/app/system/service-delivery/peers');
+
+    expect(screen.getByTestId('peer-control-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('governance-panel')).not.toBeInTheDocument();
+  });
+
+  it('shows an "Ask Concierge" page action when the operator can manage federation', () => {
+    renderAt('/app/system/service-delivery/offerings');
+
+    expect(screen.getByRole('button', { name: /Ask Concierge/i })).toBeInTheDocument();
+  });
+
+  it('hides the "Ask Concierge" action without system.sdwan.federation.manage', () => {
+    mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.federation.manage');
+
+    renderAt('/app/system/service-delivery/offerings');
+
+    expect(screen.queryByRole('button', { name: /Ask Concierge/i })).not.toBeInTheDocument();
+  });
+
+  it('opens the concierge panel from the page action', () => {
+    renderAt('/app/system/service-delivery/offerings');
+
+    expect(screen.queryByTestId('concierge-panel')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Ask Concierge/i }));
+    expect(screen.getByTestId('concierge-panel')).toBeInTheDocument();
   });
 });

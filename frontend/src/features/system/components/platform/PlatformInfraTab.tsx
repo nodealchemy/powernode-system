@@ -15,6 +15,8 @@ import { ServiceOfferingsPanel } from '@system/features/system/components/federa
 import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
 import { PlatformOverviewCards } from './PlatformOverviewCards';
 import { PeersPanel } from './PeersPanel';
+import { PeerLivenessMonitor } from './PeerLivenessMonitor';
+import { NetworkVipPicker } from './NetworkVipPicker';
 import { HealthPanel } from './HealthPanel';
 import { ScalingPanel } from './ScalingPanel';
 import { MigrationsPanel } from './MigrationsPanel';
@@ -35,10 +37,21 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  *                    (provisioning sync queued for next slice)
  *   - Health      — P7.2 per-subsystem health snapshot + 30s refresh
  *
+ * The Peers sub-tab additionally carries a real-time liveness monitor
+ * (SystemFleetChannel), and a new Service Discovery sub-tab carries virtual-IP
+ * management — both relocated from the former FederationHubPage
+ * (fe-dupes.md §10 item 16): that page's non-federation content (peer
+ * liveness, topology, OVN isolation, service discovery) belongs here rather
+ * than on a standalone /federation route. FederationHubPage's federation
+ * *control* surfaces (peer control, governance) moved to ServiceDeliveryPage
+ * instead — see its Peers tab. Topology and OVN isolation already had a home
+ * in the SDWAN hub (`/app/system/sdwan/topology`, `/app/system/sdwan/ovn`),
+ * so they didn't need relocating.
+ *
  * Plan reference: Decentralized Federation §I + P7.
  */
 
-type TabKey = 'services' | 'peers' | 'children' | 'migrations' | 'scaling' | 'health' | 'deploy';
+type TabKey = 'services' | 'peers' | 'children' | 'migrations' | 'scaling' | 'health' | 'deploy' | 'discovery';
 
 interface TabSpec {
   key: TabKey;
@@ -58,6 +71,9 @@ const TABS: TabSpec[] = [
   // The wizard component itself is shared; this surface lets operators
   // start a deploy from the dashboard without first opening chat.
   { key: 'deploy',     label: 'Deploy',     permission: 'system.platform.deploy',          icon: <Rocket className="w-4 h-4" /> },
+  // Relocated from FederationHubPage's Monitor/Control tabs (fe-dupes.md §10
+  // item 16) — virtual IPs advertised across the federation via iBGP/overlay.
+  { key: 'discovery',  label: 'Service Discovery', permission: 'system.sdwan.vips.manage', icon: <Globe2 className="w-4 h-4" /> },
 ];
 
 const BASE_PATH = '/app/system/compute/platform';
@@ -118,6 +134,7 @@ export const PlatformInfraTab: React.FC = () => {
         <Route path="scaling"    element={<ScalingTab />} />
         <Route path="health"     element={<HealthTab />} />
         <Route path="deploy"     element={<DeployTab />} />
+        <Route path="discovery"  element={<DiscoveryTab />} />
         <Route
           path="*"
           element={<Navigate to={`${BASE_PATH}/${accessibleTabs[0].key}`} replace />}
@@ -140,7 +157,16 @@ const ServicesTab: React.FC = () => (
   </div>
 );
 
-const PeersTab: React.FC = () => <PeersPanel />;
+const PeersTab: React.FC = () => (
+  <div className="space-y-6">
+    {/* Real-time liveness (SystemFleetChannel), relocated from
+        FederationHubPage's Monitor tab — complements, not replaces, the
+        operator peer list + revoke controls below. */}
+    <PeerLivenessMonitor />
+    <PeersPanel />
+  </div>
+);
+const DiscoveryTab: React.FC = () => <NetworkVipPicker />;
 const MigrationsTab: React.FC = () => (
   <div className="space-y-6">
     <MigrationsPanel />

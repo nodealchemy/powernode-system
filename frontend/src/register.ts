@@ -41,14 +41,14 @@ const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
 const OperationsHubPage = lazyPage(() => import('./pages/app/system/OperationsHubPage'));
 const SdwanHubPage = lazyPage(() => import('./pages/app/system/SdwanHubPage'));
-// Federation Hub — Phase 3 multi-site control plane (Monitor | Control
-// PathTabs: peer liveness, topology, OVN isolation, VIP discovery,
-// subscriptions/governance, peer mgmt, offerings, isolation/DNS links).
-const FederationHubPage = lazyPage(() => import('./pages/app/system/FederationHubPage'));
-// Service Delivery — federated service catalog surfaces (Offerings,
-// Subscriptions, Catalog Browser, Children). Renamed from the former
-// FederationHubPage in Phase 3e; the multi-site hub above now owns the
-// /federation path, so service delivery moves to its own /service-delivery.
+// Service Delivery — federated service catalog + federation control surfaces
+// (Offerings, Subscriptions, Catalog Browser, Children, Fulfillment, Peers).
+// FederationHubPage (Phase 3's standalone multi-site hub) was merged into
+// this page (fe-dupes.md §10 item 16): its federation control surfaces (peer
+// control, governance findings) moved into a new Peers tab here; its
+// non-federation content (peer liveness, topology, OVN isolation, service
+// discovery) moved to ComputePage's Platform tab instead. /system/federation
+// now redirects here — see the route below.
 const ServiceDeliveryPage = lazyPage(() => import('./pages/app/system/ServiceDeliveryPage'));
 // ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
 // Plan reference: Decentralized Federation §J + P2.5.8.
@@ -114,17 +114,15 @@ export function register(): void {
     // graph via @xyflow/react).
     { path: '/system/sdwan/*', component: SdwanHubPage },
 
-    // Federation Hub — Phase 3 multi-site control plane. Monitor | Control
-    // path-based sub-tabs, so the `/*` wildcard is required. Gated on
-    // system.peers.read (the page also renders its own permission-denied
-    // empty state). Mirrors the Ingress hub's route-level permission gate.
-    { path: '/system/federation/*', component: FederationHubPage, permission: 'system.peers.read' },
+    // FederationHubPage (the Phase 3 standalone multi-site hub) was merged
+    // into ServiceDeliveryPage (fe-dupes.md §10 item 16). Old
+    // /system/federation deep-links redirect to the merged page.
+    { path: '/system/federation/*', component: redirectTo('/app/system/service-delivery') },
 
     // Service Delivery — federated service catalog (Offerings +
-    // Subscriptions + Catalog Browser + Children). Renamed/moved from the
-    // former /system/federation in Phase 3e so the multi-site hub above can
-    // own /federation. Old /system/federation deep-links land on the new
-    // hub directly (no redirect — the hub now owns that path).
+    // Subscriptions + Catalog Browser + Children + Fulfillment) plus, since
+    // the FederationHubPage merge, federation peer control + governance
+    // (Peers tab).
     { path: '/system/service-delivery/*', component: ServiceDeliveryPage },
 
     // ACME hub — tabs: DNS Credentials (P2.5.8), Certificates (P2.5.9).
@@ -172,7 +170,10 @@ export function register(): void {
         { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 6 },
         { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 7 },
         { label: 'SDWAN',            path: '/app/system/sdwan',            icon: 'ShieldCheck',     order: 8 },
-        { label: 'Federation',       path: '/app/system/federation',       icon: 'Share2',          order: 9, permission: 'system.peers.read' },
+        // 'Federation' nav entry removed — FederationHubPage was merged into
+        // ServiceDeliveryPage (fe-dupes.md §10 item 16); a separate nav item
+        // pointing at the same destination would be redundant. Old
+        // /system/federation deep-links still redirect via the route above.
         { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 10 },
         { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 11 },
         { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
