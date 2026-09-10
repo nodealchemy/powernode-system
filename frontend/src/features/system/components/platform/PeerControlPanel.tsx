@@ -24,12 +24,25 @@ import ErrorAlert from '@/shared/components/ui/ErrorAlert';
  * Control tab. Composes the existing InvitePeerModal (propose/accept),
  * GrantsManagementModal (grant lifecycle), and PeerDetailDrawer.
  *
- * Differs from the legacy PeersPanel in exactly one way the Phase 3 contract
- * calls for: REVOKE is an arm-and-confirm action (useArmedConfirm) instead of
- * a `window.prompt`. Revoke is terminal, so a two-stage in-place confirm
- * matches the destructive-action convention (feedback_destructive_confirm)
- * without a blocking modal. The optional revoke reason is taken from an inline
- * field that appears only while the row's revoke button is armed.
+ * Sibling of PeersPanel (rendered on ComputePage's platform infra tab), not
+ * a replacement for it — both are live, on different routes, for different
+ * operators. PeersPanel is the read-oriented observability list (Role / Mode
+ * / Endpoints columns, a status filter bar); this panel is the mutate-
+ * oriented surface for the Federation Hub's Control tab, gated by
+ * `canManage` and adding Grants management. The one behavior difference the
+ * Phase 3 contract specifically called for: REVOKE here is an arm-and-confirm
+ * action (useArmedConfirm) instead of a `window.prompt`. Revoke is terminal,
+ * so a two-stage in-place confirm matches the destructive-action convention
+ * (feedback_destructive_confirm) without a blocking modal. The optional
+ * revoke reason is taken from an inline field that appears only while the
+ * row's revoke button is armed.
+ *
+ * C13 diff-then-decide (component-status-plane campaign): compared against
+ * PeersPanel and kept as two components — real capability divergence
+ * (columns, filtering, grants, canManage gating), each the sole component on
+ * its own routed tab. See PeerTable.tsx's header comment for the shared-cell
+ * factoring that already eliminates the actual duplication (URL/status/
+ * heartbeat rendering) between the two.
  *
  * Plan reference: Phase 3 (Federation & Multi-Site) — Control.
  */
