@@ -37,19 +37,14 @@ puts "  ⚠️  Skipped (agent not seeded — drift until seeded): #{hierarchy_r
 # HIER-P2B-ENG — the Engineering hierarchy's root joins the same forest. The
 # Platform Architect is a CORE root (db/seeds/ai_agent_hierarchy_seed.rb hangs
 # the Engineering agents under it and, core purity forbidding a reach for a
-# system agent, leaves it parentless); this is the one place its edge under
-# System Concierge can be written — the Powernode Assistant precedent. The
-# core seed owns its delegation policy, so only the edge is written here, and
-# an absent Platform Architect is skipped, never invented.
-engineering_root = Ai::Agent.global.find_by(slug: "platform-architect")
-system_concierge = Ai::Agent.global.find_by(source_key: System::Governance::HierarchyReconciler::ROOT_KEY) ||
-                   Ai::Agent.global.find_by(name: "System Concierge", agent_type: "assistant")
-if engineering_root && system_concierge
-  Ai::Agents::HierarchyWriter.new(account: hierarchy_account).attach!(
-    child: engineering_root, parent: system_concierge, spawn_reason: "seed",
-    metadata: { "agent_key" => "platform-architect" }
-  )
-  puts "  ✅ Platform Architect (Engineering root) attached under System Concierge"
-else
-  puts "  ⚠️  Platform Architect not seeded — Engineering root not attached (re-run after ai_engineering_agents_seed)"
-end
+# system agent, leaves it parentless), and its edge under System Concierge used
+# to be attached by an inline block RIGHT HERE, because the reconciler excluded
+# the core canonicals entirely.
+#
+# It no longer is (IMP-01a06aee): the reconcile! above walks
+# HierarchyReconciler#edge_only_subjects, which covers the core root and every
+# CORE_CANONICAL_KEYS canonical — edge only, never the delegation policy core
+# owns. That matters beyond tidiness: `db:seed` is FIRST-BOOT ONLY, so this
+# block could never reach an install that gained the Platform Architect later,
+# and `drift` could not report the edge missing either. One writer, and one that
+# runs again.

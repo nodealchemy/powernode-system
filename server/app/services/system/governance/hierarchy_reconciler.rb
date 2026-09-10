@@ -96,6 +96,26 @@ module System
       CORE_ROOT_KEY = "core-concierge"
       CORE_ROOT_SLUG = "powernode-assistant"
 
+      # EDGE-ONLY SUBJECTS (IMP-01a06aee). Agents whose EDGE under the root is
+      # this reconciler's and whose DELEGATION POLICY is not — the core root
+      # above, plus every PolicyDeclarations::CORE_CANONICAL_KEYS canonical
+      # (the Platform Architect today).
+      #
+      # CHILD_IDENTITIES excludes the core canonicals so a leaf policy is not
+      # written for them — core seeds those agents and owns their policies, and
+      # writing one here would flap it on every boot. That exclusion took the
+      # EDGE with the policy: `reconcile!` did not attach it and `drift` came
+      # back with missing_edges EMPTY while the edge was absent, so the only
+      # writers were db/seeds/system_agent_hierarchy.rb's inline block (and
+      # `db:seed` is FIRST-BOOT ONLY) and the governance-gap materialization
+      # lane. GovernanceGapSensor re-implemented the check privately because
+      # this drift could not answer it — one rule with two implementations, the
+      # second of them subject to the sensor's per-tick budget.
+      #
+      # Both halves matter and they are separable: attach the edge, never the
+      # policy. #edge_only_subjects is the one list; reconcile! and drift both
+      # walk it, and neither calls write_policy for it.
+
       ROOT_DELEGATION  = { inheritance_policy: "moderate",     max_depth: 3 }.freeze
       CHILD_DELEGATION = { inheritance_policy: "conservative", max_depth: 2,
                            allowed_delegate_types: [], allowed_actions: [] }.freeze
@@ -158,13 +178,16 @@ module System
           policies += 1 if write_policy(writer, agent, self.class.child_delegation(key))
         end
 
-        core_root = resolve_core_root
-        if core_root
-          writer.attach!(child: core_root, parent: root, spawn_reason: SPAWN_REASON,
-                         metadata: { "agent_key" => CORE_ROOT_KEY })
+        edge_only_subjects.each do |key, agent|
+          unless agent
+            skipped << "#{key}(agent absent)"
+            next
+          end
+
+          # No write_policy here, deliberately — see EDGE-ONLY SUBJECTS above.
+          writer.attach!(child: agent, parent: root, spawn_reason: SPAWN_REASON,
+                         metadata: { "agent_key" => key })
           attached += 1
-        else
-          skipped << "#{CORE_ROOT_KEY}(agent absent)"
         end
 
         if attached.positive? || policies.positive?
@@ -179,7 +202,7 @@ module System
       def drift
         root = resolve_root
         unless root
-          absent = CHILD_IDENTITIES.keys.map { |k| "#{k}(root absent)" } + [ "#{CORE_ROOT_KEY}(root absent)" ]
+          absent = (CHILD_IDENTITIES.keys + edge_only_subjects.keys).map { |k| "#{k}(root absent)" }
           return DriftReport.new(missing_edges: [], missing_policies: [], present: [],
                                  skipped: [ "#{ROOT_KEY}(agent absent)" ] + absent)
         end
@@ -206,13 +229,17 @@ module System
           missing_policies << key unless policy_present?(agent)
         end
 
-        core_root = resolve_core_root
-        if core_root.nil?
-          skipped << "#{CORE_ROOT_KEY}(agent absent)"
-        elsif attached?(core_root, root)
-          present << "#{ROOT_KEY}/#{CORE_ROOT_KEY}"
-        else
-          missing_edges << "#{ROOT_KEY}/#{CORE_ROOT_KEY}"
+        # Edges only: a core canonical's missing delegation policy is never
+        # reported here, because this reconciler must never create one — a
+        # drift line no reconcile can clear is a signal that never goes out.
+        edge_only_subjects.each do |key, agent|
+          if agent.nil?
+            skipped << "#{key}(agent absent)"
+          elsif attached?(agent, root)
+            present << "#{ROOT_KEY}/#{key}"
+          else
+            missing_edges << "#{ROOT_KEY}/#{key}"
+          end
         end
 
         DriftReport.new(missing_edges: missing_edges, missing_policies: missing_policies,
@@ -241,6 +268,22 @@ module System
 
       def resolve_core_root
         ::Ai::Agent.global.find_by(slug: CORE_ROOT_SLUG)
+      end
+
+      # key => agent (or nil when this install has not seeded it). Ordered:
+      # the core root, then the declared core canonicals. The canonicals are
+      # READ from PolicyDeclarations rather than restated, so one added there
+      # gets its edge with no edit here — the same property CHILD_IDENTITIES
+      # has. They resolve through resolve_agent (source_key first) because they
+      # ARE declared identities; the core root is not, and keeps its slug
+      # lookup.
+      def edge_only_subjects
+        subjects = { CORE_ROOT_KEY => resolve_core_root }
+        PolicyDeclarations::CORE_CANONICAL_KEYS.each do |key|
+          identity = PolicyDeclarations::AGENT_IDENTITIES[key]
+          subjects[key] = identity && resolve_agent(key, identity)
+        end
+        subjects
       end
 
       # Global canonicals only — source_key first (the seed-managed identity),

@@ -65,6 +65,12 @@ RSpec.describe "system_agent_hierarchy seed" do
     silence_warnings { load Rails.root.join("db", "seeds", "ai_concierge_seed.rb") }
   end
 
+  # The Platform Architect is core's too (HIER-P3, CORE_CANONICAL_KEYS), and
+  # HIER-P3's boot model is CORE seeds then EXTENSION seeds. Loaded for the
+  # same reason the core concierge is: since IMP-01a06aee the reconciler owns
+  # that EDGE as well, so a fixture without the agent would report it
+  # permanently `(agent absent)` and every skipped-list assertion below would
+  # be pinning the fixture's omission rather than the reconciler's contract.
   let!(:account)  { create(:account, name: "Powernode Admin") }
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
   let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
@@ -75,6 +81,21 @@ RSpec.describe "system_agent_hierarchy seed" do
   # why renaming the agent to "Infrastructure Generalist" did not move the root.
   let(:root) { Ai::Agent.global.find_by(source_key: "system-concierge") }
   let(:core_root) { Ai::Agent.global.find_by(slug: SystemAgentHierarchySeeds::CORE_ROOT_SLUG) }
+
+  # Since IMP-01a06aee the reconciler owns the EDGE for every
+  # CORE_CANONICAL_KEYS canonical as well (the Platform Architect), so one this
+  # fixture has not seeded is reported `(agent absent)` exactly like an
+  # unseeded wave-2 manager. DERIVED from the declarations, never restated, for
+  # the same reason WAVE_2_KEYS is: a canonical added there must move these
+  # expectations rather than quietly widening them.
+  #
+  # The nested "Engineering root" describe seeds the Architect where the
+  # contract under test needs it PRESENT; the default fixture leaves it absent,
+  # which is what makes the skip contract observable here at all.
+  let(:unseeded_skips) do
+    (SystemAgentHierarchySeeds::WAVE_2_KEYS +
+      System::Governance::PolicyDeclarations::CORE_CANONICAL_KEYS).map { |k| "#{k}(agent absent)" }
+  end
 
   def agent(name) = Ai::Agent.global.find_by!(name: name)
   def policy_for(agent) = Ai::DelegationPolicy.resolve_for(agent_id: agent.id, account_id: account.id)
@@ -117,7 +138,7 @@ RSpec.describe "system_agent_hierarchy seed" do
 
     it "reports the declared-but-unseeded managers as skipped (drift), not as an error" do
       result = System::Governance::HierarchyReconciler.new(account: account).reconcile!
-      expect(result.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+      expect(result.skipped).to match_array(unseeded_skips)
       expect(result.attached).to eq(domain_agents.size + 1)
     end
 
@@ -254,8 +275,8 @@ RSpec.describe "system_agent_hierarchy seed" do
       seed_all!
 
       report = reconciler.drift
-      expect(report.drifted?).to eq(SystemAgentHierarchySeeds::WAVE_2_KEYS.any?)
-      expect(report.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+      expect(report.drifted?).to eq(unseeded_skips.any?)
+      expect(report.skipped).to match_array(unseeded_skips)
       expect(report.missing_edges).to be_empty
       expect(report.missing_policies).to be_empty
       expect(report.present.size).to eq(domain_agents.size + 1)
@@ -307,7 +328,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       after = reconciler.drift
       expect(after.missing_edges).to be_empty
       expect(after.missing_policies).to be_empty
-      expect(after.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+      expect(after.skipped).to match_array(unseeded_skips)
     end
 
     it "treats an unseeded agent as drift, not as clean" do
@@ -318,8 +339,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       report = reconciler.drift
       expect(report).to be_drifted
       expect(report.skipped).to include("cve-responder(agent absent)")
-      expect(report.skipped - SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
-        .to eq([ "cve-responder(agent absent)" ])
+      expect(report.skipped - unseeded_skips).to eq([ "cve-responder(agent absent)" ])
       expect(report.missing_edges).to be_empty
     end
 
@@ -329,8 +349,7 @@ RSpec.describe "system_agent_hierarchy seed" do
 
       report = reconciler.drift
       expect(report).to be_drifted
-      expect(report.skipped - SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
-        .to eq([ "core-concierge(agent absent)" ])
+      expect(report.skipped - unseeded_skips).to eq([ "core-concierge(agent absent)" ])
       expect(report.missing_edges).to be_empty
     end
 

@@ -110,9 +110,14 @@ module System
         # category is not this sensor's to declare.
         OWNED_CATEGORY_PREFIXES = %w[system. sdwan.].freeze
 
-        # Only the declared root/child forest is a lineage subject. The core
-        # forest's root edge is the reconciler's (CORE_ROOT_KEY); the
-        # Engineering root's edge is written by db/seeds/system_agent_hierarchy.rb.
+        # Only the declared root/child forest is a lineage subject. Both the core
+        # forest's root edge (CORE_ROOT_KEY) and every core-canonical edge — the
+        # Engineering root among them — are the reconciler's, and reach this
+        # sensor through DriftReport#missing_edges like every other edge
+        # (IMP-01a06aee). This sensor used to carry its own
+        # `core_canonical_edge_gaps` because the reconciler's drift could not
+        # answer for them; it now can, and a second copy of that rule here
+        # would be a second place to keep in step.
         ROOT_KEY = ::System::Governance::HierarchyReconciler::ROOT_KEY
 
         def self.default_thresholds
@@ -358,7 +363,7 @@ module System
                 materialization: (agent && { "kind" => "delegation_policy", "agent_id" => agent.id,
                                              "attributes" => attrs.deep_stringify_keys }))
           end
-          signals + core_canonical_edge_gaps
+          signals
         end
 
         def edge_child(key)
@@ -377,21 +382,6 @@ module System
         # The Engineering root (a CORE canonical) is attached under System
         # Concierge by db/seeds/system_agent_hierarchy.rb, not by the
         # reconciler, whose drift report therefore cannot see this edge.
-        def core_canonical_edge_gaps
-          return [] unless root
-
-          declarations::CORE_CANONICAL_KEYS.filter_map do |key|
-            child = canonical_for(key)
-            next unless child
-            next if ::Ai::AgentLineage.for_child(child.id).active.exists?(parent_agent_id: root.id)
-
-            gap("lineage_edge_missing", "#{ROOT_KEY}/#{key}",
-                { "child_agent_id" => child.id, "parent_agent_id" => root.id,
-                  "summary" => "#{child.name} (a core canonical) has no active lineage edge under System Concierge" },
-                materialization: edge_materialization(key, child))
-          end
-        end
-
         # ---- policy_owner_undeclared ----------------------------------------
 
         # Every id a declared identity can legitimately hold rows under: the
