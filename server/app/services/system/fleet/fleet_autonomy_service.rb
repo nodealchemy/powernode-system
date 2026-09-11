@@ -580,9 +580,7 @@ module System
         # 24h ceiling and pushed that module's real remediations down the
         # budget-exhausted branch below.
         unless advisory
-          consent_module_id = metadata&.dig("module_id") || metadata&.dig(:module_id) ||
-                              metadata&.dig("payload", "module_id") || metadata&.dig(:payload, :module_id)
-          consent = ::System::Fleet::ConsentBudgetService.check_and_consume!(module_id: consent_module_id)
+          consent = ::System::Fleet::ConsentBudgetService.check_and_consume!(module_id: consent_module_id(metadata))
           unless consent.allowed
             Rails.logger.info("[FleetAutonomy] Consent budget exhausted for #{action_category}: #{consent.reason}")
             # Force into require_approval pathway — operator must explicitly
@@ -599,18 +597,7 @@ module System
           end
         end
 
-        environment, resolution_error = gate_environment(metadata)
-        result = if resolution_error
-          # Fail CLOSED: an unresolvable plane is not permission to act on it.
-          { policy: "require_approval", source: "environment_resolution_failed", reason: resolution_error }
-        elsif force_policy
-          # A decision-engine override is still subject to the plane: the
-          # overlay can only escalate it.
-          ::Ai::EnvironmentPolicyOverlay.apply({ policy: force_policy, source: "decision_engine_override" },
-                                               environment: environment, action_category: action_category)
-        else
-          @policy_service.resolve(action_category: action_category, agent: @agent, environment: environment)
-        end
+        result, resolution_error, = resolve_gate_policy(action_category, metadata, force_policy)
         if result[:environment_escalation] || resolution_error
           metadata = (metadata || {}).merge("environment_escalation" => result[:environment_escalation] || result[:reason])
         end
@@ -639,6 +626,90 @@ module System
           { decision: :blocked, gate: "unknown_policy" }
         end
       end
+
+      # WHAT #gate_action! WOULD DECIDE, WITH NO WRITE (campaign 01a08c9b B4).
+      #
+      # The remediation lane (System::Status::FleetRemediationLane) reports the
+      # gate's answer on the component status page, which re-asks on every
+      # refresh. So this walks #gate_action!'s arms in the same order and shares
+      # its two pure steps (#consent_module_id, #resolve_gate_policy), but
+      # consumes no consent unit (ConsentBudgetService.headroom, not
+      # check_and_consume!), mints no approval and sends no notification.
+      #
+      # The one step NOT shared is the final policy-to-decision mapping,
+      # because #gate_action!'s arms carry the writes. A parity spec pins every
+      # policy value to the same decision and gate on both paths, so the two
+      # cannot drift silently.
+      #
+      # Returns the gate's vocabulary (:proceed / :pending / :blocked, `gate`,
+      # `reason`), plus `policy`, `consent` (a ConsentBudgetService::Headroom,
+      # nil when advisory), `environment` and `environment_escalation`.
+      def preview_gate(action_category, metadata: {}, force_policy: nil, advisory: false)
+        unless permitted_actions.include?(action_category)
+          return refuse_unpermitted_action(action_category).merge(policy: nil, consent: nil)
+        end
+
+        consent = nil
+        unless advisory
+          consent = ::System::Fleet::ConsentBudgetService.headroom(module_id: consent_module_id(metadata))
+          if consent.exhausted
+            return { decision: :pending, gate: "consent_budget_exhausted", budget_reason: consent.reason,
+                     reason: consent.reason, policy: nil, consent: consent }
+          end
+        end
+
+        result, resolution_error, environment = resolve_gate_policy(action_category, metadata, force_policy)
+        decision, gate = decision_for_policy(result[:policy])
+        escalation = result[:environment_escalation] || resolution_error
+        {
+          decision: decision,
+          gate: gate,
+          reason: escalation,
+          policy: result[:policy],
+          policy_source: result[:source],
+          environment: environment,
+          environment_escalation: escalation,
+          consent: consent
+        }
+      end
+
+      # The module whose consent budget an action draws on: top-level or under
+      # "payload", string or symbol keys. Shared by #gate_action! and
+      # #preview_gate.
+      def consent_module_id(metadata)
+        metadata&.dig("module_id") || metadata&.dig(:module_id) ||
+          metadata&.dig("payload", "module_id") || metadata&.dig(:payload, :module_id)
+      end
+
+      # The plane and the resolved policy, with no write. Shared by
+      # #gate_action! and #preview_gate. Returns [result, resolution_error,
+      # environment].
+      def resolve_gate_policy(action_category, metadata, force_policy)
+        environment, resolution_error = gate_environment(metadata)
+        result = if resolution_error
+          # Fail CLOSED: an unresolvable plane is not permission to act on it.
+          { policy: "require_approval", source: "environment_resolution_failed", reason: resolution_error }
+        elsif force_policy
+          # A decision-engine override is still subject to the plane: the
+          # overlay can only escalate it.
+          ::Ai::EnvironmentPolicyOverlay.apply({ policy: force_policy, source: "decision_engine_override" },
+                                               environment: environment, action_category: action_category)
+        else
+          @policy_service.resolve(action_category: action_category, agent: @agent, environment: environment)
+        end
+        [ result, resolution_error, environment ]
+      end
+
+      # #gate_action!'s case arms without their writes.
+      def decision_for_policy(policy)
+        case policy
+        when "auto_approve", "notify_and_proceed" then [ :proceed, policy ]
+        when "require_approval" then [ :pending, policy ]
+        when "block", "silent" then [ :blocked, policy ]
+        else [ :blocked, "unknown_policy" ]
+        end
+      end
+      private :consent_module_id, :resolve_gate_policy, :decision_for_policy
 
       # IMP-01a025b3: is there already a live operator obligation for exactly
       # the request #gate_action! would mint for this (action_category, metadata)?

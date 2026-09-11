@@ -17,8 +17,15 @@ module System
 
       Result = Struct.new(:allowed, :remaining, :reason, keyword_init: true)
 
+      # What #check_and_consume! WOULD answer right now, with no write.
+      Headroom = Struct.new(:budget, :used, :remaining, :exhausted, :reason, keyword_init: true)
+
       def self.check_and_consume!(module_id:)
         new.check_and_consume!(module_id: module_id)
+      end
+
+      def self.headroom(module_id:)
+        new.headroom(module_id: module_id)
       end
 
       def check_and_consume!(module_id:)
@@ -31,7 +38,7 @@ module System
         return Result.new(allowed: true, remaining: nil, reason: "no_budget_set") if budget.nil? || budget <= 0
 
         # Reset window if expired.
-        if mod.consent_budget_window_start_at.nil? || mod.consent_budget_window_start_at < WINDOW_DURATION.ago
+        if window_expired?(mod)
           mod.update!(consent_budget_window_start_at: Time.current, consent_budget_used_count: 0)
         end
 
@@ -39,7 +46,7 @@ module System
           return Result.new(
             allowed: false,
             remaining: 0,
-            reason: "budget_exhausted: #{mod.consent_budget_used_count}/#{budget} used in current window"
+            reason: exhausted_reason(mod.consent_budget_used_count, budget)
           )
         end
 
@@ -53,6 +60,46 @@ module System
         # Fail-open: a service crash shouldn't block autonomy. Operator
         # can review fleet events to spot crashes.
         Result.new(allowed: true, remaining: nil, reason: "service_error")
+      end
+
+      # READ-ONLY twin of #check_and_consume! (campaign 01a08c9b B4): the
+      # remediation lane's describe reports headroom with it, and a describe
+      # must never move the budget. An expired window reads as empty, exactly
+      # as #check_and_consume! would reset it, but is NOT reset here. Same
+      # fail-open posture: a crash reports "not exhausted".
+      def headroom(module_id:)
+        return open_headroom("no_module_id") if module_id.blank?
+
+        mod = ::System::NodeModule.find_by(id: module_id)
+        return open_headroom("module_not_found") unless mod
+
+        budget = mod.consent_budget_per_day
+        return open_headroom("no_budget_set") if budget.nil? || budget <= 0
+
+        used = window_expired?(mod) ? 0 : mod.consent_budget_used_count.to_i
+        if used >= budget
+          return Headroom.new(budget: budget, used: used, remaining: 0, exhausted: true,
+                              reason: exhausted_reason(used, budget))
+        end
+
+        Headroom.new(budget: budget, used: used, remaining: budget - used, exhausted: false, reason: "ok")
+      rescue StandardError => e
+        Rails.logger.warn("[ConsentBudgetService] headroom #{e.class}: #{e.message}")
+        open_headroom("service_error")
+      end
+
+      private
+
+      def window_expired?(mod)
+        mod.consent_budget_window_start_at.nil? || mod.consent_budget_window_start_at < WINDOW_DURATION.ago
+      end
+
+      def exhausted_reason(used, budget)
+        "budget_exhausted: #{used}/#{budget} used in current window"
+      end
+
+      def open_headroom(reason)
+        Headroom.new(budget: nil, used: nil, remaining: nil, exhausted: false, reason: reason)
       end
     end
   end

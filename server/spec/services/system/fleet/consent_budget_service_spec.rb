@@ -12,6 +12,44 @@ RSpec.describe System::Fleet::ConsentBudgetService do
            category: category, variety: "subscription", name: "budget-mod")
   end
 
+  # READ-ONLY twin of check_and_consume! (B4): the remediation lane's describe
+  # reports headroom with it, and a describe must never move the budget.
+  describe ".headroom" do
+    it "reports no budget for a module without a ceiling" do
+      expect(described_class.headroom(module_id: mod.id)).to have_attributes(budget: nil, exhausted: false)
+    end
+
+    context "when module has budget=3" do
+      before do
+        mod.update!(consent_budget_per_day: 3, consent_budget_used_count: 1,
+                    consent_budget_window_start_at: Time.current)
+      end
+
+      it "reports what check_and_consume! would, without consuming" do
+        expect(described_class.headroom(module_id: mod.id))
+          .to have_attributes(budget: 3, used: 1, remaining: 2, exhausted: false)
+        expect(mod.reload.consent_budget_used_count).to eq(1)
+      end
+
+      it "reports exhaustion in check_and_consume!'s own words" do
+        mod.update!(consent_budget_used_count: 3)
+
+        expect(described_class.headroom(module_id: mod.id))
+          .to have_attributes(remaining: 0, exhausted: true,
+                              reason: "budget_exhausted: 3/3 used in current window")
+      end
+
+      it "treats an expired window as empty without resetting it" do
+        stale = 25.hours.ago
+        mod.update!(consent_budget_used_count: 3, consent_budget_window_start_at: stale)
+
+        expect(described_class.headroom(module_id: mod.id)).to have_attributes(used: 0, remaining: 3)
+        expect(mod.reload.consent_budget_used_count).to eq(3)
+        expect(mod.consent_budget_window_start_at).to be_within(1.second).of(stale)
+      end
+    end
+  end
+
   describe ".check_and_consume!" do
     context "when module has no budget set" do
       it "always allows" do

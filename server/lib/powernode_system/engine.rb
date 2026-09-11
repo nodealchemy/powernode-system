@@ -800,6 +800,22 @@ module PowernodeSystem
       end
     end
 
+    # The fleet's side of the remediation plane (campaign 01a08c9b increment
+    # B4, design §5.1/§4.3/§5.2): one lane per SIGNAL_BINDINGS kind, the
+    # signal source RemediationRefresh pulls from, runbooks.yml as a runbook
+    # source, and the mirror of status transitions into the fleet feed. Core
+    # names none of them; System::Status::RemediationWiring registers all four
+    # and is idempotent across reloads. Same to_prepare and ERROR-level rescue
+    # posture as the contributors block above, for the same reasons.
+    initializer "powernode_system.remediation_plane", after: :load_config_initializers do
+      config.to_prepare do
+        ::System::Status::RemediationWiring.register_all!
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not wire the remediation plane " \
+                           "(fleet components will route as not_actuatable): #{e.class}: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry (Phase 5 — Action Category Registry).
     #
