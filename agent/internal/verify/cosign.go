@@ -1,16 +1,7 @@
-// Package verify performs the cryptographic checks the agent runs against
-// each pulled module artifact before mounting it: cosign signature
-// verification (against the platform's pinned Sigstore identity policy)
-// and fs-verity root-hash verification (against the digest the platform's
-// ModuleArtifact row recorded at build time).
-//
-// Phase 1 adds the Verifier interface so the reconciler + CLI consumers
-// can be unit-tested with stub implementations. The default
-// CosignVerifier still shells out to the cosign binary; the embedded
-// sigstore-go path is reserved for a follow-up that bundles the
-// transitive dep tree carefully.
-//
-// Reference: Golden Eclipse plan Security Architecture (Supply Chain).
+// cosign.go holds the Verifier interface, CosignVerifier and AlwaysOK. The
+// package documentation, including where verification is and is not
+// enforced, lives in doc.go.
+
 package verify
 
 import (

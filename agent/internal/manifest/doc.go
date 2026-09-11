@@ -6,26 +6,28 @@
 //
 // DefaultRoot = /persist/var/lib/powernode/modules
 //
-// Lives under /persist so cached manifests survive reboots. Reconcile +
-// CLI commands prefer cached copies and only re-fetch when explicitly
-// asked or when a known cache-bust signal fires.
+// One file per module, <root>/<id>/manifest.json, under /persist so cached
+// manifests survive reboots. LoadOrFetch prefers the cached copy and
+// re-fetches only when it is missing, does not decode, or is older than
+// the caller's staleAfter (0 means never stale).
 //
 // # Pipeline shape
 //
-//	FetchAndCache(client, moduleID, root) → manifest
+//	FetchAndCache(client, root, moduleID) → manifest
 //	  ↓
-//	transport.Client.GetJSON(/api/v1/system/node_api/modules/:id/manifest)
+//	transport.Client.GetJSON(/api/v1/system/node_api/modules/:id)
 //	  ↓
-//	parse JSON → fsutil.AtomicWrite(<root>/<moduleID>.json)
+//	unwrap the {success, data} envelope → fsutil.AtomicWriteJSON(<root>/<id>/manifest.json)
 //	  ↓
 //	return parsed manifest.Manifest
+//
+// A failed cache write still returns the fetched manifest, alongside the
+// error.
 //
 // # Key types
 //
 //	Client    — minimal interface (GetJSON); satisfied by transport.Client
-//	Manifest  — the parsed module manifest (mirrors the
-//	            system_modules.manifest_json server-side column shape;
-//	            see types.go for the field set)
+//	Manifest  — the parsed module manifest (see types.go for the field set)
 //
 // Decoupling from transport lets tests stub without an httptest server.
 package manifest

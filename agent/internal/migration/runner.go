@@ -1,22 +1,6 @@
-// Package migration is the agent-side executor for
-// System::StorageMigration. The platform side plans + approves
-// migrations; this runner picks them up from
-// /api/v1/system/node_api/storage_migrations, advances them through
-// the 6-step contract, and reports progress.
-//
-// Contract steps (per server-side plan["agent_contract"]):
-//
-//	mount_target → snapshot → rsync → verify → cutover → unmount_source
-//
-// Mapped onto the StorageMigration state machine:
-//
-//	approved  → preparing  (mount_target + snapshot)
-//	preparing → syncing    (rsync data)
-//	syncing   → verifying  (rsync --checksum --dry-run; expect no diffs)
-//	verifying → cutover    (atomic rename — old subpath ↔ new subpath)
-//	cutover   → completed  (server-side; agent reports + unmount_source)
-//
-// Plan reference: E8.2 / E8.3.
+// runner.go holds Runner, the storage-migration executor, and its steps.
+// The package documentation, including the step contract, lives in doc.go.
+
 package migration
 
 import (

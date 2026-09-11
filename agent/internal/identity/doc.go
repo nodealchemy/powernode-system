@@ -1,5 +1,5 @@
-// Package identity discovers the agent's identity at boot — what node am I,
-// how do I find the platform, what bootstrap token (if any) do I have.
+// Package identity discovers the agent's identity at boot: which NodeInstance
+// this is, where the platform is, and what bootstrap token (if any) it holds.
 //
 // Identity is the prerequisite for enrollment: a strategy returns a partial
 // or complete Identity, which the boot subcommand uses to call
@@ -7,27 +7,31 @@
 //
 // # Strategies
 //
-// Per project_local_qemu_provider memory + Golden Eclipse plan M2.A:
+// DefaultResolver tries these in order and the first to return an identity
+// wins; a strategy with nothing to offer returns ErrNotFound:
 //
-//   - LocalIdentityStrategy   — file at /boot/powernode/identity.cfg (KEY=VALUE)
-//   - CmdlineIdentityStrategy — kernel command line params (powernode.id=, etc.)
-//   - VirtioFwCfgStrategy     — libvirt fw-cfg blob (the LocalQemuProvider path)
-//   - BootIdentityStrategy    — pre-flash placeholder (claim flow target)
-//   - AwsIdentityStrategy     — IMDSv2 instance metadata (M2.B planned)
-//   - GcpIdentityStrategy     — GCE metadata server (M2.B planned)
-//   - AzureIdentityStrategy   — IMDS endpoint (M2.B planned)
-//   - DigitalOceanStrategy    — DO metadata (M2.B planned)
-//   - ClaimStrategy           — pre-claimed device polls /node_api/claim until
-//     an operator binds it to an account
+//  1. CmdlineStrategy       — powernode.<key>=<value> kernel command-line params
+//  2. FwCfgStrategy         — QEMU virtio-fw-cfg blobs (libvirt/QEMU providers)
+//  3. LocalIdentityStrategy — /run/powernode/identity.cfg, the NoCloud cicustom
+//     identity staged pre-pivot on Proxmox uefi_disk builders
+//  4. ClaimStrategy         — a device flashed from a generic disk image: its
+//     BootIdentityStrategy reads /boot/identity.cfg, and without a bootstrap
+//     token it polls /api/v1/system/node_api/claim until an operator confirms
+//  5. CloudStrategy         — cloud metadata, once each through
+//     AwsMetadataClient, GcpMetadataClient, AzureMetadataClient and
+//     DigitalOceanMetadataClient
+//  6. LocalIdentityStrategy — /etc/identity.cfg, the legacy bare-metal fallback
 //
-// The boot subcommand iterates strategies in priority order; first one that
-// returns a non-error result wins.
+// The no-network strategies run before the cloud probes so a local or
+// physical node does not wait on metadata services that are not there. The
+// comment on DefaultResolver records why each one sits where it does.
 //
 // # Key types
 //
-//	Identity        — { ID, BootstrapToken, PlatformURL, CABundlePEM }
-//	Strategy        — interface { Discover(ctx) (Identity, error) }
-//	Resolver        — picks a strategy + caches the result
+//	Identity — InstanceUUID, BootstrapToken, PlatformURL, CABundlePEM,
+//	           Architecture, CloudProvider, DiscoveredAt
+//	Strategy — interface { Name() string; Discover(ctx) (*Identity, error) }
+//	Resolver — runs its Strategies in order under one overall Timeout
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // node_enrollment_service.rb handles the CSR side of the handshake.

@@ -1,39 +1,7 @@
-// Package oci pulls module artifacts to a local cache.
-//
-// Phase 1 rewrite: the agent fetches manifest metadata from the
-// platform's /api/v1/system/node_api/modules/:id/download endpoint
-// and streams the artifact bytes via the same mTLS transport. No
-// `oras` shell dependency — keeps the static binary lean and
-// auth-uniform with the rest of the agent.
-//
-// THE AGENT NEVER TALKS TO THE OCI REGISTRY. Every byte comes from the
-// platform's download_url; there is no registry client in this binary (no
-// /v2/ manifest or blob calls anywhere in the agent). Pull errors out rather
-// than falling back if that URL cannot be resolved.
-//
-// This comment previously described the opposite — "oci_ref + digest pulled
-// directly from the OCI registry, with download_url as a platform-proxied
-// fallback for air-gapped fleets". No such branch has ever existed here, and
-// the stale wording actively misled a 2026-07-29 investigation into
-// concluding that every node needed registry egress. Corrected to match the
-// code; if a registry path is ever added, change the code and this comment
-// together.
-//
-// Why platform-only is the design, not a limitation:
-//   - ONE egress path. Nodes need to reach the platform and nothing else;
-//     no per-node registry credentials or allowlist entries.
-//   - ONE fleet-wide cache. The platform side
-//     (Api::V1::System::NodeApi::FilesController -> OciBlobProxyService) is a
-//     digest-addressed read-through cache, so the first node to want a digest
-//     pays the registry fetch and every other node is served from disk.
-//   - A registry outage degrades instead of blocking, as long as the platform
-//     already holds the blob.
-//
-// Integrity does not depend on the transport: Digest is REQUIRED, the stream
-// is sha256'd inline, and a mismatch deletes the temp file and fails the pull.
-// So proxying through the platform grants it no ability to substitute bytes.
-//
-// Reference: Golden Eclipse plan M2.D.5; M1 supply chain.
+// pull.go holds Puller and ModuleArtifactRef. The package documentation,
+// including why every byte comes from the platform and never from the
+// registry, lives in doc.go.
+
 package oci
 
 import (

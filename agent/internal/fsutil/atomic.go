@@ -1,7 +1,6 @@
-// Package fsutil contains small filesystem helpers reused across the
-// agent. Promoted from internal/dockerd + internal/k3sd in Phase 0 of
-// the stub implementation plan so manifest, fleetevent, scripts, and
-// the M2.D CLI commands can share the same atomic-write semantics.
+// atomic.go holds AtomicWrite and AtomicWriteJSON. The package
+// documentation lives in doc.go.
+
 package fsutil
 
 import (
@@ -18,7 +17,7 @@ import (
 //
 // Same-directory constraint: the temp file is created in
 // filepath.Dir(path) so os.Rename stays a single-filesystem rename.
-// Cross-filesystem renames degrade to copy+delete and lose atomicity.
+// Across filesystems it fails with EXDEV; it never degrades to a copy.
 //
 // Behavior preserved verbatim from the dockerd.atomicWrite caller
 // pattern: open temp → write → chmod → fsync → close → rename.

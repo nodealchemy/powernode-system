@@ -23,18 +23,29 @@
 //
 // # Actual flow
 //
-//  1. GET /api/v1/system/node_api/modules/:id/download over the agent's mTLS
-//     transport — returns the artifact envelope (digest, size, download_url,
-//     and an informational oci_ref).
-//  2. Stream the bytes from download_url, which points at the platform's
-//     digest-addressed proxy (Api::V1::System::NodeApi::FilesController ->
-//     System::OciBlobProxyService). sha256 is computed inline; a mismatch
-//     deletes the temp file and fails the pull, so proxying grants the
-//     platform no ability to substitute bytes.
-//  3. Cosign signature verification (internal/verify) against the identity +
-//     issuer regexps from the module's NodeModuleVersion record.
-//  4. fs-verity root verification on the erofs file.
-//  5. Return the verified path for mount.MountModule to loop-mount.
+//  1. The caller hands Puller.Pull a ModuleArtifactRef. The reconciler builds
+//     it from the module manifest; FetchManifest builds it from
+//     GET /api/v1/system/node_api/modules/:id/download over the agent's mTLS
+//     transport (digest, size, download_url, the cosign bundle, and an
+//     informational oci_ref).
+//  2. If the ref carries a cosign blob bundle, Pull writes it beside the blob
+//     as <digest>.cosign-bundle. It does this even when the blob is already
+//     cached, because a backfill can sign an artifact after a node cached it.
+//  3. Unless a blob with that digest is already cached, stream the bytes from
+//     download_url, which points at the platform's digest-addressed proxy
+//     (Api::V1::System::NodeApi::FilesController ->
+//     System::OciBlobProxyService). There is no fallback when that URL cannot
+//     be resolved. sha256 is computed inline; a mismatch deletes the temp file
+//     and fails the pull, so proxying grants the platform no ability to
+//     substitute bytes.
+//  4. Return the blob path and the bundle path.
+//
+// The digest is required (Pull refuses a ref without one) and is the only
+// check this package makes. Signature and fs-verity verification belong to
+// the caller: runtime's Reconciler.mountModuleArtifact runs the configured
+// verify.Verifier (off by default; see internal/verify) and, when one is set,
+// the fs-verity check, before it mounts. An earlier revision of this list had
+// the Puller verifying signatures itself; it never did (IMP-01a08b79).
 //
 // Fetching through the platform rather than the registry is deliberate: one
 // egress path per node, one fleet-wide cache (the first node to want a digest
@@ -44,7 +55,7 @@
 //
 // # Key types
 //
-//	Puller             — orchestrates fetch + verify + cache
+//	Puller             — fetches a module blob, checks its digest, caches it
 //	ModuleArtifactRef  — the platform's artifact envelope (see pull.go)
 //
 // Server-side counterparts: FilesController + OciBlobProxyService serve the

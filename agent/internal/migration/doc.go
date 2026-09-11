@@ -1,28 +1,48 @@
-// Package migration runs agent-side migration steps from the platform's
-// System::Migrations job system. The platform composes a migration plan
-// (multi-hop chain of source → intermediate → destination steps); each
-// step on this node is materialized here as a stateful runner that
-// reports progress + final outcome back via the worker API.
+// Package migration is the agent-side executor for System::StorageMigration,
+// which moves a volume's data from a source binding to a target binding. The
+// platform plans and approves a migration; Runner picks up the ones assigned
+// to this node from /api/v1/system/node_api/storage_migrations, advances each
+// on every Tick, and reports each transition back.
 //
-// # Operator-facing model
+// It does NOT run the platform's multi-hop workload migration chains
+// (System::MigrationChain). A previous revision of this comment said it did;
+// nothing in this package reads a chain.
 //
-// Migration is the platform-wide pattern for moving workloads across
-// nodes / regions / clusters / accounts. See:
+// # Forward steps
 //
-//   - extensions/system/server/app/models/system/migration_chain.rb
-//   - extensions/system/server/app/services/system/migrations/
-//   - docs/federation/MIGRATION_DEVELOPER_GUIDE.md
+// The contract (server-side plan["agent_contract"]):
+//
+//	mount_target → snapshot → rsync → verify → cutover → unmount_source
+//
+// mapped onto the StorageMigration states:
+//
+//	approved  → preparing  (mount source + target)
+//	preparing → syncing    (rsync data)
+//	syncing   → verifying  (rsync --checksum --dry-run; expect no diffs)
+//	verifying → cutover
+//	cutover   → completed  (re-point the consumer's mount; the agent reports)
+//
+// Cutover stops the consumer's units, remounts its canonical mount point on
+// the target, restarts the units and releases the scratch mounts. A
+// migration that names no consumer mount point or units only unmounts the
+// source scratch.
+//
+// # Intents
+//
+// Two platform requests are checked before the status: RevertRequested
+// re-points the consumer back to the source (cutover in reverse), and
+// CleanupRequested deletes the target-side scratch artifacts, never the
+// source. Cleanup refuses any binding whose effective subpath is empty,
+// which would otherwise mount, and empty, the export root.
 //
 // # Key types
 //
-//	Runner — owns a single in-flight migration step:
-//	  - source node: snapshot + ship
-//	  - destination node: apply + verify
-//	  - intermediate: pass-through with checkpoints
+//	Runner             — Tick fetches the assigned migrations and advances each
+//	AssignedMigration  — one migration, as the node API serializes it for the agent
+//	Client             — the GetJSON / PostJSON surface Runner needs
 //
-// # Reference
+// Tick is idempotent: a re-run picks up from the status the platform
+// reports, and one migration's error does not stop the others.
 //
-// Plan P9.5 — multi-hop migration chains. The runner here is the
-// agent-side worker that actually moves bytes; chain composition +
-// approval gates live in the platform.
+// Plan reference: E8.2 / E8.3.
 package migration

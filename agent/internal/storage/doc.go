@@ -1,32 +1,40 @@
-// Package storage materializes storage assignments on the agent —
-// volumes, NFS / SMB / CIFS exports, S3FS mounts, gateway proxies, and
-// the encrypted-volume + credential plumbing each needs.
+// Package storage materializes storage assignments on the agent: network
+// mounts (NFS, CIFS / SMB, s3fs object storage), the NFS exports a backend
+// peer serves, Samba users, gateway re-exports, ownership fixes, and the
+// credential and encryption plumbing each needs.
 //
-// # Materialization flow
+// # How work arrives
 //
-//	platform → /node_api/storage_assignments → applier.Apply(ctx, assignments)
-//	  ↓
-//	per-assignment: resolve type → invoke matching driver
-//	  - nfs.go        — NFS server export + client mount
-//	  - cifs.go       — CIFS / SMB client mount
-//	  - smb_user.go   — per-user SMB credential provisioning
-//	  - s3fs.go       — s3fs FUSE mount with credentials
-//	  - exports.go    — NFS export table management
-//	  - gateway.go    — gateway-proxied storage (when storage host
-//	                    sits behind another peer)
-//	  - encryption.go — LUKS / dm-crypt setup for volume-backed mounts
-//	  - credentials.go — per-mount credential retrieval + cache
-//	  - systemd.go    — .mount unit materialization
+// The platform dispatches it as agent tasks. runtime/tasks/handlers/storage.go
+// decodes each payload and calls one entry point here:
 //
-// Each driver is a separate file because they have completely
-// different external dependencies + tooling. The applier file glues
-// them together; types.go defines the shared assignment shapes.
+//	storage.mount               → Apply
+//	storage.unmount             → Unapply
+//	storage.exports.apply       → ApplyExports
+//	storage.smb_user.apply      → ApplySambaUser
+//	storage.gateway.provision   → ProvisionGateway
+//	storage.gateway.deprovision → DeprovisionGateway
+//	storage.chown               → ApplyChown
+//
+// The payloads are built server-side by
+// extensions/system/server/app/services/system/storage/task_payload_builder.rb;
+// types.go mirrors them and validate.go is the one place each is validated.
+//
+// # Files
+//
+//   - applier.go — Apply / Unapply: one assignment's mount lifecycle
+//   - nfs.go, cifs.go, s3fs.go — the per-filesystem mount steps
+//   - exports.go — NFS export table management on a backend peer
+//   - smb_user.go — Samba user provisioning
+//   - gateway.go — gateway re-exports, for storage that sits behind another peer
+//   - credentials.go — fetches a mount's credential from the node API and
+//     stages it under MountCredsDir (tmpfs, 0600, never persisted)
+//   - encryption.go — fscrypt on a local mount target; LUKS is not
+//     implemented and fails the task
+//   - systemd.go — .mount unit materialization
+//   - chown.go — ownership fixes for an assignment's owner
 //
 // # Reference
 //
-// Plan S7a/S7b — self-hosted storage via SDWAN + gateway-proxied
-// external storage. See:
-//
-//	docs/USE_CASE_MATRIX.md  use case 9 (storage)
-//	docs/runbooks/sdwan-network-setup.md §"Storage attachments"
+// docs/STORAGE_SUBSYSTEM.md in this extension describes the storage data plane.
 package storage

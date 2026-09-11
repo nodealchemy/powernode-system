@@ -1,14 +1,6 @@
-// Package fleetevent posts agent-side events to the platform's
-// /api/v1/system/node_api/fleet/events endpoint. Used by:
-//
-//   - the long-loop reconciler (module.attached, module.detached)
-//   - cert rotation (cert.rotated)
-//   - the operator CLI (script.executed, volume.provisioned, etc.)
-//
-// Events flow into the same Fleet::EventBroadcaster pipeline that
-// trading + system autonomy already use, so the agent's view appears
-// in the unified activity feed. Reference: extensions/system/server
-// /app/services/system/fleet/event_broadcaster.rb.
+// emitter.go holds Emitter, the Event it posts and the HTTPClient seam it
+// posts through. The package documentation lives in doc.go.
+
 package fleetevent
 
 import (

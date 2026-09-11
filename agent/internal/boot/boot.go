@@ -1,14 +1,6 @@
-// Package boot implements the agent's first-boot orchestration —
-// the work that runs from initramfs init-bottom before the real
-// rootfs is pivoted in via switch_root.
-//
-// Compose pattern: this package owns no primitives of its own;
-// it composes identity discovery + enrollment + mount orchestration
-// into a single Boot(ctx) flow. The primitives (identity.Resolver,
-// enroll.Client, mount.Runner) all have their own tests and live
-// in their own packages.
-//
-// Phase 3 of the agent stub implementation plan. Stub #1.
+// boot.go holds the Orchestrator and its Boot(ctx) flow. The package
+// documentation lives in doc.go.
+
 package boot
 
 import (

@@ -11,12 +11,22 @@
 //
 // The rule: every capitalised identifier listed in a doc.go indented block
 // must be an exported top-level declaration of that same package.
+//
+// IMP-01a08b79: a second rule. Eleven internal packages carried TWO package
+// comments, one in doc.go and one on a sibling file, and go doc prints every
+// package comment it finds, in file order. In five of them the two disagreed
+// about the code: manifest's cache path, migration's subject, systemd's API,
+// identity's strategy names, and which package verifies a module signature.
+// A reader saw both and could not tell which was stale. Every package under
+// internal/ now has exactly one package comment.
 package docs_test
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -128,5 +138,68 @@ func TestDocCommentsNameRealSymbols(t *testing.T) {
 	if documenting < 5 {
 		t.Fatalf("only %d package(s) had a documented-symbol block; the extraction "+
 			"pattern has probably stopped matching the doc.go convention", documenting)
+	}
+}
+
+func TestEachInternalPackageHasOnePackageComment(t *testing.T) {
+	root := filepath.Join("..", "..", "internal")
+
+	checked := 0
+	err := filepath.WalkDir(root, func(dir string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		// The go tool ignores testdata, so a .go fixture there is not a package.
+		if d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+
+		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			return err
+		}
+
+		fset := token.NewFileSet()
+		sources := 0
+		var carriers []string
+		for _, path := range paths {
+			if strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			sources++
+			// A package comment is the comment group immediately above the
+			// package clause; a blank line in between makes it a file comment.
+			file, err := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly|parser.ParseComments)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", path, err)
+			}
+			if file.Doc != nil {
+				carriers = append(carriers, filepath.Base(path))
+			}
+		}
+		if sources == 0 {
+			return nil
+		}
+		checked++
+
+		if len(carriers) != 1 {
+			rel, _ := filepath.Rel(root, dir)
+			t.Errorf("internal/%s has %d package comments (%s); keep exactly one, in doc.go, "+
+				"and turn the rest into file comments (a blank line before `package`)",
+				rel, len(carriers), strings.Join(carriers, ", "))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+
+	// Non-vacuity: a wrong root walks nothing and every package "passes".
+	if checked < 30 {
+		t.Fatalf("only %d internal package(s) found under %s; the guard is looking in the wrong place",
+			checked, root)
 	}
 }

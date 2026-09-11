@@ -1,13 +1,9 @@
-// Package storage implements the on-node agent's storage assignment
-// applier: mount/unmount filesystem assignments, render NFS exports.d
-// on backend peers, provision Samba users, configure gateway re-exports
-// for Shape 2 (gateway_proxy) deployments, and set up fscrypt/LUKS
-// encryption.
-//
-// Mirrors the server-side payload schemas in
-// extensions/system/server/app/services/system/storage/task_payload_builder.rb.
-// Schemas MUST stay in sync — drift surfaces as silent NoOps or panics
-// in production.
+// types.go holds the storage task payloads (ChownTask lives in chown.go).
+// They mirror the server-side schemas in
+// extensions/system/server/app/services/system/storage/task_payload_builder.rb
+// and MUST stay in sync: drift surfaces as silent NoOps or panics in
+// production. The package documentation lives in doc.go.
+
 package storage
 
 // MountTask is the payload for command `storage.mount`. Dispatched to

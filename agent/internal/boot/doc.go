@@ -9,9 +9,9 @@
 // flow. The primitives all have their own tests and live in their own
 // packages:
 //
-//   - internal/identity — discover who-am-I (cloud / libvirt / cmdline)
-//   - internal/enroll   — CSR → mTLS cert exchange
-//   - internal/mount    — erofs + overlayfs assembly
+//   - internal/identity  — identity.Resolver: discover who-am-I (cloud / libvirt / cmdline)
+//   - internal/enroll    — enroll.Client: CSR → mTLS cert exchange
+//   - internal/mount     — erofs + overlayfs assembly, run through a mount.Runner
 //   - internal/transport — HTTP client used by enroll
 //
 // # Switch-root injection

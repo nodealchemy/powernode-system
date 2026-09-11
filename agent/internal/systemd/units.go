@@ -1,7 +1,6 @@
-// Package systemd wraps systemctl invocations behind the mount.Runner
-// abstraction so the M2.D CLI commands (attach, detach, init) and the
-// reconcile goroutine share one entry point. Tests use
-// mount.RecorderRunner to assert exact command sequences.
+// units.go holds Action, IsActive and DaemonReload. The package
+// documentation lives in doc.go.
+
 package systemd
 
 import (

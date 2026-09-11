@@ -1,14 +1,10 @@
-// Package manifest is the agent-side typed view of a NodeModule's
-// manifest. Mirrors what the platform serializes via
-// `NodeModule#serialize_module_full` (extensions/system/server/app/
-// models/system/node_module.rb).
-//
-// The agent caches manifests under
-// /persist/var/lib/powernode/modules/<id>/manifest.json so subsequent
-// CLI invocations (init, detach) work without a platform round-trip.
-//
-// Reference: ManifestImportService.apply_to_module describes the
-// canonical schema; this package keeps Go types in sync with that.
+// types.go is the agent-side typed view of a NodeModule's manifest. It
+// mirrors the payload the node API serializes
+// (NodeModuleNodeApiSerializer#serialize_module_full, in
+// extensions/system/server/app/serializers/system/), whose canonical schema
+// ManifestImportService#apply_to_module applies. Keep these Go types in sync
+// with it. The package documentation lives in doc.go.
+
 package manifest
 
 import (

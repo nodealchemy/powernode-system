@@ -1,24 +1,7 @@
-// Package lifecycle materializes systemd unit files from the platform's
-// `system_module_services` rows (surfaced to the agent as
-// manifest.Service entries) and wires them into module attach/detach.
-//
-// Why systemd-native: each service inherits all of systemd's lifecycle
-// guarantees — Restart= for restart_policy, Environment= for env,
-// User= for user, journalctl for stdout/stderr — without the agent
-// reimplementing a process supervisor.
-//
-// Topological order: outgoing dependencies on a service mean "start
-// these first." We use Kahn's algorithm to produce a deterministic
-// start order, with a stable secondary key (name asc) so two
-// independent services always land in the same order across
-// reconcile passes.
-//
-// Unit naming: powernode-<module-id>-<service-name>.service. The
-// per-module prefix scopes them so two modules can ship services
-// with the same human name without colliding.
-//
-// Plan reference: P8.1 (ipn-agent init_start/init_stop per
-// system_module_services rows).
+// service.go renders module services into systemd units, orders them with
+// Kahn's algorithm and attaches or detaches them. The package documentation
+// lives in doc.go.
+
 package lifecycle
 
 import (

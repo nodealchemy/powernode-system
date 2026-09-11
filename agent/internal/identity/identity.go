@@ -1,11 +1,7 @@
-// Package identity discovers a node's identity via multiple strategies
-// (DMI/SMBIOS, cloud metadata services, virtio-fw-cfg, kernel cmdline,
-// local boot device). The strategies are tried in priority order and the
-// first one that yields a non-empty result wins.
-//
-// Reference: Golden Eclipse plan M2 capabilities — multi-cloud metadata
-// discovery; legacy powernode-bootstrap/scripts/ipn_initialize
-// (ipn_init_discover + ipn_init_identity steps).
+// identity.go holds Identity, the Strategy interface, Resolver and
+// DefaultResolver's strategy order. The package documentation lives in
+// doc.go.
+
 package identity
 
 import (
