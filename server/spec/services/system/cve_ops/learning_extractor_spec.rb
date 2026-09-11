@@ -56,6 +56,21 @@ RSpec.describe System::CveOps::LearningExtractor do
     end
   end
 
+  # The auto-evolve trigger is gone: it called SelfImprovementTool's
+  # auto_evolve_skill with no user and no agent, which the tool refuses.
+  describe "with matching learnings past the old auto-evolve threshold" do
+    it "still records learnings and never builds a SelfImprovementTool" do
+      3.times do
+        create(:ai_compound_learning, account: account, tags: [ "cve_responder", "autonomy", "system.cve_published" ])
+      end
+      expect(::Ai::Tools::SelfImprovementTool).not_to receive(:new)
+
+      expect {
+        described_class.record_tick!(account: account, decisions: decisions)
+      }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
+    end
+  end
+
   describe "calibrated importance" do
     it "seeds discovery-category rows at the calibrated 0.35, not the 0.5 tool default" do
       described_class.record_tick!(account: account, decisions: decisions)

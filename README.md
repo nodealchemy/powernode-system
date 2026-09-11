@@ -307,9 +307,10 @@ viewer in active sweep).
   DecisionEngine, approval chains). For today's sensor roster, see
   [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md).
 - **M8** — Compound learning extraction (LearningExtractor wired into the tick
-  loop). Its auto-evolve trigger fires after 3 matching learnings, but it calls
-  the platform's `auto_evolve_skill` verb with no user, and the verb refuses it
-  for lack of `ai.skills.update`. Today the trigger mutates no skill.
+  loop). Its auto-evolve trigger was deleted: it called the platform's
+  `auto_evolve_skill` verb with no user and no agent, which the verb refuses for
+  lack of `ai.skills.update`, so it never mutated a skill. Skill evolution goes
+  through that verb's own gated door.
 
 ### Active sweep (May 2026)
 

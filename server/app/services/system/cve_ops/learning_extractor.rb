@@ -8,12 +8,13 @@ module System
     # only by the tag prefix ("cve_responder" vs "fleet").
     #
     # Why a separate extractor: the title carries the domain ("CVE
-    # signal_kind → gate") and the tag list seeds auto_evolve_skill's
-    # cluster query. Sharing Fleet's extractor would conflate the two
-    # domains' learning clusters and degrade auto-evolution quality.
+    # signal_kind → gate"). Sharing Fleet's extractor would conflate the two
+    # domains' learning clusters.
+    #
+    # Its auto_evolve_skill trigger was deleted with Fleet's: it called
+    # SelfImprovementTool with no user and no agent, which the tool refuses
+    # (permission denied), so it never ran. See System::Fleet::LearningExtractor.
     module LearningExtractor
-      AUTO_EVOLVE_THRESHOLD = (ENV["CVE_RESPONDER_AUTO_EVOLVE_THRESHOLD"] || 3).to_i
-
       # Calibrated importance by category, mirroring the ralph-loop creation
       # seam (inc7): reconcile-tick decision patterns seed modest and earn
       # ranking through reuse (effective_importance), instead of the 0.5 tool
@@ -35,7 +36,6 @@ module System
           next if decision == :skipped
 
           submit_learning(learning_tool, account, signal_kind, gate, decision, group)
-          maybe_auto_evolve!(account, signal_kind)
         end
       end
 
@@ -67,30 +67,6 @@ module System
         })
       rescue StandardError => e
         Rails.logger.warn("[CveLearningExtractor] failed to record learning: #{e.message}")
-      end
-
-      def maybe_auto_evolve!(account, signal_kind)
-        return unless defined?(::Ai::CompoundLearning)
-
-        count = ::Ai::CompoundLearning
-                .where(account_id: account.id)
-                .with_tag(signal_kind)
-                .count
-        return if count < AUTO_EVOLVE_THRESHOLD
-        return unless defined?(::Ai::Tools::SelfImprovementTool)
-
-        tool = ::Ai::Tools::SelfImprovementTool.new(account: account, agent: nil, user: nil)
-        result = tool.execute(params: { action: "auto_evolve_skill" })
-
-        if result.is_a?(Hash) && result[:success]
-          Rails.logger.info(
-            "[CveLearningExtractor] auto_evolve_skill triggered: " \
-            "signal_kind=#{signal_kind} matching_learnings=#{count} " \
-            "skills_mutated=#{result.dig(:data, :skills_mutated) || 0}"
-          )
-        end
-      rescue StandardError => e
-        Rails.logger.warn("[CveLearningExtractor] auto_evolve_skill failed: #{e.message}")
       end
 
       def build_content(signal_kind, gate, decision, group)

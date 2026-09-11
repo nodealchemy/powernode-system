@@ -2,20 +2,20 @@
 
 module System
   module Fleet
-    # Captures fleet decision outcomes as compound learnings (M8). After three
-    # matching decisions accumulate, `auto_evolve_skill` promotes the pattern
-    # to a reusable Skill — closing the self-improvement loop:
-    #   sensor → signal → skill → decision → outcome → learning → skill mutation
+    # Captures fleet decision outcomes as compound learnings (M8).
+    #
+    # It used to call SelfImprovementTool's auto_evolve_skill once three
+    # learnings matched a signal kind. That call passed no user and no agent,
+    # so the tool refused it (permission denied: ai.skills.update) on every
+    # run, and it logged only on success, so the refusal never surfaced. It
+    # was deleted rather than repaired: skill evolution already has a gated
+    # door (the auto_evolve_skill MCP verb, dev.skill_refine), and a
+    # reconciler that silently cannot act is worse than none.
     #
     # v0 records minimal payload (signal_kind, action_category, decision gate,
     # disruption_pct from the skill plan when available). M-D2-2 enriches with
     # actual remediation outcome (success/failure of the dispatched task).
     module LearningExtractor
-      # Number of matching tagged learnings before triggering auto-evolution.
-      # Plan M8: "After three matching learnings, auto_evolve_skill promotes
-      # the pattern to a reusable Skill". Configurable via ENV for prod tuning.
-      AUTO_EVOLVE_THRESHOLD = (ENV["FLEET_AUTO_EVOLVE_THRESHOLD"] || 3).to_i
-
       # Calibrated importance by category, mirroring the ralph-loop creation
       # seam (inc7): reconcile-tick decision patterns seed modest and earn
       # ranking through reuse (effective_importance) rather than the 0.5
@@ -52,7 +52,6 @@ module System
           next if decision == :blocked && group.all? { |d| d[:reason].to_s == "not_permitted" }
 
           submit_learning(learning_tool, account, signal_kind, gate, decision, group)
-          maybe_auto_evolve!(account, signal_kind)
         end
       end
 
@@ -117,36 +116,6 @@ module System
         })
       rescue StandardError => e
         Rails.logger.warn("[FleetLearningExtractor] failed to record learning: #{e.message}")
-      end
-
-      # When AUTO_EVOLVE_THRESHOLD matching learnings accumulate for a single
-      # signal_kind, trigger `auto_evolve_skill` once. The trigger is rate-
-      # limited via the SkillMutationService's own internal logic (it skips
-      # skills that have evolved recently), so calling it on every tick once
-      # the threshold is met is safe.
-      def maybe_auto_evolve!(account, signal_kind)
-        return unless defined?(::Ai::CompoundLearning)
-
-        count = ::Ai::CompoundLearning
-                .where(account_id: account.id)
-                .with_tag(signal_kind)
-                .count
-        return if count < AUTO_EVOLVE_THRESHOLD
-
-        return unless defined?(::Ai::Tools::SelfImprovementTool)
-
-        tool = ::Ai::Tools::SelfImprovementTool.new(account: account, agent: nil, user: nil)
-        result = tool.execute(params: { action: "auto_evolve_skill" })
-
-        if result.is_a?(Hash) && result[:success]
-          Rails.logger.info(
-            "[FleetLearningExtractor] auto_evolve_skill triggered: " \
-            "signal_kind=#{signal_kind} matching_learnings=#{count} " \
-            "skills_mutated=#{result.dig(:data, :skills_mutated) || 0}"
-          )
-        end
-      rescue StandardError => e
-        Rails.logger.warn("[FleetLearningExtractor] auto_evolve_skill failed: #{e.message}")
       end
 
       def build_content(signal_kind, gate, decision, group)

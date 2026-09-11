@@ -2,10 +2,20 @@
 
 require "rails_helper"
 
-# Golden Eclipse M8 — LearningExtractor's auto_evolve_skill trigger.
+# Golden Eclipse M8 — LearningExtractor records reconcile-tick decision
+# patterns as compound learnings.
 RSpec.describe System::Fleet::LearningExtractor do
   let(:account)  { create(:account) }
   let(:agent)    { create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy") }
+  let(:embedding_service) { instance_double(Ai::Memory::EmbeddingService, generate: nil) }
+
+  before do
+    allow(Ai::Memory::EmbeddingService).to receive(:new).and_return(embedding_service)
+  end
+
+  def tagged_learning!(signal_kind)
+    create(:ai_compound_learning, account: account, tags: [ "fleet", "autonomy", signal_kind ])
+  end
 
   let(:decisions) do
     [
@@ -20,14 +30,11 @@ RSpec.describe System::Fleet::LearningExtractor do
   end
 
   describe ".record_tick!" do
-    context "below auto-evolve threshold" do
-      it "records a learning but does not call auto_evolve_skill" do
-        # Use the dry-record path by stubbing LearningTool definedness
-        # to false. This proves dry_record is invoked when the tool is
-        # absent without DB churn.
-        stub_const("System::Fleet::LearningExtractor::AUTO_EVOLVE_THRESHOLD", 5)
-        expect(Rails.logger).to receive(:info).at_least(:once)
-        described_class.record_tick!(account: account, decisions: decisions)
+    context "with a proceeded decision" do
+      it "records the decision pattern as a learning" do
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
       end
     end
 
@@ -96,38 +103,18 @@ RSpec.describe System::Fleet::LearningExtractor do
       end
     end
 
-    context "above auto-evolve threshold" do
-      it "would trigger auto_evolve_skill once threshold matched (smoke check)" do
-        # Threshold reduced to 1 so a single learning trips the gate. We
-        # don't need actual SelfImprovementTool wiring to verify the call
-        # path — stub the tool surface and observe.
-        stub_const("System::Fleet::LearningExtractor::AUTO_EVOLVE_THRESHOLD", 1)
+    # The auto-evolve trigger is gone. It called SelfImprovementTool's
+    # auto_evolve_skill with no user and no agent, which the tool refuses
+    # (permission denied), and it logged only on success, so it never ran.
+    # The instance_double that stood in for the tool here is what hid that.
+    context "with matching learnings past the old auto-evolve threshold" do
+      it "still records learnings and never builds a SelfImprovementTool" do
+        3.times { tagged_learning!("system.module_drift") }
+        expect(::Ai::Tools::SelfImprovementTool).not_to receive(:new)
 
-        if defined?(Ai::CompoundLearning)
-          # Pre-create a tagged compound learning that satisfies the threshold.
-          Ai::CompoundLearning.create!(
-            account: account,
-            title: "test-fleet-learning",
-            content: "test",
-            category: "discovery",
-            scope: "team",
-            ai_agent_team_id: nil,
-            tags: [ "fleet", "autonomy", "system.module_drift" ],
-            status: "active",
-            confidence_score: 0.5,
-            importance_score: 0.5
-          )
-        end
-
-        if defined?(::Ai::Tools::SelfImprovementTool)
-          fake_tool = instance_double(::Ai::Tools::SelfImprovementTool)
-          allow(::Ai::Tools::SelfImprovementTool).to receive(:new).and_return(fake_tool)
-          expect(fake_tool).to receive(:execute).with(
-            params: hash_including(action: "auto_evolve_skill")
-          ).at_least(:once).and_return({ success: true, data: { skills_mutated: 0 } })
-        end
-
-        described_class.record_tick!(account: account, decisions: decisions)
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
       end
     end
   end
