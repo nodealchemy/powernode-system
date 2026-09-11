@@ -54,16 +54,18 @@ module System
     # for any declared verb looser than require_approval it REPLACES a parked
     # write with one that proceeds.
     #
-    # As declared today that is a MINORITY of the set: of the 20 rows in
+    # As declared today that is a MINORITY of the set: of the rows in
     # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 5 are auto_approve and 5
     # notify_and_proceed — 10 that proceed without an approval where absence
-    # would have parked. The other 10 are require_approval and so are no-ops on
+    # would have parked. Every other row is require_approval and so a no-op on
     # resolution. Note that notify_and_proceed counts as a widening here: it
     # proceeds.
     #
-    # (That set is now DERIVED from System::Task::COMMANDS — IMP-944567d41689 —
-    # so the split moves whenever a command lands or leaves. The counts are
-    # pinned in spec/services/system/governance/policy_reconciler_spec.rb.)
+    # (That set is DERIVED from System::Task::COMMANDS — IMP-944567d41689 —
+    # so its size moves whenever a command lands or leaves, and a command whose
+    # verb nobody declared is require_approval. The widening categories are
+    # pinned BY NAME in spec/services/system/governance/policy_reconciler_spec.rb,
+    # so a command that proceeds unattended cannot join them unnoticed.)
     #
     # This is defensible, and is the intended behaviour: it converges an
     # established install onto what its own first boot would have written, and

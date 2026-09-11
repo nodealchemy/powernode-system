@@ -302,37 +302,37 @@ RSpec.describe System::Governance::PolicyReconciler do
       expect(resolved[:record]).to be_nil
     end
 
-    # The set is DERIVED from System::Task::COMMANDS (IMP-944567d41689), so
-    # this split moves whenever a command lands or leaves — which is the point
-    # of pinning it: the reconciler's header states these numbers as its
-    # justification for widening, and a command added without a verb decision
-    # would silently change how much it widens.
-    it "declares 20 rows in a 5/5/10 split" do
-      expect(declared.size).to eq(20)
-      # NO LONGER == COMMANDS.size. Campaign 01a0790b increment 2 decoupled the
-      # gated-operation vocabulary from the Task command vocabulary: `terminate`
-      # left COMMANDS (the agent answers it with `systemctl reboot`) but both
-      # lifecycle surfaces still gate the destroy on system.task.terminate, so
-      # the category is carried by
-      # PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS instead. 19 commands +
-      # 1 gated non-command = the same 20 rows.
-      expect(declared.size).to eq(
-        System::Task::COMMANDS.size +
-        System::Governance::PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.size
-      )
-      expect(declared.values.tally).to eq(
-        "auto_approve" => 5,
-        "notify_and_proceed" => 5,
-        "require_approval" => 10
+    # The set is DERIVED from System::Task::COMMANDS (IMP-944567d41689) plus
+    # the gated operations that are no longer commands (campaign 01a0790b
+    # increment 2: `terminate` left COMMANDS but both lifecycle surfaces still
+    # gate on system.task.terminate; `start` and `stop` run through
+    # Executors::ControlInstance). Its SIZE therefore follows COMMANDS and is
+    # derived here, never hand-counted.
+    #
+    # What is pinned is the DECISION the reconciler's header justifies itself
+    # by: which categories proceed unattended. They are named one by one, so a
+    # command added with a loose verb reds this example, while a command added
+    # without a verb (the require_approval fail-safe) leaves it green and is
+    # caught by system_task_category_vocabulary_spec instead.
+    let(:auto_approved) { %w[start stop reboot sync_modules probe.module_smoke] }
+    let(:notified) { %w[apply_config a2a_call storage.smb_user.apply ci.module_build ci.package_build] }
+
+    it "declares one row per command and per gated non-command" do
+      expect(declared.keys).to match_array(
+        (System::Task::COMMANDS + System::Governance::PolicyDeclarations::GATED_NON_COMMAND_OPERATIONS.keys)
+          .uniq.map { |command| "system.task.#{command}" }
       )
     end
 
-    it "widens 10 of them relative to the absence they replace" do
+    it "widens exactly the named categories, and parks every other row" do
       widening, no_op = declared.partition { |_, verb| proceeds_unattended.include?(verb) }
 
-      expect(widening.size).to eq(10)
-      expect(no_op.size).to eq(10)
+      expect(widening.to_h).to eq(
+        auto_approved.to_h { |c| [ "system.task.#{c}", "auto_approve" ] }
+          .merge(notified.to_h { |c| [ "system.task.#{c}", "notify_and_proceed" ] })
+      )
       expect(no_op.map(&:last).uniq).to eq(%w[require_approval])
+      expect(widening.size + no_op.size).to eq(declared.size)
     end
 
     # The named ones, pinned individually. The set-level counts above would

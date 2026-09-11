@@ -214,6 +214,15 @@ module System
         # digest into a promote.
         "ci.module_build" => "notify_and_proceed",
         "ci.package_build" => "notify_and_proceed",
+        # ci.lint_discovery (campaign 01a08c9b D1b) is SYSTEM-minted only:
+        # System::LintDiscoveryExecutor creates it with Task.create! for the
+        # runner it just leased, and never meets this gate. So this row governs
+        # nothing but a hand- or agent-issued ci.lint_discovery task, which has
+        # no legitimate use: config/ci_lint_context answers only an instance
+        # holding a live lint_discovery lease whose own ci.lint_discovery task
+        # is running, and the lease verb refuses the lint_discovery purpose.
+        # Unlike the two builds, proceeding would buy nothing, so it parks.
+        "ci.lint_discovery" => "require_approval",
 
         # --- probe.* — the CHECK NAMES are allow-listed
         # (probeModuleSmokeChecks). Their ARGUMENTS were not, and as of
