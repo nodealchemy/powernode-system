@@ -113,6 +113,10 @@ module System
     scope :errored,    -> { by_status("errored") }
 
     scope :active,   -> { where(status: %w[leased registered busy releasing]) }
+    # A lease its holder may still use. `active` also counts releasing: a
+    # teardown in progress, which a release that raised can leave in place
+    # until the lease's deadline.
+    scope :live,     -> { where(status: %w[leased registered busy]) }
     scope :finished, -> { where(status: %w[released errored]) }
 
     scope :for_node_instance, ->(instance) { where(node_instance: instance) }

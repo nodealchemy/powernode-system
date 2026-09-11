@@ -217,6 +217,10 @@ RSpec.describe System::CiRunnerLease, type: :model do
       expect(System::CiRunnerLease.finished).to contain_exactly(released_lease, errored_lease)
     end
 
+    it "live includes leased/registered/busy only: a releasing lease is a teardown, not a holder" do
+      expect(System::CiRunnerLease.live).to contain_exactly(leased_lease, registered_lease, busy_lease)
+    end
+
     it "for_node_instance scopes to the given instance" do
       other_instance = create(:system_node_instance, :running, account: account)
       other_lease = build_lease(status: "leased", node_instance: other_instance)
