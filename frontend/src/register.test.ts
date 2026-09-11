@@ -4,6 +4,7 @@
 //   1. featureRegistry.registerRoutes('system', [...])   — 30 routes
 //   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 13 items
 //   3. registerSystemEntities()                          — cross-reference wiring
+//   4. featureRegistry.registerComponentSlots({...})     — drawer views
 //
 // Strategy: mock the two dependencies so we can assert on exact payloads
 // without touching the DOM, React lazy loading, or the entity sub-system.
@@ -14,11 +15,13 @@
 
 const mockRegisterRoutes = jest.fn();
 const mockRegisterNavSections = jest.fn();
+const mockRegisterComponentSlots = jest.fn();
 
 jest.mock('@/shared/services/featureRegistry', () => ({
   featureRegistry: {
     registerRoutes: (...args: unknown[]) => mockRegisterRoutes(...args),
     registerNavSections: (...args: unknown[]) => mockRegisterNavSections(...args),
+    registerComponentSlots: (...args: unknown[]) => mockRegisterComponentSlots(...args),
   },
 }));
 
@@ -49,11 +52,12 @@ beforeEach(() => {
 // =============================================================================
 
 describe('register()', () => {
-  it('calls registerRoutes, registerNavSections, and registerSystemEntities exactly once each', () => {
+  it('calls registerRoutes, registerNavSections, registerComponentSlots, and registerSystemEntities exactly once each', () => {
     register();
 
     expect(mockRegisterRoutes).toHaveBeenCalledTimes(1);
     expect(mockRegisterNavSections).toHaveBeenCalledTimes(1);
+    expect(mockRegisterComponentSlots).toHaveBeenCalledTimes(1);
     expect(mockRegisterSystemEntities).toHaveBeenCalledTimes(1);
   });
 
@@ -70,7 +74,30 @@ describe('register()', () => {
 
     expect(mockRegisterRoutes).toHaveBeenCalledTimes(2);
     expect(mockRegisterNavSections).toHaveBeenCalledTimes(2);
+    expect(mockRegisterComponentSlots).toHaveBeenCalledTimes(2);
     expect(mockRegisterSystemEntities).toHaveBeenCalledTimes(2);
+  });
+});
+
+// =============================================================================
+// registerComponentSlots — component status drawer views
+// =============================================================================
+
+describe('registered component slots', () => {
+  let slots: Record<string, unknown>;
+
+  beforeEach(() => {
+    mockRegisterComponentSlots.mockClear();
+    register();
+    slots = mockRegisterComponentSlots.mock.calls[0][0] as Record<string, unknown>;
+  });
+
+  it('registers exactly one slot: node_instance.boot_replay', () => {
+    expect(Object.keys(slots)).toEqual(['platform.status.drawer.node_instance.boot_replay']);
+  });
+
+  it('the boot_replay slot is a lazy component, not undefined', () => {
+    expect(slots['platform.status.drawer.node_instance.boot_replay']).toBeDefined();
   });
 });
 

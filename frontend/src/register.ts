@@ -232,4 +232,28 @@ export function register(): void {
   // <EntityReferenceHost> can resolve a `?entity=<type>&eid=<id>` to the right
   // detail surface. Owner-keyed under "system"; core stays ignorant of them.
   registerSystemEntities();
+
+  // Component status drawer views: one registration per
+  // `platform.status.drawer.<kind>.<view>` id (design §4, C4 rev 3). Core
+  // never enumerates kinds or views — it lists whatever sits under a kind's
+  // derived prefix and renders each as its own tab.
+  //
+  // node_instance.boot_replay: BootReplayModal's content minus the outer
+  // Modal (the drawer already IS one) — see BootReplayDrawerView's own doc
+  // for the ruling this follows.
+  //
+  // .signals (per component, beside node_instance.boot_replay per the
+  // design doc) is NOT registered here yet. Its stated gate —
+  // `Platform::Status::Contributor#signal_resolver` — has zero overrides
+  // anywhere in core or this extension (checked directly, not from memory):
+  // the base class default (nil) applies to every contributor, node_instance
+  // included, and the fleet events endpoint (POST /system/fleet/signals)
+  // takes no entity filter (kind/correlation_id/since only) — FleetEvent has
+  // no source_id/source_type column, only an opaque payload jsonb a sensor
+  // keys by convention. Reported to the lead rather than guessed at.
+  featureRegistry.registerComponentSlots({
+    'platform.status.drawer.node_instance.boot_replay': lazyPage(
+      () => import('./features/system/components/fleet/boot-replay/BootReplayDrawerView')
+    ),
+  });
 }
