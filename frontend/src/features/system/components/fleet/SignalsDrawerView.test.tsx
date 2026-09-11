@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ComponentStatusDetail } from '@/shared/types/platformStatus';
 import type { FleetEvent } from '@system/features/system/services/api/fleetApi';
@@ -192,8 +192,14 @@ describe('SignalsDrawerView', () => {
     expect(await screen.findByText('system.new_component')).toBeInTheDocument();
     expect(mockRecentSignals).toHaveBeenLastCalledWith({ limit: SIGNALS_LIMIT, node_instance_id: newRef });
 
-    resolveOld(signals([makeEvent({ kind: 'system.stale_component' })]));
-    await waitFor(() => expect(screen.queryByText('system.stale_component')).not.toBeInTheDocument());
+    // Resolve the stale request AND let its .then run before asserting. A
+    // waitFor on an absence passes on its first check, before the late
+    // response could land, so it would prove nothing about the guard.
+    await act(async () => {
+      resolveOld(signals([makeEvent({ kind: 'system.stale_component' })]));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.queryByText('system.stale_component')).not.toBeInTheDocument();
     expect(screen.getByText('system.new_component')).toBeInTheDocument();
   });
 });
