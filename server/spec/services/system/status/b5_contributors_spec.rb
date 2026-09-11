@@ -118,6 +118,7 @@ RSpec.describe "B5 status contributors" do
 
         expect(verdict(result)).to eq("not_measured")
         expect(condition(result, feed)["reason"]).to eq("SensorReportAbsent")
+        expect_counts_withheld(result)
       end
     end
 
@@ -167,12 +168,15 @@ RSpec.describe "B5 status contributors" do
         expect_counts_withheld(result)
       end
 
-      it "an outage after a clear reading is not_measured, never ok" do
+      it "an outage after a clear reading is not_measured, never ok, and the counts are withheld" do
         tick!
         store!(conditions_of(contributor))
         System::FleetEvent.where(account: account, kind: "fleet.tick_complete").delete_all
 
-        expect(verdict(conditions_of(contributor))).to eq("not_measured")
+        result = conditions_of(contributor)
+
+        expect(verdict(result)).to eq("not_measured")
+        expect_counts_withheld(result)
       end
 
       it "unavailable_since keeps the START of the outage, from the stored transition time" do
@@ -185,6 +189,61 @@ RSpec.describe "B5 status contributors" do
         result = conditions_of(contributor)
 
         expect(condition(result, feed)["evidence"]["unavailable_since"]).to eq(went_down)
+      end
+    end
+
+    # Review L1: the outage and ratchet arms carried evidence with no source.
+    it "names a source on every condition's evidence, in every arm" do
+      readings = [ conditions_of(contributor) ]
+      tick!
+      access!(at: 1.hour.ago)
+      readings << conditions_of(contributor)
+      store!(readings.last)
+      System::FleetEvent.where(account: account, kind: "fleet.tick_complete").delete_all
+      readings << conditions_of(contributor)
+
+      reasons = readings.flatten.map { |c| c["reason"] }
+      expect(reasons).to include("NoFleetTick", "FeedUnavailable", "FleetTickFresh", "AccessedWithin24h",
+                                 "HeldFromLastObservation")
+      unsourced = readings.flatten.reject { |c| c["evidence"].is_a?(Hash) && c["evidence"]["source"].present? }
+      expect(unsourced.map { |c| "#{c['type']}/#{c['reason']}" }).to be_empty
+    end
+
+    # Review M1: every read is account-scoped. Another account's tick, canary
+    # access and stored alert sit beside this account's, so an unscoped read
+    # reds here instead of passing on a one-account fixture.
+    context "with another account's data present" do
+      let(:other) { create(:account) }
+
+      before do
+        create(:system_fleet_event, account: other, kind: "fleet.tick_complete", emitted_at: 1.minute.ago,
+                                    payload: { "failed_sensors" => [] })
+        create(:system_fleet_event, account: other, kind: "system.honeypot_triggered", emitted_at: 1.hour.ago)
+        tripped = contributor.conditions_for(described_class::Canary.new(account: other))
+        expect(verdict(tripped)).to eq("down")
+        Platform::ComponentStatus.create!(
+          account_id: other.id, component_kind: described_class::KIND, component_ref: described_class::REF,
+          display_name: "Honeypot canary", conditions: tripped, verdict: verdict(tripped)
+        )
+      end
+
+      it "another account's tick is not this account's feed, and its stored alert is not held here" do
+        result = conditions_of(contributor)
+
+        expect(verdict(result)).to eq("not_measured")
+        expect(condition(result, feed)["reason"]).to eq("NoFleetTick")
+        expect(condition(result, untouched)["reason"]).to eq("FeedUnavailable")
+        expect_counts_withheld(result)
+      end
+
+      it "another account's canary access is not counted against this account's canary" do
+        tick!
+
+        result = conditions_of(contributor)
+
+        expect(verdict(result)).to eq("ok")
+        expect(condition(result, untouched)["evidence"]).to include("count_24h" => 0, "count_7d" => 0,
+                                                                  "last_access_at" => nil)
       end
     end
   end
@@ -296,6 +355,40 @@ RSpec.describe "B5 status contributors" do
       expect(verdict(result)).to eq("degraded")
       expect(stuck["reason"]).to eq("RemediationStuck")
       expect(stuck["evidence"]["fingerprints"].map { |f| f["fingerprint"] }).to eq([ "fp-stuck" ])
+    end
+
+    # Review M1: another account's settled and stuck outcomes sit beside this
+    # account's, so an unscoped summary reds here.
+    context "with another account's outcomes present" do
+      let(:other) { create(:account) }
+
+      before do
+        threshold.times do |i|
+          acted_at = (2 + i).hours.ago
+          System::Fleet::RemediationOutcome.create!(
+            account: other, signal_kind: "system.module_drift", fingerprint: "fp-other-stuck", status: "ineffective",
+            acted_at: acted_at, settle_until: acted_at + 10.minutes, validated_at: acted_at + 15.minutes
+          )
+        end
+      end
+
+      it "an account with no outcomes of its own: nothing settled and nothing stuck" do
+        result = conditions_of(contributor)
+
+        expect(verdict(result)).to eq("not_measured")
+        expect(condition(result, described_class::EFFECTIVENESS)["evidence"]["effectiveness_rate"]).to be_nil
+        expect(condition(result, described_class::STUCK)["reason"]).to eq("NoneStuck")
+        expect(condition(result, described_class::STUCK)["evidence"]["fingerprints"]).to eq([])
+      end
+
+      it "rates only this account's settled outcomes" do
+        outcome!(status: "effective")
+
+        result = conditions_of(contributor)
+
+        expect(verdict(result)).to eq("ok")
+        expect(condition(result, described_class::EFFECTIVENESS)["evidence"]["effectiveness_rate"]).to eq(1.0)
+      end
     end
   end
 end

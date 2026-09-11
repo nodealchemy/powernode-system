@@ -187,6 +187,7 @@ module System
               severity: prior["severity"],
               message: "feed unavailable (#{outage}); holding the severity last observed rather than lowering it",
               evidence: {
+                "source" => "platform_component_statuses.conditions, this component's last stored reading",
                 "counts_withheld" => true,
                 "last_observed_reason" => prior.dig("evidence", "last_observed_reason") || prior["reason"],
                 "last_observed_at" => prior.dig("evidence", "last_observed_at") || prior["observed_at"],
@@ -200,7 +201,10 @@ module System
               status: CONDITION::UNKNOWN,
               reason: "FeedUnavailable",
               message: "feed unavailable (#{outage}); access counts are withheld rather than reported as 0",
-              evidence: { "counts_withheld" => true },
+              evidence: {
+                "source" => "CompositeHealthProbe#fleet_tick_reading (the feed is down, so system_fleet_events was not counted)",
+                "counts_withheld" => true
+              },
               now: now
             )
           end
