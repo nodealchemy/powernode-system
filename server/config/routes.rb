@@ -402,7 +402,7 @@ Rails.application.routes.draw do
           # admin-only, locking out the very person this route serves.
           # Action is `#show`, not `#config`: AbstractController already
           # defines `config` and `render` calls it, so an action of that name
-          # recurses (same reason `metrics/dispatch` routes to `#index`).
+          # recurses.
           get "my_devices/:id/config", to: "my_devices#show"
 
           # Increment 3a: the index a recipient needs to DISCOVER their own
@@ -469,11 +469,6 @@ Rails.application.routes.draw do
             resources :flow_samples, only: %i[index create]
           end
         end
-
-        # === Metrics (operator-facing; aggregated counters) ===
-        # Action is `#index` because `dispatch` collides with
-        # ActionController::Metal#dispatch.
-        get "metrics/dispatch", to: "metrics#index"
 
         # === Autonomy Settings (per-action policy + chain configuration) ===
         # Operators view + edit per-domain intervention policies and assign
