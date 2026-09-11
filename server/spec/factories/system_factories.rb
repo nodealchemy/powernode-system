@@ -499,7 +499,10 @@ FactoryBot.define do
   # System::StorageAssignment — Phase S2 join object (file_storage × instance).
   factory :system_storage_assignment, class: "System::StorageAssignment" do
     association :account
-    association :node_instance, factory: :system_node_instance
+    # Same account as the assignment: System::StorageAssignment refuses a
+    # node_instance from another account (#references_belong_to_account). The
+    # bare association gave the instance a FRESH account.
+    node_instance { association :system_node_instance, account: account }
     file_storage_id { SecureRandom.uuid } # caller usually overrides with a real :file_storage row
     mount_path { "/mnt/data" }
     encryption_mode { "inherit" }

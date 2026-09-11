@@ -68,6 +68,66 @@ RSpec.describe System::StorageAssignment, type: :model do
     end
   end
 
+  # Every account-owned row an assignment names belongs to the assignment's own
+  # account (the Sdwan::PeerEnroller#verify_account_alignment! rule). The ref
+  # columns carry no FK tying them to the account, and fleet events about an
+  # assignment copy its node_instance_id into the typed column the
+  # per-component signals filter reads, so a foreign instance here would put
+  # another tenant's id into this account's events. Each ref on both arms.
+  describe "account alignment" do
+    let(:other_account) { create(:account) }
+
+    it "refuses a node_instance from another account, naming the field" do
+      assignment.node_instance = create(:system_node_instance, account: other_account)
+
+      expect(assignment).not_to be_valid
+      expect(assignment.errors[:node_instance].join).to include("must belong to this account")
+    end
+
+    it "saves when the node_instance is the assignment's own account's" do
+      expect(assignment.save).to be(true)
+      expect(assignment.errors[:node_instance]).to be_empty
+    end
+
+    it "refuses an sdwan_network from another account, and accepts its own" do
+      assignment.sdwan_network = create(:sdwan_network, account: other_account)
+      expect(assignment).not_to be_valid
+      expect(assignment.errors[:sdwan_network].join).to include("must belong to this account")
+
+      assignment.sdwan_network = create(:sdwan_network, account: account)
+      expect(assignment).to be_valid
+    end
+
+    it "refuses an sdwan_virtual_ip from another account, and accepts its own" do
+      foreign_network = create(:sdwan_network, account: other_account)
+      assignment.sdwan_virtual_ip = create(:sdwan_virtual_ip, network: foreign_network)
+      expect(assignment).not_to be_valid
+      expect(assignment.errors[:sdwan_virtual_ip].join).to include("must belong to this account")
+
+      assignment.sdwan_virtual_ip = create(:sdwan_virtual_ip, network: create(:sdwan_network, account: account))
+      expect(assignment).to be_valid
+    end
+
+    it "refuses re-pointing a saved assignment at another account's node_instance" do
+      assignment.save!
+      assignment.node_instance = create(:system_node_instance, account: other_account)
+
+      expect(assignment.save).to be(false)
+      expect(assignment.errors[:node_instance]).to be_present
+    end
+
+    # The factory used to give the assignment and its node_instance two
+    # different accounts; with the rule in place its default must align.
+    # CREATE, not build: a built factory row has unsaved associations, so both
+    # account ids are nil and "nil == nil" would pass whatever the factory did.
+    it "creates a valid, account-aligned assignment from the bare factory" do
+      bare = create(:system_storage_assignment, file_storage_id: file_storage.id)
+      expect(bare).to be_persisted
+      expect(bare.account_id).to be_present
+      expect(bare.node_instance.account_id).to eq(bare.account_id)
+    end
+  end
+
   describe "#anonuid (replaces legacy #derived_uid)" do
     # 2026-05-22 fleet-wide identity refactor (4a62bc6f) replaced the
     # hashed-per-node_instance_id derived_uid with owner_kind-dispatched

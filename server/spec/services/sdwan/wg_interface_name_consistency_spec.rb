@@ -29,7 +29,10 @@ require "rails_helper"
 RSpec.describe "WireGuard interface name consistency across server-side producers" do
   let(:account) { create(:account) }
   let(:network) { create(:sdwan_network, account: account) }
-  let(:instance) { create(:system_node_instance, :running) }
+  # Same account as the network, peer and assignment below: the bare factory
+  # gave the instance a FRESH account, a cross-tenant fixture that
+  # System::StorageAssignment now refuses (#references_belong_to_account).
+  let(:instance) { create(:system_node_instance, :running, account: account) }
   let(:peer) { enrolled_peer(instance) }
 
   def enrolled_peer(node_instance)
@@ -155,6 +158,11 @@ RSpec.describe "WireGuard interface name consistency across server-side producer
   describe "the storage mount hint" do
     it "equals the interface name the agent is told to create" do
       allocate_hva!(short_id: 88)
+      # Enrol the peer FIRST. With the instance in the network's account, the
+      # assignment's reconcile (AssignmentReconciliationService) reuses an
+      # existing Sdwan::Peer and enrols one only when none exists, so creating
+      # the assignment first would make this spec's own peer a duplicate.
+      peer
       # The factory's file_storage_id is a bare uuid; the model validates both
       # that the row exists and that it is node_mount_capable, so a real
       # :node_mountable storage is needed here.

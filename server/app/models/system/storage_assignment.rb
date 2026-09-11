@@ -22,6 +22,11 @@ module System
     }.freeze
     BASELINE_GIDS = BASELINE_UIDS.dup.freeze
 
+    # Account-owned rows an assignment may name. Each must belong to the
+    # assignment's own account (#references_belong_to_account). service_user
+    # and shared_group are fleet-wide Unix identities with no account.
+    ACCOUNT_OWNED_REFS = %i[node_instance sdwan_network sdwan_virtual_ip].freeze
+
     belongs_to :account
     belongs_to :node_instance, class_name: "::System::NodeInstance"
     belongs_to :sdwan_network, class_name: "::Sdwan::Network", optional: true
@@ -52,6 +57,7 @@ module System
     validate :encryption_mode_compatible_with_provider
     validate :service_user_absent_unless_service_user_owner
     validate :owner_change_blocked_while_chown_in_flight, on: :update
+    validate :references_belong_to_account
 
     scope :enabled, -> { where(enabled: true) }
     scope :auto_mounting, -> { enabled.where(auto_mount: true) }
@@ -314,6 +320,23 @@ module System
         unless %w[s3 gcs azure].include?(provider_type)
           errors.add(:encryption_mode, "client_side_aes only valid for object storage (s3/gcs/azure)")
         end
+      end
+    end
+
+    # The Sdwan::PeerEnroller#verify_account_alignment! rule, as a validation.
+    # The ref columns carry no FK tying them to the account, so nothing else
+    # stops an assignment in account A naming account B's instance — and the
+    # fleet events emitted about an assignment copy its node_instance_id into
+    # the typed column the per-component signals filter reads, which would put
+    # B's id into A's events. The message names no foreign id.
+    def references_belong_to_account
+      return if account_id.nil?
+
+      ACCOUNT_OWNED_REFS.each do |ref|
+        record = public_send(ref)
+        next if record.nil? || record.account_id == account_id
+
+        errors.add(ref, "must belong to this account")
       end
     end
 
