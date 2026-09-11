@@ -164,6 +164,11 @@ file_spec:
   # each script's own header for its env-var contract).
   - "/usr/local/bin/module-forge-build.sh"
   - "/usr/local/bin/module-forge-package-build.sh"
+  # Improvement discovery's runner half and its GIT_ASKPASS helper (campaign
+  # 01a08c9b D1b), invoked by the agent's ci.lint_discovery handler.
+  - "/usr/local/bin/lint-discovery-clone.sh"
+  - "/usr/local/bin/lint-discovery.sh"
+  - "/usr/local/bin/lint-discovery-askpass.sh"
   # The baked buildroot (nested debian:trixie tree) and the copied build
   # scripts (scripts/module-build/*.sh) — both staged by this module's own
   # Stage 1.5 arm, not apt packages.

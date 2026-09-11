@@ -64,6 +64,14 @@ type Dependencies struct {
 	// The a2a_call handler loads this node's identity from it to present as the
 	// A2A client cert when executing a mission-delegated peer call.
 	PKIDir string
+	// OnError reports a handler family's background failure, such as
+	// ci.lint_discovery's start-up sweep (the agent service's own OnError).
+	// Nil drops it.
+	OnError func(stage string, err error)
+	// LintWorkdirBase, set only by tests, is ci.lint_discovery's workdir base,
+	// used as is (ModuleBuildHandler.LintWorkdirBase). Production leaves it
+	// empty and the handler resolves and checks one.
+	LintWorkdirBase string
 }
 
 // RunOnceAPI is the subset of *runtime.Reconciler the sync handler

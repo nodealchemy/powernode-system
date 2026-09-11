@@ -15,7 +15,10 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //   - passthrough: provision, deprovision (platform-side concepts)
 //   - a2a: a2a_call (execute a mission-delegated peer call over the A2A mesh)
 //   - module_build: ci.module_build (native NodeModule build on a leased
-//     module-forge builder — campaign 019f5885 inc7)
+//     module-forge builder — campaign 019f5885 inc7) and ci.lint_discovery
+//     (improvement discovery's linters, on a runner leased from the
+//     account's own pool — campaign 01a08c9b D1b); one handler, an
+//     allowlist keyed by command
 //   - package_build: ci.package_build (native materialized-package build on
 //     the SAME leased module-forge builder — campaign 019f6084 inc-D)
 //   - probe_module_smoke: probe.module_smoke (structured post-compose health

@@ -540,6 +540,9 @@ func (s *Service) Run(ctx context.Context) error {
 		Reconciler:   reconciler,
 		AgentVersion: s.cfg.AgentVersion,
 		PKIDir:       s.cfg.PKIDir,
+		// Background failures of a handler family, such as ci.lint_discovery's
+		// start-up workdir sweep (D1b security R2).
+		OnError: s.cfg.OnError,
 	})
 	taskLoop, err := tasks.NewLoop(tasks.LoopConfig{
 		Client:      tasks.NewClient(swap),

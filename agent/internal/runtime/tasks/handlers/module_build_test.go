@@ -74,7 +74,7 @@ const okContextBody = `{"success":true,"data":{
 }}`
 
 func TestParseModuleBuildOptions(t *testing.T) {
-	task := &tasks.Task{Options: map[string]any{"module": "runtime-ruby", "sha": "abc123", "oci_ref": "v1"}}
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby", "sha": "abc123", "oci_ref": "v1"}}
 	opts, err := parseModuleBuildOptions(task)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -90,7 +90,7 @@ func TestParseModuleBuildOptions(t *testing.T) {
 		{},
 	}
 	for i, o := range missing {
-		if _, err := parseModuleBuildOptions(&tasks.Task{Options: o}); err == nil {
+		if _, err := parseModuleBuildOptions(&tasks.Task{Command: "ci.module_build", Options: o}); err == nil {
 			t.Fatalf("case %d: expected validation error for %v", i, o)
 		}
 	}
@@ -293,7 +293,7 @@ func TestModuleBuildHandler_Execute_ClassBGetsParentPAT(t *testing.T) {
 	exec := &fakeExec{stdout: []byte(`{"oci_digest":"sha256:bbb","fsverity_root":"root2","size":99,"built_from_sha":"sha2"}`)}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: exec}
 
-	task := &tasks.Task{Options: map[string]any{
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{
 		"module": "powernode-hub-backend", "sha": "sha2", "oci_ref": "v9",
 	}}
 
@@ -312,7 +312,7 @@ func TestModuleBuildHandler_Execute_MissingOptions(t *testing.T) {
 	exec := &fakeExec{}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: exec}
 
-	_, err := h.Execute(context.Background(), &tasks.Task{Options: map[string]any{"module": "runtime-ruby"}})
+	_, err := h.Execute(context.Background(), &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby"}})
 	if err == nil {
 		t.Fatal("expected error for missing sha/oci_ref")
 	}
@@ -329,7 +329,7 @@ func TestModuleBuildHandler_Execute_ContextFetchForbidden(t *testing.T) {
 	exec := &fakeExec{}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: exec}
 
-	task := &tasks.Task{Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
 	_, err := h.Execute(context.Background(), task)
 	if err == nil {
 		t.Fatal("expected error when ci_build_context is forbidden")
@@ -347,7 +347,7 @@ func TestModuleBuildHandler_Execute_ExecFailure(t *testing.T) {
 	}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: exec}
 
-	task := &tasks.Task{Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
 	_, err := h.Execute(context.Background(), task)
 	if err == nil {
 		t.Fatal("expected error when the build script exits non-zero")
@@ -362,7 +362,7 @@ func TestModuleBuildHandler_Execute_BadResultJSON(t *testing.T) {
 	exec := &fakeExec{stdout: []byte("build finished but forgot to print JSON\n")}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: exec}
 
-	task := &tasks.Task{Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
 	_, err := h.Execute(context.Background(), task)
 	if err == nil {
 		t.Fatal("expected error when stdout's last line isn't valid result JSON")
@@ -371,7 +371,7 @@ func TestModuleBuildHandler_Execute_BadResultJSON(t *testing.T) {
 
 func TestModuleBuildHandler_Execute_NoTransport(t *testing.T) {
 	h := &ModuleBuildHandler{Exec: &fakeExec{}}
-	task := &tasks.Task{Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
+	task := &tasks.Task{Command: "ci.module_build", Options: map[string]any{"module": "runtime-ruby", "sha": "s", "oci_ref": "v1"}}
 	if _, err := h.Execute(context.Background(), task); err == nil {
 		t.Fatal("expected error when HTTP transport is nil")
 	}

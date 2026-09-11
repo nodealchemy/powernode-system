@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
@@ -89,11 +90,123 @@ type ModuleBuildHandler struct {
 	HTTP tasks.HTTPClient
 	// Exec runs the build entrypoint. Defaults to execRunner{} when nil.
 	Exec Execer
+	// Lint runs ci.lint_discovery's two phases in the sandbox. Defaults to
+	// sandboxRunner{} when nil.
+	Lint LintExecer
+	// LintWorkdirBase, set only by tests, is used as the workdir base as is.
+	// Production resolves and checks one per task (lintWorkdirBase).
+	LintWorkdirBase string
 }
 
-// RegisterModuleBuild binds the ci.module_build command.
+// ciJob is one entry in the handler's allowlist: a task command this handler
+// runs, with its own platform-owned script, its own lease-gated context
+// endpoint and its own result handling. Every job passes secrets to its script
+// ONLY as environment variables, and scrubs them from any error or log text it
+// sends back.
+type ciJob interface {
+	run(ctx context.Context, h *ModuleBuildHandler, task *tasks.Task) (tasks.Result, error)
+}
+
+// ciJobs is the allowlist, keyed by task command (campaign 01a08c9b D1b). A
+// command absent here is refused before anything is fetched or executed.
+var ciJobs = map[string]ciJob{
+	"ci.module_build":   moduleBuildJob{},
+	"ci.lint_discovery": lintDiscoveryJob{},
+}
+
+func ciJobCommands() []string {
+	commands := make([]string, 0, len(ciJobs))
+	for command := range ciJobs {
+		commands = append(commands, command)
+	}
+	sort.Strings(commands)
+	return commands
+}
+
+// RegisterModuleBuild binds every allowlisted command to one handler.
 func RegisterModuleBuild(r *tasks.Registry, deps tasks.Dependencies) {
-	r.Register("ci.module_build", &ModuleBuildHandler{HTTP: deps.Transport, Exec: execRunner{}})
+	h := &ModuleBuildHandler{HTTP: deps.Transport, Exec: execRunner{}, Lint: sandboxRunner{},
+		LintWorkdirBase: deps.LintWorkdirBase}
+	for _, command := range ciJobCommands() {
+		r.Register(command, h)
+	}
+	// D1b security R2: once, at agent start, remove lint workdirs an earlier
+	// agent process left behind (a configured base is swept before each lint
+	// task). In the background: a large stale tree must not hold up start.
+	go func() {
+		n, err := h.sweepLintWorkdirsAtStart()
+		if err != nil && deps.OnError != nil {
+			deps.OnError("lint_workdir_sweep", err)
+		}
+		lintStartSweepDone(n, err)
+	}()
+}
+
+// scrubSecrets replaces every secret value in text, in each form it can take
+// on the way out: raw, percent-encoded (a clone URL) and JSON-escaped. It is
+// applied to any error or log text a job sends back, because a script's stderr
+// can echo what it was given (git prints a credential-bearing URL on a failed
+// clone). Values shorter than four bytes are left alone: they cannot be told
+// apart from ordinary text.
+func scrubSecrets(text string, secrets ...string) string {
+	for _, s := range secrets {
+		for _, v := range secretVariants(s) {
+			text = strings.ReplaceAll(text, v, "[REDACTED]")
+		}
+	}
+	return text
+}
+
+func containsSecret(text string, secrets []string) bool {
+	for _, s := range secrets {
+		for _, v := range secretVariants(s) {
+			if strings.Contains(text, v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func secretVariants(s string) []string {
+	if len(s) < 4 {
+		return nil
+	}
+	variants := []string{s}
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		for _, have := range variants {
+			if have == v {
+				return
+			}
+		}
+		variants = append(variants, v)
+	}
+	add(url.QueryEscape(s))
+	add(url.PathEscape(s))
+	// Both JSON escapings: Go's (which also escapes <, > and &) and the
+	// minimal one Ruby and Node linters write (only quotes, backslashes and
+	// control characters).
+	if b, err := json.Marshal(s); err == nil && len(b) >= 2 {
+		add(string(b[1 : len(b)-1]))
+	}
+	var minimal bytes.Buffer
+	enc := json.NewEncoder(&minimal)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err == nil {
+		if b := bytes.TrimSuffix(minimal.Bytes(), []byte("\n")); len(b) >= 2 {
+			add(string(b[1 : len(b)-1]))
+		}
+	}
+	return variants
+}
+
+// scrubbedLogTail scrubs each whole stream BEFORE bounding it, so a secret
+// that straddles the cut can never leave a fragment behind.
+func scrubbedLogTail(stdout, stderr []byte, secrets ...string) string {
+	return logTail([]byte(scrubSecrets(string(stdout), secrets...)), []byte(scrubSecrets(string(stderr), secrets...)))
 }
 
 // moduleBuildOptions is the parsed, validated view of task.Options for a
@@ -165,7 +278,19 @@ type moduleBuildResult struct {
 	BuiltFromSHA string      `json:"built_from_sha"`
 }
 
+// Execute runs the allowlisted job for task.Command.
 func (h *ModuleBuildHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.Result, error) {
+	job, ok := ciJobs[task.Command]
+	if !ok {
+		return nil, fmt.Errorf("ci handler: command %q is not on the allowlist", task.Command)
+	}
+	return job.run(ctx, h, task)
+}
+
+// moduleBuildJob is the ci.module_build entry: a native NodeModule build.
+type moduleBuildJob struct{}
+
+func (moduleBuildJob) run(ctx context.Context, h *ModuleBuildHandler, task *tasks.Task) (tasks.Result, error) {
 	opts, err := parseModuleBuildOptions(task)
 	if err != nil {
 		return nil, err
@@ -191,7 +316,7 @@ func (h *ModuleBuildHandler) Execute(ctx context.Context, task *tasks.Task) (tas
 		execer = execRunner{}
 	}
 	stdout, stderr, runErr := execer.Run(ctx, moduleForgeBuildScript, env)
-	tail := logTail(stdout, stderr)
+	tail := scrubbedLogTail(stdout, stderr, bctx.SourceToken, bctx.ParentPAT, bctx.OrasPassword)
 	if runErr != nil {
 		return nil, fmt.Errorf("ci.module_build %s: %w (log_tail: %s)", opts.Module, runErr, tail)
 	}
