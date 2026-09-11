@@ -21,6 +21,12 @@ module Api
         }.freeze
         private_constant :BOOT_PHASE_KEYWORDS
 
+        # The typed FleetEvent columns #signals filters on, one per drawer kind
+        # that has a signals view (node_instance, node_module, acme_certificate).
+        SIGNAL_ENTITY_FILTERS = %i[node_instance_id node_module_id certificate_id].freeze
+        UUID_FORMAT = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
+        private_constant :SIGNAL_ENTITY_FILTERS, :UUID_FORMAT
+
         # GET /api/v1/system/fleet/boot_replay
         # Returns FleetEvents for one node_instance ordered by emission time,
         # filtered to boot.* kinds plus any events sharing the boot's
@@ -80,7 +86,16 @@ module Api
         end
 
         # POST /api/v1/system/fleet/signals
-        # Body: { limit?, kind?, correlation_id?, since? }
+        # Body: { limit?, kind?, correlation_id?, since?,
+        #         node_instance_id?, node_module_id?, certificate_id? }
+        #
+        # The three entity filters back the component drawer's per-component
+        # signals view (design §6). They match the event's TYPED column, never
+        # a payload key, and narrow the account scope below — never widen it.
+        # Several combine with AND; a blank value is no filter. A malformed
+        # value is refused rather than passed to `where`: Rails casts a bad
+        # uuid to nil, and `where(column => nil)` is `IS NULL`, which would
+        # return exactly the events that recorded no entity at all.
         def signals
           # Same reclassification as #boot_replay above: reads this account's
           # FleetEvents, decides nothing. (IMP-27a8654e7c04)
@@ -91,6 +106,15 @@ module Api
           scope = scope.by_kind(params[:kind]) if params[:kind].present?
           if (since = parse_iso(params[:since]))
             scope = scope.since(since)
+          end
+          SIGNAL_ENTITY_FILTERS.each do |column|
+            value = params[column]
+            next if value.blank?
+            unless value.is_a?(String) && value.match?(UUID_FORMAT)
+              return render_error("#{column} must be a UUID", status: :unprocessable_content)
+            end
+
+            scope = scope.where(column => value)
           end
           limit = (params[:limit] || 50).to_i.clamp(1, 200)
           events = scope.limit(limit)
