@@ -34,7 +34,10 @@ module System
         # nil user does NOT imply internal — an MCP instance principal also
         # arrives with none — so without the explicit flag every tick would be
         # refused and the loop would silently stop learning.
-        learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil, internal: true) if defined?(::Ai::Tools::LearningTool)
+        if defined?(::Ai::Tools::LearningTool)
+          learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil, internal: true,
+                                                        call_origin: ::Ai::Tools::CallOrigin::SYSTEM_SERVICE)
+        end
         return record_dry(account: account, decisions: decisions) unless learning_tool
 
         bucketed = decisions.group_by { |d| [ d[:signal_kind], d[:gate], d[:decision] ] }

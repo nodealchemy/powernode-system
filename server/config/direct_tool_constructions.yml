@@ -1,0 +1,9 @@
+# Direct BaseTool constructions in this extension that name no call_origin:,
+# each with the reason it is not a machine's unmarked door. Read by core's
+# spec/lint/registrar_origin_spec.rb (MCP identity plan, reviewer guidance 3);
+# paths are relative to this extension's server/ directory. Every other direct
+# construction here must pass call_origin: (Ai::Tools::CallOrigin).
+app/controllers/api/v1/system/platform/storage_migrations_controller.rb: >-
+  A REST controller: a person's own request is the door.
+app/controllers/api/v1/system/platform/volumes_controller.rb: >-
+  A REST controller: a person's own request is the door.

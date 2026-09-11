@@ -208,15 +208,18 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
   describe "#tool helper" do
     let(:tool_klass) do
       Class.new do
-        attr_reader :account, :agent, :user, :internal
-        # Mirrors Ai::Tools::BaseTool#initialize, `internal:` included — the
-        # helper declares a userless executor as an in-process system caller
-        # rather than leaving the tool to infer it. (IMP-9030413bc292)
-        def initialize(account:, agent: nil, user: nil, internal: false)
-          @account  = account
-          @agent    = agent
-          @user     = user
-          @internal = internal
+        attr_reader :account, :agent, :user, :internal, :call_origin
+        # Mirrors Ai::Tools::BaseTool#initialize, `internal:` and `call_origin:`
+        # included. The helper declares a userless executor as an in-process
+        # system caller rather than leaving the tool to infer it
+        # (IMP-9030413bc292), and names the door its tools are built through
+        # (MCP identity plan: skill_executor).
+        def initialize(account:, agent: nil, user: nil, internal: false, call_origin: nil)
+          @account     = account
+          @agent       = agent
+          @user        = user
+          @internal    = internal
+          @call_origin = call_origin
         end
       end
     end
@@ -228,15 +231,17 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
                          inputs: {}, outputs: {})
         define_method(:perform) do
           built = tool(tk)
-          success(account_id: built.account.id, internal: built.internal, user_id: built.user&.id)
+          success(account_id: built.account.id, internal: built.internal, user_id: built.user&.id,
+                  call_origin: built.call_origin)
         end
       end
     end
 
-    it "builds the tool with the executor's account/agent/user" do
+    it "builds the tool with the executor's account/agent/user, through the skill executor's door" do
       result = concrete.new(account: account).execute
       expect(result[:success]).to be true
       expect(result[:data][:account_id]).to eq(account.id)
+      expect(result[:data][:call_origin]).to eq(::Ai::Tools::CallOrigin::SKILL_EXECUTOR)
     end
 
     # IMP-9030413bc292 — a userless executor IS an in-process system caller

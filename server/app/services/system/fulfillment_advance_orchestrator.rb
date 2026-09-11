@@ -295,7 +295,8 @@ module System
       # since MCP instance principals also arrive userless. (IMP-9030413bc292)
       attributed_user = effective_user
       fleet = ::Ai::Tools::SystemFleetTool.new(
-        account: @account, agent: nil, user: attributed_user, internal: attributed_user.nil?
+        account: @account, agent: nil, user: attributed_user, internal: attributed_user.nil?,
+        call_origin: ::Ai::Tools::CallOrigin::SYSTEM_SERVICE
       )
       resolved_platform_id = exec["platform_id"].presence || base_os.node_platform_id
 

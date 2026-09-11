@@ -617,7 +617,8 @@ module System
         # (IMP-9030413bc292 closed the first hop; IMP-0e6b216de843 this one.)
         def tool(tool_class)
           built = tool_class.new(account: @account, agent: @agent, user: @user,
-                                 internal: internal_caller?)
+                                 internal: internal_caller?,
+                                 call_origin: ::Ai::Tools::CallOrigin::SKILL_EXECUTOR)
           mark_instance_provenance(built)
         end
 
