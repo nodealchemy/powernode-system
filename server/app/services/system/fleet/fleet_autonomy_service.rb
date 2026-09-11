@@ -197,7 +197,11 @@ module System
             by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
             validated: validation,
             remediations_recorded: recorded,
-            approved_executed: approved_executed.size
+            approved_executed: approved_executed.size,
+            # B5: the sensors that raised this tick. Collected since F3-11(a)
+            # but handed only to the validator, so a tick whose honeypot sensor
+            # raised read as healthy to every other reader of this event.
+            failed_sensors: failed_sensors
           },
           source: "fleet_autonomy", correlation_id: tick_correlation
         )
