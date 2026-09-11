@@ -37,7 +37,12 @@ module Api
             return
           end
 
-          assignment = current_account.system_storage_assignments.build(assignment_params)
+          attrs = assignment_params
+          if (field = foreign_ref(attrs))
+            return render_not_found(ref_label(field))
+          end
+
+          assignment = current_account.system_storage_assignments.build(attrs)
           if assignment.save
             render_success(assignment: serialize_assignment(assignment, full: true), status: :created)
           else
@@ -48,7 +53,12 @@ module Api
         def update
           require_permission("system.storage.assignments.update")
 
-          if @assignment.update(assignment_params)
+          attrs = assignment_params
+          if (field = foreign_ref(attrs))
+            return render_not_found(ref_label(field))
+          end
+
+          if @assignment.update(attrs)
             render_success(assignment: serialize_assignment(@assignment, full: true))
           else
             render_validation_error(@assignment)
@@ -106,14 +116,51 @@ module Api
           )
         end
 
+        # review2 S-1: every id this door is handed resolves INSIDE the caller's
+        # account. Before, #update (and create / bulk_create) wrote any
+        # node_instance_id, file_storage_id or sdwan id as given, so account A
+        # could re-point its assignment at account B's node and storage. The
+        # model now refuses foreign refs as well (#references_belong_to_account,
+        # the account-scoped #file_storage); this is the door's own answer: a
+        # foreign id is a 404 byte-identical to a made-up id's, so the door never
+        # confirms that an id exists in some other account, and nothing is
+        # written. A malformed id matches no row and is the same 404.
+        def account_ref_scopes
+          {
+            "node_instance_id" => ::System::NodeInstance.where(account_id: current_account.id),
+            "file_storage_id" => ::FileManagement::Storage.where(account_id: current_account.id),
+            "sdwan_network_id" => ::Sdwan::Network.where(account_id: current_account.id),
+            "sdwan_virtual_ip_id" => ::Sdwan::VirtualIp.where(account_id: current_account.id)
+          }
+        end
+
+        # The first ref field in attrs whose id does not resolve in the caller's
+        # account, or nil. A blank value names nothing and is left to the model.
+        def foreign_ref(attrs)
+          account_ref_scopes.each do |field, scope|
+            value = attrs[field]
+            next if value.blank?
+            return field unless scope.exists?(id: value)
+          end
+          nil
+        end
+
+        def ref_label(field) = field.delete_suffix("_id").humanize
+
         def bulk_create(rows)
           created = []
           errors = []
           rows.each_with_index do |row, idx|
-            assignment = current_account.system_storage_assignments.build(row.permit(
+            attrs = row.permit(
               :file_storage_id, :node_instance_id, :sdwan_network_id, :sdwan_virtual_ip_id,
               :mount_path, :read_only, :enabled, :auto_mount, :encryption_mode, mount_options: {}
-            ).to_h)
+            ).to_h
+            if (field = foreign_ref(attrs))
+              errors << { index: idx, status: 404, error: "#{ref_label(field)} not found" }
+              next
+            end
+
+            assignment = current_account.system_storage_assignments.build(attrs)
             if assignment.save
               created << serialize_assignment(assignment, full: true)
             else
