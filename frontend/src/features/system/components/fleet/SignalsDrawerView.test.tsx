@@ -137,8 +137,9 @@ describe('SignalsDrawerView', () => {
 
   it('says so when no event records this component', async () => {
     renderView();
-    expect(await screen.findByText('No signals')).toBeInTheDocument();
-    expect(screen.getByText(/No recent fleet event records this component by node_instance_id\./)).toBeInTheDocument();
+    expect(
+      await screen.findByText('No signals: no recent fleet event records this component by node_instance_id.'),
+    ).toBeInTheDocument();
   });
 
   it('renders each event with the Fleet Dashboard row, and states the basis of the count', async () => {

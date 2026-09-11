@@ -1,9 +1,7 @@
 import { FC, useEffect, useState } from 'react';
-import { Radio } from 'lucide-react';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
-import { EmptyState } from '@/shared/components/ui/EmptyState';
 import type { ComponentStatusDetail } from '@/shared/types/platformStatus';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { FleetEventDetail, FleetEventRow } from './FleetEventParts';
@@ -106,13 +104,16 @@ export const SignalsDrawerView: FC<SignalsDrawerViewProps> = ({ row }) => {
     return <LoadingSpinner size="sm" message="Loading signals…" className="p-4" />;
   }
 
+  // The fleet components' own empty form (FleetDashboardPage's "No events
+  // yet."): a plain paragraph. ui/EmptyState is not on the host UI surface
+  // (frontend/src/shared/host-api/modules.ts), so importing it breaks the
+  // extension's dedicated build, and this view does not warrant widening that
+  // curated contract.
   if (events.length === 0) {
     return (
-      <EmptyState
-        icon={Radio}
-        title="No signals"
-        description={`No recent fleet event records this component by ${column}.`}
-      />
+      <p className="p-4 text-sm text-theme-tertiary">
+        {`No signals: no recent fleet event records this component by ${column}.`}
+      </p>
     );
   }
 
