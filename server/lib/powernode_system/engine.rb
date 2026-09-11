@@ -170,12 +170,30 @@ module PowernodeSystem
       end
     end
 
-    # Improvement discovery's result door (config/ci_lint_result, campaign
-    # 01a08c9b D1b) receives raw linter output. It is a repository's code
-    # findings, and if a runner ever echoed its credential into it, request
-    # logging would copy the credential into the log. Filter the whole payload.
-    initializer "powernode_system.filter_lint_output_parameters" do |app|
-      app.config.filter_parameters += [ :linters ]
+    # Improvement discovery's lint doors (config/ci_lint_context and
+    # config/ci_lint_result, campaign 01a08c9b D1b) take a runner's report.
+    # Rails logs a request's parameters before any action runs, so a
+    # credential a runner echoed into ANY field (the linter output,
+    # base_path, run_ref, repository_id) would reach the log whatever the
+    # gates then decided. Every string value those actions receive is
+    # masked. Scoped to their controller: a global name filter would also
+    # blank repository_id and base_path on every other endpoint's log line.
+    LINT_DOORS_CONTROLLER_PATH = "api/v1/system/node_api/lint_discovery"
+    LINT_DOORS_ROUTING_KEYS = %w[controller action format].freeze
+
+    initializer "powernode_system.filter_lint_door_parameters" do |app|
+      # Arity 3: ActiveSupport::ParameterFilter hands the block the whole
+      # request's parameters, which is what names the controller. "[FILTERED]"
+      # is Rails' default mask.
+      app.config.filter_parameters += [
+        lambda do |key, value, params|
+          next unless value.is_a?(String) && params.is_a?(Hash)
+          next unless params["controller"] == LINT_DOORS_CONTROLLER_PATH
+          next if LINT_DOORS_ROUTING_KEYS.include?(key.to_s)
+
+          value.replace("[FILTERED]")
+        end
+      ]
     end
 
     # Register feature flags with Flipper.
