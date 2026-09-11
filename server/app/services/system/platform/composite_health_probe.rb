@@ -242,7 +242,7 @@ module System
         # of the constant this class exists to delete.
         unless migrations
           return { status: NOT_MEASURED, reason: "migration state unreadable",
-                   observed_via: "in_process", env: Rails.env, ruby: RUBY_VERSION }
+                   observed_via: "in_process", env: Rails.env, ruby: RUBY_VERSION }.merge(process_identity)
         end
 
         {
@@ -251,7 +251,27 @@ module System
           env: Rails.env,
           ruby: RUBY_VERSION,
           pending_migrations: migrations[:pending]
-        }
+        }.merge(process_identity)
+      end
+
+      # Uptime belongs to a PROCESS, so it travels with the process that
+      # reported it: the program it runs as, its host and its pid. Another
+      # Puma worker or a console answers with its own. Boot time is
+      # Rails.application.config.boot_time (config/application.rb), set when
+      # the application loads. When there is none, the uptime fields are absent
+      # with a reason; a missing boot time is not an uptime of 0.
+      def process_identity
+        identity = { role: File.basename($PROGRAM_NAME.to_s), host: Socket.gethostname, pid: Process.pid }
+        booted = begin
+          Rails.application.config.boot_time
+        rescue NoMethodError
+          nil
+        end
+        return identity.merge(uptime_reason: "this process recorded no boot time") unless booted
+
+        seconds = (Time.current - booted).to_i
+        identity.merge(boot_time: booted.iso8601, uptime_seconds: seconds,
+                       uptime_human: ActiveSupport::Duration.build(seconds).inspect)
       end
 
       # Counted against the same MigrationContext Rails' own
@@ -277,10 +297,39 @@ module System
           response_time_ms: elapsed_ms(started),
           pool_size: pool[:size],
           pool_busy: pool[:busy]
-        }
+        }.merge(database_facts(::ActiveRecord::Base.connection))
       rescue ::ActiveRecord::ConnectionNotEstablished, ::ActiveRecord::StatementInvalid,
              *CONNECTIVITY_ERRORS => e
         { status: DOWN, observed_via: "SELECT 1", error: "#{e.class}: #{e.message}" }
+      end
+
+      # The database this process serves, its size and its active sessions.
+      # Each is its own query and its own failure: a role that cannot see
+      # pg_stat_activity still has a measured size, and a refused query leaves
+      # that one field absent with the reason rather than failing the
+      # subsystem, which SELECT 1 already answered.
+      def database_facts(connection)
+        facts = { database: connection.current_database }
+        facts.merge!(read_fact(:size_bytes) do
+          connection.select_value("SELECT pg_database_size(current_database())")
+        end)
+        facts.merge!(read_fact(:active_connections) do
+          connection.select_value(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active'"
+          )
+        end)
+        facts
+      end
+
+      # { key => Integer } when the query answered; otherwise
+      # { :"<key>_reason" => why }. A nil answer is not a 0.
+      def read_fact(key)
+        value = yield
+        return { :"#{key}_reason" => "query returned no value" } if value.nil?
+
+        { key => Integer(value) }
+      rescue ::ActiveRecord::StatementInvalid => e
+        { :"#{key}_reason" => "#{e.class}: #{e.message}" }
       end
 
       def probe_redis
@@ -298,10 +347,16 @@ module System
           observed_via: "PING",
           response_time_ms: elapsed_ms(started),
           used_memory: info["used_memory_human"],
-          connected_clients: info["connected_clients"]&.to_i
+          connected_clients: info["connected_clients"]&.to_i,
+          cache_store: cache_store_name
         }
       rescue *redis_error_classes => e
-        { status: DOWN, observed_via: "PING", error: "#{e.class}: #{e.message}" }
+        { status: DOWN, observed_via: "PING", error: "#{e.class}: #{e.message}", cache_store: cache_store_name }
+      end
+
+      # Read in-process, so it is known even when Redis is not.
+      def cache_store_name
+        Rails.cache.class.name
       end
 
       # Sidekiq runs in the standalone worker app, not here, and this app must
@@ -323,10 +378,22 @@ module System
           observed_via: "worker redis process registry",
           process_count: processes.size,
           queues: queues
-        }
+        }.merge(worker_last_seen(client, processes))
       rescue *redis_error_classes => e
         { status: NOT_MEASURED, reason: "worker redis unreachable — Sidekiq state unobservable",
           error: "#{e.class}: #{e.message}" }
+      end
+
+      # When the worker was last seen: the newest heartbeat among the
+      # registered processes. Sidekiq keeps each process's heartbeat as the
+      # `beat` field (epoch seconds) of the hash named by its identity, which
+      # is a member of the `processes` set read above. No heartbeat at all
+      # leaves the field absent with a reason, never a 1970 timestamp.
+      def worker_last_seen(client, processes)
+        beats = processes.filter_map { |identity| client.hget(identity, "beat").presence&.to_f }
+        return { last_seen_reason: "no registered worker process carries a heartbeat" } if beats.empty?
+
+        { last_seen_at: Time.at(beats.max).utc.iso8601 }
       end
 
       def probe_worker_web
