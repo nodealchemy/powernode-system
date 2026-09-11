@@ -114,4 +114,42 @@ RSpec.describe System::Platform::CompositeHealthProbe do
       expect(postgres[:active_connections_reason]).to include("permission denied")
     end
   end
+
+  # The drawer reads a persisted snapshot, not the probe, so the fields have to
+  # survive the snapshot write AND the contributor's evidence step. This writes
+  # through the probe's own #persist and compares whole entries: the evidence
+  # must be exactly what was stored, minus the status the condition carries.
+  describe "through the platform_subsystem contributor" do
+    let(:contributor)  { System::Status::Contributors::PlatformSubsystemContributor.new }
+    let(:worker_redis) { double("worker redis") }
+    let(:panel)        { %i[rails sidekiq redis postgres] }
+
+    before do
+      allow(Powernode::Redis).to receive(:new_worker_client).and_return(worker_redis)
+      allow(worker_redis).to receive(:smembers).with("queues").and_return([])
+      allow(worker_redis).to receive(:smembers).with("processes").and_return(%w[p1])
+      allow(worker_redis).to receive(:hget).with("p1", "beat").and_return("1757560100.25")
+    end
+
+    def healthy_evidence(records, key)
+      contributor.conditions_for(records.fetch(key)).find { |c| c["type"] == "Healthy" }["evidence"]
+    end
+
+    it "carries each panel entry into the Healthy evidence unchanged, minus status" do
+      measured = panel.index_with { |name| entry(name) }
+      probe.send(:persist, { overall: "ok", subsystems: measured, down: [], degraded: [], not_measured: [] })
+      expect(System::PlatformHealthSnapshot.for_account(account).count).to eq(1)
+
+      records = [].tap { |acc| contributor.each_component(account) { |r| acc << r } }.index_by(&:key)
+      panel.each do |name|
+        expect(healthy_evidence(records, name.to_s)).to eq(measured[name].as_json.except("status")),
+                                                         "#{name} evidence differs from what the probe stored"
+      end
+
+      expect(healthy_evidence(records, "rails")).to include("role", "host", "pid", "uptime_seconds", "boot_time")
+      expect(healthy_evidence(records, "sidekiq")).to include("last_seen_at")
+      expect(healthy_evidence(records, "redis")).to include("cache_store")
+      expect(healthy_evidence(records, "postgres")).to include("database", "size_bytes", "active_connections")
+    end
+  end
 end
