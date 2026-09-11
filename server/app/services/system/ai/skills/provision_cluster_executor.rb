@@ -151,7 +151,7 @@ module System
           # `call(params)` (only an `ensure` for undeclared-action telemetry),
           # and SystemFleetTool#call rescues exactly FOUR classes
           # (:1758-1763 — RecordNotFound, RecordInvalid, ArgumentError,
-          # NodeModuleVersion::InvalidTransition) into error results. Anything
+          # AASM::InvalidTransition) into error results. Anything
           # else reaches here as a raise:
           #   - RecordNotUnique on a node-name collision, StatementInvalid or
           #     ConnectionNotEstablished on a DB blip, a provider adapter's

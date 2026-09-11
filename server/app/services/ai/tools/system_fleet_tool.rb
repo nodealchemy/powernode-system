@@ -2737,7 +2737,7 @@ module Ai
         error_result(e.message)
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
-      rescue ArgumentError, ::System::NodeModuleVersion::InvalidTransition => e
+      rescue ArgumentError, AASM::InvalidTransition => e
         error_result(e.message)
       # === REFUSALS, not faults (IMP-a00997333d8f) ===
       #
