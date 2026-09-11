@@ -75,10 +75,6 @@ jest.mock('@system/features/system/components/fleet/HoneypotCanaryTile', () => (
   HoneypotCanaryTile: () => <div data-testid="honeypot-tile">HoneypotCanaryTile</div>,
 }));
 
-jest.mock('@system/features/system/components/fleet/DispatchLatencyTile', () => ({
-  DispatchLatencyTile: () => <div data-testid="dispatch-tile">DispatchLatencyTile</div>,
-}));
-
 jest.mock('@system/features/system/components/fleet/RemediationEffectivenessTile', () => ({
   RemediationEffectivenessTile: () => <div data-testid="remediation-tile">RemediationEffectivenessTile</div>,
 }));
@@ -579,15 +575,6 @@ describe('FleetDashboardPage — counter tiles', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('honeypot-tile')).toBeInTheDocument(),
-    );
-  });
-
-  it('renders the DispatchLatencyTile stub', async () => {
-    mockPost.mockResolvedValue(signalsResponse([]));
-    renderDashboard();
-
-    await waitFor(() =>
-      expect(screen.getByTestId('dispatch-tile')).toBeInTheDocument(),
     );
   });
 

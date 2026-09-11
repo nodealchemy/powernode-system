@@ -9,7 +9,6 @@ import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
-import { DispatchLatencyTile } from './DispatchLatencyTile';
 import { RemediationEffectivenessTile } from './RemediationEffectivenessTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
 import { BootReplayModal } from './boot-replay/BootReplayModal';
@@ -215,10 +214,9 @@ export function FleetDashboardPage(): React.JSX.Element {
         <HoneypotCanaryTile />
       </div>
 
-      {/* Phase 10.7 polish — dispatch pipeline metrics tile (Phase 10.5 backend),
-          beside remediation effectiveness (IMP-01a05ae8). */}
+      {/* Remediation effectiveness (IMP-01a05ae8). The dispatch pipeline tile
+          beside it is gone: that reading is the dispatch_latency component. */}
       <div className="px-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-        <DispatchLatencyTile />
         <RemediationEffectivenessTile />
       </div>
 
