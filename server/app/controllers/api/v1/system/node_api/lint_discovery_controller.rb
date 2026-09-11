@@ -9,10 +9,17 @@ module Api
         #
         # Both are gated like ci_build_context, and more tightly. The calling
         # instance must carry the module-forge module, which ships the lint
-        # script, AND hold an ACTIVE, UNEXPIRED lint_discovery lease of its own.
-        # The lease is found through the mTLS-authenticated instance, never
-        # through anything the caller sends, so one instance can never read or
-        # write through another's lease.
+        # script, AND hold a LIVE, UNEXPIRED lint_discovery lease of its own
+        # whose ci.lint_discovery task is RUNNING on it. Live means leased,
+        # registered or busy: a releasing lease is being torn down. The lease
+        # is found through the mTLS-authenticated instance, never through
+        # anything the caller sends, so one instance can never read or write
+        # through another's lease.
+        #
+        # LOGGING. Rails logs a request's parameters before any gate runs, so
+        # the engine filters every value these doors receive
+        # (powernode_system.filter_lint_door_parameters), and #result refuses a
+        # run_ref or base_path of the wrong shape before using either.
         #
         # CREDENTIALS. #context returns each leased repository's read credential
         # in its response body and nowhere else. It is never logged, never
@@ -23,8 +30,16 @@ module Api
         # personal token cannot be narrowed through its API), so this hands out
         # the repository's own credential.
         class LintDiscoveryController < BaseController
+          # A lint_discovery run_ref is its lease's id.
+          RUN_REF_FORMAT = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
+          # base_path is the absolute path the runner cloned into: "/name"
+          # segments of plain characters, none of them "." or "..".
+          BASE_PATH_FORMAT = %r{\A(?:/[A-Za-z0-9_@+.-]+)+\z}
+          BASE_PATH_MAX_LENGTH = 1024
+
           before_action :require_module_forge!
           before_action :require_active_lease!
+          before_action :require_well_formed_result!, only: :result
 
           # GET /api/v1/system/node_api/config/ci_lint_context
           def context
@@ -45,8 +60,13 @@ module Api
             # The runner reports a linter whose output is over core's parse
             # limit as output_truncated instead of cutting it: core never parses
             # a cut report (D1 re-verify M2).
+            # deadline_at: the runner budgets every phase from what is left of
+            # the lease, so it finishes before these doors stop answering.
+            # workdir_base: nil lets the agent resolve a disk-backed default.
             render_success(repositories: repositories,
-                           output_limit_bytes: ::Ai::Codebase::StaticAnalysisService.output_limit_bytes)
+                           output_limit_bytes: ::Ai::Codebase::StaticAnalysisService.output_limit_bytes,
+                           deadline_at: @lease.expires_at&.iso8601,
+                           workdir_base: ::System::LintDiscoveryExecutor.workdir_base)
           end
 
           # POST /api/v1/system/node_api/config/ci_lint_result
@@ -90,18 +110,44 @@ module Api
             render_error("Instance is not provisioned as a module-forge builder", :forbidden)
           end
 
-          # Active AND before its deadline: an expired lease reads nothing and
-          # writes nothing, even before the sweep has released it.
+          # Live, before its deadline, and its task running on this instance.
+          # A lease being torn down, an expired one, or one whose task has not
+          # started or is over reads nothing and writes nothing, even before
+          # the sweep has released it.
           def require_active_lease!
             @lease = ::System::CiRunnerLease
                        .for_node_instance(current_instance)
-                       .active
+                       .live
                        .where(purpose: ::System::LintDiscoveryExecutor::PURPOSE)
                        .order(created_at: :desc)
                        .first
-            return render_error("Instance has no active lint_discovery lease", :forbidden) if @lease.nil?
+            return render_error("Instance has no live lint_discovery lease", :forbidden) if @lease.nil?
+            return render_error("The lint_discovery lease has expired", :forbidden) if @lease.expired?
 
-            render_error("The lint_discovery lease has expired", :forbidden) if @lease.expired?
+            render_error("The lint_discovery lease's task is not running", :forbidden) unless lease_task_running?
+          end
+
+          def lease_task_running?
+            ::System::Task.running
+                          .for_operable(current_instance)
+                          .by_command(::System::LintDiscoveryExecutor::COMMAND)
+                          .exists?(id: @lease.build_task_id)
+          end
+
+          # The result's run_ref and base_path, held to their shape before
+          # either goes any further. The refusals never echo the value.
+          def require_well_formed_result!
+            unless params[:run_ref].is_a?(String) && RUN_REF_FORMAT.match?(params[:run_ref])
+              return render_error("run_ref is not a lease reference", :unprocessable_content)
+            end
+            return if well_formed_base_path?(params[:base_path])
+
+            render_error("base_path is not an absolute path", :unprocessable_content)
+          end
+
+          def well_formed_base_path?(path)
+            path.is_a?(String) && path.length <= BASE_PATH_MAX_LENGTH && BASE_PATH_FORMAT.match?(path) &&
+              path.split("/").none? { |segment| %w[. ..].include?(segment) }
           end
 
           def leased_repositories

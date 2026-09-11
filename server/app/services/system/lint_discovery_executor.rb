@@ -39,6 +39,15 @@ module System
     DEADLINE_SETTING = "system.lint_discovery.deadline_seconds"
     DEFAULT_DEADLINE_SECONDS = 3600
 
+    # Where the runner puts each repository's workdir. Unset, the agent
+    # resolves a disk-backed default itself (the node's persistent mount, else
+    # /var/lib) and refuses one on a RAM-backed filesystem.
+    WORKDIR_BASE_SETTING = "system.lint_discovery.workdir_base"
+
+    def self.workdir_base
+      ::SiteSetting.get(WORKDIR_BASE_SETTING).presence
+    end
+
     def self.dispatch!(account:, repositories:)
       new(account: account).dispatch!(repositories)
     end
