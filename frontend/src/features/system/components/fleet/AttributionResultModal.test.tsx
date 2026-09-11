@@ -88,11 +88,22 @@ const ATTRIBUTION_RESULT: AttributionResult = {
   reasoning: 'nginx-proxy was the most recent change and correlates with the event spike.',
 };
 
+// AttributeFailureExecutor returns confidence: nil when nothing was
+// measured -- never 0.0, which would claim "looked and found nothing".
 const EMPTY_RESULT: AttributionResult = {
   candidates: [],
   top_candidate: null,
-  confidence: 0,
+  confidence: null,
   reasoning: 'No suspect changes found in the window.',
+};
+
+// A real, low-but-measured confidence -- distinct from EMPTY_RESULT's null.
+// Must render as "2%", never be hidden or read as "not measured".
+const LOW_CONFIDENCE_RESULT: AttributionResult = {
+  candidates: [],
+  top_candidate: null,
+  confidence: 0.02,
+  reasoning: 'One weak signal found.',
 };
 
 const renderModal = (props: Partial<React.ComponentProps<typeof AttributionResultModal>> = {}) =>
@@ -259,14 +270,24 @@ describe('AttributionResultModal', () => {
     expect(screen.getByText('Confidence:')).toBeInTheDocument();
   });
 
-  it('does not render confidence section when confidence is 0', async () => {
+  it('shows "not measured" (never 0% or a hidden badge) when confidence is null', async () => {
     mockPost.mockResolvedValue(envelope(EMPTY_RESULT));
     renderModal();
 
     await waitFor(() =>
       expect(screen.getByText('No suspect changes found in the lookback window.')).toBeInTheDocument(),
     );
-    expect(screen.queryByText('Confidence:')).not.toBeInTheDocument();
+    expect(screen.getByText('Confidence:')).toBeInTheDocument();
+    expect(screen.getByText('not measured')).toBeInTheDocument();
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('renders a real low confidence as a percentage, not "not measured"', async () => {
+    mockPost.mockResolvedValue(envelope(LOW_CONFIDENCE_RESULT));
+    renderModal();
+
+    await waitFor(() => expect(screen.getByText('2%')).toBeInTheDocument());
+    expect(screen.queryByText('not measured')).not.toBeInTheDocument();
   });
 
   it('renders candidate count in the section heading', async () => {

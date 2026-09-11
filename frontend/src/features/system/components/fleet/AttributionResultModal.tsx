@@ -77,14 +77,16 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
             <div className="text-sm bg-theme-background border border-theme rounded p-3">
               <div className="font-medium mb-1">Reasoning</div>
               <p className="text-theme-tertiary">{result.reasoning}</p>
-              {result.confidence > 0 && (
-                <div className="mt-2 text-xs">
-                  <span className="text-theme-tertiary">Confidence:</span>{' '}
+              <div className="mt-2 text-xs">
+                <span className="text-theme-tertiary">Confidence:</span>{' '}
+                {result.confidence === null ? (
+                  <Badge variant="default">not measured</Badge>
+                ) : (
                   <Badge variant={result.confidence >= 0.7 ? 'success' : result.confidence >= 0.4 ? 'warning' : 'default'}>
                     {(result.confidence * 100).toFixed(0)}%
                   </Badge>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             <div>

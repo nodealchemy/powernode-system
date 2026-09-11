@@ -36,7 +36,10 @@ export interface AttributionCandidate {
 export interface AttributionResult {
   candidates: AttributionCandidate[];
   top_candidate: AttributionCandidate | null;
-  confidence: number;
+  // null when nothing was measured (AttributeFailureExecutor) -- never 0,
+  // which would claim "looked and found nothing". Renderers must show "not
+  // measured" for null, never coalesce it to 0 or a 0% badge.
+  confidence: number | null;
   reasoning: string;
 }
 
