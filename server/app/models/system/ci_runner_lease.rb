@@ -23,6 +23,12 @@ module System
     # === Constants ===
     STATUSES = %w[leased registered busy releasing released errored].freeze
     PURPOSES = %w[generic module_build disk_image_build lint_discovery].freeze
+    # Purposes only the platform leases under. lint_discovery belongs to
+    # System::LintDiscoveryExecutor: a lease minted by hand under it would pass
+    # the lint doors' lease gate and hold the account's one discovery slot.
+    SYSTEM_PURPOSES = %w[lint_discovery].freeze
+    # What the system_lease_ci_runner verb accepts and advertises.
+    MANUAL_PURPOSES = (PURPOSES - SYSTEM_PURPOSES).freeze
     SCOPES   = %w[repo org admin].freeze
 
     # === Associations ===

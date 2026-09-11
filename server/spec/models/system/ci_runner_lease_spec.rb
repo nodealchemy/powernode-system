@@ -43,6 +43,17 @@ RSpec.describe System::CiRunnerLease, type: :model do
       expect(lease.errors[:purpose]).to be_present
     end
 
+    # Improvement discovery (campaign 01a08c9b D1b) leases under lint_discovery
+    # itself; a lease minted by hand under that purpose would pass the lint
+    # doors' lease gate and hold the account's one discovery slot.
+    it "keeps system-only purposes out of the purposes a caller may lease by hand" do
+      expect(System::CiRunnerLease::SYSTEM_PURPOSES).to eq(%w[lint_discovery])
+      expect(System::CiRunnerLease::MANUAL_PURPOSES)
+        .to eq(System::CiRunnerLease::PURPOSES - System::CiRunnerLease::SYSTEM_PURPOSES)
+      expect(System::CiRunnerLease::MANUAL_PURPOSES).to include("generic", "module_build", "disk_image_build")
+      expect(System::CiRunnerLease::MANUAL_PURPOSES).not_to include("lint_discovery")
+    end
+
     it "accepts every documented purpose" do
       System::CiRunnerLease::PURPOSES.each do |purpose|
         lease = build_lease(purpose: purpose)

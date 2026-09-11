@@ -2267,8 +2267,8 @@ module Ai
             parameters: {
               pool_name: { type: "string", required: false, description: "Builder InstancePool name to acquire from (e.g. 'ci-builders-amd64'). One of pool_name/pool_id is required." },
               pool_id: { type: "string", required: false, description: "Builder InstancePool id (alternative to pool_name)" },
-              purpose: { type: "string", required: false, enum: ::System::CiRunnerLease::PURPOSES,
-                        description: "generic | module_build | disk_image_build (default generic) — selects the publish-arrival signal the reconciler waits on before release" },
+              purpose: { type: "string", required: false, enum: ::System::CiRunnerLease::MANUAL_PURPOSES,
+                        description: "generic | module_build | disk_image_build (default generic) — selects the publish-arrival signal the reconciler waits on before release. System-only purposes (lint_discovery) are refused." },
               workflow_run_id: { type: "integer", required: false, description: "Gitea workflow run id this lease serves (set by the build orchestrator; drives auto-release when the run completes)" },
               workflow_run_repo: { type: "string", required: false, description: "owner/repo of the workflow run (needed to poll run state when workflow_run_id is set)" },
               correlate_timeout: { type: "integer", required: false, description: "Seconds to wait for the runner to correlate before returning (default from SiteSetting; 0 = single attempt, the reconciler finishes async)" }
@@ -8256,11 +8256,17 @@ module Ai
       # === Campaign 019f5885 inc3 — ephemeral CI runner leases ===
 
       def lease_ci_runner(params)
+        purpose = params[:purpose].presence || "generic"
+        unless ::System::CiRunnerLease::MANUAL_PURPOSES.include?(purpose)
+          return error_result("purpose #{purpose} cannot be leased by hand; leasable purposes: " \
+                              "#{::System::CiRunnerLease::MANUAL_PURPOSES.join(', ')}")
+        end
+
         lease = ::System::CiRunnerLeaseService.lease!(
           account: @account,
           pool_name: params[:pool_name],
           pool_id: params[:pool_id],
-          purpose: params[:purpose].presence || "generic",
+          purpose: purpose,
           workflow_run_id: params[:workflow_run_id],
           workflow_run_repo: params[:workflow_run_repo],
           correlate_timeout: params[:correlate_timeout]

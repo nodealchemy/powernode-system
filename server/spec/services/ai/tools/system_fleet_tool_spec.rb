@@ -3562,6 +3562,36 @@ end
         expect(r[:data][:ci_runner_lease][:node_instance_id]).to eq(member.id)
       end
 
+      # A ready, correlatable builder is seeded, so a verb that passed the
+      # purpose through would really lease one: the refusal is the verb's own.
+      it "system_lease_ci_runner refuses a system-only purpose by name and leases nothing" do
+        member = seed_ready_member(builder_pool)
+        create(:git_runner, account: account, name: ::System::CiRunnerRegistrationResolver.runner_name(member))
+
+        expect {
+          r = call("system_lease_ci_runner", pool_name: builder_pool.name, purpose: "lint_discovery", correlate_timeout: 0)
+          expect(r[:success]).to be false
+          expect(r[:error]).to include("lint_discovery")
+        }.not_to change(System::CiRunnerLease, :count)
+      end
+
+      it "system_lease_ci_runner still leases under a manual purpose" do
+        member = seed_ready_member(builder_pool)
+        create(:git_runner, account: account, name: ::System::CiRunnerRegistrationResolver.runner_name(member))
+
+        r = call("system_lease_ci_runner", pool_name: builder_pool.name, purpose: "module_build", correlate_timeout: 0)
+
+        expect(r[:success]).to be true
+        expect(System::CiRunnerLease.find(r[:data][:ci_runner_lease][:id]).purpose).to eq("module_build")
+      end
+
+      it "advertises only the manual purposes in the verb's schema" do
+        enum = described_class.action_definitions["system_lease_ci_runner"][:parameters][:purpose][:enum]
+
+        expect(enum).to eq(System::CiRunnerLease::MANUAL_PURPOSES)
+        expect(enum).not_to include("lint_discovery")
+      end
+
       it "system_lease_ci_runner returns an error result when the pool has no ready members" do
         r = call("system_lease_ci_runner", pool_name: builder_pool.name, correlate_timeout: 0)
 
