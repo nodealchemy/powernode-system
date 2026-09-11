@@ -145,6 +145,27 @@ RSpec.describe System::LintDiscoveryExecutor do
     end
   end
 
+  # D1b security R1, defence in depth: the workdir base setting is refused
+  # when written unless the runner would accept it (the runner's own check
+  # stays authoritative).
+  describe "the workdir base setting" do
+    it "refuses, by name, a base that is not a clean absolute path below /persist/, /srv/ or /var/lib/" do
+      [ "/etc/lint", "/tmp/lint", "/", "/var/lib", "/srv/../etc", "/srv/lint/", "srv/lint", "/srv//lint",
+        "/srv/./lint", "/srv/lint\n" ].each do |bad|
+        expect { SiteSetting.set(described_class::WORKDIR_BASE_SETTING, bad) }
+          .to raise_error(ActiveRecord::RecordInvalid, %r{strictly below one of /persist/, /srv/, /var/lib/}), bad.inspect
+      end
+      expect(SiteSetting.find_by(key: described_class::WORKDIR_BASE_SETTING)).to be_nil
+    end
+
+    it "accepts a clean base below an allowed prefix, and hands it to the runner as written" do
+      %w[/persist/lint-discovery /srv/lint /var/lib/lint-discovery].each do |good|
+        SiteSetting.set(described_class::WORKDIR_BASE_SETTING, good)
+        expect(described_class.workdir_base).to eq(good)
+      end
+    end
+  end
+
   # The wiring core reads: with the extension loaded, core's discovery tick
   # dispatches through THIS executor, not a stand-in.
   describe "registration as the core provider" do

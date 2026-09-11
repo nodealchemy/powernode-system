@@ -44,8 +44,23 @@ module System
     # /var/lib) and refuses one on a RAM-backed filesystem.
     WORKDIR_BASE_SETTING = "system.lint_discovery.workdir_base"
 
+    # The runner refuses any base outside these (its check is authoritative).
+    # The setting is checked when written too (D1b security R1), so a bad
+    # value is refused by name instead of failing every lint task.
+    WORKDIR_BASE_PREFIXES = %w[/persist/ /srv/ /var/lib/].freeze
+
     def self.workdir_base
       ::SiteSetting.get(WORKDIR_BASE_SETTING).presence
+    end
+
+    # nil when `value` is an acceptable workdir base, else why it is not.
+    def self.workdir_base_problem(value)
+      path = value.to_s
+      clean = path.start_with?("/") && !path.match?(/[[:cntrl:]]/) && Pathname.new(path).cleanpath.to_s == path
+      return nil if clean && WORKDIR_BASE_PREFIXES.any? { |prefix| path.start_with?(prefix) }
+
+      "must be a clean absolute path strictly below one of #{WORKDIR_BASE_PREFIXES.join(', ')} " \
+        "(the runner refuses anything else)"
     end
 
     def self.dispatch!(account:, repositories:)

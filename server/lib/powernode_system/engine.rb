@@ -196,6 +196,16 @@ module PowernodeSystem
       ]
     end
 
+    # D1b security R1: the lint workdir base setting is checked when written
+    # too, with the runner's own rule (the runner's check stays authoritative).
+    # to_prepare, so a development reload, which rebuilds SiteSetting and its
+    # registry, registers the check again.
+    config.to_prepare do
+      ::SiteSetting.register_value_check(::System::LintDiscoveryExecutor::WORKDIR_BASE_SETTING) do |value|
+        ::System::LintDiscoveryExecutor.workdir_base_problem(value)
+      end
+    end
+
     # Register feature flags with Flipper.
     initializer "powernode_system.feature_flags", after: :load_config_initializers do
       config.after_initialize do
