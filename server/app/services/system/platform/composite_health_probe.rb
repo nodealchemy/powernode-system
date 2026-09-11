@@ -135,6 +135,37 @@ module System
         result.merge(snapshot_id: snapshot&.id, persisted: snapshot.present?)
       end
 
+      # The newest fleet.tick_complete for this account (B5). Public, with
+      # #fleet_tick_reading, so the honeypot status contributor judges its feed
+      # with the SAME query and the SAME staleness threshold as the fleet_tick
+      # subsystem instead of restating either.
+      def last_fleet_tick
+        ::System::FleetEvent.where(account: account, kind: "fleet.tick_complete")
+                            .order(emitted_at: :desc).first
+      end
+
+      # The fleet_tick subsystem's reading of one tick event. Pass the event
+      # when the caller also needs its payload, so both read the same row.
+      def fleet_tick_reading(last = last_fleet_tick)
+        unless last&.emitted_at
+          return {
+            status: NOT_MEASURED,
+            reason: "no fleet.tick_complete has ever been recorded for this account"
+          }
+        end
+
+        staleness = seconds_setting("tick_staleness_seconds", DEFAULT_TICK_STALENESS_SECONDS)
+        age = (Time.current - last.emitted_at).to_i
+
+        {
+          status: age > staleness ? DEGRADED : OK,
+          observed_via: "fleet.tick_complete",
+          last_tick_at: last.emitted_at.iso8601,
+          age_seconds: age,
+          staleness_threshold_seconds: staleness
+        }
+      end
+
       private
 
       def measure(name)
@@ -371,26 +402,7 @@ module System
       # running is the failure this catches: nothing errors, the fleet simply
       # stops being reconciled, and every other subsystem still reads fine.
       def probe_fleet_tick
-        last = ::System::FleetEvent.where(account: account, kind: "fleet.tick_complete")
-                                   .order(emitted_at: :desc).first
-
-        unless last&.emitted_at
-          return {
-            status: NOT_MEASURED,
-            reason: "no fleet.tick_complete has ever been recorded for this account"
-          }
-        end
-
-        staleness = seconds_setting("tick_staleness_seconds", DEFAULT_TICK_STALENESS_SECONDS)
-        age = (Time.current - last.emitted_at).to_i
-
-        {
-          status: age > staleness ? DEGRADED : OK,
-          observed_via: "fleet.tick_complete",
-          last_tick_at: last.emitted_at.iso8601,
-          age_seconds: age,
-          staleness_threshold_seconds: staleness
-        }
+        fleet_tick_reading
       end
 
       # Reachability without sending traffic of our own. A provider is only
