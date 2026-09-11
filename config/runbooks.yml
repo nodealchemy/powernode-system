@@ -335,7 +335,6 @@ system.project_target_unmeasurable:
 system.trading_pressure_observed:
   not_documented: true
   reason: >-
-    The trading extension is out of scope for this deployment, so no operator
-    runbook is owed. A runbook would only be written alongside that extension,
-    and would have to describe a market-pressure response this repo does not
-    perform.
+    Kinds owned by extensions not present in this deployment have no operator
+    runbook here. A runbook would have to describe a pressure response this
+    repo does not perform.
