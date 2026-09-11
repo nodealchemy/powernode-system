@@ -134,12 +134,54 @@ module System
 
     def advance(lease)
       return advance_module_build(lease) if lease.purpose == "module_build" && lease.build_task_id.present?
+      return advance_lint_discovery(lease) if lease.purpose == ::System::LintDiscoveryExecutor::PURPOSE &&
+                                              lease.build_task_id.present?
 
       case lease.status
       when "leased"                 then advance_leased(lease)
       when "registered", "busy"     then advance_running(lease)
       when "releasing"              then release(lease, reason: "resume release")
       end
+    end
+
+    # --- lint_discovery (campaign 01a08c9b D1b) --------------------------------
+    #
+    # The lease ends when its ci.lint_discovery task finishes, or at its
+    # deadline (expires_at, set by System::LintDiscoveryExecutor). Either way
+    # every repository that never reported is recorded on the account as not
+    # measured with a named reason, so a runner that went quiet can never read
+    # as a clean sweep. The deadline is the bound on the linters: it replaces
+    # D1's in-process timeout.
+    def advance_lint_discovery(lease)
+      task = ::System::Task.find_by(id: lease.build_task_id)
+      reason =
+        if task.nil? then "lint_task_missing"
+        elsif task.finished? then "runner_did_not_report"
+        elsif lease.expired? then "runner_deadline_passed"
+        end
+      return if reason.nil?
+
+      record_unreported_repositories(lease, reason)
+      # force: at the deadline the runner may still be linting, and recycling
+      # it is the point.
+      @svc.release!(lease, force: true)
+      @summary[:released] += 1
+      emit_event(lease, "system.ci_runner_lease_released", reason: "lint_discovery #{reason}")
+    end
+
+    def record_unreported_repositories(lease, reason)
+      unreported = Array(lease.metadata["repository_ids"]) - Array(lease.metadata["reported_repository_ids"])
+      return if unreported.empty?
+
+      ::Ai::Improvement::DiscoveryRun.record!(
+        account: lease.account,
+        summary: {
+          phase: "ingest", status: "not_measured", reason: reason, run_ref: lease.id,
+          repository_ids: [], unreported_repository_ids: unreported,
+          analyzers: ::Ai::Improvement::DiscoveryRunService::ANALYZERS, analyzers_degraded: [],
+          findings: 0, offers_created: 0, offers_deduped: 0, offers_parked: 0
+        }
+      )
     end
 
     # --- module_build purpose-aware correlation (inc9 Part B) -----------------

@@ -83,6 +83,7 @@ module System
       storage.gateway.provision storage.gateway.deprovision storage.chown
       ci.module_build
       ci.package_build
+      ci.lint_discovery
       probe.module_smoke
     ].freeze
 

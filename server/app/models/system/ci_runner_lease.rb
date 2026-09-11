@@ -22,7 +22,7 @@ module System
 
     # === Constants ===
     STATUSES = %w[leased registered busy releasing released errored].freeze
-    PURPOSES = %w[generic module_build disk_image_build].freeze
+    PURPOSES = %w[generic module_build disk_image_build lint_discovery].freeze
     SCOPES   = %w[repo org admin].freeze
 
     # === Associations ===

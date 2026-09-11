@@ -959,6 +959,12 @@ Rails.application.routes.draw do
           # module_build CiRunnerLease for the calling instance. Consumed by
           # the agent's ci.module_build task handler.
           get "config/ci_build_context", to: "config#ci_build_context"
+          # Improvement discovery (campaign 01a08c9b D1b): the read credential
+          # and the result door behind the agent's ci.lint_discovery handler.
+          # Gated on module-forge AND an active, unexpired lint_discovery lease
+          # held by the calling instance.
+          get "config/ci_lint_context", to: "lint_discovery#context"
+          post "config/ci_lint_result", to: "lint_discovery#result"
           # Phase 3 — LUKS passphrase derivation for volume-setup CLI.
           get "config/luks/:partition_label", to: "luks#show",
               constraints: { partition_label: /[a-zA-Z0-9_.-]{1,32}/ }

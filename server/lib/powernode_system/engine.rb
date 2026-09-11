@@ -157,11 +157,25 @@ module PowernodeSystem
             #     reads the control_plane_role_coordinator SiteSetting and
             #     returns :inert until an operator sets it.
             control_plane_role: "System::Autonomy::ControlPlaneRole",
+            #   * lint_discovery_executor — improvement discovery's runner half
+            #     (campaign 01a08c9b D1b): lease from the account's OWN pool,
+            #     a ci.lint_discovery task on that instance, results back
+            #     through core DiscoveryRunService#ingest!. Nil ⇒ core mode,
+            #     and core skips every unit with no_discovery_executor.
+            lint_discovery_executor: "System::LintDiscoveryExecutor",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }
         )
       end
+    end
+
+    # Improvement discovery's result door (config/ci_lint_result, campaign
+    # 01a08c9b D1b) receives raw linter output. It is a repository's code
+    # findings, and if a runner ever echoed its credential into it, request
+    # logging would copy the credential into the log. Filter the whole payload.
+    initializer "powernode_system.filter_lint_output_parameters" do |app|
+      app.config.filter_parameters += [ :linters ]
     end
 
     # Register feature flags with Flipper.

@@ -1,0 +1,140 @@
+# frozen_string_literal: true
+
+module System
+  # Improvement discovery's executor (campaign 01a08c9b D1b), registered under
+  # the core behaviour-provider key :lint_discovery_executor.
+  #
+  # Core (Ai::Improvement::DiscoveryRunService) hands it one account's
+  # repositories per tick. It leases ONE runner from THAT account's own pool
+  # and sends a ci.lint_discovery System::Task to that exact NodeInstance. The
+  # agent pulls each repository's read credential over its own mTLS identity
+  # from the lease-gated config/ci_lint_context endpoint, lints each repository
+  # with the repository's own bundle, and posts the raw output to the
+  # lease-gated config/ci_lint_result endpoint, which hands it to core
+  # DiscoveryRunService#ingest!. The sweep releases the lease when the task
+  # finishes, or at the lease's deadline, and records every repository that
+  # never reported as not measured.
+  #
+  # Why not a Gitea workflow: every act runner registers with the same global
+  # label, so a job dispatched to a label can start on any tenant's runner, and
+  # workflow inputs are stored unmasked. Neither may carry a tenant's code or
+  # credential.
+  #
+  # Rulings it carries:
+  #   (b) the tenant's own pool only: the pool is looked up inside the account,
+  #       and with none the unit is skipped with a named reason;
+  #   (c) one lease per account per tick, and never a second while one is live.
+  class LintDiscoveryExecutor
+    PURPOSE = "lint_discovery"
+    COMMAND = "ci.lint_discovery"
+
+    # The pool NAME is operator configuration; the pool is always the account's
+    # own. No default: an install that has not chosen a builder pool runs no
+    # discovery, and says so.
+    POOL_SETTING = "system.lint_discovery.pool_name"
+
+    # The lease's deadline, which replaces D1's in-process linter timeout. A
+    # runner that has not reported every repository by then is recorded as not
+    # measured, and its lease is released (CiRunnerLeaseSweepService).
+    DEADLINE_SETTING = "system.lint_discovery.deadline_seconds"
+    DEFAULT_DEADLINE_SECONDS = 3600
+
+    def self.dispatch!(account:, repositories:)
+      new(account: account).dispatch!(repositories)
+    end
+
+    def self.deadline_seconds
+      configured = ::SiteSetting.get(DEADLINE_SETTING).to_i
+      configured.positive? ? configured : DEFAULT_DEADLINE_SECONDS
+    end
+
+    def initialize(account:)
+      @account = account
+    end
+
+    # @return [Hash] the core executor contract: status "dispatched" |
+    #   "skipped" | "failed", reason:, run_ref: (the lease id), repositories:
+    def dispatch!(repositories)
+      pool_name = ::SiteSetting.get(POOL_SETTING).presence
+      return skipped("no_ci_runner_pool_configured") if pool_name.nil?
+
+      pool = ::System::InstancePool.for_account(@account).find_by(name: pool_name)
+      return skipped("no_ci_runner_pool") if pool.nil?
+
+      return skipped("discovery_already_running") if active_lease?
+
+      rows, runnable = partition(repositories)
+      return skipped("no_analyzable_repository", rows) if runnable.empty?
+
+      lease = lease!(pool)
+      return skipped("no_ready_runner", rows) if lease.nil?
+
+      task = create_task!(lease, runnable)
+      lease.update!(
+        build_task_id: task.id,
+        expires_at: Time.current + self.class.deadline_seconds,
+        metadata: lease.metadata.merge(
+          "repository_ids" => runnable.map(&:id),
+          "reported_repository_ids" => []
+        )
+      )
+      { status: "dispatched", run_ref: lease.id, repositories: rows }
+    rescue StandardError => e
+      release_stranded(lease) if lease
+      # The class only: core writes this to an audit row.
+      Rails.logger.error("[LintDiscovery] dispatch failed for account #{@account.id}: #{e.class}")
+      { status: "failed", reason: e.class.name, repositories: rows }.compact
+    end
+
+    private
+
+    def active_lease?
+      ::System::CiRunnerLease.for_account(@account).active.where(purpose: PURPOSE).exists?
+    end
+
+    # A repository with no usable credential cannot be cloned on the runner.
+    def partition(repositories)
+      rows = []
+      runnable = []
+      repositories.each do |repo|
+        if repo.credential&.can_be_used?
+          runnable << repo
+          rows << { id: repo.id, status: "dispatched" }
+        else
+          rows << { id: repo.id, status: "skipped", reason: "no_repository_credential" }
+        end
+      end
+      [ rows, runnable ]
+    end
+
+    def lease!(pool)
+      ::System::CiRunnerLeaseService.lease!(account: @account, pool_id: pool.id, purpose: PURPOSE,
+                                             correlate_timeout: 0)
+    rescue ::System::CiRunnerLeaseService::LeaseError => e
+      Rails.logger.info("[LintDiscovery] no runner for account #{@account.id} (#{e.class})")
+      nil
+    end
+
+    # The task names the repositories and nothing else. A credential is never
+    # in a task: the agent pulls it from the lease-gated context endpoint.
+    def create_task!(lease, repositories)
+      ::System::Task.create!(
+        account: @account,
+        operable: lease.node_instance,
+        command: COMMAND,
+        status: "pending",
+        options: { "run_ref" => lease.id, "repository_ids" => repositories.map(&:id) }
+      )
+    end
+
+    def release_stranded(lease)
+      ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: true)
+    rescue StandardError => e
+      Rails.logger.warn("[LintDiscovery] release after a failed dispatch failed: #{e.class}")
+    end
+
+    def skipped(reason, rows = nil)
+      { status: "skipped", reason: reason, repositories: rows }.compact
+    end
+  end
+end
