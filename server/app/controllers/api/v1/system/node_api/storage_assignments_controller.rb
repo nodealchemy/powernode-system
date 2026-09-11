@@ -32,7 +32,13 @@ module Api
             end
 
             @assignment.mark_status!(new_status, error_message: params[:error_message])
-            render_success(assignment_id: @assignment.id, status: @assignment.status)
+            # NOT `status:` — that is render_success's HTTP-status keyword, not a
+            # data field. A live assignment status ("mounted", "mounting", ...) is
+            # never a valid Rack status, so it raised ArgumentError AFTER
+            # mark_status! had already committed the row: the agent's mount report
+            # 500'd while the mount itself was correctly recorded. See
+            # render_success_status_keyword_spec.rb.
+            render_success(assignment_id: @assignment.id, assignment_status: @assignment.status)
           end
 
           # GET /api/v1/system/node_api/storage_assignments/:id/credential
