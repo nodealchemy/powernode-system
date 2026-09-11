@@ -44,7 +44,7 @@ module Ai
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_create_module_from_package", mutating: true
       declare_action "system_create_package_repository", mutating: true
-      declare_action "system_delete_package_repository", mutating: true
+      declare_action "system_delete_package_repository", mutating: true, destructive: true
       declare_action "system_discover_packages", mutating: false
       declare_action "system_get_package", mutating: false
       declare_action "system_get_package_repository", mutating: false

@@ -51,7 +51,7 @@ module Ai
       declare_action "system_acme_create_dns_credential", mutating: true
       declare_action "system_acme_get_certificate", mutating: false
       declare_action "system_acme_renew_certificate", mutating: true
-      declare_action "system_acme_revoke_certificate", mutating: true
+      declare_action "system_acme_revoke_certificate", mutating: true, destructive: true
 
       def self.definition
         {

@@ -215,16 +215,16 @@ module Ai
       declare_action "system_sdwan_create_port_mapping", mutating: true
       declare_action "system_sdwan_create_route_policy", mutating: true
       declare_action "system_sdwan_create_virtual_ip", mutating: true
-      declare_action "system_sdwan_delete_firewall_rule", mutating: true
-      declare_action "system_sdwan_delete_ipfix_collector", mutating: true
-      declare_action "system_sdwan_delete_network", mutating: true
-      declare_action "system_sdwan_delete_ovn_acl", mutating: true
-      declare_action "system_sdwan_delete_ovn_deployment", mutating: true
-      declare_action "system_sdwan_delete_ovn_logical_switch", mutating: true
-      declare_action "system_sdwan_delete_ovn_logical_switch_port", mutating: true
-      declare_action "system_sdwan_delete_port_mapping", mutating: true
-      declare_action "system_sdwan_delete_route_policy", mutating: true
-      declare_action "system_sdwan_delete_virtual_ip", mutating: true
+      declare_action "system_sdwan_delete_firewall_rule", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_ipfix_collector", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_network", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_ovn_acl", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_ovn_deployment", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_ovn_logical_switch", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_ovn_logical_switch_port", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_port_mapping", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_route_policy", mutating: true, destructive: true
+      declare_action "system_sdwan_delete_virtual_ip", mutating: true, destructive: true
       declare_action "system_sdwan_detach_peer", mutating: true
       declare_action "system_sdwan_failover_virtual_ip", mutating: true
       declare_action "system_sdwan_federation_compose", mutating: true
@@ -264,9 +264,9 @@ module Ai
       declare_action "system_sdwan_list_virtual_ips", mutating: false
       declare_action "system_sdwan_propose_federation_peer", mutating: true
       declare_action "system_sdwan_release_host_bridge", mutating: true
-      declare_action "system_sdwan_revoke_access_grant", mutating: true
-      declare_action "system_sdwan_revoke_federation_peer", mutating: true
-      declare_action "system_sdwan_revoke_user_device", mutating: true
+      declare_action "system_sdwan_revoke_access_grant", mutating: true, destructive: true
+      declare_action "system_sdwan_revoke_federation_peer", mutating: true, destructive: true
+      declare_action "system_sdwan_revoke_user_device", mutating: true, destructive: true
       declare_action "system_sdwan_set_data_residency", mutating: true
       declare_action "system_sdwan_set_peer_tags", mutating: true
       declare_action "system_sdwan_update_account_as_number", mutating: true

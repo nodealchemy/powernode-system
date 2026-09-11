@@ -116,7 +116,7 @@ module Ai
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_acme_provision_certificate", mutating: true
       declare_action "system_create_service", mutating: true
-      declare_action "system_delete_service", mutating: true
+      declare_action "system_delete_service", mutating: true, destructive: true
       declare_action "system_expose_service_local", mutating: true
       declare_action "system_expose_service_public_tcp", mutating: true
       declare_action "system_expose_service_publicly", mutating: true

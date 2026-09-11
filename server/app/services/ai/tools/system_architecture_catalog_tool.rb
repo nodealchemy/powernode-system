@@ -31,7 +31,7 @@ module Ai
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_create_architecture", mutating: true
-      declare_action "system_delete_architecture", mutating: true
+      declare_action "system_delete_architecture", mutating: true, destructive: true
       declare_action "system_get_architecture", mutating: false
       declare_action "system_list_architectures", mutating: false
       declare_action "system_propose_architecture", mutating: true

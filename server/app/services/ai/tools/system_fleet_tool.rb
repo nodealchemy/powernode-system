@@ -622,6 +622,7 @@ module Ai
 
       declare_action "system_terminate_instance",
                      mutating: true,
+                     destructive: true,
                      # Literal, not the executor's ACTION_CATEGORY constant:
                      # this runs at class-body evaluation and must not force an
                      # executor autoload just to read a string. Kept in step by
@@ -705,13 +706,13 @@ module Ai
       declare_action "system_create_volume", mutating: true
       declare_action "system_cve_runbook_generate", mutating: true
       declare_action "system_cve_triage", mutating: true
-      declare_action "system_delete_cve", mutating: true
-      declare_action "system_delete_instance_pool", mutating: true
-      declare_action "system_delete_module", mutating: true
-      declare_action "system_delete_node", mutating: true
-      declare_action "system_delete_provider", mutating: true
-      declare_action "system_delete_template", mutating: true
-      declare_action "system_delete_volume", mutating: true
+      declare_action "system_delete_cve", mutating: true, destructive: true
+      declare_action "system_delete_instance_pool", mutating: true, destructive: true
+      declare_action "system_delete_module", mutating: true, destructive: true
+      declare_action "system_delete_node", mutating: true, destructive: true
+      declare_action "system_delete_provider", mutating: true, destructive: true
+      declare_action "system_delete_template", mutating: true, destructive: true
+      declare_action "system_delete_volume", mutating: true, destructive: true
       declare_action "system_deploy_inference_server", mutating: true
       # HIER-P2B-ENG — approval-gated on core's release.deploy_platform (the
       # Release Manager's require_approval row; never unlocked by trust — a
@@ -728,7 +729,7 @@ module Ai
                      gate_context: :deploy_platform_gate_context,
                      on_proceed: :deferred_tool_call_result,
                      ungated_when: :deploy_platform_wizard_read?
-      declare_action "system_destroy_instance", mutating: true
+      declare_action "system_destroy_instance", mutating: true, destructive: true
       declare_action "system_detach_volume", mutating: true
       # APO-5 / DR-2 (IMP-4b4bed6967ed). Snapshot create / list / restore keep
       # the APO-1a declaration shape (`mutating:` only, so BaseTool
@@ -760,6 +761,7 @@ module Ai
       declare_action "system_list_volume_snapshots", mutating: false
       declare_action "system_delete_volume_snapshot",
                      mutating: true,
+                     destructive: true,
                      action_category: VOLUME_SNAPSHOT_DELETE_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :delete_volume_snapshot_gate_context,
@@ -782,8 +784,8 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :dispatch_module_build_batch_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_drain_instance", mutating: true
-      declare_action "system_drain_instance_pool", mutating: true
+      declare_action "system_drain_instance", mutating: true, destructive: true
+      declare_action "system_drain_instance_pool", mutating: true, destructive: true
       declare_action "system_drift_report", mutating: false
       declare_action "system_find_node_with_gpu", mutating: false
       declare_action "system_get_cve", mutating: false
@@ -844,9 +846,9 @@ module Ai
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
       declare_action "system_inspect_correlation", mutating: false
-      declare_action "system_instance_hold", mutating: true
+      declare_action "system_instance_hold", mutating: true, destructive: true
       declare_action "system_instance_hold_status", mutating: false
-      declare_action "system_instance_release_hold", mutating: true
+      declare_action "system_instance_release_hold", mutating: true, destructive: true
       declare_action "system_launch_agent_fleet", mutating: true
       declare_action "system_lease_ci_runner", mutating: true
       declare_action "system_list_ci_runner_leases", mutating: false
@@ -887,7 +889,7 @@ module Ai
                      on_proceed: :deferred_tool_call_result
       declare_action "system_provision_ci_worker", mutating: true
       declare_action "system_provision_instance", mutating: true
-      declare_action "system_reap_agent_fleet", mutating: true
+      declare_action "system_reap_agent_fleet", mutating: true, destructive: true
       # IMP-4e49eb79c5e0 — THE DR LANE'S SECOND DOOR (the destructive half).
       #
       # APO-4 landed System::Ai::Skills::ReapInstanceExecutor behind the
@@ -929,6 +931,7 @@ module Ai
       # never the only brake. See the note above it.
       declare_action "system_reap_instance",
                      mutating: true,
+                     destructive: true,
                      # Literal, not the executor's ACTION_CATEGORY: this runs at
                      # class-body evaluation and must not force an executor
                      # autoload just to read a string. The gating spec asserts
@@ -937,9 +940,9 @@ module Ai
                      executor_class: "System::Ai::Skills::ReapInstanceExecutor",
                      gate_context: :reap_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
-      declare_action "system_reboot_instance", mutating: true
+      declare_action "system_reboot_instance", mutating: true, destructive: true
       declare_action "system_recent_signals", mutating: false
-      declare_action "system_recycle_pool", mutating: true
+      declare_action "system_recycle_pool", mutating: true, destructive: true
       declare_action "system_refresh_instance_modules", mutating: true
       declare_action "system_release_ci_runner", mutating: true
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
@@ -951,6 +954,7 @@ module Ai
       # as system_reap_instance above.
       declare_action "system_replace_instance",
                      mutating: true,
+                     destructive: true,
                      action_category: "system.instance_replace",
                      executor_class: "System::Ai::Skills::ReplaceInstanceExecutor",
                      gate_context: :replace_instance_gate_context,
@@ -990,7 +994,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :rollback_module_version_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_rotate_vault_transit_pepper", mutating: true
+      declare_action "system_rotate_vault_transit_pepper", mutating: true, destructive: true
       declare_action "system_runbook_generate", mutating: true
       declare_action "system_set_default_disk_image_publication",
                      mutating: true,
@@ -1005,8 +1009,8 @@ module Ai
                      gate_context: :set_disk_image_retention_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_start_instance", mutating: true
-      declare_action "system_stop_instance", mutating: true
-      declare_action "system_terminate_ci_worker", mutating: true
+      declare_action "system_stop_instance", mutating: true, destructive: true
+      declare_action "system_terminate_ci_worker", mutating: true, destructive: true
       declare_action "system_test_nfs_export", mutating: false
       declare_action "system_unassign_module_from_template", mutating: true
       # IMP-0467eee9fc57 — see system_cordon_instance above.
@@ -1050,7 +1054,7 @@ module Ai
       declare_action "system_update_template", mutating: true
       declare_action "system_update_template_module", mutating: true
       declare_action "system_update_volume", mutating: true
-      declare_action "system_upgrade_boot_image", mutating: true
+      declare_action "system_upgrade_boot_image", mutating: true, destructive: true
       declare_action "system_validate_module_manifest", mutating: false
 
       def self.definition
