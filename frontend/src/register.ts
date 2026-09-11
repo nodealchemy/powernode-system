@@ -54,7 +54,7 @@ const redirectBySubpath = (
     // resolves through Object.prototype, so a sub-path literally named
     // "constructor" (or "toString", "hasOwnProperty", ...) would return that
     // prototype member instead of falling through to `fallback`.
-    const to = (rest && Object.hasOwn(subpathTargets, rest) ? subpathTargets[rest] : null) || fallback;
+    const to = (rest && Object.prototype.hasOwnProperty.call(subpathTargets, rest) ? subpathTargets[rest] : null) || fallback;
     return React.createElement(Navigate, { to, replace: true });
   } as ComponentType<unknown>;
 
