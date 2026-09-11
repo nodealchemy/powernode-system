@@ -107,6 +107,21 @@ RSpec.describe System::InferenceDeploymentService, type: :model do
     expect(provider.supported_models.map { |m| m["id"] }).to include("qwen2.5:14b")
   end
 
+  # E3b: a missing model used to become a stored "llama3.1:8b" pin, for a model
+  # the server may never have pulled. It is refused by name now, before any
+  # module is assigned or any provider is registered.
+  it "refuses by name, and changes nothing, when neither the caller nor the module config names a model" do
+    System::NodeModule.find_by!(account: account, name: "inference-ollama")
+                      .update_columns(config: { "inference" => { "api_port" => 11_434 } })
+
+    expect do
+      described_class.deploy!(account: account, instance: instance, endpoint_override: "http://10.0.0.5:11434", model: "  ")
+    end.to raise_error(described_class::DeploymentError, /no model to deploy.*default_model/)
+
+    expect(System::NodeModuleAssignment.where(node: instance.node)).to be_empty
+    expect(Ai::Provider.where(provider_type: "ollama")).to be_empty
+  end
+
   it "raises a DeploymentError when a required module is missing from the catalog" do
     System::NodeModule.where(account: account, name: "inference-ollama").delete_all
     expect do

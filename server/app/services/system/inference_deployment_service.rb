@@ -21,6 +21,10 @@ module System
     DEFAULT_ACCELERATOR = "nvidia"
     INFERENCE_MODULE = "inference-ollama"
     DEFAULT_PORT     = 11_434
+    # There is no built-in model (E3b): the caller names one, or the operator
+    # sets default_model in the inference module's config.
+    NO_MODEL_MESSAGE = "no model to deploy: pass model, or set default_model in the " \
+                       "#{INFERENCE_MODULE} module's inference config"
     PROBE_TIMEOUT_SECONDS = 2
 
     class DeploymentError < StandardError; end
@@ -53,7 +57,8 @@ module System
     end
 
     # @param instance [System::NodeInstance] the GPU node to host inference
-    # @param model [String, nil] model tag (defaults to the module's default_model)
+    # @param model [String, nil] model tag (defaults to the module's default_model;
+    #   refused when neither names one — there is no built-in model)
     # @param endpoint_override [String, nil] explicit URL (e.g. an existing ollama for smoke)
     # @param sdwan_network_id / vip_cidr [String, nil] optional SDWAN publication
     # @param creator [User, nil] provider owner (defaults to an account user)
@@ -65,11 +70,16 @@ module System
 
       gpu = find_module!(gpu_module_name(accelerator))
       inf = find_module!(INFERENCE_MODULE)
-      assignments = [ gpu, inf ].map { |m| assign_module!(node, m) }
 
       inf_cfg = inf.config.to_h.fetch("inference", {})
       port    = (inf_cfg["api_port"] || DEFAULT_PORT).to_i
-      model ||= inf_cfg["default_model"]
+      # The caller's model, else the inference module's configured default —
+      # never a literal (E3b). Refused BEFORE any module is assigned, so a
+      # deploy with no model leaves nothing half-applied.
+      model = model.to_s.strip.presence || inf_cfg["default_model"].to_s.strip.presence
+      raise DeploymentError, NO_MODEL_MESSAGE unless model
+
+      assignments = [ gpu, inf ].map { |m| assign_module!(node, m) }
 
       offering_id = nil
       endpoint = endpoint_override.to_s.strip.presence
@@ -176,7 +186,6 @@ module System
     # to nothing. Re-deploys re-probe, so the idempotent path doubles as the
     # activation (and honest deactivation) mechanism.
     def upsert_provider!(endpoint:, model:)
-      model ||= "llama3.1:8b"
       provider = account.ai_providers.find_or_initialize_by(provider_type: "ollama", api_endpoint: endpoint)
       provider.name           = provider.name.presence || "Ollama @ #{endpoint}"
       provider.slug           = provider.slug.presence || provider_slug(endpoint)

@@ -92,14 +92,15 @@ attrs[:protected_spec] = encode_spec_lines.call(
 # The inference contract the deploy orchestration + service discovery read:
 #   api_port      → backend_port for service_discovery_compose / the Ai::Provider URL
 #   runtime       → which inference server (ollama today; vllm/tgi later)
-#   default_model → seeded/pulled model
+#   default_model → NOT seeded. The operator names the model (this config, or
+#                   deploy_inference_server's model); a deploy with neither is
+#                   refused rather than pinned to a built-in literal (E3b).
 #   vram_required_mb → scheduler hint (must fit the GPU node's gpu_memory_mb)
 attrs[:config] = {
   "inference" => {
     "runtime"          => "ollama",
     "api_port"         => 11_434,
     "api_health_path"  => "/api/version",
-    "default_model"    => "llama3.1:8b",
     "vram_required_mb"  => 6_144,
     "requires_module"  => "gpu-nvidia-runtime",
     "model_dir"        => "/var/lib/ollama/models"
