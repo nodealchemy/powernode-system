@@ -249,63 +249,158 @@ RSpec.describe "B5 status contributors" do
   end
 
   # ── dispatch_latency ─────────────────────────────────────────────────────
+  # Review H1: this read Rails.cache counters nothing has written since the
+  # server dispatch spine was retired, so it could only read ok. It now reads
+  # the system_tasks rows the pipeline writes.
   describe System::Status::Contributors::DispatchLatencyContributor do
     let(:contributor) { described_class.new }
-    let(:failures) { described_class::FAILURES }
-
-    before { Rails.cache.clear }
-
-    def record!(name, times, owner: account)
-      times.times { System::Metrics::Aggregator.record(metric_name: name, account_id: owner.id) }
+    let(:pickup) { described_class::PICKUP }
+    let(:stuck) { described_class::STUCK }
+    let(:window) { Platform::Status::SweepService.sweep_interval_seconds }
+    let(:threshold) do
+      System::Fleet::Sensors::InstanceStatusSensor.resolved_threshold("silent_threshold_seconds", account: account)
     end
 
-    it "a cache that fails the round trip: not_measured naming CacheUnavailable, counts withheld — never a quiet window" do
-      allow(Rails.cache).to receive(:write).and_raise(StandardError, "connection refused")
+    def task!(created_at:, owner: account, status: "pending", started_at: nil, scheduled_at: nil)
+      create(:system_task, account: owner, status: status, created_at: created_at, started_at: started_at,
+                           scheduled_at: scheduled_at)
+    end
+
+    def pipeline_conditions(owner) = contributor.conditions_for(described_class::Pipeline.new(account: owner))
+
+    it "nothing picked up in the window: a MEASURED quiet window, ok, the percentiles nil — never 0" do
+      task!(status: "complete", created_at: (window * 3).seconds.ago, started_at: (window * 2).seconds.ago)
+
+      result = conditions_of(contributor)
+
+      expect(verdict(result)).to eq("ok")
+      expect(condition(result, pickup)).to include("status" => true, "reason" => "QuietWindow")
+      expect(condition(result, pickup)["evidence"]).to include("picked_up" => 0, "p50_seconds" => nil,
+                                                               "p95_seconds" => nil, "window_seconds" => window)
+    end
+
+    it "tasks picked up in the window: p50 and p95 of started_at minus when each fell due" do
+      started = 5.seconds.ago
+      [ 2, 4, 6, 8, 10 ].each { |wait| task!(status: "running", created_at: started - wait.seconds, started_at: started) }
+      # Created an hour ago but due 6s before it started: the wait runs from scheduled_at.
+      task!(status: "running", created_at: 1.hour.ago, scheduled_at: started - 6.seconds, started_at: started)
+
+      result = conditions_of(contributor)
+
+      expect(verdict(result)).to eq("ok")
+      expect(condition(result, pickup)).to include("reason" => "Measured")
+      expect(condition(result, pickup)["evidence"]).to include("picked_up" => 6, "p50_seconds" => 6.0,
+                                                               "p95_seconds" => 9.5)
+    end
+
+    it "the window is the status sweep interval, from its SiteSetting" do
+      SiteSetting.create!(key: Platform::Status::SweepService::SWEEP_INTERVAL_SETTING, value: "600",
+                          setting_type: "integer")
+      task!(status: "running", created_at: 330.seconds.ago, started_at: 300.seconds.ago)
+
+      result = conditions_of(contributor)
+
+      expect(condition(result, pickup)["evidence"]).to include("window_seconds" => 600, "picked_up" => 1,
+                                                               "p50_seconds" => 30.0)
+    end
+
+    it "a pending task past the account's silent threshold: degraded, naming it and not a younger one" do
+      old = task!(created_at: (threshold + 60).seconds.ago)
+      task!(created_at: (threshold - 60).seconds.ago)
+
+      result = conditions_of(contributor)
+      evidence = condition(result, stuck)["evidence"]
+
+      expect(verdict(result)).to eq("degraded")
+      expect(condition(result, stuck)).to include("status" => false, "reason" => "PendingNotPickedUp")
+      expect(evidence).to include("stuck_count" => 1, "threshold_seconds" => threshold)
+      expect(evidence["oldest"].map { |t| t["id"] }).to eq([ old.id ])
+    end
+
+    it "a pending task inside the threshold is not stuck: ok" do
+      task!(created_at: (threshold - 60).seconds.ago)
+
+      result = conditions_of(contributor)
+
+      expect(verdict(result)).to eq("ok")
+      expect(condition(result, stuck)).to include("status" => true, "reason" => "NoneStuck")
+    end
+
+    it "follows the account's tuned silent threshold rather than a constant of its own" do
+      System::Fleet::SensorConfig.upsert_for(account: account, sensor: "instance_status",
+                                             config: { "silent_threshold_seconds" => 24 * 3600 })
+      task!(created_at: 2.hours.ago)
+
+      result = conditions_of(contributor)
+
+      expect(verdict(result)).to eq("ok")
+      expect(condition(result, stuck)["evidence"]).to include("threshold_seconds" => 24 * 3600, "stuck_count" => 0)
+    end
+
+    it "a task scheduled for later is not stuck before it falls due, and is once it has" do
+      task!(created_at: 2.days.ago, scheduled_at: 1.hour.from_now)
+      due = task!(created_at: 2.days.ago, scheduled_at: (threshold + 60).seconds.ago)
+
+      evidence = condition(conditions_of(contributor), stuck)["evidence"]
+
+      expect(evidence["stuck_count"]).to eq(1)
+      expect(evidence["oldest"].map { |t| t["id"] }).to eq([ due.id ])
+    end
+
+    # The worker is offered scheduled rows once they fall due
+    # (Internal::System::AccountsController#pending_tasks), so a due scheduled
+    # task nobody starts is as stuck as a pending one.
+    it "a scheduled task past due and not picked up is stuck, as a pending one is" do
+      waiting = task!(status: "scheduled", created_at: 2.days.ago, scheduled_at: (threshold + 60).seconds.ago)
+      task!(status: "scheduled", created_at: 2.days.ago, scheduled_at: 1.hour.from_now)
+
+      result = conditions_of(contributor)
+      evidence = condition(result, stuck)["evidence"]
+
+      expect(verdict(result)).to eq("degraded")
+      expect(evidence["stuck_count"]).to eq(1)
+      expect(evidence["oldest"].map { |t| t["id"] }).to eq([ waiting.id ])
+    end
+
+    it "a failed read: not_measured naming QueryFailed, with no count or latency — never a quiet window" do
+      allow(System::Task).to receive(:where).and_raise(ActiveRecord::StatementInvalid, "PG::ConnectionBad: closed")
 
       result = conditions_of(contributor)
 
       expect(verdict(result)).to eq("not_measured")
-      expect(condition(result, described_class::CACHE)["reason"]).to eq("CacheUnavailable")
-      expect(condition(result, failures)["evidence"]).not_to include("counts", "failure_percent")
+      [ pickup, stuck ].each do |type|
+        expect(condition(result, type)).to include("status" => "unknown", "reason" => "QueryFailed")
+        expect(condition(result, type)["evidence"]).not_to include("picked_up", "p50_seconds", "stuck_count")
+      end
     end
 
-    it "a cache that silently loses the write (reads back nothing): not_measured" do
-      allow(Rails.cache).to receive(:read).and_return(nil)
+    it "reads only this account's tasks, while the same rows count for their own account" do
+      other = create(:account)
+      task!(owner: other, created_at: (threshold + 60).seconds.ago)
+      task!(owner: other, status: "running", created_at: 20.seconds.ago, started_at: 10.seconds.ago)
 
-      expect(verdict(conditions_of(contributor))).to eq("not_measured")
+      mine = conditions_of(contributor)
+      theirs = pipeline_conditions(other)
+
+      expect(verdict(mine)).to eq("ok")
+      expect(condition(mine, pickup)["evidence"]).to include("picked_up" => 0)
+      expect(condition(mine, stuck)["evidence"]).to include("stuck_count" => 0)
+      expect(verdict(theirs)).to eq("degraded")
+      expect(condition(theirs, pickup)["evidence"]).to include("picked_up" => 1)
     end
 
-    it "a working cache with no counters: a MEASURED quiet window, ok, with zero counts" do
-      result = conditions_of(contributor)
+    it "names a source on every condition's evidence, the failure arm included" do
+      readings = [ conditions_of(contributor) ]
+      task!(created_at: (threshold + 60).seconds.ago)
+      task!(status: "running", created_at: 20.seconds.ago, started_at: 10.seconds.ago)
+      readings << conditions_of(contributor)
+      allow(System::Task).to receive(:where).and_raise(ActiveRecord::StatementInvalid, "boom")
+      readings << conditions_of(contributor)
 
-      expect(verdict(result)).to eq("ok")
-      expect(condition(result, failures)["reason"]).to eq("QuietWindow")
-      expect(condition(result, failures)["evidence"]["counts"]).to include("system.dispatch.completed" => 0,
-                                                                          "system.dispatch.failed" => 0)
-    end
-
-    it "failures above the tile's 5%: degraded, citing the threshold" do
-      record!("system.dispatch.completed", 18)
-      record!("system.dispatch.failed", 2)
-
-      result = conditions_of(contributor)
-
-      expect(verdict(result)).to eq("degraded")
-      expect(condition(result, failures)["evidence"]).to include("failure_percent" => 10.0, "threshold_percent" => 5)
-    end
-
-    it "exactly 5% is not above the tile's `> 5`: ok" do
-      record!("system.dispatch.completed", 19)
-      record!("system.dispatch.failed", 1)
-
-      expect(verdict(conditions_of(contributor))).to eq("ok")
-    end
-
-    it "reads only this account's counters, as MetricsController#index does" do
-      record!("system.dispatch.failed", 5, owner: create(:account))
-      record!("system.dispatch.completed", 5)
-
-      expect(verdict(conditions_of(contributor))).to eq("ok")
+      expect(readings.flatten.map { |c| c["reason"] })
+        .to include("QuietWindow", "NoneStuck", "Measured", "PendingNotPickedUp", "QueryFailed")
+      unsourced = readings.flatten.reject { |c| c["evidence"].is_a?(Hash) && c["evidence"]["source"].present? }
+      expect(unsourced.map { |c| "#{c['type']}/#{c['reason']}" }).to be_empty
     end
   end
 

@@ -3,55 +3,63 @@
 module System
   module Status
     module Contributors
-      # The dispatch pipeline, one component per account (campaign 01a08c9b B5,
-      # checklist row 22). It reads DispatchLatencyTile's data:
-      # System::Metrics::Aggregator's Rails.cache counters over the tile's
-      # window, scoped to the account the way MetricsController#index scopes
-      # them.
+      # The task pickup pipeline, one component per account (campaign
+      # 01a08c9b B5, checklist row 22).
       #
-      # ── WHY A ROUND TRIP FIRST ──────────────────────────────────────────
-      # Aggregator.read_bucket rescues every error to 0 (aggregator.rb:96-101),
-      # so a cache outage reads exactly like a quiet window. Before trusting a
-      # zero, this writes a probe key, reads it back and deletes it. A failed
-      # round trip is not_measured with reason CacheUnavailable, and the counts
-      # are withheld. A round trip that works with counters at 0 is a MEASURED
-      # quiet window: zero dispatches, and ok. The counter writer is untouched.
+      # ── WHAT IT READS ───────────────────────────────────────────────────
+      # System::Task rows ARE the dispatch pipeline. A producer writes a
+      # pending row, and the instance's agent is offered it on every status
+      # report (NodeApi::StatusController#pending_tasks) and stamps started_at
+      # when it starts it. Pickup latency is started_at minus the moment the
+      # row fell due: created_at, or scheduled_at when that is later.
       #
-      # ── THE THRESHOLD ───────────────────────────────────────────────────
-      # The tile's own: failurePercent = failed / (completed + failed), and the
-      # badge turns danger above 5 (DispatchLatencyTile.tsx:58-63 and :72).
-      # Above it is degraded. There is no other number. The ratio is taken over
-      # counts: the tile's rates are the same counts over the same window, so
-      # the ratio is identical without the rates' rounding.
+      # This used to read the system.dispatch.* Rails.cache counters. Nothing
+      # has written those since the server dispatch spine was retired
+      # (2026-09-07), so it could only ever read ok (B5 review H1). The rows
+      # are what the pipeline writes today.
+      #
+      # ── TWO CONDITIONS ──────────────────────────────────────────────────
+      # PickupLatency: p50 and p95 over the tasks picked up within one status
+      # sweep interval (platform.status.sweep_interval_seconds), the window
+      # this component is re-read on. No latency threshold is ruled, so a
+      # measured latency is reported, not judged. None picked up is a
+      # MEASURED quiet window: ok, a count of 0, and the percentiles nil,
+      # never 0.
+      #
+      # NoStuckPending: a waiting task (pending, or scheduled) that fell due
+      # longer ago than the account's silent threshold (InstanceStatusSensor
+      # silent_threshold_seconds, the rule that calls an instance silent). An
+      # agent reporting inside that window is offered a pending task on every
+      # report, and the worker is offered pending and scheduled rows once they
+      # fall due (Internal::System::AccountsController#pending_tasks), so a task
+      # older than it was not picked up by a live consumer. Any such task
+      # degrades the component, and the oldest are named. A task scheduled for
+      # later is not stuck before it falls due.
+      #
+      # A failed read is not_measured with reason QueryFailed, never ok.
       class DispatchLatencyContributor < ::Platform::Status::Contributor
         include ::System::Status::ConditionHelpers
 
         KIND = "dispatch_latency"
         REF  = "dispatch_pipeline"
 
-        AGGREGATOR = ::System::Metrics::Aggregator
+        TASKS         = ::System::Task
+        SWEEP         = ::Platform::Status::SweepService
+        SILENT_SENSOR = ::System::Fleet::Sensors::InstanceStatusSensor
+        SILENT_KEY    = "silent_threshold_seconds"
 
-        # The tile's window and tracked names (DispatchLatencyTile.tsx:15-21).
-        WINDOW = 300.seconds
-        TRACKED = %w[
-          system.dispatch.claimed
-          system.dispatch.started
-          system.dispatch.completed
-          system.dispatch.failed
-          system.fleet.event
-        ].freeze
-        COMPLETED = "system.dispatch.completed"
-        FAILED    = "system.dispatch.failed"
+        PICKUP = "PickupLatency"
+        STUCK  = "NoStuckPending"
 
-        # DispatchLatencyTile.tsx:72, `failurePercent > 5`.
-        FAILURE_PERCENT_THRESHOLD = 5
+        # When a row fell due, and how long it then waited to start.
+        DUE_AT  = "GREATEST(system_tasks.created_at, COALESCE(system_tasks.scheduled_at, system_tasks.created_at))"
+        LATENCY = "GREATEST(0, EXTRACT(EPOCH FROM (system_tasks.started_at - #{DUE_AT})))::double precision".freeze
 
-        CACHE    = "CacheReachable"
-        FAILURES = "FailureRate"
+        # The statuses a consumer is offered (the worker's pending_tasks set).
+        WAITING = %w[pending scheduled].freeze
 
-        PROBE_KEY = "system_status:dispatch_latency:round_trip"
-        # Only a backstop for a delete that failed; the key is deleted at once.
-        PROBE_TTL = 1.minute
+        # How many stuck tasks the evidence names. A display limit, not a threshold.
+        STUCK_NAMED = 5
 
         Pipeline = Struct.new(:account, keyword_init: true)
 
@@ -78,86 +86,93 @@ module System
 
         def conditions_for(record)
           now = Time.current
-          round_trip = cache_round_trip
-          return [ cache_down(round_trip, now), failures_withheld(now) ] unless round_trip[:ok]
-
-          stats = AGGREGATOR.stats_for_names(TRACKED, account_id: record.account.id, window: WINDOW, at: now)
-          [ cache_up(now), failure_rate(stats, now) ]
+          account = record.account
+          window = SWEEP.sweep_interval_seconds
+          threshold = silent_threshold(account)
+          [ pickup_condition(pickup_stats(account, window, now), window, now),
+            stuck_condition(stuck_tasks(account, threshold, now), threshold, now) ]
+        rescue ActiveRecord::ActiveRecordError => e
+          [ query_failed(PICKUP, e, now), query_failed(STUCK, e, now) ]
         end
 
         private
 
-        def cache_round_trip
-          key = "#{PROBE_KEY}:#{SecureRandom.hex(8)}"
-          token = SecureRandom.hex(8)
-          Rails.cache.write(key, token, expires_in: PROBE_TTL)
-          read = Rails.cache.read(key)
-          return { ok: true } if read == token
-
-          { ok: false, error: "wrote a probe value and read back #{read.nil? ? 'nothing' : 'a different value'}" }
-        rescue StandardError => e
-          { ok: false, error: "#{e.class}: #{e.message}" }
-        ensure
-          begin
-            Rails.cache.delete(key) if key
-          rescue StandardError
-            nil
-          end
+        def tasks(account)
+          TASKS.where(account_id: account.id)
         end
 
-        def cache_up(now)
-          CONDITION.build(type: CACHE, status: true, reason: "RoundTripOk",
-                          evidence: { "source" => "Rails.cache write, read and delete of a probe key" }, now: now)
+        def silent_threshold(account)
+          SILENT_SENSOR.resolved_threshold(SILENT_KEY, account: account).to_i
         end
 
-        def cache_down(round_trip, now)
-          CONDITION.build(
-            type: CACHE,
-            status: CONDITION::UNKNOWN,
-            reason: "CacheUnavailable",
-            message: "the metrics cache failed a round trip: #{round_trip[:error]}",
-            evidence: { "source" => "Rails.cache write, read and delete of a probe key", "error" => round_trip[:error] },
-            now: now
+        def pickup_stats(account, window, now)
+          count, p50, p95 = tasks(account).where(started_at: (now - window.seconds)..now).pick(
+            Arel.sql("COUNT(*)"),
+            Arel.sql("percentile_cont(0.5) WITHIN GROUP (ORDER BY #{LATENCY})"),
+            Arel.sql("percentile_cont(0.95) WITHIN GROUP (ORDER BY #{LATENCY})")
           )
+          { count: count.to_i, p50: p50&.to_f&.round(3), p95: p95&.to_f&.round(3) }
         end
 
-        def failures_withheld(now)
-          CONDITION.build(
-            type: FAILURES,
-            status: CONDITION::UNKNOWN,
-            reason: "CacheUnavailable",
-            message: "Aggregator.read_bucket reads a cache failure as 0, so the counters would be a guess; withheld",
-            evidence: { "counts_withheld" => true },
-            now: now
-          )
+        def stuck_tasks(account, threshold, now)
+          scope = tasks(account).where(status: WAITING).where("#{DUE_AT} <= ?", now - threshold.seconds)
+          named = scope.order(Arel.sql("#{DUE_AT} ASC")).limit(STUCK_NAMED)
+                       .pluck(:id, :command, :operable_type, :operable_id, Arel.sql(DUE_AT))
+          { count: scope.count, named: named }
         end
 
-        def failure_rate(stats, now)
-          counts = TRACKED.index_with { |name| stats.fetch(name).fetch(:count) }
-          rates  = TRACKED.index_with { |name| stats.fetch(name).fetch(:rate_per_sec) }
-          finished = counts.fetch(COMPLETED) + counts.fetch(FAILED)
-          percent = finished.positive? ? (counts.fetch(FAILED).to_f / finished * 100) : 0.0
+        def pickup_condition(stats, window, now)
           evidence = {
-            "source" => "System::Metrics::Aggregator, Rails.cache per-minute buckets, account-scoped as MetricsController#index",
-            "window_seconds" => WINDOW.to_i,
-            "counts" => counts,
-            "rates_per_sec" => rates,
-            "failure_percent" => percent.round(2),
-            "threshold_percent" => FAILURE_PERCENT_THRESHOLD,
-            "threshold_source" => "DispatchLatencyTile.tsx:72 (failurePercent > 5)"
+            "source" => "system_tasks.started_at minus created_at (or a later scheduled_at), account-scoped",
+            "window_seconds" => window,
+            "window_source" => SWEEP::SWEEP_INTERVAL_SETTING,
+            "picked_up" => stats[:count],
+            "p50_seconds" => stats[:p50],
+            "p95_seconds" => stats[:p95]
           }
-
-          if percent > FAILURE_PERCENT_THRESHOLD
-            CONDITION.build(
-              type: FAILURES, status: false, reason: "FailureRateHigh", severity: CONDITION::SEVERITY_DEGRADED,
-              message: "#{percent.round(1)}% of finished dispatches failed in the last #{WINDOW.to_i / 60}m " \
-                       "(above #{FAILURE_PERCENT_THRESHOLD}%)",
-              evidence: evidence, now: now
-            )
+          if stats[:count].zero?
+            CONDITION.build(type: PICKUP, status: true, reason: "QuietWindow",
+                            message: "no task was picked up in the last #{window}s",
+                            evidence: evidence, now: now)
           else
-            CONDITION.build(type: FAILURES, status: true, reason: finished.positive? ? "FailureRateOk" : "QuietWindow",
+            CONDITION.build(type: PICKUP, status: true, reason: "Measured",
+                            message: "p50 #{stats[:p50]}s, p95 #{stats[:p95]}s over #{stats[:count]} task(s) " \
+                                     "picked up in the last #{window}s",
                             evidence: evidence, now: now)
           end
+        end
+
+        def stuck_condition(stuck, threshold, now)
+          evidence = {
+            "source" => "system_tasks with status pending or scheduled, due longer ago than the threshold, account-scoped",
+            "threshold_seconds" => threshold,
+            "threshold_source" => "#{SILENT_SENSOR.name} #{SILENT_KEY}, resolved for this account",
+            "stuck_count" => stuck[:count],
+            "oldest" => stuck[:named].map do |id, command, operable_type, operable_id, due_at|
+              { "id" => id, "command" => command, "operable_type" => operable_type,
+                "operable_id" => operable_id, "due_at" => due_at&.iso8601 }
+            end
+          }
+          if stuck[:count].zero?
+            CONDITION.build(type: STUCK, status: true, reason: "NoneStuck", evidence: evidence, now: now)
+          else
+            CONDITION.build(
+              type: STUCK, status: false, reason: "PendingNotPickedUp", severity: CONDITION::SEVERITY_DEGRADED,
+              message: "#{stuck[:count]} task(s) pending longer than the silent threshold (#{threshold}s)",
+              evidence: evidence, now: now
+            )
+          end
+        end
+
+        def query_failed(type, error, now)
+          CONDITION.build(
+            type: type,
+            status: CONDITION::UNKNOWN,
+            reason: "QueryFailed",
+            message: "the system_tasks read failed (#{error.class}), so nothing was measured",
+            evidence: { "source" => "system_tasks, account-scoped", "error" => "#{error.class}: #{error.message}" },
+            now: now
+          )
         end
       end
     end
