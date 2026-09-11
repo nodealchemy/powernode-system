@@ -53,10 +53,15 @@ module System
     # therefore autoloads them) on demand, and the discovery spec is what keeps
     # the list honest.
     module ActionCategoryRouter
+      # ORDER MATTERS to #router_for, which answers with the first match.
+      # System::Status::FleetRemediationLane routes a subset of the
+      # DecisionEngine's categories, so it stays after the engine and the alarm
+      # keeps naming the engine that owns those bindings.
       ROUTERS = %w[
         System::AdaptationGate
         System::Fleet::DecisionEngine
         System::Ai::Skills::BaseSkillExecutor
+        System::Status::FleetRemediationLane
       ].freeze
 
       def self.routers

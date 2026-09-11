@@ -187,4 +187,23 @@ RSpec.describe System::Autonomy::ActionCategoryRouter do
       expect(service.gate_action!(category)[:gate]).to eq("block")
     end
   end
+
+  # B4's fleet remediation lane calls gate_action! from #proceed!, so the
+  # discovery above finds it. It routes the DecisionEngine's own categories
+  # for kinds with an applier, and must never be the router an alarm names.
+  describe "the fleet remediation lane as a declared router" do
+    let(:lane)   { System::Status::FleetRemediationLane }
+    let(:engine) { System::Fleet::DecisionEngine }
+
+    it "routes only categories the DecisionEngine already routes, so the routed union is unchanged" do
+      expect(lane.routed_action_categories).to be_present
+      expect(lane.routed_action_categories - engine.routed_action_categories).to be_empty
+    end
+
+    it "is never the router the misconfiguration alarm names" do
+      lane.routed_action_categories.each do |category|
+        expect(described_class.router_for(category)).not_to eq(lane), "#{category} was attributed to the lane"
+      end
+    end
+  end
 end

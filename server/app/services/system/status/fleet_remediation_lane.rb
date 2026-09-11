@@ -32,17 +32,46 @@ module System
     # own answer still carried in `gate` and `policy`.
     #
     # ── #proceed! IS THE LANE'S OWN ACTUATOR ────────────────────────────────
-    # Core never calls it (Platform::Remediation::Lane). It runs the fence, then
-    # the fleet gate — the same #gate_action! the autonomy tick uses — and
-    # returns the gate's result. Applying a remediation needs the signal's
-    # payload, which only the tick holds, so the applier stays the tick's.
+    # Core never calls it (Platform::Remediation::Lane declares it and has no
+    # call site). A kind with no REMEDIATION_APPLIERS entry is refused FIRST,
+    # in the words #describe uses, before the fence and before the gate: the
+    # gate would spend a consent unit and answer :proceed for an action nothing
+    # then takes. Otherwise it runs the fence, then the fleet gate — the same
+    # #gate_action! the autonomy tick uses — and returns the gate's result.
+    # Applying a remediation needs the signal's payload, which only the tick
+    # holds, so the applier stays the tick's.
+    #
+    # ── A ROUTED LANE WITH NO POLICY ROW IS SAID ON THE ROW ─────────────────
+    # #describe re-asks the gate on every remediation refresh. The gate's
+    # refusal for a routed-but-unseeded lane logs an ERROR, which on a read
+    # would repeat on every refresh. The preview refuses silently instead, and
+    # this lane puts the misconfiguration in the row's reason, where the
+    # operator reads it. The tick's #gate_action! keeps the alarm.
+    #
+    # ── A DECLARED ROUTER ───────────────────────────────────────────────────
+    # #proceed! hands an action category to #gate_action!, which makes this a
+    # routing surface in System::Autonomy::ActionCategoryRouter's sense. Its
+    # categories are DERIVED, never listed: the bindings that have an applier,
+    # since those are the only kinds whose proceed reaches the gate. They are a
+    # subset of the DecisionEngine's own, and ROUTERS lists this lane after the
+    # engine, so the misconfiguration alarm keeps naming the engine.
     class FleetRemediationLane < ::Platform::Remediation::Lane
+      extend ::System::Autonomy::ActionCategoryRouter
+
       KEY = "system.fleet"
+
+      def self.routed_action_categories
+        engine = ::System::Fleet::DecisionEngine
+        engine::SIGNAL_BINDINGS.filter_map do |kind, binding|
+          binding[:action_category] if engine::REMEDIATION_APPLIERS.key?(kind)
+        end.uniq
+      end
 
       NO_BINDING = "NoFleetBinding"
       NO_ACCOUNT = "SharedComponent"
       NO_AGENT   = "NoGateAgent"
       NO_APPLIER = "NoRemediationApplier"
+      MISCONFIGURED = "MisconfiguredLane"
 
       # Registry keys of the component kinds the target derivation reads.
       # A kind's key is data (it lands in component rows), not a class name.
@@ -96,6 +125,9 @@ module System
 
         preview = gate.preview_gate(binding[:action_category], metadata: target.metadata,
                                                               advisory: advisory?(binding))
+        if preview[:gate] == ::System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING
+          preview = preview.merge(reason: misconfigured_lane_reason(binding, gate))
+        end
         report(preview, kind, target, account)
       end
 
@@ -104,6 +136,12 @@ module System
         binding = bindings[kind]
         return { decision: :denied, reason: NO_BINDING } unless binding
         return { decision: :denied, reason: NO_ACCOUNT } if account.nil?
+        # Asked before the fence and the gate: the gate would spend a consent
+        # unit and answer :proceed for an action nothing then takes.
+        unless applier?(kind)
+          return { decision: :denied, state: ::Platform::ComponentStatus::REMEDIATION_NOT_ACTUATABLE,
+                   reason: no_applier_reason(kind) }
+        end
 
         target = target_for(component_status, account)
         fenced = fence_refusal(component_status, target)
@@ -139,12 +177,26 @@ module System
         binding[:advisory] == true
       end
 
+      def applier?(kind)
+        engine::REMEDIATION_APPLIERS.key?(kind)
+      end
+
+      def no_applier_reason(kind)
+        "#{NO_APPLIER}: #{kind} has no remediation applier; the fleet gate can only notify or plan"
+      end
+
+      def misconfigured_lane_reason(binding, gate)
+        "#{MISCONFIGURED}: #{binding[:action_category]} is routed to agent '#{gate.agent&.name}', " \
+          "which has no intervention policy row for it, so every signal on this lane is blocked. " \
+          "Re-run that agent's seed against this database."
+      end
+
       def report(preview, kind, target, account)
         state, can_proceed, reason = rung_for(preview)
-        unless engine::REMEDIATION_APPLIERS.key?(kind)
+        unless applier?(kind)
           state = ::Platform::ComponentStatus::REMEDIATION_NOT_ACTUATABLE
           can_proceed = false
-          reason = "#{NO_APPLIER}: #{kind} has no remediation applier; the fleet gate can only notify or plan"
+          reason = no_applier_reason(kind)
         end
 
         {

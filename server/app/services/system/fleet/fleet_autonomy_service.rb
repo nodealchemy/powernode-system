@@ -649,8 +649,11 @@ module System
       # `reason`), plus `policy`, `consent` (a ConsentBudgetService::Headroom,
       # nil when advisory), `environment` and `environment_escalation`.
       def preview_gate(action_category, metadata: {}, force_policy: nil, advisory: false)
+        # Silent: a preview is a read, and a remediation refresh asks it for
+        # every component on every sweep. The lane says the misconfiguration on
+        # the row; #gate_action! keeps the alarm.
         unless permitted_actions.include?(action_category)
-          return refuse_unpermitted_action(action_category).merge(policy: nil, consent: nil)
+          return refuse_unpermitted_action(action_category, log: false).merge(policy: nil, consent: nil)
         end
 
         consent = nil

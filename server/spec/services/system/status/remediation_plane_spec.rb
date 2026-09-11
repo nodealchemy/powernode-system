@@ -124,6 +124,55 @@ RSpec.describe "System remediation plane (B4)" do
     end
   end
 
+  # Review G1: the gate would spend a consent unit and answer :proceed for a
+  # kind nothing can apply. Both arms run the real gate under one budget and
+  # one auto_approve policy per kind, so only the applier rung differs.
+  describe "proceed! on a kind with no remediation applier" do
+    let(:mod) do
+      create(:system_node_module, account: account, node_platform: platform, category: category,
+                                  variety: "subscription", name: "unapplied-mod")
+    end
+    let(:component) { component!("node_module", mod.id) }
+    let(:applied)   { "system.config_drift" }
+    let(:unapplied) { bindings.keys.find { |k| !appliers.key?(k) && bindings[k][:advisory] != true } }
+
+    def auto_approve!(kind)
+      owner = System::Fleet::DecisionEngine.owner_for(bindings.fetch(kind))
+      agent = Ai::Agent.find_by(account: account, source_key: owner) ||
+              create(:ai_agent, account: account, agent_type: "monitor", name: "Gate #{owner}", source_key: owner)
+      category_key = bindings.fetch(kind)[:action_category]
+      return if Ai::InterventionPolicy.exists?(ai_agent_id: agent.id, action_category: category_key)
+
+      policy!(agent, category_key, "auto_approve")
+    end
+
+    before do
+      expect(unapplied).to be_present
+      expect(appliers).to have_key(applied)
+      [ applied, unapplied ].each { |kind| auto_approve!(kind) }
+      mod.update!(consent_budget_per_day: 5, consent_budget_used_count: 1,
+                  consent_budget_window_start_at: Time.current)
+    end
+
+    it "refuses before the gate, not_actuatable in describe's words, spending no consent unit" do
+      described = lane.describe(component, unapplied, account: account)
+      expect(described[:policy]).to eq("auto_approve")
+
+      result = lane.proceed!(component, unapplied, account: account)
+
+      expect(result).to include(decision: :denied, state: "not_actuatable")
+      expect(result[:reason]).to include("NoRemediationApplier").and eq(described[:reason])
+      expect(mod.reload.consent_budget_used_count).to eq(1)
+    end
+
+    it "still spends exactly one unit through the real gate for a kind that has an applier" do
+      result = lane.proceed!(component, applied, account: account)
+
+      expect(result[:decision]).to eq(:proceed)
+      expect(mod.reload.consent_budget_used_count).to eq(2)
+    end
+  end
+
   describe "INV-1: the self-management fence" do
     let(:kind) { "system.instance_state_drifted" }
     let(:sibling_node) { create(:system_node, account: account, node_template: template, name: "sibling-node") }
@@ -201,11 +250,27 @@ RSpec.describe "System remediation plane (B4)" do
         .to include(state: "not_actuatable", can_proceed: false, policy: "block")
     end
 
-    it "is not_actuatable when the owner has no policy row for the category at all" do
+    # Review G3: a remediation refresh re-asks describe on every sweep, so a
+    # logged alarm there repeated on every refresh. The row carries it instead.
+    it "is not_actuatable when the owner has no policy row, says so on the row, and logs nothing" do
       agent
+      allow(Rails.logger).to receive(:error).and_call_original
 
-      expect(lane.describe(component, kind, account: account))
-        .to include(state: "not_actuatable", can_proceed: false)
+      reports = Array.new(2) { lane.describe(component, kind, account: account) }
+
+      expect(reports.last).to include(state: "not_actuatable", can_proceed: false)
+      expect(reports.last[:reason]).to include("MisconfiguredLane")
+                                   .and include(bindings.fetch(kind)[:action_category])
+      expect(Rails.logger).not_to have_received(:error).with(/MISCONFIGURED LANE/)
+    end
+
+    it "leaves the gate's own alarm in place for the tick" do
+      allow(Rails.logger).to receive(:error).and_call_original
+
+      System::Fleet::FleetAutonomyService.new(account: account, agent: agent)
+                                         .gate_action!(bindings.fetch(kind)[:action_category], metadata: {})
+
+      expect(Rails.logger).to have_received(:error).with(/MISCONFIGURED LANE/).once
     end
 
     it "reports an observation-only binding as not_actuatable even when the gate would proceed" do
@@ -364,6 +429,21 @@ RSpec.describe "System remediation plane (B4)" do
       Platform::Status::Emitters.notify(transition: transition("ok", "degraded"), events: [ degraded ])
       expect(System::FleetEvent.where(account: account, kind: "platform.component_status_changed").sole.severity)
         .to eq("medium")
+    end
+
+    # Review G2: core writes status_changed AND component_down for a move into
+    # down. The feed gets one row for that transition, not two.
+    it "writes exactly one feed row for a transition into down, though core writes two status events" do
+      changed = status_event!("platform.component_status_changed", "ok", "down")
+      down = status_event!("platform.component_down", "ok", "down")
+
+      expect do
+        Platform::Status::Emitters.notify(transition: transition("ok", "down"), events: [ changed, down ])
+      end.to change { System::FleetEvent.where(account: account).count }.by(1)
+
+      row = System::FleetEvent.where(account: account).sole
+      expect(row.kind).to eq("platform.component_down")
+      expect(row.payload).to include("status_event_id" => down.id, "status_event_ids" => [ changed.id, down.id ])
     end
 
     it "mirrors nothing for a shared component, which has no fleet account" do

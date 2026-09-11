@@ -69,27 +69,36 @@ module System
       # The complete refusal for an action outside the gate's policy row set.
       # Callers hand over the WHOLE arm rather than asking a predicate and
       # composing their own result, so a second gate cannot adopt half of it.
-      def refuse_unpermitted_action(action_category)
+      #
+      # `log: false` is for a read-only preview of the gate
+      # (FleetAutonomyService#preview_gate). The refusal is identical; only the
+      # log lines are skipped, because a read repeated on every status refresh
+      # would turn the alarm into noise. The gate itself always logs.
+      def refuse_unpermitted_action(action_category, log: true)
         # NAME THE ROUTER, never assume one. This said "routed by DecisionEngine"
         # unconditionally, which is false for the four `project.*` categories only
         # System::AdaptationGate routes — an operator following the alarm to
         # SIGNAL_BINDINGS would find nothing there (IMP-7a6c9a70e050).
         if (router = ::System::Autonomy::ActionCategoryRouter.router_for(action_category))
-          Rails.logger.error(
-            "[#{autonomy_log_tag}] MISCONFIGURED LANE: '#{action_category}' is routed by " \
-            "#{router.name} but has NO intervention policy row on agent '#{agent&.name}'. " \
-            "Every signal on this lane is being blocked and no operator is reached. " \
-            "Re-run that agent's seed against this database."
-          )
+          if log
+            Rails.logger.error(
+              "[#{autonomy_log_tag}] MISCONFIGURED LANE: '#{action_category}' is routed by " \
+              "#{router.name} but has NO intervention policy row on agent '#{agent&.name}'. " \
+              "Every signal on this lane is being blocked and no operator is reached. " \
+              "Re-run that agent's seed against this database."
+            )
+          end
           return { decision: :blocked, gate: GATE_POLICY_MISSING, reason: GATE_POLICY_MISSING }
         end
 
         # A category nothing routes to is an ordinary refusal, not a deploy
         # defect. Conflating them would fire the misconfiguration alarm on every
         # stray string and train operators to ignore it.
-        Rails.logger.warn(
-          "[#{autonomy_log_tag}] Action '#{action_category}' not in agent '#{agent&.name}' policies — blocked"
-        )
+        if log
+          Rails.logger.warn(
+            "[#{autonomy_log_tag}] Action '#{action_category}' not in agent '#{agent&.name}' policies — blocked"
+          )
+        end
         { decision: :blocked, reason: "not_permitted" }
       end
 
