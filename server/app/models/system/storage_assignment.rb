@@ -153,8 +153,24 @@ module System
 
     # ----- Existing soft-fetch + helpers -----
 
+    # Resolved INSIDE the assignment's account (review2 S-1). file_storage is a
+    # hand-written lookup, not a belongs_to, so it is outside
+    # ACCOUNT_OWNED_REFS: scoping the lookup is what keeps it in the account.
+    # Another account's storage never resolves, whichever writer set the id —
+    # the operator door, a sensor, or an update_column around validation — so
+    # every reader (credential issuer, payload builder, NFS/SMB managers, chown
+    # dispatch) sees nil, and #file_storage_must_exist refuses it with the same
+    # error a made-up id gets, revealing nothing about the other account.
+    # Cached per (file_storage_id, account_id): re-pointing the id in memory
+    # re-resolves instead of serving the previously looked-up storage.
     def file_storage
-      @file_storage ||= ::FileManagement::Storage.find_by(id: file_storage_id)
+      return nil if file_storage_id.blank?
+
+      key = [ file_storage_id, account_id ]
+      return @file_storage if @file_storage && @file_storage_key == key
+
+      @file_storage_key = key
+      @file_storage = ::FileManagement::Storage.find_by(id: file_storage_id, account_id: account_id)
     end
 
     # Resolve `inherit` to the storage's per-provider default. Block defaults to

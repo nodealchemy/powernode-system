@@ -116,12 +116,51 @@ RSpec.describe System::StorageAssignment, type: :model do
       expect(assignment.errors[:node_instance]).to be_present
     end
 
+    # file_storage is a hand-written lookup, not a belongs_to, so it is scoped
+    # to the account at the lookup itself: another account's storage never
+    # resolves, and the refusal is the ordinary "must reference an existing"
+    # error — the SAME one a made-up id gets, so it reveals nothing.
+    it "refuses another account's file storage with the error a nonexistent storage gets" do
+      assignment.file_storage_id = create(:file_storage, :nfs, :node_mountable, account: other_account).id
+      expect(assignment).not_to be_valid
+      foreign_error = assignment.errors[:file_storage_id].dup
+
+      assignment.file_storage_id = SecureRandom.uuid
+      assignment.valid?
+      expect(foreign_error).to eq(assignment.errors[:file_storage_id])
+      expect(foreign_error.join).to include("must reference an existing")
+    end
+
+    it "re-resolves file_storage when file_storage_id changes, rather than serving a stale lookup" do
+      expect(assignment).to be_valid # resolves (and caches) the account's own storage
+      assignment.file_storage_id = create(:file_storage, :nfs, :node_mountable, account: other_account).id
+
+      expect(assignment.file_storage).to be_nil
+      expect(assignment).not_to be_valid
+    end
+
+    it "never resolves another account's file storage from a row written around validation" do
+      assignment.save!
+      foreign = create(:file_storage, :nfs, :node_mountable, account: other_account)
+      assignment.update_column(:file_storage_id, foreign.id)
+
+      expect(described_class.find(assignment.id).file_storage).to be_nil
+    end
+
+    it "still resolves its own account's file storage (the other arm)" do
+      assignment.save!
+      expect(described_class.find(assignment.id).file_storage).to eq(file_storage)
+    end
+
     # The factory used to give the assignment and its node_instance two
     # different accounts; with the rule in place its default must align.
     # CREATE, not build: a built factory row has unsaved associations, so both
     # account ids are nil and "nil == nil" would pass whatever the factory did.
-    it "creates a valid, account-aligned assignment from the bare factory" do
-      bare = create(:system_storage_assignment, file_storage_id: file_storage.id)
+    # The account is given (the storage is this account's, and a storage never
+    # resolves across accounts); node_instance is NOT, so the factory's own
+    # default is what is under test.
+    it "creates a valid, account-aligned assignment from the factory's default node_instance" do
+      bare = create(:system_storage_assignment, account: account, file_storage_id: file_storage.id)
       expect(bare).to be_persisted
       expect(bare.account_id).to be_present
       expect(bare.node_instance.account_id).to eq(bare.account_id)
