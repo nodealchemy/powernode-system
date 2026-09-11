@@ -2,6 +2,7 @@ import React, { ComponentType, lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import { featureRegistry } from '@/shared/services/featureRegistry';
 import { registerSystemEntities } from './features/system/entityRegistry';
+import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet/signalsFilterColumns';
 
 // Helper: widen the lazy-loaded module's default-export type from the
 // concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
@@ -242,18 +243,22 @@ export function register(): void {
   // Modal (the drawer already IS one) — see BootReplayDrawerView's own doc
   // for the ruling this follows.
   //
-  // .signals (per component, beside node_instance.boot_replay per the
-  // design doc) is NOT registered here yet. Its stated gate —
-  // `Platform::Status::Contributor#signal_resolver` — has zero overrides
-  // anywhere in core or this extension (checked directly, not from memory):
-  // the base class default (nil) applies to every contributor, node_instance
-  // included, and the fleet events endpoint (POST /system/fleet/signals)
-  // takes no entity filter (kind/correlation_id/since only) — FleetEvent has
-  // no source_id/source_type column, only an opaque payload jsonb a sensor
-  // keys by convention. Reported to the lead rather than guessed at.
+  // <kind>.signals: that component's recent fleet events, filtered by the
+  // event's TYPED column (design §6, signals ruling) — never payload keys.
+  // One slot per kind in SIGNAL_FILTER_COLUMN_BY_KIND, all served by the one
+  // SignalsDrawerView, which reads the row's kind to pick the column.
+  const signalsView = lazyPage(
+    () => import('./features/system/components/fleet/SignalsDrawerView')
+  );
   featureRegistry.registerComponentSlots({
     'platform.status.drawer.node_instance.boot_replay': lazyPage(
       () => import('./features/system/components/fleet/boot-replay/BootReplayDrawerView')
+    ),
+    ...Object.fromEntries(
+      Object.keys(SIGNAL_FILTER_COLUMN_BY_KIND).map((kind) => [
+        `platform.status.drawer.${kind}.signals`,
+        signalsView,
+      ])
     ),
   });
 }

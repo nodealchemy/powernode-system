@@ -157,6 +157,24 @@ describe('fleetApi', () => {
       });
     });
 
+    it('passes the typed entity filters in the POST body when provided', async () => {
+      mockPost.mockResolvedValueOnce(envelope(SIGNALS_RESPONSE));
+
+      await fleetApi.recentSignals({
+        limit: 50,
+        node_instance_id: 'inst-1',
+        node_module_id: 'mod-1',
+        certificate_id: 'cert-1',
+      });
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE_FLEET}/signals`, {
+        limit: 50,
+        node_instance_id: 'inst-1',
+        node_module_id: 'mod-1',
+        certificate_id: 'cert-1',
+      });
+    });
+
     it('returns the unwrapped payload with events, count, and channel', async () => {
       mockPost.mockResolvedValueOnce(envelope(SIGNALS_RESPONSE));
 

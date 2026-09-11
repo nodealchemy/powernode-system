@@ -92,12 +92,30 @@ describe('registered component slots', () => {
     slots = mockRegisterComponentSlots.mock.calls[0][0] as Record<string, unknown>;
   });
 
-  it('registers exactly one slot: node_instance.boot_replay', () => {
-    expect(Object.keys(slots)).toEqual(['platform.status.drawer.node_instance.boot_replay']);
+  it('registers boot_replay and one signals view per filterable kind, and nothing else', () => {
+    expect(Object.keys(slots).sort()).toEqual([
+      'platform.status.drawer.acme_certificate.signals',
+      'platform.status.drawer.node_instance.boot_replay',
+      'platform.status.drawer.node_instance.signals',
+      'platform.status.drawer.node_module.signals',
+    ]);
   });
 
   it('the boot_replay slot is a lazy component, not undefined', () => {
     expect(slots['platform.status.drawer.node_instance.boot_replay']).toBeDefined();
+  });
+
+  // One component serves every kind: it picks the column from the row's kind,
+  // so the kind->column map has a single home (signalsFilterColumns.ts).
+  it('points every signals slot at the same lazy component, distinct from boot_replay', () => {
+    const signals = [
+      slots['platform.status.drawer.node_instance.signals'],
+      slots['platform.status.drawer.node_module.signals'],
+      slots['platform.status.drawer.acme_certificate.signals'],
+    ];
+    signals.forEach((slot) => expect(slot).toBeDefined());
+    expect(new Set(signals).size).toBe(1);
+    expect(signals[0]).not.toBe(slots['platform.status.drawer.node_instance.boot_replay']);
   });
 });
 

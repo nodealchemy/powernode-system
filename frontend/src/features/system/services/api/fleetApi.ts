@@ -77,10 +77,17 @@ export interface RemediationOutcomesSummary {
 
 export const fleetApi = {
   // Fetch recent fleet events. Initial backlog before subscribing live.
+  // The three id filters match the event's TYPED column (never a payload
+  // key) and narrow the caller's account scope; several combine with AND.
+  // The server refuses a malformed id with 422 rather than matching the
+  // events that recorded no entity.
   recentSignals: async (params: {
     limit?: number;
     kind?: string;
     correlation_id?: string;
+    node_instance_id?: string;
+    node_module_id?: string;
+    certificate_id?: string;
   } = {}): Promise<{ events: FleetEvent[]; count: number; channel: string }> => {
     const response = await apiClient.post<ApiEnvelope<{
       events: FleetEvent[];
