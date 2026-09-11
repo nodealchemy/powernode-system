@@ -1,9 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package, PlayCircle } from 'lucide-react';
-import { Badge } from '@/shared/components/ui/Badge';
+import { Activity, AlertTriangle, Clock, Cpu, GitBranch, PlayCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
-import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useWsSubscription } from '@/shared/hooks/useWsSubscription';
 import { useAuth } from '@/shared/hooks/useAuth';
@@ -12,6 +9,7 @@ import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 import { RemediationEffectivenessTile } from './RemediationEffectivenessTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
 import { BootReplayModal } from './boot-replay/BootReplayModal';
+import { FleetEventDetail, FleetEventRow } from './FleetEventParts';
 
 // Severity levels in increasing-urgency order. Used by the severity
 // quick-filter chips below.
@@ -232,36 +230,12 @@ export function FleetDashboardPage(): React.JSX.Element {
             ) : (
               <ul className="divide-y divide-theme-border text-sm">
                 {filteredEvents.map((e) => (
-                  <li
+                  <FleetEventRow
                     key={e.id}
-                    className={`px-4 py-2 hover:bg-theme-surface-hover cursor-pointer ${selectedEvent?.id === e.id ? 'bg-theme-surface-hover' : ''}`}
-                    onClick={() => setSelectedEvent(e)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-mono text-xs flex-1 truncate">{e.kind}</div>
-                      <SeverityBadge severity={e.severity} />
-                      <span className="text-xs text-theme-tertiary">
-                        {new Date(e.emitted_at).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-0.5 text-xs text-theme-tertiary">
-                      {e.source && <span>source: {e.source}</span>}
-                      {/* When an event references a specific module (e.g.
-                          system.module_published), give the operator one-
-                          click navigation to that module's detail page. */}
-                      {e.node_module_id && (
-                        <Link
-                          to={`/app/system/modules?module_id=${e.node_module_id}`}
-                          onClick={(ev) => ev.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-theme-link hover:underline"
-                          title="View module"
-                        >
-                          <Package size={12} />
-                          {(e.payload?.module_name as string | undefined) ?? 'view module'}
-                        </Link>
-                      )}
-                    </div>
-                  </li>
+                    event={e}
+                    selected={selectedEvent?.id === e.id}
+                    onSelect={setSelectedEvent}
+                  />
                 ))}
               </ul>
             )}
@@ -288,57 +262,10 @@ export function FleetDashboardPage(): React.JSX.Element {
               <p className="p-4 text-sm text-theme-tertiary">Click an event to view its details + correlation chain.</p>
             ) : (
               <div className="text-sm">
-                {/* Selected event detail — was missing entirely before; clicking
-                    only set selectedCorrelation, so events without a correlation_id
-                    (most events) produced no visible response. */}
-                <div className="px-4 py-3 border-b border-theme space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs">{selectedEvent.kind}</span>
-                    <SeverityBadge severity={selectedEvent.severity} />
-                  </div>
-                  <div className="text-xs text-theme-tertiary space-y-0.5">
-                    <div>id: <code className="font-mono">{selectedEvent.id}</code></div>
-                    <div>emitted: {new Date(selectedEvent.emitted_at).toLocaleString()}</div>
-                    {selectedEvent.source && <div>source: {selectedEvent.source}</div>}
-                    {selectedEvent.correlation_id && (
-                      <div>correlation_id: <code className="font-mono">{selectedEvent.correlation_id}</code></div>
-                    )}
-                    {selectedEvent.node_id && (
-                      <div>
-                        node_id:{' '}
-                        <EntityLink type="node" id={selectedEvent.node_id} label={selectedEvent.node_id} className="font-mono" />
-                      </div>
-                    )}
-                    {selectedEvent.node_instance_id && (
-                      <div>
-                        instance_id:{' '}
-                        {selectedEvent.node_id ? (
-                          <EntityLink
-                            type="node_instance"
-                            id={`${selectedEvent.node_id}:${selectedEvent.node_instance_id}`}
-                            label={selectedEvent.node_instance_id}
-                            className="font-mono"
-                          />
-                        ) : (
-                          <code className="font-mono">{selectedEvent.node_instance_id}</code>
-                        )}
-                      </div>
-                    )}
-                    {selectedEvent.node_module_id && (
-                      <div>
-                        module_id:{' '}
-                        <EntityLink type="node_module" id={selectedEvent.node_module_id} label={selectedEvent.node_module_id} className="font-mono" />
-                      </div>
-                    )}
-                  </div>
-                  {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
-                    <details className="text-xs" open>
-                      <summary className="cursor-pointer text-theme-tertiary hover:text-theme-primary">payload</summary>
-                      <pre className="mt-1 p-2 bg-theme-surface rounded text-xs overflow-x-auto font-mono">
-{JSON.stringify(selectedEvent.payload, null, 2)}
-                      </pre>
-                    </details>
-                  )}
+                {/* Selected event detail (FleetEventDetail, shared with the status
+                    drawer's signals view). The dashboard adds attribution
+                    feedback and boot replay under it. */}
+                <FleetEventDetail event={selectedEvent}>
                   {selectedEvent.node_instance_id && selectedEvent.node_module_id && (
                     <div className="pt-2">
                       <AttributionFeedbackButton
@@ -368,7 +295,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                       </button>
                     </div>
                   )}
-                </div>
+                </FleetEventDetail>
 
                 {/* Correlation chain — separate section, only meaningful
                     when correlation_id is present AND there are multiple
@@ -427,11 +354,6 @@ function Counter({ icon, label, value, highlight }: CounterProps): React.JSX.Ele
       <div className="text-2xl font-semibold mt-1">{value}</div>
     </div>
   );
-}
-
-function SeverityBadge({ severity }: { severity: FleetEvent['severity'] }): React.JSX.Element {
-  const variant = severity === 'critical' || severity === 'high' ? 'danger' : severity === 'medium' ? 'warning' : 'default';
-  return <Badge variant={variant}>{severity}</Badge>;
 }
 
 export default FleetDashboardPage;
