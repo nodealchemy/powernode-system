@@ -24,6 +24,7 @@ module System
 
         GONE_STATUSES = %w[revoked].freeze
         HEARTBEAT = "Heartbeat"
+        ACCEPTANCE = "Acceptance"
 
         LIFECYCLE = {
           "active"    => { status: true,  reason: "Active" },
@@ -97,11 +98,34 @@ module System
                            message: record.metadata.is_a?(Hash) ? record.metadata["suspension_reason"] : nil,
                            now: now),
             progressing_condition(cause: PROGRESSING[record.status.to_s], now: now),
+            acceptance_condition(record, now),
             heartbeat_condition(record, now)
           ].compact
         end
 
         private
+
+        # A proposed peer is waiting for the other side to accept with a token.
+        # Once that token has expired, #accept! refuses it (acceptance_token_error,
+        # the same rule both accept doors run), so the peering can never finish.
+        # Progressing alone reported that forever (B3 review F5); this reads it
+        # degraded with the expiry named. Asked only when a token was issued: a
+        # peer with no digest (drill mode) accepts without one.
+        def acceptance_condition(record, now)
+          return nil unless record.status.to_s == "proposed"
+          return nil if record.acceptance_token_digest.blank?
+
+          expires_at = record.acceptance_token_expires_at
+          expired = expires_at.present? && expires_at < now
+
+          CONDITION.build(
+            type: ACCEPTANCE, status: !expired,
+            reason: expired ? "AcceptanceTokenExpired" : "AcceptanceTokenValid",
+            message: expired ? "acceptance token expired at #{expires_at.iso8601}; accept! refuses it" : nil,
+            evidence: { "acceptance_token_expires_at" => expires_at&.iso8601 },
+            now: now
+          )
+        end
 
         def heartbeat_condition(record, now)
           return nil unless record.peer_kind.to_s == "platform"

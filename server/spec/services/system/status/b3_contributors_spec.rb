@@ -75,8 +75,8 @@ RSpec.describe "B3 status contributors" do
 
     # The :versioned trait creates a version row; it does not move
     # current_version_id, which is what "published" means.
-    def published_module!(**attrs)
-      record = module!(**attrs)
+    def published_module!(*traits, **attrs)
+      record = module!(*traits, **attrs)
       version = create(:system_node_module_version, node_module: record, version_number: 1)
       record.update_columns(current_version_id: version.id, current_version_number: 1)
       record.reload
@@ -85,7 +85,7 @@ RSpec.describe "B3 status contributors" do
     it "does not dress the variety discriminator up as a health condition" do
       # VARIETIES says what a module IS, never how it is doing. A condition
       # over it would be true for every row by construction.
-      record = module!
+      record = module!(:with_data_file)
       types = conditions(contributor, record).map { |c| c["type"] }
 
       expect(types).to match_array(%w[Held Published])
@@ -93,14 +93,25 @@ RSpec.describe "B3 status contributors" do
         .to include("variety" => record.variety)
     end
 
-    it "is NeverBuilt with no current version, and Published with one" do
-      unbuilt = module!
+    it "is NeverBuilt when it ships an artifact with no current version, and Published with one" do
+      unbuilt = module!(:with_data_file)
       expect(condition(contributor, unbuilt, "Published")["reason"]).to eq("NeverBuilt")
       expect(verdict(contributor, unbuilt)).to eq(Platform::ComponentStatus::DEGRADED)
 
-      built = published_module!
+      manifest_only = module!(manifest_yaml: "name: built-from-manifest\n")
+      expect(condition(contributor, manifest_only, "Published")["reason"]).to eq("NeverBuilt")
+
+      built = published_module!(:with_data_file)
       expect(condition(contributor, built, "Published")["reason"]).to eq("Published")
       expect(verdict(contributor, built)).to eq(Platform::ComponentStatus::OK)
+    end
+
+    it "asks a spec-only module nothing about versions, so it reads ok rather than degraded forever" do
+      # Nodes materialise the spec off the row; only an artifact needs a version.
+      spec_only = module!
+
+      expect(condition(contributor, spec_only, "Published")).to be_nil
+      expect(verdict(contributor, spec_only)).to eq(Platform::ComponentStatus::OK)
     end
 
     it "holds a disabled module rather than calling it broken" do
@@ -120,8 +131,10 @@ RSpec.describe "B3 status contributors" do
     end
 
     it "does not enumerate another account's modules" do
+      own = module!
       other = create(:system_node_module, account: create(:account))
 
+      expect(components(contributor).map(&:id)).to include(own.id)
       expect(components(contributor).map(&:id)).not_to include(other.id)
     end
   end
@@ -186,6 +199,32 @@ RSpec.describe "B3 status contributors" do
       expect(condition(contributor, record, "Handshake")["reason"]).to eq("NeverHandshaked")
       expect(condition(contributor, record, "Progressing")["reason"]).to eq("Handshaking")
     end
+
+    it "loads every peer's node with the batch, not one query per peer" do
+      3.times { peer!(status: "active", last_handshake_at: Time.current) }
+      node_queries = 0
+      counter = lambda do |*, payload|
+        node_queries += 1 if payload[:sql].to_s.include?('"system_nodes"')
+      end
+
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        contributor.each_component(account) { |peer| contributor.environment_id_for(peer) }
+      end
+
+      expect(node_queries).to eq(1)
+    end
+
+    it "does not enumerate another account's peers" do
+      own = peer!(status: "active", last_handshake_at: Time.current)
+      other_account = create(:account)
+      other_instance = create(:system_node_instance, account: other_account, status: "running",
+                                                     node: create(:system_node, account: other_account))
+      other = create(:sdwan_peer, account: other_account, node_instance: other_instance,
+                                  network: create(:sdwan_network, account: other_account))
+
+      expect(components(contributor).map(&:id)).to include(own.id)
+      expect(components(contributor).map(&:id)).not_to include(other.id)
+    end
   end
 
   # ── sdwan_service ────────────────────────────────────────────────────────
@@ -211,7 +250,9 @@ RSpec.describe "B3 status contributors" do
     end
 
     it "keeps intent and observation separate: disabled is held, silent is degraded" do
-      disabled = service!(status: "disabled", health_state: "serving")
+      # "unknown" is what SdwanServiceHealthSensor writes to every non-active
+      # service each tick, so it is the only health a disabled service has.
+      disabled = service!(status: "disabled", health_state: "unknown")
       silent   = service!(status: "active", health_state: "silent")
 
       expect(condition(contributor, disabled, "Held")["reason"]).to eq("Disabled")
@@ -235,6 +276,19 @@ RSpec.describe "B3 status contributors" do
       expect(contributor.dependencies_for(bound))
         .to eq([ { "kind" => "acme_certificate", "ref" => cert.id.to_s, "relation" => "requires" } ])
       expect(contributor.dependencies_for(service!)).to eq([])
+    end
+
+    it "does not ask a disabled service the health question at all" do
+      expect(condition(contributor, service!(status: "disabled", health_state: "unknown"), "Health")).to be_nil
+      expect(condition(contributor, service!(status: "active", health_state: "unknown"), "Health")).to be_present
+    end
+
+    it "does not enumerate another account's services" do
+      own = service!
+      other = create(:sdwan_service, account: create(:account))
+
+      expect(components(contributor).map(&:id)).to include(own.id)
+      expect(components(contributor).map(&:id)).not_to include(other.id)
     end
   end
 
@@ -313,6 +367,19 @@ RSpec.describe "B3 status contributors" do
       expect(contributor.dependencies_for(record))
         .to eq([ { "kind" => "node_instance", "ref" => instance.id.to_s, "relation" => "requires" } ])
     end
+
+    it "does not enumerate another account's assignments" do
+      own = assignment!(status: "mounted")
+      other_account = create(:account)
+      other_instance = create(:system_node_instance, account: other_account, status: "running",
+                                                     node: create(:system_node, account: other_account))
+      other_storage = create(:file_storage, account: other_account, node_mount_capable: true)
+      other = create(:system_storage_assignment, account: other_account, node_instance: other_instance,
+                                                 file_storage_id: other_storage.id)
+
+      expect(components(contributor).map(&:id)).to include(own.id)
+      expect(components(contributor).map(&:id)).not_to include(other.id)
+    end
   end
 
   # ── acme_certificate ─────────────────────────────────────────────────────
@@ -370,6 +437,15 @@ RSpec.describe "B3 status contributors" do
 
       expect(condition(contributor, record, "Expiry")).to be_nil
       expect(verdict(contributor, record)).to eq(Platform::ComponentStatus::PROGRESSING)
+    end
+
+    it "does not enumerate another account's certificates" do
+      own = cert!(status: "valid", expires_at: 90.days.from_now)
+      other = create(:system_acme_certificate, account: create(:account), status: "valid",
+                                               expires_at: 90.days.from_now)
+
+      expect(components(contributor).map(&:id)).to include(own.id)
+      expect(components(contributor).map(&:id)).not_to include(other.id)
     end
   end
 
@@ -438,6 +514,30 @@ RSpec.describe "B3 status contributors" do
 
       expect(condition(contributor, record, "Progressing")["reason"]).to eq("AwaitingAcceptance")
       expect(verdict(contributor, record)).to eq(Platform::ComponentStatus::PROGRESSING)
+    end
+
+    it "degrades a proposed peer whose acceptance token expired, naming the expiry" do
+      digest = Digest::SHA256.hexdigest("token")
+      expired = peer!(status: "proposed", acceptance_token_digest: digest,
+                      acceptance_token_expires_at: 1.hour.ago)
+      live = peer!(status: "proposed", acceptance_token_digest: digest,
+                   acceptance_token_expires_at: 1.day.from_now)
+
+      acceptance = condition(contributor, expired, "Acceptance")
+      expect(acceptance["reason"]).to eq("AcceptanceTokenExpired")
+      expect(acceptance["message"]).to include("expired at")
+      expect(verdict(contributor, expired)).to eq(Platform::ComponentStatus::DEGRADED)
+
+      expect(condition(contributor, live, "Acceptance")["reason"]).to eq("AcceptanceTokenValid")
+      expect(verdict(contributor, live)).to eq(Platform::ComponentStatus::PROGRESSING)
+    end
+
+    it "does not enumerate another account's peers" do
+      own = peer!(status: "active")
+      other = create(:system_federation_peer, account: create(:account))
+
+      expect(components(contributor).map(&:id)).to include(own.id)
+      expect(components(contributor).map(&:id)).not_to include(other.id)
     end
   end
 

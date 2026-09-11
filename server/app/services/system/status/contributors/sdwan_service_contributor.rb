@@ -100,12 +100,20 @@ module System
             "last_observed_flow_at" => record.last_observed_flow_at&.iso8601
           }
 
-          [
+          conditions = [
             enum_condition(type: "Lifecycle", mapping: LIFECYCLE, value: record.status, now: now),
-            held_condition(cause: record.status.to_s == "disabled" ? "Disabled" : nil, now: now),
-            enum_condition(type: "Health", mapping: HEALTH, value: record.health_state,
-                           evidence: evidence, now: now)
+            held_condition(cause: record.status.to_s == "disabled" ? "Disabled" : nil, now: now)
           ]
+          # Health is asked only of an ACTIVE service (B3 review F2).
+          # SdwanServiceHealthSensor resets health_state to `unknown` on every
+          # non-active service each tick, so for a disabled one the column is a
+          # value the sensor erased, not an observation, and its UNKNOWN would
+          # outrank Held and read not_measured instead of held.
+          if record.status.to_s == "active"
+            conditions << enum_condition(type: "Health", mapping: HEALTH, value: record.health_state,
+                                         evidence: evidence, now: now)
+          end
+          conditions
         end
       end
     end

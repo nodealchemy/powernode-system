@@ -14,8 +14,8 @@ module System
       # constant-that-cannot-fail the composite probe was written to delete.
       #
       # The two facts that CAN come back wrong are whether an operator disabled
-      # it, and whether it has ever been built into a version the fleet can
-      # serve.
+      # it, and, for a module that ships an artifact, whether it has ever been
+      # built into a version the fleet can serve.
       #
       # ── SCOPE ───────────────────────────────────────────────────────────
       # Nothing is gone: no soft delete, no archived state, hard destroy only.
@@ -77,16 +77,31 @@ module System
           [
             held_condition(cause: record.enabled? ? nil : "Disabled", now: now),
             published_condition(record, now)
-          ]
+          ].compact
         end
 
         private
 
-        # A module with no current version has never produced anything a node
-        # can materialise. It is not broken — nothing failed — but it is not
-        # serviceable either, and an operator who assigned it to a template is
-        # waiting on a build that may never have been dispatched.
+        # ONLY A MODULE THAT SHIPS AN ARTIFACT NEEDS A VERSION (B3 review F1).
+        # Nodes materialise a module's spec (mask, file_spec, package_spec,
+        # config) off the ROW on every reconcile; the node-API manifest never
+        # consults current_version. What does resolve through a published
+        # version is the downloadable artifact (modules#download): a data file,
+        # or the image a manifest is built into. A spec-only module has nothing
+        # to build, so asking it "published?" read degraded forever, and nothing
+        # an operator could do would clear it.
+        def ships_artifact?(record)
+          record.data_file_name.present? || record.manifest_yaml.present?
+        end
+
+        # A module that ships an artifact but has no current version has never
+        # produced anything a node can download. It is not broken — nothing
+        # failed — but it is not serviceable either, and an operator who
+        # assigned it to a template is waiting on a build that may never have
+        # been dispatched. nil for a spec-only module: there is no question.
         def published_condition(record, now)
+          return nil unless ships_artifact?(record)
+
           published = record.current_version_id.present?
 
           CONDITION.build(

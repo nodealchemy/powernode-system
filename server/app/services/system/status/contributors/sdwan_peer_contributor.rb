@@ -48,8 +48,11 @@ module System
         def each_component(account)
           return if account.blank?
 
+          # node_instance: :node, because environment_id_for walks to the node;
+          # preloading only the instance cost one system_nodes query per peer
+          # (B3 review F3).
           MODEL.where(account_id: account.id)
-               .includes(:node_instance, :network)
+               .includes(:network, node_instance: :node)
                .find_each { |peer| yield peer }
         end
 
