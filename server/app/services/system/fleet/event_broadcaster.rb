@@ -126,13 +126,23 @@ module System
         # Map signal payload into FleetEvent resource ref columns. The
         # column allow-list is enforced in the caller via slice; this just
         # extracts the canonical names from the payload.
+        #
+        # The instance and module refs are also read under the COLUMN's own
+        # name: the sdwan, storage, package and CVE sensors name their subject
+        # `node_instance_id` / `node_module_id` in the signal payload, and a
+        # signal has no kwarg path, so without this those events never carry
+        # the typed column the per-component signals filter reads.
+        # spec/lint/fleet_event_typed_ref_emit_sites_spec.rb keeps every emit
+        # site honest against this mapping.
         def resource_refs_from_payload(payload)
           return {} unless payload.is_a?(Hash)
 
           {
             node_id: payload["node_id"] || payload[:node_id],
-            node_instance_id: payload["instance_id"] || payload[:instance_id],
-            node_module_id: payload["module_id"] || payload[:module_id],
+            node_instance_id: payload["instance_id"] || payload[:instance_id] ||
+                              payload["node_instance_id"] || payload[:node_instance_id],
+            node_module_id: payload["module_id"] || payload[:module_id] ||
+                            payload["node_module_id"] || payload[:node_module_id],
             node_module_version_id: payload["module_version_id"] || payload[:module_version_id],
             certificate_id: payload["certificate_id"] || payload[:certificate_id],
             cve_id: payload["cve_id"] || payload[:cve_id]

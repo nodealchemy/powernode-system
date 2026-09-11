@@ -206,7 +206,7 @@ module System
               account: account,
               kind: "system.cluster_bootstrap.pod_subnet_prefix_ignored",
               severity: :medium,
-              source: "kubernetes_cluster_provisioner",
+              source: "kubernetes_cluster_provisioner", node_instance_id: @node_instance.id,
               payload: {
                 cluster_name: cluster_name,
                 node_instance_id: @node_instance.id,

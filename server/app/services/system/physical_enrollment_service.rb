@@ -227,6 +227,7 @@ module System
         severity:               :low,
         source:                 "operator_ui",
         node_module_id:         nil,
+        node_instance_id:       node_instance.id,
         payload: {
           unclaimed_device_id: unclaimed.id,
           node_instance_id:    node_instance.id,

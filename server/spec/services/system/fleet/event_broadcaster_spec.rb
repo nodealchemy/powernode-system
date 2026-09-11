@@ -36,6 +36,38 @@ RSpec.describe System::Fleet::EventBroadcaster do
       expect(System::FleetEvent.last.node_instance_id).to eq(uuid)
     end
 
+    # A producer that names the instance by the COLUMN's own name inside the
+    # payload (sensors cannot pass kwargs through emit_signal!) still gets the
+    # typed column, so the per-component signals filter can find the event.
+    it "extracts node_instance_id from a payload key spelled like the column" do
+      uuid = SecureRandom.uuid
+      event = described_class.emit!(
+        account: account, kind: "x.y", severity: :low,
+        payload: { node_instance_id: uuid }, source: "test"
+      )
+      expect(event.node_instance_id).to eq(uuid)
+    end
+
+    # The other arm: no instance anywhere means the column stays NULL, which
+    # reads as "not recorded" and is never a value the filter matches.
+    it "leaves node_instance_id NULL when the payload names no instance" do
+      event = described_class.emit!(
+        account: account, kind: "x.y", severity: :low,
+        payload: { peer_id: SecureRandom.uuid }, source: "test"
+      )
+      expect(event.node_instance_id).to be_nil
+    end
+
+    it "prefers an explicit node_instance_id kwarg over the payload" do
+      kwarg_uuid = SecureRandom.uuid
+      event = described_class.emit!(
+        account: account, kind: "x.y", severity: :low,
+        payload: { node_instance_id: SecureRandom.uuid }, source: "test",
+        node_instance_id: kwarg_uuid
+      )
+      expect(event.node_instance_id).to eq(kwarg_uuid)
+    end
+
     it "returns nil on validation failure rather than raising" do
       result = described_class.emit!(
         account: account, kind: "x.y", severity: :nonsense,
@@ -83,6 +115,31 @@ RSpec.describe System::Fleet::EventBroadcaster do
       expect(event.payload["fingerprint"]).to eq("drift:#{i_uuid}")
       expect(event.node_instance_id).to eq(i_uuid)
       expect(event.node_module_id).to eq(m_uuid)
+    end
+
+    # The sdwan and storage sensors name the instance as node_instance_id in
+    # the signal payload; the signal path has no kwarg, so the mapper is the
+    # only place the typed column can come from.
+    it "sets node_instance_id from a signal payload keyed node_instance_id" do
+      i_uuid = SecureRandom.uuid
+      signal = System::Fleet::Signal.new(
+        kind: "system.sdwan_peer_drift", severity: :medium,
+        payload: { peer_id: SecureRandom.uuid, node_instance_id: i_uuid },
+        fingerprint: "sdwan_peer_drift:#{i_uuid}"
+      )
+      expect(described_class.emit_signal!(account: account, signal: signal).node_instance_id).to eq(i_uuid)
+    end
+
+    # The package-drift and critical-upgrade sensors name the module the same
+    # way (the column's own name).
+    it "sets node_module_id from a signal payload keyed node_module_id" do
+      m_uuid = SecureRandom.uuid
+      signal = System::Fleet::Signal.new(
+        kind: "system.module_critical_upgrade_ready", severity: :high,
+        payload: { package_module_link_id: SecureRandom.uuid, node_module_id: m_uuid },
+        fingerprint: "crit_upgrade:#{m_uuid}"
+      )
+      expect(described_class.emit_signal!(account: account, signal: signal).node_module_id).to eq(m_uuid)
     end
   end
 
