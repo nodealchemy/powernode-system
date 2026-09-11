@@ -68,13 +68,18 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
     end
 
     context "in execute mode (provisioning stubbed at the service layer)" do
+      # 20084a27 added environment_id and environment&.slug to
+      # SystemFleetTool#serialize_instance; the doubles did not allow them, so
+      # these examples were red from that commit on.
+      let(:environment) { create(:ai_environment, account: account, slug: "staging-east") }
       let(:fake_instance) do
         instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x",
                         node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
                         mtls_subject: nil, agent_version: nil,
-                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil)
+                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil,
+                        environment_id: environment.id, environment: environment)
       end
       let(:fake_result) do
         ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-abc" })
@@ -94,6 +99,8 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
         expect(d[:provisioned].size).to eq(2)
         expect(d[:failures]).to be_empty
         expect(::System::ProvisioningService).to have_received(:provision_instance).twice
+        expect(d[:provisioned].first[:instance]).to include(environment_id: environment.id,
+                                                            environment_slug: "staging-east")
       end
     end
 
@@ -104,7 +111,8 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
                         mtls_subject: nil, agent_version: nil,
-                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil)
+                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil,
+                        environment_id: nil, environment: nil)
       end
       let(:ok_result)  { ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-1" }) }
       let(:bad_result) { ::System::Runtime::Result.err(error: "region unavailable") }
@@ -126,6 +134,7 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
         expect(r[:data][:failures].size).to eq(1)
         expect(r[:data][:failures].first[:step]).to eq("provision_instance")
         expect(r[:data][:failures].first[:error]).to match(/region unavailable/)
+        expect(r[:data][:provisioned].first[:instance]).to include(environment_id: nil, environment_slug: nil)
       end
     end
   end
