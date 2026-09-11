@@ -58,7 +58,11 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
 
   let(:platform)  { create(:system_node_platform, account: account) }
   let(:node)      { create(:system_node, account: account, node_template: template) }
-  let!(:instance) { create(:system_node_instance, :running, node: node) }
+  # A live heartbeat: DecisionEngine#dispatch_reconcile_task refuses an on-node
+  # task to a running instance whose agent has never reported (IMP-fb05226e89cb),
+  # and every lane below dispatches one. The refusal itself is pinned in its own
+  # describe near the end.
+  let!(:instance) { create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current) }
   let(:module_a)  { create(:system_node_module, account: account, name: "closure-a-#{SecureRandom.hex(3)}") }
 
   # Settle the outcome the validator just minted and score it against a sense
@@ -397,6 +401,43 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
       expect {
         validator.record_proceeded!(decisions: [ decision ], signals: [ signal ])
       }.not_to change { System::Fleet::RemediationOutcome.count }
+    end
+  end
+
+  # IMP-fb05226e89cb (4bfd9820): an on-node task PULLED by an agent that has never
+  # reported would sit queued forever, so the engine refuses it. The fixture's
+  # heartbeat is what keeps every lane above out of that refusal; this pins the
+  # refusal, so the heartbeat reads as load-bearing rather than decoration. The
+  # other arm, the same signal dispatching sync_modules to a heartbeating
+  # instance, is the "stops blocking" example above.
+  describe "an instance whose agent has never reported" do
+    let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+
+    let(:signal) do
+      System::Fleet::Signal.new(
+        kind: "system.module_drift", severity: :medium,
+        payload: { "instance_id" => instance.id, "_sensor" => "ModuleDriftSensor" },
+        fingerprint: "module_drift:#{instance.id}"
+      )
+    end
+
+    before do
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.module_assign",
+                                     policy: "notify_and_proceed", is_active: true)
+      allow_any_instance_of(::System::Ai::Skills::DriftRemediateExecutor).to receive(:execute).and_return(
+        { success: true, data: { resolved: true, requires_approval: false, disruption_pct: 5,
+                                 planned_actions: { attach: [ "mod-1" ], detach: [], update: [] } } }
+      )
+      instance.update!(last_heartbeat_at: nil)
+    end
+
+    it "is refused the on-node sync, and says why" do
+      decision = engine.decide(signal)
+
+      expect(decision[:remediation]).to include(applied: false, command: "sync_modules", instance_status: "running")
+      expect(decision[:remediation][:reason]).to include("never reported")
+      expect(System::Task.where(account: account, command: "sync_modules", operable: instance)).to be_empty
     end
   end
 
