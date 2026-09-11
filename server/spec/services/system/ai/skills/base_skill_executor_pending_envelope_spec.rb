@@ -68,9 +68,13 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor pending envelope" do
     expect(ZzPendingFixtureExecutor.performed_on).to be_empty
   end
 
+  # `requires_human_session` is declared but set only on a human-only park (MCP
+  # identity plan R2), and this park is not one. So it answers every OTHER
+  # declared key, the same two-arm reading core's mcp_tool_schema_fidelity_spec
+  # pins.
   it "answers exactly the platform's declared pending body" do
     expect(result[:data].keys.map(&:to_s).sort)
-      .to eq(Ai::Tools::BaseTool::PENDING_RESULT_PROPERTIES.keys.map(&:to_s).sort)
+      .to eq(Ai::Tools::BaseTool::PENDING_RESULT_PROPERTIES.keys.map(&:to_s).sort - %w[requires_human_session])
   end
 
   it "names the category, the approval request and the deferred operation" do
