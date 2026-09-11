@@ -185,6 +185,16 @@ describe('ServiceDeliveryPage', () => {
     expect(screen.getByTestId('governance-panel')).toBeInTheDocument();
   });
 
+  // C10 review NEW-2: FIX-3 restored this shortcut with no test — deleting it
+  // left the suite green. Cover both arms: the link's target when governance
+  // is visible, and its absence alongside the rest of the gated section.
+  it('links the Governance section to the platform migrations tab (C10 review NEW-2)', () => {
+    renderAt('/app/system/service-delivery/peers');
+
+    const link = screen.getByRole('link', { name: /Migrations & chains/i });
+    expect(link).toHaveAttribute('href', '/app/system/compute/platform/migrations');
+  });
+
   it('hides the governance section without system.sdwan.federation.read', () => {
     mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.federation.read');
 
@@ -192,6 +202,7 @@ describe('ServiceDeliveryPage', () => {
 
     expect(screen.getByTestId('peer-control-panel')).toBeInTheDocument();
     expect(screen.queryByTestId('governance-panel')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Migrations & chains/i })).not.toBeInTheDocument();
   });
 
   it('shows an "Ask Concierge" page action when the operator can manage federation', () => {

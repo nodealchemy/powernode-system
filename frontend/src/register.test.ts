@@ -194,6 +194,15 @@ describe('registered routes', () => {
       const el = renderAt('/app/system/federation/control');
       expect((el.props as { to: string }).to).toBe('/app/system/service-delivery/peers');
     });
+
+    // C10 review NEW-1: a plain `subpathTargets[rest]` lookup resolves
+    // through Object.prototype, so a sub-path literally named "constructor"
+    // would return that prototype member (a function) instead of falling
+    // through to the page-root fallback.
+    it('sends /system/federation/constructor to the page root, not Object.prototype.constructor', () => {
+      const el = renderAt('/app/system/federation/constructor');
+      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery');
+    });
   });
 
   it('registers /system/ingress/* gated on system.ingress.read', () => {
