@@ -94,10 +94,10 @@ RSpec.describe "task history survives operable removal" do
   # to lose the same history. Asserted per model rather than on the concern, so
   # a model that drops the include is caught.
   describe "every operable that cascades tasks" do
+    # The two types a NEW row may name (System::Task::OPERABLE_TYPES).
     {
       "System::Node" => :system_node,
-      "System::NodeInstance" => :system_node_instance,
-      "System::Provider" => :system_provider
+      "System::NodeInstance" => :system_node_instance
     }.each do |klass, factory|
       it "#{klass} preserves its task rows on destroy" do
         operable = create(factory, account: account)
@@ -105,6 +105,33 @@ RSpec.describe "task history survives operable removal" do
 
         expect { operable.destroy! }.not_to change { ::System::Task.count }
         expect(task.reload.status).to eq("failed")
+      end
+    end
+
+    # The four provider types still declare the cascade and still need it, but a
+    # new row can no longer NAME one: the Task lane was narrowed to the two
+    # node-scoped types, because delivery is current_instance.tasks and a
+    # Provider has no agent to deliver to. The inclusion validation is
+    # CHANGE-guarded (`if: :operable_type_changed?`), so a row written before
+    # that narrowing keeps saving and keeps being cascaded — which is exactly
+    # the row this cascade exists to protect. These examples build that row the
+    # way history left it, with update_columns, rather than asserting a shape
+    # the lane no longer mints.
+    {
+      "System::Provider" => :system_provider,
+      "System::ProviderNetwork" => :system_provider_network,
+      "System::ProviderVolume" => :system_provider_volume,
+      "System::ProviderVolumeSnapshot" => :system_provider_volume_snapshot
+    }.each do |klass, factory|
+      it "#{klass} preserves a pre-narrowing task row on destroy" do
+        operable = create(factory, account: account)
+        task = task_for(create(:system_node_instance, account: account), status: "running")
+        task.update_columns(operable_type: klass, operable_id: operable.id)
+
+        expect { operable.destroy! }.not_to change { ::System::Task.count }
+        expect(task.reload.status).to eq("failed")
+        expect(task.operable_id).to be_nil
+        expect(task.options["removed_operable"]).to include("type" => klass, "id" => operable.id)
       end
     end
   end
