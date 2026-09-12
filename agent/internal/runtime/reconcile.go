@@ -61,8 +61,10 @@ type ReconcilerConfig struct {
 	// Verifier verifies cosign signatures against the bundle. May be
 	// verify.AlwaysOK in dev/test.
 	Verifier verify.Verifier
-	// Fsverity verifies fs-verity Merkle-tree root hash matches expected.
-	Fsverity *verify.FsVerifier
+	// Fsverity checks the blob's fs-verity Merkle-tree root against the
+	// manifest's. nil skips the check (the DEFAULT); production sites take it
+	// from ResolveModuleFsverity.
+	Fsverity verify.DigestVerifier
 	// MountRunner is the os/exec abstraction used by mount/security/systemd.
 	MountRunner mount.Runner
 	// Layout describes mount points (modules cache, sysroot, etc.).
@@ -994,20 +996,15 @@ func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) 
 	if err := r.cfg.Verifier.VerifyBlob(ctx, cfsPath, bundlePath); err != nil {
 		return fmt.Errorf("verify cosign: %w", err)
 	}
+	// fs-verity arm. cfg.Fsverity is whatever ResolveModuleFsverity chose for
+	// this site: nil by DEFAULT (no check), measure-only once the operator opts
+	// in. mod.FsverityRoot, NOT mod.Digest: Digest is the sha256 of the blob
+	// bytes, FsverityRoot is the kernel's Merkle-tree root over the same file;
+	// passing Digest compared two unrelated hashes. A missing root is refused by
+	// the checker itself (FsVerifier.VerifyDigest), so an enforcing checker fails
+	// closed on it and a measuring one reports it. A branch here refused it under
+	// every mode, which is why no site could ever wire this arm.
 	if r.cfg.Fsverity != nil {
-		// mod.FsverityRoot, NOT mod.Digest: Digest is the sha256 of the blob
-		// bytes, FsverityRoot is the kernel's Merkle-tree root over the same
-		// file. Passing Digest here compared two unrelated hashes, so every
-		// module mount would have failed the moment fs-verity was enabled.
-		// Dormant until now only because cfg.Fsverity is nil by default.
-		if mod.FsverityRoot == "" {
-			// Fail closed. A configured verifier with nothing to verify against
-			// is a silent bypass, which is worse than refusing the mount: the
-			// operator turned fs-verity ON and would otherwise get unverified
-			// modules while believing they were protected.
-			return fmt.Errorf("verify fs-verity: module %s has no fsverity_root_hash published; "+
-				"refusing to mount unverified while fs-verity is enabled", mod.ID)
-		}
 		if err := r.cfg.Fsverity.VerifyDigest(ctx, cfsPath, mod.FsverityRoot); err != nil {
 			return fmt.Errorf("verify fs-verity: %w", err)
 		}
@@ -1826,7 +1823,7 @@ type FactoryConfig struct {
 	ManifestRoot   string
 	Puller         PullerAPI
 	Verifier       verify.Verifier
-	Fsverity       *verify.FsVerifier
+	Fsverity       verify.DigestVerifier
 	MountRunner    mount.Runner
 	Layout         mount.Layout
 	StatePath      string

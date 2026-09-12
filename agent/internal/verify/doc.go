@@ -138,16 +138,34 @@
 // it gates promotion on oci_digest presence, running-instance count, liveness
 // and dwell time only.
 //
-// ReconcilerConfig.Fsverity is nil by default at every site, so the fs-verity
-// arm of the same gate is skipped. The fsverity_root_hash channel is complete
-// on the native (module-forge) path, on the ingest! path since push.sh stamps
-// io.powernode.fsverity_root_hash (IMP-e2c2da99b4b5), and on the platform-CI
-// notify path; any publisher that ships neither leaves a nil root, and
-// enabling Fsverity refuses exactly those mounts (fail closed). Note what
+// The fs-verity arm of the same gate, ReconcilerConfig.Fsverity, is resolved at
+// the same three sites through runtime.ResolveModuleFsverity and
+// NewModuleFsverity, under the same policy: nil under off (the DEFAULT, no
+// check) and MEASURE-ONLY under audit, runtime and all alike. It reports
+// "verify:module_fsverity_audit" and never refuses (IMP-4eabe61c3d90). It is
+// not on the enforcement ladder yet because no node image ships the fsverity
+// binary: an enforcing check would refuse every mount on every opted-in node,
+// and on SiteBoot that is an unbootable node. Enforcing it waits on the image
+// shipping fsverity and a clean measurement. The fsverity_root_hash channel is
+// complete on the native (module-forge) path, on the ingest! path since push.sh
+// stamps io.powernode.fsverity_root_hash (IMP-e2c2da99b4b5), and on the
+// platform-CI notify path; a publisher that ships neither leaves a nil root,
+// which the checker names ("no fsverity_root_hash published"). Note what
 // fs-verity is worth here even when populated: VerifyDigest compares a hash
 // that arrives over the SAME channel as oci_digest, over the SAME bytes Pull
 // already sha256'd; its incremental value is FsVerifier.Enable turning on
-// kernel open-time enforcement, and that call tolerates EOPNOTSUPP.
+// kernel open-time enforcement. An enable that fails as unsupported or
+// already enabled (errno name or strerror text) falls through to the
+// userspace digest. Even MEASURE-ONLY, a successful enable is a real change:
+// the cached blob becomes immutable and gains a Merkle tree, which is why it
+// happens only on nodes whose operator opted into a mode.
+//
+// Why the DEFAULT stays off (IMP-4eabe61c3d90): audit findings from both arms
+// go to the site's error hook, which writes to the agent's stderr (the service
+// journal; the console for the initramfs boot composers). They are not
+// delivered to the platform, so a default-audit fleet would pay a verification
+// pass on every boot-composer mount for a measurement nobody centrally reads.
+// Moving the default to audit waits on that delivery.
 //
 // # What a signed mount does and does not prove
 //

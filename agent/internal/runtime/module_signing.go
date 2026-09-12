@@ -112,6 +112,14 @@ type signingKeysClient interface {
 	GetJSON(path string) (*http.Response, error)
 }
 
+// ResolveModuleFsverity is what every module-mount construction site calls for
+// the fs-verity arm of the gate, beside ResolveModuleVerifier and under the same
+// policy: nil under off (the DEFAULT, no check), measure-only in every active
+// mode (see verify.NewModuleFsverity). No I/O at construction.
+func ResolveModuleFsverity(cfg verify.ModuleSigningConfig, site verify.Site, runner mount.Runner, onError func(string, error)) (verify.DigestVerifier, error) {
+	return verify.NewModuleFsverity(cfg, site, runner, onError)
+}
+
 // ResolveModuleVerifier is what every module-mount construction site calls.
 // It returns the Verifier for cfg at site, sourcing the trust anchor as:
 //

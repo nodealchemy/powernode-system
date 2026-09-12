@@ -10,6 +10,32 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
+// DigestVerifier is the fs-verity arm of the module-mount gate
+// (ReconcilerConfig.Fsverity): nil skips it, FsVerifier enforces, and
+// AuditDigestVerifier measures. Sites obtain it from NewModuleFsverity.
+type DigestVerifier interface {
+	VerifyDigest(ctx context.Context, path, expected string) error
+}
+
+// AuditDigestVerifier runs Inner and reports — but never returns — its
+// failures. It is the fs-verity counterpart of AuditVerifier.
+type AuditDigestVerifier struct {
+	Inner  DigestVerifier
+	Report func(stage string, err error)
+}
+
+// VerifyDigest always returns nil; a failure from Inner is passed to Report
+// under the stage "verify:module_fsverity_audit" with the blob path.
+func (a AuditDigestVerifier) VerifyDigest(ctx context.Context, path, expected string) error {
+	if a.Inner == nil {
+		return nil
+	}
+	if err := a.Inner.VerifyDigest(ctx, path, expected); err != nil && a.Report != nil {
+		a.Report("verify:module_fsverity_audit", fmt.Errorf("would refuse %s: %w", path, err))
+	}
+	return nil
+}
+
 // FsVerifier wraps the `fsverity` CLI for enabling fs-verity on a freshly
 // pulled blob and verifying the on-disk root hash matches the platform's
 // recorded value.
@@ -53,14 +79,17 @@ func (v *FsVerifier) Digest(ctx context.Context, path string) (string, error) {
 // pre-mount check.
 func (v *FsVerifier) VerifyDigest(ctx context.Context, path, expected string) error {
 	if expected == "" {
-		return errors.New("VerifyDigest: expected hash required (no-op pre-checks are a footgun)")
+		// Fail closed. A check with nothing to compare against is a silent
+		// bypass; name the cause, which is on the publish side.
+		return errors.New("no fsverity_root_hash published for this artifact; nothing to verify the blob against")
 	}
 	if err := v.Enable(ctx, path); err != nil {
-		// Don't fail on already-enabled — the digest check below will
-		// catch any tampering anyway. Surface only unexpected errors.
-		if !strings.Contains(err.Error(), "EOPNOTSUPP") &&
-			!strings.Contains(err.Error(), "EEXIST") &&
-			!strings.Contains(err.Error(), "already enabled") {
+		// Don't fail on already-enabled or on a filesystem without verity
+		// support — the userspace digest below still catches tampering.
+		// mount.ExecRunner embeds the CLI's output, and fsverity-utils prints
+		// strerror text ("Operation not supported", "File exists"), not the
+		// errno names, so match both. Surface only unexpected errors.
+		if !enableErrTolerable(err.Error()) {
 			return err
 		}
 	}
@@ -74,4 +103,16 @@ func (v *FsVerifier) VerifyDigest(ctx context.Context, path, expected string) er
 		return fmt.Errorf("fs-verity digest mismatch: got %s, expected %s", got, expected)
 	}
 	return nil
+}
+
+// enableErrTolerable reports whether an `fsverity enable` failure means
+// "already enabled" or "not supported on this filesystem", in either the
+// errno-name or the strerror form.
+func enableErrTolerable(msg string) bool {
+	for _, s := range []string{"EOPNOTSUPP", "Operation not supported", "EEXIST", "File exists", "already enabled"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

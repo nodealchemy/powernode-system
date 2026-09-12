@@ -40,7 +40,10 @@ var fsverityAssignRe = regexp.MustCompile(`(?m)^[ \t]*Fsverity:[ \t]*(.+)$`)
 // Verifier interface — package-qualified from outside internal/verify, bare
 // from inside it. This, not the field name, is what the enumeration oracle
 // keys on — see its comment.
-var concreteVerifierRe = regexp.MustCompile(`(?:\bverify\.|[&\s(,])(AlwaysOK|CosignVerifier|AuditVerifier)\{`)
+// The fs-verity checkers (FsVerifier, AuditDigestVerifier) count too: they are
+// the other arm of the same mount gate, so constructing one is also choosing
+// what a mount is checked against.
+var concreteVerifierRe = regexp.MustCompile(`(?:\bverify\.|[&\s(,])(AlwaysOK|CosignVerifier|AuditVerifier|FsVerifier|AuditDigestVerifier)\{`)
 
 // TestModuleMountVerifierWiringIsConfigDriven pins the central factual claim in
 // internal/verify/doc.go: every production path that mounts a module artifact
@@ -93,14 +96,34 @@ func TestModuleMountVerifierWiringIsConfigDriven(t *testing.T) {
 				site.path, site.what, site.site)
 		}
 
-		// The fs-verity arm of the same gate. Left unset, ReconcilerConfig.Fsverity
-		// is nil and the check is skipped entirely.
-		if m := fsverityAssignRe.FindAllStringSubmatch(src, -1); len(m) != 0 {
-			t.Fatalf("%s (%s): now sets Fsverity: %s. The fsverity_root_hash channel "+
-				"is complete only when every publisher stamps a root — a module with a "+
-				"nil root hash hits the fail-closed branch. Confirm population first, "+
-				"and refresh internal/verify/doc.go.",
-				site.path, site.what, strings.TrimSpace(m[0][1]))
+		// The fs-verity arm of the same gate (IMP-4eabe61c3d90). Every site takes
+		// it from ResolveModuleFsverity for its own site, exactly like the
+		// signature arm: nil under off (the DEFAULT), measure-only under every
+		// active mode. A hard-wired FsVerifier would ENFORCE, and no node image
+		// ships the fsverity binary, so it would refuse every mount — on
+		// compose.go, an unbootable node.
+		fm := fsverityAssignRe.FindAllStringSubmatch(src, -1)
+		if len(fm) != 1 {
+			t.Fatalf("%s (%s): found %d `Fsverity:` assignments, want exactly 1 — the "+
+				"fs-verity arm must be resolved from policy at every mount site",
+				site.path, site.what, len(fm))
+		}
+		if line := fm[0][1]; concreteVerifierRe.MatchString(line) {
+			t.Fatalf("%s (%s): Fsverity line %q constructs a concrete checker directly; "+
+				"take it from ResolveModuleFsverity so the operator's policy decides",
+				site.path, site.what, strings.TrimSpace(line))
+		}
+		// The resolved value must be what reaches the field: capture the variable
+		// ResolveModuleFsverity is assigned to and require the Fsverity: line to
+		// name it, so `Fsverity: nil` beside a discarded resolution fails here.
+		rm := regexp.MustCompile(`(\w+),\s*err\s*:?=\s*(?:runtime\.)?ResolveModuleFsverity\([^)]*` + regexp.QuoteMeta(site.site)).FindStringSubmatch(src)
+		if rm == nil {
+			t.Fatalf("%s (%s): must resolve its fs-verity check via ResolveModuleFsverity(..., %s, ...)",
+				site.path, site.what, site.site)
+		}
+		if v := strings.TrimSuffix(strings.TrimSpace(fm[0][1]), ","); v != rm[1] {
+			t.Fatalf("%s (%s): Fsverity: is %q, but ResolveModuleFsverity's result is %q — "+
+				"the resolved check must be what reaches the reconciler", site.path, site.what, v, rm[1])
 		}
 	}
 
@@ -109,7 +132,8 @@ func TestModuleMountVerifierWiringIsConfigDriven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read internal/verify/doc.go: %v", err)
 	}
-	for _, claim := range []string{"DEFAULT OFF", "ResolveModuleVerifier", "NewModuleVerifier", "sign-blob"} {
+	for _, claim := range []string{"DEFAULT OFF", "ResolveModuleVerifier", "NewModuleVerifier", "sign-blob",
+		"ResolveModuleFsverity", "NewModuleFsverity", "MEASURE-ONLY"} {
 		if !strings.Contains(string(doc), claim) {
 			t.Fatalf("internal/verify/doc.go no longer contains %q, but the wiring "+
 				"above still resolves through the policy whose default is off. The "+
@@ -144,7 +168,7 @@ var concreteVerifierSites = map[string]string{
 	"internal/runtime/compose.go":                            "module mount — resolved via ResolveModuleVerifier(SiteBoot), DEFAULT OFF; enforces only under `all`",
 	"cmd/powernode-agent/internal/cli/reconciler_factory.go": "module mount — resolved via ResolveModuleVerifier(SiteCLI), DEFAULT OFF",
 	"internal/runtime/module_signing.go":                     "ResolveModuleVerifier — the policy resolver; constructs AlwaysOK for off and for the non-enforcing no-anchor degrade",
-	"internal/verify/module.go":                              "NewModuleVerifier — THE constructor: AlwaysOK for off, static-key CosignVerifier (+AuditVerifier wrapper) otherwise",
+	"internal/verify/module.go":                              "NewModuleVerifier — THE constructor: AlwaysOK for off, static-key CosignVerifier (+AuditVerifier wrapper) otherwise; NewModuleFsverity — nil for off, measure-only AuditDigestVerifier(FsVerifier) otherwise",
 	"internal/bootupgrade/bootupgrade.go":                    "boot/UKI upgrade — REAL CosignVerifier, static-key, ENFORCED, key inline on the task",
 	"cmd/powernode-agent/internal/cli/verify_cmd.go":         "operator `powernode-agent verify` — keyless pins constructed here; --key goes through NewModuleVerifier",
 }

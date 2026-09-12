@@ -609,6 +609,12 @@ func NewPivotComposerAt(platformURL, pkiDir string, layout mount.Layout, breadcr
 	if err != nil {
 		return nil, fmt.Errorf("module signing: %w", err)
 	}
+	// The fs-verity arm, same policy: nil by DEFAULT, measure-only when opted
+	// in — never a refusal here, where a refused mount is an unbootable node.
+	moduleFsverity, err := ResolveModuleFsverity(signing, verify.SiteBoot, mount.ExecRunner{}, onError)
+	if err != nil {
+		return nil, fmt.Errorf("module fs-verity: %w", err)
+	}
 	return NewReconcilerForCLI(FactoryConfig{
 		ModulesClient:  client,
 		ManifestClient: client,
@@ -623,6 +629,7 @@ func NewPivotComposerAt(platformURL, pkiDir string, layout mount.Layout, breadcr
 			Cache:       "/persist/cache/modules",
 		},
 		Verifier:       moduleVerifier,
+		Fsverity:       moduleFsverity,
 		MountRunner:    mount.ExecRunner{},
 		Layout:         layout,
 		StatePath:      mount.StatePath,

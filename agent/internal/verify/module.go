@@ -134,6 +134,33 @@ func NewModuleVerifier(cfg ModuleSigningConfig, site Site, runner mount.Runner, 
 	return AuditVerifier{Inner: real, Report: report}, nil
 }
 
+// NewModuleFsverity is THE constructor for the fs-verity arm of the
+// module-mount gate, resolved from the same policy as NewModuleVerifier.
+//
+// ModeOff (the default) returns nil: no fs-verity check. Every other mode, at
+// every site, returns FsVerifier wrapped in AuditDigestVerifier — MEASURE-ONLY,
+// under runtime and all as well as audit. No node image ships the fsverity
+// binary, so an enforcing check would refuse every mount on every opted-in node
+// (on SiteBoot, an unbootable node). Enforcing by cfg.Enforces(site) is a
+// deliberate later change to this function and its tests, once the image ships
+// fsverity and the measurement is clean. The check needs no trust anchor: the
+// expected root rides the manifest. report receives findings; nil is tolerated.
+func NewModuleFsverity(cfg ModuleSigningConfig, site Site, runner mount.Runner, report func(stage string, err error)) (DigestVerifier, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if !cfg.Active() {
+		return nil, nil
+	}
+	if runner == nil {
+		runner = mount.ExecRunner{}
+	}
+	if report == nil {
+		report = func(string, error) {}
+	}
+	return AuditDigestVerifier{Inner: &FsVerifier{Runner: runner}, Report: report}, nil
+}
+
 // AuditVerifier runs Inner and reports — but never returns — its failures.
 // It is the measurement instrument for the audit rung and for the boot
 // composer under runtime: the operator sees, per node and per module, what

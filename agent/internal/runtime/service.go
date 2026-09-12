@@ -363,6 +363,11 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("module signing: %w", err)
 	}
+	// The fs-verity arm, same policy: nil by DEFAULT, measure-only when opted in.
+	moduleFsverity, err := ResolveModuleFsverity(s.cfg.ModuleSigning, verify.SiteService, mount.ExecRunner{}, s.cfg.OnError)
+	if err != nil {
+		return fmt.Errorf("module fs-verity: %w", err)
+	}
 	reconciler, err := NewReconciler(ReconcilerConfig{
 		ModulesClient:  client,
 		ManifestClient: client,
@@ -380,6 +385,7 @@ func (s *Service) Run(ctx context.Context) error {
 			Cache:       "/persist/cache/modules",
 		},
 		Verifier:    moduleVerifier,
+		Fsverity:    moduleFsverity,
 		MountRunner: mount.ExecRunner{},
 		Layout:      mount.DefaultLayout(),
 		StatePath:   s.cfg.StatePath,

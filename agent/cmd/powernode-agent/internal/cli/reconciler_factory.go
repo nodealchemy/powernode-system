@@ -31,11 +31,17 @@ func BuildReconciler(cctx *Context, dryRun bool) (*runtime.Reconciler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("module signing: %w", err)
 	}
-	moduleVerifier, err := runtime.ResolveModuleVerifier(signing, verify.SiteCLI, cctx.Transport, mount.ExecRunner{}, "", func(stage string, err error) {
+	report := func(stage string, err error) {
 		fmt.Fprintf(os.Stderr, "[powernode-agent %s] %v\n", stage, err)
-	})
+	}
+	moduleVerifier, err := runtime.ResolveModuleVerifier(signing, verify.SiteCLI, cctx.Transport, mount.ExecRunner{}, "", report)
 	if err != nil {
 		return nil, fmt.Errorf("module signing: %w", err)
+	}
+	// The fs-verity arm, same policy: nil by DEFAULT, measure-only when opted in.
+	moduleFsverity, err := runtime.ResolveModuleFsverity(signing, verify.SiteCLI, mount.ExecRunner{}, report)
+	if err != nil {
+		return nil, fmt.Errorf("module fs-verity: %w", err)
 	}
 	cfg := runtime.FactoryConfig{
 		ModulesClient:  cctx.Transport,
@@ -48,6 +54,7 @@ func BuildReconciler(cctx *Context, dryRun bool) (*runtime.Reconciler, error) {
 			Cache:       "/persist/cache/modules",
 		},
 		Verifier:    moduleVerifier,
+		Fsverity:    moduleFsverity,
 		MountRunner: mount.ExecRunner{},
 		Layout:      mount.DefaultLayout(),
 		StatePath:   mount.StatePath,
