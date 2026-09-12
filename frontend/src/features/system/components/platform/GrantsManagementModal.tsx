@@ -27,7 +27,9 @@ import type {
  *   - Bottom: collapsible "Issue New Grant" form
  *
  * Pessimistic-scope allowlists (node_instance_ids / sdwan_network_ids /
- * source_cidrs) are exposed via comma-separated text inputs — full
+ * source_cidrs) are required on every axis — concrete entries, or `*` for
+ * any; the server refuses a blank axis — and exposed via comma-separated
+ * text inputs. Full
  * relation-pickers are queued for the unified /app/system/network view
  * (per plan §K.5).
  *
@@ -277,19 +279,13 @@ const GrantRow: React.FC<GrantRowProps> = ({ grant, isRevoking, onRevoke }) => {
       {!grant.unrestricted && (
         <div className="text-theme-secondary">
           scope ·{' '}
-          {grant.node_instance_ids.length > 0 && (
-            <span className="mr-2">
-              {grant.node_instance_ids.length} instance{grant.node_instance_ids.length === 1 ? '' : 's'}
-            </span>
-          )}
-          {grant.sdwan_network_ids.length > 0 && (
-            <span className="mr-2">
-              {grant.sdwan_network_ids.length} network{grant.sdwan_network_ids.length === 1 ? '' : 's'}
-            </span>
-          )}
-          {grant.source_cidrs.length > 0 && (
-            <span className="font-mono text-theme-primary">{grant.source_cidrs.join(', ')}</span>
-          )}
+          <span className="mr-2">{axisSummary(grant.node_instance_ids, 'instance')}</span>
+          <span className="mr-2">{axisSummary(grant.sdwan_network_ids, 'network')}</span>
+          <span className="font-mono text-theme-primary">
+            {isAnyAxis(grant.source_cidrs) || grant.source_cidrs.length === 0
+              ? axisSummary(grant.source_cidrs, 'source')
+              : grant.source_cidrs.join(', ')}
+          </span>
         </div>
       )}
 
@@ -298,6 +294,16 @@ const GrantRow: React.FC<GrantRowProps> = ({ grant, isRevoking, onRevoke }) => {
       )}
     </div>
   );
+};
+
+// `['*']` is the explicit ANY sentinel; a blank axis denies (the server
+// refuses to issue one, so blank only shows on a row written around it).
+const isAnyAxis = (list: string[]): boolean => list.length === 1 && list[0] === '*';
+
+const axisSummary = (list: string[], noun: string): string => {
+  if (isAnyAxis(list)) return `any ${noun}`;
+  if (list.length === 0) return `no ${noun} (deny)`;
+  return `${list.length} ${noun}${list.length === 1 ? '' : 's'}`;
 };
 
 const LifecyclePill: React.FC<{ lifecycle: GrantLifecycle }> = ({ lifecycle }) => {
@@ -335,6 +341,9 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const parseCsv = (s: string): string[] =>
+    s.split(',').map((part) => part.trim()).filter(Boolean);
+
   const validation = useMemo(() => {
     const errors: string[] = [];
     if (!resourceKind.trim()) errors.push('resource_kind is required.');
@@ -344,17 +353,20 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
     if (!Number.isFinite(ttl) || ttl < 7 || ttl > 365) {
       errors.push('TTL must be 7–365 days.');
     }
+    const axes = [nodeInstanceIds, sdwanNetworkIds, sourceCidrs].map(parseCsv);
+    if (axes.some((a) => a.length === 0)) {
+      errors.push('Every pessimistic-scope allowlist is required — list values, or * for any.');
+    } else if (axes.some((a) => a.includes('*') && a.length > 1)) {
+      errors.push('* (any) must stand alone in an allowlist, not be mixed with values.');
+    }
     return { ok: errors.length === 0, errors };
-  }, [resourceKind, remoteSubject, scopes, ttlDays]);
+  }, [resourceKind, remoteSubject, scopes, ttlDays, nodeInstanceIds, sdwanNetworkIds, sourceCidrs]);
 
   const handleToggleScope = (scope: GrantScope) => {
     setScopes((prev) =>
       prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope],
     );
   };
-
-  const parseCsv = (s: string): string[] =>
-    s.split(',').map((part) => part.trim()).filter(Boolean);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -476,9 +488,9 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
         </Field>
       </div>
 
-      <details className="text-xs">
+      <details open className="text-xs">
         <summary className="cursor-pointer text-theme-secondary hover:text-theme-primary">
-          Pessimistic scope (optional) — instance / network / CIDR allowlists
+          Pessimistic scope (required) — instance / network / CIDR allowlists; * means any
         </summary>
         <div className="mt-2 space-y-2">
           <Field label="Node Instance IDs (comma-separated)">
@@ -487,7 +499,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
               value={nodeInstanceIds}
               onChange={(e) => setNodeInstanceIds(e.target.value)}
               disabled={submitting}
-              placeholder="empty = any instance"
+              placeholder="instance IDs, or * for any instance"
               className="w-full px-2 py-1 border border-theme rounded bg-theme-surface text-theme-primary font-mono text-xs disabled:opacity-50"
             />
           </Field>
@@ -497,7 +509,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
               value={sdwanNetworkIds}
               onChange={(e) => setSdwanNetworkIds(e.target.value)}
               disabled={submitting}
-              placeholder="empty = any network"
+              placeholder="network IDs, or * for any network"
               className="w-full px-2 py-1 border border-theme rounded bg-theme-surface text-theme-primary font-mono text-xs disabled:opacity-50"
             />
           </Field>
@@ -507,7 +519,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
               value={sourceCidrs}
               onChange={(e) => setSourceCidrs(e.target.value)}
               disabled={submitting}
-              placeholder="e.g. 10.0.0.0/8, 192.168.1.0/24"
+              placeholder="e.g. 10.0.0.0/8, 192.168.1.0/24, or * for any source"
               className="w-full px-2 py-1 border border-theme rounded bg-theme-surface text-theme-primary font-mono text-xs disabled:opacity-50"
             />
           </Field>

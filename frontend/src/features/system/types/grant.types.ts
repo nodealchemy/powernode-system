@@ -39,9 +39,10 @@ export interface IssueGrantRequest {
   remote_subject: string;
   permission_scopes: GrantScope[];
   ttl_days?: number;
-  node_instance_ids?: string[];
-  sdwan_network_ids?: string[];
-  source_cidrs?: string[];
+  /** Required on every axis: concrete values, or ['*'] for any. Blank is refused (422). */
+  node_instance_ids: string[];
+  sdwan_network_ids: string[];
+  source_cidrs: string[];
 }
 
 export interface GrantsListResponse {

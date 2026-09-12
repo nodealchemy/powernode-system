@@ -273,10 +273,15 @@ describe('peerGrantsApi', () => {
     });
 
     it('works without optional ttl_days — omits it from request when not provided', async () => {
+      // The three pessimistic-scope axes are required (blank is refused
+      // server-side), so the minimal request states each as ANY.
       const minimalRequest: IssueGrantRequest = {
         resource_kind: 'node_instance',
         remote_subject: 'service:billing',
         permission_scopes: ['read'],
+        node_instance_ids: ['*'],
+        sdwan_network_ids: ['*'],
+        source_cidrs: ['*'],
       };
       mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
 
@@ -285,9 +290,9 @@ describe('peerGrantsApi', () => {
       const [, body] = mockPost.mock.calls[0] as [string, IssueGrantRequest];
       expect(body.ttl_days).toBeUndefined();
       expect(body.resource_id).toBeUndefined();
-      expect(body.node_instance_ids).toBeUndefined();
-      expect(body.sdwan_network_ids).toBeUndefined();
-      expect(body.source_cidrs).toBeUndefined();
+      expect(body.node_instance_ids).toEqual(['*']);
+      expect(body.sdwan_network_ids).toEqual(['*']);
+      expect(body.source_cidrs).toEqual(['*']);
     });
 
     it('sends node_instance_ids when provided', async () => {

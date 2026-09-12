@@ -90,9 +90,9 @@ const GRANT_ACTIVE: FederationGrant = {
   revoked_at: null,
   revocation_reason: null,
   archived_at: null,
-  node_instance_ids: [],
-  sdwan_network_ids: [],
-  source_cidrs: [],
+  node_instance_ids: ['*'],
+  sdwan_network_ids: ['*'],
+  source_cidrs: ['*'],
   unrestricted: true,
   grantor_user_id: 'user-1',
 };
@@ -121,6 +121,18 @@ const GRANT_WITH_RESTRICTIONS: FederationGrant = {
 
 function grantsEnvelope(grants: FederationGrant[]) {
   return envelope({ grants, count: grants.length });
+}
+
+// Every pessimistic-scope axis is required (blank denies server-side), so a
+// submittable issue form states each one — `*` (ANY) unless a test needs more.
+function fillScopeAxesWithAny() {
+  for (const hint of ['* for any instance', '* for any network', '* for any source']) {
+    const input = screen
+      .getAllByRole('textbox')
+      .find((i) => (i as HTMLInputElement).placeholder?.includes(hint));
+    expect(input).toBeDefined();
+    fireEvent.change(input as HTMLInputElement, { target: { value: '*' } });
+  }
 }
 
 // =============================================================================
@@ -433,6 +445,24 @@ describe('GrantsManagementModal', () => {
     expect(screen.getByText('2 instances')).toBeInTheDocument();
     expect(screen.getByText('1 network')).toBeInTheDocument();
     expect(screen.getByText('10.0.0.0/8, 192.168.1.0/24')).toBeInTheDocument();
+  });
+
+  it('labels ANY axes as "any" and blank axes as deny in the restriction details', async () => {
+    const partial: FederationGrant = {
+      ...GRANT_ACTIVE,
+      id: 'grant-partial',
+      unrestricted: false,
+      node_instance_ids: ['*'],
+      sdwan_network_ids: [],
+      source_cidrs: ['*'],
+    };
+    mockGet.mockResolvedValue(grantsEnvelope([partial]));
+
+    renderModal({ peerId: 'peer-abc' });
+
+    await waitFor(() => expect(screen.getByText('any instance')).toBeInTheDocument());
+    expect(screen.getByText('no network (deny)')).toBeInTheDocument();
+    expect(screen.getByText('any source')).toBeInTheDocument();
   });
 
   it('renders the revocation reason for a revoked grant', async () => {
@@ -865,6 +895,73 @@ describe('GrantsManagementModal', () => {
     );
   });
 
+  it('refuses to submit while a pessimistic-scope allowlist is blank', async () => {
+    mockGet.mockResolvedValue(grantsEnvelope([]));
+
+    renderModal({ peerId: 'peer-abc' });
+
+    await waitFor(() => expect(screen.getByText('Issue Grant')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Issue Grant'));
+
+    await waitFor(() =>
+      expect(screen.getByText('Issue New Grant')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByRole('textbox');
+    const byHint = (hint: string) =>
+      inputs.find((i) => (i as HTMLInputElement).placeholder?.includes(hint)) as HTMLInputElement;
+    fireEvent.change(byHint('e.g. skill'), { target: { value: 'skill' } });
+    fireEvent.change(byHint('alice@remote'), { target: { value: 'alice@remote.example.org' } });
+    fireEvent.change(byHint('* for any instance'), { target: { value: '*' } });
+    fireEvent.change(byHint('* for any network'), { target: { value: '*' } });
+    // source CIDR axis left blank
+
+    // The submit button is disabled while invalid; submit the form directly so
+    // onSubmit's validation runs and surfaces its message.
+    const form = document.querySelector('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Every pessimistic-scope allowlist is required — list values, or * for any.'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit when * is mixed with values in an allowlist', async () => {
+    mockGet.mockResolvedValue(grantsEnvelope([]));
+
+    renderModal({ peerId: 'peer-abc' });
+
+    await waitFor(() => expect(screen.getByText('Issue Grant')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Issue Grant'));
+
+    await waitFor(() =>
+      expect(screen.getByText('Issue New Grant')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByRole('textbox');
+    const byHint = (hint: string) =>
+      inputs.find((i) => (i as HTMLInputElement).placeholder?.includes(hint)) as HTMLInputElement;
+    fireEvent.change(byHint('e.g. skill'), { target: { value: 'skill' } });
+    fireEvent.change(byHint('alice@remote'), { target: { value: 'alice@remote.example.org' } });
+    fillScopeAxesWithAny();
+    fireEvent.change(byHint('* for any instance'), { target: { value: '*, inst-a' } });
+
+    const form = document.querySelector('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('* (any) must stand alone in an allowlist, not be mixed with values.'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------------
   // Issue Grant form — successful submission
   // ---------------------------------------------------------------------------
@@ -898,6 +995,7 @@ describe('GrantsManagementModal', () => {
     if (remoteSubjectInput) {
       fireEvent.change(remoteSubjectInput, { target: { value: 'alice@remote.example.org' } });
     }
+    fillScopeAxesWithAny();
 
     // TTL is already 30 days by default — valid
 
@@ -913,9 +1011,9 @@ describe('GrantsManagementModal', () => {
           remote_subject: 'alice@remote.example.org',
           permission_scopes: ['read'],
           ttl_days: 30,
-          node_instance_ids: [],
-          sdwan_network_ids: [],
-          source_cidrs: [],
+          node_instance_ids: ['*'],
+          sdwan_network_ids: ['*'],
+          source_cidrs: ['*'],
         }),
       ),
     );
@@ -951,6 +1049,8 @@ describe('GrantsManagementModal', () => {
     if (remoteSubjectInput) {
       fireEvent.change(remoteSubjectInput, { target: { value: 'alice@remote.example.org' } });
     }
+
+    fillScopeAxesWithAny();
 
     const issueButtons = screen.getAllByText('Issue Grant');
     const submitBtn = issueButtons[issueButtons.length - 1];
@@ -991,6 +1091,8 @@ describe('GrantsManagementModal', () => {
     if (remoteSubjectInput) {
       fireEvent.change(remoteSubjectInput, { target: { value: 'alice@remote.example.org' } });
     }
+
+    fillScopeAxesWithAny();
 
     const issueButtons = screen.getAllByText('Issue Grant');
     const submitBtn = issueButtons[issueButtons.length - 1];
@@ -1033,6 +1135,8 @@ describe('GrantsManagementModal', () => {
     if (remoteSubjectInput) {
       fireEvent.change(remoteSubjectInput, { target: { value: 'alice@remote.example.org' } });
     }
+
+    fillScopeAxesWithAny();
 
     const issueButtons = screen.getAllByText('Issue Grant');
     const submitBtn = issueButtons[issueButtons.length - 1];
@@ -1079,6 +1183,8 @@ describe('GrantsManagementModal', () => {
     if (remoteSubjectInput) {
       fireEvent.change(remoteSubjectInput, { target: { value: 'alice@remote.example.org' } });
     }
+
+    fillScopeAxesWithAny();
 
     const issueButtons = screen.getAllByText('Issue Grant');
     const submitBtn = issueButtons[issueButtons.length - 1];
@@ -1165,7 +1271,7 @@ describe('GrantsManagementModal', () => {
       (i) => (i as HTMLInputElement).placeholder?.includes('alice@remote'),
     );
     const nodeInstanceInput = inputs.find(
-      (i) => (i as HTMLInputElement).placeholder?.includes('empty = any instance'),
+      (i) => (i as HTMLInputElement).placeholder?.includes('* for any instance'),
     );
 
     if (resourceKindInput) {
@@ -1176,6 +1282,11 @@ describe('GrantsManagementModal', () => {
     }
     if (nodeInstanceInput) {
       fireEvent.change(nodeInstanceInput, { target: { value: 'inst-a, inst-b, inst-c' } });
+    }
+    for (const hint of ['* for any network', '* for any source']) {
+      const input = inputs.find((i) => (i as HTMLInputElement).placeholder?.includes(hint));
+      expect(input).toBeDefined();
+      fireEvent.change(input as HTMLInputElement, { target: { value: '*' } });
     }
 
     const issueButtons = screen.getAllByText('Issue Grant');
