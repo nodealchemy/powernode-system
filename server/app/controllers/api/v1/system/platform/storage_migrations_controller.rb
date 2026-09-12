@@ -103,7 +103,7 @@ module Api
             return forbidden unless current_user&.has_permission?("system.platform.scale")
 
             result = call_mcp_action("system_revert_storage_migration_binding",
-              id: @migration.id, reason: params[:reason]
+              migration_id: @migration.id, reason: params[:reason]
             )
             return render_error(result[:error] || "Revert request failed", status: :unprocessable_content) unless result[:success]
             render_success(storage_migration: result[:storage_migration])
@@ -117,7 +117,7 @@ module Api
             return forbidden unless current_user&.has_permission?("system.platform.scale")
 
             result = call_mcp_action("system_cleanup_storage_migration",
-              id: @migration.id, reason: params[:reason], immediate: params[:immediate]
+              migration_id: @migration.id, reason: params[:reason], immediate: params[:immediate]
             )
             return render_error(result[:error] || "Cleanup request failed", status: :unprocessable_content) unless result[:success]
             render_success(storage_migration: result[:storage_migration])
