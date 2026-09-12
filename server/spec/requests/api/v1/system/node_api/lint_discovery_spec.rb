@@ -45,7 +45,10 @@ RSpec.describe "Api::V1::System::NodeApi::LintDiscovery", type: :request do
       expires_at: expires_at,
       metadata: { "repository_ids" => repository_ids, "reported_repository_ids" => [] }
     )
-    task = System::Task.create!(account: acct, operable: node_instance, command: System::LintDiscoveryExecutor::COMMAND,
+    # The LITERAL, not LintDiscoveryExecutor::COMMAND: task_command_membership_spec
+    # can only verify membership in System::Task::COMMANDS against a literal, and
+    # duplicating the constant's value is what makes it checkable.
+    task = System::Task.create!(account: acct, operable: node_instance, command: "ci.lint_discovery",
                                 status: "running", options: { "run_ref" => lease.id, "repository_ids" => repository_ids })
     lease.update_columns(build_task_id: task.id)
     lease
@@ -222,7 +225,7 @@ RSpec.describe "Api::V1::System::NodeApi::LintDiscovery", type: :request do
 
     it "reads no credential through a running lint task on another instance" do
       elsewhere = System::Task.create!(
-        account: account, operable: builder_instance, command: System::LintDiscoveryExecutor::COMMAND,
+        account: account, operable: builder_instance, command: "ci.lint_discovery",
         status: "running", options: { "run_ref" => lease.id, "repository_ids" => [ repository.id ] }
       )
       lease.update_columns(build_task_id: elsewhere.id)
