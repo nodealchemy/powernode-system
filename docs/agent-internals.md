@@ -22,7 +22,7 @@ agent behavior on running nodes.
 flowchart TD
     Boot[powernode-agent boot] --> ID[internal/identity:<br/>discover NodeInstance UUID<br/>via fw-cfg / cloud metadata / DMI]
     ID --> Enroll[internal/enroll:<br/>POST /node_api/enroll<br/>bootstrap token → mTLS cert]
-    Enroll --> Mount[internal/mount + oci:<br/>fetch + sha256-verify<br/>+ compose layers<br/>cosign/fs-verity NOT enforced]
+    Enroll --> Mount[internal/mount + oci:<br/>fetch + sha256-verify<br/>+ compose layers<br/>cosign opt-in, DEFAULT OFF<br/>fs-verity measure-only]
     Mount --> Svc[powernode-agent service]
     Svc --> Heart[internal/runtime + transport:<br/>30s heartbeat]
     Svc --> Task[internal/runtime + transport:<br/>task lease via FOR UPDATE<br/>SKIP LOCKED]
@@ -52,7 +52,7 @@ domain unit with focused responsibilities; no cross-package state.
 |---------|----------------|
 | `transport` | mTLS HTTP client for `/node_api/*`. The TLS handshake presents the agent's client cert (signed by the platform's internal CA at enrollment); the reverse proxy verifies it via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven, on the single websecure entrypoint) and forwards the CN to Rails. No Bearer header — auth is purely cryptographic, bound to the connection. Certificate pinning, automatic CA chain refresh, exponential backoff on platform unreachable. |
 | `security` | Capability dropping, seccomp filter application to the agent process itself, per-module SELinux/AppArmor profile loading on attach, IMA/EVM integration. |
-| `verify` | Supplies the cosign + fs-verity primitives and `NewModuleVerifier`, the one constructor every module-mount site resolves through (`runtime.ResolveModuleVerifier`). Module signature enforcement is **operator opt-in, DEFAULT OFF**: with nothing configured all three sites get the no-op `verify.AlwaysOK`; the ladder `off → audit → runtime → all` (`/persist/etc/powernode/module-signing.conf`, env, service flags) turns on a multi-key static `CosignVerifier` over the platform's `cosign sign-blob` bundle, which rides the manifest as `cosign_bundle_b64`, against the platform's served (cached under `/persist`) or pinned public keys. `ReconcilerConfig.Fsverity` stays nil by default. The boot/UKI upgrade path enforces unconditionally. There is no per-module `cosign_identity_regexp`/`cosign_issuer_regexp` trust policy in the manifest; those columns feed the SERVER's ingest-time keyless fallback. Map: `agent/internal/verify/doc.go`; procedure: `docs/runbooks/module-signature-verification.md`. |
+| `verify` | Supplies the cosign + fs-verity primitives and `NewModuleVerifier`, the one constructor every module-mount site resolves through (`runtime.ResolveModuleVerifier`). Module signature enforcement is **operator opt-in, DEFAULT OFF**: with nothing configured all three sites get the no-op `verify.AlwaysOK`; the ladder `off → audit → runtime → all` (`/persist/etc/powernode/module-signing.conf`, env, service flags) turns on a multi-key static `CosignVerifier` over the platform's `cosign sign-blob` bundle, which rides the manifest as `cosign_bundle_b64`, against the platform's served (cached under `/persist`) or pinned public keys. `ReconcilerConfig.Fsverity` comes from `NewModuleFsverity` (`runtime.ResolveModuleFsverity`) under the same policy: nil under `off`, and measure-only (report, never refuse) in every other mode until node images ship the `fsverity` binary. The boot/UKI upgrade path enforces unconditionally. There is no per-module `cosign_identity_regexp`/`cosign_issuer_regexp` trust policy in the manifest; those columns feed the SERVER's ingest-time keyless fallback. Map: `agent/internal/verify/doc.go`; procedure: `docs/runbooks/module-signature-verification.md`. |
 
 ### Storage + mounting
 
@@ -215,10 +215,10 @@ sequenceDiagram
     OCI-->>Agent: local erofs blob
     Agent->>Verify: VerifyBlob (AlwaysOK by default; static-key cosign once module signing is opted in)
     Verify-->>Agent: signature OK
-    Agent->>Sysfs: fs-verity enable
+    Agent->>Sysfs: fs-verity enable (only when module signing is opted in)
     Sysfs-->>Agent: root_hash
     Agent->>Verify: compare to NodeModuleVersion.fsverity_root_hash
-    Verify-->>Agent: hash matches
+    Verify-->>Agent: mismatch reported, never refused (measure-only)
     Agent->>Mount: insert into priority-ordered lower stack
     Mount->>Sysfs: overlayfs mount with new lower
     Sysfs-->>Mount: mounted
@@ -234,7 +234,7 @@ from the intersection of *desired* (platform-supplied assignments) and
 
 | Set | Trigger | What runs |
 |---|---|---|
-| `toAttach` | desired but not currently mounted (digest absent from current) | `attachModule`: pull OCI → sha256 digest check → cosign/fs-verity gate (wired to a no-op today) → mount erofs → policy.Apply → `lifecycle.AttachServices` |
+| `toAttach` | desired but not currently mounted (digest absent from current) | `attachModule`: pull OCI → sha256 digest check → cosign/fs-verity gate (resolved from module-signing policy: off by default; fs-verity measure-only) → mount erofs → policy.Apply → `lifecycle.AttachServices` |
 | `toDetach` | currently mounted but not in desired (digest absent from desired) | `detachModule`: `lifecycle.DetachServices` + `mount.UnmountModule` |
 | `toReattach` | currently mounted AND in desired AND manifest hash changed | `attachModule` again (pull/mount/policy short-circuit on cached state); `lifecycle.AttachServices` re-renders unit files via `writeIfChanged` |
 

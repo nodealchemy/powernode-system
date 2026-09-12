@@ -403,7 +403,7 @@ agent's heartbeat is reporting a different list than what's assigned. Two
 sub-cases:
 
 - Module dependency missing on the platform side (your `dependency_spec` references a module that's not in `staging`+)
-- Agent failed the blob **sha256** digest check on download (check agent logs via serial console; look for "digest mismatch"). Note fs-verity is **not** verified on mount today — `ReconcilerConfig.Fsverity` is nil on every path — so a "fsverity verification failed" line will not appear
+- Agent failed the blob **sha256** digest check on download (check agent logs via serial console; look for "digest mismatch"). Note fs-verity never blocks a mount: under the default module-signing mode it is not checked, and under any other mode a problem is only reported as a `verify:module_fsverity_audit` line, so it cannot be why a module is missing
 
 **`PoolEmptyError` on provision** — you're using an InstancePool template but
 the pool's empty. Either wait for replenishment (~5 min) or create a fresh

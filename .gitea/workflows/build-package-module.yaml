@@ -177,9 +177,9 @@ jobs:
             SIZE=$(stat -c%s "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null || echo 0)
             DIGEST=$(sha256sum "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null | awk '{print $1}' || echo "")
             # fs-verity Merkle root — stored as NodeModuleVersion/ModuleArtifact.fsverity_root_hash
-            # published so the on-node agent COULD tamper-verify the erofs lower at
-            # mount. It does not today: ReconcilerConfig.Fsverity is nil on every
-            # reconciler construction site, so the hash is recorded and unused.
+            # published so the on-node agent can tamper-check the erofs lower at
+            # mount. Today that check only measures and reports, and only on nodes
+            # whose module-signing mode is not off; it never refuses a mount.
             # (parity with
             # build-platform-modules.yaml). Distinct from the sha256 oci_digest above.
             FSVERITY_ROOT=$(fsverity digest --hash-alg=sha256 "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null | awk '{print $1}' || echo "")
