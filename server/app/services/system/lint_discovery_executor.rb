@@ -28,12 +28,6 @@ module System
     PURPOSE = "lint_discovery"
     COMMAND = "ci.lint_discovery"
 
-    # Raised when the leased runner's agent is not reporting, so an on-node task
-    # would be queued for a node that will never pull it (IMP-fb05226e89cb).
-    # Not a dispatch failure: dispatch! turns it into a named skip and releases
-    # the lease, so the next tick can try a live member.
-    DeadTargetError = Class.new(StandardError)
-
     # The pool NAME is operator configuration; the pool is always the account's
     # own. No default: an install that has not chosen a builder pool runs no
     # discovery, and says so.
@@ -109,10 +103,6 @@ module System
         )
       )
       { status: "dispatched", run_ref: lease.id, repositories: rows }
-    rescue DeadTargetError => e
-      release_stranded(lease) if lease
-      Rails.logger.info("[LintDiscovery] runner agent not live for account #{@account.id}: #{e.message}")
-      skipped("runner_agent_not_live", rows)
     rescue StandardError => e
       release_stranded(lease) if lease
       # The class only: core writes this to an audit row.
@@ -152,17 +142,13 @@ module System
     # The task names the repositories and nothing else. A credential is never
     # in a task: the agent pulls it from the lease-gated context endpoint.
     #
-    # An on-node task is PULLED, so the agent has to be reporting for it to run
-    # at all. InstancePoolService#acquire! already refuses a member whose
-    # #on_node_dispatch_refusal answers, but that is liveness at CLAIM time and
-    # the lease outlives the claim — so this consults the predicate itself and
-    # fails closed, rather than holding a runner while queueing work nothing
-    # will pull. The census (on_node_task_producer_census_spec) reads this
-    # consult as this producer's :gated evidence.
+    # NOT gated here, deliberately: the target is the instance this flow just
+    # leased, and the CLAIM is what gates it — InstancePoolService#acquire!
+    # refuses a member whose #on_node_dispatch_refusal answers. dispatch! leases
+    # and constructs in the same breath, so a second consult here would be a
+    # rival threshold beside the allocator's. The census entry for this producer
+    # records that reasoning (:acknowledged, on_node_task_producer_census_spec).
     def create_task!(lease, repositories)
-      refusal = lease.node_instance.on_node_dispatch_refusal
-      raise DeadTargetError, refusal if refusal
-
       ::System::Task.create!(
         account: @account,
         operable: lease.node_instance,

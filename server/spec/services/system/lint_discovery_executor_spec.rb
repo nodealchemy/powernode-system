@@ -11,9 +11,7 @@ RSpec.describe System::LintDiscoveryExecutor do
   let(:account) { create(:account) }
   let(:node_template) { create(:system_node_template, account: account) }
   let(:node) { create(:system_node, account: account, node_template: node_template) }
-  # A live heartbeat: create_task! consults #on_node_dispatch_refusal, so a
-  # runner with no heartbeat is refused (the example for that sets it to nil).
-  let(:instance) { create(:system_node_instance, :running, node: node, last_heartbeat_at: Time.current) }
+  let(:instance) { create(:system_node_instance, :running, node: node) }
   let(:token) { "gta_#{SecureRandom.hex(20)}" }
   let!(:repository) do
     create(:git_repository, account: account, name: "core").tap do |repo|
@@ -146,22 +144,10 @@ RSpec.describe System::LintDiscoveryExecutor do
       expect(released).to contain_exactly(hash_including(account: account, force: true))
     end
 
-    # IMP-fb05226e89cb: an on-node task is PULLED, so a target whose agent is not
-    # reporting holds the lease and queues work nothing will claim. The pool
-    # allocator gates at acquire! one frame up, but that is a fact about claim
-    # time, not dispatch time — so the producer consults the predicate too and
-    # fails closed. The census entry for this site is :gated on that evidence.
-    it "refuses a runner whose agent is not live, mints no task, and releases the lease" do
-      instance.update!(last_heartbeat_at: nil)
-      released = []
-      allow(System::CiRunnerLeaseService).to receive(:release!) { |**kwargs| released << kwargs }
-
-      result = dispatch!
-
-      expect(result).to include(status: "skipped", reason: "runner_agent_not_live")
-      expect(System::Task.where(account: account, command: "ci.lint_discovery")).to be_empty
-      expect(released).to contain_exactly(hash_including(account: account, force: true))
-    end
+    # NO example for "refuses a runner whose agent is not live": this producer is
+    # censused :acknowledged, not :gated. The liveness gate is the allocator's,
+    # at InstancePoolService#acquire! one frame up, and it is pinned in that
+    # service's own spec — a second consult here would be a rival threshold.
   end
 
   # D1b security R1, defence in depth: the workdir base setting is refused

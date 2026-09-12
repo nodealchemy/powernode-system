@@ -161,17 +161,21 @@ RSpec.describe "on-node task producer census" do
              "of a dead agent and the task is pulled when one starts."
       },
       "app/services/system/lint_discovery_executor.rb#create_task!" => {
-        disposition: :gated, sites: 1,
-        evidence: "on_node_dispatch_refusal",
-        why: "Improvement discovery's runner dispatch (campaign 01a08c9b D1b). The pool allocator " \
-             "already refuses a dead member inside InstancePoolService#acquire!, one frame up, and " \
-             "the FIRST DRAFT of this entry leaned on exactly that — the same 'live by " \
-             "construction' reason an independent review falsified for the fulfillment entry " \
-             "below. Claim-time liveness is not dispatch-time liveness, so this consults the " \
-             "predicate itself and fails closed with a `runner_agent_not_live` skip, releasing the " \
-             "lease, rather than holding a runner while queueing a task no agent will pull. It " \
-             "does NOT close the stale re-dispatch class — a re-dispatched or cloned row never " \
-             "re-enters this method — which is the agent-side run_ref check, filed separately."
+        disposition: :acknowledged, sites: 1,
+        why: "Improvement discovery's runner dispatch (campaign 01a08c9b D1b). In scope and " \
+             "deliberately not gated HERE, because the CLAIM is what gates it: " \
+             "CiRunnerLeaseService#lease! acquires through InstancePoolService.acquire! " \
+             "(ci_runner_lease_service.rb:136), which selects via #select_live_member, whose " \
+             "predicate is member.on_node_dispatch_refusal || member.dormant_agent_reason " \
+             "(instance_pool_service.rb:294), refusing a claim that fails it with 'failed the " \
+             "liveness gate' (:181) — the same allocator gate the fulfillment entry below cites, " \
+             "read from the code rather than assumed. dispatch! leases and constructs in the same " \
+             "breath and #active_lease? refuses a second dispatch while one is live, so no stale " \
+             "lease reaches this method. A FIRST DRAFT of this entry was :gated on a consult added " \
+             "here; it was withdrawn as a rival threshold beside the allocator's, which is the " \
+             "drift this census exists to prevent. The stale re-dispatch class (a clone carrying " \
+             "an old run_ref against a LIVE node) is a lease-identity problem no liveness check " \
+             "can catch, and is tracked as its own offer."
       },
       "app/services/system/fulfillment_advance_orchestrator.rb#ensure_template_applied!" => {
         disposition: :acknowledged, sites: 1,
