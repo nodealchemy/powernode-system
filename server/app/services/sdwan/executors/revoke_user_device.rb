@@ -60,20 +60,23 @@ module Sdwan
       # state: if the device has been re-parented onto another grant, or either
       # row is gone, this raises instead of acting on the wrong device.
       #
-      # This is NOT an authorization check — both ids come from the stored
-      # params. Account ownership is enforced upstream by the controller's
-      # set_network/set_grant/set_device guards, matching the convention the
-      # other SDWAN trust-boundary executors follow.
+      # Ownership is checked here too (IMP-134062908364): the GRANT carries
+      # account_id (system_sdwan_user_devices has none), so it resolves through
+      # Base#resolve_scoped and an anchored operation refuses another account's
+      # grant with the same CrossAccountError as every sibling. Before, this
+      # read the grant with a bare find and relied on the dispatcher having
+      # scoped the same ids upstream. The device is then found THROUGH that
+      # grant, which is the pairing check. Unanchored callers pass through.
       def scoped_device
-        ::Sdwan::AccessGrant.find(params[:grant_id]).user_devices.find(params[:device_id])
+        resolve_scoped(::Sdwan::AccessGrant, params[:grant_id]).user_devices.find(params[:device_id])
       end
 
       # The label the CARD renders, resolved through Base#scoped_label_record
       # (IMP-8e4674f4d62d). scoped_device is deliberately not reused: it
-      # anchors on the GRANT named in the same params, which re-validates the
-      # pairing but establishes nothing about ownership, so a caller that did
-      # not pre-scope had another account's device labelled on its approvers'
-      # card.
+      # RAISES on a foreign or missing row, where a card label must degrade to
+      # the id, and it passes through unanchored, where a label must decline —
+      # a caller that did not pre-scope had another account's device labelled
+      # on its approvers' card.
       #
       # The GRANT is what gets anchored, not the device: system_sdwan_user_devices
       # carries no account_id, and #scoped_label_record returns nil for any

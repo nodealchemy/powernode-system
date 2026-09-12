@@ -14,7 +14,7 @@ module Sdwan
       protected
 
       def perform
-        network = ::Sdwan::Network.find(params[:network_id])
+        network = resolve_scoped(::Sdwan::Network, params[:network_id])
         name = network.name
         network.destroy!
         { network_id: params[:network_id], name: name, destroyed: true }

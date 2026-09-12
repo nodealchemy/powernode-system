@@ -14,7 +14,7 @@ module Sdwan
 
       def perform
         reject_device_scoped_params!
-        grant = ::Sdwan::AccessGrant.find(params[:grant_id])
+        grant = resolve_scoped(::Sdwan::AccessGrant, params[:grant_id])
         # Both callers plumb `reason` into params — AccessGrantsController#revoke
         # from the request body, Ai::Tools::SdwanTool#revoke_access_grant from the
         # MCP action that documents it as "recorded on the grant". Dropping it here

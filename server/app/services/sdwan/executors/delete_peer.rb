@@ -17,7 +17,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::Sdwan::Peer.find(params[:peer_id])
+        peer = resolve_scoped(::Sdwan::Peer, params[:peer_id])
         # Read the connectivity tuple BEFORE the row goes away — this is the
         # only record of which endpoint was removed once the peer is gone.
         endpoint = peer.primary_endpoint

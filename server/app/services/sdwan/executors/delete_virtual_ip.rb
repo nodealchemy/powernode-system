@@ -13,7 +13,7 @@ module Sdwan
       protected
 
       def perform
-        vip = ::Sdwan::VirtualIp.find(params[:vip_id])
+        vip = resolve_scoped(::Sdwan::VirtualIp, params[:vip_id])
         addr = vip.try(:address)
         vip.destroy!
         { vip_id: params[:vip_id], address: addr, destroyed: true }

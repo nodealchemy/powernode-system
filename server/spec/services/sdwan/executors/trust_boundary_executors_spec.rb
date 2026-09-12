@@ -6,9 +6,10 @@ require "rails_helper"
 # the approval-gated revoke/accept actions on the federation-peer and
 # access-grant controllers. Previously entirely uncovered. Each extends
 # System::Executors::Base and is invoked as `.execute(params, deferred_operation:)`
-# returning `{ success:, data: }`. The executors are intentionally unscoped —
-# account ownership is enforced upstream by the controllers' set_* guards —
-# so these specs pin the actual state mutation each one performs.
+# returning `{ success:, data: }`. These specs pin the actual state mutation
+# each one performs, unanchored (deferred_operation: nil). The anchored arm —
+# each executor refusing another account's row through Base#resolve_scoped —
+# is pinned in anchored_record_lookup_spec.rb (IMP-134062908364).
 RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
   let(:account) { create(:account) }
 

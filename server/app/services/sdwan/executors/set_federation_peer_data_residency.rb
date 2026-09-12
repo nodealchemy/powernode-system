@@ -59,7 +59,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::System::FederationPeer.find(params[:federation_peer_id])
+        peer = resolve_scoped(::System::FederationPeer, params[:federation_peer_id])
         previous = peer.data_residency
 
         # The ride-along fields of the same request and the residency change are

@@ -13,7 +13,7 @@ module Sdwan
       protected
 
       def perform
-        rule = ::Sdwan::FirewallRule.find(params[:rule_id])
+        rule = resolve_scoped(::Sdwan::FirewallRule, params[:rule_id])
         rule.destroy!
         { rule_id: params[:rule_id], destroyed: true }
       end

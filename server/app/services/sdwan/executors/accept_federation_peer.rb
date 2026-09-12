@@ -38,7 +38,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::System::FederationPeer.find(params[:federation_peer_id])
+        peer = resolve_scoped(::System::FederationPeer, params[:federation_peer_id])
 
         # One transaction: the ride-along fields and the acceptance are a single
         # operator intent, and accept! can still refuse below (a peer revoked

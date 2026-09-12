@@ -21,7 +21,7 @@ module Sdwan
       protected
 
       def perform
-        vip = ::Sdwan::VirtualIp.find(params[:vip_id])
+        vip = resolve_scoped(::Sdwan::VirtualIp, params[:vip_id])
 
         # IMP-d952c791e264 — asked BEFORE prefer_target!, which persists a
         # reordered failover_holder_peer_ids with its own update! and is NOT

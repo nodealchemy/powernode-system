@@ -4,9 +4,11 @@ require "rails_helper"
 
 # The tenancy seam on System::Executors::Base.
 #
-# Executors are INTENTIONALLY unscoped — ownership is enforced upstream by the
-# controllers' set_* guards, documented at trust_boundary_executors_spec.rb:9-11
-# and revoke_user_device.rb:56-59 — and a blanket `where(account_id:)` would
+# Sdwan::Executors resolve their own subject rows through #resolve_scoped below
+# (the per-executor anchored arm is pinned in
+# spec/services/sdwan/executors/anchored_record_lookup_spec.rb); several
+# System::Executors still use a bare find. Not a blanket scope: a blanket
+# `where(account_id:)` would
 # break the callers that reach an executor with a literal
 # `deferred_operation: nil` (Base.preview, Ai::Tools::SystemFleetTool,
 # ServiceDiscoveryComposerExecutor), silently turning every find into

@@ -62,21 +62,25 @@ module Sdwan
       # state: if the grant has moved to another network, or either row is gone,
       # this raises instead of destroying the wrong grant.
       #
-      # This is NOT an authorization check — both ids come from the stored
-      # params. Account ownership is enforced upstream by the controller's
-      # set_network/set_grant guards, matching the convention the other SDWAN
-      # trust-boundary executors follow.
+      # Ownership is checked here too (IMP-134062908364): the NETWORK carries
+      # account_id, so it resolves through Base#resolve_scoped and an anchored
+      # operation refuses another account's network with the same
+      # CrossAccountError as every sibling. Before, this read the network with
+      # a bare find and relied on the dispatcher having scoped the same ids
+      # upstream. The grant is then found THROUGH that network, which is the
+      # pairing check. Unanchored callers pass through as before.
       def scoped_grant
-        ::Sdwan::Network.find(params[:network_id]).access_grants.find(params[:grant_id])
+        resolve_scoped(::Sdwan::Network, params[:network_id]).access_grants.find(params[:grant_id])
       end
 
       # The row the CARD names, resolved through Base#scoped_label_record
       # (IMP-8e4674f4d62d). scoped_grant is deliberately not reused here: it
-      # anchors on the NETWORK named in the same params, which re-validates the
-      # pairing but establishes nothing about ownership — so a caller that did
-      # not pre-scope had another account's grant labelled on its approvers'
-      # card, and this card's label is the grant holder's EMAIL ADDRESS. That
-      # makes it a disclosure of personal data, not a mislabelled resource.
+      # RAISES on a foreign or missing row, and a card label must degrade to
+      # the id rather than fail. It also passes through unanchored, where a
+      # label must decline — a caller that did not pre-scope had another
+      # account's grant labelled on its approvers' card, and this card's label
+      # is the grant holder's EMAIL ADDRESS. That makes it a disclosure of
+      # personal data, not a mislabelled resource.
       #
       # Both guards, not one: the account anchor is the ownership check, and
       # the `sdwan_network_id` comparison keeps scoped_grant's pairing check —

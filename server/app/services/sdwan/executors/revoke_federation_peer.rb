@@ -31,7 +31,7 @@ module Sdwan
       # it was also the arm that dropped the reason. revoke! is defined on the
       # model unconditionally, so there is nothing to fall back from.
       def perform
-        peer = ::System::FederationPeer.find(params[:federation_peer_id])
+        peer = resolve_scoped(::System::FederationPeer, params[:federation_peer_id])
         peer.revoke!(reason: params[:reason])
         { federation_peer_id: peer.id, revoked: true }
       end
