@@ -160,10 +160,10 @@ If the remote peer is rejecting, the clean recovery is to **revoke + re-propose*
 
 ```ruby
 # rails console on A (the grantor side)
-grant = System::FederationGrant.find_by_bearer_token("fg-<id>")
+grant = System::FederationGrant.find_by_bearer_token("fgs.<id>.<signature>")
 puts grant.active?                              # false → expired or revoked
 puts grant.permission_scopes                    # ["read"] etc.
-puts grant.node_instance_ids                    # empty = unrestricted
+puts grant.node_instance_ids                    # ["*"] = any; empty = deny
 puts grant.sdwan_network_ids
 puts grant.source_cidrs
 puts grant.applies_to?(
@@ -182,12 +182,12 @@ puts grant.applies_to?(
 
 ## Symptom: Federation API returns 401 even with valid cert + grant
 
-**What you see:** B presents both an mTLS cert (signed by A's internal CA per the P2.5 flow) and a `Bearer fg-<grant_id>` header, but A returns 401.
+**What you see:** B presents both an mTLS cert (signed by A's internal CA per the P2.5 flow) and a `Bearer fgs.<grant_id>.<signature>` header, but A returns 401.
 
 **Diagnose order:**
 1. **Cert chain valid?** A's `FederationApi::BaseController#authenticate_federation_peer!` walks the cert chain. Use `openssl s_client -showcerts -connect platform-a:443` from B's side to see what cert is being presented.
 2. **Cert belongs to a known peer?** The cert's subject CN (`fed:<peer.id>`, assigned by A at accept time) resolves back to the `System::FederationPeer` via `inbound_subject`. If that peer row doesn't exist (or is `revoked` / `suspended`), auth fails.
-3. **Grant token parses?** The `Authorization: Bearer fg-<uuid>` token must start with `fg-` and resolve to an existing `FederationGrant` row via `find_by_bearer_token`.
+3. **Grant token parses?** The `Authorization: Bearer fgs.<uuid>.<signature>` token must start with `fgs.`, carry a signature that verifies against A's current server secret (rotating the secret invalidates every outstanding token), and resolve to an existing `FederationGrant` row via `find_by_bearer_token`. No other token shape is accepted.
 4. **Trust chain mismatch?** In the **hierarchical** mode A signed B's CSR off A's own CA, so B's cert chains to A's CA from A's perspective — no mismatch. In the **symmetric** mode each side trusts the other's advertised CA anchor (`peer.trusted_ca_pem`); if that anchor wasn't absorbed at accept, A validates B's cert against the wrong CA and the chain fails.
 
 **Fix:** revoke the peer and re-propose from scratch so the accept chain re-runs the CSR sign (hierarchical) or CA-anchor exchange (symmetric) and re-stamps `inbound_subject` / `trusted_ca_pem`.

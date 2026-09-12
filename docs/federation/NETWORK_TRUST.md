@@ -30,7 +30,9 @@ Locked Decision #12 makes SDWAN a **first-class participant** in trust:
 
 Together: a request is denied unless the calling NodeInstance, the
 SDWAN network the request arrived over, AND the source IP all match
-the populated allowlists on the grant.
+the grant's allowlists. Every axis is stated explicitly: concrete
+entries, or `["*"]` (ANY) for no restriction on that axis. A blank
+allowlist denies, and validation refuses to save one.
 
 ---
 
@@ -100,7 +102,7 @@ include the proxy's internal address.
 
 ## Pessimistic-grant matching algorithm
 
-For each populated allowlist on a `FederationGrant`:
+For each allowlist on a `FederationGrant`:
 
 ```ruby
 return forbidden unless grant.applies_to_instance?(request.headers["X-Calling-Instance"])
@@ -110,14 +112,20 @@ return forbidden unless grant.applies_to_source_ip?(request.remote_ip)
 
 Each predicate:
 
-- Returns `true` when its corresponding allowlist is **empty** (no
-  restriction on this axis — preserves v1 back-compat).
-- Returns `true` when the supplied value is in the populated allowlist.
-- Returns `false` when the allowlist is populated but the supplied value
+- Returns `true` when its allowlist is exactly `["*"]` (ANY — no
+  restriction on this axis, even when the header is absent).
+- Returns `true` when the supplied value is in a concrete allowlist.
+- Returns `false` when the allowlist is concrete but the supplied value
   is missing or doesn't match.
+- Returns `false` when the allowlist is **blank**. Blank means deny,
+  never "unrestricted".
 
-All three axes are AND-combined. A grant with populated allowlists is
-pessimistic: every populated axis must match.
+All three axes are AND-combined, so every axis must pass.
+`FederationGrant#unrestricted?` is true only when all three are ANY.
+
+Validation refuses a blank axis, and refuses `"*"` mixed with concrete
+entries. A blank row can therefore only exist if it was written around
+validation, and such a row denies every call.
 
 ---
 
@@ -173,11 +181,11 @@ sequenceDiagram
     Auth->>Bridge: validate active bridge<br/>for (peer, network)
     Bridge-->>Auth: bridge active
     Auth->>Grant: applies_to_instance? + applies_to_network? + applies_to_source_ip?
-    alt all three allowlists match (or empty)
+    alt all three allowlists match (or are ANY ["*"])
         Grant-->>Auth: allowed
         Auth-->>Proxy: 200 + response payload
         Proxy-->>PeerB: 200
-    else any populated allowlist mismatches
+    else any allowlist mismatches (or is blank)
         Grant-->>Auth: forbidden
         Auth-->>Proxy: 403 with allowlist contents in body
         Proxy-->>PeerB: 403 ("calling instance not in grant allowlist" etc.)
@@ -212,8 +220,8 @@ If a federation_api call returns 403 with "calling instance not in
 grant allowlist," inspect:
 
 ```ruby
-grant = System::FederationGrant.find_by_bearer_token("fg-<id>")
-grant.node_instance_ids   # what's allowed
+grant = System::FederationGrant.find_by_bearer_token("fgs.<id>.<signature>")
+grant.node_instance_ids   # what's allowed (["*"] = any, [] = deny)
 request.headers["X-Calling-Instance"]   # what was supplied
 ```
 
@@ -222,19 +230,24 @@ allowlist contents to make this triage straightforward.
 
 ---
 
-## Back-compat (grants created before §K)
+## Explicit ANY, no implicit unrestricted
 
-Grants created before the LD #12 migration ship with all three
-allowlists empty (`node_instance_ids` / `sdwan_network_ids` /
-`source_cidrs` each default to `[]`). The predicates return `true` for
-empty allowlists — i.e. `FederationGrant#unrestricted?` is `true` — so
-those grants continue to work unchanged.
+There is no back-compat reading of an empty allowlist. The columns
+default to `[]`, and a blank axis is refused at validation, so every
+creator states each axis: the operator Grants editor and
+`POST /api/v1/system/platform/peers/:peer_id/grants`, the service-catalog
+subscription grants (both the issuing side and the receiving side's
+local record), the managed-child accept cascade, and the edge-exposure
+smoke seed. The system-issued grants write `["*"]` on every axis. The
+axis check runs when a grant is created or an axis changes, so a row
+written around validation with a blank axis denies but can still be
+revoked and archived.
 
 The FederationManager AI Skill surfaces grants carrying `admin` or
-`migrate` permission scope as `broad_scope_grants` findings —
-flagging pre-K grants that warrant tightening (pair with
-`#unrestricted?` to spot a broad scope that is also unscoped on every
-pessimistic axis).
+`migrate` permission scope as `broad_scope_grants` findings, marking
+grants that warrant tightening. Pair them with `#unrestricted?`, which
+means ANY on every pessimistic axis, to spot a broad scope that is also
+unscoped.
 
 ---
 

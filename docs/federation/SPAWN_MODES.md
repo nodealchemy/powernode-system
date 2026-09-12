@@ -78,8 +78,8 @@ the accept chain (`System::Federation::FederationAcceptanceService`, which
 `FederationApi::AcceptController#create` drives) auto-issues a
 `FederationGrant` on the parent side recording its persistent
 read/write/admin rights on the child (resource_kind:
-`managed_child_operator`, TTL 365 days, all pessimistic-scope
-allowlists empty by default).
+`managed_child_operator`, TTL 365 days, every pessimistic-scope
+allowlist set to `["*"]` (ANY); a blank allowlist would deny).
 
 The symmetric child-side grant lands when the child's first-run
 handler completes — at that point both sides agree on the parent's

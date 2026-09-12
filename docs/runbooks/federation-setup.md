@@ -196,16 +196,18 @@ curl -s -X POST \
     "resource_id":       null,
     "permission_scopes": ["read"],
 
-    "node_instance_ids": [],
-    "sdwan_network_ids": [],
-    "source_cidrs":      []
+    "node_instance_ids": ["*"],
+    "sdwan_network_ids": ["*"],
+    "source_cidrs":      ["*"]
   }'
 ```
 
 `resource_id: null` means "all of `resource_kind`"; the three trailing arrays
-are the optional **pessimistic-scope** allowlists (Locked Decision #12) —
-empty leaves that axis unrestricted (`FederationGrant#unrestricted?`). The
-grant returns a bearer token (`fg-<grant_id>`) that B presents alongside its
+are the required **pessimistic-scope** allowlists (Locked Decision #12). Each
+lists the allowed values, or `["*"]` (ANY) for no restriction on that axis
+(`FederationGrant#unrestricted?` is true only when all three are ANY). A blank
+axis is refused with a 422. The
+grant returns a bearer token (`fgs.<grant_id>.<signature>`) that B presents alongside its
 mTLS cert when calling A's `federation_api`. Default TTL is 30 days; the
 grant validates well-formed array contents (UUIDs, CIDRs) on save (LD #12).
 See [`../federation/NETWORK_TRUST.md`](../federation/NETWORK_TRUST.md) for the
