@@ -5,14 +5,13 @@ require "rails_helper"
 # Covers P4.5.5 — pessimistic auth chain extensions on
 # FederationApi::BaseController#authorize_grant!:
 #   - X-Calling-Instance header must match grant.node_instance_ids
-#     (when populated)
+#     (unless ANY)
 #   - X-Sdwan-Network header must match grant.sdwan_network_ids AND
 #     correspond to an active FederationNetworkBridge
-#   - request.remote_ip must fall in grant.source_cidrs (when populated)
+#   - request.remote_ip must fall in grant.source_cidrs (unless ANY)
 #
-# Back-compat verified separately: a grant with all three allowlists
-# empty matches regardless of supplied headers (covered in
-# resources_spec.rb).
+# ANY (`["*"]`) on every axis matches regardless of supplied headers; a
+# blank allowlist denies (see the last describe block).
 RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
                 type: :request do
   let(:account) { create(:account) }
@@ -152,15 +151,24 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
     end
   end
 
-  describe "back-compat: empty allowlists stay permissive" do
-    it "allows when grant has no scope restrictions even with no headers" do
-      grant = make_grant
-      # all allowlists empty — defaults from factory
+  # IMP-01166cdc69a7: blank is deny, never "unrestricted".
+  describe "explicit ANY allows; blank denies" do
+    it "allows with no headers when every axis is explicitly ANY" do
+      grant = make_grant(node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ])
 
       get path, headers: mtls_headers.merge("Authorization" => "Bearer #{grant.bearer_token}")
       # no X-Calling-Instance, no X-Sdwan-Network
 
       expect(response).to have_http_status(:ok)
+    end
+
+    it "denies a grant whose allowlists are blank (a row written around validation)" do
+      grant = make_grant(node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ])
+      grant.update_columns(node_instance_ids: [], sdwan_network_ids: [], source_cidrs: [])
+
+      get path, headers: full_headers.merge("Authorization" => "Bearer #{grant.bearer_token}")
+
+      expect(response).to have_http_status(:forbidden)
     end
   end
 end

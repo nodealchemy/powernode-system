@@ -152,9 +152,9 @@ module Federation
         permission_scopes: Array(resp[:permission_scopes]),
         issued_at: Time.current,
         expires_at: parse_time(resp[:expires_at]) || 30.days.from_now,
-        node_instance_ids: [],
-        sdwan_network_ids: [],
-        source_cidrs: [],
+        node_instance_ids: [ ::System::FederationGrant::ANY ],
+        sdwan_network_ids: [ ::System::FederationGrant::ANY ],
+        source_cidrs: [ ::System::FederationGrant::ANY ],
         metadata: {
           "received_from_peer_id" => @peer.id,
           "remote_grant_id" => resp[:grant_id]

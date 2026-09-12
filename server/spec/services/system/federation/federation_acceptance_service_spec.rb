@@ -188,6 +188,7 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
         resource_kind: "managed_child_operator",
         permission_scopes: %w[read write admin],
         issued_at: Time.current, expires_at: 365.days.from_now,
+        node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ],
         metadata: { "auto_issued_by" => "managed_child_accept_cascade" }
       )
 

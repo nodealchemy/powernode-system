@@ -317,7 +317,9 @@ federation_peer = ::System::FederationPeer.create!(
 federation_grant = ::System::FederationGrant.create!(
   account: account, federation_peer: federation_peer, grantor_user: nil,
   remote_subject: "smoke-edge-subject@peer.example.test", resource_kind: "service_subscription",
-  permission_scopes: [ "read" ], issued_at: Time.current, expires_at: 30.days.from_now
+  permission_scopes: [ "read" ], issued_at: Time.current, expires_at: 30.days.from_now,
+  node_instance_ids: [ ::System::FederationGrant::ANY ], sdwan_network_ids: [ ::System::FederationGrant::ANY ],
+  source_cidrs: [ ::System::FederationGrant::ANY ]
 )
 offering_backend_service = ::Sdwan::Service.create!(
   account: account, slug: "smoke-edge-offering-backend", name: "Smoke Edge Offering Backend",

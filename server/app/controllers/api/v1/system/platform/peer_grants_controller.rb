@@ -20,7 +20,8 @@ module Api
         #       "all of kind"), remote_subject (required), permission_scopes
         #       (default ["read"]), ttl_days (default 30, min 7, max 365),
         #       node_instance_ids/sdwan_network_ids/source_cidrs (pessimistic
-        #       allowlists; default []).
+        #       allowlists; each required — values, or ["*"] for any; a blank
+        #       axis is refused with 422).
         #
         #   POST   /api/v1/system/platform/peers/:peer_id/grants/:id/revoke
         #     Soft-revoke. Sets revoked_at; record persists for 90d retention

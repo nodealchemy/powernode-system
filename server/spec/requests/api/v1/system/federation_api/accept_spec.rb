@@ -136,8 +136,10 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
         expect(grant.metadata["auto_issued_by"]).to eq("managed_child_accept_cascade")
         expect(grant.metadata["spawn_mode"]).to eq("managed_child")
         expect(grant.metadata["spawn_role"]).to eq("parent")
-        # Pessimistic axes intentionally empty — operator can tighten later
-        # via FederationManager findings.
+        # Pessimistic axes deliberately ANY (blank would deny, IMP-01166cdc69a7)
+        # — the parent↔child relationship bounds it; operators can tighten
+        # later via FederationManager findings.
+        expect(grant.node_instance_ids).to eq([ "*" ])
         expect(grant.unrestricted?).to be true
       end
 
@@ -152,6 +154,7 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
           permission_scopes: %w[read write admin],
           issued_at: Time.current,
           expires_at: 365.days.from_now,
+          node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ],
           metadata: { "auto_issued_by" => "managed_child_accept_cascade" }
         )
 

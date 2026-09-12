@@ -263,9 +263,9 @@ module System
       # Managed-child auto-grant. Fires only when the peer row represents
       # the parent's view of a managed_child spawn (spawn_role=parent AND
       # spawn_mode=managed_child). Idempotent — if a live row already
-      # exists for this peer + resource_kind, skip. Empty pessimistic-scope
-      # allowlists keep this grant permissive within the bounded
-      # parent↔child relationship.
+      # exists for this peer + resource_kind, skip. Explicit ANY on every
+      # pessimistic-scope allowlist keeps this grant permissive within the
+      # bounded parent↔child relationship (a blank allowlist would deny).
       def auto_issue_managed_child_grant!(peer)
         return nil unless peer.spawn_role == "parent"
         return nil unless peer.spawn_mode == "managed_child"
@@ -285,6 +285,9 @@ module System
           permission_scopes: %w[read write admin],
           issued_at: Time.current,
           expires_at: Time.current + MANAGED_CHILD_GRANT_TTL,
+          node_instance_ids: [ ::System::FederationGrant::ANY ],
+          sdwan_network_ids: [ ::System::FederationGrant::ANY ],
+          source_cidrs: [ ::System::FederationGrant::ANY ],
           metadata: {
             "auto_issued_by" => "managed_child_accept_cascade",
             "spawn_mode" => peer.spawn_mode,

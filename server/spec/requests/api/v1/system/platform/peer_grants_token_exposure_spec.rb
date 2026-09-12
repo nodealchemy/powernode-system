@@ -105,7 +105,8 @@ RSpec.describe "Api::V1::System::Platform::PeerGrants bearer-token exposure", ty
     it "returns the bearer token exactly at issuance, under an honest key" do
       post base,
            params: { resource_kind: "skill", remote_subject: "bob@b.example.org",
-                     permission_scopes: %w[read] },
+                     permission_scopes: %w[read],
+                     node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ] },
            headers: auth_headers_for(manager), as: :json
       expect(response).to have_http_status(:created)
 

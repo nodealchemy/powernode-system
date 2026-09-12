@@ -2,28 +2,51 @@
 
 require "rails_helper"
 
-# Covers the P4.5 pessimistic-scope additions to FederationGrant
-# (LD #12). The pre-LD#12 grant behavior is covered in
-# `federation_grant_spec.rb`; this file focuses on the new
-# instance/network/CIDR allowlist semantics.
+# Pessimistic-scope allowlists on FederationGrant (LD #12): node_instance_ids,
+# sdwan_network_ids, source_cidrs.
+#
+# IMP-01166cdc69a7 (operator direction, no-legacy rule): a BLANK allowlist is a
+# DENY on that axis, never "unrestricted". A grant that means "any" on an axis
+# says so explicitly with the ANY sentinel ("*"), which must stand alone.
 RSpec.describe System::FederationGrant, type: :model do
+  let(:any) { described_class::ANY }
+
+  describe "ANY sentinel" do
+    it "is the literal *" do
+      expect(described_class::ANY).to eq("*")
+    end
+  end
+
   describe "#unrestricted?" do
-    it "is true when all three allowlists are empty" do
-      grant = build(:system_federation_grant)
+    it "is true only when every axis is explicitly ANY" do
+      grant = build(:system_federation_grant, node_instance_ids: [ any ], sdwan_network_ids: [ any ], source_cidrs: [ any ])
       expect(grant.unrestricted?).to be true
     end
 
-    it "is false when any allowlist is populated" do
-      expect(build(:system_federation_grant, node_instance_ids: [ "id1" ]).unrestricted?).to be false
-      expect(build(:system_federation_grant, sdwan_network_ids: [ "id1" ]).unrestricted?).to be false
-      expect(build(:system_federation_grant, source_cidrs: [ "10.0.0.0/8" ]).unrestricted?).to be false
+    it "is false when all three allowlists are blank (blank is deny, not unrestricted)" do
+      grant = build(:system_federation_grant, node_instance_ids: [], sdwan_network_ids: [], source_cidrs: [])
+      expect(grant.unrestricted?).to be false
+    end
+
+    it "is false when any axis is a concrete allowlist" do
+      base = { node_instance_ids: [ any ], sdwan_network_ids: [ any ], source_cidrs: [ any ] }
+      expect(build(:system_federation_grant, **base, node_instance_ids: [ "id1" ]).unrestricted?).to be false
+      expect(build(:system_federation_grant, **base, sdwan_network_ids: [ "id1" ]).unrestricted?).to be false
+      expect(build(:system_federation_grant, **base, source_cidrs: [ "10.0.0.0/8" ]).unrestricted?).to be false
     end
   end
 
   describe "#applies_to_instance?" do
-    it "is true when allowlist empty (back-compat — no restriction)" do
+    it "denies when the allowlist is blank, whatever is supplied" do
       grant = build(:system_federation_grant, node_instance_ids: [])
+      expect(grant.applies_to_instance?("any-uuid")).to be false
+      expect(grant.applies_to_instance?(nil)).to be false
+    end
+
+    it "allows anything, including an absent header, when the allowlist is ANY" do
+      grant = build(:system_federation_grant, node_instance_ids: [ any ])
       expect(grant.applies_to_instance?("any-uuid")).to be true
+      expect(grant.applies_to_instance?(nil)).to be true
     end
 
     it "is true when supplied instance is in the allowlist" do
@@ -44,9 +67,15 @@ RSpec.describe System::FederationGrant, type: :model do
   end
 
   describe "#applies_to_network?" do
-    it "is true when allowlist empty (back-compat)" do
+    it "denies when the allowlist is blank" do
       grant = build(:system_federation_grant, sdwan_network_ids: [])
+      expect(grant.applies_to_network?("any-uuid")).to be false
+    end
+
+    it "allows any network when the allowlist is ANY" do
+      grant = build(:system_federation_grant, sdwan_network_ids: [ any ])
       expect(grant.applies_to_network?("any-uuid")).to be true
+      expect(grant.applies_to_network?(nil)).to be true
     end
 
     it "matches when supplied network is in allowlist" do
@@ -61,9 +90,15 @@ RSpec.describe System::FederationGrant, type: :model do
   end
 
   describe "#applies_to_source_ip?" do
-    it "is true when allowlist empty" do
+    it "denies when the allowlist is blank" do
       grant = build(:system_federation_grant, source_cidrs: [])
+      expect(grant.applies_to_source_ip?("10.0.0.1")).to be false
+    end
+
+    it "allows any source when the allowlist is ANY" do
+      grant = build(:system_federation_grant, source_cidrs: [ any ])
       expect(grant.applies_to_source_ip?("10.0.0.1")).to be true
+      expect(grant.applies_to_source_ip?(nil)).to be true
     end
 
     it "matches an IPv4 in a /24 CIDR" do
@@ -128,10 +163,58 @@ RSpec.describe System::FederationGrant, type: :model do
                                 source_ip: "8.8.8.8")).to be false
     end
 
-    it "passes regardless of supplied values when grant is unrestricted (back-compat)" do
-      grant = build(:system_federation_grant)
-      expect(grant.unrestricted?).to be true
+    it "passes regardless of supplied values only when every axis is explicitly ANY" do
+      grant = build(:system_federation_grant, node_instance_ids: [ any ], sdwan_network_ids: [ any ], source_cidrs: [ any ])
       expect(grant.applies_to?(instance_id: nil, sdwan_network_id: nil, source_ip: nil)).to be true
+    end
+
+    it "fails for a grant whose allowlists are all blank (a row written around validation)" do
+      grant = build(:system_federation_grant, node_instance_ids: [], sdwan_network_ids: [], source_cidrs: [])
+      expect(grant.applies_to?(instance_id: "inst-a", sdwan_network_id: "net-x", source_ip: "10.1.2.3")).to be false
+    end
+  end
+
+  describe "validation" do
+    it "refuses a grant with a blank allowlist on any axis" do
+      %i[node_instance_ids sdwan_network_ids source_cidrs].each do |axis|
+        grant = build(:system_federation_grant, axis => [])
+        expect(grant).not_to be_valid, "#{axis} blank must be invalid"
+        expect(grant.errors[axis].join).to match(/ANY|\*/)
+      end
+    end
+
+    it "refuses ANY mixed with concrete entries" do
+      expect(build(:system_federation_grant, node_instance_ids: [ any, "abc" ])).not_to be_valid
+      expect(build(:system_federation_grant, sdwan_network_ids: [ "net-a", any ])).not_to be_valid
+      expect(build(:system_federation_grant, source_cidrs: [ any, "10.0.0.0/8" ])).not_to be_valid
+    end
+
+    it "still lets a row written around validation be revoked and archived (it denies meanwhile)" do
+      grant = create(:system_federation_grant)
+      grant.update_columns(node_instance_ids: [], sdwan_network_ids: [ any, "abc" ], source_cidrs: [])
+
+      expect(grant.reload.applies_to?(instance_id: "x", sdwan_network_id: "abc", source_ip: "10.0.0.1")).to be false
+      expect { grant.revoke!(reason: "cleanup") }.not_to raise_error
+      expect { grant.archive! }.not_to raise_error
+      expect(grant.reload).to be_revoked.and be_archived
+    end
+
+    it "re-checks the axes when one of them is changed on an existing grant" do
+      grant = create(:system_federation_grant)
+      expect(grant.update(source_cidrs: [])).to be false
+      expect(grant.errors[:source_cidrs].join).to match(/ANY|\*/)
+    end
+
+    it "denies a non-array axis rather than coercing it (a row written around validation)" do
+      grant = build(:system_federation_grant, node_instance_ids: any, sdwan_network_ids: any, source_cidrs: any)
+      expect(grant.applies_to_instance?(any)).to be false
+      expect(grant.applies_to_network?(any)).to be false
+      expect(grant.unrestricted?).to be false
+    end
+
+    it "accepts ANY alone and concrete allowlists on every axis" do
+      expect(build(:system_federation_grant, node_instance_ids: [ any ], sdwan_network_ids: [ any ], source_cidrs: [ any ])).to be_valid
+      expect(build(:system_federation_grant, node_instance_ids: %w[abc], sdwan_network_ids: %w[net-a], source_cidrs: %w[10.0.0.0/8])).to be_valid
     end
   end
 end

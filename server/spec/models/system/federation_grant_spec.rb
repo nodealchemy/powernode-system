@@ -37,7 +37,8 @@ RSpec.describe System::FederationGrant, type: :model do
         account: account, federation_peer: peer,
         grantor_user: create(:user, account: account),
         remote_subject: "alice@b", resource_kind: "skill",
-        permission_scopes: [ "read" ], expires_at: nil
+        permission_scopes: [ "read" ], expires_at: nil,
+        node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ]
       )
       expect(grant.save).to be true
       expect(grant.expires_at).to be_present
@@ -80,7 +81,8 @@ RSpec.describe System::FederationGrant, type: :model do
         grantor_user: create(:user, account: account),
         remote_subject: "alice@b",
         resource_kind: "skill",
-        permission_scopes: [ "read" ]
+        permission_scopes: [ "read" ],
+        node_instance_ids: [ "*" ], sdwan_network_ids: [ "*" ], source_cidrs: [ "*" ]
       )
       expect(grant.save).to be true
       expect(grant.issued_at).to be_within(2.seconds).of(Time.current)
@@ -209,35 +211,25 @@ RSpec.describe System::FederationGrant, type: :model do
       expect(described_class.find_by_bearer_token(token)).to be_nil
     end
 
-    describe "legacy raw-PK `fg-<id>` grace" do
-      it "rejects a legacy token by default (POWERNODE_FEDERATION_LEGACY_TOKEN unset)" do
-        prev = ENV.delete("POWERNODE_FEDERATION_LEGACY_TOKEN")
-        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to be_nil
-        # the signed envelope still resolves with the legacy grace unset
-        expect(described_class.find_by_bearer_token(grant.bearer_token)).to eq(grant)
-      ensure
-        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
-      end
-
-      it "accepts a legacy token only when the operator explicitly opts back in" do
+    # IMP-01166cdc69a7 — the raw-PK `fg-<id>` token path is deleted, not
+    # defaulted off: the envelope is the only token shape, and no environment
+    # variable can re-enable the old one.
+    describe "no raw-PK token path" do
+      it "rejects a raw-PK `fg-<id>` token even when the retired grace variable is set" do
         prev = ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"]
         ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = "true"
-        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to eq(grant)
-      ensure
-        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
-      end
-
-      it "rejects a legacy token when POWERNODE_FEDERATION_LEGACY_TOKEN is explicitly off" do
-        prev = ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"]
-        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = "false"
         expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to be_nil
-        # the new envelope still resolves with legacy off
         expect(described_class.find_by_bearer_token(grant.bearer_token)).to eq(grant)
       ensure
-        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
+        prev.nil? ? ENV.delete("POWERNODE_FEDERATION_LEGACY_TOKEN") : ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
       end
 
-      it "returns nil (not a 500) for a malformed legacy id" do
+      it "no longer defines the legacy prefix or grace-variable constants" do
+        expect(described_class.const_defined?(:LEGACY_PREFIX, false)).to be false
+        expect(described_class.const_defined?(:LEGACY_TOKEN_ENV, false)).to be false
+      end
+
+      it "returns nil (not a 500) for raw-PK-shaped input" do
         expect(described_class.find_by_bearer_token("fg-not-a-uuid")).to be_nil
         expect(described_class.find_by_bearer_token("fg-")).to be_nil
       end

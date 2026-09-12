@@ -64,8 +64,18 @@ RSpec.describe "Api::V1::System::Platform::PeerGrants", type: :request do
         remote_subject: "bob@b.example.org",
         permission_scopes: %w[read write],
         ttl_days: 14,
+        node_instance_ids: [ "*" ],
+        sdwan_network_ids: [ "*" ],
         source_cidrs: [ "10.0.0.0/24" ]
       }
+    end
+
+    # IMP-01166cdc69a7: a grant must state every axis; blank is refused, not
+    # silently issued as a grant that denies everything.
+    it "refuses a grant with a blank allowlist axis" do
+      post base, params: valid_body.except(:sdwan_network_ids), headers: auth_headers_for(manager), as: :json
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to include("sdwan_network_ids")
     end
 
     it "issues a grant with pessimistic CIDR scope" do

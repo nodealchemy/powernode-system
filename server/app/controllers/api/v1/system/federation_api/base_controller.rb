@@ -113,10 +113,9 @@ module Api
             @current_account ||= current_federation_peer&.account
           end
 
-          # Resolves a Bearer `fgs.<id>.<sig>` HMAC-envelope token (or a legacy
-          # `fg-<id>` token during the grace window) to a FederationGrant and
-          # enforces the multi-layer auth chain expected by federation_api
-          # resource endpoints:
+          # Resolves a Bearer `fgs.<id>.<sig>` HMAC-envelope token (the only
+          # accepted shape) to a FederationGrant and enforces the multi-layer
+          # auth chain expected by federation_api resource endpoints:
           #
           #   1. Bearer token present
           #   2. Grant resolves
@@ -126,12 +125,14 @@ module Api
           #   6. Grant's resource_id is either nil (kind-wide) or == requested id
           #   7. Grant carries the requested scope
           #   8. (LD #12) Grant's node_instance_ids allowlist matches caller's
-          #      X-Calling-Instance header (when populated)
+          #      X-Calling-Instance header (unless the allowlist is ANY `["*"]`)
           #   9. (LD #12) Grant's sdwan_network_ids allowlist matches caller's
-          #      X-Sdwan-Network header (when populated; validated against
-          #      active FederationNetworkBridge for this peer)
+          #      X-Sdwan-Network header (unless ANY; a supplied network is
+          #      validated against an active FederationNetworkBridge for this peer)
           #  10. (LD #12) Grant's source_cidrs allowlist matches caller's
-          #      verified source IP (when populated)
+          #      verified source IP (unless ANY)
+          #
+          # A blank allowlist on any axis denies.
           #
           # On success returns the FederationGrant. On failure renders 401
           # or 403 (caller-side render is short-circuited by render_unauthorized
@@ -223,8 +224,8 @@ module Api
           # the existing mTLS chain to NodeApi::BaseController).
           #
           # Returns nil when the header is absent — the grant's
-          # `applies_to_instance?` returns true for empty allowlists,
-          # so absence-of-header preserves back-compat for v1 grants.
+          # `applies_to_instance?` then passes only when its allowlist is
+          # ANY (`["*"]`); a concrete or blank allowlist denies.
           def calling_instance_id
             request.headers["X-Calling-Instance"].presence
           end

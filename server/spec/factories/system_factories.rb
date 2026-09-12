@@ -917,6 +917,11 @@ FactoryBot.define do
     issued_at { Time.current }
     expires_at { 30.days.from_now }
     metadata { {} }
+    # Blank allowlists deny (IMP-01166cdc69a7); the factory states "any"
+    # explicitly so a spec that is not about pessimistic scope stays permissive.
+    node_instance_ids { [ "*" ] }
+    sdwan_network_ids { [ "*" ] }
+    source_cidrs { [ "*" ] }
 
     trait :revoked do
       revoked_at { 1.day.ago }

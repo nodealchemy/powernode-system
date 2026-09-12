@@ -110,9 +110,9 @@ module Federation
         permission_scopes: offering.default_grant_scopes,
         issued_at: Time.current,
         expires_at: ttl_days.days.from_now,
-        node_instance_ids: [],
-        sdwan_network_ids: [],
-        source_cidrs: []
+        node_instance_ids: [ ::System::FederationGrant::ANY ],
+        sdwan_network_ids: [ ::System::FederationGrant::ANY ],
+        source_cidrs: [ ::System::FederationGrant::ANY ]
       )
     end
 
