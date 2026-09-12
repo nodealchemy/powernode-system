@@ -1507,6 +1507,11 @@ func TestSandboxRunner_KillsWhatThePhaseLeftBehind(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to switch to the sandbox user")
 	}
+	if !sandboxAttrsUsable() {
+		t.Skip("this host refuses the sandbox's own PID namespace or uid switch; " +
+			"TestSandboxRunner_NothingThePhaseStartedOutlivesIt covers the same " +
+			"property through the user-namespace seam")
+	}
 	// Not t.TempDir(): the testing package makes its parent 0700, which the
 	// sandbox user cannot traverse (D1b correctness N2). This directory and
 	// every directory above it must be traversable by others.
@@ -1564,6 +1569,22 @@ id -u
 	if left := processesCarrying(marker); len(left) != 0 {
 		t.Fatalf("processes %v outlived the phase", left)
 	}
+}
+
+// sandboxAttrsUsable reports whether this host lets the REAL sandbox attrs run.
+// Root alone is not enough: the phase gets its own PID namespace, and a
+// container whose root holds no CAP_SYS_ADMIN refuses CLONE_NEWPID with EPERM
+// (the CI runner is exactly that — it runs as root, so the euid check above
+// does not cover it). Probed with the same SysProcAttr sandboxCommand builds,
+// so only that refusal is skipped and every other failure still fails.
+func sandboxAttrsUsable() bool {
+	probe := exec.Command("/bin/true")
+	probe.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:    true,
+		Cloneflags: syscall.CLONE_NEWPID,
+		Credential: &syscall.Credential{Uid: lintSandboxUID, Gid: lintSandboxGID, Groups: []uint32{}},
+	}
+	return probe.Run() == nil
 }
 
 // unprivilegedRunner is the REAL runner with its test seam on: the same PID
