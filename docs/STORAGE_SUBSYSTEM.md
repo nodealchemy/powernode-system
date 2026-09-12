@@ -375,10 +375,10 @@ dispatched by `app/services/ai/tools/system_fleet_tool.rb` (volumes + migrations
 | Action | Purpose | Key params |
 |--------|---------|------------|
 | `system_list_volumes` | List ProviderVolumes | `status`, `transport`, `node_instance_id`, `unattached_only` |
-| `system_get_volume` | Full detail on one volume | `id` |
+| `system_get_volume` | Full detail on one volume | `volume_id` |
 | `system_create_volume` | Register a ProviderVolume | `name`, `size_gb`, `transport`, `nfs_server`, `nfs_export_path`, … |
-| `system_update_volume` | Update name/desc/size/status | `id`, … |
-| `system_delete_volume` | Delete a volume (must be detached) | `id` |
+| `system_update_volume` | Update name/desc/size/status | `volume_id`, … |
+| `system_delete_volume` | Delete a volume (must be detached) | `volume_id` |
 | `system_attach_volume` | Attach to a NodeInstance | `volume_id`, `node_instance_id`, `role` |
 | `system_detach_volume` | Detach from a NodeInstance | `volume_id`, `node_instance_id` |
 | `system_test_nfs_export` | Probe an NFS server/export (no mount) | `server`, `export_path` |
@@ -408,8 +408,8 @@ state) with it — an instance-level verb, not this one.
 |--------|---------|------------|
 | `system_snapshot_volume` | Snapshot a volume via its provider | `volume_id`, `name`, `description` |
 | `system_list_volume_snapshots` | List a volume's snapshots, newest first | `volume_id` |
-| `system_delete_volume_snapshot` | **DESTROYS a restore point** — approval-gated; provider delete then row drop | `id` |
-| `system_restore_volume_snapshot` | Restore a volume from a completed snapshot — read `restored_in_place` | `id`, `swap_into_place` |
+| `system_delete_volume_snapshot` | **DESTROYS a restore point** — approval-gated; provider delete then row drop | `snapshot_id` |
+| `system_restore_volume_snapshot` | Restore a volume from a completed snapshot — read `restored_in_place` | `snapshot_id`, `swap_into_place` |
 
 **Restore is not one thing**, and every surface reports which it got.
 `BaseProvider#volume_snapshot_restore_mode` declares it:
@@ -475,12 +475,12 @@ taken. That sensor is tracked as improvement
 |--------|---------|------------|
 | `system_migrate_storage_component` | Create a `planned` StorageMigration + plan | `node_instance_id`, `source_volume_id`, `target_volume_id`, `role` |
 | `system_list_storage_migrations` | List migrations (newest, cap 100) | `status`, `node_instance_id`, `active_only` |
-| `system_get_storage_migration` | Fetch one (plan, bytes, audit log) | `id` |
-| `system_approve_storage_migration` | `planned → approved` | `id` |
-| `system_cancel_storage_migration` | Cancel pre-sync only | `id`, `reason` |
-| `system_report_storage_migration_progress` | Advance phase + record bytes | `id`, `status`, `bytes_copied`, `bytes_total`, `bytes_verified`, `note` |
-| `system_revert_storage_migration_binding` | (Increment 9) Request the agent re-point the mount back to source | `id`, `reason` |
-| `system_cleanup_storage_migration` | (Increment 9) **DESTRUCTIVE** — delete target-side scratch artifacts only | `id`, `reason`, `immediate` |
+| `system_get_storage_migration` | Fetch one (plan, bytes, audit log) | `migration_id` |
+| `system_approve_storage_migration` | `planned → approved` | `migration_id` |
+| `system_cancel_storage_migration` | Cancel pre-sync only | `migration_id`, `reason` |
+| `system_report_storage_migration_progress` | Advance phase + record bytes | `migration_id`, `status`, `bytes_copied`, `bytes_total`, `bytes_verified`, `note` |
+| `system_revert_storage_migration_binding` | (Increment 9) Request the agent re-point the mount back to source | `migration_id`, `reason` |
+| `system_cleanup_storage_migration` | (Increment 9) **DESTRUCTIVE** — delete target-side scratch artifacts only | `migration_id`, `reason`, `immediate` |
 
 ### Ownership + chown
 
