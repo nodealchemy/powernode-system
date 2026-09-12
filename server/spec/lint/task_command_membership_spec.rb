@@ -132,7 +132,14 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # inside the <<~RUBY heredoc of the "FIRES on the variable shape a literal
       # grep cannot see" example, still synthetic source handed to the scanner
       # as a string, still constructing nothing.
-      "lint/on_node_task_producer_census_spec.rb" => [ 496 ],
+      #
+      # MOVED 496 -> 509 when the lint_discovery producer was censused (campaign
+      # 01a08c9b D1b: a 13-line :gated entry above this site). RE-AUDITED — 509
+      # is still the `::System::Task.create!(` head inside the <<~RUBY heredoc of
+      # the "FIRES on the variable shape a literal grep cannot see" example,
+      # still synthetic source handed to the scanner as a string, still
+      # constructing nothing.
+      "lint/on_node_task_producer_census_spec.rb" => [ 509 ],
       # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
       # here until increment 3 DELETED it, along with the
       # System::Runtime::ControlInstance class it covered and the server

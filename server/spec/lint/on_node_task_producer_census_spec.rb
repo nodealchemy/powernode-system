@@ -160,6 +160,19 @@ RSpec.describe "on-node task producer census" do
              "#dormant_agent_reason rather than refusing, since a stopped box is not evidence " \
              "of a dead agent and the task is pulled when one starts."
       },
+      "app/services/system/lint_discovery_executor.rb#create_task!" => {
+        disposition: :gated, sites: 1,
+        evidence: "on_node_dispatch_refusal",
+        why: "Improvement discovery's runner dispatch (campaign 01a08c9b D1b). The pool allocator " \
+             "already refuses a dead member inside InstancePoolService#acquire!, one frame up, and " \
+             "the FIRST DRAFT of this entry leaned on exactly that — the same 'live by " \
+             "construction' reason an independent review falsified for the fulfillment entry " \
+             "below. Claim-time liveness is not dispatch-time liveness, so this consults the " \
+             "predicate itself and fails closed with a `runner_agent_not_live` skip, releasing the " \
+             "lease, rather than holding a runner while queueing a task no agent will pull. It " \
+             "does NOT close the stale re-dispatch class — a re-dispatched or cloned row never " \
+             "re-enters this method — which is the agent-side run_ref check, filed separately."
+      },
       "app/services/system/fulfillment_advance_orchestrator.rb#ensure_template_applied!" => {
         disposition: :acknowledged, sites: 1,
         offer: "01a07872-a383",
