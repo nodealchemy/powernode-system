@@ -322,14 +322,14 @@ module System
       end
 
       # { key => Integer } when the query answered; otherwise
-      # { :"<key>_reason" => why }. A nil answer is not a 0.
+      # { "<key>_reason": why }. A nil answer is not a 0.
       def read_fact(key)
         value = yield
-        return { :"#{key}_reason" => "query returned no value" } if value.nil?
+        return { "#{key}_reason": "query returned no value" } if value.nil?
 
         { key => Integer(value) }
       rescue ::ActiveRecord::StatementInvalid => e
-        { :"#{key}_reason" => "#{e.class}: #{e.message}" }
+        { "#{key}_reason": "#{e.class}: #{e.message}" }
       end
 
       def probe_redis

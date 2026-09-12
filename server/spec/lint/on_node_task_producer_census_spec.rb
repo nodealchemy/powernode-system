@@ -221,7 +221,7 @@ RSpec.describe "on-node task producer census" do
         disposition: :out_of_scope, sites: 1,
         why: "Same as nfs_export_manager#dispatch_task — a storage.* verb passed as a method " \
              "parameter, agent-delegated rather than an on-node reconcile command."
-      },
+      }
       # REMOVED — #create_instance_operation no longer exists (campaign 01a0790b
       # increment 1). It was the ungated association-form producer
       # (`current_account.system_tasks.create(command: command, ...)`) behind the
