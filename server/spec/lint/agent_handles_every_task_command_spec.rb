@@ -49,6 +49,23 @@ RSpec.describe "System::Task::COMMANDS vs the agent's handler registry", type: :
   # subsystem delete four verbs that were still reachable.
   LITERAL_REGISTER_RX = /\br\.Register\(\s*"([^"]+)"/
   LOOP_REGISTER_RX    = /for\s+_,\s*cmd\s*:=\s*range\s*\[\]string\{(.*?)\}/m
+  # THE THIRD SHAPE: a range over a DERIVED set. module_build.go declares an
+  # allowlist map and registers its keys through a helper —
+  #
+  #   var ciJobs = map[string]ciJob{ "ci.module_build": ..., "ci.lint_discovery": ... }
+  #   func ciJobCommands() []string { for command := range ciJobs { ... } }
+  #   for _, command := range ciJobCommands() { r.Register(command, h) }
+  #
+  # No literal call and no inline []string appears anywhere in that chain. When
+  # campaign 01a08c9b turned the literal registration into this form, BOTH ci.*
+  # commands disappeared from this scan at once and the subset example reported
+  # two handlers as missing that RegisterDefaults demonstrably registers (proven
+  # by running it: Lookup returns *ModuleBuildHandler for each). These three
+  # follow the chain — the range that registers, the helper it calls, the map the
+  # helper reads — and the parser guard asserts both commands come back.
+  RANGE_REGISTER_RX   = /for\s+(?:\w+\s*,\s*)?\w+\s*:=\s*range\s+(\w+)(?:\(\))?\s*\{[^{}]*?r\.Register\(/m
+  MAP_ALLOWLIST_RX    = /^var\s+(\w+)\s*=\s*map\[string\][^{]*\{(.*?)^\}/m
+  FUNC_BODY_RX        = /^func\s+(\w+)\s*\([^)]*\)[^{]*\{(.*?)^\}/m
   # Every `func RegisterX(...)` the handlers package defines, and every one
   # RegisterDefaults actually calls. A registration is only real if the chain
   # RegisterDefaults -> RegisterX -> r.Register is intact, and scanning for the
@@ -78,11 +95,35 @@ RSpec.describe "System::Task::COMMANDS vs the agent's handler registry", type: :
     src.gsub(%r{/\*.*?\*/}m, "").gsub(%r{^\s*//.*$}, "")
   end
 
+  # name => body, for every allowlist map and every plain function in the
+  # package. Collected across ALL sources, because the map, the helper and the
+  # registering loop need not share a file.
+  let(:go_map_bodies) { go_sources.values.flat_map { |src| src.scan(MAP_ALLOWLIST_RX) }.to_h }
+  let(:go_func_bodies) { go_sources.values.flat_map { |src| src.scan(FUNC_BODY_RX) }.to_h }
+
+  # The allowlist keys an identifier resolves to: the map itself, or the map a
+  # helper function ranges over. ONE hop, deliberately — a deeper indirection
+  # returns nothing and so reds the parser guard above, rather than being
+  # chased silently until the scan quietly reads the wrong set.
+  def derived_commands(identifier, maps, funcs)
+    body = maps[identifier]
+    if body.nil?
+      func = funcs[identifier]
+      return [] if func.nil?
+
+      body = maps[func[/range\s+(\w+)/, 1]]
+    end
+    body.to_s.scan(/"([^"]+)"\s*:/).flatten
+  end
+
   let(:agent_commands) do
+    maps = go_map_bodies
+    funcs = go_func_bodies
     go_sources.values.flat_map { |src|
       literals = src.scan(LITERAL_REGISTER_RX).flatten
       looped   = src.scan(LOOP_REGISTER_RX).flatten.flat_map { |block| block.scan(/"([^"]+)"/).flatten }
-      literals + looped
+      derived  = src.scan(RANGE_REGISTER_RX).flatten.flat_map { |id| derived_commands(id, maps, funcs) }
+      literals + looped + derived
     }.uniq
   end
 
@@ -93,6 +134,19 @@ RSpec.describe "System::Task::COMMANDS vs the agent's handler registry", type: :
     # so between them they prove both arms of the scan still work.
     expect(agent_commands).to include("start"), "the literal r.Register(\"...\") scan matched nothing"
     expect(agent_commands).to include("storage.chown"), "the loop-form registration scan matched nothing"
+    # The THIRD shape, and the reason this arm exists: RegisterModuleBuild binds
+    # its commands by ranging over a DERIVED set — `for _, command := range
+    # ciJobCommands()`, whose helper ranges over the `ciJobs` allowlist map. That
+    # is neither a literal call nor an inline []string, so when campaign 01a08c9b
+    # changed module_build.go into that shape, BOTH ci commands vanished from this
+    # scan at once and the subset example below reported two missing handlers that
+    # RegisterDefaults demonstrably registers. Asserting them here means the next
+    # change of registration shape reds THIS example — the parser's own oracle —
+    # instead of silently making the subset example lie.
+    expect(agent_commands).to include("ci.module_build", "ci.lint_discovery"),
+      "the allowlist-map registration scan matched nothing: ciJobs' keys are registered through " \
+      "`for _, command := range ciJobCommands() { r.Register(command, h) }`, so a scan that cannot " \
+      "follow a map-derived set reports every ci.* command as unhandled"
   end
 
   # THE CHAIN, NOT JUST ITS LAST LINK. A `r.Register(...)` call proves nothing
