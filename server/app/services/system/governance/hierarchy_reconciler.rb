@@ -120,8 +120,15 @@ module System
       # allowed_delegate_types is filled in by .child_delegation, not here: core
       # E4 made an EMPTY list mean NONE rather than "unrestricted", and an empty
       # literal here is what began refusing sibling delegation.
+      # allowed_actions likewise: an empty list means NONE since core
+      # IMP-d2873a16567e, so the action a delegation is checked as is named.
+      # Spelled here rather than read from Ai::DelegationPolicy::DELEGATABLE_ACTIONS
+      # so this class body still loads against a core that predates the
+      # constant (extension and core can land out of step); the seed specs
+      # assert the two are equal.
+      DELEGATED_ACTIONS = %w[execute].freeze
       CHILD_DELEGATION = { inheritance_policy: "conservative", max_depth: 2,
-                           allowed_actions: [] }.freeze
+                           allowed_actions: DELEGATED_ACTIONS }.freeze
       SPAWN_REASON = "seed"
 
       Result = Struct.new(:attached, :policies_written, :skipped, keyword_init: true) do
@@ -142,7 +149,7 @@ module System
         end
 
         def root_delegation
-          ROOT_DELEGATION.merge(allowed_delegate_types: system_agent_types, allowed_actions: [])
+          ROOT_DELEGATION.merge(allowed_delegate_types: system_agent_types, allowed_actions: DELEGATED_ACTIONS)
         end
 
         # A system domain agent may delegate to its SIBLINGS.

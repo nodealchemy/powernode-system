@@ -231,7 +231,8 @@ RSpec.describe "system_capacity_manager_agent seed" do
       # its siblings, enumerated from system_agent_types.
       expect(policy.allowed_delegate_types)
         .to eq(System::Governance::HierarchyReconciler.system_agent_types)
-      expect(policy.delegatable_actions).to eq([])
+      # Same rule for actions since IMP-d2873a16567e: the list is spelled out.
+      expect(policy.delegatable_actions).to eq(Ai::DelegationPolicy::DELEGATABLE_ACTIONS)
 
       report = System::Governance::HierarchyReconciler.new(account: account).drift
       expect(report.skipped).not_to include("capacity-manager(agent absent)")

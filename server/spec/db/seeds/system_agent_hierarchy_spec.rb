@@ -235,7 +235,8 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(fleet.allowed_delegate_types)
         .to eq(System::Governance::HierarchyReconciler.system_agent_types)
       expect(fleet.allowed_delegate_types).to include(agent("CVE Responder").agent_type)
-      expect(fleet.delegatable_actions).to eq([])
+      # An empty list means NONE for actions too (IMP-d2873a16567e).
+      expect(fleet.delegatable_actions).to eq(Ai::DelegationPolicy::DELEGATABLE_ACTIONS)
     end
 
     it "refuses a delegate whose type is not a system agent's" do
@@ -281,7 +282,7 @@ RSpec.describe "system_agent_hierarchy seed" do
       declared_types = ([ "Infrastructure Generalist" ] + domain_agents).map { |n| agent(n).agent_type }.uniq.sort
       expect(concierge.allowed_delegate_types).to eq(declared_types)
       expect(concierge.allowed_delegate_types).to include("monitor", "assistant")
-      expect(concierge.delegatable_actions).to eq([])
+      expect(concierge.delegatable_actions).to eq(Ai::DelegationPolicy::DELEGATABLE_ACTIONS)
     end
 
     # The consumer, not the column: a seeded policy must still ALLOW the
