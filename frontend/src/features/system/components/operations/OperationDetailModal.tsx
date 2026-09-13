@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { formatDuration, formatTimestamp } from '@/shared/utils/formatters';
 import { Modal } from '@/shared/components/ui/Modal';
-import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
+import { TabContainer, type Tab } from '@/shared/components/layout/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { StatusBadge } from '../shared/StatusBadge';
@@ -519,7 +519,6 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
             activeTab={activeTab}
             onTabChange={(id) => setActiveTab(id as TabId)}
             variant="underline"
-            showContent={false}
           />
 
           {/* Content */}

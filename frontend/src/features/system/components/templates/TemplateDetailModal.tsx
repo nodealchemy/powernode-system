@@ -5,7 +5,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
-import { TabContainer } from '@/shared/components/ui/TabContainer';
+import { TabContainer } from '@/shared/components/layout/TabContainer';
 import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -460,6 +460,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
             tabs={tabs}
             activeTab={activeTab}
             onTabChange={setActiveTab}
+            renderContent={(tabId) => tabs.find((tab) => tab.id === tabId)?.content}
           />
         ) : (
           <div className="flex items-center justify-center h-64 text-theme-secondary">

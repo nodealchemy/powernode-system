@@ -15,7 +15,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
-import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
+import { TabContainer, type Tab } from '@/shared/components/layout/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -123,12 +123,11 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
     });
   };
 
-  // `badge` renders whenever it is defined, where the inline strip it replaces
-  // rendered a count only when it was above zero — hence `|| undefined`.
+  // TabContainer renders a badge only when its count is above zero.
   const tabs: (Tab & { id: TabId })[] = [
     { id: 'info', label: 'Information', icon: <Package className="w-4 h-4" /> },
-    { id: 'resources', label: 'Resources', icon: <FileCode className="w-4 h-4" />, badge: resources.length || undefined },
-    { id: 'dependencies', label: 'Dependencies', icon: <Link className="w-4 h-4" />, badge: module?.dependencies?.length || undefined },
+    { id: 'resources', label: 'Resources', icon: <FileCode className="w-4 h-4" />, badge: { count: resources.length } },
+    { id: 'dependencies', label: 'Dependencies', icon: <Link className="w-4 h-4" />, badge: { count: module?.dependencies?.length ?? 0 } },
     { id: 'metadata', label: 'Metadata', icon: <Package className="w-4 h-4" /> }
   ];
 
@@ -498,7 +497,6 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
             activeTab={activeTab}
             onTabChange={(id) => setActiveTab(id as TabId)}
             variant="underline"
-            showContent={false}
           />
 
           {/* Content */}

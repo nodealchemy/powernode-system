@@ -37,7 +37,12 @@ const INLINE_STRIP_MARKER = 'px-6 py-3 text-sm font-medium border-b-2 transition
  */
 const OWNS_TABS = /setActiveTab/;
 
-const TAB_CONTAINER_IMPORT = "@/shared/components/ui/TabContainer";
+/**
+ * The one shared tab container. The deprecated copy under `components/ui` was
+ * deleted in favour of it (IMP-efa22f08cb32); the host API exposes this id to
+ * extension bundles.
+ */
+const TAB_CONTAINER_IMPORT = "@/shared/components/layout/TabContainer";
 
 /**
  * Components that own tab state without being the detail-modal strip this task

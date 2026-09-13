@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Server, Cpu, Box, Activity, Layers } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
-import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
+import { TabContainer, type Tab } from '@/shared/components/layout/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -384,7 +384,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   }, [nodeId, addNotification]);
 
   // Build tabs array
-  const tabs: Tab[] = [
+  const tabs: (Tab & { content: React.ReactNode })[] = [
     {
       id: 'info',
       label: 'Information',
@@ -398,7 +398,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       id: 'instances',
       label: 'Instances',
       icon: <Cpu className="w-4 h-4" />,
-      badge: instances.length,
+      badge: { count: instances.length },
       content: (
         <NodeInstancesTab
           nodeId={nodeId}
@@ -436,7 +436,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       id: 'modules',
       label: 'Modules',
       icon: <Box className="w-4 h-4" />,
-      badge: modules.length,
+      badge: { count: modules.length },
       content: (
         <NodeModulesTab
           modules={modules}
@@ -455,7 +455,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
       id: 'operations',
       label: 'Operations',
       icon: <Activity className="w-4 h-4" />,
-      badge: operations.filter(op => ['pending', 'running'].includes(op.status)).length || undefined,
+      badge: { count: operations.filter(op => ['pending', 'running'].includes(op.status)).length },
       content: <NodeOperationsTab operations={operations} />
     });
   }
@@ -516,6 +516,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
             tabs={tabs}
             activeTab={activeTab}
             onTabChange={setActiveTab}
+            renderContent={(tabId) => tabs.find((tab) => tab.id === tabId)?.content}
             variant="underline"
           />
         ) : (

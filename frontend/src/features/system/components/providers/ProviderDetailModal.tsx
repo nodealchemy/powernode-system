@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Cloud, MapPin, Server, Settings, Cpu } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
-import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
+import { TabContainer, type Tab } from '@/shared/components/layout/TabContainer';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -429,13 +429,12 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
   }, [addNotification]);
 
 
-  // `badge` renders whenever it is defined, where the inline strip it replaces
-  // rendered a count only when it was above zero — hence `|| undefined`.
+  // TabContainer renders a badge only when its count is above zero.
   const tabs: (Tab & { id: TabId })[] = [
     { id: 'info', label: 'Information', icon: <Cloud className="w-4 h-4" /> },
-    { id: 'regions', label: 'Regions', icon: <MapPin className="w-4 h-4" />, badge: regions.length || undefined },
+    { id: 'regions', label: 'Regions', icon: <MapPin className="w-4 h-4" />, badge: { count: regions.length } },
     { id: 'instance_types', label: 'Instance Types', icon: <Cpu className="w-4 h-4" /> },
-    { id: 'connections', label: 'Connections', icon: <Server className="w-4 h-4" />, badge: connections.length || undefined },
+    { id: 'connections', label: 'Connections', icon: <Server className="w-4 h-4" />, badge: { count: connections.length } },
     { id: 'config', label: 'Configuration', icon: <Settings className="w-4 h-4" /> }
   ];
 
@@ -484,7 +483,6 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
             activeTab={activeTab}
             onTabChange={(id) => setActiveTab(id as TabId)}
             variant="underline"
-            showContent={false}
           />
 
           {/* Content */}

@@ -20,7 +20,7 @@ import {
   Check
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
-import { TabContainer, type Tab } from '@/shared/components/ui/TabContainer';
+import { TabContainer, type Tab } from '@/shared/components/layout/TabContainer';
 import { History, Wrench } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
@@ -699,7 +699,6 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             activeTab={activeTab}
             onTabChange={(id) => setActiveTab(id as TabId)}
             variant="underline"
-            showContent={false}
           />
 
           {/* Content */}
