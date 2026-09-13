@@ -202,11 +202,42 @@ module System
         # consume the whole window every tick while the rest of a mass failure
         # is never looked at.
         def candidates
+          without_reaper_owned(unfiltered_candidates)
+        end
+
+        # IMP-4e24a37fdd40 — a member the pool reaper owns is one more
+        # exclusion, and so it too must go BEFORE the limit: it mints no
+        # FleetEvent, so the emit window never removes it, and left to
+        # #signal_for it would be redrawn every tick for its whole retention
+        # window. The SQL is a conservative SUBSET of
+        # InstancePoolService#collects_dead_member?, which still decides every
+        # row that reaches #signal_for; a row the SQL cannot decide is kept.
+        #
+        # The rescue covers BUILDING the fragment only. The relation is lazy, so
+        # an error in the query itself would surface in #sense and fail the
+        # whole tick — which is why every input the fragment interpolates is
+        # bounded (the fleet retention is clamped, a pool override is parsed
+        # only when it is a short whole number).
+        def without_reaper_owned(relation)
+          owned = ::System::InstancePoolService.reaper_owned_members_sql(account: account)
+          return relation unless owned
+
+          relation.where("NOT COALESCE((#{owned[:sql]}), false)", owned[:binds])
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] reaper-owned pre-filter skipped: #{e.class}: #{e.message}"
+          )
+          relation
+        end
+
+        def unfiltered_candidates
           ::System::NodeInstance
             # instance_pool alongside provider_region: #ephemeral_pool_error reads
             # the pool for every candidate it reaches, and a per-row lookup there is
             # the N+1 the eager-loading convention exists to stop.
-            .includes(:provider_region, :instance_pool)
+            # The pool's plane and account too: #pool_reaper_collects? reads both
+            # for every errored pool member before any reason is classified.
+            .includes(:provider_region, instance_pool: %i[environment account])
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(
@@ -294,6 +325,13 @@ module System
         end
 
         def signal_for(instance)
+          # IMP-4e24a37fdd40 — reap, do not replace. A dead ephemeral pool
+          # member the pool reaper collects itself (a name-verified terminate,
+          # then the row) is left to it: the replace lane would claim a warm
+          # member of the same pool as a "replacement" for a builder nobody
+          # needs replaced, and park a card an operator can only reject.
+          return nil if pool_reaper_collects?(instance)
+
           reason, detail = unrecoverable_reason(instance)
           return nil unless reason
 
@@ -329,6 +367,22 @@ module System
           host || reboot_exhausted(instance) || ephemeral_pool_error(instance)
         end
 
+        # IMP-4e24a37fdd40 — is this dead pool member the pool reaper's to
+        # collect right now? See InstancePoolService#collects_dead_member?,
+        # which answers false once the member is overdue, so a reaper that
+        # fails a member hands it back to this sensor. A failure to ask keeps
+        # the member on the approval lane rather than hiding it.
+        def pool_reaper_collects?(instance)
+          return false if instance.instance_pool_id.blank?
+
+          ::System::InstancePoolService.reaper_collects_dead_member?(instance)
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] pool reaper check failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          false
+        end
+
         # 4. Campaign 01a07025 / app-2 — an errored EPHEMERAL pool member.
         #
         # LAST ON PURPOSE, so this arm is strictly additive: it can only
@@ -345,14 +399,13 @@ module System
         # ("this member is disposable and the pool will replenish") is the
         # pool's definition rather than a guess about a host.
         #
-        # Still only DETECTION. The binding routes this to
+        # Still only DETECTION, and only for a member the pool reaper will not
+        # collect (#pool_reaper_collects?, checked before any reason): a claimed
+        # member, a protected plane, an unswept pool, retention off, or a member
+        # the reaper has let go overdue. The binding routes it to
         # ReplaceInstanceExecutor under system.instance_replace (seeded
-        # require_approval), whose additive half is all an approved replace
-        # applies; the terminate is a SECOND approval on system.instance_reap
-        # replaying ReapInstanceExecutor. Nothing here shortens that path —
-        # per the ratified rule in
-        # docs/operations/autonomous-infrastructure-readiness-2026-08-12.md §7,
-        # removals never auto-apply.
+        # require_approval); the terminate is a SECOND approval on
+        # system.instance_reap replaying ReapInstanceExecutor.
         def ephemeral_pool_error(instance)
           return nil unless instance.status == "error"
           return nil if instance.instance_pool_id.blank?

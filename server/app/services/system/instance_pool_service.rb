@@ -151,6 +151,19 @@ module System
       new(account: pool.account).recycle_stale_members!(pool: pool, actor: actor)
     end
 
+    # See #collects_dead_member?.
+    def self.reaper_collects_dead_member?(instance)
+      pool = instance.instance_pool
+      return false unless pool
+
+      new(account: pool.account).collects_dead_member?(instance)
+    end
+
+    # See #reaper_owned_members_sql.
+    def self.reaper_owned_members_sql(account:, now: Time.current)
+      new(account: account).reaper_owned_members_sql(now: now)
+    end
+
     def initialize(account:)
       @account = account
     end
@@ -1064,6 +1077,109 @@ module System
       cycled
     end
 
+    # The pool statuses whose members the reaper sweeps: the worker's
+    # InstancePoolReplenisherJob lists `active` and `draining` pools and runs
+    # recycle_stale_members! for each. A paused or archived pool is never swept.
+    REAPER_SWEPT_POOL_STATUSES = %w[active draining].freeze
+
+    # How long past its retention window a dead member may still be waiting
+    # before the reaper is taken to have failed it (#collects_dead_member?).
+    REAPER_OVERDUE_SLACK = 1.day
+
+    # IMP-4e24a37fdd40 — is this dead EPHEMERAL member the reaper's to collect?
+    # True only while every condition prune_dead_records! applies holds and the
+    # sweep reaches the pool at all: the member is in `error`, the pool is
+    # swept, the member is not claimed (a claimed member in error is never
+    # collected), retention is on, neither the pool's plane nor the member's own
+    # withholds destruction — and the member is NOT OVERDUE.
+    #
+    # InstanceUnrecoverableSensor asks this before minting a replace approval,
+    # and stops signalling while it is true. That makes "true" a promise, and
+    # the reaper cannot always keep it: a provider that never confirms the guest
+    # gone is retried on a backoff with only a log line; a pool in an account
+    # the worker does not sweep is never ticked; a tick that raises before its
+    # retention phase never prunes. So the promise EXPIRES: once the member's
+    # last sign of life is older than its retention window plus
+    # REAPER_OVERDUE_SLACK, this answers false and the sensor signals it again.
+    # Nothing is left both unreaped and unsignalled.
+    def collects_dead_member?(instance, now: Time.current)
+      return false unless instance.status == "error"
+
+      pool = instance.instance_pool
+      return false unless pool && pool.account_id == instance.account_id
+      return false unless pool.lifecycle_class == "ephemeral"
+      return false unless REAPER_SWEPT_POOL_STATUSES.include?(pool.status)
+      return false if instance.pool_state == "claimed"
+
+      retention_days = record_retention_days(pool)
+      return false if retention_days <= 0
+
+      last_sign_of_life = [ instance.last_heartbeat_at, instance.pool_acquired_at,
+                            instance.pool_warming_started_at, instance.created_at ].compact.max
+      return false if last_sign_of_life < now - retention_days.days - REAPER_OVERDUE_SLACK
+      return false if plane_withholds_destruction(pool)
+
+      member = ::System::NodeInstance.where(id: instance.id)
+      purgeable_environment_ids(member, "system_node_instances.environment_id").include?(instance.environment_id)
+    end
+
+    # IMP-4e24a37fdd40 — the SQL half of #collects_dead_member?, for a caller
+    # that must drop reaper-owned members BEFORE a LIMIT
+    # (InstanceUnrecoverableSensor#candidates).
+    #
+    # A conservative SUBSET of the Ruby predicate: every row it matches, the
+    # predicate answers true for. A row it cannot decide is left unmatched for
+    # the predicate to decide: a retention override that is not a plain whole
+    # number, a pool or member with no plane. The planes are resolved here in
+    # Ruby, through the same #plane_withholds_destruction_on question, so the
+    # overlay's rules are never re-expressed in SQL. Returns { sql:, binds: }
+    # over system_node_instances, or nil when no plane can hold a reaper-owned
+    # member.
+    def reaper_owned_members_sql(now: Time.current)
+      environments = ::Ai::Environment.where(account_id: @account.id).to_a
+      pool_env_ids = environments.reject { |environment| plane_withholds_destruction_on(environment) }.map(&:id)
+      member_env_ids = environments.select do |environment|
+        environment.tier == PURGEABLE_PLANE_TIER && pool_env_ids.include?(environment.id)
+      end.map(&:id)
+      return nil if member_env_ids.empty?
+
+      retention_days = <<~SQL.squish
+        (CASE
+          WHEN NULLIF(reaper_pool.metadata->>'record_retention_days', '') IS NULL
+            THEN CAST(:default_days AS integer)
+          WHEN reaper_pool.metadata->>'record_retention_days' ~ '^[0-9]{1,6}$'
+            THEN CAST(reaper_pool.metadata->>'record_retention_days' AS integer)
+        END)
+      SQL
+      sql = <<~SQL.squish
+        system_node_instances.status = 'error'
+        AND system_node_instances.pool_state <> 'claimed'
+        AND system_node_instances.environment_id IN (:member_env_ids)
+        AND EXISTS (
+          SELECT 1 FROM system_instance_pools reaper_pool
+          WHERE reaper_pool.id = system_node_instances.instance_pool_id
+            AND reaper_pool.account_id = system_node_instances.account_id
+            AND reaper_pool.lifecycle_class = 'ephemeral'
+            AND reaper_pool.status IN (:swept_statuses)
+            AND reaper_pool.environment_id IN (:pool_env_ids)
+            AND #{retention_days} > 0
+            AND GREATEST(system_node_instances.last_heartbeat_at, system_node_instances.pool_acquired_at,
+                         system_node_instances.pool_warming_started_at, system_node_instances.created_at)
+                >= CAST(:now AS timestamp) - make_interval(days => #{retention_days})
+                   - make_interval(secs => :slack_seconds)
+        )
+      SQL
+
+      {
+        sql: sql,
+        binds: {
+          member_env_ids: member_env_ids, pool_env_ids: pool_env_ids,
+          swept_statuses: REAPER_SWEPT_POOL_STATUSES, default_days: fleet_record_retention_days,
+          now: now, slack_seconds: REAPER_OVERDUE_SLACK.to_i
+        }
+      }
+    end
+
     private
 
     # === Claim ledger (IMP-68403ec0358d) ===
@@ -1680,9 +1796,22 @@ module System
     # boolean) keeps the default rather than reading as 0 and silently turning
     # pruning off fleet-wide. An explicit 0 still disables it.
     def record_retention_days(pool)
-      pool.metadata.to_h["record_retention_days"].presence&.to_i ||
-        Integer(::SiteSetting.get(RECORD_RETENTION_DAYS_SETTING).to_s, 10, exception: false) ||
-        DEAD_RECORD_RETENTION_DAYS
+      pool.metadata.to_h["record_retention_days"].presence&.to_i || fleet_record_retention_days
+    end
+
+    # The longest fleet-wide window honoured. Far past any real retention, and
+    # it keeps the reaper-owned SQL's timestamp arithmetic in range: an absurd
+    # setting would otherwise make InstanceUnrecoverableSensor's query raise
+    # every tick and blind it to every instance.
+    MAX_FLEET_RECORD_RETENTION_DAYS = 3650
+
+    # The fleet-wide window every pool without an override uses: the operator's
+    # SiteSetting, else the default. Shared with #reaper_owned_members_sql so
+    # the SQL and the Ruby predicate read one number.
+    def fleet_record_retention_days
+      days = Integer(::SiteSetting.get(RECORD_RETENTION_DAYS_SETTING).to_s, 10, exception: false) ||
+             DEAD_RECORD_RETENTION_DAYS
+      [ days, MAX_FLEET_RECORD_RETENTION_DAYS ].min
     end
 
     # The environment ids among `scope`'s rows the reaper may destroy unasked:
