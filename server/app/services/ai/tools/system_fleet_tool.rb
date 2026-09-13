@@ -1253,10 +1253,25 @@ module Ai
 
           # === Instances ===
           "system_list_instances" => {
-            description: "List instances, optionally narrowed by node_id, template_id, or the plane of the fleet they run on (environment).",
+            description: "List instances, optionally narrowed by node_id, template_id, the plane of the fleet they run on (environment), " \
+                         "or their recorded lifecycle status (status / live_only). Unfiltered by default. Each row's " \
+                         "lifecycle_status is the state the platform RECORDED, not an observation; `observed` carries what " \
+                         "was actually seen (agent heartbeat, provider power state) with observed_at and a basis of " \
+                         "measured or not_measured.",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only that node's instances" },
               template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" },
+              status: {
+                type: "array", required: false, items: { type: "string", enum: ::System::NodeInstance::STATUSES },
+                description: "Return only instances in these recorded lifecycle statuses (a single string is accepted too). " \
+                             "One of: #{::System::NodeInstance::STATUSES.join(', ')}. An unknown status is refused, never ignored."
+              },
+              live_only: {
+                type: "boolean", required: false,
+                description: "true: return only instances the control plane still counts on — " \
+                             "#{::System::NodeInstance::LIVE_REPLICA_STATUSES.join(', ')}. Excludes terminated AND error; " \
+                             "ask status: [\"error\"] for failures. Combined with status, a status outside that set is refused."
+              },
               **ENVIRONMENT_FILTER_PARAMETER,
               **PAGINATION_PARAMETERS
             }
@@ -3897,7 +3912,39 @@ module Ai
           node_ids = account_nodes.where(node_template_id: params[:template_id]).pluck(:id)
           scope = scope.where(node_id: node_ids)
         end
+        statuses = instance_status_filter(params)
+        scope = scope.where(status: statuses) if statuses
         paginated_result(:instances, scope, params) { |i| serialize_instance(i) }
+      end
+
+      # IMP-79e075dc73a0 — the status set a list call asked for, or nil for no
+      # filter. Fails closed like the environment filter: a status the model
+      # does not know, or live_only paired with a status outside the live set,
+      # RAISES (converted to a refusal by #call) rather than being dropped,
+      # because a dropped filter answers "what is in error" with the whole
+      # fleet and an empty intersection reads as "nothing is terminated".
+      #
+      # live_only reuses LIVE_REPLICA_STATUSES, the model's own definition of
+      # the rows the control plane still counts on, rather than a second list.
+      def instance_status_filter(params)
+        requested = Array(params[:status]).map(&:to_s).reject(&:blank?)
+        unknown = requested - ::System::NodeInstance::STATUSES
+        if unknown.any?
+          raise ArgumentError, "status #{unknown.join(', ')} is not an instance status — " \
+                               "one of: #{::System::NodeInstance::STATUSES.join(', ')}"
+        end
+
+        return requested.presence unless ActiveModel::Type::Boolean.new.cast(params[:live_only])
+
+        live = ::System::NodeInstance::LIVE_REPLICA_STATUSES
+        return live if requested.empty?
+
+        outside = requested - live
+        if outside.any?
+          raise ArgumentError, "live_only excludes status #{outside.join(', ')} — " \
+                               "drop live_only to list it, or ask only for #{live.join(', ')}"
+        end
+        requested
       end
 
       def get_instance(params)
@@ -6723,7 +6770,27 @@ module Ai
           agent_version: i.agent_version,
           gpu_count: i.gpu_count,
           gpu_type: i.gpu_type,
-          gpu_memory_mb: i.gpu_memory_mb
+          gpu_memory_mb: i.gpu_memory_mb,
+          # IMP-79e075dc73a0 — no bare status. `status` stays for existing
+          # callers; lifecycle_status names it for what it is (the state the
+          # platform recorded), and `observed` carries what was actually seen.
+          lifecycle_status: i.status,
+          observed: serialize_instance_observation(i)
+        }
+      end
+
+      # The two observers of an instance: its agent (heartbeat) and its
+      # provider (power state). observed_at is the newer of the two, never the
+      # time of this call; with neither, the row was not measured and says so
+      # rather than presenting a recorded state as a live one.
+      def serialize_instance_observation(i)
+        observed_at = [ i.last_heartbeat_at, i.provider_power_state_at ].compact.max
+        {
+          agent_heartbeat_at: i.last_heartbeat_at&.iso8601,
+          provider_power_state: i.provider_power_state,
+          provider_power_state_at: i.provider_power_state_at&.iso8601,
+          observed_at: observed_at&.iso8601,
+          basis: observed_at ? "measured" : "not_measured"
         }
       end
 
