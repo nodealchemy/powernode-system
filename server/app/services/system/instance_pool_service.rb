@@ -40,9 +40,17 @@ module System
     # How long a dead pool member's DB records survive before the reaper
     # prunes them. Pool members are ephemeral (a CI builder lives minutes), so
     # a week is already generous for post-mortem inspection while keeping the
-    # fleet list bounded. Override per pool with
+    # fleet list bounded. The operator sets the fleet-wide window in the
+    # RECORD_RETENTION_DAYS_SETTING SiteSetting; a pool overrides it with
     # metadata["record_retention_days"]; 0 or negative disables pruning.
     DEAD_RECORD_RETENTION_DAYS = 7
+    RECORD_RETENTION_DAYS_SETTING = "system.instance_pool.dead_record_retention_days"
+
+    # The plane tier the retention phases collect on: the planes whose pools
+    # exist to churn (seeded: dev and ci). Staging and above keep their dead
+    # rows for an operator even where their rules would not escalate a
+    # terminate, and a protected plane never loses them (IMP-1f0996aa7fa3).
+    PURGEABLE_PLANE_TIER = 0
 
     # Past-retention members whose provider guest is confirmed gone per reaper
     # tick (IMP-64d9f2cdff63). Each confirmation can be a synchronous provider
@@ -1200,7 +1208,12 @@ module System
     # partially-built pool in a caller's test double cannot make the reaper
     # raise on a plane lookup instead of doing its work.
     private def plane_withholds_destruction(pool)
-      environment = pool.environment
+      plane_withholds_destruction_on(pool.environment)
+    end
+
+    # The question itself, for any plane: the pool's, or a member's own when
+    # the retention phases decide which dead rows they may take.
+    private def plane_withholds_destruction_on(environment)
       return nil if environment.nil?
 
       verdict = ::Ai::EnvironmentPolicyOverlay.apply(
@@ -1394,13 +1407,43 @@ module System
     # the retention window. `destroy` (not delete_all) so dependent tasks and
     # certificates go with them — several FKs onto these tables are NO ACTION,
     # and a raw delete would either violate them or orphan rows.
+    #
+    # The clock is the member's LAST SIGN OF LIFE — heartbeat, claim or warm
+    # start — never updated_at (IMP-1f0996aa7fa3). Observers keep writing
+    # updated_at: CloudSyncService's hourly sync writes last_synced_at on every
+    # row whose provider id is still listed, whatever its status — a
+    # presumed-dead row whose VM is still up, or one whose recycled VMID now
+    # names another guest — so a dead row's age kept restarting. None of these
+    # columns is written by an observer. GREATEST skips NULLs, and created_at is
+    # never NULL.
+    #
+    # A CLAIMED member in `error` is never collected. The claimed arms flag and
+    # never terminate (F1-10): the reaper marks such a member `error` for agent
+    # silence while its guest may still be running under its consumer, and
+    # collecting its record starts with a provider terminate of that guest. A
+    # claimed member that reached `terminated` is collected like any other.
+    #
+    # Only rows on a churn plane are collected (#purgeable_environment_ids),
+    # even when the pool sits on one: the pool-level check in
+    # #recycle_stale_members! asks about the POOL's plane, and a member can sit
+    # on another.
     def prune_dead_records!(pool:, now:)
       retention_days = record_retention_days(pool)
       return 0 if retention_days <= 0
 
-      dead = pool.node_instances
-                 .where(status: %w[terminated error])
-                 .where("updated_at < ?", now - retention_days.days)
+      past_retention = pool.node_instances
+                           .where(status: %w[terminated error])
+                           .where.not(status: "error", pool_state: "claimed")
+                           .where(
+                             "GREATEST(system_node_instances.last_heartbeat_at, " \
+                             "system_node_instances.pool_acquired_at, " \
+                             "system_node_instances.pool_warming_started_at, " \
+                             "system_node_instances.created_at) < ?",
+                             now - retention_days.days
+                           )
+      dead = past_retention.where(
+        environment_id: purgeable_environment_ids(past_retention, "system_node_instances.environment_id")
+      )
 
       pruned = 0
       backoff = positive_pool_setting(pool, "errored_terminate_backoff_seconds",
@@ -1521,8 +1564,8 @@ module System
       return true if member.cloud_instance_id.blank?
 
       if member.provider_guest_name.blank?
-        # touch: false — the retention clock is updated_at, and recording an
-        # identity is not a reason to restart it.
+        # touch: false — recording an identity is not a write anyone should
+        # read as activity on the row.
         member.merge_config!({ "provider_guest_name" => member.name }, touch: false)
       end
 
@@ -1592,11 +1635,15 @@ module System
       return 0 if retention_days <= 0
 
       cutoff = now - retention_days.days
-      shells = ::System::Node
-               .where(account_id: pool.account_id)
-               .where("system_nodes.config @> ?", { instance_pool_id: pool.id }.to_json)
-               .where("system_nodes.updated_at < ?", cutoff)
-               .where.missing(:node_instances)
+      candidates = ::System::Node
+                   .where(account_id: pool.account_id)
+                   .where("system_nodes.config @> ?", { instance_pool_id: pool.id }.to_json)
+                   .where("system_nodes.updated_at < ?", cutoff)
+                   .where.missing(:node_instances)
+      # Same plane rule as the member loop (IMP-1f0996aa7fa3).
+      shells = candidates.where(
+        environment_id: purgeable_environment_ids(candidates, "system_nodes.environment_id")
+      )
 
       pruned = 0
       shells.find_each do |node|
@@ -1627,11 +1674,27 @@ module System
       end
     end
 
-    # Per-pool retention knob, shared by both retention phases so they can
-    # never drift apart. Operator policy — deliberately not changed here.
+    # Retention window, shared by both retention phases so they can never drift
+    # apart: the pool's own override, else the operator's SiteSetting, else the
+    # default. The SiteSetting must be a whole number; anything else (a typo, a
+    # boolean) keeps the default rather than reading as 0 and silently turning
+    # pruning off fleet-wide. An explicit 0 still disables it.
     def record_retention_days(pool)
       pool.metadata.to_h["record_retention_days"].presence&.to_i ||
+        Integer(::SiteSetting.get(RECORD_RETENTION_DAYS_SETTING).to_s, 10, exception: false) ||
         DEAD_RECORD_RETENTION_DAYS
+    end
+
+    # The environment ids among `scope`'s rows the reaper may destroy unasked:
+    # planes on the churn tier that the pool's own question
+    # (#plane_withholds_destruction_on) leaves alone, so a protected plane keeps
+    # its rows. A row with no plane is kept too: nil must not switch the
+    # protected-plane rules off.
+    def purgeable_environment_ids(scope, column)
+      ids = scope.distinct.pluck(Arel.sql(column)).compact
+      ::Ai::Environment.where(id: ids, tier: PURGEABLE_PLANE_TIER)
+                       .reject { |environment| plane_withholds_destruction_on(environment) }
+                       .map(&:id)
     end
 
     # Best-effort provider resolution for reload_pending_seeds! — a member

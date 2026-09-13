@@ -1183,7 +1183,10 @@ RSpec.describe System::InstancePoolService, type: :service do
     def seed_dead_member(status:, age:, **instance_attrs)
       member = seed_pool_member(state: "draining", **instance_attrs)
       member.merge_config!("provider_guest_name" => member.name) unless instance_attrs.key?(:cloud_instance_id)
-      member.update_columns(status: status, updated_at: age.ago)
+      # The retention clock is the member's last sign of life, not updated_at
+      # (IMP-1f0996aa7fa3), so age every column it reads.
+      member.update_columns(status: status, updated_at: age.ago, created_at: age.ago,
+                            pool_warming_started_at: age.ago, last_heartbeat_at: age.ago)
       member
     end
 
