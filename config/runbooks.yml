@@ -61,6 +61,16 @@ system.instance_unrecoverable:
     one, and the operator question here is which of those five steps already
     landed before the failure.
 
+system.pool_guest_orphaned:
+  not_documented: true
+  reason: >-
+    No runbook covers a provider guest named for an ephemeral pool that no
+    platform row knows (OrphanPoolGuestSensor → system.pool_guest_reap). A
+    runbook would need to cover confirming from the hypervisor's own inventory
+    that the guest is unrecorded before approving the reap in a protected plane,
+    and what to do when a guest's name lost the pool marker to hostname
+    budgeting and the sensor cannot attribute it.
+
 # ── Module and template convergence ───────────────────────────────────────
 system.module_drift:
   doc: "docs/runbooks/node-provisioning.md#phase-4--run-"

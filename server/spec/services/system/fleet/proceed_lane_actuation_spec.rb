@@ -57,13 +57,16 @@ RSpec.describe "fleet proceed-lane actuation", type: :service do
     # refusal in RemediationValidator#record_proceeded! costs these lanes their
     # outcome rows. They actuate through their SKILL and have no applier, so
     # apply_remediation! answers "no applier" and nothing mints. The validator's
-    # comment states the gap; this fixes its membership so a seventh lane has to
+    # comment states the gap; this fixes its membership so an eighth lane has to
     # be a decision rather than an accident.
     it "PINS the skill-actuated, applier-less lanes that reach the proceed arm" do
       # Across ALL the seeded policy hashes, not just FLEET_AUTONOMY_POLICIES:
       # system.module_critical_upgrade_ready is seeded by the CVE responder,
       # and reading one hash would silently score it as "no policy" and drop
       # it from the pin.
+      #
+      # system.pool_guest_orphaned joined with IMP-64d9f2cdff63: its reap skill
+      # (ReapOrphanPoolGuestExecutor) is the actuator, so it has no applier.
       decls    = System::Governance::PolicyDeclarations
       policies = decls.constants.grep(/_POLICIES\z/)
                       .map { |c| decls.const_get(c) }
@@ -79,6 +82,7 @@ RSpec.describe "fleet proceed-lane actuation", type: :service do
         system.acme_cert_expiring
         system.federation_peer_liveness
         system.module_critical_upgrade_ready
+        system.pool_guest_orphaned
         system.sdwan_bgp_session_unhealthy
         system.sdwan_credential_expiring
         system.sdwan_peer_drift
