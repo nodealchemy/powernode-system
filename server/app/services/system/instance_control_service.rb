@@ -104,6 +104,13 @@ module System
         Runtime::Result.ok(data: adapter_result.except(:success))
       else
         revert_status(instance)
+        # IMP-64d9f2cdff63 — same reading as ProvisioningService#terminate_instance:
+        # the id names someone else's guest, so the row gives it up rather than
+        # aiming the next attempt at that guest again.
+        if action.to_sym == :terminate &&
+           adapter_result[:error_code].to_s == Providers::BaseProvider::GUEST_NAME_MISMATCH
+          instance.mark_provider_guest_lost!(reason: adapter_result[:error])
+        end
         Runtime::Result.err(error: adapter_result[:error] || "Control action failed", data: adapter_result)
       end
     rescue Providers::BaseProvider::ProviderError => e
@@ -246,6 +253,11 @@ module System
     # with the platform's canonical `:status` value.
     def execute_cloud_action(instance, action, force: false)
       unless instance.cloud_instance_id.present?
+        # IMP-64d9f2cdff63 — same reading as ProvisioningService#terminate_instance:
+        # a row that lost its provider identity has nothing left to terminate,
+        # and refusing would leave an operator's terminate failing forever.
+        return { success: true, status: "terminated" } if action.to_sym == :terminate && instance.provider_guest_lost?
+
         return { success: false, error: "Instance has no cloud instance ID" }
       end
 

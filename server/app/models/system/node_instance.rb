@@ -1225,6 +1225,21 @@ module System
                      provider_power_state_at: Time.current)
     end
 
+    # IMP-64d9f2cdff63 — this row's provider id was found to name a DIFFERENT
+    # guest (or cannot be tied to its own). The id is removed so no later
+    # terminate, sync or reap is aimed at that other guest, and the stamp says
+    # why the row no longer carries one. The guest this row once described is
+    # now reachable only by name, which is what the orphan-guest sensor reads.
+    def mark_provider_guest_lost!(reason:)
+      delete_config_keys!("cloud_instance_id", touch: false)
+      merge_config!("provider_guest_lost_at" => Time.current.iso8601,
+                    "provider_guest_lost_reason" => reason.to_s.first(500))
+    end
+
+    def provider_guest_lost?
+      config.to_h["provider_guest_lost_at"].present?
+    end
+
     # Has the agent spoken since a reap judged this instance dead?
     #
     # This is the discriminator for whether a provider "powered on" verdict may

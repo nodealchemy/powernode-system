@@ -327,6 +327,20 @@ module System
       # unconfigured).
       assert_not_self_managed!(instance, action: "terminate")
 
+      # IMP-64d9f2cdff63 — a row that already lost its provider identity has
+      # nothing left to terminate: its id named someone else's guest and was
+      # cleared. Refusing here ("no cloud instance ID") would make every caller
+      # that retries on status — the replica reconciler's scale-in, a re-approved
+      # reap — fail the same way forever, so the row is finalized instead. Any
+      # guest it once described is reachable only by name now (the orphan
+      # pool-guest lane).
+      if instance.cloud_instance_id.blank? && instance.provider_guest_lost?
+        Rails.logger.warn("[ProvisioningService] Terminate: #{instance.name} lost its provider identity " \
+                          "(#{instance.config.to_h['provider_guest_lost_reason']}) — finalizing the row")
+        finalize_termination!(instance)
+        return Runtime::Result.ok(data: { guest_lost: true })
+      end
+
       return Runtime::Result.err(error: "Instance has no cloud instance ID") unless instance.cloud_instance_id.present?
 
       provider_adapter = begin
@@ -342,6 +356,17 @@ module System
       # never finish terminating (IMP-708079f866d9).
       result = provider_adapter.terminate_instance(instance.cloud_instance_id,
                                                    expected_name: instance.provider_guest_name)
+
+      # IMP-64d9f2cdff63 — the id now names someone else's guest, and the
+      # provider refused to touch it. Keeping the id would aim every later
+      # terminate, sync and reap at that guest, so the row gives it up and says
+      # so. Not finalized: this proves nothing about whether THIS row's own
+      # guest is gone.
+      if guest_name_mismatch_result?(result)
+        instance.mark_provider_guest_lost!(reason: result[:error])
+        Rails.logger.error("[ProvisioningService] Terminate refused for #{instance.name}: #{result[:error]} — provider id cleared, row marked lost")
+        return Runtime::Result.err(error: result[:error], data: { guest_lost: true })
+      end
 
       # Idempotent terminate (F4-02): a provider-side NotFound means the
       # resource is already gone (e.g. a prior terminate destroyed it while
@@ -409,6 +434,11 @@ module System
       return false unless result.is_a?(Hash) && !result[:success]
 
       result[:error_code].to_s.casecmp?("NotFound") || result[:error].to_s.match?(/not found/i)
+    end
+
+    def guest_name_mismatch_result?(result)
+      result.is_a?(Hash) && !result[:success] &&
+        result[:error_code].to_s == Providers::BaseProvider::GUEST_NAME_MISMATCH
     end
 
     def validate_node!(node)

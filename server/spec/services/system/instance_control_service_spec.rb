@@ -202,6 +202,33 @@ RSpec.describe System::InstanceControlService do
       expect(instance.reload.status).to eq('error')
     end
 
+    # IMP-64d9f2cdff63 — the provider proved the id now names another guest and
+    # refused to touch it. The row must give the id up, or the next terminate
+    # (and every sync and reap) is aimed at that other guest again.
+    it 'clears the provider id and marks the row lost when the guest at that id is not ours' do
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name)
+        .and_return(success: false, error_code: System::Providers::BaseProvider::GUEST_NAME_MISMATCH,
+                    error: 'guest at i-terminate-1 is named other-vm')
+
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be false
+      instance.reload
+      expect(instance.cloud_instance_id).to be_nil
+      expect(instance).to be_provider_guest_lost
+    end
+
+    it 'terminates a row that already lost its provider identity without asking the provider' do
+      lost = create(:system_node_instance, node: node, status: 'stopped', cloud_instance_id: nil)
+      lost.mark_provider_guest_lost!(reason: 'id recycled onto another guest')
+      expect(System::Providers::Registry).not_to receive(:for_instance)
+
+      result = described_class.execute(instance: lost.reload, action: :terminate)
+
+      expect(result.success?).to be true
+      expect(lost.reload.status).to eq('terminated')
+    end
+
     it 'does not stamp the row terminated when the provider raises — goes to error instead' do
       allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name)
         .and_raise(System::Providers::BaseProvider::ProviderError, 'api timeout')

@@ -449,6 +449,25 @@ module System
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
 
+        # IMP-64d9f2cdff63. The recycled-vmid guard in the NotFound rescue below
+        # only covers "our vmid is no longer on our node". The common case on a
+        # single-node host is the opposite: the vmid IS still on our node,
+        # because allocate_next_vmid! handed our freed id to the next guest
+        # created there. The stop and DELETE below address node/kind/vmid and
+        # nothing else, so without this check terminating a stale row stopped
+        # and destroyed whichever guest now holds that number.
+        #
+        # A config already gone from our node leaves nothing here to stop or
+        # delete, and sending those calls anyway would race any creator that
+        # draws this now-free vmid in the meantime — so that case goes straight
+        # to the cluster-wide absence question the NotFound rescue below asks.
+        if (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal unless refusal == :absent_here
+
+          return cluster_absence_response(c, instance_id: instance_id, node: node, kind: kind, vmid: vmid,
+                                             expected_name: expected_name)
+        end
+
         # Best-effort graceful stop first; ignore failures (the guest may
         # already be off, or it may refuse to shut down). Then destroy.
         begin
@@ -456,6 +475,17 @@ module System
           c.wait_task(node: node, upid: stop_upid, timeout: 30)
         rescue Proxmox::Client::Error
           nil
+        end
+
+        # Re-verified after the stop and BEFORE anything else destructive: the
+        # stop can wait up to 30s, the check at the top is only as fresh as that,
+        # and clearing protection on a guest that has since taken this vmid would
+        # strip its guard even though the DELETE below is then refused.
+        if (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal unless refusal == :absent_here
+
+          return cluster_absence_response(c, instance_id: instance_id, node: node, kind: kind, vmid: vmid,
+                                             expected_name: expected_name)
         end
 
         # Clear the protection flag before delete. VMs are created with
@@ -498,8 +528,18 @@ module System
         # created with it (see the "name" body key in the clone/create paths).
         # Only a KNOWN name that DIFFERS proves recycling — if either side's name
         # is missing we cannot disprove a migration, so keep refusing.
-        if (live_node = node_hosting_vmid(c, vmid: vmid, kind: kind, excluding_node: node,
-                                          expected_name: expected_name))
+        cluster_absence_response(c, instance_id: instance_id, node: node, kind: kind, vmid: vmid,
+                                    expected_name: expected_name)
+      rescue Proxmox::Client::Error => e
+        build_error_response("PVE terminate failed: #{e.message}")
+      end
+
+      # The "not on our node" answer for #terminate_instance: gone only when no
+      # OTHER node hosts this vmid as what may still be our guest (see the
+      # NotFound rescue's comment for why "missing here" is not "gone").
+      def cluster_absence_response(client, instance_id:, node:, kind:, vmid:, expected_name:)
+        if (live_node = node_hosting_vmid(client, vmid: vmid, kind: kind, excluding_node: node,
+                                               expected_name: expected_name))
           build_error_response(
             "PVE terminate failed: vm #{vmid} is not on #{node} but is present on #{live_node}; " \
             "refusing to treat it as already-gone"
@@ -507,8 +547,6 @@ module System
         else
           build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
         end
-      rescue Proxmox::Client::Error => e
-        build_error_response("PVE terminate failed: #{e.message}")
       end
 
       def get_instance(instance_id)
@@ -2002,6 +2040,45 @@ module System
       rescue StandardError => e
         Rails.logger.warn("[ProxmoxProvider] cluster-wide vmid check failed for #{vmid}: #{e.class}: #{e.message}")
         nil
+      end
+
+      # nil when it is safe to send destructive calls to node/kind/vmid for a
+      # guest created as expected_name; :absent_here when there is no guest at
+      # that id on this node at all; otherwise the error response to return.
+      #
+      # No expected name: nil (the caller opted out of the check, unchanged).
+      # Config missing on this node: :absent_here, so #terminate_instance asks
+      # the cluster-wide absence question instead of sending destructive calls
+      # to a vmid another creator may be drawing right now. A readable
+      # guest carrying a DIFFERENT name: GUEST_NAME_MISMATCH. A config that
+      # cannot be read, or a guest with no name to compare: refused WITHOUT the
+      # mismatch code — an unverifiable identity is not a recycled one, and it
+      # is not permission to destroy what may be another guest either.
+      def guest_identity_refusal(client, node:, kind:, vmid:, expected_name:)
+        expected = expected_name.to_s.strip
+        return nil if expected.empty?
+
+        config = client.get("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config")
+        found = (config.is_a?(Hash) ? config[kind.to_s == "lxc" ? "hostname" : "name"] : nil).to_s.strip
+        return nil if found == expected
+
+        if found.empty?
+          return build_error_response(
+            "PVE terminate refused: #{node}/#{kind}/#{vmid} carries no guest name to verify against #{expected.inspect}"
+          )
+        end
+
+        build_error_response(
+          "PVE terminate refused: #{node}/#{kind}/#{vmid} is guest #{found.inspect}, not #{expected.inspect} " \
+          "(the vmid was recycled onto another guest)",
+          code: GUEST_NAME_MISMATCH
+        )
+      rescue Proxmox::Client::NotFoundError
+        :absent_here
+      rescue Proxmox::Client::Error => e
+        build_error_response(
+          "PVE terminate refused: could not read the identity of #{node}/#{kind}/#{vmid}: #{e.message}"
+        )
       end
 
       # True only when BOTH names are known and they differ — i.e. the vmid on the

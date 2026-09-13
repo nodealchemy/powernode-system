@@ -527,6 +527,60 @@ RSpec.describe System::ProvisioningService do
       expect(instance.reload.status).to eq("starting")
     end
 
+    # IMP-64d9f2cdff63. A name mismatch proves the provider id now names a
+    # DIFFERENT guest. Keeping the id would aim every later terminate, sync
+    # and reap at that other guest; the row has lost its provider identity and
+    # must say so instead of retrying against the wrong VM forever.
+    context "when the provider reports the guest at that id is not ours" do
+      before do
+        allow(adapter).to receive(:terminate_instance).and_return(
+          success: false,
+          error_code: System::Providers::BaseProvider::GUEST_NAME_MISMATCH,
+          error: "guest at i-123 is named other-vm, expected member-1"
+        )
+      end
+
+      it "fails without finalizing the row" do
+        result = terminate
+
+        expect(result.success?).to be(false)
+        expect(result.data[:guest_lost]).to be(true)
+        expect(instance.reload.status).to eq("starting")
+      end
+
+      it "clears the stale provider id and marks the row lost" do
+        terminate
+
+        instance.reload
+        expect(instance.cloud_instance_id).to be_nil
+        expect(instance).to be_provider_guest_lost
+        expect(instance.config["provider_guest_lost_reason"]).to include("other-vm")
+      end
+
+      # Every status-keyed caller retries a terminate (scale-in, a re-approved
+      # reap). A lost row must converge on that retry rather than fail with
+      # "no cloud instance ID" forever.
+      it "finalizes the row on the next terminate, without asking the provider" do
+        terminate
+        expect(adapter).to have_received(:terminate_instance).once
+
+        result = described_class.terminate_instance(instance: instance.reload)
+
+        expect(result.success?).to be(true)
+        expect(instance.reload.status).to eq("terminated")
+        expect(adapter).to have_received(:terminate_instance).once
+      end
+    end
+
+    it "still refuses a row with no provider id that was never marked lost" do
+      bare = create(:system_node_instance, node: node, status: "running", cloud_instance_id: nil)
+
+      result = described_class.terminate_instance(instance: bare)
+
+      expect(result.success?).to be(false)
+      expect(bare.reload.status).to eq("running")
+    end
+
     # F4-09 — codify the F4-02 fix across the full status matrix: terminate
     # must drive ANY non-terminal status to "terminated", not only the
     # steady-state ones. Pre-fix, a not-yet-up instance (pending/starting)

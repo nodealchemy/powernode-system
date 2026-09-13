@@ -29,6 +29,13 @@ module System
         unknown: "unknown"
       }.freeze
 
+      # error_code #terminate_instance returns when the resource at the given id
+      # is provably a DIFFERENT guest than expected_name — the id was recycled
+      # onto someone else's guest — and nothing destructive was sent.
+      # ProvisioningService reads it as the row having lost its provider
+      # identity (IMP-64d9f2cdff63).
+      GUEST_NAME_MISMATCH = "GuestNameMismatch"
+
       # Provisioning resilience — fail-fast HTTP timeout convention.
       #
       # Every auth/token + SDK/HTTP connection on the provisioning path MUST
@@ -308,7 +315,9 @@ module System
       #   created with. Optional, and providers may ignore it — Proxmox uses it to
       #   tell a MIGRATED guest (same id, same name, different node: refuse to
       #   call it gone) from a RECYCLED vmid (same id, different guest: it really
-      #   is gone). Omitting it keeps the conservative behaviour.
+      #   is gone), and to refuse to destroy a guest at the id that is not the
+      #   expected one (error_code GUEST_NAME_MISMATCH). Omitting it keeps the
+      #   conservative behaviour.
       def terminate_instance(instance_id, expected_name: nil)
         raise NotImplementedError, "#{self.class} must implement #terminate_instance"
       end

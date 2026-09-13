@@ -1428,6 +1428,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         .with("/api2/json/cluster/resources", { "type" => "vm" })
         .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2",
                        "name" => "someone-elses-vm", "status" => "running" } ])
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9009/config")
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError,
+                   "Configuration file 'nodes/pve1/qemu-server/9009.conf' does not exist")
 
       result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
@@ -1446,6 +1449,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         .with("/api2/json/cluster/resources", { "type" => "vm" })
         .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2",
                        "name" => "dryrun-web-1", "status" => "running" } ])
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9009/config")
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError,
+                   "Configuration file 'nodes/pve1/qemu-server/9009.conf' does not exist")
 
       result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
@@ -1464,10 +1470,130 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
         .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "pve2", "status" => "running" } ])
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9009/config")
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
 
       result = provider.terminate_instance("pve1/qemu/9009", expected_name: "dryrun-web-1")
 
       expect(result[:success]).to be false
+    end
+
+    # IMP-64d9f2cdff63. The recycled-vmid guard above only ran on the
+    # NotFound path — "our vmid is not on our node". The far more common case
+    # on a single-node host is that the vmid IS on our node, because Proxmox
+    # handed the lowest free id to the NEXT guest created there. The stop and
+    # DELETE ran against node/kind/vmid with no identity check at all, so
+    # terminating a stale row stopped and destroyed whichever guest now held
+    # that number (observed: stale builder rows carrying ids later given to the
+    # SDWAN testbed VMs). With a known expected name, the guest at that id must
+    # BE ours before anything destructive is sent.
+    describe "same-node guest identity check" do
+      def stub_config(body)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config").and_return(body)
+      end
+
+      it "refuses to stop or delete a guest whose name differs from the one we created" do
+        stub_config("name" => "sdwan-testbed-a", "memory" => 2048)
+        expect(client).not_to receive(:post)
+        expect(client).not_to receive(:put)
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+        expect(result[:error]).to include("sdwan-testbed-a", "ci-builder-pool-1-0")
+      end
+
+      it "stops and deletes when the guest at that id is ours" do
+        stub_config("name" => "ci-builder-pool-1-0")
+        allow(client).to receive(:post).and_return("UPID:pve1:stop")
+        allow(client).to receive(:wait_task)
+        allow(client).to receive(:put)
+        expect(client).to receive(:delete)
+          .with("/api2/json/nodes/pve1/qemu/9004", hash_including("purge" => 1))
+          .and_return("UPID:pve1:destroy")
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:success]).to be true
+      end
+
+      it "compares an LXC guest by its hostname" do
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/lxc/9004/config")
+                                      .and_return("hostname" => "someone-else")
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/lxc/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:error_code]).to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+      end
+
+      # Unable to READ the identity is not permission to destroy what may be
+      # someone else's guest: refuse, and let the caller retry.
+      it "refuses, without a mismatch verdict, when the guest's config cannot be read" do
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config")
+                                      .and_raise(System::Providers::Proxmox::Client::Error, "HTTP 500")
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).not_to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+      end
+
+      it "refuses, without a mismatch verdict, a guest that carries no name to compare" do
+        stub_config("memory" => 2048)
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).not_to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+      end
+
+      # A config already gone from our node means there is nothing here to stop
+      # or delete. Sending those calls anyway races whichever creator draws this
+      # now-free vmid next, and destroys ITS guest.
+      it "sends nothing destructive when the guest's config is already gone from our node" do
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config")
+                                      .and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
+        allow(client).to receive(:get).with("/api2/json/cluster/resources", { "type" => "vm" }).and_return([])
+        expect(client).not_to receive(:post)
+        expect(client).not_to receive(:put)
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:success]).to be true
+        expect(result[:status]).to eq("terminated")
+      end
+
+      # The stop can wait 30s; the identity is checked again before the DELETE.
+      # ...and before protection is cleared, so the guest now holding the id
+      # keeps its guard.
+      it "re-verifies the guest after the stop and refuses, touching nothing more, if the id changed hands" do
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config")
+                                      .and_return({ "name" => "ci-builder-pool-1-0" }, { "name" => "intruder" })
+        allow(client).to receive(:post).and_return("UPID:pve1:stop")
+        allow(client).to receive(:wait_task)
+        expect(client).not_to receive(:put)
+        expect(client).not_to receive(:delete)
+
+        result = provider.terminate_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+        expect(result[:error_code]).to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+      end
+
+      it "does not read the config at all when no expected name is given (unchanged conservative path)" do
+        allow(client).to receive(:post).and_return("UPID:pve1:stop")
+        allow(client).to receive(:wait_task)
+        allow(client).to receive(:put)
+        allow(client).to receive(:delete).and_return("UPID:pve1:destroy")
+        expect(client).not_to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config")
+
+        expect(provider.terminate_instance("pve1/qemu/9004")[:success]).to be true
+      end
     end
   end
 
