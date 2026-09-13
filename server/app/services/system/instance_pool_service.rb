@@ -44,6 +44,13 @@ module System
     # metadata["record_retention_days"]; 0 or negative disables pruning.
     DEAD_RECORD_RETENTION_DAYS = 7
 
+    # Past-retention members whose provider guest is confirmed gone per reaper
+    # tick (IMP-64d9f2cdff63). Each confirmation can be a synchronous provider
+    # terminate (a stop that waits up to 30s, then a DELETE) made inside the
+    # worker's HTTP call, so the backlog is worked off a small slice at a time,
+    # and a member whose confirmation failed backs off like the errored ladder.
+    PRUNE_CONFIRMATIONS_PER_TICK = 3
+
     # Maximum age (seconds) for a "warming" instance before the reaper
     # marks it errored. Provider boot + agent enrollment + module attach
     # should reach "running" + ready within ~10min for cloud, longer for
@@ -1313,11 +1320,12 @@ module System
     # recorded attempt. A missing or unparseable timestamp means we have no
     # evidence of a recent attempt, so we proceed — the attempt COUNT bounds
     # the provider calls independently of the clock.
-    def errored_terminate_backoff_elapsed?(member:, now:, attempts:, base:, cap:)
+    def errored_terminate_backoff_elapsed?(member:, now:, attempts:, base:, cap:,
+                                           last_attempt_key: "pool_terminate_last_attempt_at")
       return true if attempts <= 0
 
       last_attempt_at = begin
-        raw = member.config.to_h["pool_terminate_last_attempt_at"]
+        raw = member.config.to_h[last_attempt_key]
         raw.present? ? Time.zone.parse(raw) : nil
       rescue ArgumentError
         nil
@@ -1395,14 +1403,29 @@ module System
                  .where("updated_at < ?", now - retention_days.days)
 
       pruned = 0
-      dead.find_each do |member|
+      backoff = positive_pool_setting(pool, "errored_terminate_backoff_seconds",
+                                      DEFAULT_ERRORED_TERMINATE_BACKOFF_SECONDS)
+      backoff_cap = positive_pool_setting(pool, "errored_terminate_backoff_cap_seconds",
+                                          DEFAULT_ERRORED_TERMINATE_BACKOFF_CAP_SECONDS)
+      # Random, not oldest-first: a member whose provider keeps refusing to
+      # confirm would otherwise hold the front of every slice and starve the
+      # rest of the backlog. Drawn wider than the slice so members still backing
+      # off do not consume it.
+      due = dead.order(Arel.sql("random()")).limit(PRUNE_CONFIRMATIONS_PER_TICK * 10).to_a
+                .select { |member| prune_confirmation_due?(member, now: now, base: backoff, cap: backoff_cap) }
+                .first(PRUNE_CONFIRMATIONS_PER_TICK)
+      due.each do |member|
+        # IMP-64d9f2cdff63. The record is the LAST pointer to its VM, and this
+        # used to prune on status + age alone — including `error` members whose
+        # terminate never succeeded. Five builder VMs were left on the
+        # hypervisor that way with nothing on the platform able to see them.
+        next unless provider_guest_confirmed_gone?(member, pool: pool, now: now)
+
         node = member.node
 
-        # A member whose terminate failed still carries cloud_instance_id, and
-        # that row is the ONLY pointer we hold to a VM that may still be
-        # running and billing. Nothing here can reconcile against the provider,
-        # so name the id in the journal before the row goes: the pointer then
-        # survives an operator audit even though the record does not.
+        # Name the provider id (nil once the row was marked lost) in the journal
+        # before the row goes, so the pointer survives an operator audit even
+        # though the record does not.
         Rails.logger.info(
           "[InstancePoolService] pruning dead pool record " \
           "(instance=#{member.id} pool='#{pool.name}' status=#{member.status} " \
@@ -1467,6 +1490,78 @@ module System
       end
 
       pruned
+    end
+
+    # May this past-retention member's record go yet? True only when the
+    # provider has confirmed, by guest NAME, that the row's own guest is gone:
+    #
+    #   * no provider id at all — the guest was never created, or the row was
+    #     already marked lost (its id named someone else's guest);
+    #   * ProvisioningService's name-verified terminate succeeded, or found the
+    #     guest already gone;
+    #   * the provider proved the id now holds a guest of a DIFFERENT name.
+    #     ProvisioningService has cleared the id and marked the row lost. That
+    #     reading assumes the name at the provider is still the one the guest was
+    #     created with: a guest renamed AT THE PROVIDER reads the same as a
+    #     recycled id, so its row goes and the guest is left running under a
+    #     name the platform did not give it (the orphan pool-guest sensor sees it
+    #     only if the new name still carries an ephemeral pool's prefix).
+    #
+    # A row from before the guest name was captured (IMP-708079f866d9) is
+    # verified by the name the guest was CREATED with, which is the row's own
+    # name (ProvisioningService passes instance.name to the provider) — recorded
+    # first, then checked exactly like any other. Nothing on the platform
+    # renames a NodeInstance; a row renamed by hand after that backfill is read
+    # as the mismatch above.
+    #
+    # Anything else — a refused, failed or raising terminate — keeps the record
+    # and backs the member off. A non-Result return is read the way
+    # #terminate_member reads it: only an explicit failure counts as one.
+    def provider_guest_confirmed_gone?(member, pool:, now:)
+      return true if member.cloud_instance_id.blank?
+
+      if member.provider_guest_name.blank?
+        # touch: false — the retention clock is updated_at, and recording an
+        # identity is not a reason to restart it.
+        member.merge_config!({ "provider_guest_name" => member.name }, touch: false)
+      end
+
+      result = begin
+        ::System::ProvisioningService.terminate_instance(instance: member)
+      rescue StandardError => e
+        # Raised rather than returned (a self-management fence, a malformed id,
+        # a registry or DB error): still a confirmation that did not happen, and
+        # retried on the same backoff as a refusal instead of on every tick.
+        return defer_prune_confirmation!(member, pool: pool, now: now, error: "#{e.class}: #{e.message}")
+      end
+      return true unless result.respond_to?(:failure?) && result.failure?
+      return true if result.data.to_h[:guest_lost]
+
+      defer_prune_confirmation!(member, pool: pool, now: now, error: result.error)
+    end
+
+    # Records a failed confirmation for the backoff gate; always false.
+    def defer_prune_confirmation!(member, pool:, now:, error:)
+      attempts = member.config.to_h["pool_prune_confirm_attempts"].to_i + 1
+      member.merge_config!(
+        { "pool_prune_confirm_attempts" => attempts, "pool_prune_confirm_last_attempt_at" => now.iso8601 },
+        touch: false
+      )
+      Rails.logger.warn(
+        "[InstancePoolService] record prune deferred (attempt #{attempts}): provider has not confirmed " \
+        "the guest gone (instance=#{member.id} pool='#{pool.name}'): #{error}"
+      )
+      false
+    end
+
+    # Backoff gate for a past-retention member whose last confirmation failed:
+    # the errored ladder's exponential schedule, on the prune's own counters.
+    def prune_confirmation_due?(member, now:, base:, cap:)
+      errored_terminate_backoff_elapsed?(
+        member: member, now: now, base: base, cap: cap,
+        attempts: member.config.to_h["pool_prune_confirm_attempts"].to_i,
+        last_attempt_key: "pool_prune_confirm_last_attempt_at"
+      )
     end
 
     # Second retention phase: pool-provenance Node shells with no instances

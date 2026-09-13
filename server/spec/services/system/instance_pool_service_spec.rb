@@ -1180,10 +1180,148 @@ RSpec.describe System::InstancePoolService, type: :service do
   # is per-node, defaults to a 30-day window (longer than a builder's entire
   # lifecycle), covers only "terminated", and never removes the Node row.
   describe ".recycle_stale_members! record retention" do
-    def seed_dead_member(status:, age:)
-      member = seed_pool_member(state: "draining")
+    def seed_dead_member(status:, age:, **instance_attrs)
+      member = seed_pool_member(state: "draining", **instance_attrs)
+      member.merge_config!("provider_guest_name" => member.name) unless instance_attrs.key?(:cloud_instance_id)
       member.update_columns(status: status, updated_at: age.ago)
       member
+    end
+
+    # The provider confirms each past-retention guest gone before its record
+    # is pruned (IMP-64d9f2cdff63, below). Examples about the retention
+    # mechanics themselves stand on a confirming provider.
+    before do
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.ok)
+    end
+
+    # IMP-64d9f2cdff63. The record is the LAST pointer to its VM. Pruning it on
+    # status + age alone deleted rows whose terminate had never succeeded, and
+    # five builder VMs (three running, 48 GB between them) were left on the
+    # hypervisor with nothing on the platform able to see them. A record now
+    # goes only once the provider, asked by guest name, confirms the guest gone.
+    describe "provider confirmation before a record is pruned" do
+      it "asks the provider to terminate the guest before pruning its record" do
+        old = seed_dead_member(status: "error", age: 30.days)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance)
+          .with(instance: having_attributes(id: old.id))
+        expect(System::NodeInstance.where(id: old.id)).not_to exist
+      end
+
+      it "keeps the record while the provider has not confirmed the guest gone" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "PVE terminate failed: HTTP 500"))
+
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstance.where(id: old.id)).to exist,
+                                                          "the record was pruned with its VM unconfirmed — the orphan-VM defect"
+        expect(counts[:records_pruned]).to eq(0)
+      end
+
+      it "keeps the Node too while its member is kept" do
+        old = seed_dead_member(status: "terminated", age: 30.days)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "PVE terminate failed: HTTP 500"))
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: old.node_id)).to exist
+      end
+
+      # A mismatch means the id now names someone else's guest: ProvisioningService
+      # has already cleared it and marked the row lost. Nothing the row holds can
+      # reach its own guest any more, so keeping it protects nothing.
+      it "prunes a record whose provider identity was found to belong to another guest" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "name mismatch", data: { guest_lost: true }))
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstance.where(id: old.id)).not_to exist
+      end
+
+      it "prunes a record that never had a provider id without calling the provider" do
+        old = seed_dead_member(status: "error", age: 30.days, cloud_instance_id: nil)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+        expect(System::NodeInstance.where(id: old.id)).not_to exist
+      end
+
+      # Rows written before the guest name was captured (IMP-708079f866d9) are
+      # still confirmed at the provider — never pruned blind. The guest was
+      # created with the row's own name, so that name is recorded and verified
+      # like any other.
+      it "verifies a row from before guest-name capture by the name the guest was created with" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        old.delete_config_keys!("provider_guest_name")
+        old.update_columns(updated_at: 30.days.ago)
+        verified_as = []
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+          verified_as << instance.provider_guest_name
+          ::System::Runtime::Result.ok
+        end
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(verified_as).to eq([ old.name ])
+        expect(System::NodeInstance.where(id: old.id)).not_to exist
+      end
+
+      it "keeps such a row when that verification is refused" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        old.delete_config_keys!("provider_guest_name")
+        old.update_columns(updated_at: 30.days.ago)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "PVE terminate refused: carries no guest name"))
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstance.where(id: old.id)).to exist
+      end
+
+      # The errored ladder backs off "because this calls a cloud provider every
+      # 60s tick"; a refused confirmation must not be retried on every tick
+      # either — and recording the attempt must not restart the retention clock.
+      it "backs off a member whose confirmation was refused, without restarting its retention clock" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "PVE terminate refused: HTTP 500"))
+
+        2.times { described_class.recycle_stale_members!(pool: pool) }
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(old.reload.config["pool_prune_confirm_attempts"]).to eq(1)
+        expect(old.updated_at).to be < 29.days.ago
+      end
+
+      it "backs off a member whose confirmation raises, keeping its record" do
+        old = seed_dead_member(status: "error", age: 30.days)
+        allow(::System::ProvisioningService).to receive(:terminate_instance).and_raise(ArgumentError, "bad id")
+
+        2.times { described_class.recycle_stale_members!(pool: pool) }
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(old.reload.config["pool_prune_confirm_attempts"]).to eq(1)
+        expect(System::NodeInstance.where(id: old.id)).to exist
+      end
+
+      it "asks the provider about at most PRUNE_CONFIRMATIONS_PER_TICK members per tick" do
+        (described_class::PRUNE_CONFIRMATIONS_PER_TICK + 2).times { seed_dead_member(status: "error", age: 30.days) }
+
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance)
+          .exactly(described_class::PRUNE_CONFIRMATIONS_PER_TICK).times
+        expect(counts[:records_pruned]).to eq(described_class::PRUNE_CONFIRMATIONS_PER_TICK)
+      end
     end
 
     it "prunes pool members dead longer than the retention window" do
