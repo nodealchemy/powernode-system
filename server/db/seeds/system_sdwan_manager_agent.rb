@@ -68,7 +68,10 @@ sdwan_agent.assign_attributes(
 # both persist. No hardcoded model id — AgentModelSelector resolves it.
 sdwan_agent.system_prompt = sdwan_prompt
 sdwan_agent.mcp_metadata = (sdwan_agent.mcp_metadata || {}).merge(
-  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
+  # Duty surface (IMP-777f59d4cc1e): the system_sdwan family — peers, topology,
+  # VIPs, federation, BGP — plus the instances and peers a network spans.
+  "tool_access" => { "tool_families" => %w[system_sdwan system_list_instances system_get_instance system_discover_peers] }
 )
 if sdwan_agent.new_record?
   sdwan_agent.creator  = creator

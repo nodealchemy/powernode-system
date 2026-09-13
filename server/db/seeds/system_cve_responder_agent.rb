@@ -62,9 +62,19 @@ cve_agent.assign_attributes(
 # mcp_metadata in place), then reassign mcp_metadata to a fresh merged hash so
 # both survive AR dirty-tracking. Security triage warrants reasoning-tier;
 # resolution is left to AgentModelSelector (no hardcoded model id).
+#
+# tool_access.tool_families is its duty surface (IMP-777f59d4cc1e): CVE intake,
+# triage and runbooks (the `system_cve` prefix), exposure and blast radius, the
+# packages and modules a patch moves through, and the instances it lands on.
+# Without it the export fell back to the read verbs every unscoped agent shares.
 cve_agent.system_prompt = cve_prompt
 cve_agent.mcp_metadata = (cve_agent.mcp_metadata || {}).merge(
-  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
+  "tool_access" => { "tool_families" => %w[
+    system_cve system_get_cve system_get_cve_exposure system_create_cve system_blast_radius
+    system_compliance_snapshot system_search_packages system_get_package system_resolve_package_dependencies
+    system_refresh_package_module system_list_modules system_get_module system_list_instances system_get_instance
+  ] }
 )
 if cve_agent.new_record?
   cve_agent.creator  = creator

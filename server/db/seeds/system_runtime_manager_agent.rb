@@ -78,6 +78,16 @@ runtime_agent.assign_attributes(
     "managed_runtimes" => %w[docker k3s_server k3s_agent]
   )
 )
+# tool_access.tool_families is its duty surface (IMP-777f59d4cc1e): the docker
+# and kubernetes families it reconciles, the runtime provision / decommission /
+# ready verbs, and the instances and tasks those act on. Reassigned so it
+# persists beside the in-place system_prompt.
+runtime_agent.mcp_metadata = (runtime_agent.mcp_metadata || {}).merge(
+  "tool_access" => { "tool_families" => %w[
+    docker kubernetes system_provision_docker_runtime system_decommission_docker_runtime system_mark_docker_ready
+    system_list_managed_docker_hosts system_list_instances system_get_instance system_list_tasks system_get_task
+  ] }
+)
 if runtime_agent.new_record?
   runtime_agent.creator  = creator
   runtime_agent.provider = provider

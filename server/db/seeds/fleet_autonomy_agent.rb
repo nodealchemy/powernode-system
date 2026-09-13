@@ -68,6 +68,19 @@ fleet_agent.assign_attributes(
   system_prompt: fleet_prompt,
   autonomy_config: { "interval_seconds" => 60, "extension" => "system" }
 )
+# tool_access.tool_families is its duty surface (IMP-777f59d4cc1e): sensors and
+# their config, signals and failure attribution, drift and boot-image rollout,
+# instance module refresh, and recording what a tick learned. Reassigned (not
+# mutated in place) so it persists beside the in-place system_prompt.
+fleet_agent.mcp_metadata = (fleet_agent.mcp_metadata || {}).merge(
+  "tool_access" => { "tool_families" => %w[
+    system_drift_report system_recent_signals system_attribute_failure system_inspect_correlation
+    system_get_sensor_config system_update_sensor_config system_get_silent_instances system_list_instances
+    system_get_instance system_refresh_instance_modules system_upgrade_boot_image system_list_nodes system_get_node
+    system_list_modules system_list_module_versions system_module_diff system_list_tasks system_get_task
+    system_discover_packages create_learning
+  ] }
+)
 # Only set creator/provider on new records — preserves operator overrides on existing rows.
 if fleet_agent.new_record?
   fleet_agent.creator  = creator

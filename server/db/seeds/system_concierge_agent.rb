@@ -233,8 +233,19 @@ end
 # (not in-place mutate) so it persists alongside the in-place system_prompt the
 # accessor already wrote into mcp_metadata. No hardcoded model id —
 # AgentModelSelector resolves it from the account's credentialed providers.
+#
+# tool_access.tool_families (IMP-777f59d4cc1e): the READ side of the surface
+# Ai::ConciergeToolBridge::SYSTEM_CONCIERGE_TOOL_FILTER gives its chat — list,
+# get, discover and diagnostic reads across fleet, SDWAN, docker and
+# kubernetes — plus delegation. It is read-only by default; state changes go
+# through a specialist, so no write verb of those families is listed.
 concierge_agent.mcp_metadata = (concierge_agent.mcp_metadata || {}).merge(
-  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
+  "tool_access" => { "tool_families" => %w[
+    system_list system_get system_sdwan_list system_sdwan_get docker_list docker_get kubernetes_list kubernetes_get
+    system_discover system_drift_report system_recent_signals system_attribute_failure system_inspect_correlation
+    system_blast_radius system_compliance_snapshot system_module_diff list_agents execute_agent
+  ] }
 )
 concierge_agent.save!
 
