@@ -15,9 +15,16 @@ require "rails_helper"
 # an unconfigured fence proves nothing at all — it is indistinguishable from a
 # fence that never refuses anything. The assertion is therefore the REFUSAL
 # ITSELF, observed to be absent before the write and present after it.
-RSpec.describe "site_setting_set arms the self-management fence" do
+#
+# IMP-70db2b60bfb3: the key is registered PROTECTED, so it is written only
+# through site_setting_set_protected, which parks for a person to confirm in
+# their own session and runs as that person. set_key! below takes that whole
+# path — request, own-session approval, replay — so the fence is observed to
+# arm through the governed route, not a direct write.
+RSpec.describe "site_setting_set_protected arms the self-management fence" do
   let(:account) { create(:account) }
-  let(:admin) { create(:user, account: account) }
+  let!(:admin) { create(:user, account: account, permissions: [ "admin.access" ]) }
+  let(:confirmer) { create(:user, account: account, permissions: [ "admin.access", "ai.autonomy.approve" ]) }
   let(:node) { create(:system_node, account: account) }
   let(:instance) { create(:system_node_instance, :running, node: node) }
 
@@ -31,19 +38,30 @@ RSpec.describe "site_setting_set arms the self-management fence" do
     end.new
   end
 
-  before do
-    allow(admin).to receive(:has_permission?).and_return(false)
-    allow(admin).to receive(:has_permission?).with("admin.access").and_return(true)
-  end
+  after { ::Mcp::Principal.reset! }
 
+  def key = ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY
+
+  # Request through the MCP verb, then complete it as a person from their own
+  # session. Returns the parked envelope; the write happens on the approval.
   def set_key!(value)
-    tool.execute(
-      params: {
-        action: "site_setting_set",
-        key: ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY,
-        value: value
-      }
-    )
+    parked = tool.execute(params: { action: "site_setting_set_protected", key: key, value: value })
+    expect(parked.dig(:data, :pending)).to be(true), parked.inspect
+
+    operation = ::Ai::DeferredOperation.find(parked.dig(:data, :deferred_operation_id))
+    workflow = ::Ai::Autonomy::ApprovalWorkflowService.new(account: account)
+
+    # The human-only half: the same approver deciding through a tool door is
+    # refused and arms nothing. Without human_only this approval would complete.
+    expect(workflow.approve(request: operation.approval_request, approver: confirmer, origin: "mcp_oauth"))
+      .to be(false)
+    unarmed = Class.new { include ::System::Autonomy::SelfManagementFence }.new
+    expect(unarmed.self_managed_target?(instance)).to be false
+
+    approved = workflow.approve(request: operation.approval_request, approver: confirmer,
+                                origin: ::Ai::ApprovalDecision::REST_SESSION)
+    expect(approved).to be(true)
+    parked
   end
 
   it "registers the key the fence reads, taking it from the fence's own constant" do
@@ -56,9 +74,26 @@ RSpec.describe "site_setting_set arms the self-management fence" do
     expect { fence_consumer.assert_not_self_managed!(instance, action: "terminate") }.not_to raise_error
   end
 
-  it "goes live once the key is written through the MCP verb" do
-    result = set_key!(node.id)
-    expect(result[:success]).to be true
+  it "stays inert while the protected write is only PARKED — a request is not an arming" do
+    tool.execute(params: { action: "site_setting_set_protected", key: key, value: node.id })
+
+    live = Class.new { include ::System::Autonomy::SelfManagementFence }.new
+    expect(live.self_managed_target?(instance)).to be false
+  end
+
+  it "cannot be armed through the policy-gated verb, even under an auto_approve policy" do
+    ::Ai::InterventionPolicy.create!(account: account, action_category: "platform.site_setting.write",
+                                     scope: "global", policy: "auto_approve", priority: 5, is_active: true)
+
+    result = tool.execute(params: { action: "site_setting_set", key: key, value: node.id })
+
+    expect(result[:success]).to be false
+    live = Class.new { include ::System::Autonomy::SelfManagementFence }.new
+    expect(live.self_managed_target?(instance)).to be false
+  end
+
+  it "goes live once a person confirms the protected write" do
+    set_key!(node.id)
 
     # A fresh consumer: the fence memoizes self_hosting_node_id for the life of
     # the including object, so reusing the one from the previous example would
@@ -98,15 +133,11 @@ RSpec.describe "site_setting_set arms the self-management fence" do
     node_tool = ::Ai::Tools::SiteSettingTool.new(account: account, user: nil)
     node_tool.instance_authorized = true
 
-    result = node_tool.execute(
-      params: {
-        action: "site_setting_set",
-        key: ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY,
-        value: node.id
-      }
-    )
-
-    expect(result[:success]).to be false
+    %w[site_setting_set site_setting_set_protected].each do |action|
+      result = node_tool.execute(params: { action: action, key: key, value: node.id })
+      expect(result[:success]).to be(false), "#{action}: #{result.inspect}"
+    end
+    expect(::Ai::DeferredOperation.count).to eq(0)
     # The oracle is the fence's state, not the error string.
     live = Class.new { include ::System::Autonomy::SelfManagementFence }.new
     expect(live.self_managed_target?(instance)).to be false

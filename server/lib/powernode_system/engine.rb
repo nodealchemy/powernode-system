@@ -683,7 +683,11 @@ module PowernodeSystem
           description: "System::Node id this control plane is hosted on. Arms the " \
                        "self-management fence (INV-1: management authority comes from the " \
                        "consensus group, never the node itself). Unset means 'not " \
-                       "self-hosted' and leaves every consumer of the fence inert."
+                       "self-hosted' and leaves every consumer of the fence inert.",
+          # IMP-70db2b60bfb3: arming or disarming INV-1 is a person's decision.
+          # Protected keys are written only through the human-only verb, which
+          # parks for a person to confirm in their own session.
+          protected: true
         )
 
         # IMP-e840a570a371 — BootImageStalenessSensor's own enablement. The
