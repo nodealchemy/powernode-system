@@ -263,6 +263,36 @@ module System
             }
           }
         },
+        # IMP-64d9f2cdff63 — a provider guest named for an ephemeral pool that
+        # no platform row knows (OrphanPoolGuestSensor): a VM left behind when
+        # its record went. Capacity work, like the replace/reap pair above.
+        #
+        # side_effectful WITHOUT dry_run_supported: the seeded policy is
+        # auto_approve, so a ci / ephemeral pool's orphan is destroyed on the
+        # tick; in a protected plane the environment overlay escalates the
+        # destructive category, the executor is skipped rather than run
+        # plan-only, and a released approval replays it. The mapper keeps the
+        # pool id so the resolver can place the action in the pool's plane —
+        # there is no row for the guest itself to place it by.
+        "system.pool_guest_orphaned" => {
+          skill: ::System::Ai::Skills::ReapOrphanPoolGuestExecutor,
+          action_category: "system.pool_guest_reap",
+          owner: "capacity-manager",
+          side_effectful: true,
+          input_mapper: ->(signal) {
+            pool_id = signal.dig(:payload, "instance_pool_id")
+            next nil if pool_id.blank?
+
+            {
+              instance_pool_id: pool_id,
+              cloud_instance_id: signal.dig(:payload, "cloud_instance_id"),
+              guest_name: signal.dig(:payload, "guest_name"),
+              # The region whose inventory listed the guest; a pool also places
+              # members in its preferred regions, possibly behind another connection.
+              provider_region_id: signal.dig(:payload, "provider_region_id")
+            }
+          }
+        },
         # Node mTLS cert nearing expiry (CertificateExpirySensor).
         #
         # IMP-43e94c9d46d4: this comment used to say cert rotation was handled

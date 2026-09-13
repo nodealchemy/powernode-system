@@ -253,7 +253,7 @@ RSpec.describe "system_capacity_manager_agent seed" do
     CAPACITY_SKILLS = %w[
       system-replace-instance system-reap-instance system-relocate-workload
       system-scale-project system-provision-full-stack system-platform-resilience
-      system-attach-storage
+      system-attach-storage system-reap-orphan-pool-guest
     ].freeze
 
     before do
@@ -267,7 +267,7 @@ RSpec.describe "system_capacity_manager_agent seed" do
       Ai::AgentSkill.where(ai_agent_id: owner.id, is_active: true).joins(:skill).pluck("ai_skills.slug")
     end
 
-    it "materialises the seven capacity executors on the Capacity Manager" do
+    it "materialises the eight capacity executors on the Capacity Manager" do
       expect(bound_slugs("Capacity Manager")).to match_array(CAPACITY_SKILLS)
     end
 

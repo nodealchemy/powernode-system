@@ -1035,6 +1035,27 @@ SKILLS_DATA = [
       holding volumes or a VIP must be replaced first, or the data goes with the VM.
     PROMPT
   },
+  {
+    name: "Reap Orphan Pool Guest",
+    slug: "system-reap-orphan-pool-guest",
+    description: "Destroy a provider guest named for an ephemeral instance pool that no platform row knows — a VM left behind when its record went",
+    category: "sre_observability",
+    subdomain: "fleet",
+    executor: "System::Ai::Skills::ReapOrphanPoolGuestExecutor",
+    tags: %w[fleet orphan terminate destructive],
+    system_prompt: <<~PROMPT.strip
+      Destroy an orphaned pool guest reported by the orphan_pool_guest sensor: a VM at the
+      provider, named for an EPHEMERAL instance pool, that no platform row names.
+      Inputs: instance_pool_id (required — the pool the guest is named for), cloud_instance_id
+      (required — the provider id it was listed under), guest_name (required).
+      DESTRUCTIVE AND IRREVERSIBLE. Every claim is re-checked at execution: the name must still
+      be one of the pool's member names, no row in any account may name the guest, and the
+      terminate is name-verified — the provider refuses rather than destroy a different guest
+      at a recycled id. Gated on system.pool_guest_reap: proceeds for a pool in an unprotected
+      plane, parks for approval in a protected one. Never use it on a guest that is not named
+      for a pool; a guest a row still knows is the replace / reap lanes' concern, not this one.
+    PROMPT
+  },
   # ── HIER-P2F — Disk Image Manager skills (R4 of the 2026-06-28 campaign) ──
   {
     name: "Disk Image Promote",

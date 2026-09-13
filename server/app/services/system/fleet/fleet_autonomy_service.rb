@@ -291,6 +291,11 @@ module System
         # rebooted back; it emits system.instance_unrecoverable on the distinct
         # system.instance_replace lane instead of another reboot proposal.
         ::System::Fleet::Sensors::InstanceUnrecoverableSensor,
+        # IMP-64d9f2cdff63 — provider guests named for an ephemeral pool that
+        # no platform row knows: a record pruned while its VM survived. Read
+        # from the provider's inventory by guest name; emits
+        # system.pool_guest_orphaned on the system.pool_guest_reap lane.
+        ::System::Fleet::Sensors::OrphanPoolGuestSensor,
         # Provider-side state drift (e.g. libvirt domstate=shut-off while
         # the model says status=running). Complementary to InstanceStatusSensor
         # which watches heartbeat staleness. Together they distinguish

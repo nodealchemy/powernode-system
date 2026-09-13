@@ -446,6 +446,15 @@ module System
         # routed set — the row exists so the terminate is an operator-visible,
         # separately tunable control rather than an unrowed default.
         "system.instance_reap"           => "require_approval",
+        # IMP-64d9f2cdff63 — destroy a provider guest named for an EPHEMERAL
+        # pool that no platform row knows (OrphanPoolGuestSensor →
+        # ReapOrphanPoolGuestExecutor). auto_approve per the operator direction
+        # ("ci / ephemeral auto, protected planes park"): the plane decides the
+        # rest, because Ai::EnvironmentPolicyOverlay escalates this destructive
+        # category to require_approval in a protected environment, and the
+        # lane's inputs place it in the pool's. The terminate is name-verified
+        # at the provider, so a recycled id cannot turn it onto another guest.
+        "system.pool_guest_reap"         => "auto_approve",
         "system.region_expansion"        => "require_approval",
         "system.capacity_resize"         => "require_approval",
         "system.relocate_workload"       => "require_approval"
