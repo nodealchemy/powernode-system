@@ -61,14 +61,14 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **37 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **38 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   external workload pressure (cross-extension stigmergic coordination), instance
   state drift, GitOps drift, package repository drift, project SLO breaches,
   disk-image publication failure streaks, SDWAN health (peer reachability, BGP
   session, VIP reachability, drift, credential expiry), and storage assignment
   drift
-- **65 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+- **66 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
   package + module authoring, architecture catalog, federation, and platform

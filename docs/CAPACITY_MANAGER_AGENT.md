@@ -75,7 +75,7 @@ K3s → **Runtime Manager**; operator chat and platform deploy → **System Conc
 
 ## Skills
 
-Seven executors bind to the agent (`binds_to "capacity_manager"` — the
+Eight executors bind to the agent (`binds_to "capacity_manager"` — the
 `SkillBindings::AGENT_ALIASES` slug; `system_skill_bindings_seed.rb` materialises the
 `Ai::AgentSkill` rows and deletes drift):
 
@@ -83,6 +83,7 @@ Seven executors bind to the agent (`binds_to "capacity_manager"` — the
 |---|---|---|---|
 | `system-replace-instance` | `ReplaceInstanceExecutor` | `system.instance_replace` (require_approval) — the `instance_unrecoverable_sensor` lane runs it AS this agent | Fleet Autonomy |
 | `system-reap-instance` | `ReapInstanceExecutor` | `system.instance_reap` (require_approval) — the second approval a replace asks for | Fleet Autonomy |
+| `system-reap-orphan-pool-guest` | `ReapOrphanPoolGuestExecutor` | `system.pool_guest_reap` (auto_approve; parks in a protected plane) — the `orphan_pool_guest_sensor` lane runs it AS this agent | — (new, IMP-64d9f2cdff63) |
 | `system-relocate-workload` | `RelocateWorkloadExecutor` | `system.relocate_workload` (require_approval) | Fleet Autonomy |
 | `system-scale-project` | `ScaleProjectExecutor` | dispatched by `System::AdaptationGate` under `project.scale_horizontal` (auto within the `auto_apply_window`); `remove_replicas` is approval-gated by the result envelope | Fleet Autonomy |
 | `system-provision-full-stack` | `ProvisionFullStackExecutor` | the composer `scale_project` / `relocate_workload` call | Fleet Autonomy |
@@ -103,7 +104,7 @@ provider reads, task reads, storage reads — so the Claude Code counterpart
 
 ## Intervention Policies
 
-The agent ships with **23 intervention policies**:
+The agent ships with **24 intervention policies**:
 
 | Action | Policy | Reached through | Why |
 |---|---|---|---|
@@ -112,6 +113,7 @@ The agent ships with **23 intervention policies**:
 | `system.region_expansion` | `require_approval` | executor / Concierge | Cost-bearing |
 | `system.capacity_resize` | `require_approval` | executor / Concierge (`capacity_recommend` proposes) | Cost-bearing |
 | `system.relocate_workload` | `require_approval` | executor: `RelocateWorkloadExecutor` | Workload relocation |
+| `system.pool_guest_reap` | `auto_approve` | sensor: `orphan_pool_guest_sensor` → `ReapOrphanPoolGuestExecutor` | Destroys a provider guest named for an ephemeral pool that no row knows (a VM left behind when its record went); placed in the pool's plane, so a protected plane parks it; the terminate is name-verified (IMP-64d9f2cdff63) |
 | `system.instance_pool_create` | `require_approval` | operator door (`Ai::GatedActions`) — twin | Capacity commitment |
 | `system.instance_pool_update` | `notify_and_proceed` | agent vocabulary, no gate site | Changes pool size targets |
 | `system.instance_pool_ceiling_raise` | `require_approval` | operator door — twin | Raises target/max — commits spend |
