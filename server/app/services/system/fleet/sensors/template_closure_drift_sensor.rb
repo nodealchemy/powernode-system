@@ -29,6 +29,10 @@ module System
             .joins(node: :node_template)
             .where(system_nodes: { account_id: account.id })
             .where(status: live_statuses)
+            # IMP-10c9b9634d4e — an abandoned instance held a standing closure
+            # card re-detected 1416 times. It is reaped (AbandonedInstanceSensor's
+            # lane, excluding exactly the rows it signals), not converged.
+            .where.not(id: AbandonedInstanceSensor.claimed_relation(account: account).select(:id))
             .includes(node: [ :node_template, :node_module_assignments ])
             .find_each.filter_map { |inst| sense_instance(inst) }
         end

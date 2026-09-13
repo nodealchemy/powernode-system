@@ -437,4 +437,36 @@ RSpec.describe System::Fleet::Sensors::InstanceUnrecoverableSensor do
         .not_to include("system.instance_replace")
     end
   end
+
+  # IMP-10c9b9634d4e — a replace for a machine abandoned weeks ago claims a
+  # warm member to stand in for nothing and parks a card; the abandoned lane
+  # reaps it instead. Excluded in SQL, before the per-tick limit.
+  describe "#sense — abandoned instances" do
+    it "does not propose replacing an abandoned instance, and still does for a recently silent one" do
+      abandoned = silent_instance
+      abandoned.update_columns(last_heartbeat_at: 30.days.ago, created_at: 60.days.ago)
+      recent = silent_instance
+      stub_provider_status("terminated")
+
+      ids = sensor.sense.map { |s| s.payload["instance_id"] }
+
+      expect(ids).to eq([ recent.id ])
+    end
+
+    it "still proposes replacing an abandoned instance past the reap lane's per-tick bound" do
+      # `starting`: a `running` guest parks its reap, and a reap that parks is
+      # not bounded, so it would be claimed however many came before it.
+      oldest = silent_instance
+      oldest.update_columns(status: "starting", last_heartbeat_at: 40.days.ago, created_at: 60.days.ago)
+      queued = silent_instance
+      queued.update_columns(status: "starting", last_heartbeat_at: 20.days.ago, created_at: 60.days.ago)
+      stub_provider_status("terminated")
+      System::Fleet::SensorConfig.upsert_for(account: account, sensor: "abandoned_instance",
+                                             config: { "max_per_tick" => 1 })
+
+      ids = sensor.sense.map { |s| s.payload["instance_id"] }
+
+      expect(ids).to eq([ queued.id ])
+    end
+  end
 end

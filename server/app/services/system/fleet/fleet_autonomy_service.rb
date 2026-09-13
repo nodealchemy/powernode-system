@@ -283,6 +283,11 @@ module System
         # sensor for why five weeks of green "0 reaped, success" logs proved
         # nothing.
         ::System::Fleet::Sensors::StuckTaskBacklogSensor,
+        # IMP-10c9b9634d4e — instances silent past the abandonment window: reaped
+        # on the system.abandoned_instance_reap lane, and excluded (by the same
+        # relation) from the silent, unrecoverable and closure-drift sensors, so
+        # a machine that no longer exists stops raising remediation cards.
+        ::System::Fleet::Sensors::AbandonedInstanceSensor,
         ::System::Fleet::Sensors::InstanceStatusSensor,
         # IMP-e2f53e87d090 (APO-2b) — the DR classifier for the population
         # InstanceStatusSensor watches. A silent instance whose VM the provider
@@ -933,6 +938,10 @@ module System
              # a re-emitted unrecoverable signal updates the one open approval
              # rather than queueing another.
              "system.instance_replace",
+             # IMP-10c9b9634d4e — in a protected plane the abandoned-instance
+             # reap parks; a standing abandoned signal re-decided every dedup
+             # window must update that one card, not queue another.
+             "system.abandoned_instance_reap",
              "system.cert_rotate", "system.cert_revoke",
              # Observation signals never create remediation outcomes
              # (see RemediationValidator#record_proceeded!), so they should not

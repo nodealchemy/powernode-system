@@ -99,4 +99,34 @@ RSpec.describe System::Fleet::Sensors::TemplateClosureDriftSensor do
   it "registers the template_closure_apply category with the core autonomy registry" do
     expect(Ai::InterventionPolicy.category_registered?("system.template_closure_apply")).to be true
   end
+
+  # IMP-10c9b9634d4e — an abandoned instance raised a standing closure-drift
+  # card (1416 re-detections) whose blast radius counted it as provisioned.
+  # It is reaped, not converged.
+  it "does not propose a closure apply for an abandoned instance, and still does for a live one" do
+    abandoned = create(:system_node_instance, node: node, status: "error")
+    abandoned.update_columns(last_heartbeat_at: 30.days.ago, created_at: 60.days.ago)
+    live = create(:system_node_instance, :running, node: node)
+    create(:system_template_module, node_template: template, node_module: module_b)
+
+    ids = sensor.sense.map { |s| payload_value(s, :instance_id) }
+
+    expect(ids).to eq([ live.id ])
+  end
+
+  # Only the rows the reap lane signals leave this lane; one past its per-tick
+  # bound keeps its closure card rather than being on neither lane.
+  it "still proposes a closure apply for an abandoned instance past the reap lane's per-tick bound" do
+    oldest = create(:system_node_instance, node: node, status: "error")
+    oldest.update_columns(last_heartbeat_at: 40.days.ago, created_at: 60.days.ago)
+    queued = create(:system_node_instance, node: node, status: "error")
+    queued.update_columns(last_heartbeat_at: 20.days.ago, created_at: 60.days.ago)
+    create(:system_template_module, node_template: template, node_module: module_b)
+    System::Fleet::SensorConfig.upsert_for(account: account, sensor: "abandoned_instance",
+                                           config: { "max_per_tick" => 1 })
+
+    ids = sensor.sense.map { |s| payload_value(s, :instance_id) }
+
+    expect(ids).to eq([ queued.id ])
+  end
 end

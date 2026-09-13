@@ -198,13 +198,14 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
     # this manager, never lifted off Fleet Autonomy (see
     # policy_reconciler_rehome_spec's added_after_wave1). 24 since
     # IMP-64d9f2cdff63 added system.pool_guest_reap to CAPACITY_POLICY_KEYS,
-    # likewise born here.
-    it "Capacity Manager = the capacity keys + instance pools + provisioning + platform scaling + cordon (24)" do
+    # likewise born here. 25 since IMP-10c9b9634d4e added
+    # system.abandoned_instance_reap, likewise born here.
+    it "Capacity Manager = the capacity keys + instance pools + provisioning + platform scaling + cordon (25)" do
       expect(d::CAPACITY_MANAGER_POLICIES.keys).to match_array(
         d::CAPACITY_POLICY_KEYS.keys + d::INSTANCE_POOL_POLICIES.keys + d::PROVISIONING_POLICIES.keys +
         d::PLATFORM_SCALING_POLICIES.keys + d::INSTANCE_CORDON_OPERATOR_POLICIES.keys
       )
-      expect(d::CAPACITY_MANAGER_POLICIES.size).to eq(24)
+      expect(d::CAPACITY_MANAGER_POLICIES.size).to eq(25)
       expect(set("capacity-manager")).to include(agent_key: "capacity-manager", scope: "agent",
                                                   condition_overrides: d::PROVISIONING_CONDITION_OVERRIDES)
       expect(set("capacity-manager")[:policies]).to equal(d::CAPACITY_MANAGER_POLICIES)

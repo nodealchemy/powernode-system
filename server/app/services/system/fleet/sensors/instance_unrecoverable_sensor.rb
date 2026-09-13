@@ -202,7 +202,18 @@ module System
         # consume the whole window every tick while the rest of a mass failure
         # is never looked at.
         def candidates
-          without_reaper_owned(unfiltered_candidates)
+          without_abandoned(without_reaper_owned(unfiltered_candidates))
+        end
+
+        # IMP-10c9b9634d4e — an instance abandoned past the window is reaped on
+        # AbandonedInstanceSensor's lane; a replace would claim a warm member to
+        # stand in for a machine gone for weeks and park a card for it. The
+        # exclusion is exactly the rows that sensor signals this tick, so a row
+        # past its per-tick bound stays here rather than on neither lane, and it
+        # is applied before the limit for the same reason as the reaper-owned
+        # exclusion.
+        def without_abandoned(relation)
+          relation.where.not(id: AbandonedInstanceSensor.claimed_relation(account: account).select(:id))
         end
 
         # IMP-4e24a37fdd40 — a member the pool reaper owns is one more

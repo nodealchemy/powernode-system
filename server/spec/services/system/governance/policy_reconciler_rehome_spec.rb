@@ -232,8 +232,11 @@ RSpec.describe System::Governance::PolicyReconciler, "FORMER_OWNERS (HIER-P2DECL
     #     (PROVISIONING_POLICIES).
     #   system.pool_guest_reap — IMP-64d9f2cdff63, the orphan-pool-guest reap
     #     lane, new on the Capacity Manager (CAPACITY_POLICY_KEYS).
+    #   system.abandoned_instance_reap — IMP-10c9b9634d4e, the abandoned-instance
+    #     reap lane, new on the Capacity Manager (CAPACITY_POLICY_KEYS).
     let(:added_after_wave1) do
-      %w[system.volume_snapshot_create project.target_unmeasurable_investigate system.pool_guest_reap]
+      %w[system.volume_snapshot_create project.target_unmeasurable_investigate system.pool_guest_reap
+         system.abandoned_instance_reap]
     end
 
     it "records every key wave 1 lifted off Fleet Autonomy — 35 — and P2A's 16 before them" do

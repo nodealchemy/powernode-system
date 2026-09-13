@@ -61,6 +61,17 @@ system.instance_unrecoverable:
     one, and the operator question here is which of those five steps already
     landed before the failure.
 
+system.instance_abandoned:
+  not_documented: true
+  reason: >-
+    No runbook covers reaping an instance abandoned past the window
+    (AbandonedInstanceSensor → system.abandoned_instance_reap). A runbook would
+    need to cover confirming the machine is really gone before approving the
+    reap in a protected plane, placing an operator hold on a row that must be
+    kept, and repointing a published service reported stranded on its legacy
+    backend. node-provisioning.md's decommission covers a planned teardown, not
+    a row that outlived its machine.
+
 system.pool_guest_orphaned:
   not_documented: true
   reason: >-

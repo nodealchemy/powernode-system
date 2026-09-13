@@ -293,6 +293,24 @@ module System
             }
           }
         },
+        # IMP-10c9b9634d4e — an instance no one has heard from past the
+        # abandonment window (AbandonedInstanceSensor). Operator direction: a
+        # reap lane, not reprovision/closure approvals; in a protected plane one
+        # parked reap approval instead of repeating cards.
+        #
+        # skill: nil — the remediation is the terminate itself, applied by
+        # #reap_abandoned_instance (REMEDIATION_APPLIERS), which re-checks the
+        # claim first. The payload names the instance, so the gate places the
+        # action in the INSTANCE'S plane: the auto_approve row proceeds in an
+        # unprotected one, and Ai::EnvironmentPolicyOverlay escalates this
+        # destructive category to require_approval in a protected one, where
+        # FleetAutonomyService#dedup_key_for keeps it to one approval per
+        # instance and a released approval replays the applier.
+        "system.instance_abandoned" => {
+          skill: nil,
+          action_category: "system.abandoned_instance_reap",
+          owner: "capacity-manager"
+        },
         # Node mTLS cert nearing expiry (CertificateExpirySensor).
         #
         # IMP-43e94c9d46d4: this comment used to say cert rotation was handled
@@ -1592,8 +1610,16 @@ module System
       # same force_policy mechanism escalate_stuck_remediation! uses to
       # override a resolved policy that doesn't fit the moment. Every other
       # signal kind is unaffected (nil = let gate_action! resolve normally).
+      #
+      # IMP-10c9b9634d4e — system.instance_abandoned uses the same flag:
+      # AbandonedInstanceSensor sets it when a terminate would cost something a
+      # person should weigh (a guest last seen running or powered off, an
+      # attached volume, a virtual IP held), so that reap parks one approval
+      # even in an unprotected plane.
+      FORCE_APPROVAL_FLAG_KINDS = %w[system.template_closure_drift system.instance_abandoned].freeze
+
       def force_policy_for(signal)
-        return nil unless signal.kind == "system.template_closure_drift"
+        return nil unless FORCE_APPROVAL_FLAG_KINDS.include?(signal.kind)
 
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         return nil unless payload["requires_approval"] || payload[:requires_approval]
@@ -2006,6 +2032,11 @@ module System
         # the real state); the remediation is a model-side convergence to
         # the provider-reported status.
         "system.instance_state_drifted" => { method: :converge_instance_state_drift },
+        # IMP-10c9b9634d4e — the abandoned-instance reap. skill: nil, like the
+        # honeypot quarantine below: the remediation IS the terminate, so
+        # without this entry an approved reap would fall through to "no
+        # applier" and the machine's row would outlive the approval.
+        "system.instance_abandoned" => { method: :reap_abandoned_instance },
         # IMP-83471cc28e1a: honeypot quarantine (F3-08) routes through
         # system.instance_terminate but, like instance_silent, has no skill
         # and no on-node task to dispatch — the remediation IS the
@@ -2371,6 +2402,98 @@ module System
         "terminated" => :terminate!,
         "error" => :mark_errored!
       }.freeze
+
+      # IMP-10c9b9634d4e — the system.instance_abandoned applier: terminate a
+      # machine nobody has heard from past the abandonment window.
+      #
+      # RE-CHECKS THE CLAIM rather than trusting the signal. In a protected
+      # plane the approval can sit for hours, and in that time the agent may
+      # have come back, an operator may have put the row on hold, or something
+      # else may have terminated it. AbandonedInstanceSensor.abandoned? is the
+      # same rule the sensor selected by, so a row that stopped qualifying is
+      # refused here instead of reaped on a stale observation.
+      #
+      # WHAT IS AT STAKE IS RE-READ TOO. The sensor flags a reap
+      # requires_approval, listing approval_reasons (last seen running, powered
+      # off, a volume attached, a virtual IP held), and #force_policy_for parks
+      # it; both ride the
+      # approval payload back here. An approval covers the reasons its card
+      # showed: a reason at stake NOW that it did not list has been weighed by
+      # no one, so the reap is refused and the next tick re-signals it with
+      # that reason on the card.
+      #
+      # Attached volumes are DETACHED before the terminate, as the DR reap does
+      # (ReplaceInstanceExecutor#reattach_volumes!): a provider terminate
+      # destroys every disk in the guest's config. A volume that will not
+      # detach stops the reap.
+      #
+      # Published service backends are released before the terminate
+      # (ServiceBackendRelease, the order the DR reap uses): after the terminate
+      # the rows can no longer be found by the instance and would keep the dead
+      # host in every set.
+      def reap_abandoned_instance(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        id = payload["instance_id"] || payload[:instance_id]
+        instance = find_account_instance(id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+        return refuse_foreign_control_plane!(instance, command: "abandoned_instance_reap") unless owned_by_this_control_plane?(instance)
+        return refuse_self_managed!(instance, command: "abandoned_instance_reap") if self_managed_target?(instance)
+
+        if instance.status == "terminated"
+          return { applied: false, instance_id: instance.id, reason: "already terminated" }
+        end
+
+        sensor = ::System::Fleet::Sensors::AbandonedInstanceSensor
+        unless sensor.abandoned?(instance, account: account)
+          return { applied: false, instance_id: instance.id,
+                   reason: "no longer abandoned (status #{instance.status}, last sign of life " \
+                           "#{sensor.last_sign_of_life(instance)&.iso8601}, ops hold #{instance.ops_held?})" }
+        end
+
+        approved = [ true, "true" ].include?(payload["requires_approval"] || payload[:requires_approval])
+        covered = approved ? Array(payload["approval_reasons"] || payload[:approval_reasons]).map(&:to_s) : []
+        at_stake = sensor.approval_reasons(instance)
+        unweighed = at_stake - covered
+        if unweighed.any?
+          return { applied: false, instance_id: instance.id,
+                   reason: "not reaped without approval: #{unweighed.join(', ')} since it was reported" }
+        end
+
+        # Approval does not clear this one: a terminate destroys the peers and
+        # leaves their ids in the VIP's holder lists, and this lane cannot move
+        # an address. Refused until the operator has moved it off the guest.
+        if at_stake.include?("virtual_ip_holder")
+          return { applied: false, instance_id: instance.id,
+                   reason: "holds or is failover for a virtual IP: move the address off this guest by removing " \
+                           "its peer from the VIP's holder and failover lists (sdwan_update_virtual_ip) before it " \
+                           "is reaped. A failover does not clear it: it moves a dead holder into the failover " \
+                           "list, or makes a dead failover peer the holder" }
+        end
+
+        detached = []
+        ::System::ProviderVolume.attached.where(node_instance_id: instance.id).find_each do |volume|
+          detach = ::System::VolumeManagementService.detach(volume: volume)
+          unless detach.success?
+            return { applied: false, instance_id: instance.id, detached_volume_ids: detached,
+                     reason: "volume #{volume.id} did not detach: #{detach.error}" }
+          end
+
+          detached << volume.id
+        end
+
+        backends = ::System::Fleet::ServiceBackendRelease.release!(account: account, instance: instance,
+                                                                   log_tag: "FleetDecisionEngine")
+        released = { detached_volume_ids: detached,
+                     removed_sdwan_service_backend_ids: backends[:removed],
+                     stranded_sdwan_service_ids: backends[:stranded] }
+
+        result = ::System::ProvisioningService.terminate_instance(instance: instance)
+        unless result.success?
+          return { applied: false, instance_id: instance.id, reason: "terminate refused: #{result.error}" }.merge(released)
+        end
+
+        { applied: true, instance_id: instance.id }.merge(released)
+      end
 
       # IMP-555e29eeb4ab: the instance_state_drifted applier. Unlike
       # reboot_silent_instance, there is nothing to actuate — the provider

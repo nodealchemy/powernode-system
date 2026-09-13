@@ -56,4 +56,37 @@ RSpec.describe System::Fleet::Sensors::InstanceStatusSensor, type: :service do
     described_class.new(account: account).sense
     expect(single.reload.metadata["region_health"]).to be_nil
   end
+
+  # IMP-10c9b9634d4e — an instance silent for weeks is abandoned, not silent.
+  # Calling it silent raised a critical signal with a reprovision plan for a
+  # machine that no longer exists; AbandonedInstanceSensor's reap lane owns it.
+  describe "#sense — abandoned instances" do
+    let(:node) { create(:system_node, account: account, node_template: template) }
+
+    it "stops calling an abandoned instance silent, and still reports one silent inside the window" do
+      abandoned = create(:system_node_instance, node: node, status: "starting")
+      abandoned.update_columns(last_heartbeat_at: 30.days.ago, created_at: 60.days.ago)
+      silent = create(:system_node_instance, node: node, status: "running")
+      silent.update_columns(last_heartbeat_at: 1.hour.ago)
+
+      ids = described_class.new(account: account).sense.map { |s| s.payload["instance_id"] }
+
+      expect(ids).to eq([ silent.id ])
+    end
+
+    # Review F3: only the rows the reap lane actually signals leave this lane.
+    # One past its per-tick bound is still reported here, not on neither lane.
+    it "still reports an abandoned instance past the reap lane's per-tick bound" do
+      oldest = create(:system_node_instance, node: node, status: "starting")
+      oldest.update_columns(last_heartbeat_at: 40.days.ago, created_at: 60.days.ago)
+      queued = create(:system_node_instance, node: node, status: "starting")
+      queued.update_columns(last_heartbeat_at: 20.days.ago, created_at: 60.days.ago)
+      System::Fleet::SensorConfig.upsert_for(account: account, sensor: "abandoned_instance",
+                                             config: { "max_per_tick" => 1 })
+
+      ids = described_class.new(account: account).sense.map { |s| s.payload["instance_id"] }
+
+      expect(ids).to eq([ queued.id ])
+    end
+  end
 end

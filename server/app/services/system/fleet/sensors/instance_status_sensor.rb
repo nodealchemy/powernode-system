@@ -65,6 +65,12 @@ module System
             .where(system_nodes: { account_id: account.id })
             .where(status: HEARTBEAT_EXPECTED_STATUSES)
             .where("last_heartbeat_at < ? OR last_heartbeat_at IS NULL", cutoff)
+            # IMP-10c9b9634d4e — silent for weeks is abandoned, not silent: a
+            # reprovision plan for a machine that no longer exists is a card an
+            # operator can only reject. Excluded are exactly the rows
+            # AbandonedInstanceSensor signals this tick, so nothing is dropped
+            # here that the reap lane does not pick up.
+            .where.not(id: AbandonedInstanceSensor.claimed_relation(account: account).select(:id))
 
           fence_to_control_plane(silent)
             .find_each.map do |inst|

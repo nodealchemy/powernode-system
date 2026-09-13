@@ -455,6 +455,14 @@ module System
         # lane's inputs place it in the pool's. The terminate is name-verified
         # at the provider, so a recycled id cannot turn it onto another guest.
         "system.pool_guest_reap"         => "auto_approve",
+        # IMP-10c9b9634d4e — terminate a non-pool cloud instance nobody has heard
+        # from past the abandonment window (AbandonedInstanceSensor → the
+        # DecisionEngine's #reap_abandoned_instance). auto_approve per the
+        # operator direction ("non-protected plane gets a reap lane; a protected
+        # plane parks a single reap approval"): the payload places the action in
+        # the instance's plane, and Ai::EnvironmentPolicyOverlay escalates this
+        # destructive category to require_approval in a protected one.
+        "system.abandoned_instance_reap" => "auto_approve",
         "system.region_expansion"        => "require_approval",
         "system.capacity_resize"         => "require_approval",
         "system.relocate_workload"       => "require_approval"
