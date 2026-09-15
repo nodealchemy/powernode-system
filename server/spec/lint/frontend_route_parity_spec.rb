@@ -114,7 +114,7 @@ module FrontendRouteParity
     i = from
     while i < to
       quote = source[i]
-      unless ["'", '"', "`"].include?(quote)
+      unless [ "'", '"', "`" ].include?(quote)
         i += 1
         next
       end
@@ -150,7 +150,7 @@ module FrontendRouteParity
         i += 1
       end
       i += 1
-      found << [start, body]
+      found << [ start, body ]
     end
     found
   end
@@ -169,9 +169,9 @@ module FrontendRouteParity
     source.to_enum(:scan, BINDING_RE).each do
       match = Regexp.last_match
       rhs = match.end(0)
-      stop = [(source.index(";", rhs) || (rhs + 300)), rhs + 300].min
+      stop = [ (source.index(";", rhs) || (rhs + 300)), rhs + 300 ].min
       literals = literals_in(source, rhs, stop).map(&:last)
-      bindings[match[1]] << [match.begin(0), literals] unless literals.empty?
+      bindings[match[1]] << [ match.begin(0), literals ] unless literals.empty?
     end
     bindings
   end
@@ -217,7 +217,7 @@ module FrontendRouteParity
   end
 
   def system_path?(path)
-    path.start_with?("/system/", "#{API_PREFIX}/system/") || ["/system", "#{API_PREFIX}/system"].include?(path)
+    path.start_with?("/system/", "#{API_PREFIX}/system/") || [ "/system", "#{API_PREFIX}/system" ].include?(path)
   end
 
   def with_prefix(path)
@@ -242,7 +242,7 @@ module FrontendRouteParity
       next if (path.split("/") & NON_OPERATOR_SEGMENTS).any?
 
       defaults = route.defaults
-      grouped[[path, "#{defaults[:controller]}##{defaults[:action]}"]] << verb
+      grouped[[ path, "#{defaults[:controller]}##{defaults[:action]}" ]] << verb
     end
 
     grouped.map do |(path, action), verbs|
@@ -274,7 +274,7 @@ module FrontendRouteParity
           location = "#{relative}:#{source[0...at].count("\n") + 1}"
           lookup = ->(name) { (bindings[name] || []).select { |off, _| off < at }.max_by(&:first)&.last&.first }
 
-          candidates = literal ? [literal] : ((bindings[identifier] || []).select { |off, _| off < at }.max_by(&:first)&.last || [])
+          candidates = literal ? [ literal ] : ((bindings[identifier] || []).select { |off, _| off < at }.max_by(&:first)&.last || [])
           if candidates.empty?
             unresolvable << { file: relative, location: location, detail: "URL comes from #{identifier.inspect}" }
             next
@@ -305,7 +305,7 @@ module FrontendRouteParity
       end
     end
 
-    [calls, unresolvable]
+    [ calls, unresolvable ]
   end
 
   # An unresolvable call site only matters where a /system URL could be hiding,
@@ -358,7 +358,7 @@ RSpec.describe "frontend/backend route parity", type: :lint do
   it "has no frontend apiClient call to a route that does not exist" do
     unmatched = calls
                 .reject { |call| entries.any? { |e| e[:path] == call[:path] && e[:verbs].include?(call[:verb]) } }
-                .uniq { |call| [call[:verb], call[:path]] }
+                .uniq { |call| [ call[:verb], call[:path] ] }
                 .map { |call| "#{call[:verb]} #{call[:path]}  (#{call[:location]})" }
 
     expect(unmatched).to be_empty, <<~MSG

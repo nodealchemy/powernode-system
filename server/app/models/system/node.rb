@@ -283,6 +283,5 @@ module System
 
       errors.add(:environment, "must belong to the node's account")
     end
-
   end
 end

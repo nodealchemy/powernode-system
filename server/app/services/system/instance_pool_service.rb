@@ -825,7 +825,7 @@ module System
           end
         end
 
-    # F1-10 — flag, never terminate: the claim may still back a live
+        # F1-10 — flag, never terminate: the claim may still back a live
         # workload. The config flag + FleetEvent surface the leak to the
         # operator; without them a consumer crash after acquire! leaked
         # the member forever while replenish! counted it against
