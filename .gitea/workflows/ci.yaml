@@ -110,8 +110,35 @@ jobs:
           fi
           exit 0
 
+  # IMP-ddacfe8bde28: resolves the core commit this run tests against, once.
+  # Every parent checkout below used to take core's default branch HEAD as of
+  # its own start, so a run's verdict depended on push order across the two
+  # repos and two jobs of one run could test different core commits. Rule
+  # (scripts/ci-resolve-core-ref.sh): the core branch named exactly like this
+  # run's branch if core has one, else core's default branch.
+  core-ref:
+    runs-on: ubuntu-24.04
+    # Every parent-checkout job waits on this; a hung ls-remote must not hold
+    # them to the runner's default ceiling.
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the core commit
+        id: resolve
+        env:
+          CORE_READ_TOKEN: ${{ secrets.PLATFORM_READ_TOKEN }}
+          WANTED: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          out=$(bash scripts/ci-resolve-core-ref.sh "${{ github.server_url }}/powernode/powernode-platform.git" "$WANTED")
+          echo "$out"
+          printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
+
   rspec:
-    needs: ci-hygiene
+    needs: [ci-hygiene, core-ref]
     # SIX SHARDS, balanced by example count, each computing its own slice.
     #
     # This was one job running all four suites sequentially, and that job could
@@ -224,10 +251,21 @@ jobs:
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - name: Check out the parent platform
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           # Pull submodules (business, marketing, supply-chain, system).
@@ -382,7 +420,7 @@ jobs:
   # shard skips this job and the run is red anyway, so no needs.<job>.result
   # expression or matrix-output feature is required.
   rspec-gate:
-    needs: rspec
+    needs: [rspec, core-ref]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -419,10 +457,21 @@ jobs:
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - name: Check out the parent platform
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           submodules: recursive
@@ -507,7 +556,7 @@ jobs:
     # contending for the same fixed host port; each job now gets its own
     # kernel-assigned ports, so this runs concurrently with rspec and
     # worker-specs.
-    needs: ci-hygiene
+    needs: [ci-hygiene, core-ref]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -572,10 +621,21 @@ jobs:
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - name: Check out the parent platform
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           submodules: recursive
@@ -646,15 +706,27 @@ jobs:
           exit 0
 
   frontend-typecheck:
+    needs: core-ref
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
 
@@ -702,15 +774,27 @@ jobs:
     # component/page test suite via the parent's jest runner. Per
     # project_extension_jest_infra.md, the invocation pattern is
     # `npx --prefix ../../../frontend jest --config=jest.config.js`.
+    needs: core-ref
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
 
@@ -820,6 +904,7 @@ jobs:
         run: bash scripts/audit-todos.sh
 
   rubocop:
+    needs: core-ref
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the system extension
@@ -827,10 +912,21 @@ jobs:
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - name: Check out the parent platform
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           # Submodules required so 'bundle install' resolves frozen lockfile
@@ -864,7 +960,7 @@ jobs:
   worker-specs:
     # No longer the last link in a port-publishing chain; that chain only
     # existed to serialise the shared 6379/5432 bindings, which are gone.
-    needs: ci-hygiene
+    needs: [ci-hygiene, core-ref]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -927,10 +1023,21 @@ jobs:
         with:
           path: extensions/system
 
+      # An empty ref is not an error to actions/checkout: it is the core default
+      # branch, the unpinned behaviour this replaces. Refused here, per job,
+      # because `if: always()` jobs still run when core-ref failed.
+      - name: Refuse an unresolved core commit
+        env:
+          CORE_SHA: ${{ needs.core-ref.outputs.sha }}
+        run: |
+          [ -n "$CORE_SHA" ] || { echo "::error::core-ref resolved no core commit"; exit 1; }
+          echo "core commit: $CORE_SHA"
+
       - name: Check out the parent platform
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
+          ref: ${{ needs.core-ref.outputs.sha }}
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           submodules: recursive
