@@ -37,7 +37,15 @@ RSpec.describe "gate description matches the approval card", type: :request do
   # `failed` DeferredOperation behind when it was eventually run). This spec is
   # about the two LABELS agreeing, so it needs a request that actually reaches
   # the gate: a running instance, which may_stop?.
-  let!(:instance) { create(:system_node_instance, node: node, name: "web-1", status: "running") }
+  #
+  # last_heartbeat_at is load-bearing for the same reason. Since IMP-93d9f4a31627
+  # TasksController#create refuses an on-node reconcile (sync_modules) with 422
+  # BEFORE the gate when no agent will pull it, and a `running` row that has
+  # never reported is exactly that (NodeInstance#silence_verdict :never_reported).
+  let!(:instance) do
+    create(:system_node_instance, node: node, name: "web-1", status: "running",
+                                  last_heartbeat_at: Time.current)
+  end
 
   # A fresh spec account has no InterventionPolicy rows, so the service falls
   # through to its require_approval default — which is the branch that parks a
