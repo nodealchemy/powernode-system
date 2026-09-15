@@ -139,6 +139,20 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
       .to include("system.instance_reboot", "system.module_assign")
   end
 
+  # IMP-9c8c05f8617e — the Capacity Manager's reap lanes stranded in "other",
+  # where the System modal does not render, so their auto_approve rows could be
+  # neither seen nor tuned there. Pinned by name beside the set's other reap so
+  # a later move is a decision, not a side effect of a prefix edit.
+  it "files the reap lanes under node_lifecycle beside system.instance_reap" do
+    seed_policy_rows!
+    pivot = by_domain
+
+    reaps = %w[system.abandoned_instance_reap system.instance_reap system.pool_guest_reap]
+
+    expect(categories_in(pivot, "node_lifecycle")).to include(*reaps)
+    expect(categories_in(pivot, "instance_pool")).not_to include("system.pool_guest_reap")
+  end
+
   # The System Topology Designer's composer trio. All three are registered but
   # deliberately unseeded (engine.rb: operator/Concierge-driven composer
   # skills), so their rows only ever arrive through #update — and by name they
