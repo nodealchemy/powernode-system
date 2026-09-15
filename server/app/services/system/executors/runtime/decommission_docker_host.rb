@@ -15,7 +15,7 @@ module System
           # managed hosts only. External (operator-registered) hosts have
           # no Vault-issued TLS material to purge, so they're destroyed
           # directly, same as before.
-          host = ::Devops::DockerHost.find(params[:host_id])
+          host = resolve_scoped(::Devops::DockerHost, params[:host_id])
           if host.managed?
             ::System::DockerDaemonProvisionerService.new(docker_host: host, account: account).decommission!
           else

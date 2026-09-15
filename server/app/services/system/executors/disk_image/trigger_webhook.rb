@@ -30,7 +30,7 @@ module System
         protected
 
         def perform
-          webhook = ::System::DiskImageWebhook.find(params[:webhook_id])
+          webhook = resolve_scoped(::System::DiskImageWebhook, params[:webhook_id])
           case params[:action].to_s
           when "revoke"
             webhook.update!(status: "revoked") if webhook.status != "revoked"

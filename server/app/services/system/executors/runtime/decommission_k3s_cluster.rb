@@ -7,7 +7,7 @@ module System
         protected
 
         def perform
-          cluster = ::Devops::KubernetesCluster.find(params[:cluster_id])
+          cluster = resolve_scoped(::Devops::KubernetesCluster, params[:cluster_id])
           name = cluster.name
           cluster.destroy!
           { cluster_id: params[:cluster_id], name: name, decommissioned: true }

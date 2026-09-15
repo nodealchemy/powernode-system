@@ -326,16 +326,15 @@ module System
       # no re-validation (a create has no source pair at all, since no row
       # exists yet).
       #
-      # Every Sdwan::Executors class that resolves its own subject row from
-      # params routes it through here (the deletes, revokes, VIP failover and
-      # federation-peer accept/residency joined the creates in
-      # IMP-134062908364) rather than trusting the dispatcher to have scoped
-      # the same id upstream. NOT yet universal: several System::Executors
-      # (disk_image, instance_pool, runtime) still read their subject with a
-      # bare find. A blanket `where(account_id:)` would break the callers that
-      # reach an executor with no account at all, turning every find into
-      # `where(account_id: nil)`:
-      # fail-open dressed as fail-closed. Those callers pass a literal nil —
+      # Every Sdwan::Executors and System::Executors class that resolves its
+      # own subject row from params routes it through here (the Sdwan deletes,
+      # revokes, VIP failover and federation-peer accept/residency joined the
+      # creates in IMP-134062908364; the System disk_image, instance_pool and
+      # runtime executors followed in IMP-71bbba747282) rather than trusting
+      # the dispatcher to have scoped the same id upstream. A blanket
+      # `where(account_id:)` would break the callers that reach an executor
+      # with no account at all, turning every find into `where(account_id:
+      # nil)`: fail-open dressed as fail-closed. Those callers pass a literal nil —
       # Base.preview when invoked PRE-GATE (its `deferred_operation:` keyword
       # defaults to nil; a preview reached through Ai::DeferredOperation#preview
       # instead carries an Ai::DeferredOperation::PreviewContext, which does

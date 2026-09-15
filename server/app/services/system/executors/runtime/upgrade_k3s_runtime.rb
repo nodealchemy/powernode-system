@@ -20,7 +20,7 @@ module System
           # yet. Refuse to claim success on a no-op — a false "upgraded"
           # stamp here is exactly what the require_approval gate exists to
           # prevent.
-          cluster = ::Devops::KubernetesCluster.find(params[:cluster_id])
+          cluster = resolve_scoped(::Devops::KubernetesCluster, params[:cluster_id])
           target = params[:target_version]
           raise NotYetImplementedError,
                 "K3s runtime upgrade orchestration is not implemented for cluster " \

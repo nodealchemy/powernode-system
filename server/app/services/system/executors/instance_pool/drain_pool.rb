@@ -7,7 +7,7 @@ module System
         protected
 
         def perform
-          pool = ::System::InstancePool.find(params[:pool_id])
+          pool = resolve_scoped(::System::InstancePool, params[:pool_id])
           # drain! is an InstancePoolService class method (pool: kwarg), not a
           # model method — the previous respond_to?(:drain!) guard was always
           # false, so this executor silently no-opped.

@@ -7,7 +7,7 @@ module System
         protected
 
         def perform
-          pool = ::System::InstancePool.find(params[:pool_id])
+          pool = resolve_scoped(::System::InstancePool, params[:pool_id])
           name = pool.name
           pool.destroy!
           { pool_id: params[:pool_id], name: name, destroyed: true }

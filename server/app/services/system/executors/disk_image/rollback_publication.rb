@@ -17,7 +17,7 @@ module System
         protected
 
         def perform
-          target = ::System::DiskImagePublication.find(params[:target_publication_id])
+          target = resolve_scoped(::System::DiskImagePublication, params[:target_publication_id])
           unless target.promotable?
             raise UnpromotablePublicationError,
                   "cannot roll back to publication #{target.id}: status=#{target.status} " \
@@ -26,7 +26,7 @@ module System
           end
 
           platform = if params[:platform_id]
-                       ::System::NodePlatform.find(params[:platform_id])
+                       resolve_scoped(::System::NodePlatform, params[:platform_id])
           else
                        target.node_platform
           end

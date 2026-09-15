@@ -18,7 +18,7 @@ module System
           # with command=ssh_command running `kubectl drain` on a server
           # node in the cluster. That delegation isn't wired up yet, so
           # refuse to claim success rather than silently no-op.
-          node = ::Devops::KubernetesNode.find(params[:node_id])
+          node = resolve_scoped(::Devops::KubernetesNode, params[:node_id])
           raise NotYetImplementedError,
                 "K3s node drain is not implemented for node #{node.id} (#{node.name}) " \
                 "— drain manually via kubectl until a driver lands"

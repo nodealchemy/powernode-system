@@ -16,7 +16,7 @@ module System
         protected
 
         def perform
-          pub = ::System::DiskImagePublication.find(params[:publication_id])
+          pub = resolve_scoped(::System::DiskImagePublication, params[:publication_id])
           unless pub.promotable?
             raise UnpromotablePublicationError,
                   "cannot promote publication #{pub.id}: status=#{pub.status} " \

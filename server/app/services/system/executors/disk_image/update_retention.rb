@@ -7,7 +7,7 @@ module System
         protected
 
         def perform
-          platform = ::System::NodePlatform.find(params[:platform_id])
+          platform = resolve_scoped(::System::NodePlatform, params[:platform_id])
           platform.update!(disk_image_retention_count: params[:retention_count])
           { platform_id: platform.id, retention_count: platform.disk_image_retention_count }
         end

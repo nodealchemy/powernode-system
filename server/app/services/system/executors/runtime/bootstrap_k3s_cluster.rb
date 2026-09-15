@@ -13,7 +13,7 @@ module System
           # call. instance_id identifies the bootstrap NodeInstance; the
           # rest of the payload rides under params[:attributes] like the
           # other create-style executors.
-          instance = ::System::NodeInstance.find(params[:instance_id])
+          instance = resolve_scoped(::System::NodeInstance, params[:instance_id])
           cluster = ::System::KubernetesClusterProvisionerService.new(
             node_instance: instance,
             kubeconfig: attrs[:kubeconfig],
