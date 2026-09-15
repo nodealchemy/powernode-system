@@ -29,6 +29,7 @@ module System
   # category ever reaches it.
   module AutonomyActions
     extend ActiveSupport::Concern
+    include ::HumanSession
 
     # The system agents `by_agent_pivot` builds a bucket for, and the agents
     # `serialize_agents` ships. Membership is one question: does the extension
@@ -243,6 +244,16 @@ module System
           (policy.new_record? ? %w[notification] : policy.preferred_channels.presence || %w[notification])
         policy.conditions = attrs[:conditions].presence || policy.conditions || {}
         policy.approval_chain_id = attrs.key?(:approval_chain_id) ? attrs[:approval_chain_id] : policy.approval_chain_id
+
+        # IMP-03134d9452d2: this row may decide which requests only a person may decide
+        # in their own session (Ai::Approvals::HumanSessionPolicy#account_mark), so a
+        # write that could lift that mark needs that person's own session. Refused per
+        # entry, like every other entry error here: nothing is written for it.
+        before_conditions = policy.new_record? ? nil : policy.attribute_in_database(:conditions)
+        if !own_human_session? &&
+           ::Ai::Approvals::HumanSessionPolicy.mark_lifting_write?(before: before_conditions, after: policy.conditions)
+          next errors << "[#{idx}] #{::Ai::Approvals::HumanSessionPolicy::MARK_WRITE_REFUSAL}"
+        end
 
         if policy.save
           changed_count += 1
