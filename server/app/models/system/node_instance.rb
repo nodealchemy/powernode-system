@@ -483,11 +483,12 @@ module System
     # still queued against it is unrunnable from that moment.
     #
     # ON THE COLUMN, NOT ONLY THE AASM EVENT. `terminated` reaches this column
-    # by routes the state machine never sees: System::CloudSyncService writes
-    # `status:` straight from the provider's view with a bare update! — the
-    # hourly sync is what usually notices a VM has gone — and
-    # NodeApi::StatusController#update writes any member of STATUSES that an
-    # agent reports. An `after` hook on mark_terminated would miss both, which
+    # by routes the state machine never sees: System::CloudSyncService#
+    # sync_node_instances writes `status:` straight from a per-instance provider
+    # read with a bare update!, and NodeApi::StatusController#update writes any
+    # member of STATUSES that an agent reports. (The hourly region sweep, the path
+    # that usually notices a VM has gone, confirms through mark_terminated! since
+    # IMP-ed10c0c4577c.) An `after` hook on mark_terminated would miss both, which
     # is the "sole writer" trap: the question is who writes the COLUMN, not who
     # calls the method.
     #

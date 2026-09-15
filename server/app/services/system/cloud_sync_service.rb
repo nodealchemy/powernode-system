@@ -319,10 +319,10 @@ module System
       # sync_region_instances), so it's the only path that ever reconciles a
       # deleted instance. Skipped when the listing was truncated — an unseen
       # page, not a deletion, would otherwise be misread as "gone". Goes
-      # through the AASM `terminate!` event (legal from any non-terminal
-      # state) rather than a raw status write, so the transition is audited
-      # (System::LifecycleAuditable) the same as every other real status
-      # change on this model.
+      # through the AASM events (terminate! where needed, then the confirming
+      # mark_terminated!) rather than a raw status write, so the transition is
+      # audited (System::LifecycleAuditable) the same as every other real
+      # status change on this model.
       terminated_count = 0
       unless truncated
         live_rows.each do |local_instance|
@@ -333,7 +333,14 @@ module System
           next if local_instance.created_at > TERMINATION_SWEEP_GRACE_SECONDS.seconds.ago
           next unless local_instance.may_terminate?
 
-          local_instance.terminate!
+          # IMP-ed10c0c4577c: absence from a complete listing is the provider's
+          # confirmation, so this lands mark_terminated, the CONFIRMED event that
+          # cancels the row's unrunnable tasks (NodeInstance#confirmed_termination?).
+          # terminate! alone is the optimistic pre-provider stamp, which cancels
+          # nothing. mark_terminated is not legal from the transitional statuses,
+          # so those take the stamp first and confirm it as a self-transition.
+          local_instance.terminate! unless local_instance.may_mark_terminated?
+          local_instance.mark_terminated!
           local_instance.update!(last_synced_at: Time.current)
           terminated_count += 1
           updated_count += 1

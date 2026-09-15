@@ -442,6 +442,46 @@ RSpec.describe System::CloudSyncService do
         expect(present.reload.status).to eq("running")
       end
 
+      # IMP-ed10c0c4577c: absence from a complete listing CONFIRMS the guest gone,
+      # so the sweep must land a confirmed termination, the one
+      # NodeInstance#cancel_unrunnable_tasks! acts on. The optimistic terminate!
+      # stamp alone left every queued task against the vanished VM pending.
+      it "cancels the pending tasks of the instance it terminates, and only that instance's" do
+        present = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-kept")
+        deleted = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-vanished")
+        deleted.update_column(:created_at, 1.hour.ago)
+        doomed = create(:system_task, account: deleted.account, operable: deleted, status: "pending")
+        kept = create(:system_task, account: present.account, operable: present, status: "pending")
+
+        allow(adapter).to receive(:list_instances).and_return(
+          success: true,
+          instances: [ { cloud_instance_id: "i-kept", status: "running",
+                         private_ip_address: present.private_ip_address, public_ip_address: present.public_ip_address } ],
+          page_count: 1, truncated: false
+        )
+
+        described_class.new.sync_region_instances(region: region, account: account)
+
+        expect(deleted.reload.status).to eq("terminated")
+        expect(doomed.reload.status).to eq("cancelled")
+        expect(kept.reload.status).to eq("pending")
+      end
+
+      it "terminates and cancels for a row the sweep finds in a transitional status" do
+        stopping = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-stopping")
+        stopping.update_columns(status: "stopping", created_at: 1.hour.ago)
+        task = create(:system_task, account: stopping.account, operable: stopping, status: "pending")
+
+        allow(adapter).to receive(:list_instances).and_return(
+          success: true, instances: [], page_count: 1, truncated: false
+        )
+
+        described_class.new.sync_region_instances(region: region, account: account)
+
+        expect(stopping.reload.status).to eq("terminated")
+        expect(task.reload.status).to eq("cancelled")
+      end
+
       it "does not terminate a just-provisioned instance the provider hasn't listed yet (eventual consistency)" do
         fresh = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-brand-new")
 
