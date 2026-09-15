@@ -54,6 +54,15 @@ RSpec.describe System::NodeModuleAssignment, "honeypot auto-wiring" do
     # The hook runs after_commit, so a rolled-back assignment shouldn't trigger.
     # This verifies the assignment isn't accidentally creating events outside
     # the commit boundary.
+    #
+    # Build the fixtures OUTSIDE the rolled-back transaction: Account creates its
+    # default environments in after_create_commit, so an account first created
+    # inside it never gets one and the node template fails "Environment must exist".
+    node
+    canary_module
+    # The event count alone cannot see a hook that fires before commit: an event
+    # written inside the transaction is rolled back with it. Assert the call.
+    expect(System::Honeypot::CanaryModuleService).not_to receive(:observe_access!)
     expect {
       ActiveRecord::Base.transaction do
         create(:system_node_module_assignment, node: node, node_module: canary_module)
