@@ -37,6 +37,18 @@ module System
 
       return Runtime::Result.err(error: "Instance has no cloud instance ID") unless instance.cloud_instance_id.present?
 
+      # IMP-23c89e2be535: a terminated row names no guest any more, and Proxmox
+      # recycles VMIDs, so its cloud_instance_id may name someone else's. Answer
+      # from the row itself rather than let the provider describe that guest.
+      if instance.status == "terminated"
+        return Runtime::Result.ok(data: {
+          status: "terminated",
+          private_ip_address: instance.private_ip_address,
+          public_ip_address: instance.public_ip_address,
+          updated: false
+        })
+      end
+
       Rails.logger.info("[CloudSyncService] Syncing instance #{instance.name}")
 
       provider_adapter = begin
@@ -75,7 +87,9 @@ module System
     def sync_node_instances(node:)
       validate_node!(node)
 
-      instances = node.node_instances.where(variety: %w[cloud dynamic])
+      # Terminated rows are not synced: see the recycled-VMID note in
+      # #sync_region_instances (IMP-23c89e2be535).
+      instances = node.node_instances.where(variety: %w[cloud dynamic]).where.not(status: "terminated")
       synced_count = 0
       errors = []
 
@@ -162,9 +176,17 @@ module System
       # PG::UndefinedColumn on every real invocation (never caught: the only
       # spec/request-spec coverage of this method fully mocked
       # CloudSyncService, so the raw query was never exercised against a DB).
+      #
+      # IMP-23c89e2be535: terminated rows are excluded. Proxmox recycles VMIDs,
+      # so a dead row's cloud_instance_id can name a NEW guest the listing
+      # reports as running/stopped. Matched by id alone, that rewrote the dead
+      # row's status and addresses to the new guest's, and index_by (one row per
+      # id) let the dead row shadow the new guest's own row. The deletion sweep
+      # below never acted on terminated rows either.
       local_instances = ::System::NodeInstance
         .where(provider_region: region)
         .where(variety: %w[cloud dynamic])
+        .where.not(status: "terminated")
         .where("config ->> 'cloud_instance_id' IS NOT NULL")
         .index_by(&:cloud_instance_id)
 
@@ -245,7 +267,6 @@ module System
       unless truncated
         local_instances.each do |cloud_instance_id, local_instance|
           next if seen_cloud_instance_ids.include?(cloud_instance_id)
-          next if local_instance.status == "terminated"
           next if local_instance.created_at > TERMINATION_SWEEP_GRACE_SECONDS.seconds.ago
           next unless local_instance.may_terminate?
 

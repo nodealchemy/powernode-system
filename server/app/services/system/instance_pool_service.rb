@@ -1527,9 +1527,9 @@ module System
     # The clock is the member's LAST SIGN OF LIFE — heartbeat, claim or warm
     # start — never updated_at (IMP-1f0996aa7fa3). Observers keep writing
     # updated_at: CloudSyncService's hourly sync writes last_synced_at on every
-    # row whose provider id is still listed, whatever its status — a
-    # presumed-dead row whose VM is still up, or one whose recycled VMID now
-    # names another guest — so a dead row's age kept restarting. None of these
+    # row whose provider id is still listed — a presumed-dead row whose VM is
+    # still up, and (until IMP-23c89e2be535 excluded terminated rows) one whose
+    # recycled VMID now names another guest — so a dead row's age kept restarting. None of these
     # columns is written by an observer. GREATEST skips NULLs, and created_at is
     # never NULL.
     #

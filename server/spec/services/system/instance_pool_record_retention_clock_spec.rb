@@ -9,9 +9,9 @@ require "rails_helper"
 # The pool reaper already prunes dead members (prune_dead_records!), but it
 # measured death by `updated_at`, which observers keep writing. The hourly
 # CloudSyncService#sync_region_instances writes last_synced_at on every row whose
-# provider id is still listed, whatever its status — a presumed-dead row whose
-# VM is still up, or one whose recycled VMID now names another guest — so a dead
-# row's age kept restarting. On 2026-09-13 the CI plane held
+# provider id is still listed — a presumed-dead row whose VM is still up, and
+# (until IMP-23c89e2be535 excluded terminated rows) one whose recycled VMID now
+# names another guest — so a dead row's age kept restarting. On 2026-09-13 the CI plane held
 # 150 builder rows (134 terminated, 12 error), 61 of them silent for longer than
 # the 7-day window, against an operator target of 2-3.
 #

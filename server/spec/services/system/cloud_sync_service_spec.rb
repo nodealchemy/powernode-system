@@ -21,6 +21,86 @@ RSpec.describe System::CloudSyncService do
       .with(connection, region: region).and_return(adapter)
   end
 
+  # IMP-23c89e2be535 — Proxmox recycles VMIDs. A terminated row's
+  # cloud_instance_id can name a NEW guest, which the provider reports as
+  # running/stopped. Matching by id alone rewrote the dead row's status (and
+  # IPs) to the new guest's, and index_by let the dead row shadow the new guest's
+  # own row. A terminated row names no guest any more, so no sync path may read
+  # the provider for it.
+  describe "a terminated row whose recycled VMID now names another guest" do
+    def terminated_row(cloud_instance_id)
+      row = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: cloud_instance_id)
+      row.update_columns(status: "terminated", private_ip_address: "192.0.2.10", public_ip_address: nil,
+                         last_synced_at: 2.days.ago)
+      row.reload
+    end
+
+    def list!(*entries)
+      allow(adapter).to receive(:list_instances).and_return(
+        success: true, instances: entries, page_count: 1, truncated: false
+      )
+    end
+
+    before { allow(adapter).to receive(:supports?).with(:sync).and_return(true) }
+
+    it "sync_region_instances leaves the dead row's status, addresses and clock alone" do
+      dead = terminated_row("9101")
+      synced_before = dead.last_synced_at
+      list!({ cloud_instance_id: "9101", status: "running", private_ip_address: "192.0.2.77", public_ip_address: nil })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      dead.reload
+      expect(dead.status).to eq("terminated")
+      expect(dead.private_ip_address).to eq("192.0.2.10")
+      expect(dead.last_synced_at).to be_within(1.second).of(synced_before)
+      expect(dead.provider_power_state).to be_nil
+    end
+
+    it "sync_region_instances reconciles the live row that shares the recycled id, not the dead one" do
+      live = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "9102")
+      # Created last: with no ORDER BY, Postgres usually returns it last, so an
+      # index_by over both rows typically kept the dead one. Typical, not guaranteed.
+      dead = terminated_row("9102")
+      list!({ cloud_instance_id: "9102", status: "stopped",
+              private_ip_address: live.private_ip_address, public_ip_address: live.public_ip_address })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(live.reload.status).to eq("stopped")
+      expect(dead.reload.status).to eq("terminated")
+    end
+
+    it "sync_instance_state answers terminated for a terminated row without asking the provider" do
+      dead = terminated_row("9103")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(provider)
+      allow(provider).to receive(:get_instance).and_return(
+        success: true, status: "running", private_ip_address: "192.0.2.99", public_ip_address: nil
+      )
+
+      result = described_class.new.sync_instance_state(instance: dead)
+
+      expect(result.data).to include(status: "terminated", updated: false)
+      expect(provider).not_to have_received(:get_instance)
+    end
+
+    it "sync_node_instances does not rewrite a terminated row from the provider" do
+      dead = terminated_row("9104")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(provider)
+      allow(provider).to receive(:get_instance).and_return(
+        success: true, status: "running", private_ip_address: "192.0.2.88", public_ip_address: nil
+      )
+
+      described_class.new.sync_node_instances(node: dead.node)
+
+      dead.reload
+      expect(dead.status).to eq("terminated")
+      expect(dead.private_ip_address).to eq("192.0.2.10")
+    end
+  end
+
   describe "#sync_region_instances" do
     it "returns a structured error when the provider lacks sync support" do
       allow(adapter).to receive(:supports?).with(:sync).and_return(false)

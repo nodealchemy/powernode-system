@@ -985,9 +985,10 @@ module System
       return true if CONFIRMED_TERMINATE_EVENTS.include?(event)
 
       # No AASM event, or an unrelated one: a bare column write. Only sweep when
-      # the column actually MOVED to terminated — CloudSyncService writes
-      # last_synced_at on already-terminated rows every cycle, and re-sweeping
-      # on each of those is a query per tick for nothing.
+      # the column actually MOVED to terminated — an already-terminated row is
+      # saved again by unrelated writes (IP or timestamp updates from a door),
+      # and re-sweeping on each of those is a query for nothing. (CloudSyncService
+      # no longer touches terminated rows since IMP-23c89e2be535.)
       saved_change_to_status?
     end
 
