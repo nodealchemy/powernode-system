@@ -101,6 +101,184 @@ RSpec.describe System::CloudSyncService do
     end
   end
 
+  # IMP-8225624f46b1 — the recycled-VMID fix above excluded terminated rows, but
+  # every other row was still matched by id alone. A listing that names the
+  # guest (Proxmox does) says whose guest the id belongs to NOW, and a row
+  # records the name its guest was created with (provider_guest_name).
+  describe "guest identity on the region listing" do
+    def list!(*entries)
+      allow(adapter).to receive(:list_instances).and_return(
+        success: true, instances: entries, page_count: 1, truncated: false
+      )
+    end
+
+    def row(cloud_instance_id, status:, guest_name:, **attrs)
+      create(:system_node_instance, :running, provider_region: region, cloud_instance_id: cloud_instance_id,
+                                              provider_guest_name: guest_name, **attrs).tap do |r|
+        r.update_columns(status: status, private_ip_address: "192.0.2.10", public_ip_address: nil,
+                         created_at: 2.hours.ago)
+      end.reload
+    end
+
+    before { allow(adapter).to receive(:supports?).with(:sync).and_return(true) }
+
+    it "a stopped row does not adopt the state of another guest now at its id, and gives the id up" do
+      stopped = row("pve1/qemu/9201", status: "stopped", guest_name: "web-a")
+      list!({ cloud_instance_id: "pve1/qemu/9201", name: "someone-else", status: "running",
+              private_ip_address: "192.0.2.77", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      stopped.reload
+      expect(stopped.status).to eq("stopped")
+      expect(stopped.private_ip_address).to eq("192.0.2.10")
+      expect(stopped.provider_power_state).to be_nil
+      expect(stopped.provider_guest_lost?).to be(true)
+      expect(stopped.cloud_instance_id).to be_nil
+      expect(result.data[:guest_lost_count]).to eq(1)
+    end
+
+    it "an error row that may be promoted is not promoted by another guest's power state" do
+      errored = row("pve1/qemu/9202", status: "error", guest_name: "web-b")
+      list!({ cloud_instance_id: "pve1/qemu/9202", name: "someone-else", status: "running",
+              private_ip_address: "192.0.2.78", public_ip_address: nil })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      errored.reload
+      expect(errored.status).to eq("error")
+      expect(errored.private_ip_address).to eq("192.0.2.10")
+      expect(errored.provider_guest_lost?).to be(true)
+      expect(errored.cloud_instance_id).to be_nil
+    end
+
+    it "holds a just-provisioned row whose id still lists another name, keeping its id" do
+      young = row("pve1/qemu/9209", status: "running", guest_name: "web-young")
+      young.update_columns(created_at: 1.minute.ago)
+      list!({ cloud_instance_id: "pve1/qemu/9209", name: "previous-guest", status: "stopped",
+              private_ip_address: "192.0.2.60", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      young.reload
+      expect(young.provider_guest_lost?).to be(false)
+      expect(young.cloud_instance_id).to eq("pve1/qemu/9209")
+      expect(young.status).to eq("running")
+      expect(young.private_ip_address).to eq("192.0.2.10")
+      expect(result.data[:guest_lost_count]).to eq(0)
+    end
+
+    # Every provider records provider_guest_name at provision time, but only
+    # some listings name the guest (AWS, OpenStack, mock and local_qemu do not).
+    # An unnamed entry must stay an id match, or those rows lose their ids hourly.
+    it "reconciles a row with a recorded name against a listing entry that names no guest" do
+      named = row("i-0abc", status: "running", guest_name: "web-aws")
+      list!({ cloud_instance_id: "i-0abc", status: "stopped", private_ip_address: "192.0.2.10", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      named.reload
+      expect(named.status).to eq("stopped")
+      expect(named.provider_guest_lost?).to be(false)
+      expect(named.cloud_instance_id).to eq("i-0abc")
+      expect(result.data[:guest_lost_count]).to eq(0)
+    end
+
+    it "still reconciles a row whose recorded guest name the listing agrees with" do
+      mine = row("pve1/qemu/9203", status: "running", guest_name: "web-c")
+      list!({ cloud_instance_id: "pve1/qemu/9203", name: "web-c", status: "stopped",
+              private_ip_address: "192.0.2.10", public_ip_address: nil })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      mine.reload
+      expect(mine.status).to eq("stopped")
+      expect(mine.provider_guest_lost?).to be(false)
+    end
+
+    it "keeps id-only matching when either side has no name to compare" do
+      legacy = row("pve1/qemu/9204", status: "running", guest_name: nil)
+      list!({ cloud_instance_id: "pve1/qemu/9204", name: "whatever", status: "stopped",
+              private_ip_address: "192.0.2.10", public_ip_address: nil })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(legacy.reload.status).to eq("stopped")
+    end
+
+    it "of two live rows sharing an id, reconciles only the one whose guest the listing names" do
+      current = row("pve1/qemu/9205", status: "running", guest_name: "web-new")
+      # Created last so an id-only index_by would have kept THIS row, not current.
+      stale = row("pve1/qemu/9205", status: "running", guest_name: "web-old")
+      list!({ cloud_instance_id: "pve1/qemu/9205", name: "web-new", status: "stopped",
+              private_ip_address: "192.0.2.10", public_ip_address: nil })
+
+      described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(current.reload.status).to eq("stopped")
+      stale.reload
+      expect(stale.status).to eq("running")
+      expect(stale.provider_guest_lost?).to be(true)
+    end
+
+    it "writes neither of two live rows sharing an id when nothing tells them apart, and terminates neither" do
+      first = row("pve1/qemu/9206", status: "running", guest_name: nil)
+      second = row("pve1/qemu/9206", status: "running", guest_name: nil)
+      list!({ cloud_instance_id: "pve1/qemu/9206", name: "web-x", status: "stopped",
+              private_ip_address: "192.0.2.99", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      [ first, second ].each do |r|
+        r.reload
+        expect(r.status).to eq("running")
+        expect(r.private_ip_address).to eq("192.0.2.10")
+      end
+      expect(result.data[:ambiguous_count]).to eq(1)
+    end
+
+    it "leaves an unnamed row shadowed by a same-name match unwritten, and counts it" do
+      mine = row("pve1/qemu/9210", status: "running", guest_name: "web-mine")
+      legacy = row("pve1/qemu/9210", status: "running", guest_name: nil)
+      list!({ cloud_instance_id: "pve1/qemu/9210", name: "web-mine", status: "stopped",
+              private_ip_address: "192.0.2.10", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(mine.reload.status).to eq("stopped")
+      expect(legacy.reload.status).to eq("running")
+      expect(legacy.cloud_instance_id).to eq("pve1/qemu/9210")
+      expect(result.data[:ambiguous_count]).to eq(1)
+    end
+
+    # Gap (1): InstanceControlService commits terminate! before the provider call,
+    # so a crash in between leaves a terminated row whose guest still runs. The
+    # row is not resurrected (a terminal status is not rewritten from a listing),
+    # but a same-named guest at its id is reported, not ignored.
+    it "reports a terminated row whose own guest is still listed, without rewriting it" do
+      dead = row("pve1/qemu/9207", status: "terminated", guest_name: "web-t")
+      list!({ cloud_instance_id: "pve1/qemu/9207", name: "web-t", status: "running",
+              private_ip_address: "192.0.2.55", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(result.data[:terminated_guest_present]).to eq([ dead.id ])
+      dead.reload
+      expect(dead.status).to eq("terminated")
+      expect(dead.private_ip_address).to eq("192.0.2.10")
+    end
+
+    it "does not report a terminated row whose id now names a different guest" do
+      row("pve1/qemu/9208", status: "terminated", guest_name: "web-gone")
+      list!({ cloud_instance_id: "pve1/qemu/9208", name: "someone-else", status: "running",
+              private_ip_address: "192.0.2.56", public_ip_address: nil })
+
+      result = described_class.new.sync_region_instances(region: region, account: account)
+
+      expect(result.data[:terminated_guest_present]).to eq([])
+    end
+  end
+
   describe "#sync_region_instances" do
     it "returns a structured error when the provider lacks sync support" do
       allow(adapter).to receive(:supports?).with(:sync).and_return(false)

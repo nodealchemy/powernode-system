@@ -68,6 +68,25 @@ RSpec.describe "POST /api/v1/system/worker_api/cloud_sync/reconcile", type: :req
         .with(region: @region_b1, account: other_account)
     end
 
+    # IMP-8225624f46b1: the guest-identity counters reach the layer the hourly
+    # job reads, summed across the account's regions like held_count.
+    it "aggregates guest_lost_count, ambiguous_count and terminated_guest_present across regions" do
+      allow(::System::CloudSyncService).to receive(:sync_region_instances)
+        .with(region: @region_a1, account: account)
+        .and_return(::System::Runtime::Result.ok(data: { synced_count: 1, guest_lost_count: 1, ambiguous_count: 0,
+                                                         terminated_guest_present: [ "row-1" ] }))
+      allow(::System::CloudSyncService).to receive(:sync_region_instances)
+        .with(region: @region_a2, account: account)
+        .and_return(::System::Runtime::Result.ok(data: { synced_count: 1, guest_lost_count: 2, ambiguous_count: 1,
+                                                         terminated_guest_present: [ "row-2" ] }))
+
+      post "/api/v1/system/worker_api/cloud_sync/reconcile", headers: headers
+
+      result = JSON.parse(response.body).dig("data", "results").find { |r| r["account_id"] == account.id }
+      expect(result).to include("guest_lost_count" => 3, "ambiguous_count" => 1)
+      expect(result["terminated_guest_present"]).to contain_exactly("row-1", "row-2")
+    end
+
     it "rescues per-region failures so one bad region doesn't fail the tick" do
       allow(::System::CloudSyncService).to receive(:sync_region_instances)
         .with(region: @region_a1, account: account)

@@ -64,6 +64,11 @@ module Api
             # actually reads — a held_count that stops at the service is a signal
             # nobody receives.
             held_total = 0
+            # IMP-8225624f46b1: recycled ids given up, ids several rows share with
+            # nothing to tell them apart, and terminated rows whose guest still runs.
+            guest_lost_total = 0
+            ambiguous_total = 0
+            terminated_guest_present = []
             errors = []
 
             regions.find_each do |region|
@@ -72,6 +77,9 @@ module Api
                 synced_total += result.data[:synced_count].to_i
                 updated_total += result.data[:updated_count].to_i
                 held_total += result.data[:held_count].to_i
+                guest_lost_total += result.data[:guest_lost_count].to_i
+                ambiguous_total += result.data[:ambiguous_count].to_i
+                terminated_guest_present.concat(Array(result.data[:terminated_guest_present]))
               else
                 errors << { region_id: region.id, error: result.error }
               end
@@ -87,6 +95,9 @@ module Api
               synced_count: synced_total,
               updated_count: updated_total,
               held_count: held_total,
+              guest_lost_count: guest_lost_total,
+              ambiguous_count: ambiguous_total,
+              terminated_guest_present: terminated_guest_present,
               errors: errors
             }
           end

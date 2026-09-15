@@ -183,12 +183,18 @@ module System
       # row's status and addresses to the new guest's, and index_by (one row per
       # id) let the dead row shadow the new guest's own row. The deletion sweep
       # below never acted on terminated rows either.
-      local_instances = ::System::NodeInstance
+      #
+      # IMP-8225624f46b1: the rows left are still matched to a listing entry by
+      # GUEST as well as id wherever both sides name one (#guest_identity), and
+      # grouped rather than index_by'd, so two live rows sharing a recycled id no
+      # longer shadow each other.
+      live_rows = ::System::NodeInstance
         .where(provider_region: region)
         .where(variety: %w[cloud dynamic])
         .where.not(status: "terminated")
         .where("config ->> 'cloud_instance_id' IS NOT NULL")
-        .index_by(&:cloud_instance_id)
+        .to_a
+      rows_by_cloud_instance_id = live_rows.group_by(&:cloud_instance_id)
 
       synced_count = 0
       updated_count = 0
@@ -196,12 +202,66 @@ module System
       # the guard below. Reported alongside updated_count so "nothing changed"
       # and "we refused to change it" are never the same number.
       held_count = 0
+      # Rows whose id the listing gives to a DIFFERENTLY named guest: the id was
+      # recycled, so the row gives it up (NodeInstance#mark_provider_guest_lost!)
+      # instead of adopting that guest's state.
+      guest_lost_count = 0
+      # Listing entries whose id several live rows share with nothing to tell
+      # them apart: none of them is written, and none is swept.
+      ambiguous_count = 0
       seen_cloud_instance_ids = Set.new
+      accounted_row_ids = Set.new
 
       cloud_instances.each do |cloud_data|
         seen_cloud_instance_ids << cloud_data[:cloud_instance_id]
-        local_instance = local_instances[cloud_data[:cloud_instance_id]]
-        next unless local_instance
+        candidates = rows_by_cloud_instance_id[cloud_data[:cloud_instance_id]] || []
+        next if candidates.empty?
+
+        lost, possible = candidates.partition { |row| guest_identity(row, cloud_data) == :different }
+        lost.each do |row|
+          accounted_row_ids << row.id
+          # Giving up the id is permanent, so it waits out the same grace window
+          # the deletion sweep does: just after provisioning the listing is not
+          # yet reliable, and a recycled id can still show the previous guest's
+          # name for a while. A young row is held, neither written nor swept.
+          if row.created_at > TERMINATION_SWEEP_GRACE_SECONDS.seconds.ago
+            held_count += 1
+            next
+          end
+
+          row.mark_provider_guest_lost!(
+            reason: "cloud sync: #{cloud_data[:cloud_instance_id]} is listed as guest " \
+                    "#{cloud_data[:name].to_s.inspect}, not #{row.provider_guest_name.to_s.inspect}"
+          )
+          guest_lost_count += 1
+        end
+
+        local_instance = reconcilable_row(possible, cloud_data)
+        unless local_instance
+          if possible.any?
+            ambiguous_count += 1
+            possible.each { |row| accounted_row_ids << row.id }
+            Rails.logger.warn(
+              "[CloudSyncService] #{possible.size} live instances share #{cloud_data[:cloud_instance_id]} " \
+              "with nothing to tell them apart (#{possible.map(&:id).join(', ')}); none reconciled"
+            )
+          end
+          next
+        end
+        accounted_row_ids << local_instance.id
+
+        # A row the listing's name picked out can share its id with rows that
+        # record no name: those are shadowed, not reconciled. Say so rather than
+        # leave them silently stale.
+        shadowed = possible - [ local_instance ]
+        if shadowed.any?
+          ambiguous_count += 1
+          shadowed.each { |row| accounted_row_ids << row.id }
+          Rails.logger.warn(
+            "[CloudSyncService] #{cloud_data[:cloud_instance_id]} reconciled to instance=#{local_instance.id} by guest " \
+            "name; #{shadowed.size} unnamed instance(s) sharing the id left unreconciled (#{shadowed.map(&:id).join(', ')})"
+          )
+        end
 
         local_instance.record_provider_power_state!(cloud_data[:status])
 
@@ -265,8 +325,11 @@ module System
       # change on this model.
       terminated_count = 0
       unless truncated
-        local_instances.each do |cloud_instance_id, local_instance|
-          next if seen_cloud_instance_ids.include?(cloud_instance_id)
+        live_rows.each do |local_instance|
+          # A row already accounted for above (reconciled, given up as lost, or
+          # ambiguous) is not a deletion, and neither is one whose id is listed.
+          next if accounted_row_ids.include?(local_instance.id)
+          next if seen_cloud_instance_ids.include?(local_instance.cloud_instance_id)
           next if local_instance.created_at > TERMINATION_SWEEP_GRACE_SECONDS.seconds.ago
           next unless local_instance.may_terminate?
 
@@ -287,6 +350,14 @@ module System
         # a non-zero, non-falling held_count is the signal that instances are
         # sitting presumed-dead with their VMs still powered on.
         held_count: held_count,
+        guest_lost_count: guest_lost_count,
+        ambiguous_count: ambiguous_count,
+        # IMP-8225624f46b1 gap (1): terminated rows whose OWN guest (same id,
+        # same recorded name) the provider still lists. InstanceControlService
+        # commits terminate! before the provider call, so a crash between the two
+        # leaves exactly this. Reported, never rewritten: a terminal status is not
+        # resurrected from a listing.
+        terminated_guest_present: terminated_guest_present_ids(region, cloud_instances),
         terminated_count: terminated_count,
         cloud_count: cloud_instances.size,
         page_count: page_count,
@@ -300,6 +371,46 @@ module System
     end
 
     private
+
+    # :same / :different when both the row's recorded creation name
+    # (provider_guest_name) and the listing entry's guest name are known;
+    # :unknown otherwise (a provider whose listing names no guest, or a row older
+    # than the capture), which keeps id-only matching for that pair.
+    def guest_identity(row, cloud_data)
+      recorded = row.provider_guest_name.to_s.strip
+      listed = cloud_data[:name].to_s.strip
+      return :unknown if recorded.empty? || listed.empty?
+
+      recorded == listed ? :same : :different
+    end
+
+    # The one row a listing entry describes, or nil: the row whose recorded name
+    # the listing agrees with, else the only candidate there is.
+    def reconcilable_row(candidates, cloud_data)
+      same = candidates.select { |row| guest_identity(row, cloud_data) == :same }
+      return same.first if same.size == 1
+      return candidates.first if same.empty? && candidates.size == 1
+
+      nil
+    end
+
+    def terminated_guest_present_ids(region, cloud_instances)
+      named = cloud_instances.select { |c| c[:cloud_instance_id].present? && c[:name].to_s.strip.present? }
+                             .index_by { |c| c[:cloud_instance_id] }
+      return [] if named.empty?
+
+      ::System::NodeInstance
+        .where(provider_region: region, status: "terminated")
+        .where("config ->> 'cloud_instance_id' IN (?)", named.keys)
+        .select { |row| guest_identity(row, named[row.cloud_instance_id]) == :same }
+        .each do |row|
+          Rails.logger.warn(
+            "[CloudSyncService] instance=#{row.id} is terminated but its guest " \
+            "#{row.provider_guest_name.inspect} is still listed at #{row.cloud_instance_id}"
+          )
+        end
+        .map(&:id)
+    end
 
     def terminated_result(instance)
       Runtime::Result.ok(data: {
