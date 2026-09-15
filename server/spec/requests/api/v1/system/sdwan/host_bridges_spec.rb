@@ -15,6 +15,13 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
   let(:instance_a) { create(:system_node_instance, :running, node: node_a) }
   let(:instance_b) { create(:system_node_instance, :running, node: node_b) }
 
+  # IMP-5b740a804dbb: a node in ANOTHER account needs a template of that account.
+  # Since 332356f9 (2026-09-08) System::Node refuses a template from a different
+  # account, and these cross-account examples used to borrow `template`.
+  def other_template(other_account)
+    create(:system_node_template, account: other_account)
+  end
+
   before do
     Sdwan::HostBridge.where(account_id: account.id).delete_all
   end
@@ -30,7 +37,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
     it "lists bridges scoped to the current account only" do
       ::Sdwan::HostBridgeAllocator.allocate!(host: instance_a, kind: "linux")
       other_account = create(:account)
-      other_node = create(:system_node, account: other_account, node_template: template)
+      other_node = create(:system_node, account: other_account, node_template: other_template(other_account))
       other_instance = create(:system_node_instance, :running, node: other_node)
       ::Sdwan::HostBridgeAllocator.allocate!(host: other_instance, kind: "linux", account: other_account)
 
@@ -105,7 +112,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
 
     it "returns 404 for a bridge in a different account" do
       other_account = create(:account)
-      other_node = create(:system_node, account: other_account, node_template: template)
+      other_node = create(:system_node, account: other_account, node_template: other_template(other_account))
       other_instance = create(:system_node_instance, :running, node: other_node)
       bridge = ::Sdwan::HostBridgeAllocator.allocate!(host: other_instance, kind: "linux", account: other_account)
 
@@ -196,7 +203,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
 
     it "refuses a host in a different account" do
       other_account = create(:account)
-      other_node = create(:system_node, account: other_account, node_template: template)
+      other_node = create(:system_node, account: other_account, node_template: other_template(other_account))
       other_instance = create(:system_node_instance, :running, node: other_node)
 
       post "/api/v1/system/sdwan/host_bridges",
