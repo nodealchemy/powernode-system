@@ -198,6 +198,13 @@ package_spec:
   - systemd-boot
   - kmod
   - udev
+  # fsverity provides /usr/bin/fsverity (+ libfsverity0, both under the carved
+  # /usr/bin and /usr/lib). The agent's fs-verity check (verify.FsVerifier)
+  # shells out to `fsverity enable` / `fsverity digest` before a module mount.
+  # Without the binary, every check reports `executable file not found`, so
+  # the check could only ever measure (IMP-20cd36a71ecf). The initramfs stages
+  # its own copy for the pre-pivot boot composer.
+  - fsverity
 
 dependencies:
   # Depends on the truly-minimal powernode-system-base for the

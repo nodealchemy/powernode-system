@@ -143,10 +143,14 @@
 // NewModuleFsverity, under the same policy: nil under off (the DEFAULT, no
 // check) and MEASURE-ONLY under audit, runtime and all alike. It reports
 // "verify:module_fsverity_audit" and never refuses (IMP-4eabe61c3d90). It is
-// not on the enforcement ladder yet because no node image ships the fsverity
-// binary: an enforcing check would refuse every mount on every opted-in node,
-// and on SiteBoot that is an unbootable node. Enforcing it waits on the image
-// shipping fsverity and a clean measurement. The fsverity_root_hash channel is
+// not on the enforcement ladder yet. FsVerifier shells out to the fsverity
+// binary, which base-os-ubuntu-noble (post-pivot) and the initramfs (SiteBoot)
+// ship only from IMP-20cd36a71ecf on. A node still on an older base-os or boot
+// image reports "executable file not found", and an enforcing check there would
+// refuse every mount on an opted-in node (on SiteBoot, an unbootable node).
+// NodeCapabilities.FsverityAvailable now requires the binary too, so the
+// heartbeat tells those nodes apart. Enforcing waits on the fleet running the
+// new images and a clean measurement. The fsverity_root_hash channel is
 // complete on the native (module-forge) path, on the ingest! path since push.sh
 // stamps io.powernode.fsverity_root_hash (IMP-e2c2da99b4b5), and on the
 // platform-CI notify path; a publisher that ships neither leaves a nil root,

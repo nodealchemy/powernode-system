@@ -139,11 +139,12 @@ func NewModuleVerifier(cfg ModuleSigningConfig, site Site, runner mount.Runner, 
 //
 // ModeOff (the default) returns nil: no fs-verity check. Every other mode, at
 // every site, returns FsVerifier wrapped in AuditDigestVerifier — MEASURE-ONLY,
-// under runtime and all as well as audit. No node image ships the fsverity
-// binary, so an enforcing check would refuse every mount on every opted-in node
+// under runtime and all as well as audit. The fsverity binary this shells out
+// to ships in base-os and the initramfs only from IMP-20cd36a71ecf on, so on a
+// node still running an older image an enforcing check would refuse every mount
 // (on SiteBoot, an unbootable node). Enforcing by cfg.Enforces(site) is a
-// deliberate later change to this function and its tests, once the image ships
-// fsverity and the measurement is clean. The check needs no trust anchor: the
+// deliberate later change to this function and its tests, once the fleet runs
+// those images and the measurement is clean. The check needs no trust anchor: the
 // expected root rides the manifest. report receives findings; nil is tolerated.
 func NewModuleFsverity(cfg ModuleSigningConfig, site Site, runner mount.Runner, report func(stage string, err error)) (DigestVerifier, error) {
 	if err := cfg.Validate(); err != nil {

@@ -172,6 +172,12 @@ install() {
     # mount(8) is needed by prepare-root to wire up 9p, overlayfs, and binds.
     inst_multiple mount
 
+    # fsverity(1) is the fs-verity check the boot composer runs on each module
+    # blob before mounting it (verify.FsVerifier). base-os ships its own copy,
+    # but that is only reachable after the pivot. Required, not -o: the
+    # disk-image build fails loud when the build container lacks it.
+    inst_multiple fsverity
+
     # /sysroot is the conventional switch-root target. systemd's switch-root
     # implementation expects this dir to exist before it executes.
     mkdir -p "${initdir}/sysroot"

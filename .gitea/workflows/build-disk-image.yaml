@@ -319,8 +319,8 @@ jobs:
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
               dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
-              openssh-server openssh-client nftables kmod
-            for t in sfdisk resize2fs partx blkid blockdev udevadm; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — persist bounded-grow needs it in the initramfs"; exit 1; }; done
+              openssh-server openssh-client nftables kmod fsverity
+            for t in sfdisk resize2fs partx blkid blockdev udevadm fsverity; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — the initramfs stages it (persist bounded-grow; fsverity for the boot composer's module check)"; exit 1; }; done
             cd /work && ./build.sh --arch arm64 --variants "kernel-initrd,disk-image-arm64-uefi"
           '
           # Copy built artifacts back out (contents only, to avoid build/arm64/arm64
@@ -800,10 +800,10 @@ jobs:
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
               dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
-              openssh-server openssh-client nftables kmod
+              openssh-server openssh-client nftables kmod fsverity
             # Fail loud (in-container) if any persist grow tool is absent — a
             # non-fatal dracut-install warning must not ship a broken initramfs.
-            for t in sfdisk resize2fs partx blkid blockdev udevadm; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — persist bounded-grow needs it in the initramfs"; exit 1; }; done
+            for t in sfdisk resize2fs partx blkid blockdev udevadm fsverity; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — the initramfs stages it (persist bounded-grow; fsverity for the boot composer's module check)"; exit 1; }; done
             cd /work && ./build.sh --arch amd64 --variants "kernel-initrd,disk-image-amd64-uefi"
           '
           mkdir -p build/amd64

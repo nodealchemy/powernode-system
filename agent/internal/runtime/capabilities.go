@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -15,7 +16,9 @@ import (
 // Detection runs once at service startup. The set is stable across
 // agent restarts until the kernel itself changes (kexec, upgrade,
 // downgrade); persisting it would only save microseconds, so we
-// re-detect on each boot for simplicity.
+// re-detect on each boot for simplicity. FsverityAvailable also needs
+// the fsverity binary, so on a non-pivot host an apt install or removal
+// shows only after the agent restarts.
 type NodeCapabilities struct {
 	KernelVersion      string `json:"kernel_version,omitempty"`
 	ErofsAvailable     bool   `json:"erofs_available"`
@@ -72,10 +75,13 @@ func DetectCapabilities() *NodeCapabilities {
 type kernelProbe struct {
 	procRoot    string // "/proc"
 	modulesRoot string // "/lib/modules"
+	// lookPath resolves a userland binary a kernel feature is driven
+	// through. nil reports every binary absent.
+	lookPath func(string) (string, error)
 }
 
 func defaultKernelProbe() kernelProbe {
-	return kernelProbe{procRoot: "/proc", modulesRoot: "/lib/modules"}
+	return kernelProbe{procRoot: "/proc", modulesRoot: "/lib/modules", lookPath: exec.LookPath}
 }
 
 // detectCapabilities is DetectCapabilities with its probes injected.
@@ -106,13 +112,26 @@ func detectCapabilities(k kernelProbe, hw hardwareProbe) *NodeCapabilities {
 	// touching real files is non-trivial, so we infer from the
 	// kernel version (>=5.4 ships fs-verity unconditionally in
 	// stock distro configs). Conservative: false if uname failed.
-	caps.FsverityAvailable = kernelAtLeast(caps.KernelVersion, 5, 4)
+	// The agent drives it through the fsverity binary
+	// (verify.FsVerifier), so the kernel alone is not enough: without
+	// the binary every check fails with "executable file not found"
+	// (IMP-20cd36a71ecf).
+	caps.FsverityAvailable = kernelAtLeast(caps.KernelVersion, 5, 4) && k.hasBinary("fsverity")
 
 	// Hardware inventory (IMP-657e05418572) — GPU, installed RAM and
 	// chassis model, carried in this same block. See hardware.go.
 	detectHardware(hw, caps)
 
 	return caps
+}
+
+// hasBinary reports whether name resolves on PATH.
+func (k kernelProbe) hasBinary(name string) bool {
+	if k.lookPath == nil {
+		return false
+	}
+	_, err := k.lookPath(name)
+	return err == nil
 }
 
 // readProcFilesystems returns a name → present? map for the kernel's

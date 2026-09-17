@@ -49,7 +49,11 @@ func (f *hwFixture) writeFile(t *testing.T, path, content string) {
 }
 
 func (f *hwFixture) kernelProbe() kernelProbe {
-	return kernelProbe{procRoot: f.procRoot, modulesRoot: filepath.Join(f.procRoot, "..", "lib", "modules")}
+	return kernelProbe{
+		procRoot:    f.procRoot,
+		modulesRoot: filepath.Join(f.procRoot, "..", "lib", "modules"),
+		lookPath:    func(name string) (string, error) { return "/usr/bin/" + name, nil },
+	}
 }
 
 func (f *hwFixture) hardwareProbe(run func(string, ...string) ([]byte, error)) hardwareProbe {

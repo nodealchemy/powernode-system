@@ -123,7 +123,9 @@ func New(cfg Config) *Service {
 	}
 	// Detect kernel capabilities ONCE at construction. Stable across
 	// the agent's lifetime — kernel features don't change without
-	// a reboot, which restarts the agent process anyway. The booted disk
+	// a reboot, which restarts the agent process anyway. fsverity_available
+	// also needs the fsverity binary; on a pivot node that comes from the
+	// composed image, which likewise changes only across a reboot. The booted disk
 	// image's git_sha (campaign 019f505f) is likewise fixed for the life of
 	// the boot, so it's read once here rather than per heartbeat.
 	return &Service{
@@ -670,8 +672,9 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		ModuleDigests: digests,
 		MountState:    mountState,
 		// Capabilities are detected once and cached on the Service.
-		// Stable across heartbeats — kernel features don't change
-		// without a reboot, which restarts the agent.
+		// Stable across heartbeats — kernel features (and, on a pivot
+		// node, the image's fsverity binary) don't change without a
+		// reboot, which restarts the agent.
 		Capabilities: s.capabilities,
 		// Baked-in disk-image git_sha, read once at construction.
 		BootedImageGitSHA: s.bootedImageGitSHA,
