@@ -2,8 +2,23 @@
 # each with the reason it is not a machine's unmarked door. Read by core's
 # spec/lint/registrar_origin_spec.rb (MCP identity plan, reviewer guidance 3);
 # paths are relative to this extension's server/ directory. Every other direct
-# construction here must pass call_origin: (Ai::Tools::CallOrigin).
+# construction here must pass call_origin: (Ai::Tools::CallOrigin). A key is a
+# file, which excuses every construction in it, or `file#receiver`, which
+# excuses only the constructions through that variable — use the second for a
+# variable that holds a class that is not a tool, so a real tool built
+# elsewhere in the file is still judged. Quote `#receiver` keys (YAML treats a
+# bare leading `#` as a comment).
 app/controllers/api/v1/system/platform/storage_migrations_controller.rb: >-
   A REST controller: a person's own request is the door.
 app/controllers/api/v1/system/platform/volumes_controller.rb: >-
   A REST controller: a person's own request is the door.
+"app/services/system/ai/skills/base_skill_executor.rb#executor_class": >-
+  #executor builds a nested peer/child skill executor, not a BaseTool.
+"app/services/system/cve_ops/cve_responder_service.rb#sensor_class": >-
+  Iterates SENSORS (System::CveOps::Sensors::*), not a BaseTool.
+"app/services/system/fleet/decision_engine.rb#skill_class": >-
+  binding[:skill] is a skill executor class, not a BaseTool.
+"app/services/system/fleet/decision_engine.rb#dispatcher": >-
+  ::Ai::Provisioning::AdaptationDispatchService, not a BaseTool.
+"app/services/system/fleet/fleet_autonomy_service.rb#sensor_class": >-
+  Iterates SENSORS (System::Fleet::Sensors::*), not a BaseTool.
