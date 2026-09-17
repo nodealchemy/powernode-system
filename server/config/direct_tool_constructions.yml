@@ -6,8 +6,11 @@
 # file, which excuses every construction in it, or `file#receiver`, which
 # excuses only the constructions through that variable — use the second for a
 # variable that holds a class that is not a tool, so a real tool built
-# elsewhere in the file is still judged. Quote `#receiver` keys (YAML treats a
-# bare leading `#` as a comment).
+# elsewhere in the file is still judged (a `#receiver` key excuses that
+# receiver NAME wherever it appears in the file, not only the reviewed call
+# site). `#receiver` keys are quoted here for clarity, not because YAML
+# requires it: a `#` inside an unquoted scalar is only a comment when it is
+# preceded by whitespace, which a mid-string `path#receiver` never is.
 app/controllers/api/v1/system/platform/storage_migrations_controller.rb: >-
   A REST controller: a person's own request is the door.
 app/controllers/api/v1/system/platform/volumes_controller.rb: >-
