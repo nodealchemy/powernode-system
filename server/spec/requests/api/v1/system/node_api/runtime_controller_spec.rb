@@ -241,6 +241,127 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       cfg = JSON.parse(response.body).dig("data", "bootstrap_config")
       expect(cfg["cni_plugin"]).to eq("ovn_kubernetes")
     end
+
+    # IMP-a5f236e8cc56 — k3s_agent runtime config delivery. Surfaces the
+    # operator-set target_cluster_id from the node's enabled k3s-agent
+    # NodeModuleAssignment#config, but only when it names a
+    # Devops::KubernetesCluster in the node's OWN account that is not in
+    # `error`. Any other shape (absent, foreign-account, error-state)
+    # renders empty so join_request! keeps doing its own validation
+    # (single-cluster auto-select, or the AmbiguousClusterError /
+    # NoClusterAvailableError refusal) instead of this endpoint vouching
+    # for an id it cannot back.
+    describe "k3s_agent runtime returns target_cluster_id (IMP-a5f236e8cc56)" do
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:cluster) do
+        ::Devops::KubernetesCluster.create!(
+          account: account, name: "target-cluster-#{SecureRandom.hex(3)}",
+          flavor: "k3s", environment: "production", status: "active",
+          cni_plugin: "flannel",
+          api_endpoint: "https://[fd00::2]:6443",
+          encrypted_kubeconfig: "kc", encrypted_server_token: "tok", encrypted_agent_token: "tok"
+        )
+      end
+
+      def assign_k3s_agent!(config: {})
+        ::System::NodeModuleAssignment.find_or_create_by!(node: node, node_module: k3s_agent_module) do |a|
+          a.enabled = true
+          a.config = config
+        end.tap { |a| a.update!(enabled: true, config: config) }
+      end
+
+      it "returns empty target_cluster_id when no k3s-agent assignment config names one" do
+        assign_k3s_agent!(config: {})
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "runtime")).to eq("k3s_agent")
+        expect(body.dig("data", "target_cluster_id")).to eq("")
+        expect(body.dig("data", "content_hash")).to be_present
+      end
+
+      it "returns the target_cluster_id when it names a non-error cluster in the node's account" do
+        assign_k3s_agent!(config: { "target_cluster_id" => cluster.id })
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "target_cluster_id")).to eq(cluster.id)
+      end
+
+      it "returns empty target_cluster_id when it names a cluster in a different account" do
+        other_account = create(:account)
+        foreign_cluster = ::Devops::KubernetesCluster.create!(
+          account: other_account, name: "foreign-cluster-#{SecureRandom.hex(3)}",
+          flavor: "k3s", environment: "production", status: "active",
+          cni_plugin: "flannel", api_endpoint: "https://[fd00::3]:6443",
+          encrypted_kubeconfig: "kc", encrypted_server_token: "tok", encrypted_agent_token: "tok"
+        )
+        assign_k3s_agent!(config: { "target_cluster_id" => foreign_cluster.id })
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "target_cluster_id")).to eq("")
+      end
+
+      it "returns empty target_cluster_id when the named cluster is in error state" do
+        cluster.update!(status: "error")
+        assign_k3s_agent!(config: { "target_cluster_id" => cluster.id })
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "target_cluster_id")).to eq("")
+      end
+
+      # Review finding (IMP-a5f236e8cc56 round 2): a DISABLED assignment must
+      # not surface its target_cluster_id — deleting `.enabled` from the
+      # builder's query left every prior example in this block green, because
+      # none of them ever created a disabled assignment. This is the example
+      # that actually exercises the `.enabled` filter.
+      it "returns empty target_cluster_id when the k3s-agent assignment is disabled" do
+        assign_k3s_agent!(config: { "target_cluster_id" => cluster.id })
+        ::System::NodeModuleAssignment.find_by!(node: node, node_module: k3s_agent_module)
+                                       .update!(enabled: false)
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "target_cluster_id")).to eq("")
+      end
+
+      # A non-UUID value must not raise (find_by with a malformed uuid string
+      # would otherwise 500 on some adapters/column types) — it simply names
+      # no cluster, so it resolves the same as any other unresolvable id.
+      it "returns empty target_cluster_id when the configured value is not a UUID" do
+        assign_k3s_agent!(config: { "target_cluster_id" => "not-a-uuid" })
+
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "target_cluster_id")).to eq("")
+      end
+
+      it "changes content_hash when target_cluster_id changes" do
+        assign_k3s_agent!(config: {})
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        empty_hash = JSON.parse(response.body).dig("data", "content_hash")
+
+        assign_k3s_agent!(config: { "target_cluster_id" => cluster.id })
+        get "/api/v1/system/node_api/runtime/k3s_agent/config"
+        resolved_hash = JSON.parse(response.body).dig("data", "content_hash")
+
+        expect(resolved_hash).not_to eq(empty_hash)
+      end
+    end
   end
 
   describe "POST /api/v1/system/node_api/runtime/handshake" do

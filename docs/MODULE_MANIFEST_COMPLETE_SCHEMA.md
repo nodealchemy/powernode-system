@@ -507,7 +507,7 @@ security:
 
 ### Example 4 — K3s server module
 
-A cluster-control-plane module that exposes the K8s API. (`k3s-server` bootstraps its own cluster and never issues a `join_request`, so `target_cluster_id` does not apply to it — every server registers on `phase=ready` against the one cluster it bootstrapped; there is no HA control plane for a second server to join. On `k3s-agent` workers the field is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented) on the agent side.)
+A cluster-control-plane module that exposes the K8s API. (`k3s-server` bootstraps its own cluster and never issues a `join_request`, so `target_cluster_id` does not apply to it — every server registers on `phase=ready` against the one cluster it bootstrapped; there is no HA control plane for a second server to join. On `k3s-agent` workers the field IS [IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56) — IMP-a5f236e8cc56 — set it in the assignment's `config` to pick which cluster the worker joins.)
 
 > **This is an example, not the shipped module.** The manifest below starts k3s with `--cluster-init` (embedded etcd), so its description is true *of this example*. The shipped `k3s-server` module (`server/db/seeds/k3s_modules.rb`) runs **without** `--cluster-init` on the SQLite datastore and never forms an HA control plane — copy this example verbatim and you get a different module from the one the platform seeds (see [`runbooks/multi-cluster-k3s.md`](./runbooks/multi-cluster-k3s.md), Phase 4).
 
@@ -565,7 +565,7 @@ security:
   user_namespace: false      # k3s needs real root for kubelet ops
 ```
 
-Notice `target_cluster_id` is not a manifest.yaml key — same reasoning as parent-module wiring. Two corrections to earlier revisions of this line: it is a **module-assignment `config`** key, not `NodeInstance.metadata`; and nothing reads it from either place. The platform consumes `target_cluster_id` only as a runtime-handshake request parameter, from two phases: `phase=join_request` (`runtime_handshake_handlers.rb:164`), which the agent never populates, and the `cluster_id` an already-joined node echoes on `phase=ready` (`:195`), which can only name the cluster it is already in. Neither lets an operator choose one, so multi-cluster worker placement is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented).
+Notice `target_cluster_id` is not a manifest.yaml key — same reasoning as parent-module wiring. It is a **module-assignment `config`** key, not `NodeInstance.metadata`. The platform consumes it as a runtime-handshake request parameter, from two phases: `phase=join_request` (`runtime_handshake_handlers.rb:164`), which the agent NOW populates (IMP-a5f236e8cc56) by fetching it from `runtime/k3s_agent/config` — the same `config` key, read server-side from the node's enabled `k3s-agent` assignment — and the `cluster_id` an already-joined node echoes on `phase=ready` (`:195`), which can only name the cluster it is already in and cannot relocate a joined worker. So the operator's choice is made at assignment time via `config.target_cluster_id`, and multi-cluster worker placement is [IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56).
 
 ### Example 5 — Privileged hardening module (`security-hardening`)
 

@@ -12,7 +12,7 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 |---|---|---|---|---|---|
 | 1 | Long-lived edge gateway / SaaS tenant | `persistent` | `docker-engine` | ✅ Works | Don't terminate without backing up `/persist/var` |
 | 2 | Single-cluster K3s for app workloads | `persistent` | `k3s-server` + `k3s-agent` | ✅ Works | api_endpoint is an SDWAN VIP whose only holder is the bootstrap server. Losing that server is an outage, not a failover: K3s HA is **parked** — a 2nd `k3s-server` bootstraps a separate cluster (which then refuses worker joins), and the datastore is SQLite via kine, not etcd. See [Use Case 2](#use-case-2--single-k3s-cluster-) |
-| 3 | Multi-cluster K3s in one account | `persistent` | per cluster | ❌ Not implemented | Bootstrapping a second cluster works; placing a worker in a chosen one does not — the join is refused (`AmbiguousClusterError`, 409) and no node is produced. See [Use Case 3](#use-case-3--multi-cluster-k3s--not-implemented) |
+| 3 | Multi-cluster K3s in one account | `persistent` | per cluster | ✅ Implemented (IMP-a5f236e8cc56) | Set `target_cluster_id` in the `k3s-agent` module assignment's `config` and the worker joins the named cluster. Omitted/unresolvable + more than one non-error cluster is still refused (`AmbiguousClusterError`, 409), no node produced. See [Use Case 3](#use-case-3--multi-cluster-k3s--implemented-imp-a5f236e8cc56) |
 | 4 | Bursty batch jobs (ML, data pipelines) | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Bootstrap latency = ~90s per instance; consider pre-baked image |
 | 5 | CI runner pool | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Image cache vaporizes on terminate; use a registry mirror |
 | 6 | Multi-tenant container farm | `persistent` | `docker-engine` per tenant | ⚠️ Works with caveats | No host-level isolation; trust boundary is the SDWAN account |
@@ -152,37 +152,36 @@ This section used to describe an HA control plane and an etcd datastore. Neither
 | "Control plane survives forever; etcd state in `/persist/var/lib/rancher/k3s`" | Same correction, in Use Case 7: SQLite, not etcd — and one server, so its loss is an outage. |
 | "Run a `docker save` / etcd snapshot before `system_terminate_instance`" | There is no etcd to snapshot. Stop k3s and copy `/var/lib/rancher/k3s/server/` (`db/` and `token`) — upstream K3s' documented single-server (SQLite) backup. |
 
-### Use Case 3 — Multi-cluster K3s ❌ NOT IMPLEMENTED
+### Use Case 3 — Multi-cluster K3s ✅ Implemented (IMP-a5f236e8cc56)
 
 **What you want**: prod + staging clusters in one account. Each NodeInstance joins a specific cluster.
 
-**Reality**: bootstrapping the second cluster works. Placing a worker in a
-chosen one does not, and the second cluster's existence breaks worker joins
-for *both*. `target_cluster_id` is wired on the platform side and unreachable
-from the agent, so every worker's `JoinRequest` carries an empty target; with
-more than one non-error cluster in the account the platform **refuses** it —
-`AmbiguousClusterError`, with `system.k3s_ambiguous_cluster_join_refused`
-emitted at severity `high` (`kubernetes_cluster_provisioner_service.rb:329`)
-and 409 returned. The worker does not join the wrong cluster; **no node is
-produced at all**. Do not go looking for a misplaced node; there is none.
+**Reality**: both bootstrapping the second cluster AND placing a worker in a
+chosen one work. Set `target_cluster_id` in the `k3s-agent` module
+assignment's `config`; the platform surfaces it back to the calling node on
+`runtime/k3s_agent/config` (only when it names a cluster in the node's own
+account that isn't in `error` state), and `k3sd.AgentManager` fetches +
+forwards it each tick. Omit it (or supply one that doesn't resolve) in an
+account with more than one non-error cluster and the platform still
+**refuses rather than guessing** — `AmbiguousClusterError`, with
+`system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`
+(`kubernetes_cluster_provisioner_service.rb:329`) and 409 returned. The
+worker never joins the wrong cluster; **no node is produced at all**. Do not
+go looking for a misplaced node from an unconfigured join; there is none.
 
-**What is actually wired** — the platform half, and only that half:
+**What is wired, end to end**:
 - `KubernetesClusterProvisionerService.join_request!(target_cluster_id:)` resolves a supplied value specifically, and validates the cluster exists, is in the account, and isn't in `error` state
-- `handle_join_request` forwards `params[:target_cluster_id].presence` into it (`runtime_handshake_handlers.rb:164`), so a value that arrived would be honoured
-- Nothing supplies one on the join. `k3sd.AgentManager.TargetClusterID` is declared and consumed (`JoinRequest(ctx, m.TargetClusterID)`) but never written, and `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module **names** only — so assignment config never reaches the K3s reconcilers
-- The one value that *does* travel is not a choice. On `phase=ready` the agent sends `cluster_id` — the cluster it already joined — and `handle_k3s_ready` forwards it as `target_cluster_id` (`runtime_handshake_handlers.rb:195`) so a ready re-fire cannot relocate an already-joined node. That is a memory of a join, not a way to pick one, and it is empty on the first join that matters here
+- `handle_join_request` forwards `params[:target_cluster_id].presence` into it (`runtime_handshake_handlers.rb:164`), so a value that arrived is honoured
+- The agent now supplies one. `System::NodeApi::RuntimeConfigBuilder#k3s_agent_config` reads the calling node's ENABLED `k3s-agent` `NodeModuleAssignment#config["target_cluster_id"]`, surfacing it only when it names a live in-account cluster. `k3sd.HTTPAgentConfigClient` fetches that value each tick and sets `k3sd.AgentManager.TargetClusterID`, consumed in `JoinRequest(ctx, m.TargetClusterID)`. `k3sd.ModulesAPI.AssignedModules(ctx) ([]string, error)` is unchanged (still module **names** only) — this is a separate, dedicated channel
+- On `phase=ready` the agent also sends `cluster_id` — the cluster it already joined — and `handle_k3s_ready` forwards it as `target_cluster_id` (`runtime_handshake_handlers.rb:195`) so a ready re-fire cannot relocate an already-joined node. **Changing `target_cluster_id` after a join does not move the worker** — only a fresh join consults the config-sourced value
 
-The producer is tracked separately (IMP-a5f236e8cc56 gap 3). Until it lands,
-**Use Case 2 (single cluster) is the supported shape**: with exactly one
-non-error cluster the join is unambiguous and succeeds without a target. If
-you need workers on cluster A, add them **before** cluster B exists — there is
-no operator-side workaround afterwards.
+**Use Case 2 (single cluster) still works unchanged**: with exactly one
+non-error cluster the join is unambiguous and succeeds without a target —
+`target_cluster_id` is optional there, not required.
 
-**Withdrawn setup** — the assignment call below still succeeds and still
-stores the value; it just never reaches the node:
+**Set it at assignment time:**
 
 ```javascript
-// WITHDRAWN — stored, not delivered. See the table below.
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
   // The template-assignment verbs take the NodeModule UUID, not its name — system_list_modules returns { id, name }.
@@ -190,6 +189,11 @@ platform.system_assign_module_to_template({
   config: { target_cluster_id: "<cluster-A-uuid>" }
 })
 ```
+
+**Historical — corrected 2026-09-17.** Before IMP-a5f236e8cc56 the agent had
+no producer for `target_cluster_id`, and the assignment call above stored
+the value without delivering it. Kept visible for an operator who read an
+earlier revision:
 
 | Withdrawn claim | What is actually true |
 |---|---|
@@ -276,9 +280,9 @@ Worker NodeInstances (N varies):
   # lives on the InstancePool. See "How lifecycle_class is actually set" above.
   Node.lifecycle_class = "ephemeral"
   Module: k3s-agent
-  # WITHDRAWN — stored, never delivered. Nothing on the agent reads it and the
-  # join always carries an empty target. See Use Case 3.
-  metadata.target_cluster_id = "<the-cluster-id>"
+  # Set on the assignment's config (not metadata — see Use Case 3), and
+  # delivered to the agent as of IMP-a5f236e8cc56.
+  config.target_cluster_id = "<the-cluster-id>"
 ```
 
 **What works**:
@@ -319,7 +323,7 @@ Worker NodeInstances (N varies):
 | Terminate the *only* K3s server (single-server cluster) | Cluster has no remaining api server; kubectl breaks and stays broken until that server is back | **Do not add a 2nd `k3s-server`** — it bootstraps a separate cluster (K3s HA is parked), and that second cluster refuses every later worker join. Restore the bootstrap node: start it again if it is stopped. If the VM is gone, the cluster is gone with it, but its row is not — `mark_node_stopped!` leaves the cluster counting as a join candidate — so hard-delete the dead row with `kubernetes_decommission_cluster` *before* bootstrapping a replacement server (restore `/var/lib/rancher/k3s/server/` from backup onto it if you need the old state), or worker joins are refused again |
 | Run thousands of short-lived ephemeral instances | High bootstrap latency tax | Pre-bake disk image OR pre-warmed pool via `system_create_instance_pool` (slice 7 shipped) |
 | Expect pod traffic encrypted via SDWAN | Plain VXLAN over host NIC (the default when `pod_subnet_prefix` is null) | Set `pod_subnet_prefix` on the `Sdwan::Network` before bootstrapping with `cni_plugin: "flannel"` — shipped 2026-05-19, see [Use Case 9](#use-case-9--encrypted-pod-to-pod-via-sdwan--opt-in) |
-| Bootstrap a second cluster in an account that still needs k3s-agent workers | Every subsequent worker join is refused — 409 `AmbiguousClusterError`, `system.k3s_ambiguous_cluster_join_refused` at severity `high`, and no node produced | No workaround today; add the workers before the second cluster exists. See [Use Case 3](#use-case-3--multi-cluster-k3s--not-implemented) |
+| Bootstrap a second cluster in an account that still needs k3s-agent workers | An UNCONFIGURED worker join (no `target_cluster_id`, or one that doesn't resolve) is refused — 409 `AmbiguousClusterError`, `system.k3s_ambiguous_cluster_join_refused` at severity `high`, and no node produced | Set `target_cluster_id` in the `k3s-agent` module assignment's `config` to the intended cluster's id (IMP-a5f236e8cc56). See [Use Case 3](#use-case-3--multi-cluster-k3s--implemented-imp-a5f236e8cc56) |
 | SSH directly to managed Docker host and run containers | Platform sync imports them with `owner=operator` (advisory tag) | OK but track ownership via container labels |
 | Backup `/persist` before terminating an instance | (no automated path yet) | Docker hosts: `docker save`. K3s servers: there is no etcd to snapshot — the datastore is SQLite — so stop k3s and copy `/var/lib/rancher/k3s/server/` (`db/` and `token`) before `system_terminate_instance` |
 

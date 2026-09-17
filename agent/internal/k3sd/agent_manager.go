@@ -39,14 +39,16 @@ type AgentManager struct {
 	StatePath string // JSON state cache; defaults to DefaultAgentStatePath
 
 	// TargetClusterID is the cluster UUID to join when the account has
-	// more than one non-error cluster. NOT WIRED: nothing assigns this
-	// field. NewAgentManager does not set it, and ModulesAPI hands the
-	// reconcilers module NAMES only (applier.go), so no assignment
-	// metadata reaches here — it is always "" on phase=join_request.
+	// more than one non-error cluster. IMP-a5f236e8cc56 — refreshed
+	// each tick, BEFORE Reconcile, from the operator-set k3s-agent
+	// NodeModuleAssignment#config via runtime/service.go's
+	// HTTPAgentConfigClient.FetchAgentConfig — NOT by this
+	// constructor: NewAgentManager still leaves it at its zero value.
 	//
 	// Empty resolves only when the account has exactly one non-error
-	// candidate. With more than one the platform refuses the join
-	// (AmbiguousClusterError -> 409, event
+	// candidate, or when no operator config names a live one. With
+	// more than one candidate and an empty target the platform
+	// refuses the join (AmbiguousClusterError -> 409, event
 	// system.k3s_ambiguous_cluster_join_refused at severity high); it
 	// does not fall back to the most recent cluster. See
 	// kubernetes_cluster_provisioner_service.rb:351.

@@ -375,7 +375,7 @@ module System
                 "join is refused (409 AmbiguousClusterError, " \
                 "system.k3s_ambiguous_cluster_join_refused), and with none it fails as this " \
                 "request did (422). See " \
-                "docs/CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented"
+                "docs/CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56"
         end
         if c.status == "error"
           raise NoClusterAvailableError,

@@ -67,25 +67,29 @@ sequenceDiagram
     note over VIP,A1: If bootstrap server drains:<br/>VIP migrates to next holder<br/>workers' K3S_URL keeps resolving
 ```
 
-### Multi-cluster routing via `target_cluster_id` — NOT IMPLEMENTED
+### Multi-cluster routing via `target_cluster_id` — IMPLEMENTED (IMP-a5f236e8cc56)
 
-**Putting a worker in a chosen cluster does not work today.**
-`target_cluster_id` is wired on the platform side and unreachable from the
-agent: `k3sd.AgentManager.TargetClusterID` is declared and consumed
-(`JoinRequest(ctx, m.TargetClusterID)`) but never written, and
-`k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module
-**names** only — so assignment config never reaches the K3s reconcilers. Every
-worker's join therefore carries an empty target, and in an account with more
-than one non-error cluster the platform **refuses** it: `AmbiguousClusterError`,
-with `system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`
-(`kubernetes_cluster_provisioner_service.rb:329`) and 409 returned. The worker
-does not join the wrong cluster; **no node is produced at all**.
+**Putting a worker in a chosen cluster works.** Set `target_cluster_id` in
+the `k3s-agent` module assignment's `config`; the platform surfaces it back
+to that node on `runtime/k3s_agent/config` (only when it names a
+`Devops::KubernetesCluster` in the node's own account whose status isn't
+`error`), `k3sd.AgentManager.TargetClusterID` is refreshed from that
+endpoint each tick — via a NEW channel, `k3sd.HTTPAgentConfigClient`,
+separate from `k3sd.ModulesAPI.AssignedModules(ctx) ([]string, error)`
+(still module **names** only) — and is consumed in `JoinRequest(ctx,
+m.TargetClusterID)`. If it's omitted, or names a cluster the platform can't
+back (foreign-account, or `error` status), the single-cluster fallback
+still applies: with exactly one non-error cluster the join resolves without
+a target; with more than one the platform **refuses rather than guessing**:
+`AmbiguousClusterError`, with `system.k3s_ambiguous_cluster_join_refused`
+emitted at severity `high` (`kubernetes_cluster_provisioner_service.rb:329`)
+and 409 returned. The worker never joins the wrong cluster in that case
+either; **no node is produced at all**.
 
-Single-cluster accounts are unaffected — with exactly one non-error cluster the
-join is unambiguous and succeeds without a target. The producer is tracked
-separately (IMP-a5f236e8cc56 gap 3).
+Single-cluster accounts are unaffected either way — with exactly one
+non-error cluster the join is unambiguous and succeeds without a target.
 
-The diagram below is the intended design, not current behaviour:
+The diagram below is now current behaviour, not just intent:
 
 ```mermaid
 flowchart TB
@@ -107,6 +111,10 @@ flowchart TB
     W1 -. "joins via VIP" .-> S1
     W2 -. "joins via VIP" .-> S2
 ```
+
+**Historical — corrected 2026-09-17.** Before IMP-a5f236e8cc56, the agent had
+no producer for `target_cluster_id` and this section said so. Kept visible
+for an operator who read an earlier revision:
 
 | Withdrawn claim | What is actually true |
 |---|---|
@@ -291,7 +299,7 @@ Symptoms: agent posts `phase=join_request` but cluster fails to add it; agent lo
 
 - `api_endpoint` mismatch: K3s api_endpoint uses an SDWAN VIP (slice 3). If the worker isn't on the same SDWAN network as the bootstrap node, the VIP is unreachable. Confirm with `system_sdwan_list_peers` that both peers are on the same network.
 - Token mismatch (rare): platform regenerated the join token but the agent has a stale cache. Force re-fetch by removing the systemd drop-in `/etc/systemd/system/k3s-agent.service.d/override.conf` and restarting `powernode-agent`.
-- Multi-cluster refusal: with more than one non-error cluster in the account the join is **refused**, not misrouted — the handshake returns **409** (`AmbiguousClusterError`) and `system.k3s_ambiguous_cluster_join_refused` is emitted at severity `high`. Setting `metadata.target_cluster_id` on the assignment does not help, because the value never reaches the agent — see [Multi-cluster routing](#multi-cluster-routing-via-target_cluster_id--not-implemented) for the withdrawn instructions and what replaced them. There is no operator-side workaround today; add workers before a second cluster exists.
+- Multi-cluster refusal: with more than one non-error cluster in the account, a join carrying no usable `target_cluster_id` is **refused**, not misrouted — the handshake returns **409** (`AmbiguousClusterError`) and `system.k3s_ambiguous_cluster_join_refused` is emitted at severity `high`. Set `target_cluster_id` in the `k3s-agent` module assignment's `config` to the intended cluster's id (IMP-a5f236e8cc56) — it now reaches the agent — and confirm it resolves via `kubernetes_get_cluster` before retrying; allow one agent tick for the fetch to pick it up. See [Multi-cluster routing](#multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56) for the full mechanism and the withdrawn instructions it replaced.
 
 ### kubelet logs unavailable
 

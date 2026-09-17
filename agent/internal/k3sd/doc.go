@@ -7,8 +7,9 @@
 //     token from /etc/rancher/k3s/ and post in subsequent reconcile.
 //
 //   - When `k3s-agent` module is assigned: post phase=join_request
-//     (with an empty target_cluster_id — see Multi-cluster below),
-//     receive {api_endpoint, agent_token}, write systemd drop-in at
+//     (with target_cluster_id when the operator configured one — see
+//     Multi-cluster below), receive {api_endpoint, agent_token}, write
+//     systemd drop-in at
 //     /etc/systemd/system/k3s-agent.service.d/override.conf, start k3s-agent.service.
 //
 // # State machine (server)
@@ -44,15 +45,21 @@
 //
 // Multi-cluster (use case 3 in USE_CASE_MATRIX.md): JoinRequest carries a
 // target_cluster_id discriminator, and the platform validates that the target
-// cluster belongs to the same account and isn't in error state. NOT WIRED on
-// the agent side — AgentManager.TargetClusterID has no producer: nothing
-// assigns it, and ModulesAPI (applier.go) hands the reconcilers module names
-// only, so assignment metadata never reaches them. The field is therefore
-// always empty on the wire, and an account with more than one non-error
-// cluster has its worker joins refused (AmbiguousClusterError -> 409,
+// cluster belongs to the same account and isn't in error state. WIRED end to
+// end (IMP-a5f236e8cc56) — AgentManager.TargetClusterID is refreshed each
+// tick, before Reconcile, from k3sd.HTTPAgentConfigClient, a dedicated
+// channel separate from ModulesAPI (applier.go), which still hands the
+// reconcilers module names only. The value comes from the calling node's
+// enabled k3s-agent NodeModuleAssignment#config["target_cluster_id"], and the
+// platform surfaces it only when it names a live in-account, non-error
+// cluster — otherwise it's empty, same as an unconfigured assignment. An
+// account with more than one non-error cluster and an empty/unresolvable
+// target still has its worker joins refused (AmbiguousClusterError -> 409,
 // system.k3s_ambiguous_cluster_join_refused at severity high) rather than
-// mis-routed. An account with exactly one non-error cluster resolves
-// without it; an account with none fails 422 instead.
+// mis-routed — it never guesses. An account with exactly one non-error
+// cluster resolves without a target; an account with none fails 422 instead.
+// Changing target_cluster_id after a join does not relocate the worker —
+// only a fresh join consults it.
 //
 // The api_endpoint returned to k3s-agent is an Sdwan::VirtualIp /128, which
 // keeps kubectl + worker K3S_URL pointed at a stable address across a server

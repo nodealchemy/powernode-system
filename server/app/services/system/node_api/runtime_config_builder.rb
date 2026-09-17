@@ -27,6 +27,8 @@ module System
             docker_config
           when "k3s_server"
             k3s_server_config
+          when "k3s_agent"
+            k3s_agent_config
           else
             empty_config
           end
@@ -86,10 +88,69 @@ module System
         }
       end
 
-      # k3s_agent + kubeadm runtime config delivery is a
-      # follow-up; return an empty payload so the agent doesn't
-      # error out when probing newer endpoints from older
-      # runtimes.
+      # IMP-a5f236e8cc56 — k3s_agent runtime config. Surfaces the
+      # operator-set target_cluster_id from the calling node's ENABLED
+      # k3s-agent NodeModuleAssignment#config, but only when that id
+      # names a Devops::KubernetesCluster in the node's OWN account
+      # whose status is not "error". Every other shape — no
+      # assignment, a disabled one, a missing/blank config key, an
+      # id naming a foreign-account cluster, or an error-state
+      # cluster — surfaces an empty string rather than raising or
+      # guessing, so join_request! keeps doing its own validation
+      # (single-cluster auto-select, or the AmbiguousClusterError /
+      # NoClusterAvailableError refusal) instead of this endpoint
+      # vouching for an id it cannot back.
+      #
+      # Consulted ONLY on a fresh join (phase=join_request, driven by
+      # k3sd.AgentManager.TargetClusterID). An already-joined worker's
+      # membership is cached client-side
+      # (AgentManager.state.joinedClusterID) and is never re-resolved
+      # from this value, so changing target_cluster_id after a join
+      # does not relocate it — only a fresh join (cleanup + reinstall)
+      # consults it.
+      def k3s_agent_config
+        target_cluster_id = resolved_target_cluster_id
+        {
+          runtime: @runtime,
+          target_cluster_id: target_cluster_id,
+          content_hash: ::Digest::SHA256.hexdigest({ target_cluster_id: target_cluster_id }.to_json)
+        }
+      end
+
+      def resolved_target_cluster_id
+        node = @instance.node
+        return "" if node.blank?
+
+        # Deterministic winner if a node somehow carries more than one
+        # NodeModule row named "k3s-agent" (module_assigned? in the
+        # controller has the same by-name-only shape and doesn't need to
+        # pick one — it only checks existence). Highest `priority` wins,
+        # matching NodeModuleAssignment.by_priority and
+        # DockerDaemonOverridesResolver's own priority-ordered resolution;
+        # ties broken by the most-recently-created row (UUIDv7 ids sort by
+        # creation time) so the result never depends on unspecified DB
+        # ordering.
+        assignment = node.node_module_assignments
+                         .enabled
+                         .joins(:node_module)
+                         .where(system_node_modules: { name: "k3s-agent" })
+                         .order(priority: :desc, id: :desc)
+                         .first
+        return "" if assignment.blank?
+
+        candidate = assignment.config.is_a?(Hash) ? assignment.config["target_cluster_id"] : nil
+        return "" if candidate.blank?
+
+        cluster = ::Devops::KubernetesCluster.find_by(id: candidate, account_id: node.account_id)
+        return "" if cluster.blank? || cluster.status == "error"
+
+        cluster.id
+      end
+
+      # kubeadm runtime config delivery is a follow-up (k3s_agent got
+      # its own handler above, IMP-a5f236e8cc56); return an empty
+      # payload so the agent doesn't error out when probing newer
+      # endpoints from older runtimes.
       def empty_config
         {
           runtime: @runtime,

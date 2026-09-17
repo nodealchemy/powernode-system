@@ -147,6 +147,88 @@ func TestAgentReconcile_InstalledNoJoin_FetchesAndWrites(t *testing.T) {
 	}
 }
 
+// IMP-a5f236e8cc56 gap 3 — TargetClusterID now has a producer
+// (runtime/service.go refreshes it from HTTPAgentConfigClient before
+// each Reconcile, mirroring ServerManager.Bootstrap). These three
+// pin AgentManager's existing consumption of the field: whatever the
+// refresh sets, join_request carries verbatim.
+func TestAgentReconcile_JoinRequest_PassesStubTargetClusterID(t *testing.T) {
+	a := &stubAgentApplier{Installed: true}
+	m, fp := newTestAgentManager(t, []string{"k3s-agent"}, a)
+	defer fp.close()
+
+	// Simulate the tick-hook refresh runtime/service.go performs
+	// before calling Reconcile.
+	m.TargetClusterID = "cluster-stub-xyz"
+
+	m.Reconcile(context.Background())
+
+	if fp.JoinRequest != 1 {
+		t.Fatalf("expected JoinRequest once, got %d", fp.JoinRequest)
+	}
+	if fp.LastJoinRequest.TargetClusterID != "cluster-stub-xyz" {
+		t.Fatalf("TargetClusterID not forwarded to join_request: got %q, want %q",
+			fp.LastJoinRequest.TargetClusterID, "cluster-stub-xyz")
+	}
+}
+
+func TestAgentReconcile_JoinRequest_EmptyTargetClusterIDStaysEmpty(t *testing.T) {
+	a := &stubAgentApplier{Installed: true}
+	m, fp := newTestAgentManager(t, []string{"k3s-agent"}, a)
+	defer fp.close()
+
+	// No refresh happened yet (e.g. first tick, or every prior fetch
+	// 403'd) — TargetClusterID stays at its zero value.
+	if m.TargetClusterID != "" {
+		t.Fatalf("expected zero-value TargetClusterID, got %q", m.TargetClusterID)
+	}
+
+	m.Reconcile(context.Background())
+
+	if fp.JoinRequest != 1 {
+		t.Fatalf("expected JoinRequest once, got %d", fp.JoinRequest)
+	}
+	if fp.LastJoinRequest.TargetClusterID != "" {
+		t.Fatalf("expected empty target_cluster_id on the wire, got %q", fp.LastJoinRequest.TargetClusterID)
+	}
+	// And the join still proceeds — single-cluster auto-select path
+	// keeps working exactly as it did before this field had a
+	// producer.
+	if m.state.joinedClusterID != fp.BootstrapClusterID {
+		t.Fatalf("join did not proceed with empty target: joinedClusterID = %q", m.state.joinedClusterID)
+	}
+}
+
+// A refresh fetch error (network blip, 500, etc.) must not block the
+// join: runtime/service.go records it via OnError and leaves
+// TargetClusterID at its last-known value (mirrors the Bootstrap
+// fetch-error handling for ServerManager) rather than blanking it or
+// aborting the tick. Modelled here at the AgentManager level, since
+// that's the boundary the field crosses: whatever value survives a
+// failed refresh is what join_request carries, and the join still
+// completes.
+func TestAgentReconcile_JoinRequest_StaleTargetClusterIDSurvivesAFailedRefresh(t *testing.T) {
+	a := &stubAgentApplier{Installed: true}
+	m, fp := newTestAgentManager(t, []string{"k3s-agent"}, a)
+	defer fp.close()
+
+	// A prior successful refresh set this; the current tick's fetch
+	// failed (simulated by simply not overwriting it, exactly what
+	// runtime/service.go's `if err != nil { OnError(...) } else {
+	// assign }` shape does).
+	m.TargetClusterID = "cluster-last-known-good"
+
+	m.Reconcile(context.Background())
+
+	if fp.LastJoinRequest.TargetClusterID != "cluster-last-known-good" {
+		t.Fatalf("stale value not preserved through a failed refresh: got %q",
+			fp.LastJoinRequest.TargetClusterID)
+	}
+	if m.state.joinedClusterID != fp.BootstrapClusterID {
+		t.Fatalf("join did not proceed after a failed refresh: joinedClusterID = %q", m.state.joinedClusterID)
+	}
+}
+
 func TestAgentReconcile_HasJoinNotRunning_Starts(t *testing.T) {
 	a := &stubAgentApplier{Installed: true, HasJoin: true}
 	m, fp := newTestAgentManager(t, []string{"k3s-agent"}, a)
@@ -172,6 +254,38 @@ func TestAgentReconcile_RunningNoReady_ReportsReady(t *testing.T) {
 	}
 	if fp.LastReady.Role != RoleAgent {
 		t.Fatalf("expected role=agent, got %q", fp.LastReady.Role)
+	}
+}
+
+// IMP-a5f236e8cc56 gap 3 — with TargetClusterID now refreshed live from the
+// platform every tick, an already-joined worker must NOT re-resolve its
+// membership from that live value on phase=ready: it reports its own
+// CACHED joinedClusterID (state.joinedClusterID, set once at join time),
+// never the current TargetClusterID. Otherwise an operator changing
+// target_cluster_id on the assignment after a join would silently
+// "move" the worker's ready re-fires onto a different cluster it never
+// actually joined.
+func TestAgentReconcile_ReportReady_UsesCachedJoinNotLiveTarget(t *testing.T) {
+	a := &stubAgentApplier{Installed: true, HasJoin: true, Running: true,
+		Version_: "v1.30.4+k3s1"}
+	m, fp := newTestAgentManager(t, []string{"k3s-agent"}, a)
+	defer fp.close()
+
+	// Simulate: this worker already joined cluster A (cached in state),
+	// and the operator has since repointed the assignment's
+	// target_cluster_id at a DIFFERENT cluster B — the live value a
+	// runtime/service.go refresh would now be feeding in.
+	m.state.joinedClusterID = "cluster-A-already-joined"
+	m.TargetClusterID = "cluster-B-newly-configured"
+
+	m.Reconcile(context.Background())
+
+	if fp.Ready != 1 {
+		t.Fatalf("expected Ready once, got %d", fp.Ready)
+	}
+	if fp.LastReady.ClusterID != "cluster-A-already-joined" {
+		t.Fatalf("ReportReady used %q, want the cached join cluster %q (must not relocate on live TargetClusterID)",
+			fp.LastReady.ClusterID, "cluster-A-already-joined")
 	}
 }
 

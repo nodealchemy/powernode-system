@@ -149,21 +149,23 @@ articles = [
   {
     slug: "multi-cluster-k3s",
     title: "Multi-cluster K3s Patterns",
-    excerpt: "Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed api_endpoint, and per-cluster kubeconfig retrieval. Neither an HA control plane nor adding workers to a chosen cluster is implemented — a second k3s-server bootstraps a second cluster, and k3s-agent joins are refused once one exists.",
+    excerpt: "Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed api_endpoint, per-cluster kubeconfig retrieval, and placing a worker in a chosen cluster via target_cluster_id. An HA control plane is not implemented — a second k3s-server bootstraps a second cluster rather than joining the first.",
     content: <<~MD
       # Multi-cluster K3s
 
       Patterns for running prod + staging + workload-specific K3s clusters in a single Powernode account.
 
-      ## Critical rule — adding workers to a chosen cluster is NOT IMPLEMENTED
+      ## Placing a worker in a chosen cluster (IMP-a5f236e8cc56)
 
-      **Once a second non-error cluster exists in the account, every k3s-agent join is refused.** `resolve_membership_cluster!` raises `AmbiguousClusterError` and the platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`. No node is produced — the worker does not join the wrong cluster, it does not join at all.
+      **Set `target_cluster_id` in the `k3s-agent` module assignment's `config`, and the worker joins the cluster you named.** The platform surfaces that value back to the calling node on `runtime/k3s_agent/config` — only when it names a `Devops::KubernetesCluster` in the node's own account whose status isn't `error` — and the agent fetches + forwards it each tick.
 
-      `target_cluster_id` is wired on the platform side and unreachable from the agent: the handshake handler forwards a supplied value into `join_request!`, but `k3sd.AgentManager.TargetClusterID` is declared and consumed and never written, and `k3sd.ModulesAPI` hands the K3s reconcilers module **names** only — so assignment config never reaches the K3s reconcilers. Setting `config.target_cluster_id` on the module assignment stores the value and changes nothing about the join.
+      **Omitting it (or naming a cluster the platform can't back) still refuses rather than guessing, once a second non-error cluster exists.** `resolve_membership_cluster!` raises `AmbiguousClusterError` and the platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`. No node is produced — the worker never joins the wrong cluster, it does not join at all. Setting `config.target_cluster_id` to the intended cluster's id avoids that refusal.
 
-      An earlier revision of this article said the opposite — that agents "auto-select the most recent active cluster" and "join the wrong cluster silently". That fallback applies only when there is exactly one candidate cluster. Do not go looking for a misplaced node; there is none.
+      An earlier revision of this article said agents "auto-select the most recent active cluster" and "join the wrong cluster silently". Neither is true — that fallback applies only when there is exactly one candidate cluster. Do not go looking for a misplaced node from an unconfigured join; there is none.
 
-      Single-cluster accounts are unaffected: with exactly one non-error cluster the worker joins it without a target.
+      **Changing `target_cluster_id` after a join does not relocate the worker.** Only a fresh join consults it — an already-joined worker keeps re-reporting readiness against its own cached membership.
+
+      Single-cluster accounts are unaffected either way: with exactly one non-error cluster the worker joins it without a target.
 
       ## HA control plane — NOT IMPLEMENTED
 
@@ -245,7 +247,7 @@ articles = [
 
       ## K3s
 
-      - Agent can't join, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream → the account has two or more non-error clusters. Expected, not a misconfiguration: nothing on the agent supplies a `target_cluster_id`, so the platform refuses rather than guessing. No operator-side fix today
+      - Agent can't join, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream → the account has two or more non-error clusters, and the join carried no usable `target_cluster_id`. Set `target_cluster_id` in the `k3s-agent` module assignment's `config` to the intended cluster's id (IMP-a5f236e8cc56) and confirm it resolves via `kubernetes_get_cluster` before retrying — allow one agent tick for the fetch to pick it up
       - Agent can't join, no refusal event → verify same SDWAN network as bootstrap server
       - Token mismatch → restart `powernode-agent` to clear stale cache
       - Pod-to-pod traffic unencrypted → known gap (slice 9 not yet shipped); use NetworkPolicy + service mesh

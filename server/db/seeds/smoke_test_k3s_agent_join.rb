@@ -14,14 +14,17 @@
 # Tier semantics:
 #   db (default): operator-driven register_node_join! + mark_node_ready!
 #                 for each agent. Negative test runs always.
-#   single+:      agent-driven — VMs boot, agents POST phase=join_request
-#                 with an EMPTY target_cluster_id: the agent has no
-#                 producer for the field (k3sd.AgentManager.TargetClusterID
-#                 is never assigned), so the platform resolves membership
-#                 by single-cluster auto-select. That resolves only while
-#                 the account has exactly one non-error cluster; with a
-#                 second one the join is refused as ambiguous
-#                 (AmbiguousClusterError -> 409), not auto-selected.
+#   single+:      agent-driven — VMs boot, agents POST phase=join_request.
+#                 IMP-a5f236e8cc56: the agent now fetches + forwards
+#                 target_cluster_id from the k3s-agent module assignment's
+#                 config, when the operator set one. This drill's
+#                 assignments carry no target_cluster_id, so the agent
+#                 still sends an EMPTY value here, and the platform
+#                 resolves membership by single-cluster auto-select. That
+#                 resolves only while the account has exactly one
+#                 non-error cluster; with a second one the join is
+#                 refused as ambiguous (AmbiguousClusterError -> 409), not
+#                 auto-selected.
 #                 All sites share one Account (`::Account.first`,
 #                 _smoke_k3s_helpers.rb:263), so run this phase BEFORE
 #                 bootstrapping a second site's cluster or the join is
@@ -96,17 +99,20 @@ if h.tier_at_least?("single")
 else
   h.step("Synth register_node_join + mark_node_ready for each agent (db tier)")
   agent_instances.each_with_index do |inst, idx|
-    # SYNTHETIC ON PURPOSE, and worth saying out loud (IMP-01a05e92):
-    # target_cluster_id here is a value NO AGENT EVER SENDS.
-    # k3sd.HandshakeRequest.TargetClusterID is documented as "NOT WIRED on the
-    # agent side: AgentManager.TargetClusterID has no producer, so this is
-    # always '' here, and there is nothing an operator can set on the module
-    # assignment to change that." handle_join_request forwards
-    # params[:target_cluster_id] straight through, so on a real fleet it is
-    # always nil — which is why an account with more than one non-error
-    # cluster cannot join a worker AT ALL (409 AmbiguousClusterError rather
-    # than auto-select). Passing it below exercises the service's resolution
-    # branch; it does not evidence a path the agent can take.
+    # SYNTHETIC ON PURPOSE, and worth saying out loud (IMP-01a05e92,
+    # revisited for IMP-a5f236e8cc56): target_cluster_id here is a value
+    # THIS DRILL supplies directly at the service layer, not one an agent
+    # process produced. A real agent CAN now supply this value —
+    # k3sd.HTTPAgentConfigClient fetches it each tick from the k3s-agent
+    # module assignment's config, and AgentManager.TargetClusterID forwards
+    # it on JoinRequest (WIRED end to end — agent/internal/k3sd/handshake.go)
+    # — but the db tier never runs the agent binary, so this call still
+    # bypasses that path entirely: it exercises the service's resolution
+    # branch against a real value, but does not evidence agent-side
+    # delivery. handle_join_request forwards params[:target_cluster_id]
+    # straight through unchanged. See SMOKE_TEST.md's caveat for this exact
+    # seed, or docs/USE_CASE_MATRIX.md Use Case 3, for the working
+    # agent-driven path.
     join = ::System::KubernetesClusterProvisionerService.join_request!(
       node_instance: inst, target_cluster_id: cluster.id
     )

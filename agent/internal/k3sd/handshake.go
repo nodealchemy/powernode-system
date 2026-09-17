@@ -72,12 +72,14 @@ type HandshakeRequest struct {
 	// rather than landing on the most recent cluster
 	// (kubernetes_cluster_provisioner_service.rb:351).
 	//
-	// NOT WIRED on the agent side: AgentManager.TargetClusterID has
-	// no producer, so this is always "" here, and there is nothing
-	// an operator can set on the module assignment to change that.
-	// An account with more than one non-error cluster therefore
-	// cannot currently join a worker at all. (phase=ready differs:
-	// ClusterID below IS sent, from the cached join ack.)
+	// WIRED end to end (IMP-a5f236e8cc56): AgentManager.TargetClusterID
+	// is refreshed each tick from the operator-set k3s-agent
+	// NodeModuleAssignment#config, via k3sd.HTTPAgentConfigClient —
+	// so this carries a real value whenever that config is set. An
+	// unconfigured (or unresolvable) target in an account with more
+	// than one non-error cluster still gets the refusal above.
+	// (phase=ready differs: ClusterID below IS sent, from the cached
+	// join ack, and is never re-chosen from this config.)
 	TargetClusterID string `json:"target_cluster_id,omitempty"`
 
 	// Ready fields (both, phase=ready)
@@ -206,9 +208,12 @@ func (c *Client) Bootstrap(ctx context.Context, kubeconfig, serverToken, agentTo
 // disambiguation. "Single-cluster" is exact: the platform resolves
 // an empty value only when the account has exactly one non-error
 // cluster. More than one is refused as ambiguous (409); none at all
-// fails 422 (NoClusterAvailableError), not 409. No production caller
-// supplies a value today — AgentManager.TargetClusterID has no
-// producer — so this is always "".
+// fails 422 (NoClusterAvailableError), not 409. The sole production
+// caller is AgentManager.transitionJoinRequest, passing
+// m.TargetClusterID — refreshed each tick by runtime/service.go
+// from the operator-set k3s-agent module assignment config
+// (IMP-a5f236e8cc56), so it carries a real value whenever that
+// config names a live cluster, and "" otherwise.
 func (c *Client) JoinRequest(ctx context.Context, targetClusterID string) (*JoinRequestPayload, error) {
 	req := HandshakeRequest{
 		Runtime:         RuntimeK3sAgent,

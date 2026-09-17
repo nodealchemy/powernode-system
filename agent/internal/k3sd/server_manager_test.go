@@ -130,6 +130,7 @@ type fakeK3sPlatform struct {
 	JoinRequest        int
 	LastBootstrap      HandshakeRequest
 	LastReady          HandshakeRequest
+	LastJoinRequest    HandshakeRequest
 	BootstrapClusterID string
 }
 
@@ -167,6 +168,7 @@ func newFakeK3sPlatform(t *testing.T) *fakeK3sPlatform {
 			})
 		case PhaseJoinRequest:
 			fp.JoinRequest++
+			fp.LastJoinRequest = req
 			fp.respond(w, map[string]any{
 				"cluster_id":   fp.BootstrapClusterID,
 				"api_endpoint": "https://[fd00::1]:6443",

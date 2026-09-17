@@ -2,12 +2,16 @@
 
 > Status: active
 
-> ## ⚠️ Steps 3–4 are NOT SUPPORTED — this tutorial cannot be completed as written
+> ## ⚠️ Steps 3–4 are NOT SUPPORTED AS WRITTEN — one of two blockers was fixed
 >
-> Steps 1–2 work. Steps 3–4 rest on three things that do not exist, so a second
-> cluster cannot be brought up by following this page, and Steps 5–6 and
-> Verification all presuppose cluster B. **Read this before you start
-> provisioning**, not forty minutes in.
+> Steps 1–2 work. Steps 3–4 as originally written rested on THREE things that
+> did not exist. **Gap 3 (the `target_cluster_id` producer) is now fixed**
+> (IMP-a5f236e8cc56, 2026-09-17) — see the corrected
+> [Concept refresher](#concept-refresher). **Gaps 1 and 2 (re-templating an
+> already-provisioned instance) are not**, and Step 3 as written depends on
+> exactly that, so this tutorial still cannot be completed by following Steps
+> 3–4 verbatim. **Read this before you start provisioning**, not forty
+> minutes in.
 >
 > **1. No MCP verb re-templates a provisioned instance.**
 > `system_update_instance` accepts exactly `instance_id`, `name`,
@@ -38,18 +42,26 @@
 > *old* module set. (Apply is also additive by default: `purge_stale` is
 > `false`, so the outgoing template's modules stay assigned.)
 >
-> **3. `target_cluster_id` has no producer on the agent.** See the corrected
-> [Concept refresher](#concept-refresher) — the field the worker would use to
-> pick cluster B is declared, read, and never written.
+> **3. ~~`target_cluster_id` has no producer on the agent~~ — FIXED
+> (IMP-a5f236e8cc56).** Set it in the `k3s-agent` module assignment's
+> `config` and the worker joins the named cluster. This alone does not
+> unblock Steps 3–4 as written, because they also need (1)+(2), which remain
+> open — see the corrected [Concept refresher](#concept-refresher) for the
+> full mechanism.
 >
 > **What IS supported today**, and the reason (1)+(2) are a gap rather than a
 > dead end — bind the template **at node-creation time, before provisioning**:
-> `system_create_template` → `system_assign_module_to_template` →
-> `system_create_node({ template_id })` → `system_provision_instance`.
-> Provisioning runs `TemplateApplyService`, so the assignments materialize.
-> Outside MCP, `POST /api/v1/system/nodes/:id/apply_template` applies a
-> template to an already-created node. Neither is written up as a walkthrough
-> here, because gap (3) still blocks the worker half regardless.
+> `system_create_template` → `system_assign_module_to_template` (with
+> `config: { target_cluster_id: "<cluster-b-id>" }` for a `k3s-agent`
+> assignment) → `system_create_node({ template_id })` →
+> `system_provision_instance`. Provisioning runs `TemplateApplyService`, so
+> the assignments materialize, and the target cluster is delivered to the
+> agent the same way. Outside MCP, `POST /api/v1/system/nodes/:id/apply_template`
+> applies a template to an already-created node. Neither is written up as a
+> walkthrough here, because Steps 3–4 as written still need (1)+(2), which
+> remain unimplemented — but see
+> [runbooks/multi-cluster-k3s.md, Phase 3](../runbooks/multi-cluster-k3s.md#phase-3--add-workers-to-a-specific-cluster--implemented)
+> for the worked procedure using the node-creation-time bind.
 
 > **What you'll learn:** Run multiple K3s clusters in the same account with
 > per-tenant SDWAN networks providing the trust boundary. Tenant clusters
@@ -106,36 +118,40 @@ routing is contained within each SDWAN network — no cross-network
 reachability without an explicit federation peer or operator-granted
 access.
 
-**`target_cluster_id` is mandatory when more than one cluster exists — and
-today nothing supplies it.** Two corrections to what this page used to say:
+**`target_cluster_id` is required when more than one cluster exists, and IMP-a5f236e8cc56
+gave the agent a way to supply it.** Set it in the `k3s-agent` module
+assignment's `config`, the same key this page always documented:
 
 - **Omitting it does not silently pick a cluster.** `resolve_membership_cluster!`
   refuses to auto-select among several: with more than one non-error cluster and no
-  `target_cluster_id` the join raises `AmbiguousClusterError` and the platform
+  usable `target_cluster_id` the join raises `AmbiguousClusterError` and the platform
   emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`
   (`kubernetes_cluster_provisioner_service.rb:329`). The single-cluster fallback
   applies only when there is exactly one candidate — and "candidate" is
   `where.not(status: "error")`, so a cluster in `pending`, `bootstrapping`,
   `degraded` or `disconnected` counts toward the ambiguity, not just an
   `active` one.
-- **The agent has no way to send it on `phase=join_request`.** Scope matters
-  here: on `phase=ready` the agent *does* send `target_cluster_id`, from
-  `ReportReady(..., m.state.joinedClusterID)` (`agent_manager.go:198`, read at
-  `runtime_handshake_handlers.rb:195`) — but that names the cluster it has
-  already joined, it does not choose one. For the join itself there is no
-  producer. The server reads it from the handshake
-  (`runtime_handshake_handlers.rb:164`); the agent would source it from
-  `k3sd.AgentManager.TargetClusterID`, and nothing ever assigns that field.
-  It is declared (`agent_manager.go:53`) and consumed
-  (`agent_manager.go:158`), but the only non-test writer in the tree is the
-  handshake struct literal it feeds — there is no writer at all, in production
-  or in tests. `NewAgentManager` never sets it (`runtime/service.go:265` passes
-  five arguments, none of them a cluster), and
-  `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module names
-  only — so assignment metadata never reaches the K3s reconcilers at all.
+- **The agent now sends it on `phase=join_request`.** Scope, corrected: on
+  `phase=ready` the agent *also* sends `target_cluster_id`, from
+  `ReportReady(..., m.state.joinedClusterID)` (`agent_manager.go:200`, read at
+  `runtime_handshake_handlers.rb:195`) — that one names the cluster it has
+  already joined and cannot relocate it. For the JOIN itself, the producer is
+  `k3sd.AgentManager.TargetClusterID` (declared `agent_manager.go:55`,
+  consumed `agent_manager.go:160`), refreshed each tick — before `Reconcile`
+  — by `runtime/service.go`'s `PostSend` hook from `k3sd.HTTPAgentConfigClient`,
+  a NEW channel distinct from `k3sd.ModulesAPI.AssignedModules(ctx)
+  ([]string, error)` (still module names only). Server-side,
+  `System::NodeApi::RuntimeConfigBuilder#k3s_agent_config` reads the calling
+  node's ENABLED `k3s-agent` assignment's `config["target_cluster_id"]` and
+  surfaces it only when it names a live, non-`error`, same-account cluster —
+  the same validation `join_request!` was already doing, now with something
+  to validate. The server reads the join-time value from the handshake
+  (`runtime_handshake_handlers.rb:164`).
 
-So a second cluster in the same account is currently a state a worker **cannot
-join**, whatever you put in the template's module config.
+So a second cluster in the same account is a state a worker CAN join, as
+long as `target_cluster_id` is set in the `k3s-agent` assignment's `config`
+— whatever you put there is what gets validated and delivered. Changing it
+after a join does not relocate the worker; only a fresh join consults it.
 
 **Multi-account vs multi-tenant within account:** for true SaaS-style
 multi-tenancy where tenants must not see each other's resources at all
@@ -225,7 +241,7 @@ belongs.
 **Expected outcome:** both instances have `/128`s from tenant-b's `/64`.
 This is the last step of this tutorial that works — see the banner at the top.
 
-## Step 3 — Assign `k3s-server` to tenant B's bootstrap — NOT SUPPORTED
+## Step 3 — Assign `k3s-server` to tenant B's bootstrap — NOT SUPPORTED (gaps 1+2, unrelated to target_cluster_id)
 
 The first two calls work and are worth keeping: authoring the template and
 binding the module to it are both supported.
@@ -262,11 +278,15 @@ The direct observable for "did a cluster come up" is
 `platform.kubernetes_list_clusters()`, used in Step 4 and
 [Verification](#verification) below — not an event poll.
 
-## Step 4 — Join tenant B's worker — NOT SUPPORTED
+## Step 4 — Join tenant B's worker — mechanism WORKS, this tutorial's path to it does NOT
 
-This step presupposes a bootstrapped cluster B, which Step 3 cannot produce.
-The template authoring below is correct and does work; the binding and the
-join do not.
+`config.target_cluster_id` on a `k3s-agent` assignment now reaches the
+worker (IMP-a5f236e8cc56) — see the corrected
+[Concept refresher](#concept-refresher). **But this step still presupposes a
+bootstrapped cluster B, which Step 3 cannot produce** (gaps 1+2, re-templating
+an already-provisioned instance, remain open). The template authoring below
+is correct and does work on its own; it just has nothing to point at while
+Step 3 is blocked in this specific tutorial:
 
 ```javascript
 // Get tenant B's cluster_id (once a cluster B exists)
@@ -283,7 +303,7 @@ platform.system_create_template({
 platform.system_assign_module_to_template({
   template_id: "<tenant-b-k3s-worker-template-id>",
   module_id: "<k3s-agent-module-id>",                     // UUID, not the name
-  config: { target_cluster_id: "<cluster-b-id>" }         // stored; see below — not delivered
+  config: { target_cluster_id: "<cluster-b-id>" }         // delivered to the agent
 })
 ```
 
@@ -291,17 +311,22 @@ platform.system_assign_module_to_template({
 |---|---|
 | `system_create_template({ module_assignments: [{ module_name, config }] })` | `module_assignments` is **not declared** and is dropped, and the call also omitted the required `node_platform_id`, so it failed validation outright. There is no inline form; the two-verb sequence above is the supported way, and it is the same one Step 3 and [Troubleshooting](#troubleshooting) already use. The nested `module_name` was wrong for a second reason: `system_assign_module_to_template` takes the NodeModule **UUID**. |
 | `system_update_instance({ instance_id, node_template_id })` | Same withdrawal as Step 3 — `node_template_id` is not declared by this verb and is dropped. |
-| "worker joins **cluster B**, not cluster A" | Not reachable. `config.target_cluster_id` is stored on the join, but nothing carries it to the node: `k3sd.ModulesAPI` hands the K3s reconcilers module **names** only, and `AgentManager.TargetClusterID` has no writer. The worker's `JoinRequest` therefore always sends an empty target, and with two non-error clusters (this tutorial's are both `bootstrapping`) the platform **refuses** the join. |
 
-**Corrected — omitting `target_cluster_id` refuses, it does not guess.**
-Earlier revisions said the worker "joins whichever cluster the platform's first
-lookup returns" and that the agent posts a warning event
-`system.k3s.handshake.join_target_ambiguous`. Neither is true. With more than
-one non-error cluster and no target, `resolve_membership_cluster!` raises
+**Historical — corrected 2026-09-17 (IMP-a5f236e8cc56).** This row described
+the target_cluster_id gap before the producer landed; kept visible for an
+operator who read an earlier revision:
+
+| Withdrawn claim | What is actually true |
+|---|---|
+| "worker joins **cluster B**, not cluster A" | Not reachable *in this specific tutorial's walkthrough*, because Step 3 never produces cluster B (gaps 1+2). The underlying claim about `target_cluster_id` itself is now WRONG: `config.target_cluster_id` IS delivered to the agent as of IMP-a5f236e8cc56 — `k3sd.HTTPAgentConfigClient` fetches it each tick and `AgentManager.TargetClusterID` forwards it on `JoinRequest`. If cluster B existed (e.g. bootstrapped via the runbook's supported Phase 1+2 flow), this exact assignment would join the worker to it. |
+
+**Refusal, unaffected by the producer landing.** Omitting `target_cluster_id`
+(or naming a cluster the platform can't back) still refuses rather than
+guessing — it does not join whichever cluster the platform's first lookup
+returns, and there is no handshake warning event. With more than one
+non-error cluster and no usable target, `resolve_membership_cluster!` raises
 `AmbiguousClusterError` — the join fails — and the emitted kind is
-`system.k3s_ambiguous_cluster_join_refused` (severity `high`), not a handshake
-warning. That behaviour is strictly safer than what was documented, but it does
-mean the worker does not join at all.
+`system.k3s_ambiguous_cluster_join_refused` (severity `high`).
 
 Once a worker has joined, cluster membership is read with:
 
@@ -439,11 +464,13 @@ platform.system_delete_template({ template_id: "<tenant-b-k3s-worker-template-id
 ## Troubleshooting
 
 **Worker did not join at all, `system.k3s_ambiguous_cluster_join_refused` in
-the event stream** — this is the expected outcome with two non-error clusters, not
-a misconfiguration you can correct. See Step 4: the join carries no
-`target_cluster_id` because nothing on the agent supplies one, and the platform
-refuses rather than guessing. Setting `config.target_cluster_id` on the
-template join does not change that. There is no operator-side workaround today.
+the event stream** — with two non-error clusters, this means the join carried
+no usable `target_cluster_id`: either the `k3s-agent` assignment's `config`
+has no `target_cluster_id` set, or the one it names doesn't resolve
+(foreign-account, or `error` status). See Step 4: set
+`config.target_cluster_id` on the `k3s-agent` assignment to the intended
+cluster's id and confirm it resolves via `kubernetes_get_cluster` before
+retrying — allow one agent tick (~30-60s) for the fetch to pick it up.
 
 To edit an **existing** template↔module join (priority, enabled, config), use
 `system_update_template_module`. `system_assign_module_to_template` calls
@@ -500,6 +527,8 @@ SDWAN network is supported — each cluster's pod CIDR is independent.
   `smoke_test_multi_vrf.rb`, `smoke_test_ovn_k8s_cni.rb` validate the
   SDWAN topology compiler that's doing the isolation work.
 
-_Last verified: 2026-08-31 (rev 3) — every `platform.<verb>({ ... })` example on
-this page is pinned against the verb's own `action_definitions` by
-`spec/docs/module_docs_mcp_call_signatures_spec.rb`._
+_Last verified: 2026-09-17 (rev 4) — gap 3 (`target_cluster_id` producer)
+re-verified fixed (IMP-a5f236e8cc56); gaps 1+2 (re-templating) re-verified
+still open, so Steps 3-4 remain not completable as written. Every
+`platform.<verb>({ ... })` example on this page is pinned against the verb's
+own `action_definitions` by `spec/docs/module_docs_mcp_call_signatures_spec.rb`._

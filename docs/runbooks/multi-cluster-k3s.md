@@ -2,31 +2,30 @@
 
 > Status: active
 
-Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed `api_endpoint`, kubeconfig retrieval, and cross-cluster operator workflows. An HA control plane (Phase 4) and placing workers in a chosen cluster (Phase 3) are **not implemented** — see the banner below.
+Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed `api_endpoint`, kubeconfig retrieval, and cross-cluster operator workflows. An HA control plane (Phase 4) is **not implemented** — see the banner below. Placing workers in a chosen cluster (Phase 3) **is** implemented as of IMP-a5f236e8cc56.
 
 **Audience:** operators running multi-environment fleets (prod + staging, multi-region, multi-tenant); SREs managing K3s upgrades.
 
-> ## ⚠️ Phase 3 (adding workers to a chosen cluster) is NOT IMPLEMENTED
+> ## ✅ Phase 3 (adding workers to a chosen cluster) is IMPLEMENTED (IMP-a5f236e8cc56, 2026-09-17)
 >
-> **Bootstrapping a second cluster works. Putting a worker in a specific one
-> does not.** `target_cluster_id` is wired on the platform side and unreachable
-> from the agent, so once a second cluster exists in the account, k3s-agent
-> joins are **refused** — `AmbiguousClusterError`, with
-> `system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`. The
-> worker does not join the wrong cluster; **no node is produced at all**.
+> **Bootstrapping a second cluster works, and so does putting a worker in a
+> specific one.** Set `target_cluster_id` in the `k3s-agent` module
+> assignment's `config`; the platform surfaces it to the agent on the
+> existing `runtime/k3s_agent/config` endpoint, `k3sd.AgentManager` fetches it
+> each tick and forwards it on `phase=join_request`. See
+> [Phase 3](#phase-3--add-workers-to-a-specific-cluster--implemented) for the
+> working steps.
 >
-> Earlier revisions of this page said the opposite — that omitting
-> `target_cluster_id` makes the agent "auto-select the most recent active
-> cluster" and join the wrong one. That fallback does not exist for a
-> multi-cluster account. If you followed this guide, set the field, saw the
-> assignment call succeed, and went looking for a misplaced node: there is no
-> misplaced node, and nothing you can set on the assignment will change the
-> outcome today.
->
-> The withdrawn instructions are kept visible in [Phase 3](#phase-3--add-workers-to-a-specific-cluster--not-implemented),
-> alongside what is actually true. Phases 1 and 2 (bootstrapping each cluster)
-> are unaffected. The producer is tracked separately (IMP-a5f236e8cc56 gap 3);
-> this page will be restored when it lands.
+> **If you omit it** (or it names a cluster the platform can't back — a
+> foreign-account id, or one in `error` status), the OLD single-cluster
+> behaviour still applies: with exactly one non-error cluster in the account
+> the join resolves without a target; with more than one it is **refused** —
+> `AmbiguousClusterError`, with `system.k3s_ambiguous_cluster_join_refused`
+> emitted at severity `high`. The worker does not join the wrong cluster in
+> that case either; **no node is produced at all**. That refusal behaviour —
+> and the earlier withdrawal explaining it — are kept visible in the
+> [historical section](#phase-3--add-workers-to-a-specific-cluster--implemented)
+> below, since an operator on an older node image (pre-producer) still hits it.
 >
 > **Phase 4 (HA control plane) is NOT IMPLEMENTED either — now confirmed.** An
 > earlier revision of this banner reported that as an unverified suspicion. It
@@ -128,48 +127,57 @@ platform.kubernetes_list_clusters()
 
 Two clusters now exist; their `api_endpoint` VIPs are different `/128` addresses.
 
-## Phase 3 — Add workers to a specific cluster ❌ NOT IMPLEMENTED
+## Phase 3 — Add workers to a specific cluster ✅ Implemented
 
-**There is no supported way to place a worker in a chosen cluster today.** Once
-a second non-error cluster exists in the account, every k3s-agent join is
-refused. Read this section before you provision workers into a multi-cluster
-account — the failure is at join time, not at assignment time, so the calls all
-appear to succeed.
-
-The steps below are **withdrawn**, kept visible so you can recognise them if you
-have already run them:
+**Set `target_cluster_id` in the `k3s-agent` module assignment's `config`,
+and the worker joins the cluster you named.** The platform surfaces that
+value to the calling node on the existing `runtime/k3s_agent/config`
+endpoint (only when it names a `Devops::KubernetesCluster` in the node's own
+account whose status is not `error`; otherwise it surfaces empty).
+`k3sd.AgentManager` refreshes `TargetClusterID` from that endpoint each tick,
+before `Reconcile`, and forwards it on `phase=join_request`
+(`agent_manager.go:55` declares the field, `:160` consumes it,
+`runtime/service.go` is the producer). This is a NEW, dedicated channel —
+`k3sd.ModulesAPI.AssignedModules` still hands the reconcilers module names
+only, unchanged; the value is fetched separately by
+`k3sd.HTTPAgentConfigClient`. Server-side, `handle_join_request`
+(`runtime_handshake_handlers.rb`) forwards whatever arrives into
+`join_request!`, same as it always has — this page's changes are entirely
+about the agent finally having something to send it.
 
 ```javascript
-// WITHDRAWN — the assignment succeeds and the config is stored, but the
-// value never reaches the node. See the table below.
 platform.system_provision_instance({ node_id: "<worker-node-id>", ... })
 
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
   module_id: "<k3s-agent-module-id>",
   config: {
-    target_cluster_id: "cluster-prod-id"          // stored; not delivered
+    target_cluster_id: "cluster-prod-id"          // delivered to the agent
   }
 })
+// → wait ~30-60s (one agent tick) for the config fetch, then the next
+//   Reconcile tick's join_request; the worker joins cluster-prod-id
 ```
 
-| Withdrawn claim | What is actually true |
-|---|---|
-| "Without `metadata.target_cluster_id`, agents auto-select the **most recent active cluster**" | There is no most-recent-active fallback for a multi-cluster account. `resolve_membership_cluster!` (`kubernetes_cluster_provisioner_service.rb:351`) auto-selects **only when there is exactly one candidate**; with more than one it raises `AmbiguousClusterError` and the join fails. "Candidate" is `where.not(status: "error")` — so a cluster in `pending`, `bootstrapping`, `degraded` or `disconnected` counts toward the ambiguity, not just an `active` one. Only `error` is excluded. |
-| "new workers will join the wrong cluster if you have multiples" | No node is produced at all. The platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high` (`kubernetes_cluster_provisioner_service.rb:329`) and returns 409. Looking for a misplaced node will not find one. |
-| `target_cluster_id: "cluster-prod-id"  // ← REQUIRED for multi-cluster` | Required by the platform, and impossible to supply from the agent. Setting it on the assignment changes nothing about the join. |
-| "The agent reads `target_cluster_id` from its module assignment metadata at boot, passes it through to the platform's `runtime/handshake` POST" | The **server** half is real: `handle_join_request` forwards `params[:target_cluster_id].presence` into `join_request!` (`runtime_handshake_handlers.rb:164`), so a value that arrived would be honoured. The **agent** half does not exist. `k3sd.AgentManager.TargetClusterID` is declared (`agent_manager.go:53`) and consumed (`agent_manager.go:158`, passed to `JoinRequest`) but never written: `NewAgentManager` takes five arguments — client, modules, applier, nodeID, onError — none of them a cluster, and its struct literal sets six fields, not including this one. Nor is there a channel that could carry it: `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)`, module **names** only, so assignment config never reaches the K3s reconcilers. Every worker's `JoinRequest` therefore sends an empty target. |
-| "Agent must restart to pick up changes to `target_cluster_id` in module metadata" | Nothing to pick up. A restart, terminate + reprovision, or `system_refresh_instance_modules` all leave the join target empty. |
+**Validation happens on the same fetch, not at assignment time.** An id that
+doesn't name a live cluster in the node's own account (foreign-account, or a
+cluster in `error` status) is surfaced as empty rather than passed through —
+the assignment call still succeeds either way, so check
+`kubernetes_list_nodes` to confirm the worker actually landed where you
+intended, not just that the assign call returned 200.
 
-**What this is wired on one side only means in practice:** the gap is a missing
-write on the agent, not a missing feature on the platform. When a producer
-lands (IMP-a5f236e8cc56 gap 3), the validation described above — cluster
-exists, same account, not in `error` state — is already in place and this
-section can be restored roughly as written.
+**Changing `target_cluster_id` after a join does not move the worker.** Only
+a fresh join (a worker that hasn't joined yet, or one that's had its join
+state cleared — cleanup, a stop, or a k3s reinstall) consults the field. An
+already-joined worker keeps re-reporting readiness against its own cached
+`joinedClusterID` (`agent_manager.go:179, 200`), which the platform accepts
+as the target regardless of what the assignment config says now. To move a
+worker, remove it from the old cluster and provision a fresh one against the
+new `target_cluster_id`.
 
-**Single-cluster accounts are unaffected.** With exactly one non-error cluster,
-the worker joins it without a target. Assign `k3s-agent` and provision as
-normal:
+**Single-cluster accounts are unaffected.** With exactly one non-error
+cluster, the worker joins it without a target — `target_cluster_id` is
+optional in that case, not required:
 
 ```javascript
 platform.system_provision_instance({ node_id: "<worker-node-id>", ... })
@@ -179,9 +187,25 @@ platform.system_assign_module_to_template({
 })
 ```
 
-There is no operator-side workaround for the multi-cluster case. Bootstrapping
-the second cluster is what closes the single-cluster window, so if you need
-workers on cluster A, add them **before** cluster B exists.
+### Historical — corrected 2026-09-17 (IMP-a5f236e8cc56)
+
+Before the producer above landed, this section described Phase 3 as
+withdrawn. Kept visible so an operator who read an earlier revision of this
+page recognises the claims they may have acted on:
+
+| Withdrawn claim | What is actually true |
+|---|---|
+| "Without `metadata.target_cluster_id`, agents auto-select the **most recent active cluster**" | There is no most-recent-active fallback. `resolve_membership_cluster!` (`kubernetes_cluster_provisioner_service.rb:351`) auto-selects **only when there is exactly one candidate**; with more than one and no (or an unresolvable) target it raises `AmbiguousClusterError` and the join fails. "Candidate" is `where.not(status: "error")` — so a cluster in `pending`, `bootstrapping`, `degraded` or `disconnected` counts toward the ambiguity, not just an `active` one. Only `error` is excluded. |
+| "new workers will join the wrong cluster if you have multiples" | With no usable target, no node is produced at all — the platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high` (`kubernetes_cluster_provisioner_service.rb:329`) and returns 409. With a usable target (the working case above), the worker joins the NAMED cluster, never a guessed one. |
+| `target_cluster_id: "cluster-prod-id"  // ← REQUIRED for multi-cluster` | Required only when the account has more than one non-error cluster AND you need a SPECIFIC one — and, as of IMP-a5f236e8cc56, it is deliverable from the agent (see the working steps above). |
+| "The agent reads `target_cluster_id` from its module assignment metadata at boot, passes it through to the platform's `runtime/handshake` POST" | Close, but wrong about the mechanism and timing: the agent fetches it from `runtime/k3s_agent/config` on every `PostSend` tick (not once at boot), via `k3sd.HTTPAgentConfigClient`, and forwards the fetched value on the `runtime/handshake` `phase=join_request` POST. `k3sd.AgentManager.TargetClusterID` is declared (`agent_manager.go:55`) and consumed (`agent_manager.go:160`, passed to `JoinRequest`), and is now written each tick by `runtime/service.go`'s `PostSend` hook — the same pattern used for `ServerManager.Bootstrap`. |
+| "Agent must restart to pick up changes to `target_cluster_id` in module metadata" | No restart needed — the fetch happens every tick (roughly every 30-60s), so a config change is picked up on the next tick, well before the agent's join_request fires for a fresh join. |
+
+**What was wired on one side only now has its missing write.** The
+server-side validation described above — cluster exists, same account, not
+in `error` state — was already in place; IMP-a5f236e8cc56 added the agent's
+producer (`k3sd.HTTPAgentConfigClient` + the `runtime/service.go` refresh)
+that finally delivers a value for it to validate.
 
 ## Phase 4 — HA control plane (≥2 servers) ❌ NOT IMPLEMENTED
 
@@ -242,9 +266,10 @@ platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id:
 platform.system_assign_module_to_template({
   template_id: "<k3s-server-template>",
   module_id: "<k3s-server-module-id>"
-  // config: { target_cluster_id } is stored and never delivered — the same
-  // missing channel as Phase 3 (`ModulesAPI` hands over module names only),
-  // and the k3s-server reconciler has no join path that could use it anyway.
+  // config: { target_cluster_id } is stored, but k3s-server has no producer
+  // for it (unlike k3s-agent as of IMP-a5f236e8cc56 — see Phase 3): the
+  // k3s-server reconciler never issues a join_request, so there is no
+  // phase where a target cluster could apply. Setting it here does nothing.
 })
 
 // WITHDRAWN — this listing returns one node, not two. The new server is the
@@ -401,9 +426,9 @@ platform.system_assign_module_to_template({
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Worker does not join at all, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream | Two or more non-error clusters in the account. The join carries no `target_cluster_id` because nothing on the agent supplies one, and the platform refuses rather than guessing | Expected outcome, not a misconfiguration. There is no fix today — see [Phase 3](#phase-3--add-workers-to-a-specific-cluster--not-implemented). Do not go looking for a misplaced node; none was created |
+| Worker does not join at all, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream | Two or more non-error clusters in the account, and the join carries no usable `target_cluster_id` — either the `k3s-agent` module assignment's `config` has no `target_cluster_id` set, or the one it names doesn't resolve (foreign-account, or `error` status) | Set `target_cluster_id` in the assignment `config` to the intended cluster's id (see [Phase 3](#phase-3--add-workers-to-a-specific-cluster--implemented)), confirm it resolves in `kubernetes_get_cluster`, and wait one agent tick before the next join attempt. Do not go looking for a misplaced node from a prior refusal; none was created |
 | Worker stuck in `join_request` phase | API endpoint VIP unreachable | Verify worker is on the same SDWAN network as the cluster's bootstrap server |
-| Worker stuck in `join_request`, "bad token" | Token rotated since last cache | Restart `powernode-agent` on the worker; or re-fetch via terminate + reprovision. **⚠️ In a multi-cluster account, do not terminate + reprovision.** Once joined, the worker keeps working because it re-reports readiness against its own cached `joinedClusterID` (`agent_manager.go:177, 198`), which the platform accepts as the target. Anything that clears that cache — cleanup, a stop, or a k3s reinstall (`agent_manager.go:153, 219, 228`) — sends the next `JoinRequest` with an empty target, which is then refused. A reprovision destroys a working worker you cannot rebuild while a second cluster exists |
+| Worker stuck in `join_request`, "bad token" | Token rotated since last cache | Restart `powernode-agent` on the worker; or re-fetch via terminate + reprovision. **⚠️ In a multi-cluster account, do not terminate + reprovision.** Once joined, the worker keeps working because it re-reports readiness against its own cached `joinedClusterID` (`agent_manager.go:179, 200`), which the platform accepts as the target regardless of the assignment's current `target_cluster_id`. Anything that clears that cache — cleanup, a stop, or a k3s reinstall (`agent_manager.go:155, 221, 230`) — sends the next `JoinRequest` re-consulting `target_cluster_id`; if that's unset or unresolvable and a second cluster exists, the join is then refused. A reprovision without setting `target_cluster_id` can therefore land a worker on the wrong side of that refusal while a second cluster exists |
 | Second `k3s-server` never shows up in `kubernetes_list_nodes` for the first cluster | It never tried to join. The k3s-server reconciler has no join path, so it bootstrapped a second cluster instead | Expected outcome, not a misconfiguration — see [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented). `kubernetes_list_clusters` will show the new server as the sole node of a new cluster. Nothing on the assignment changes this |
 | VIP doesn't fail over after primary loss | Every cluster is single-server (Phase 4 is not implemented), so `failover_holder_peer_ids` is empty and there is nothing to promote; or `sdwan_vip_failover` is blocked by `require_approval` | Check the approval queue. If the cluster genuinely has one server, this is expected, and adding another server will not fix it — it makes a second cluster |
 | `kubectl` works but pods can't reach external services | Pods using flannel/CNI default route | Verify worker Nodes have proper egress. This is a pod *egress* concern, distinct from the encrypted pod-to-pod overlay (flannel-over-SDWAN, which ships per "Per-tenant pod plane" above). |
@@ -422,7 +447,7 @@ so an operator who already tried it recognises what they ran.
 
 When an operator chats "set up prod and staging K3s" / "add a worker to staging cluster" / "decommission staging cluster":
 
-1. For multi-cluster bootstrap, surface the Phase 1 + 2 sequence. Do **not** offer to add workers to a chosen cluster — say plainly that Phase 3 is not implemented and that k3s-agent joins are refused once a second cluster exists (see the banner at the top of this page)
+1. For multi-cluster bootstrap, surface the Phase 1 + 2 sequence. For "add a worker to staging cluster", offer Phase 3: set `target_cluster_id` in the `k3s-agent` module assignment's `config` to the target cluster's id. Warn that once a second cluster exists, an UNCONFIGURED k3s-agent join (no `target_cluster_id`, or one that doesn't resolve) is refused rather than guessed (see the banner at the top of this page)
 2. Do **not** propose an HA control plane. Say plainly that Phase 4 is not implemented: a second `k3s-server` bootstraps a second cluster rather than joining the first, and doing so refuses every subsequent worker join. If the operator asks for HA anyway, say that K3s HA is parked — not a queued defect and not on a roadmap — and steer the design to single-server clusters
 3. For decommission, use `kubernetes_decommission_cluster` with `request_confirmation` (destructive)
 4. After each phase, surface the relevant cluster status from `kubernetes_get_cluster`
@@ -439,4 +464,4 @@ The Concierge filter includes `kubernetes_*` actions — this entire workflow is
 
 ---
 
-_Last verified: 2026-09-01 — Phases 3 and 4 re-verified against the agent and provisioner source; both withdrawn. Phases 1, 2, 5, 6 not re-verified in that pass._
+_Last verified: 2026-09-17 — Phase 3 re-verified against the agent and provisioner source and restored (IMP-a5f236e8cc56: the agent-side `target_cluster_id` producer landed). Phase 4 re-verified 2026-09-01 and remains withdrawn/parked. Phases 1, 2, 5, 6 not re-verified in that pass._

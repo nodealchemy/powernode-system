@@ -4,46 +4,80 @@ require "spec_helper"
 require "rack/utils"
 
 # IMP-c43c4829fe11 — three documents told an operator that `target_cluster_id`
-# is a working knob with a forgiving fallback. It is neither.
+# is a working knob with a forgiving fallback. It was neither, until
+# IMP-a5f236e8cc56 (2026-09-17) landed the agent-side producer described in
+# point 1 below — READ THAT UPDATE FIRST, then treat everything after it in
+# this header as the ORIGINAL FILING's premise: true when written, superseded
+# now, and kept here because it explains why this file's tests are shaped the
+# way they are (the "CODE half pins the premise, DOC half is a matched pair"
+# design two paragraphs down did not change — only which state is "the
+# premise" did).
 #
-# The field is wired on the PLATFORM side and unreachable from the AGENT:
+# UPDATE (IMP-a5f236e8cc56, 2026-09-17): the agent NOW has a producer.
+# `k3sd.AgentManager.TargetClusterID` is refreshed each tick, before
+# Reconcile, from `k3sd.HTTPAgentConfigClient` — a dedicated channel reading
+# the calling node's enabled `k3s-agent` `NodeModuleAssignment#config` via
+# `System::NodeApi::RuntimeConfigBuilder#k3s_agent_config`, surfaced only when
+# it names a live, non-`error`, same-account cluster. `NewAgentManager` itself
+# is UNCHANGED (still five args, still no cluster field in its struct literal)
+# — the assignment happens post-construction, in `runtime/service.go`'s
+# `PostSend` hook, mirroring how `ServerManager.Bootstrap` was already
+# refreshed. The refusal behaviour below is UNCHANGED for an unconfigured or
+# unresolvable target: it still refuses rather than guessing. The "docs vs.
+# what the agent actually sends" premise this file's tests enforce therefore
+# flipped from "the agent sends nothing" to "the agent sends what the
+# operator configured, or nothing" — the code-half assertions below were
+# updated to match; search this file for IMP-a5f236e8cc56 for every site that
+# changed.
+#
+# ORIGINAL FILING (superseded above, kept for the CODE/DOC-half design it
+# explains):
+#
+# The field was wired on the PLATFORM side and unreachable from the AGENT:
 #
 #   * The server reads it — `runtime_handshake_handlers.rb` passes
 #     `params[:target_cluster_id].presence` into `join_request!`, so a value
 #     that arrived would be honoured.
-#   * Nothing on the agent produces one. `k3sd.AgentManager.TargetClusterID` is
-#     declared (agent_manager.go) and consumed (`JoinRequest(ctx,
-#     m.TargetClusterID)`), but NEVER ASSIGNED: `NewAgentManager` takes five
-#     arguments, none of them a cluster, and its struct literal does not set the
-#     field. `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` —
-#     module NAMES only — so assignment config never reaches the K3s
-#     reconcilers at all.
-#   * So the worker's join always carries an empty target, and with more than
+#   * Nothing on the agent produced one. `k3sd.AgentManager.TargetClusterID`
+#     was declared (agent_manager.go) and consumed (`JoinRequest(ctx,
+#     m.TargetClusterID)`), but NEVER ASSIGNED: `NewAgentManager` took five
+#     arguments, none of them a cluster, and its struct literal did not set
+#     the field. `k3sd.ModulesAPI` was (and still is) `AssignedModules(ctx)
+#     ([]string, error)` — module NAMES only — so assignment config never
+#     reached the K3s reconcilers through THAT channel (IMP-a5f236e8cc56 added
+#     a separate one, `HTTPAgentConfigClient`, rather than widening this one).
+#   * So the worker's join always carried an empty target, and with more than
 #     one active cluster `resolve_membership_cluster!` raises
 #     `AmbiguousClusterError` and emits `system.k3s_ambiguous_cluster_join_refused`
 #     at severity `high`. It REFUSES. It does not auto-select, and it produces
-#     no misplaced node — it produces no node.
+#     no misplaced node — it produces no node. (Still true for an unconfigured
+#     or unresolvable target — see the UPDATE above.)
 #
-# The declared-and-consumed-but-never-written shape is why a reference count is
-# useless here: `TargetClusterID` has six hits in the agent tree and works in
-# none of them. The CODE half below pins the missing WRITE positively — it
-# enumerates what `NewAgentManager` actually sets, rather than asserting an
-# absence a rename would satisfy.
+# The declared-and-consumed-but-never-written shape is why a reference count
+# was useless there: `TargetClusterID` had six hits in the agent tree and
+# worked in none of them (now seven, and the seventh — the assignment in
+# `runtime/service.go` — is the one that works). The CODE half below pinned
+# the missing WRITE positively — it enumerated what `NewAgentManager` actually
+# set, rather than asserting an absence a rename would satisfy; post-fix it
+# pins the SAME enumeration (still accurate — the write moved elsewhere) plus
+# the new write site.
 #
 # This guard has two halves and needs both:
 #
-#   1. The CODE half pins the premise. If someone implements the producer
-#     (IMP-a5f236e8cc56 gap 3), these examples redden and the withdrawal notices
-#     corrected here are exactly the ones to restore.
-#   2. The DOC half is a matched PAIR per file — the false promise ABSENT and a
-#     truthful replacement PRESENT. Absence alone is vacuous: deleting the
-#     section outright would satisfy it, and leave an operator with a
-#     multi-cluster account and no warning that their workers cannot join.
+#   1. The CODE half pins the premise — now "wired end to end", where it used
+#     to pin "no producer". Both states are checkable the same way: read the
+#     source, don't take the docs' word for it.
+#   2. The DOC half is a matched PAIR per file — the false promise ABSENT (or,
+#     post-fix, contained to a labelled historical row) and a truthful
+#     replacement PRESENT. Absence alone is vacuous: deleting the section
+#     outright would satisfy it, and (pre-fix) would have left an operator
+#     with a multi-cluster account and no warning that their workers could not
+#     join — or (post-fix) with no instructions for how to place one.
 #
-# The CODE half needs its CONTRAST or "no producer" is untethered from "broken":
-# the SERVER half is pinned as working. That is the difference between "wired on
-# one side only" and "unimplemented", and it is the difference the docs now
-# state.
+# The CODE half needs its CONTRAST or "wired end to end" is untethered from
+# "was broken": the SERVER half was ALREADY pinned as working, before and
+# after — target_cluster_id becoming deliverable did not change server-side
+# validation, only whether it has anything to validate.
 #
 # WHY THIS FILE AND NOT THE SIGNATURE ENUMERATOR:
 # docs/runbooks/multi-cluster-k3s.md is already listed in
@@ -249,7 +283,16 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
   # --- code: the premise the docs must be written to ----------------------
 
-  describe "k3sd.AgentManager (the agent half — no producer)" do
+  # IMP-a5f236e8cc56 — the agent half now HAS a producer, but it is
+  # external to this struct: runtime/service.go's PostSend loop
+  # refreshes TargetClusterID from k3sd.HTTPAgentConfigClient before
+  # each Reconcile, the same way it already refreshed
+  # ServerManager.Bootstrap. NewAgentManager itself is deliberately
+  # UNCHANGED by that — the field stays public and constructor-free —
+  # so the tests below pinning its six-field literal and cluster-free
+  # signature are still the accurate premise; see "the agent tree as a
+  # whole" below for where the new write site is pinned instead.
+  describe "k3sd.AgentManager (the agent half — producer is external to the struct)" do
     let(:agent_manager) { self.class.read(ext_root, "agent/internal/k3sd/agent_manager.go") }
 
     it "declares TargetClusterID and consumes it in the join request" do
@@ -259,6 +302,9 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
     # POSITIVE enumeration, not an absence assertion: list what the constructor
     # actually sets. A rename of the field would not silently satisfy this.
+    # Still accurate post-IMP-a5f236e8cc56: the refresh is a POST-construction
+    # field assignment in runtime/service.go, mirroring Bootstrap — the
+    # constructor itself was deliberately left alone.
     it "NewAgentManager sets six fields and TargetClusterID is not one of them" do
       literal = agent_manager[/m := &AgentManager\{(.*?)\n\t\}/m, 1]
       expect(literal).not_to be_nil, "expected a &AgentManager{...} literal in NewAgentManager"
@@ -310,15 +356,19 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       end
     end
 
-    # The one place anything is ever written INTO a TargetClusterID is the
-    # outbound handshake struct, from JoinRequest's own parameter — which the
-    # sole production caller supplies as the never-written field above. So the
-    # value on the wire is always "".
+    # IMP-a5f236e8cc56 gap 3 — TWO write sites now, not one:
+    #   1. runtime/service.go — the PRODUCER. Each PostSend tick assigns
+    #      AgentManager.TargetClusterID from HTTPAgentConfigClient.FetchAgentConfig,
+    #      the same shape as the pre-existing ServerManager.Bootstrap refresh.
+    #   2. agent/internal/k3sd/handshake.go — unchanged, the outbound handshake
+    #      struct field, populated from JoinRequest's own parameter.
+    # NON-production (_test.go) sources are excluded — the enumeration is about
+    # what SHIPS, not what a test double asserts.
     # Keyed by file and CONTENT rather than line number: an unrelated insertion
     # higher up a Go file must not redden a docs guard with a message that says
     # nothing about the invariant.
-    it "has exactly one TargetClusterID write site, and it is the outbound payload" do
-      writes = go_sources.flat_map do |rel, src|
+    it "has exactly two TargetClusterID write sites: the producer and the outbound payload" do
+      writes = go_sources.reject { |rel, _| rel.end_with?("_test.go") }.flat_map do |rel, src|
         src.lines.filter_map do |line|
           next unless line.match?(/TargetClusterID\s*(:|=)\s*\S/)
 
@@ -326,10 +376,13 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
         end
       end
 
-      expect(writes).to eq([ "agent/internal/k3sd/handshake.go: TargetClusterID: targetClusterID," ])
+      expect(writes).to contain_exactly(
+        "agent/internal/runtime/service.go: k3sAgentMgr.TargetClusterID = targetClusterID",
+        "agent/internal/k3sd/handshake.go: TargetClusterID: targetClusterID,"
+      )
     end
 
-    it "has exactly one production caller of JoinRequest, passing the unwritten field" do
+    it "has exactly one production caller of JoinRequest, passing the now-refreshed field" do
       callers = go_sources.reject { |rel, _| rel.end_with?("_test.go") }.flat_map do |rel, src|
         src.lines.filter_map do |line|
           next unless line.match?(/\.JoinRequest\(ctx/)
@@ -340,6 +393,31 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
       expect(callers).to eq(
         [ "agent/internal/k3sd/agent_manager.go: payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)" ]
+      )
+    end
+
+    # The producer itself: FetchAgentConfig is called exactly once in
+    # production, from the PostSend refresh above, and its error arm must
+    # record via OnError without blanking the previous value (see the
+    # sibling Bootstrap-fetch comment it was modelled on).
+    it "has exactly one production caller of FetchAgentConfig, and it precedes Reconcile" do
+      service = self.class.read(ext_root, "agent/internal/runtime/service.go")
+      fetch_line = service.lines.index { |l| l.match?(/k3sAgentConfig\.FetchAgentConfig\(ctx\)/) }
+      reconcile_line = service.lines.index { |l| l.match?(/k3sAgentMgr\.Reconcile\(ctx\)/) }
+
+      expect(fetch_line).not_to be_nil, "expected a k3sAgentConfig.FetchAgentConfig(ctx) call in service.go"
+      expect(reconcile_line).not_to be_nil, "expected a k3sAgentMgr.Reconcile(ctx) call in service.go"
+      expect(fetch_line).to be < reconcile_line
+
+      callers = go_sources.reject { |rel, _| rel.end_with?("_test.go") }.flat_map do |rel, src|
+        src.lines.filter_map do |line|
+          next unless line.match?(/\.FetchAgentConfig\(ctx/)
+
+          "#{rel}: #{line.strip}"
+        end
+      end
+      expect(callers).to eq(
+        [ "agent/internal/runtime/service.go: if targetClusterID, err := k3sAgentConfig.FetchAgentConfig(ctx); err != nil {" ]
       )
     end
 
@@ -479,11 +557,15 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
                                        ])).to be_empty
     end
 
-    it "AgentManager.TargetClusterID states the refusal and the missing producer" do
+    # IMP-a5f236e8cc56 replaced "nothing assigns this field" with a statement
+    # of WHO now assigns it (runtime/service.go, refreshed each tick) — the
+    # refusal-when-empty behaviour it sits beside is unchanged.
+    it "AgentManager.TargetClusterID states the refusal and where it is now assigned" do
       expect(self.class.go_prose_absent_in(agent_manager, /TargetClusterID is the cluster UUID/, [
                                              /AmbiguousClusterError/,
                                              /exactly one non-error/,
-                                             /nothing assigns this field/
+                                             /runtime\/service\.go/,
+                                             /each tick/
                                            ])).to be_empty
     end
 
@@ -513,12 +595,15 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
                                            ])).to be_empty
     end
 
-    it "the JoinRequest doc states the zero-cluster arm as 422, not 409" do
+    # IMP-a5f236e8cc56 replaced "no producer" with the production caller and
+    # where its value now comes from — "no producer" is false once
+    # runtime/service.go refreshes the field.
+    it "the JoinRequest doc states the zero-cluster arm as 422, not 409, and names the producer" do
       expect(self.class.go_prose_absent_in(handshake, /targetClusterID is optional/, [
                                              /exactly one non-error/,
                                              /409/,
                                              /422/,
-                                             /no producer/
+                                             /IMP-a5f236e8cc56/
                                            ])).to be_empty
     end
 
@@ -547,9 +632,13 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # File-wide by necessity (one block), so these pin CLAIMS, not identifiers:
     # a bare /ModulesAPI/ would be satisfied by the `# Key types` list 15 lines
     # up while the Multi-cluster paragraph regressed underneath it.
-    it "the package doc states the discriminator is unwired on the agent side" do
+    # IMP-a5f236e8cc56 replaced "no producer" with "WIRED end to end" plus a
+    # citation of the mechanism (HTTPAgentConfigClient) — the discriminator
+    # is no longer unwired, so pin what it now says instead.
+    it "the package doc states the discriminator is wired end to end" do
       expect(self.class.go_prose_absent(package_doc, [
-                                          /no producer/,
+                                          /WIRED end to end/,
+                                          /HTTPAgentConfigClient/,
                                           /AmbiguousClusterError/,
                                           /module names only/,
                                           /exactly one non-error cluster resolves/
@@ -557,10 +646,13 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     end
 
     # The mirror of the check above, pointed the other way. Rewriting these
-    # comments shifted every line below the TargetClusterID field doc by +7,
-    # and two documents cite those lines by number — the withdrawal itself
-    # rotted four citations in the runbook and two in tutorial 05. A line
-    # citation into a file this spec already governs is cheap to pin, so pin it.
+    # comments shifts every line below the TargetClusterID field doc, and two
+    # documents cite those lines by number — a rewrite rots every citation
+    # after it unless the docs are updated in the same commit. IMP-a5f236e8cc56
+    # grew the field's own doc comment by 2 lines (NOT WIRED -> refreshed from
+    # the new producer), so every citation at/after the old line 53 shifted by
+    # +2. A line citation into a file this spec already governs is cheap to
+    # pin, so pin it.
     #
     # Membership-agnostic on purpose: every cited line must NAME one of the two
     # identifiers the citations exist to point at. That survives a reflow of the
@@ -568,7 +660,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # of all six sites are braces, blanks and unrelated statements.
     #
     # The loose arm alone is not enough, though: `m.state.joinedClusterID = ""`
-    # occurs VERBATIM at 153, 219 and 228, so a shift that slid one citation
+    # occurs VERBATIM at 155, 221 and 230, so a shift that slid one citation
     # onto another of the three would pass it. The four distinctive lines are
     # therefore also pinned by content, and the two cache-clearing citations are
     # pinned as a SET, which is the strongest thing true of interchangeable
@@ -591,15 +683,15 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
       # Declaration, call, and the two "re-reports readiness against its own
       # cached joinedClusterID" sites, each pinned to the line it is cited for.
-      expect(source[52].to_s.strip).to eq("TargetClusterID string")
-      expect(source[157].to_s.strip).to eq("payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)")
-      expect(source[176].to_s.strip).to eq("m.state.joinedClusterID = payload.ClusterID")
-      expect(source[197].to_s).to include("ReportReady(ctx, RuntimeK3sAgent, RoleAgent, version, m.state.joinedClusterID)")
+      expect(source[54].to_s.strip).to eq("TargetClusterID string")
+      expect(source[159].to_s.strip).to eq("payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)")
+      expect(source[178].to_s.strip).to eq("m.state.joinedClusterID = payload.ClusterID")
+      expect(source[199].to_s).to include("ReportReady(ctx, RuntimeK3sAgent, RoleAgent, version, m.state.joinedClusterID)")
 
       # The three interchangeable cache-clearing sites: pinned as a set, so a
       # shift onto a different one of the three is still caught.
       clearing = source.each_index.select { |i| source[i].strip == 'm.state.joinedClusterID = ""' }.map { |i| i + 1 }
-      expect(clearing).to eq([ 153, 219, 228 ])
+      expect(clearing).to eq([ 155, 221, 230 ])
     end
 
     # An EIGHTH surface, found by sweeping for the fabrication's other copies
@@ -747,7 +839,10 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # The anchor the message points at. Kept as one constant so the assertion
     # that the message cites it and the assertion that it RESOLVES cannot
     # drift apart into two different anchors.
-    CLUSTER_ROUTING_ANCHOR = "multi-cluster-routing-via-target_cluster_id--not-implemented"
+    # IMP-a5f236e8cc56 — CONTAINER_RUNTIMES.md's heading changed from "— NOT
+    # IMPLEMENTED" to "— IMPLEMENTED (IMP-a5f236e8cc56)", so its GitHub slug
+    # changed too; the 422 body's citation was updated in the same commit.
+    CLUSTER_ROUTING_ANCHOR = "multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56"
 
     let(:service) do
       self.class.read(ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb")
@@ -970,11 +1065,16 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # not define, survived in tutorial 05. One implementation, five documents.
     it_behaves_like "an ambiguity-status sentence"
 
-    it "keeps the withdrawn instruction visible and marked NOT IMPLEMENTED" do
+    # IMP-a5f236e8cc56 restored Phase 3; Phase 4 (HA) remains genuinely NOT
+    # IMPLEMENTED, so that phrase still appears doc-wide. The three
+    # identifiers stay pinned too — they're still true facts the page uses to
+    # explain the NEW producer (AssignedModules is still names-only;
+    # runtime_handshake_handlers.rb's forwarding is unchanged; the field's
+    # fully-qualified name identifies what's now wired).
+    it "keeps NOT IMPLEMENTED (Phase 4) and the mechanism identifiers visible" do
       expect(doc).to match(/NOT IMPLEMENTED/)
       expect(doc).to match(/`k3sd\.AgentManager\.TargetClusterID`/)
       expect(doc).to match(/AssignedModules/)
-      # Wired on one side only — not "does not exist".
       expect(doc).to match(/runtime_handshake_handlers\.rb/)
     end
 
@@ -1471,6 +1571,32 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(seed).to match(/AmbiguousClusterError/)
     end
 
+    # IMP-a5f236e8cc56 — the KB article is what the Concierge actually serves
+    # an operator who asks how to place a worker on a chosen cluster. Before
+    # this task, no assertion here covered the article's OWN restatement of
+    # the withdrawn premise (only the shared refusal-wording patterns did,
+    # elsewhere in this file, and this describe block never used them) — the
+    # docs-accuracy spec pinned every OTHER surface's wording but not this
+    # one's, which is exactly how the two passages below survived unfixed
+    # through the first pass of this task.
+    it "no longer teaches that target_cluster_id has no agent-side producer" do
+      expect(self.class.present_sites(seed, [
+                                         /wired on the platform side and unreachable from the agent/,
+                                         /nothing on the agent supplies a `target_cluster_id`/,
+                                         /No operator-side fix today/,
+                                         /never written/,
+                                         /never reaches the (agent|K3s reconcilers)/
+                                       ])).to be_empty
+    end
+
+    it "teaches the working mechanism, including the producer" do
+      expect(self.class.absent(seed, [
+                                 /IMP-a5f236e8cc56/,
+                                 /k3s-agent` module assignment's `config`/,
+                                 /does not relocate the worker/
+                               ])).to be_empty
+    end
+
     # IMP-2a3ff83c1955. The Concierge reads this article, and the runbook's own
     # "how the Concierge should use this" section now tells it not to propose
     # HA. An article that still says HA "requires >=2 server NodeInstances"
@@ -1508,20 +1634,28 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
   # The established wording, shared so a fifth phrasing cannot be invented for
   # a sixth document. Every corrected page must state all six.
+  #
+  # IMP-a5f236e8cc56 replaced two of the six: "NOT IMPLEMENTED" and "wired on
+  # the platform side and unreachable from the agent" described the pre-fix
+  # state (no agent-side producer) and are false now that one exists. Their
+  # replacements state what is STILL true post-fix: the platform still
+  # refuses rather than guessing when a join carries no usable target, and
+  # the producer + its scope (IMP-a5f236e8cc56) is named so a reader can find
+  # the mechanism.
   REFUSAL_WORDING = [
     /AmbiguousClusterError/,
     /system\.k3s_ambiguous_cluster_join_refused/,
     /severity `high`/,
     /no node is produced at all/,
-    /NOT IMPLEMENTED/,
-    /wired on the platform side and unreachable from the agent/
+    /refuses rather than guessing/,
+    /IMP-a5f236e8cc56/
   ].freeze
 
   describe "docs/tutorials/04-k3s-cluster.md" do
     let(:doc) { self.class.read(ext_root, "docs/tutorials/04-k3s-cluster.md") }
     # The withdrawal table is nested inside a blockquote callout under Step 5,
     # bounded by the "Expected outcome" paragraph that follows it.
-    let(:region) { doc[/^> ### ⚠️ Choosing a cluster with `target_cluster_id` is NOT IMPLEMENTED.*?(?=^\*\*Expected outcome:)/m].to_s }
+    let(:region) { doc[/^> ### ✅ Choosing a cluster with `target_cluster_id` is IMPLEMENTED.*?(?=^\*\*Expected outcome:)/m].to_s }
 
     # This file is the reason the task exists: it stated the fabrication in
     # wording no phrase sweep for "most recent active" would find.
@@ -1657,15 +1791,16 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
     it_behaves_like "an ambiguity-status sentence"
 
-    # The routing diagram survives the withdrawal, so it must be labelled or it
-    # reads as current behaviour on its own — a picture outlives the prose above
-    # it in a reader's memory.
-    it "labels the surviving routing diagram as intent, not behaviour" do
+    # IMP-a5f236e8cc56 — the diagram graduated from intent to actual
+    # behaviour. It still needs a label, or a reader can't tell whether a
+    # future diagram change is describing intent or reality; the label just
+    # now says the diagram IS current behaviour.
+    it "labels the surviving routing diagram as current behaviour" do
       expect(self.class.absent(doc, [
-                                 /The diagram below is the intended design, not current behaviour/
+                                 /The diagram below is now current behaviour, not just intent/
                                ])).to be_empty
       diagram_at = doc.index("```mermaid\nflowchart TB\n    Op[Operator]")
-      caveat_at = doc.index("The diagram below is the intended design")
+      caveat_at = doc.index("The diagram below is now current behaviour")
       expect(diagram_at).not_to be_nil
       expect(caveat_at).not_to be_nil
       expect(caveat_at).to be < diagram_at
@@ -1700,8 +1835,12 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       "restart-to-pick-up advice" => /Agent must restart to pick up changes to `target_cluster_id`/
     }.freeze
 
+    # IMP-a5f236e8cc56 — "Multi-cluster K3s ✅" left HISTORICAL_UM: it's no
+    # longer a regression to catch, it's the restored heading (see the
+    # quick-reference-row test below, inverted the same way). The
+    # wrong-cluster claim stays forbidden — the worker still never joins a
+    # cluster it wasn't told to; it either joins the named one or refuses.
     HISTORICAL_UM = [
-      /Multi-cluster K3s ✅/,
       /k3s-agent joins the wrong cluster/
     ].freeze
 
@@ -1723,14 +1862,16 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     end
 
     # This is the highest-traffic of the corrected files and its quick-reference
-    # table is what most readers see. A corrected walkthrough under a row still
-    # marked "Works" is worse than no correction: the row is the summary a
-    # reader trusts.
-    it "no longer marks use case 3 as working, in the quick-reference row too" do
+    # table is what most readers see. IMP-a5f236e8cc56 restored the capability,
+    # so the row must say so — a row still marked "Not implemented" under a
+    # working walkthrough is the same class of error the withdrawal originally
+    # fixed, just pointed the other way: the row is the summary a reader
+    # trusts.
+    it "marks use case 3 as implemented, in the quick-reference row too" do
       row = doc.lines.find { |l| l.start_with?("| 3 | Multi-cluster K3s in one account") }
       expect(row).not_to be_nil, "quick-reference row for use case 3 is gone"
-      expect(row).to include("❌ Not implemented")
-      expect(row).not_to include("✅")
+      expect(row).to include("✅ Implemented")
+      expect(row).not_to include("❌")
     end
 
     it "states the refusal in the sibling documents' wording" do
@@ -1788,12 +1929,14 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
         .to be_empty
     end
 
-    it "names the only source the platform actually consumes" do
+    # IMP-a5f236e8cc56 dropped two of the original pins: "nothing reads it
+    # from either place" and a bare "NOT IMPLEMENTED" both described the
+    # pre-fix state and are false now that the agent populates
+    # phase=join_request from the same module-assignment config key.
+    it "names the source the platform actually consumes" do
       expect(self.class.absent(doc, [
                                  /module-assignment `config`/,
-                                 /nothing reads it from either place/,
                                  /runtime_handshake_handlers\.rb:164/,
-                                 /NOT IMPLEMENTED/,
                                  # A review caught the first draft claiming the
                                  # join_request parameter was the ONLY source
                                  # the platform consumes. `handle_k3s_ready`
@@ -1805,7 +1948,11 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
                                  # over-claim with another.
                                  /`phase=join_request`/,
                                  /`phase=ready`/,
-                                 /`:195`/
+                                 /`:195`/,
+                                 # What replaced the withdrawal: the agent-side
+                                 # producer and where it reads from.
+                                 /IMP-a5f236e8cc56/,
+                                 /IMPLEMENTED/
                                ])).to be_empty
     end
   end

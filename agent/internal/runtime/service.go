@@ -288,6 +288,14 @@ func (s *Service) Run(ctx context.Context) error {
 		k3sClient, k3sModules, k3sd.NewShellAgentApplier(),
 		client.InstanceID, s.cfg.OnError,
 	)
+	// IMP-a5f236e8cc56 gap 3 — agent-side TargetClusterID fetcher. The
+	// platform's runtime/k3s_agent/config endpoint surfaces the
+	// operator-set target_cluster_id (from the node's enabled
+	// k3s-agent NodeModuleAssignment#config) once it names a live
+	// in-account cluster. The PostSend loop fetches each tick and
+	// refreshes AgentManager.TargetClusterID before Reconcile — same
+	// wiring shape as k3sBootstrap/k3sServerMgr.Bootstrap above.
+	k3sAgentConfig := k3sd.NewHTTPAgentConfigClient(client)
 
 	// E8.2 — storage migration runner. Polls
 	// /api/v1/system/node_api/storage_migrations every PostSend tick;
@@ -341,6 +349,21 @@ func (s *Service) Run(ctx context.Context) error {
 				s.cfg.OnError("k3s_bootstrap_fetch", err)
 			} else {
 				k3sServerMgr.Bootstrap = cfg
+			}
+			// IMP-a5f236e8cc56 gap 3 — refresh K3s agent
+			// TargetClusterID from the platform before this tick's
+			// Reconcile. Same stale-on-error shape as the Bootstrap
+			// fetch above: a failed fetch is recorded via OnError and
+			// the PREVIOUS value is left in place rather than blanked,
+			// so a transient fetch failure can't relocate/strand an
+			// in-flight join. It is consulted only on the
+			// join_request transition (state.joinedClusterID stays
+			// authoritative once joined), so this refresh is a no-op
+			// for an already-joined worker.
+			if targetClusterID, err := k3sAgentConfig.FetchAgentConfig(ctx); err != nil {
+				s.cfg.OnError("k3s_agent_config_fetch", err)
+			} else {
+				k3sAgentMgr.TargetClusterID = targetClusterID
 			}
 			// Phase 2 K3s — both managers run each tick; the one
 			// whose module isn't assigned no-ops in its first switch

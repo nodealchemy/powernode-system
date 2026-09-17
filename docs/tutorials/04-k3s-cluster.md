@@ -71,14 +71,17 @@ peer in the cluster, and worker `K3S_URL` keeps resolving — no kubectl /
 operator action required. (Single-server cluster: VIP failover has nowhere
 to go; for production HA you want ≥2 servers.)
 
-**`metadata.target_cluster_id`** never reaches the agent. It is wired on the
-platform side and unreachable from the agent, so a worker's join always
-carries an empty target. With exactly one non-error cluster that is
-unambiguous and the join succeeds. With more than one the platform
-**refuses** it: `AmbiguousClusterError`, with
+**`target_cluster_id`** (set in the `k3s-agent` module assignment's
+`config`) now reaches the agent (IMP-a5f236e8cc56) — see
+[Step 5](#step-5--assign-k3s-agent-single-cluster-accounts) for the
+mechanism. This tutorial's account has exactly one cluster, so a worker's
+join carries an empty target either way and that's unambiguous — the join
+succeeds without needing it. In an account with more than one non-error
+cluster, an unconfigured (or unresolvable) target still gets the platform's
+refusal — it refuses rather than guessing: `AmbiguousClusterError`, with
 `system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`, and
-**no node is produced at all**. The withdrawn instruction is kept visible in
-[Step 5](#step-5--assign-k3s-agent-single-cluster-accounts).
+**no node is produced at all**. A correctly-configured `target_cluster_id`
+avoids that refusal by naming the intended cluster.
 
 ## Prerequisites
 
@@ -174,20 +177,24 @@ platform.system_assign_module_to_template({
 })
 ```
 
-> ### ⚠️ Choosing a cluster with `target_cluster_id` is NOT IMPLEMENTED
+> ### ✅ Choosing a cluster with `target_cluster_id` is IMPLEMENTED (IMP-a5f236e8cc56)
 >
-> Earlier revisions of this step passed
-> `config: { target_cluster_id: "<cluster-id-from-step-3>" }`. The assignment
-> succeeds and the value is stored, but it never reaches the node.
-> `k3sd.AgentManager.TargetClusterID` is declared and consumed
-> (`JoinRequest(ctx, m.TargetClusterID)`) but never written, and
-> `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module
-> **names** only — so assignment config has no channel to the K3s reconcilers.
-> The **server** half is real: `handle_join_request` forwards
-> `params[:target_cluster_id].presence` into `join_request!`
-> (`runtime_handshake_handlers.rb:164`), so a value that arrived would be
-> honoured. `target_cluster_id` is wired on the platform side and unreachable
-> from the agent. The producer is tracked separately (IMP-a5f236e8cc56 gap 3).
+> This tutorial's account has exactly one cluster, so Step 5 above doesn't
+> need it — but if you're following this tutorial as a template for a
+> multi-cluster account, pass
+> `config: { target_cluster_id: "<cluster-id-from-step-3>" }` on the
+> `system_assign_module_to_template` call instead, and it now reaches the
+> node: `k3sd.AgentManager.TargetClusterID` is declared and consumed
+> (`JoinRequest(ctx, m.TargetClusterID)`), and is refreshed each tick — before
+> `Reconcile` — from `k3sd.HTTPAgentConfigClient`, a NEW channel separate from
+> `k3sd.ModulesAPI.AssignedModules(ctx) ([]string, error)` (which still hands
+> the reconcilers module **names** only). The **server** half was already
+> real: `handle_join_request` forwards `params[:target_cluster_id].presence`
+> into `join_request!` (`runtime_handshake_handlers.rb:164`), so a value that
+> arrived was always honoured — the gap was purely that no value ever
+> arrived. See
+> [runbooks/multi-cluster-k3s.md, Phase 3](../runbooks/multi-cluster-k3s.md#phase-3--add-workers-to-a-specific-cluster--implemented)
+> for the full worked multi-cluster procedure.
 >
 > | Withdrawn claim | What is actually true |
 > |---|---|
