@@ -10,8 +10,9 @@ require "rails_helper"
 # defects that happen to share a permit list:
 #
 #   1. CLOBBER (the IMP-044cf93b class). `config` is shared with the agent's
-#      telemetry lanes — boot_lkg, module_verify_state, runtime_metrics,
-#      sdwan_state — which write several times a minute per node. A PUT
+#      telemetry lanes — boot_lkg, module_verify_state, module_signing_audit,
+#      runtime_metrics, sdwan_state — which write several times a minute per
+#      node. A PUT
 #      carrying a document assembled from a page load erases whatever landed
 #      in the interval, silently, on both sides.
 #   2. UNVALIDATED STAGE KEYS. Nothing checked what a key MEANT, so a body

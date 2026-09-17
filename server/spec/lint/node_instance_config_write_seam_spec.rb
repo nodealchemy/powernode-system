@@ -9,7 +9,7 @@ require "tmpdir"
 # StatusController#report was fixed on its own; the sweep found it was one of
 # THIRTEEN files doing the same read-modify-write of the whole jsonb document.
 # That makes it a convention rather than a bug, and a convention that is only
-# written down decays: the four telemetry writers each carry a comment naming
+# written down decays: the five telemetry writers each carry a comment naming
 # the endpoint that was clobbering them, and it clobbered them anyway for as
 # long as nothing checked.
 #
@@ -383,7 +383,8 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
 
       A read-modify-write of the whole document erases whatever the node's
       heartbeat wrote in the interval — boot_lkg, module_verify_state,
-      sdwan_state and runtime_metrics all live in this column.
+      module_signing_audit, sdwan_state and runtime_metrics all live in
+      this column.
 
       If the shape is `permit`, the write is a MASS ASSIGNMENT: the params list
       admits `config` wholesale, so a request body replaces the document. Drop
@@ -615,6 +616,7 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       [
         ::System::BootLkgStateWriter::CONFIG_KEY,
         ::System::ModuleVerifyStateWriter::CONFIG_KEY,
+        ::System::ModuleSigningAuditWriter::CONFIG_KEY,
         ::System::RuntimeMetricsWriter::CONFIG_KEY,
         ::Sdwan::AgentApplyStateWriter::CONFIG_KEY,
         ::System::NodeInstance::AGENT_HARDWARE_HINT_SOURCE_KEY

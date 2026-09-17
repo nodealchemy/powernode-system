@@ -162,10 +162,13 @@
 //
 // Why the DEFAULT stays off (IMP-4eabe61c3d90): audit findings from both arms
 // go to the site's error hook, which writes to the agent's stderr (the service
-// journal; the console for the initramfs boot composers). They are not
-// delivered to the platform, so a default-audit fleet would pay a verification
-// pass on every boot-composer mount for a measurement nobody centrally reads.
-// Moving the default to audit waits on that delivery.
+// journal; the console for the initramfs boot composers). The SERVICE site's
+// findings now ALSO ride the heartbeat to the platform as `module_signing_audit`
+// (IMP-c52b5c2d6cbf, internal/signingaudit), so that half is centrally readable.
+// The boot composer's are not: it verifies during the initramfs pivot, before
+// any heartbeat exists. A default-audit fleet would therefore still pay a
+// verification pass on every boot-composer mount for a measurement nobody
+// centrally reads, and that undelivered half is what the default waits on.
 //
 // # What a signed mount does and does not prove
 //

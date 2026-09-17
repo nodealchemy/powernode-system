@@ -76,6 +76,7 @@ module Api
           #   sdwan_state (per-network applier outcomes — see
           #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state,
           #   module_verify_state (see System::ModuleVerifyStateWriter),
+          #   module_signing_audit (see System::ModuleSigningAuditWriter),
           #   booted_from_lkg / lkg_age_seconds / lkg_present /
           #   lkg_confirmed_at / lkg_module_count / boot_incomplete /
           #   pivot_confinement_omitted (see System::BootLkgStateWriter)
@@ -176,6 +177,27 @@ module Api
               )
             rescue StandardError => e
               Rails.logger.warn("[StatusController] module verify state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-c52b5c2d6cbf — the module-signing ladder's AUDIT findings.
+            # The audit rungs measure what an enforcing rung WOULD refuse, and
+            # every finding used to reach only the node's stderr — so the
+            # ladder's default stayed `off` because no one could see fleet-wide
+            # whether enforcing was safe. Absent block => nothing written
+            # (a node running signing `off`, or a pre-feature agent, stays
+            # distinguishable from one that measured and was QUIET, which
+            # arrives as a PRESENT block whose findings list is empty and IS
+            # recorded — that silence is what justifies enforcing). Wrapped so
+            # an ingest bug cannot bounce telemetry, exactly like the blocks
+            # above.
+            begin
+              signing_obs = hb["module_signing_audit"]
+              ::System::ModuleSigningAuditWriter.write!(
+                instance: current_instance,
+                payload:  signing_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] module signing audit ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
             # IMP-b8d5cfa33b79 — the agent's BOOT / LKG telemetry. Seven

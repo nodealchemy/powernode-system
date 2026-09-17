@@ -9,7 +9,8 @@ module System
   # request cycles: the operator API, the MCP fleet tools, half a dozen
   # background services, and — several times a minute per node — the agent
   # telemetry lanes (System::BootLkgStateWriter, System::ModuleVerifyStateWriter,
-  # System::RuntimeMetricsWriter, Sdwan::AgentApplyStateWriter).
+  # System::ModuleSigningAuditWriter, System::RuntimeMetricsWriter,
+  # Sdwan::AgentApplyStateWriter).
   #
   # A read-modify-write of the WHOLE document —
   #
@@ -31,7 +32,7 @@ module System
   # Let Postgres do the merge against the CURRENT row. `||` is a shallow merge:
   # only the top-level keys in the argument are replaced, and the statement
   # never reads the rest of the document into Ruby, so there is no interval to
-  # lose a write in. The four telemetry writers above already do exactly this
+  # lose a write in. The five telemetry writers above already do exactly this
   # (their private #merge_config_key!); this concern is that idiom promoted to
   # the model so every other writer can reach it, and so the guard spec
   # (spec/lint/node_instance_config_write_seam_spec.rb) has one adoption target

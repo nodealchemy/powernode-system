@@ -29,6 +29,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks/handlers"
 	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
+	"github.com/nodealchemy/powernode-system/agent/internal/signingaudit"
 	"github.com/nodealchemy/powernode-system/agent/internal/tcpfwd"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
@@ -100,6 +101,11 @@ type Service struct {
 	// New() stays a pure constructor and tests can substitute a fixture path.
 	// Touched only from the heartbeat goroutine, so it needs no locking.
 	cpu *cpuSampler
+	// signingAudit collects the module-signing ladder's AUDIT findings so they
+	// ride the heartbeat instead of dying in the journal (IMP-c52b5c2d6cbf). It
+	// TEES the configured OnError hook rather than replacing it: stderr keeps
+	// every report, and the platform gets a bounded, de-duplicated summary.
+	signingAudit *signingaudit.Collector
 }
 
 func New(cfg Config) *Service {
@@ -125,6 +131,7 @@ func New(cfg Config) *Service {
 		capabilities:      DetectCapabilities(),
 		bootedImageGitSHA: identity.BootedImageGitSHA(),
 		verifyProbes:      newVerifyEvaluator(cfg),
+		signingAudit:      signingaudit.New(signingaudit.DefaultMaxFindings),
 	}
 }
 
@@ -359,12 +366,19 @@ func (s *Service) Run(ctx context.Context) error {
 	// by DEFAULT (nothing configured), a static-key CosignVerifier against the
 	// platform's trusted keys once opted in. Fails the service start, rather
 	// than every mount, when an enforcing mode has no trust anchor.
-	moduleVerifier, err := ResolveModuleVerifier(s.cfg.ModuleSigning, verify.SiteService, client, mount.ExecRunner{}, s.cfg.ModuleSigningKeyCacheDir, s.cfg.OnError)
+	// Mark the audit collector ACTIVE only when a verification pass actually
+	// runs here. An empty result then means QUIET — the measurement the ladder
+	// waits for — rather than NOT MEASURED, and an `off` node can never report
+	// itself clean. See signingaudit.Collector.Snapshot.
+	if s.cfg.ModuleSigning.Active() {
+		s.signingAudit.MarkActive(s.cfg.ModuleSigning.Mode)
+	}
+	moduleVerifier, err := ResolveModuleVerifier(s.cfg.ModuleSigning, verify.SiteService, client, mount.ExecRunner{}, s.cfg.ModuleSigningKeyCacheDir, s.signingAudit.Tee(s.cfg.OnError))
 	if err != nil {
 		return fmt.Errorf("module signing: %w", err)
 	}
 	// The fs-verity arm, same policy: nil by DEFAULT, measure-only when opted in.
-	moduleFsverity, err := ResolveModuleFsverity(s.cfg.ModuleSigning, verify.SiteService, mount.ExecRunner{}, s.cfg.OnError)
+	moduleFsverity, err := ResolveModuleFsverity(s.cfg.ModuleSigning, verify.SiteService, mount.ExecRunner{}, s.signingAudit.Tee(s.cfg.OnError))
 	if err != nil {
 		return fmt.Errorf("module fs-verity: %w", err)
 	}
@@ -692,6 +706,11 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	// platform records as NOT MEASURED, and must never be sent as an empty
 	// block that could read as "verified, nothing wrong".
 	payload.ModuleVerifyState = s.verifyProbes.Snapshot()
+	// Same absence rule, with one more distinction: nil stays nil, so "audit
+	// never ran here" reaches the platform as NOT MEASURED — while an audited
+	// node with nothing to report sends a PRESENT, empty block, because that
+	// silence is the measurement the ladder waits for before enforcing.
+	payload.ModuleSigningAudit = s.signingAudit.Snapshot()
 	// Boot-LKG observability (#39). Two reads of tiny /persist files:
 	//   1. The boot breadcrumb — whether THIS boot fell back to the LKG (+ age),
 	//      and whether it composed an incomplete set.

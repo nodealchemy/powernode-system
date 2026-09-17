@@ -11,6 +11,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/probe"
 	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
+	"github.com/nodealchemy/powernode-system/agent/internal/signingaudit"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
@@ -64,6 +65,25 @@ type HeartbeatPayload struct {
 	// so a report covering one shell can never be mistaken for a pass. See
 	// internal/probe.
 	ModuleVerifyState []probe.ModuleReport `json:"module_verify_state,omitempty"`
+	// ModuleSigningAudit is what the module-signing ladder's AUDIT rungs
+	// observed on this node (IMP-c52b5c2d6cbf): one entry per DISTINCT finding
+	// from verify:module_signature_audit / verify:module_fsverity_audit, each
+	// naming a blob an enforcing rung would have refused, with a repeat count —
+	// plus verify:module_signing / verify:module_signing_keys, the measurement's
+	// own failure modes, which say a quiet reading here is worthless.
+	// Before this block those findings reached only the node's stderr, so the
+	// ladder's default stayed `off` — no one could see fleet-wide whether
+	// enforcing was safe.
+	//
+	// A POINTER, and the payload a struct, both deliberately: `omitempty`
+	// erases an empty SLICE exactly as it erases a nil one, so a slice here
+	// would make a quiet node byte-identical to a node that never measured —
+	// and the ABSENCE of findings is the whole justification for enforcing.
+	// nil (omitted) means NOT MEASURED: signing is off. A present block with an
+	// empty findings list means audit ran and this node is QUIET. The platform's
+	// System::ModuleSigningAuditWriter keeps those apart and must never
+	// synthesize one into the other.
+	ModuleSigningAudit *signingaudit.Observation `json:"module_signing_audit,omitempty"`
 	// Capabilities is the agent-detected kernel capability set
 	// (erofs, overlayfs, fs-verity). The server records this on every
 	// heartbeat for fleet introspection ("which nodes can mount

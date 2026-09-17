@@ -224,8 +224,9 @@ module System
     #     the provisioning selectors the create form carries in `config`
     #     (frontend CreateInstanceModal) before the provider adapter runs.
     #
-    # NOT here, and each for its own reason: the four telemetry lanes
-    # (boot_lkg, module_verify_state, runtime_metrics, sdwan_state) and
+    # NOT here, and each for its own reason: the five telemetry lanes
+    # (boot_lkg, module_verify_state, module_signing_audit, runtime_metrics,
+    # sdwan_state) and
     # agent_hardware_hints, which the node reports; network_profile_source,
     # which records WHO declared the profile (a body that could set it would
     # re-arm auto-classification over an operator choice — the MCP action takes

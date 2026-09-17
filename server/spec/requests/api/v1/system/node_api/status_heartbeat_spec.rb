@@ -38,6 +38,52 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
     }
   end
 
+  # IMP-c52b5c2d6cbf — the module-signing ladder's audit findings reach the
+  # platform on the heartbeat. Before this, they existed only in the node's
+  # journal, so the ladder could not be advanced on evidence.
+  describe "module-signing audit ingest" do
+    def heartbeat!(extra)
+      post "/api/v1/system/node_api/status/heartbeat", params: body.merge(extra), headers: headers, as: :json
+      expect(response).to have_http_status(:ok)
+      instance.reload.config&.dig("module_signing_audit")
+    end
+
+    it "records the findings the agent reported" do
+      document = heartbeat!(module_signing_audit: {
+        findings: [
+          { stage: "verify:module_signature_audit", detail: "would refuse /persist/blobs/aa: no cosign bundle",
+            count: 3, first_seen: "2026-09-17T10:00:00Z", last_seen: "2026-09-17T10:09:00Z" }
+        ],
+        truncated: false
+      })
+
+      expect(document["finding_count"]).to eq(1)
+      expect(document["findings"].first).to include(
+        "stage" => "verify:module_signature_audit", "count" => 3
+      )
+      expect(document["findings"].first["detail"]).to include("no cosign bundle")
+    end
+
+    # QUIET is the measurement the ladder waits for — enforcing is justified by
+    # finding NOTHING — so a present-but-empty block is recorded as a real
+    # measurement rather than discarded as "no data".
+    it "records an empty findings list as a measurement, attributed to its rung" do
+      expect(heartbeat!(module_signing_audit: { findings: [], truncated: false, mode: "audit" }))
+        .to include("finding_count" => 0, "findings" => [], "mode" => "audit")
+    end
+
+    # A node running signing `off`, or an agent older than this block, must stay
+    # distinguishable from one that measured and found nothing.
+    it "writes nothing when the heartbeat carries no block" do
+      expect(heartbeat!({})).to be_nil
+    end
+
+    # A block the server cannot read must never be recorded as a quiet node.
+    it "writes nothing when the block is malformed" do
+      expect(heartbeat!(module_signing_audit: { truncated: false })).to be_nil
+    end
+  end
+
   describe "POST /api/v1/system/node_api/status/heartbeat" do
     it "persists telemetry into the dedicated NodeInstance columns" do
       post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
