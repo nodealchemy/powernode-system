@@ -181,6 +181,90 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
       end
     end
 
+    # IMP-b9f4b900f00b, operator decision D3 (2026-09-18) — every
+    # name-keyed ProviderRegion/ProviderInstanceType lookup in this class is
+    # now scoped to @account. Before, a name shared with another tenant
+    # could resolve to THEIR row (and, downstream, provision on their
+    # provider) via find_by(name:)/where(name:) with no account filter.
+    context "when another account's catalog shares this account's region and type names" do
+      let!(:foreign_account) { create(:account) }
+      let!(:foreign_provider) do
+        create(:system_provider, account: foreign_account, provider_type: "proxmox", name: "foreign-proxmox")
+      end
+      let!(:foreign_connection) do
+        create(:system_provider_connection, account: foreign_account, provider: foreign_provider,
+                                             status: "connected", enabled: true)
+      end
+      let!(:foreign_region) do
+        create(:system_provider_region, provider: foreign_provider, account: foreign_account, name: "shared-region")
+      end
+      let!(:foreign_type) do
+        create(:system_provider_instance_type, provider: foreign_provider, account: foreign_account,
+                                                name: "shared-sku")
+      end
+
+      let!(:pve_provider) do
+        create(:system_provider, account: account, provider_type: "proxmox", name: "proxmox")
+      end
+      let!(:pve_connection) do
+        create(:system_provider_connection, account: account, provider: pve_provider,
+                                             status: "connected", enabled: true)
+      end
+      let!(:pve_region) do
+        create(:system_provider_region, provider: pve_provider, account: account, name: "shared-region")
+      end
+      let!(:pve_type) do
+        create(:system_provider_instance_type, provider: pve_provider, account: account, name: "shared-sku")
+      end
+
+      it "resolves THIS account's region and type, never the foreign account's" do
+        instance = create(:system_node_instance, node: node, provider_region: pve_region,
+                                                  provider_instance_type: pve_type)
+        captured = {}
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |args|
+          captured[:region_id] = args[:provider_region_id]
+          captured[:type_id]   = args[:provider_instance_type_id]
+          ::System::Runtime::Result.ok(data: { instance_id: instance.id })
+        end
+
+        result = described_class.new(account: account, current_user: user).provision!(
+          payload: payload,
+          spawn_target: { template_id: template.name, region: "shared-region", instance_size: "shared-sku" }
+        )
+
+        expect(result[:ok?]).to be true
+        expect(captured[:region_id]).to eq(pve_region.id)
+        expect(captured[:type_id]).to eq(pve_type.id)
+        expect(captured[:region_id]).not_to eq(foreign_region.id)
+        expect(captured[:type_id]).not_to eq(foreign_type.id)
+      end
+
+      it "resolves an explicit provider_region_id/provider_instance_type_id only within this account" do
+        instance = create(:system_node_instance, node: node, provider_region: pve_region,
+                                                  provider_instance_type: pve_type)
+        allow(::System::ProvisioningService).to receive(:provision_instance)
+          .and_return(::System::Runtime::Result.ok(data: { instance_id: instance.id }))
+
+        # An explicit id naming the FOREIGN account's row must not resolve —
+        # SpawnProvisioner falls through to this account's own defaults
+        # instead of silently adopting the foreign row.
+        result = described_class.new(account: account, current_user: user).provision!(
+          payload: payload,
+          spawn_target: { template_id: template.name, provider_region_id: foreign_region.id,
+                           provider_instance_type_id: foreign_type.id }
+        )
+
+        expect(result[:ok?]).to be true
+        expect(::System::ProvisioningService).to have_received(:provision_instance) do |kwargs|
+          # Positive: falls through to THIS account's own region/type — not
+          # merely "isn't the foreign one" (which a nil resolution would also
+          # satisfy vacuously).
+          expect(kwargs[:provider_region_id]).to eq(pve_region.id)
+          expect(kwargs[:provider_instance_type_id]).to eq(pve_type.id)
+        end
+      end
+    end
+
     context "failure paths" do
       it "returns ok?=false when template_id is missing" do
         result = described_class.new(account: account, current_user: user)

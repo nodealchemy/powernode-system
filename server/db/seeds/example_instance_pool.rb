@@ -37,11 +37,14 @@ if template.new_record?
 end
 puts "  ✅ Template: #{template.name}"
 
-# Pool requires provider_region_id + provider_instance_type_id; use first available.
-region = ::System::ProviderRegion.first
-instance_type = ::System::ProviderInstanceType.first
+# Pool requires provider_region_id + provider_instance_type_id; use the first
+# available ones that belong to THIS account (IMP-b9f4b900f00b) — an
+# unscoped `.first` could pair another tenant's catalog row with this
+# account's pool, which InstancePool now refuses to save.
+region = ::System::ProviderRegion.where(account: account).first
+instance_type = ::System::ProviderInstanceType.where(account: account).first
 unless region && instance_type
-  puts "  ⚠️  No ProviderRegion / ProviderInstanceType found — pool needs at least one of each"
+  puts "  ⚠️  No ProviderRegion / ProviderInstanceType found for this account — pool needs at least one of each"
   puts "       (these are typically seeded by node_module_catalog.rb or similar)"
   return
 end

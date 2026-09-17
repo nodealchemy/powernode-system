@@ -142,6 +142,7 @@ module System
     before_validation :inherit_account_from_node
     before_validation :inherit_environment_from_node, on: :create
     validate :environment_belongs_to_account
+    validate :provider_catalog_belongs_to_account, if: :check_provider_catalog_account?
     scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # IMP-231f17d71dfa — a presumed-dead verdict is scoped to ONE error episode.
@@ -1690,6 +1691,38 @@ module System
       return if environment.nil? || account_id.nil? || environment.account_id == account_id
 
       errors.add(:environment, "must belong to the instance's account")
+    end
+
+    # Only on create, or when region/type/account actually change (operator
+    # ruling 2026-09-13/2026-09-17, option a). CloudSyncService's bare
+    # update! (cloud_sync_service.rb:128/130/306/308/344), the heartbeat in
+    # status_controller.rb:37, and InstancePoolService#replenish!/#drain!
+    # all save NodeInstance/InstancePool unrescued on every tick; an
+    # always-on check would abort the hourly sync, the termination sweep and
+    # every pool tick the first time it hit one already-mismatched row. This
+    # also skips 2 SELECTs on every heartbeat save.
+    def check_provider_catalog_account?
+      new_record? || provider_region_id_changed? || provider_instance_type_id_changed? || account_id_changed?
+    end
+
+    # Regions and instance types are per-account catalog rows. An instance
+    # placed in another account's region would be provisioned through that
+    # tenant's provider (IMP-b9f4b900f00b).
+    #
+    # Both FKs are re-checked whenever EITHER changes (the guard above fires
+    # on either _changed?, and this method walks both regardless of which
+    # one triggered it). A PATCH that touches only provider_instance_type_id
+    # on a legacy mismatched row is therefore refused naming provider_region
+    # too, a field the caller didn't touch — fail-closed and correct, but the
+    # repair for such a row is to set BOTH fields in the same request.
+    def provider_catalog_belongs_to_account
+      return if account_id.nil?
+
+      { provider_region: provider_region, provider_instance_type: provider_instance_type }.each do |attr, row|
+        next if row.nil? || row.account_id == account_id
+
+        errors.add(attr, "must belong to the instance's account")
+      end
     end
 
     def inherit_account_from_node

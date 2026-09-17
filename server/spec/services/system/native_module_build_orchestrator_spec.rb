@@ -12,8 +12,8 @@ require "rails_helper"
 RSpec.describe System::NativeModuleBuildOrchestrator do
   let(:account)         { create(:account) }
   let(:node_template)   { create(:system_node_template, account: account) }
-  let(:provider_region) { create(:system_provider_region) }
-  let(:instance_type)   { create(:system_provider_instance_type) }
+  let(:provider_region) { create(:system_provider_region, account: account) }
+  let(:instance_type)   { create(:system_provider_instance_type, account: account) }
 
   let(:pool) do
     System::InstancePool.create!(

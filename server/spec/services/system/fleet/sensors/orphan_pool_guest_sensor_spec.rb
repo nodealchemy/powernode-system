@@ -17,19 +17,26 @@ require "rails_helper"
 RSpec.describe System::Fleet::Sensors::OrphanPoolGuestSensor do
   let(:account)                { create(:account) }
   let(:node_template)          { create(:system_node_template, account: account) }
-  let(:provider_region)        { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region)        { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
   let(:connection)             { instance_double("System::ProviderConnection") }
   let(:adapter)                { instance_double("System::Providers::BaseProvider") }
   let(:sensor)                 { described_class.new(account: account) }
 
   let!(:pool) { make_pool("ci-builders") }
 
+  # `provider_region`/`provider_instance_type` above are reused (not rebuilt)
+  # for the default `owner: account` pool because other examples stub
+  # `Registry.for(connection, region: provider_region)` against that exact
+  # object — an `owner: other` pool needs its OWN account's catalog row
+  # instead, or InstancePool now refuses the save (IMP-b9f4b900f00b).
   def make_pool(name, lifecycle_class: "ephemeral", owner: account, template: node_template)
+    region = owner == account ? provider_region : create(:system_provider_region, account: owner)
+    type   = owner == account ? provider_instance_type : create(:system_provider_instance_type, account: owner)
     System::InstancePool.create!(
       account: owner, node_template: template, name: name,
       target_size: 1, min_size: 0, max_size: 3, lifecycle_class: lifecycle_class, status: "active",
-      provider_region: provider_region, provider_instance_type: provider_instance_type
+      provider_region: region, provider_instance_type: type
     )
   end
 
@@ -166,7 +173,7 @@ RSpec.describe System::Fleet::Sensors::OrphanPoolGuestSensor do
 
     # Members are placed in preferred_regions too (pick_region_for_slot).
     it "reads the pool's preferred regions as well as its own" do
-      elsewhere = create(:system_provider_region)
+      elsewhere = create(:system_provider_region, account: account)
       pool.update!(preferred_regions: [ elsewhere.id ])
       other_adapter = instance_double("System::Providers::BaseProvider")
       stub_listing([])
@@ -180,7 +187,7 @@ RSpec.describe System::Fleet::Sensors::OrphanPoolGuestSensor do
 
     # A cluster-wide listing answers the same guest from every region on it.
     it "reports a guest once when two listed regions return it" do
-      elsewhere = create(:system_provider_region)
+      elsewhere = create(:system_provider_region, account: account)
       pool.update!(preferred_regions: [ elsewhere.id ])
       stub_listing([ guest("ci-builders-pool-1-0", vmid: 9002) ])
       allow(System::Providers::Registry).to receive(:for).with(connection, region: elsewhere).and_return(adapter)

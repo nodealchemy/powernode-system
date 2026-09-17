@@ -30,8 +30,8 @@ require "rails_helper"
 RSpec.describe "APO-4 reap replay, approval to terminate (IMP-4e49eb79c5e0)", type: :service do
   let(:account)                { create(:account) }
   let(:node_template)          { create(:system_node_template, account: account) }
-  let(:provider_region)        { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region)        { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
 
   let(:pool) do
     System::InstancePool.create!(

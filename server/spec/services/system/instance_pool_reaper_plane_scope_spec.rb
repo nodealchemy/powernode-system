@@ -18,8 +18,8 @@ require "rails_helper"
 # planes whose pools exist to churn — are untouched.
 RSpec.describe System::InstancePoolService, "reaper plane scope" do
   let(:account) { create(:account) }
-  let(:provider_region) { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region) { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
 
   def pool_in(slug)
     environment = account.environments.find_by!(slug: slug)

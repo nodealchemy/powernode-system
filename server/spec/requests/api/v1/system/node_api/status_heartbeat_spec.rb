@@ -340,8 +340,8 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
   # is alive, so it's the trigger point (NodeInstance#promote_pool_ready!,
   # called unconditionally from this endpoint).
   describe "pool warming -> ready promotion (heartbeat-driven)" do
-    let(:provider_region)       { create(:system_provider_region) }
-    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:provider_region)       { create(:system_provider_region, account: account) }
+    let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
     let(:pool) do
       System::InstancePool.create!(
         account: account,

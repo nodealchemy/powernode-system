@@ -142,8 +142,11 @@ FactoryBot.define do
     # the denormalization and is why callers still route through the node here.
     transient { account { nil } }
 
-    association :provider_region, factory: :system_provider_region
-    association :provider_instance_type, factory: :system_provider_instance_type
+    # On the node's account: the instance refuses another account's provider
+    # catalog (IMP-b9f4b900f00b), and the bare associations gave each row a
+    # FRESH account.
+    provider_region { association :system_provider_region, account: node.account }
+    provider_instance_type { association :system_provider_instance_type, account: node.account }
     sequence(:name) { |n| "Instance #{n}" }
     variety { "cloud" }
     status { "pending" }

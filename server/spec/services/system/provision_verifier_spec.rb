@@ -104,7 +104,12 @@ RSpec.describe System::ProvisionVerifier do
   it "does not consider another account's instance" do
     foreign = create(:account)
     foreign_node = create(:system_node, account: foreign)
-    instance = create(:system_node_instance, node: foreign_node, provider_region: region,
+    # Region on the FOREIGN account (IMP-b9f4b900f00b) — the point under test
+    # is that the reconciler's account scoping hides this row, not the region
+    # FK; reusing the outer `region` (a different account than foreign_node)
+    # is no longer a constructible row at all.
+    foreign_region = create(:system_provider_region, account: foreign)
+    instance = create(:system_node_instance, node: foreign_node, provider_region: foreign_region,
                                              status: "running", cloud_instance_id: "pve1/qemu/9105")
     r = reconcile_one(instance.id)
     expect(r[:ok]).to be false
@@ -219,11 +224,20 @@ RSpec.describe System::ProvisionVerifier do
     it "does not certify another account's instance as removed" do
       foreign = create(:account)
       foreign_node = create(:system_node, account: foreign)
-      instance = create(:system_node_instance, node: foreign_node, provider_region: region,
+      # Region on the FOREIGN account (IMP-b9f4b900f00b) — same reasoning as
+      # the reconcile_instances example above.
+      foreign_region = create(:system_provider_region, account: foreign)
+      instance = create(:system_node_instance, node: foreign_node, provider_region: foreign_region,
                                                status: "running", cloud_instance_id: "pve1/qemu/9208")
 
       r = reconcile_absent(instance.id)
       expect(r[:ok]).to be false
+      # Discriminating: `status: "running"` (not "terminated") would ALSO
+      # refuse via the status gate a few lines below the account-scope check
+      # in reconcile_one_absent, so `ok: false` alone doesn't prove this
+      # example exercises account scoping rather than merely happening to
+      # fail for an unrelated reason.
+      expect(r[:detail]).to match(/no NodeInstance row/i)
     end
 
     it "FAILS a row the platform never marked terminated" do

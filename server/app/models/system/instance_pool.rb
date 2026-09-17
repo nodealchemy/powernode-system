@@ -78,6 +78,8 @@ module System
     before_validation :inherit_environment_from_template, on: :create
     validate :node_template_belongs_to_account
     validate :environment_belongs_to_account
+    validate :provider_catalog_belongs_to_account, if: :check_provider_catalog_account?
+    validate :preferred_regions_belong_to_account, if: :check_preferred_regions_account?
     scope :in_environment, ->(env) { where(environment_id: env.is_a?(::Ai::Environment) ? env.id : env) }
 
     # === Validations ===
@@ -270,6 +272,54 @@ module System
       return if errors[:node_template].any? # already reported at the cause
 
       errors.add(:environment, "must belong to the pool's account")
+    end
+
+    # Only on create, or when region/type/account actually change (operator
+    # ruling 2026-09-13/2026-09-17, option a). InstancePoolService#replenish!
+    # (:521) and #drain! (:545) both save the pool with a bare update! on
+    # every tick, unrescued; an always-on check would abort every pool tick
+    # the first time it hit an already-mismatched row.
+    def check_provider_catalog_account?
+      new_record? || provider_region_id_changed? || provider_instance_type_id_changed? || account_id_changed?
+    end
+
+    # Pool members are provisioned in this region as this SKU, so both must be
+    # the pool's own account's catalog rows (IMP-b9f4b900f00b).
+    #
+    # Both FKs are re-checked whenever EITHER changes (the guard above fires
+    # on either _changed?, and this method walks both regardless of which one
+    # triggered it). A PATCH that touches only provider_instance_type_id on a
+    # legacy mismatched pool is therefore refused naming provider_region too,
+    # a field the caller didn't touch — fail-closed and correct, but the
+    # repair is to set BOTH fields in the same request.
+    def provider_catalog_belongs_to_account
+      return if account_id.nil?
+
+      { provider_region: provider_region, provider_instance_type: provider_instance_type }.each do |attr, row|
+        next if row.nil? || row.account_id == account_id
+
+        errors.add(attr, "must belong to the pool's account")
+      end
+    end
+
+    # Same guard shape as check_provider_catalog_account? and for the same
+    # reason: replenish!/drain! save the pool unrescued on every tick.
+    def check_preferred_regions_account?
+      new_record? || preferred_regions_changed? || account_id_changed?
+    end
+
+    # preferred_regions (audit-plan cross-AZ spread) is a bare text[] of
+    # ProviderRegion ids with no FK — pick_region_for_slot round-robins
+    # through it unchecked, so an id from another tenant's region would
+    # silently place — and provision — a member there (IMP-b9f4b900f00b).
+    def preferred_regions_belong_to_account
+      ids = Array(preferred_regions).compact_blank
+      return if ids.empty? || account_id.nil?
+
+      foreign = ::System::ProviderRegion.where(id: ids).where.not(account_id: account_id).pluck(:id)
+      return if foreign.empty?
+
+      errors.add(:preferred_regions, "must all belong to the pool's account (foreign: #{foreign.join(', ')})")
     end
   end
 end

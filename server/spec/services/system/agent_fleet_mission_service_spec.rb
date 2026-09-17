@@ -531,8 +531,8 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
           name: "f1-11-pool", target_size: 1, min_size: 0, max_size: 3,
           lifecycle_class: "ephemeral", status: "active",
           metadata: { "reuse_without_reset" => true },
-          provider_region: create(:system_provider_region),
-          provider_instance_type: create(:system_provider_instance_type)
+          provider_region: create(:system_provider_region, account: account),
+          provider_instance_type: create(:system_provider_instance_type, account: account)
         )
       end
 
@@ -603,8 +603,8 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
           account: account, node_template: template,
           name: "f2-03-pool", target_size: 1, min_size: 0, max_size: 3,
           lifecycle_class: "ephemeral", status: "active",
-          provider_region: create(:system_provider_region),
-          provider_instance_type: create(:system_provider_instance_type)
+          provider_region: create(:system_provider_region, account: account),
+          provider_instance_type: create(:system_provider_instance_type, account: account)
         )
       end
 

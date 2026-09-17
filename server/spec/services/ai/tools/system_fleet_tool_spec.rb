@@ -146,8 +146,8 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         ::System::InstancePool.create!(
           account: account, node_template: node_template, name: "tune-me",
           target_size: 2, min_size: 1, max_size: 5, lifecycle_class: "ephemeral",
-          status: "active", provider_region: create(:system_provider_region),
-          provider_instance_type: create(:system_provider_instance_type)
+          status: "active", provider_region: create(:system_provider_region, account: account),
+          provider_instance_type: create(:system_provider_instance_type, account: account)
         )
       end
 
@@ -175,8 +175,8 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         foreign = ::System::InstancePool.create!(
           account: other, node_template: create(:system_node_template, account: other),
           name: "foreign", target_size: 1, min_size: 0, max_size: 3, lifecycle_class: "ephemeral",
-          status: "active", provider_region: create(:system_provider_region),
-          provider_instance_type: create(:system_provider_instance_type)
+          status: "active", provider_region: create(:system_provider_region, account: other),
+          provider_instance_type: create(:system_provider_instance_type, account: other)
         )
         r = call("system_update_instance_pool", pool_id: foreign.id, target_size: 9)
         expect(r[:success]).to be false
@@ -3093,8 +3093,8 @@ end
   end
 
   describe "Gap remediation slice 3 — pool ops + canary marking" do
-    let(:provider_region) { create(:system_provider_region) }
-    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:provider_region) { create(:system_provider_region, account: account) }
+    let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
     let(:pool) do
       ::System::InstancePool.create!(
         account: account, node_template: template,
@@ -3239,8 +3239,8 @@ end
           account: other_account, node_template: create(:system_node_template, account: other_account),
           name: "other-pool", target_size: 0, min_size: 0, max_size: 5,
           lifecycle_class: "ephemeral", status: "archived",
-          provider_region: provider_region,
-          provider_instance_type: provider_instance_type
+          provider_region: create(:system_provider_region, account: other_account),
+          provider_instance_type: create(:system_provider_instance_type, account: other_account)
         )
         r = call("system_delete_instance_pool", pool_id: other_pool.id)
         expect(r[:success]).to be false
@@ -3528,8 +3528,8 @@ end
     # (ci_runner_lease_service_spec.rb); these examples lock in the MCP
     # param-marshaling + response shape + error passthrough.
     describe "system_lease_ci_runner / system_release_ci_runner / system_list_ci_runner_leases" do
-      let(:provider_region)  { create(:system_provider_region) }
-      let(:instance_type)    { create(:system_provider_instance_type) }
+      let(:provider_region)  { create(:system_provider_region, account: account) }
+      let(:instance_type)    { create(:system_provider_instance_type, account: account) }
       let(:builder_pool) do
         System::InstancePool.create!(
           account: account, node_template: template, name: "ci-builders-mcp",
@@ -5811,8 +5811,8 @@ end
   # reports and what the pool member's state actually is, and an assertion on
   # either side alone cannot see it.
   describe "instance-pool payload nesting (IMP-0b6d91ec76a0)" do
-    let(:provider_region) { create(:system_provider_region) }
-    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:provider_region) { create(:system_provider_region, account: account) }
+    let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
 
     # target_size 1 with exactly one ready member => deficit 0, so replenish!
     # returns before provision_warming_member! and no provider is touched.

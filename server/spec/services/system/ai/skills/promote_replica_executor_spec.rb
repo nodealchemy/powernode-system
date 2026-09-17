@@ -26,8 +26,8 @@ require "yaml"
 RSpec.describe System::Ai::Skills::PromoteReplicaExecutor, type: :service do
   let(:account)                { create(:account) }
   let(:node_template)          { create(:system_node_template, account: account) }
-  let(:provider_region)        { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region)        { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
 
   def instance_named(name, status:)
     node = create(:system_node, account: account, node_template: node_template)

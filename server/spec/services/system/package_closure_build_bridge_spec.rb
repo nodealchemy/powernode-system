@@ -16,8 +16,8 @@ RSpec.describe System::PackageClosureBuildBridge do
   let(:account)         { create(:account) }
   let(:user)            { create(:user, account: account) }
   let(:node_template)   { create(:system_node_template, account: account) }
-  let(:provider_region) { create(:system_provider_region) }
-  let(:instance_type)   { create(:system_provider_instance_type) }
+  let(:provider_region) { create(:system_provider_region, account: account) }
+  let(:instance_type)   { create(:system_provider_instance_type, account: account) }
   let(:suffix)          { "br#{SecureRandom.hex(3)}" }
 
   let(:repo) do

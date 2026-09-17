@@ -22,7 +22,7 @@ RSpec.describe System::Status::Contributors::NodeContributor do
   # An instance whose provider carries a connection in the given state.
   def instance_with_connection!(node:, connection_status:, enabled: true)
     provider = create(:system_provider, account: account)
-    region = create(:system_provider_region, provider: provider)
+    region = create(:system_provider_region, provider: provider, account: account)
     create(:system_provider_connection, provider: provider, account: account,
                                         status: connection_status, enabled: enabled)
     create(:system_node_instance, account: account, node: node,

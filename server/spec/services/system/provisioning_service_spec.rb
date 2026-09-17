@@ -8,8 +8,8 @@ require "rails_helper"
 RSpec.describe System::ProvisioningService do
   let(:account)       { create(:account) }
   let(:node)          { create(:system_node, account: account) }
-  let(:region)        { create(:system_provider_region) }
-  let(:instance_type) { create(:system_provider_instance_type) }
+  let(:region)        { create(:system_provider_region, account: account) }
+  let(:instance_type) { create(:system_provider_instance_type, account: account) }
   let(:adapter)       { instance_double("System::Providers::BaseProvider", provider_type: "mock", supports?: true) }
 
   before do
@@ -745,8 +745,8 @@ RSpec.describe System::ProvisioningService do
         System::InstancePool.create!(
           account: account, node_template: node.node_template, name: name,
           target_size: 1, min_size: 0, max_size: 2, lifecycle_class: "ephemeral",
-          status: "active", provider_region: create(:system_provider_region),
-          provider_instance_type: create(:system_provider_instance_type),
+          status: "active", provider_region: create(:system_provider_region, account: account),
+          provider_instance_type: create(:system_provider_instance_type, account: account),
           metadata: metadata
         )
       end
@@ -883,8 +883,8 @@ RSpec.describe System::ProvisioningService do
     end
 
     context "when the instance belongs to a pool whose metadata declares sdwan_network_id" do
-      let(:pool_region)   { create(:system_provider_region) }
-      let(:pool_type)     { create(:system_provider_instance_type) }
+      let(:pool_region)   { create(:system_provider_region, account: account) }
+      let(:pool_type)     { create(:system_provider_instance_type, account: account) }
       let(:pool) do
         System::InstancePool.create!(
           account: account, node_template: node.node_template, name: "sdwan-pool",

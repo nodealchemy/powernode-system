@@ -491,8 +491,8 @@ RSpec.describe "approval-card preview account anchoring" do
         node_template: create(:system_node_template, account: account),
         name: name, target_size: 1, min_size: 0, max_size: 2,
         lifecycle_class: "ephemeral", status: "active",
-        provider_region: create(:system_provider_region),
-        provider_instance_type: create(:system_provider_instance_type)
+        provider_region: create(:system_provider_region, account: account),
+        provider_instance_type: create(:system_provider_instance_type, account: account)
       )
     end
 

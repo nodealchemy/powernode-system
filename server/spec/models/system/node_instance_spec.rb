@@ -722,8 +722,8 @@ RSpec.describe System::NodeInstance, type: :model do
         account: account, node_template: node.node_template,
         name: "forge-gate-pool-#{SecureRandom.hex(4)}", target_size: 1, min_size: 0, max_size: 3,
         lifecycle_class: "ephemeral", status: "active",
-        provider_region: create(:system_provider_region),
-        provider_instance_type: create(:system_provider_instance_type)
+        provider_region: create(:system_provider_region, account: account),
+        provider_instance_type: create(:system_provider_instance_type, account: account)
       )
     end
     let(:instance) do

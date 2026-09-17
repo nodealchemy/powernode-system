@@ -16,8 +16,8 @@ require "rails_helper"
 RSpec.describe Ai::Tools::SystemFleetTool, "system_provision_instance contract" do
   let(:account)       { create(:account) }
   let(:node)          { create(:system_node, account: account) }
-  let(:region)        { create(:system_provider_region) }
-  let(:instance_type) { create(:system_provider_instance_type) }
+  let(:region)        { create(:system_provider_region, account: account) }
+  let(:instance_type) { create(:system_provider_instance_type, account: account) }
   let(:adapter)       { instance_double("System::Providers::BaseProvider", provider_type: "mock", supports?: true) }
   let(:tool)          { described_class.new(account: account, internal: true) }
 

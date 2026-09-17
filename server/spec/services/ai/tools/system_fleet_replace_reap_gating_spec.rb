@@ -46,8 +46,8 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
   let(:tool) { Ai::Tools::SystemFleetTool.new(account: account, user: user) }
 
   let(:node_template)          { create(:system_node_template, account: account) }
-  let(:provider_region)        { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region)        { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
 
   let(:pool) do
     System::InstancePool.create!(

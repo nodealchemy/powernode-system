@@ -43,8 +43,8 @@ RSpec.describe System::PlatformDeploymentOrchestrator do
              metadata: { "provisioner_response" => { "node_instance_id" => instance.id } })
     end
     let(:node)     { create(:system_node, account: account, node_template: template) }
-    let(:provider_region) { create(:system_provider_region) }
-    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:provider_region) { create(:system_provider_region, account: account) }
+    let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
     let(:instance) do
       create(:system_node_instance, node: node, name: "spawned-child", variety: "cloud",
              status: "pending", provider_region: provider_region,
@@ -221,8 +221,8 @@ RSpec.describe System::PlatformDeploymentOrchestrator do
 
   describe "#attach_storage_volume!" do
     let(:node) { create(:system_node, account: account, node_template: template) }
-    let(:provider_region) { create(:system_provider_region) }
-    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:provider_region) { create(:system_provider_region, account: account) }
+    let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
     let(:instance) do
       create(:system_node_instance, node: node, name: "deploy-target", variety: "cloud",
              status: "running", provider_region: provider_region,

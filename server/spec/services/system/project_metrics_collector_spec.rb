@@ -152,7 +152,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
     it "samples real replica_count/region_count from the mission's provisioned instances" do
       node   = create(:system_node, account: account)
-      region = create(:system_provider_region)
+      region = create(:system_provider_region, account: account)
       inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
       inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
 
@@ -179,7 +179,7 @@ RSpec.describe System::ProjectMetricsCollector do
     # example would still pass if the sensor stopped reading the row.
     it "excludes an errored instance from replica_count and drifts on the shortfall" do
       node   = create(:system_node, account: account)
-      region = create(:system_provider_region)
+      region = create(:system_provider_region, account: account)
       inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
       inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
       inst_c = create(:system_node_instance, node: node, provider_region: region, status: "error")
@@ -214,8 +214,8 @@ RSpec.describe System::ProjectMetricsCollector do
     # drops the whole region.
     it "drops a region whose only instance has errored from region_count" do
       node     = create(:system_node, account: account)
-      region_a = create(:system_provider_region)
-      region_b = create(:system_provider_region)
+      region_a = create(:system_provider_region, account: account)
+      region_b = create(:system_provider_region, account: account)
       inst_a = create(:system_node_instance, :running, node: node, provider_region: region_a)
       inst_b = create(:system_node_instance, :running, node: node, provider_region: region_a)
       inst_c = create(:system_node_instance, node: node, provider_region: region_b, status: "error")
@@ -238,7 +238,7 @@ RSpec.describe System::ProjectMetricsCollector do
     # .active" simplification fails here instead of in production.
     it "still counts instances in transitional states as live replicas" do
       node   = create(:system_node, account: account)
-      region = create(:system_provider_region)
+      region = create(:system_provider_region, account: account)
       instances = %w[pending provisioning starting running stopping stopped rebooting].map do |status|
         create(:system_node_instance, node: node, provider_region: region, status: status)
       end
@@ -255,7 +255,7 @@ RSpec.describe System::ProjectMetricsCollector do
     # readable statement of what "live" means here.
     it "excludes terminated instances from replica_count" do
       node   = create(:system_node, account: account)
-      region = create(:system_provider_region)
+      region = create(:system_provider_region, account: account)
       inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
       inst_b = create(:system_node_instance, node: node, provider_region: region, status: "terminated")
 
@@ -808,7 +808,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "reports unavailable when none of the mission's instances has a runtime_metrics observation" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         mission, = seed_provisioned_mission([ inst.id ])
 
         described_class.collect!(mission: mission)
@@ -820,7 +820,7 @@ RSpec.describe System::ProjectMetricsCollector do
       it "computes a real percentage from memory_free_kb against the instance's provisioned memory" do
         node = create(:system_node, account: account)
         # default provider_instance_type memory_mb is 1024 -> 1_048_576 KB total
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_runtime_metrics(inst, memory_free_kb: 524_288) # half free -> 50% used
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -834,7 +834,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "averages across measured instances and reports coverage" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
         inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
         stamp_runtime_metrics(inst_a, memory_free_kb: 1_048_576) # 0% used
@@ -851,7 +851,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "excludes a measured instance from the average but reports live when at least one is fresh" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         fresh  = create(:system_node_instance, :running, node: node, provider_region: region)
         stale  = create(:system_node_instance, :running, node: node, provider_region: region)
         stamp_runtime_metrics(fresh, memory_free_kb: 262_144) # 75% used
@@ -868,7 +868,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "reports unavailable when the only instance's runtime_metrics observation is stale" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_runtime_metrics(inst, memory_free_kb: 0, observed_at: 2.hours.ago)
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -909,7 +909,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "is never derived from load_average alone" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_runtime_metrics(inst, "load_average" => "0.15 0.20 0.10")
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -929,7 +929,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "reports the measured percent-busy the agent shipped" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_runtime_metrics(inst, "cpu_pct" => 42.5)
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -943,7 +943,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "averages across measured instances and reports coverage" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
         inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
         inst_c = create(:system_node_instance, :running, node: node, provider_region: region)
@@ -964,7 +964,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # the same exclusion memory_pct makes.
       it "excludes a stale observation and reports unavailable when it is the only one" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         inst.update_columns(
           config: inst.config.merge(
             "runtime_metrics" => { "observed_at" => 2.hours.ago.utc.iso8601, "cpu_pct" => 99.0 }
@@ -983,7 +983,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # drop it and turn an idle fleet into "we don't know".
       it "keeps a measured 0.0 as a live observation" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_runtime_metrics(inst, "cpu_pct" => 0.0)
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -996,7 +996,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "rejects an out-of-range reading rather than publishing it" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         inst   = create(:system_node_instance, :running, node: node, provider_region: region)
         stamp_runtime_metrics(inst, "cpu_pct" => 250.0)
 
@@ -1041,7 +1041,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       def mission_with_cpu_observed(ago)
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         stamp_cpu(inst, observed_at: ago)
         seed_provisioned_mission([ inst.id ]).first
       end
@@ -1101,7 +1101,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # it is excluded from the ratio and reported as coverage instead.
       it "reports unavailable when no instance has ever heartbeat" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         expect(inst.last_heartbeat_at).to be_nil
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -1114,7 +1114,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "reports 100.0 when every reporting replica is fresh" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         a = create(:system_node_instance, :running, node: node, provider_region: region)
         b = create(:system_node_instance, :running, node: node, provider_region: region)
         [ a, b ].each { |i| i.update_columns(last_heartbeat_at: Time.current) }
@@ -1135,7 +1135,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # metric can say so — a node that stops heartbeating just goes stale.
       it "reports a real 50.0 when half the reporting replicas have gone silent" do
         node   = create(:system_node, account: account)
-        region = create(:system_provider_region)
+        region = create(:system_provider_region, account: account)
         up   = create(:system_node_instance, :running, node: node, provider_region: region)
         down = create(:system_node_instance, :running, node: node, provider_region: region)
         up.update_columns(last_heartbeat_at: Time.current)
@@ -1153,7 +1153,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # must be published, not swallowed as "unknown".
       it "publishes a measured 0.0 when every reporting replica has gone silent" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         inst.update_columns(last_heartbeat_at: 2.hours.ago)
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -1166,7 +1166,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       it "excludes never-reported instances from the ratio and shows the coverage gap" do
         node    = create(:system_node, account: account)
-        region  = create(:system_provider_region)
+        region  = create(:system_provider_region, account: account)
         up      = create(:system_node_instance, :running, node: node, provider_region: region)
         unknown = create(:system_node_instance, :running, node: node, provider_region: region)
         up.update_columns(last_heartbeat_at: Time.current)
@@ -1188,7 +1188,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # count.
       it "excludes a rebooting replica rather than reading a routine reboot as an outage" do
         node    = create(:system_node, account: account)
-        region  = create(:system_provider_region)
+        region  = create(:system_provider_region, account: account)
         up      = create(:system_node_instance, :running, node: node, provider_region: region)
         booting = create(:system_node_instance, node: node, provider_region: region, status: "rebooting")
         up.update_columns(last_heartbeat_at: Time.current)
@@ -1209,7 +1209,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # there is simply nothing whose liveness this metric can describe.
       it "reports unavailable when no replica is in a state where a heartbeat is expected" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :stopped, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :stopped, node: node, provider_region: create(:system_provider_region, account: account))
         inst.update_columns(last_heartbeat_at: 2.hours.ago)
 
         mission, = seed_provisioned_mission([ inst.id ])
@@ -1226,7 +1226,7 @@ RSpec.describe System::ProjectMetricsCollector do
       # the window in force here can never drift from the sensor's.
       it "honors the operator's instance_status silent threshold" do
         node = create(:system_node, account: account)
-        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region, account: account))
         inst.update_columns(last_heartbeat_at: 10.minutes.ago) # silent at the 3m default
 
         mission, = seed_provisioned_mission([ inst.id ])

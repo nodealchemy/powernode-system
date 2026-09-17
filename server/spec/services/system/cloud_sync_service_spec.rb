@@ -8,7 +8,11 @@ require "rails_helper"
 # result.
 RSpec.describe System::CloudSyncService do
   let(:account)    { create(:account) }
-  let(:region)     { create(:system_provider_region) }
+  # Scoped to `account` (IMP-b9f4b900f00b): every row this file builds is
+  # synced with `sync_region_instances(region: region, account: account)`,
+  # so the row's node must land on the SAME account as `region`, or
+  # NodeInstance now refuses the save.
+  let(:region)     { create(:system_provider_region, account: account) }
   let(:connection) { double("provider connection") }
   let(:adapter) do
     instance_double("System::Providers::BaseProvider", provider_type: "pro_cloud")
@@ -29,7 +33,7 @@ RSpec.describe System::CloudSyncService do
   # the provider for it.
   describe "a terminated row whose recycled VMID now names another guest" do
     def terminated_row(cloud_instance_id)
-      row = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: cloud_instance_id)
+      row = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: cloud_instance_id)
       row.update_columns(status: "terminated", private_ip_address: "192.0.2.10", public_ip_address: nil,
                          last_synced_at: 2.days.ago)
       row.reload
@@ -58,7 +62,7 @@ RSpec.describe System::CloudSyncService do
     end
 
     it "sync_region_instances reconciles the live row that shares the recycled id, not the dead one" do
-      live = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "9102")
+      live = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "9102")
       # Created last: with no ORDER BY, Postgres usually returns it last, so an
       # index_by over both rows typically kept the dead one. Typical, not guaranteed.
       dead = terminated_row("9102")
@@ -113,7 +117,7 @@ RSpec.describe System::CloudSyncService do
     end
 
     def row(cloud_instance_id, status:, guest_name:, **attrs)
-      create(:system_node_instance, :running, provider_region: region, cloud_instance_id: cloud_instance_id,
+      create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: cloud_instance_id,
                                               provider_guest_name: guest_name, **attrs).tap do |r|
         r.update_columns(status: status, private_ip_address: "192.0.2.10", public_ip_address: nil,
                          created_at: 2.hours.ago)
@@ -327,7 +331,7 @@ RSpec.describe System::CloudSyncService do
       end
 
       def presumed_dead_instance(last_heartbeat_at:, presumed_dead_at:)
-        inst = create(:system_node_instance, :running, provider_region: region,
+        inst = create(:system_node_instance, :running, account: account, provider_region: region,
                       cloud_instance_id: "i-silent")
         inst.update_columns(status: "error",
                             last_heartbeat_at: last_heartbeat_at,
@@ -380,7 +384,7 @@ RSpec.describe System::CloudSyncService do
       # Written inside the change branch it would be freshest on refused rows and
       # stale on healthy ones, which inverts the column's meaning.
       it "records the observation even when nothing about the row changed" do
-        healthy = create(:system_node_instance, :running, provider_region: region,
+        healthy = create(:system_node_instance, :running, account: account, provider_region: region,
                          cloud_instance_id: "i-healthy")
         list_as_running!(healthy)
 
@@ -422,8 +426,8 @@ RSpec.describe System::CloudSyncService do
       before { allow(adapter).to receive(:supports?).with(:sync).and_return(true) }
 
       it "marks the missing instance terminated but leaves the still-present one alone" do
-        present = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-present")
-        deleted = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-deleted")
+        present = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-present")
+        deleted = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-deleted")
         deleted.update_column(:created_at, 1.hour.ago) # outside the termination-sweep grace period
 
         allow(adapter).to receive(:list_instances).and_return(
@@ -447,8 +451,8 @@ RSpec.describe System::CloudSyncService do
       # NodeInstance#cancel_unrunnable_tasks! acts on. The optimistic terminate!
       # stamp alone left every queued task against the vanished VM pending.
       it "cancels the pending tasks of the instance it terminates, and only that instance's" do
-        present = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-kept")
-        deleted = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-vanished")
+        present = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-kept")
+        deleted = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-vanished")
         deleted.update_column(:created_at, 1.hour.ago)
         doomed = create(:system_task, account: deleted.account, operable: deleted, status: "pending")
         kept = create(:system_task, account: present.account, operable: present, status: "pending")
@@ -468,7 +472,7 @@ RSpec.describe System::CloudSyncService do
       end
 
       it "terminates and cancels for a row the sweep finds in a transitional status" do
-        stopping = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-stopping")
+        stopping = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-stopping")
         stopping.update_columns(status: "stopping", created_at: 1.hour.ago)
         task = create(:system_task, account: stopping.account, operable: stopping, status: "pending")
 
@@ -483,7 +487,7 @@ RSpec.describe System::CloudSyncService do
       end
 
       it "does not terminate a just-provisioned instance the provider hasn't listed yet (eventual consistency)" do
-        fresh = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-brand-new")
+        fresh = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-brand-new")
 
         allow(adapter).to receive(:list_instances).and_return(
           success: true, instances: [], page_count: 1, truncated: false
@@ -495,7 +499,7 @@ RSpec.describe System::CloudSyncService do
       end
 
       it "does not terminate an already-terminated instance again" do
-        instance = create(:system_node_instance, provider_region: region, cloud_instance_id: "i-gone", status: "terminated")
+        instance = create(:system_node_instance, account: account, provider_region: region, cloud_instance_id: "i-gone", status: "terminated")
 
         allow(adapter).to receive(:list_instances).and_return(
           success: true, instances: [], page_count: 1, truncated: false
@@ -506,7 +510,7 @@ RSpec.describe System::CloudSyncService do
       end
 
       it "does not terminate when the listing was truncated (can't distinguish deletion from an unseen page)" do
-        instance = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-1")
+        instance = create(:system_node_instance, :running, account: account, provider_region: region, cloud_instance_id: "i-1")
         allow(connection).to receive(:provider_id).and_return("conn-1")
 
         allow(adapter).to receive(:list_instances).and_return(

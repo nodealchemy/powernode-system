@@ -22,8 +22,8 @@ require "rails_helper"
 RSpec.describe System::Ai::Skills::ReapOrphanPoolGuestExecutor, type: :service do
   let(:account)                { create(:account) }
   let(:node_template)          { create(:system_node_template, account: account) }
-  let(:provider_region)        { create(:system_provider_region) }
-  let(:provider_instance_type) { create(:system_provider_instance_type) }
+  let(:provider_region)        { create(:system_provider_region, account: account) }
+  let(:provider_instance_type) { create(:system_provider_instance_type, account: account) }
   let(:connection)             { instance_double("System::ProviderConnection") }
   let(:adapter)                { instance_double("System::Providers::BaseProvider") }
   let(:guest_name)             { "ci-builders-pool-1789188789-0-20260912045310-cc99" }
@@ -31,11 +31,19 @@ RSpec.describe System::Ai::Skills::ReapOrphanPoolGuestExecutor, type: :service d
 
   let!(:pool) { make_pool("ci-builders") }
 
+  # `provider_region`/`provider_instance_type` above are reused (not rebuilt)
+  # for the default `owner: account` pool because other examples stub
+  # `Registry.for(connection, region: provider_region)` against that exact
+  # object — an `owner: other` pool (ambiguous-name case) needs its OWN
+  # account's catalog row instead, or InstancePool now refuses the save
+  # (IMP-b9f4b900f00b).
   def make_pool(name, lifecycle_class: "ephemeral", owner: account, template: node_template)
+    region = owner == account ? provider_region : create(:system_provider_region, account: owner)
+    type   = owner == account ? provider_instance_type : create(:system_provider_instance_type, account: owner)
     System::InstancePool.create!(
       account: owner, node_template: template, name: name,
       target_size: 1, min_size: 0, max_size: 3, lifecycle_class: lifecycle_class, status: "active",
-      provider_region: provider_region, provider_instance_type: provider_instance_type
+      provider_region: region, provider_instance_type: type
     )
   end
 
@@ -176,7 +184,7 @@ RSpec.describe System::Ai::Skills::ReapOrphanPoolGuestExecutor, type: :service d
   # The sensor also lists a pool's preferred regions, which can sit behind a
   # different connection: the reap asks THAT region's inventory, not the pool's.
   it "confirms and reaps in the preferred region the guest was listed in" do
-    elsewhere = create(:system_provider_region)
+    elsewhere = create(:system_provider_region, account: account)
     pool.update!(preferred_regions: [ elsewhere.id ])
     other_adapter = instance_double("System::Providers::BaseProvider")
     allow(adapter).to receive(:list_instances).and_return(listing)

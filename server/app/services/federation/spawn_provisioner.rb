@@ -161,7 +161,13 @@ module Federation
     def resolve_region(spawn_target, node)
       explicit_id = spawn_target[:provider_region_id] || spawn_target["provider_region_id"]
       if explicit_id.present?
-        region = ::System::ProviderRegion.find_by(id: explicit_id)
+        # Scoped to @account (IMP-b9f4b900f00b, operator decision D3
+        # 2026-09-18): ProviderRegion.account_id is NOT NULL and there is no
+        # shared/global catalog row, so an unscoped id hit was already a row
+        # NodeInstance/InstancePool would refuse to save — scoping only
+        # changes WHICH failure this returns, and for the better: resolution
+        # now falls through to a usable row instead of pinning a doomed one.
+        region = ::System::ProviderRegion.find_by(id: explicit_id, account_id: @account.id)
         return region if region
       end
 
@@ -175,18 +181,23 @@ module Federation
       # silently provisioning a PVE spawn on the wrong substrate.
       preset_hint = instance_type_hint(spawn_target)
       if preset_hint.present?
-        it = ::System::ProviderInstanceType.find_by(name: preset_hint)
+        # Scoped to @account (IMP-b9f4b900f00b) — an unscoped name lookup
+        # let a name shared with another tenant silently resolve to THEIR
+        # instance type and, downstream, provision on their provider.
+        it = ::System::ProviderInstanceType.find_by(name: preset_hint, account_id: @account.id)
         if it
           # Within the pinned provider, honor a region-name hint when given
           # (disambiguates same-named regions across providers), else take
           # that provider's first connectable region.
           if region_hint
-            named = ::System::ProviderRegion.find_by(provider_id: it.provider_id, name: region_hint)
+            named = ::System::ProviderRegion.find_by(provider_id: it.provider_id, name: region_hint,
+                                                       account_id: @account.id)
             return named if named
           end
           region = first_region_for_connectable_provider(it.provider)
           return region if region
-          owned = ::System::ProviderRegion.where(provider_id: it.provider_id).order(:created_at).first
+          owned = ::System::ProviderRegion.where(provider_id: it.provider_id, account_id: @account.id)
+                                          .order(:created_at).first
           return owned if owned
         end
       end
@@ -218,7 +229,11 @@ module Federation
       provider = ::System::Provider.where(account_id: @account.id).order(:created_at).first
       return nil unless provider
 
-      ::System::ProviderRegion.where(provider_id: provider.id).order(:created_at).first
+      # account_id scoping here is implied by `provider` already being
+      # account-filtered above; stated explicitly for consistency with every
+      # other ProviderRegion/ProviderInstanceType lookup in this class
+      # (IMP-b9f4b900f00b, D3).
+      ::System::ProviderRegion.where(provider_id: provider.id, account_id: @account.id).order(:created_at).first
     end
 
     # Returns the first region belonging to a provider that has at least
@@ -236,8 +251,11 @@ module Federation
       provider_ids = scope.order(:created_at).pluck(:provider_id).uniq
       return nil if provider_ids.empty?
 
+      # Scoped to @account (IMP-b9f4b900f00b, D3): a connected
+      # ProviderConnection only proves the PROVIDER is reachable, not that
+      # every region under it belongs to @account.
       ::System::ProviderRegion
-        .where(provider_id: provider_ids)
+        .where(provider_id: provider_ids, account_id: @account.id)
         .order(:created_at)
         .first
     end
@@ -261,13 +279,18 @@ module Federation
                 .where("account_id = ? OR account_id IS NULL", @account&.id)
       connectable_ids = scope.pluck(:provider_id).uniq
       if connectable_ids.any?
+        # Scoped to @account (IMP-b9f4b900f00b, D3) — same reasoning as
+        # first_region_for_connectable_provider above.
         named = ::System::ProviderRegion
-                  .where(name: region_hint, provider_id: connectable_ids)
+                  .where(name: region_hint, provider_id: connectable_ids, account_id: @account.id)
                   .order(:created_at)
                   .first
         return named if named
       end
-      ::System::ProviderRegion.where(name: region_hint).order(:created_at).first
+      # Scoped to @account (IMP-b9f4b900f00b) — same reasoning as the
+      # instance-type lookup above: an unscoped name fallback would silently
+      # resolve to another tenant's region.
+      ::System::ProviderRegion.where(name: region_hint, account_id: @account.id).order(:created_at).first
     end
 
     def resolve_provider_type(node, region)
@@ -283,7 +306,9 @@ module Federation
       explicit_id = spawn_target[:provider_instance_type_id] ||
                     spawn_target["provider_instance_type_id"]
       if explicit_id.present?
-        type = ::System::ProviderInstanceType.find_by(id: explicit_id)
+        # Scoped to @account (IMP-b9f4b900f00b, D3) — same reasoning as
+        # resolve_region's explicit-id lookup above.
+        type = ::System::ProviderInstanceType.find_by(id: explicit_id, account_id: @account.id)
         return type if type
       end
 
@@ -291,13 +316,14 @@ module Federation
       if preset_hint.present?
         type = ::System::ProviderInstanceType.find_by(
           name: preset_hint,
-          provider_id: region.provider_id
+          provider_id: region.provider_id,
+          account_id: @account.id
         )
         return type if type
       end
 
       ::System::ProviderInstanceType
-        .where(provider_id: region.provider_id)
+        .where(provider_id: region.provider_id, account_id: @account.id)
         .order(:created_at)
         .first
     end
