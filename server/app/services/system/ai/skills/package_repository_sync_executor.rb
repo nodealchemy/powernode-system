@@ -19,6 +19,19 @@ module System
             repository_id: { type: "string", required: true,
                              description: "PackageRepository.id" }
           },
+          # IMP-702d27f2d384 — `force` is a real keyword `#perform` accepts but
+          # is deliberately NOT a descriptor input; see the IMP-c90ba4ec46da
+          # comment at #perform for why (disables the mass-obsoletion guard on
+          # shared repos, re-gated at runtime instead of exposed to whatever
+          # composes a plan step from this catalog). Listed here, with a
+          # reason, so the anti-drift spec's exact-match inventory
+          # (descriptor_input_contract_spec.rb) can tell "deliberately hidden"
+          # from "forgot to declare" instead of silently accepting either.
+          intentionally_hidden_inputs: {
+            force: "IMP-c90ba4ec46da — disables the mass-obsoletion guard; re-gated at runtime " \
+                   "on shared repos via system.package_repositories.manage_shared, not exposed " \
+                   "to an LLM composer reading this catalog"
+          },
           outputs: {
             ok:            :boolean,
             queued:        :boolean,

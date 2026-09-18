@@ -71,6 +71,17 @@ module System
             dry_run: { type: "boolean", required: false, default: false,
                        description: "Plan only — return projected actions without provisioning or terminating" }
           },
+          # IMP-702d27f2d384 — `storage_gb` is a real `#perform` keyword
+          # deliberately left off `inputs`; see .resolve_storage_gb's
+          # divergent-reading note. Listed here with a reason so the
+          # anti-drift spec's exact-match inventory can tell "deliberately
+          # hidden" from "forgot to declare".
+          intentionally_hidden_inputs: {
+            storage_gb: "IMP-b439270dab0d — legacy alias of the declared with_storage_gb, resolved " \
+                        "via Shared::StorageSizeResolution.resolve; exposing both invites the " \
+                        "divergent-reading bug documented at ProvisionFullStackExecutor" \
+                        ".resolve_storage_gb — declare only the canonical with_storage_gb"
+          },
           outputs: {
             dry_run: :boolean,
             count: :integer,

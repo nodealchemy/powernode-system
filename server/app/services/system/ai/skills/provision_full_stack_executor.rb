@@ -49,6 +49,21 @@ module System
             dry_run: { type: "boolean", required: false, default: false,
                        description: "Plan only — return projected actions without creating any cloud resources" }
           },
+          # IMP-702d27f2d384 — three real `#perform` keywords deliberately
+          # left off `inputs` above, each already explained inline at
+          # #perform / .resolve_storage_gb; listed here with a reason so the
+          # anti-drift spec (descriptor_input_contract_spec.rb) can tell
+          # "deliberately hidden" from "forgot to declare".
+          intentionally_hidden_inputs: {
+            storage_gb: "IMP-b439270dab0d — legacy alias of the declared with_storage_gb, resolved " \
+                        "via Shared::StorageSizeResolution.resolve; exposing both invites the " \
+                        "divergent-reading bug documented at .resolve_storage_gb — declare only " \
+                        "the canonical with_storage_gb",
+            name_prefix: "IMP 019fe4c4-e813 — mission-substrate marker the composing orchestrator " \
+                         "injects (lands in node naming), not a value a caller composes directly",
+            mission_id: "IMP 019fe4c4-e813 — mission-substrate marker the composing orchestrator " \
+                        "injects (lands in node.config), not a value a caller composes directly"
+          },
           outputs: {
             dry_run: :boolean,
             count: :integer,

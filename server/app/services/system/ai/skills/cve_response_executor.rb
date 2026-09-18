@@ -52,7 +52,9 @@ module System
                         description: "critical|high|medium|low" },
             affected_packages: { type: "array", required: true,
                                  description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
-            summary: { type: "string", required: false }
+            summary: { type: "string", required: false },
+            persist: { type: "boolean", required: false, default: false,
+                      description: "Persist computed CveExposure rows instead of only returning the keyword-overlap stub (IMP-702d27f2d384 — was accepted by #perform but missing here)" }
           },
           outputs: {
             cve_id: :string,

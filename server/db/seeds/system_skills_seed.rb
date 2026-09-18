@@ -85,7 +85,8 @@ SKILLS_DATA = [
     tags: %w[cve security fleet exposure],
     system_prompt: <<~PROMPT.strip
       Triage a disclosed CVE — enumerate exposed modules/instances and plan remediation.
-      Inputs: cve_id, severity, affected_packages.
+      Inputs: cve_id, severity, affected_packages (required); summary, persist (optional — persist
+      writes computed CveExposure rows instead of only returning the keyword-overlap stub).
       Returns risk score + impact-ranked remediation plan.
       Sets requires_approval=true when a plan touches >5% of the fleet.
     PROMPT

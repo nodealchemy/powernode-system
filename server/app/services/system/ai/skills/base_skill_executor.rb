@@ -122,6 +122,22 @@ module System
             end.uniq.freeze
           end
 
+          # Every concrete executor class on disk, in the same enumerate-from-
+          # disk-not-descendants shape as .routed_action_categories above and
+          # for the same reason (IMP-702d27f2d384 — the anti-drift spec needs
+          # to check EVERY executor, not a sampled few, without depending on
+          # what Zeitwerk happens to have autoloaded by the time it runs).
+          # Only BaseSkillExecutor itself answers this; a subclass is not a
+          # router.
+          def all_concrete_executors
+            return [].freeze unless self == ::System::Ai::Skills::BaseSkillExecutor
+
+            Dir.glob(File.join(__dir__, "*_executor.rb")).sort.filter_map do |path|
+              klass = "System::Ai::Skills::#{File.basename(path, '.rb').camelize}".safe_constantize
+              klass if klass && klass < self
+            end.freeze
+          end
+
           # The Ai::InterventionPolicy category this executor's gate resolves.
           #
           # Declarable per-executor — `skill_descriptor(action_category: "...")`
