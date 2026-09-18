@@ -3,6 +3,14 @@ inherit_gem:
 
 AllCops:
   TargetRubyVersion: 3.2
+  # NewCops: enable — see server/.rubocop.yml:8 for the full reasoning
+  # (IMP-d96158bf07df). Short version: this extension has no Gemfile of its
+  # own, so its CI `rubocop` job always resolves from the PARENT platform's
+  # server/Gemfile.lock regardless of anything pinned here; `disable` would
+  # silently and permanently forfeit new-cop coverage instead. Kept `enable`
+  # and paired it with core/scripts/check-extension-rubocop.sh +
+  # core/scripts/pattern-validation.sh, which mirror the CI invocation
+  # locally so a parent-lock-triggered break surfaces before push.
   NewCops: enable
   SuggestExtensions: false
   Exclude:

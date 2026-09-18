@@ -6,6 +6,23 @@ inherit_from:
 
 AllCops:
   TargetRubyVersion: 3.2
+  # NewCops: enable — DELIBERATE, IMP-d96158bf07df. The CI `rubocop` job
+  # (extensions/system's own .gitea/workflows/ci.yaml) always installs and
+  # runs from the PARENT platform's server/Gemfile.lock, not from anything
+  # pinned here — this extension ships no Gemfile of its own, so there is no
+  # place to pin a rubocop version independent of the parent even if we
+  # wanted to (doing so would mean restructuring the CI job to give the
+  # extension its own bundle, which would also stop testing the version this
+  # code actually ships under). That leaves two real options: `disable` (stop
+  # new cops from ever firing — silent, permanent loss of coverage, with
+  # nothing to revisit it) or `enable` (stay current, accept that a PARENT
+  # lock bump can surface a batch of new-cop offences here with no local
+  # change of our own). Chose `enable`: core/scripts/check-extension-rubocop.sh
+  # + core/scripts/pattern-validation.sh now mirror this exact CI invocation
+  # (same server/Gemfile.lock-resolved version, same per-directory config
+  # resolution) locally, so a parent-triggered break surfaces on the next
+  # local gate run or push — not prevented, but no longer discoverable only
+  # by CI, after push, on an unrelated change.
   NewCops: enable
   SuggestExtensions: false
   Exclude:
