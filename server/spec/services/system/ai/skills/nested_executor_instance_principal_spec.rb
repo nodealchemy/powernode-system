@@ -134,6 +134,7 @@ RSpec.describe "instance principal → nested skill executor → tool" do
       "system_cve_triage"       => ::System::Ai::Skills::CveResponseExecutor,
       "system_attribute_failure" => ::System::Ai::Skills::AttributeFailureExecutor,
       "system_platform_maintenance" => ::System::Ai::Skills::PlatformMaintenanceExecutor,
+      "system_platform_health_check" => ::System::Ai::Skills::PlatformHealthCheckExecutor,
       "system_platform_resilience"  => ::System::Ai::Skills::PlatformResilienceExecutor
     }.each do |action, executor_class|
       it "hands #{executor_class.name.demodulize} the instance provenance" do

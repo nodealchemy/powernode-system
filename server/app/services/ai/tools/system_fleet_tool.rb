@@ -240,6 +240,13 @@ module Ai
         # them directly. The executors are reused.
         "system_platform_maintenance"   => "system.platform.read",
         "system_platform_resilience"    => "system.platform.scale",
+        # IMP-80a353489ba4: health_check split out of platform_maintenance
+        # into its own wrapper + executor (PlatformHealthCheckExecutor), same
+        # read PERMISSION tier as before — invoking it needs only a read
+        # permission. See declare_action below for `mutating:`, which is a
+        # SEPARATE question (does it write) and is true: the probe persists a
+        # PlatformHealthSnapshot row on every call.
+        "system_platform_health_check"  => "system.platform.read",
 
         # Audit + AI skills surfaces
         # ComplianceSnapshotService#snapshot! is a PURE READ — it only collects
@@ -876,6 +883,17 @@ module Ai
       declare_action "system_module_publish_target", mutating: false
       declare_action "system_platform_maintenance", mutating: true
       declare_action "system_platform_resilience", mutating: true
+      # `mutating: true`, not false: CompositeHealthProbe#call_and_persist!
+      # (System::Platform::CompositeHealthProbe) writes a PlatformHealthSnapshot
+      # row on every invocation, exactly the readOnlyHint precedent
+      # Ai::Tools::CoordinationTool's measure_pressure/perceive_pressure/
+      # perceive_signals already set for this codebase (mcp/tool_catalog.rb's
+      # READ_ONLY_ACTION_PREFIXES comment) — an observation-sounding verb that
+      # persists is declared mutating, not inferred read-only from its name.
+      # This action carried `mutating: true` before the split too (as part of
+      # platform_maintenance's combined declaration); the split preserves that
+      # governance rather than loosening it.
+      declare_action "system_platform_health_check", mutating: true
       # HIER-P2B-ENG — approval-gated on core's release.promote (the Release
       # Manager's require_approval row, no trust unlock). The context resolves
       # the version under the account and probes the transition BEFORE
@@ -1938,14 +1956,18 @@ module Ai
 
           # === Lifecycle skill wrappers (MCP.2) ===
           "system_platform_maintenance" => {
-            description: "Wraps the platform_maintenance skill executor — op-discriminated: cert_status, cert_rotate, drift_check, health_check. Use `op:` for the sub-action; the MCP dispatcher already owns `action:`.",
+            description: "Wraps the platform_maintenance skill executor — op-discriminated: cert_status, cert_rotate, drift_check. Use `op:` for the sub-action; the MCP dispatcher already owns `action:`. For the composite platform health answer, use system_platform_health_check instead.",
             parameters: {
               op: { type: "string", required: true, enum: ::System::Ai::Skills::PlatformMaintenanceExecutor::ACTIONS,
-                   description: "cert_status | cert_rotate | drift_check | health_check" },
+                   description: "cert_status | cert_rotate | drift_check" },
               certificate_id: { type: "string", required: false, description: "UUID of the certificate to act on (for cert_status/cert_rotate)" },
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scope the maintenance op to" },
               renewal_window_days: { type: "integer", required: false, description: "Days-before-expiry window that flags a cert for rotation" }
             }
+          },
+          "system_platform_health_check" => {
+            description: "Wraps the platform_health_check skill executor (IMP-80a353489ba4) — the composite platform health answer, split out of platform_maintenance so it has its own owner. No sub-action; takes no parameters.",
+            parameters: {}
           },
           "system_platform_resilience" => {
             description: "Wraps the platform_resilience skill executor — op-discriminated: drain_instance, scale, failover_check.",
@@ -2672,6 +2694,7 @@ module Ai
         when "system_cleanup_storage_migration"          then cleanup_storage_migration(params)
         # Lifecycle skill wrappers (MCP.2)
         when "system_platform_maintenance"     then platform_maintenance(params)
+        when "system_platform_health_check"    then platform_health_check(params)
         when "system_platform_resilience"      then platform_resilience(params)
         when "system_compliance_snapshot"      then compliance_snapshot(params)
         when "system_runbook_generate"         then runbook_generate(params)
@@ -6297,7 +6320,7 @@ module Ai
       # using the same key for the sub-action would shadow it.
       def platform_maintenance(params)
         op = params[:op].presence || params[:maintenance_action].presence
-        return error_result("op is required (cert_status | cert_rotate | drift_check | health_check)") if op.blank?
+        return error_result("op is required (cert_status | cert_rotate | drift_check)") if op.blank?
 
         executor = build_skill_executor(::System::Ai::Skills::PlatformMaintenanceExecutor)
         result = executor.execute(
@@ -6306,6 +6329,15 @@ module Ai
           deployment_id: params[:deployment_id],
           renewal_window_days: params[:renewal_window_days]
         )
+        return error_result(result[:error]) unless result[:success]
+        success_result(result[:data])
+      end
+
+      # IMP-80a353489ba4: split out of #platform_maintenance. No op — the
+      # composite health probe is this wrapper's only action.
+      def platform_health_check(_params)
+        executor = build_skill_executor(::System::Ai::Skills::PlatformHealthCheckExecutor)
+        result = executor.execute
         return error_result(result[:error]) unless result[:success]
         success_result(result[:data])
       end

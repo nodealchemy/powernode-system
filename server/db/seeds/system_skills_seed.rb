@@ -622,24 +622,48 @@ SKILLS_DATA = [
   {
     name: "Platform Maintenance",
     slug: "system-platform-maintenance",
-    description: "Routine platform maintenance: cert renewal/rotation, drift checks, health snapshots. Action-discriminated: cert_status, cert_rotate, drift_check, health_check.",
+    description: "Routine platform maintenance: cert renewal/rotation, drift checks. Action-discriminated: cert_status, cert_rotate, drift_check.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::PlatformMaintenanceExecutor",
     invocation_mode: "one_shot",
-    tags: %w[platform maintenance certificates renewal drift health],
+    tags: %w[platform maintenance certificates renewal drift],
     system_prompt: <<~PROMPT.strip
       ROUTINE platform care only — NOT incident response (use platform_resilience),
-      NOT new deployments (use platform_deploy).
+      NOT new deployments (use platform_deploy), NOT the composite health answer
+      (use platform_health_check).
 
       Action-discriminated; pick the branch:
         - cert_status   → "are my certs healthy?" / "what's expiring?"
         - cert_rotate   → "rotate the cert for X" / "renew everything expiring"
         - drift_check   → "any drift on my deployments?"
-        - health_check  → "what's the platform's overall health?"
 
       Each branch is read-only or triggers an async background job — none block on long work;
       returns immediately with structured recommendations.
+    PROMPT
+  },
+
+  # ─── Platform health check (IMP-80a353489ba4) ──────────────────────
+  # Split out of Platform Maintenance so the composite health answer has its
+  # own owner (platform-health-monitor) instead of riding the concierge's
+  # binding. See PlatformHealthCheckExecutor's docstring.
+  {
+    name: "Platform Health Check",
+    slug: "system-platform-health-check",
+    description: "COMPOSITE platform health snapshot across every subsystem — Rails, worker, Sidekiq, Redis, PostgreSQL, reverse proxy, MCP endpoint, fleet tick liveness, provider egress, fleet error/silent counts.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::PlatformHealthCheckExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform health monitoring observability],
+    system_prompt: <<~PROMPT.strip
+      "What's the platform's overall health?" — the composite answer, delegated whole to
+      System::Platform::CompositeHealthProbe. A subsystem that could not be observed reports
+      not_measured, never "ok". Also runs on a schedule via
+      System::Platform::ScheduledHealthCheckService, persisted as a health snapshot.
+
+      NOT incident response (use platform_resilience) and NOT routine maintenance
+      (use platform_maintenance for certs/drift).
     PROMPT
   },
 

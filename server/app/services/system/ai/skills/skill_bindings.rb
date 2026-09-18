@@ -58,6 +58,10 @@ module System
           # server/db/seeds/ai_engineering_agents_seed.rb), the only one an
           # extension executor binds.
           "platform_architect"   => "platform-architect",
+          # Platform Health Monitor (IMP-80a353489ba4) is also a CORE
+          # canonical (server/db/seeds/monitoring_analytics_agents_seed.rb)
+          # — PlatformHealthCheckExecutor's only binding.
+          "platform_health_monitor" => "platform-health-monitor",
 
           # legacy display-name labels — same targets, still accepted
           "Fleet Autonomy"            => "fleet-autonomy",

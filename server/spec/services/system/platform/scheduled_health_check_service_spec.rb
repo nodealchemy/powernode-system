@@ -5,7 +5,7 @@ require_relative "../../../support/schema_defect_helpers"
 
 # Campaign 01a07025 increment 3 — the scheduled, attributed, persisted
 # platform-health duty. Before this service, System::Platform::
-# CompositeHealthProbe and PlatformMaintenanceExecutor's health_check action
+# CompositeHealthProbe and PlatformHealthCheckExecutor's health_check action
 # both worked but had no caller on any schedule (no sensor binding, no cron)
 # — the increment-3 investigation's cleanest finding: a capability that
 # existed, was correct, and had never once run unattended.
@@ -14,30 +14,42 @@ require_relative "../../../support/schema_defect_helpers"
 # cross-checking this increment's report against its own): an earlier version
 # resolved the attributed agent via Ai::Agent.resolve_concierge_for, which
 # answers "the account's `is_concierge`-flagged agent" — Powernode Assistant,
-# a CORE agent this executor has no relationship to. The executor
-# `binds_to "concierge"`, which SkillBindings::AGENT_ALIASES maps to the
-# source_key "system-concierge" — a DIFFERENT agent. So every prior run
-# credited the wrong one. `global_concierge` below is that decoy: present in
-# every example so a resolver that drifts back toward it fails loudly, never
-# absent-by-omission.
+# a CORE agent this executor has no relationship to. `global_concierge` below
+# is that decoy: present in every example so a resolver that drifts back
+# toward it fails loudly, never absent-by-omission.
+#
+# THE SILENT-STOP THIS SPEC ALSO GUARDS AGAINST (IMP-80a353489ba4, operator
+# ruling 2026-09-13, re-affirmed 2026-09-18): health_check moved out of
+# PlatformMaintenanceExecutor (bound to "concierge") into its own executor,
+# PlatformHealthCheckExecutor, bound to "platform_health_monitor" — a
+# canonical with no everyday caller anywhere else in the platform (unlike the
+# concierge, minted lazily the first time a user opens a conversation). A
+# version of #bound_agent_clone that only ever READ for an existing clone
+# (never minted one) meant the scheduled sweep — the ONLY thing that ever
+# resolves this canonical — permanently skipped every account that had not
+# already acquired a clone some other way, which was every account. The
+# "with NO clone minted yet" context below is the oracle for that: it asserts
+# the check ACTUALLY RAN (a snapshot row, an attributed execution row) on an
+# account that starts with no clone, not merely that the executor is bound —
+# an assertion that would still pass with the sweep deleted outright.
 #
 # The three properties this spec exists to pin, because a health check that
 # runs but proves none of them is not the duty the operator asked for:
 #   - PERSISTED: a System::PlatformHealthSnapshot row exists afterward.
 #   - ATTRIBUTED: an Ai::AgentExecution row exists naming the agent that ran
-#     it — and specifically the agent PlatformMaintenanceExecutor is actually
+#     it — and specifically the agent PlatformHealthCheckExecutor is actually
 #     bound to, resolved through SkillBindings + source_key, never the
 #     is_concierge decoy and never the global canonical itself ("a global
 #     canonical never executes" — HIER-P1 / extensions/system/CLAUDE.md
 #     convention 4).
 #   - STABLE UNDER RENAME: the bound canonical's slug and display name are
-#     deliberately NOT "system concierge"-shaped below, mirroring the live
-#     rename this campaign is mid-way through — only source_key is asserted
-#     to matter.
+#     deliberately NOT "platform health monitor"-shaped below — only
+#     source_key is asserted to matter, mirroring the discipline that caught
+#     the original mis-attribution while the concierge was mid-rename.
 RSpec.describe System::Platform::ScheduledHealthCheckService do
   let(:seeding_account) { create(:account) }
   let(:account) { create(:account) }
-  let(:user) { create(:user, account: account) }
+  let!(:user) { create(:user, account: account) }
   let!(:provider) { create(:ai_provider, account: account, is_active: true) }
 
   # THE DECOY. Flagged `is_concierge: true` — what
@@ -50,16 +62,18 @@ RSpec.describe System::Platform::ScheduledHealthCheckService do
                               source_key: "powernode-assistant", is_system: true)
   end
 
-  # THE REAL OWNER. Named and slugged to NOT look like "System Concierge" —
-  # the display name and slug are exactly what a rename moves — with only
-  # source_key matching System::Ai::Skills::SkillBindings::AGENT_ALIASES's
-  # "concierge" -> "system-concierge" mapping, read from the constant rather
-  # than restated as a literal so this spec cannot drift from the registry.
-  let(:bound_source_key) { System::Ai::Skills::SkillBindings::AGENT_ALIASES.fetch("concierge") }
+  # THE REAL OWNER. Named and slugged to NOT look like "Platform Health
+  # Monitor" — the display name and slug are exactly what a rename moves —
+  # with only source_key matching
+  # System::Ai::Skills::SkillBindings::AGENT_ALIASES's
+  # "platform_health_monitor" -> "platform-health-monitor" mapping, read from
+  # the constant rather than restated as a literal so this spec cannot drift
+  # from the registry.
+  let(:bound_source_key) { System::Ai::Skills::SkillBindings::AGENT_ALIASES.fetch("platform_health_monitor") }
 
   let!(:bound_canonical) do
     create(:ai_agent, :global, owner_account: seeding_account, status: "active",
-                              name: "Infrastructure Generalist", slug: "infrastructure-generalist",
+                              name: "Fleet Watcher", slug: "fleet-watcher",
                               source_key: bound_source_key, is_system: true)
   end
 
@@ -70,18 +84,65 @@ RSpec.describe System::Platform::ScheduledHealthCheckService do
     end
   end
 
+  def minted_clone_of(canonical, in_account:)
+    ::Ai::Agent.owned_by_account(in_account.id).find_by(cloned_from_id: canonical.id)
+  end
+
   describe "#run_if_due!" do
-    it "skips the account when no clone of the bound agent has been minted yet" do
-      stub_probes_ok
+    context "with NO clone of the bound agent minted yet" do
+      it "mints the clone on this first sweep and actually runs the check through it, not merely skips" do
+        stub_probes_ok
+        expect(minted_clone_of(bound_canonical, in_account: account)).to be_nil
 
-      result = described_class.new(account: account).run_if_due!
+        result = described_class.new(account: account).run_if_due!
 
-      expect(result).to include(ran: false, reason: "no_bound_agent_clone")
-      expect(System::PlatformHealthSnapshot.for_account(account)).to be_empty
-      expect(Ai::AgentExecution.where(account: account)).to be_empty
+        minted = minted_clone_of(bound_canonical, in_account: account)
+        expect(minted).to be_present, "expected the sweep to mint a clone of the bound canonical; none exists"
+        expect(minted.id).not_to eq(bound_canonical.id)
+
+        expect(result[:ran]).to be(true)
+        expect(result[:agent_id]).to eq(minted.id)
+
+        snapshot = System::PlatformHealthSnapshot.for_account(account).recent.first
+        expect(snapshot).to be_present, "expected a persisted snapshot from the FIRST sweep, found none"
+
+        execution = Ai::AgentExecution.where(account: account).order(:created_at).last
+        expect(execution).to be_present, "expected an attributed Ai::AgentExecution row from the FIRST sweep"
+        expect(execution.ai_agent_id).to eq(minted.id)
+        expect(execution.ai_agent_id).not_to eq(bound_canonical.id)
+        expect(execution.ai_agent_id).not_to eq(global_concierge.id)
+        expect(execution.execution_context["kind"]).to eq("scheduled_health_check")
+        expect(execution.status).to eq("completed")
+      end
+
+      it "mints independently for a second account on ITS first sweep — not a one-time global backfill" do
+        stub_probes_ok
+        other_account = create(:account)
+        create(:user, account: other_account)
+        create(:ai_provider, account: other_account, is_active: true)
+
+        described_class.new(account: account).run_if_due!
+        result = described_class.new(account: other_account).run_if_due!
+
+        expect(result[:ran]).to be(true)
+        expect(minted_clone_of(bound_canonical, in_account: other_account)).to be_present
+        expect(minted_clone_of(bound_canonical, in_account: other_account).id)
+          .not_to eq(minted_clone_of(bound_canonical, in_account: account).id)
+      end
+
+      it "still skips — never executes AS the global canonical — when the account has no user to own a clone" do
+        userless_account = create(:account)
+        create(:ai_provider, account: userless_account, is_active: true)
+
+        result = described_class.new(account: userless_account).run_if_due!
+
+        expect(result).to include(ran: false, reason: "no_bound_agent_clone")
+        expect(::Ai::Agent.owned_by_account(userless_account.id)).to be_empty
+        expect(Ai::AgentExecution.where(account: userless_account)).to be_empty
+      end
     end
 
-    context "with a clone of the bound agent, and ALSO a clone of the is_concierge decoy" do
+    context "with a clone of the bound agent already minted, and ALSO a clone of the is_concierge decoy" do
       let!(:clone) do
         ::Ai::Agents::AccountPrincipalResolver.for(canonical_slug: bound_canonical.source_key,
                                                     account: account, user: user)

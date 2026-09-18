@@ -8,14 +8,24 @@ module System
     # agents "responsible for regularly checking the health of the various
     # components." System::Platform::CompositeHealthProbe already answers
     # that correctly (offer 01a07024-d980), and
-    # System::Ai::Skills::PlatformMaintenanceExecutor already exposes it as
-    # the `health_check` action — but the increment-3 investigation found
-    # neither is ever invoked on a schedule: the executor's health_check
-    # branch has no sensor binding in DecisionEngine::SIGNAL_BINDINGS and no
-    # cron, and the dashboard's own path
-    # (Api::V1::System::Platform::HealthController#show) deliberately calls
-    # `.call`, not `.call_and_persist!`, because it is a per-viewer 30s poll.
-    # So the capability existed, worked, and had never once run unattended.
+    # System::Ai::Skills::PlatformHealthCheckExecutor already exposes it as
+    # its one action — but the increment-3 investigation found neither is
+    # ever invoked on a schedule: the executor's health_check branch has no
+    # sensor binding in DecisionEngine::SIGNAL_BINDINGS and no cron, and the
+    # dashboard's own path (Api::V1::System::Platform::HealthController#show)
+    # deliberately calls `.call`, not `.call_and_persist!`, because it is a
+    # per-viewer 30s poll. So the capability existed, worked, and had never
+    # once run unattended.
+    #
+    # IMP-80a353489ba4 (operator ruling 2026-09-13, re-affirmed 2026-09-18):
+    # health_check moved out of PlatformMaintenanceExecutor (bound to
+    # "concierge") into its own executor, PlatformHealthCheckExecutor, bound
+    # to "platform_health_monitor" — the canonical whose whole job is
+    # watching the platform, not the concierge's. This service now resolves
+    # and mints THAT canonical's clone (see #bound_agent_clone below); every
+    # reference to PlatformMaintenanceExecutor in the comments above this
+    # point is historical (what the capability looked like before the split),
+    # not what this service reads today.
     #
     # THIS SERVICE closes exactly that gap, and only that gap. Filed
     # separately (not fixed here — out of scope for this increment): the
@@ -53,18 +63,37 @@ module System
     #     campaign exists to remove, caught here as a live mis-attribution.
     #
     #     So the resolution is now: ask SkillBindings which source_key(s)
-    #     PlatformMaintenanceExecutor is registered against (never hardcoded
+    #     PlatformHealthCheckExecutor is registered against (never hardcoded
     #     here — a future `binds_to` change cannot silently re-point this),
     #     resolve the GLOBAL canonical by that source_key (never slug, never
     #     display name — both are mid-rename; source_key is "explicitly set
     #     and derived from nothing", the one identifier a rename cannot
-    #     touch), then ask Ai::Agents::AccountPrincipalResolver.existing —
-    #     the platform's ONE resolver of "which row acts for canonical X in
-    #     account Y" — for the account's clone, READ-ONLY (never minting).
-    #     No clone yet is simply skipped for this tick, rather than crediting
-    #     the canonical or minting one as a side effect of a health check:
-    #     "a global canonical never executes" is the platform's ratified
-    #     design.
+    #     touch).
+    #
+    #     IMP-80a353489ba4: THIS is the part the 2026-09-13 ruling changed.
+    #     An earlier version of this method asked
+    #     Ai::Agents::AccountPrincipalResolver.existing — read-only, never
+    #     minting — for the account's clone, and skipped the tick with
+    #     `reason: "no_bound_agent_clone"` when none existed yet. For an
+    #     account that had simply never had ANY reason to touch
+    #     platform-health-monitor before (nothing else in the platform
+    #     resolves it — unlike the concierge, which gets minted lazily the
+    #     first time a user opens a conversation), that made the skip
+    #     PERMANENT: the scheduled sweep was the only caller that could ever
+    #     trigger the mint, and it refused to be the one to do it. The ruling:
+    #     mint the monitor's clone the SAME WAY the concierge's is minted —
+    #     lazily, on first use, via Ai::Agents::AccountPrincipalResolver
+    #     .acting — except here the sweep tick itself IS the first use, so
+    #     #bound_agent_clone below calls `.acting`, not `.existing`. `.acting`
+    #     still cannot conjure a clone for an account with no user to own one
+    #     or no active provider to run it on (mint! returns nil there, and
+    #     `.acting` falls back to answering with the global canonical itself
+    #     — "a global canonical never executes" is still the platform's
+    #     ratified design) — #bound_agent_clone treats that fallback exactly
+    #     like the old no-clone case and skips the tick, because a health
+    #     check must still never execute AS the canonical. What changed is
+    #     only the ordinary case: an account that CAN run one now gets one
+    #     minted on its first-ever sweep, instead of being skipped forever.
     #
     #     This is the piece missing everywhere else, too, not just here: every
     #     autonomous fleet-tick remediation already writes an agent_id into a
@@ -76,8 +105,8 @@ module System
     #     duty. It does not touch BaseSkillExecutor or
     #     System::Fleet::DecisionEngine — both out of scope for this
     #     increment, and the fleet services tree is a different lane's.
-    #   - PERSISTED: invokes PlatformMaintenanceExecutor's `health_check`
-    #     action exactly as a human chat request would, which calls
+    #   - PERSISTED: invokes PlatformHealthCheckExecutor exactly as a human
+    #     chat request would, which calls
     #     CompositeHealthProbe#call_and_persist! — the SAME not_measured
     #     discipline that class already carries is untouched by this service;
     #     nothing here re-implements or approximates a subsystem check, so it
@@ -104,9 +133,13 @@ module System
       end
 
       # Runs the check if due, else a documented no-op. Never raises: one
-      # mis-configured account (no clone of the bound agent yet, no
-      # resolvable provider or creator) must not take down the sweep for
-      # every other account.
+      # mis-configured account (no resolvable provider or creator to mint the
+      # bound agent's clone with) must not take down the sweep for every
+      # other account. An account that CAN mint one but simply has not yet
+      # gets it minted right here (#bound_agent_clone) — the reason string is
+      # still `no_bound_agent_clone`, but as of IMP-80a353489ba4 that only
+      # ever fires for the genuinely un-mintable case, never merely "hasn't
+      # run before".
       def run_if_due!
         return { account_id: @account.id, ran: false, reason: "not_due" } unless due?
 
@@ -133,20 +166,20 @@ module System
         last.nil? || last <= interval_minutes.minutes.ago
       end
 
-      # The GLOBAL canonical PlatformMaintenanceExecutor is actually
+      # The GLOBAL canonical PlatformHealthCheckExecutor is actually
       # registered against, resolved through the SAME registry
       # SkillBindingsReconciler reads — never a hardcoded source_key, never
       # the executor's `binds_to` label re-derived by hand, so this cannot
       # drift from the reconciler's own answer to "who owns this skill".
       def bound_canonical
         # The bare constant reference forces Rails to autoload
-        # PlatformMaintenanceExecutor NOW if it has not been loaded yet in
+        # PlatformHealthCheckExecutor NOW if it has not been loaded yet in
         # this process — which is what runs its `binds_to` class-body line
         # and registers it with SkillBindings. Referencing the constant only
         # inside the `.find` block below would autoload it too late: `.all`
         # would already have returned its (registration-less) snapshot by
         # the time the block ran.
-        executor_class = ::System::Ai::Skills::PlatformMaintenanceExecutor
+        executor_class = ::System::Ai::Skills::PlatformHealthCheckExecutor
         registration = ::System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == executor_class }
         return nil unless registration
 
@@ -158,22 +191,41 @@ module System
         ::Ai::Agent.global.find_by(source_key: agent_keys.first)
       end
 
-      # The account's EXISTING clone of the bound canonical — never the
-      # canonical itself (a global agent never executes), and never minted
-      # here: AccountPrincipalResolver.existing is the read-only twin of the
-      # minting `acting`/`for`, exactly because a health check must not have
-      # the side effect of creating an agent.
+      # The account's clone of the bound canonical, MINTED on first use if it
+      # does not exist yet (IMP-80a353489ba4) — the same lazy-mint mechanism
+      # the concierge's clone goes through everywhere it is resolved
+      # (Ai::Agents::AccountPrincipalResolver.acting / .concierge_for / .for,
+      # called from a controller or service the first time an account
+      # actually needs the concierge to act). platform-health-monitor has no
+      # such everyday caller — this scheduled sweep is the only thing that
+      # ever resolves it — so `.acting`'s ordinary lazy-mint behavior is what
+      # makes the FIRST due tick for a given account the mint point, for a
+      # brand-new account and for a long-existing one that simply never
+      # triggered it before alike: there is no separate migration or
+      # backfill population, because every account converges through this
+      # same call on its next due tick.
+      #
+      # `.acting` still cannot mint for an account with no user to own the
+      # clone or no active provider to run it on (AccountPrincipalResolver
+      # #mint! returns nil there) — it falls back to answering with the
+      # GLOBAL CANONICAL itself in that case, per its own contract. A global
+      # canonical must never execute (HIER-P1), so that fallback is treated
+      # exactly like "no clone" here and the tick is skipped, never run
+      # against the canonical.
       def bound_agent_clone
         canonical = bound_canonical
         return nil unless canonical
 
-        ::Ai::Agents::AccountPrincipalResolver.existing(canonical, account: @account)
+        agent = ::Ai::Agents::AccountPrincipalResolver.acting(canonical, account: @account)
+        return nil if agent.nil? || agent.id == canonical.id
+
+        agent
       end
 
       def run_and_attribute!(agent)
         started_at = Time.current
-        executor = ::System::Ai::Skills::PlatformMaintenanceExecutor.new(account: @account, agent: agent, user: nil)
-        result = executor.execute(gated: true, action: "health_check")
+        executor = ::System::Ai::Skills::PlatformHealthCheckExecutor.new(account: @account, agent: agent, user: nil)
+        result = executor.execute(gated: true)
         completed_at = Time.current
 
         # health_check wraps the probe result a second layer deep:
