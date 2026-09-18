@@ -1032,6 +1032,55 @@ module System
         "system.replica_lag_unsafe" => {
           skill: nil,
           action_category: "system.observation"
+        },
+        # IMP-ff6d46f2c3e1 — TerminatedGuestPresentSensor. Gap (1) of
+        # IMP-8225624f46b1: a terminated row whose own guest the provider
+        # still lists (InstanceControlService commits terminate! before the
+        # provider call; a crash between the two leaves exactly this — the VM
+        # keeps running and billing with the platform believing it is gone).
+        #
+        # skill: nil, and there is no safe applier to name: the only actions
+        # are "retry the provider destroy" or "confirm it already happened",
+        # both of which risk destroying the wrong guest if the sensor's
+        # read is stale (a recycled cloud_instance_id, the same hazard
+        # #guest_identity/#terminated_guest_present_ids in CloudSyncService
+        # guards against on the READ side). A person confirming in the
+        # provider console is the honest remediation.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator, which is the entire point of this lane (same reasoning as
+        # system.node_lkg_investigate above). Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES: the
+        # fingerprint stands until a person acts, not inside one settle
+        # window, and it would otherwise manufacture a false
+        # fleet.remediation_stuck escalation.
+        "system.cloud_sync_terminated_guest_present" => {
+          skill: nil,
+          action_category: "system.cloud_sync_terminated_guest_investigate"
+        },
+        # IMP-ff6d46f2c3e1 — the STALENESS arm, added in review (D1): the
+        # presence binding above only ever fires from a FRESH check event, so
+        # a region whose sync has stopped succeeding reports nothing wrong —
+        # not because nothing is wrong, but because nothing is looking. A
+        # distinct kind and category from the presence lane on purpose: they
+        # can each be true independently (a dead sync says nothing about
+        # whether a specific guest is still billing, and vice versa), and an
+        # operator resolving one must not be able to dismiss the other by
+        # association the way a shared category would invite.
+        #
+        # skill: nil — no applier: the fix is a person finding out why the
+        # hourly job or the provider API stopped succeeding, same as the
+        # presence lane's "check the provider console". DO NOT collapse to
+        # system.observation (auto_approve reaches no operator) or to the
+        # presence category above (see the sensor's own doc for why they must
+        # stay separable). Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES: the
+        # fingerprint stands until a fresh check event lands, not inside one
+        # settle window.
+        "system.cloud_sync_check_stale" => {
+          skill: nil,
+          action_category: "system.cloud_sync_check_stale_investigate"
         }
       }.freeze
 

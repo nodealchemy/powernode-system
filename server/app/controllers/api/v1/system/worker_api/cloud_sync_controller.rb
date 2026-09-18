@@ -59,10 +59,48 @@ module Api
             synced_total = 0
             updated_total = 0
             # IMP-231f17d71dfa: instances whose provider-reported status the
-            # platform deliberately declined to apply. Aggregated alongside
-            # updated_total because this is the layer the hourly SystemCloudSyncJob
-            # actually reads — a held_count that stops at the service is a signal
-            # nobody receives.
+            # platform deliberately declined to apply.
+            #
+            # IMP-ff6d46f2c3e1 CORRECTION (revised — the first correction here
+            # overstated coverage in two different ways, caught in review):
+            # this line used to claim "this is the layer the hourly
+            # SystemCloudSyncJob actually reads" — false at the time. As of
+            # this change SystemCloudSyncJob's own #execute DOES read and log
+            # all four of held_count/guest_lost_count/ambiguous_count/
+            # terminated_guest_present (worker/app/jobs/system_cloud_sync_job.rb)
+            # — but only into its OWN Sidekiq log line, for an operator tailing
+            # that job. A log line is not a sensor: none of the four reach the
+            # fleet-autonomy DecisionEngine through the job.
+            #
+            # terminated_guest_present is the one that reaches an actual
+            # consumer: System::CloudSyncService writes a durable check-event
+            # trail (TERMINATED_GUEST_CHECK_EVENT_KIND) and
+            # System::Fleet::Sensors::TerminatedGuestPresentSensor reads it on
+            # its own 60s tick, independent of this job entirely.
+            #
+            # held_count and guest_lost_count are NOT covered by an equivalent
+            # path, and an earlier revision of this comment overclaimed that
+            # they were — corrected after review named the exact gaps:
+            #   * held: InstanceStatusSensor::HEARTBEAT_EXPECTED_STATUSES is
+            #     %w[running starting] and EXCLUDES `error`, but the canonical
+            #     held row is exactly "provider reports running, platform
+            #     holds `error`" (CloudSyncService#sync_region_instances
+            #     :311-321) — so InstanceStatusSensor never sees it. Nothing
+            #     else watches a held row either.
+            #   * guest-lost: AbandonedInstanceSensor.abandoned_relation scopes
+            #     instance_pool_id: nil, ops_hold_at: nil,
+            #     ABANDONABLE_VARIETIES = %w[cloud], and a 7-day window — so a
+            #     guest-lost row is only ever reachable there for an UNPOOLED,
+            #     NOT-ops-held `cloud` instance in starting/running/stopped/
+            #     error, and only after 7 days of silence. Pooled rows,
+            #     `physical`, `dynamic`, pending/provisioning/stopping/
+            #     rebooting statuses, and anything younger than 7 days are not
+            #     covered — and this method itself can mark a `dynamic` row
+            #     guest-lost (regions query below selects
+            #     variety: %w[cloud dynamic]), which AbandonedInstanceSensor's
+            #     `cloud`-only scope will never admit regardless of age.
+            # Neither gap is widened by this change — filed separately as
+            # 01a0b256.
             held_total = 0
             # IMP-8225624f46b1: recycled ids given up, ids several rows share with
             # nothing to tell them apart, and terminated rows whose guest still runs.

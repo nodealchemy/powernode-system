@@ -281,6 +281,61 @@ RSpec.describe System::CloudSyncService do
 
       expect(result.data[:terminated_guest_present]).to eq([])
     end
+
+    # IMP-ff6d46f2c3e1 — gap (1) reached no sensor because nothing durable
+    # recorded it: the service reported it via a warn log and a response field
+    # the worker job never read. TerminatedGuestPresentSensor reads this event
+    # trail instead of the (unpersisted) provider listing, so both arms —
+    # found and clean — must land, and must be tellable apart from a sync
+    # that never ran at all.
+    describe "the terminated-guest check event" do
+      it "records a HIGH-severity check event naming the instance when its guest is still listed" do
+        dead = row("pve1/qemu/9211", status: "terminated", guest_name: "web-t2")
+        list!({ cloud_instance_id: "pve1/qemu/9211", name: "web-t2", status: "running",
+                private_ip_address: "192.0.2.61", public_ip_address: nil })
+
+        expect {
+          described_class.new.sync_region_instances(region: region, account: account)
+        }.to change { System::FleetEvent.where(kind: System::CloudSyncService::TERMINATED_GUEST_CHECK_EVENT_KIND).count }.by(1)
+
+        event = System::FleetEvent.where(kind: System::CloudSyncService::TERMINATED_GUEST_CHECK_EVENT_KIND).last
+        expect(event.account_id).to eq(account.id)
+        expect(event.severity).to eq("high")
+        expect(event.payload["provider_region_id"]).to eq(region.id)
+        expect(event.payload["terminated_guest_present"]).to eq([ dead.id ])
+      end
+
+      # The MEASURED-ZERO form: a clean tick must still leave a check event,
+      # with the key present and empty — never omitted — so a consumer can
+      # tell "measured, found nothing" apart from "never measured" (no event
+      # at all). Severity differs from the found case so a log/alert filter on
+      # severity alone does not have to parse the payload to tell them apart.
+      it "records a LOW-severity check event naming no instance when the tick is clean" do
+        row("pve1/qemu/9212", status: "terminated", guest_name: "web-gone2")
+        list!({ cloud_instance_id: "pve1/qemu/9212", name: "someone-else-2", status: "running",
+                private_ip_address: "192.0.2.62", public_ip_address: nil })
+
+        expect {
+          described_class.new.sync_region_instances(region: region, account: account)
+        }.to change { System::FleetEvent.where(kind: System::CloudSyncService::TERMINATED_GUEST_CHECK_EVENT_KIND).count }.by(1)
+
+        event = System::FleetEvent.where(kind: System::CloudSyncService::TERMINATED_GUEST_CHECK_EVENT_KIND).last
+        expect(event.severity).to eq("low")
+        expect(event.payload["terminated_guest_present"]).to eq([])
+      end
+
+      it "does not fail the whole sync when recording the check event raises" do
+        dead = row("pve1/qemu/9213", status: "terminated", guest_name: "web-t3")
+        list!({ cloud_instance_id: "pve1/qemu/9213", name: "web-t3", status: "running",
+                private_ip_address: "192.0.2.63", public_ip_address: nil })
+        allow(System::FleetEvent).to receive(:create!).and_raise(ActiveRecord::RecordInvalid.new(System::FleetEvent.new))
+
+        result = nil
+        expect { result = described_class.new.sync_region_instances(region: region, account: account) }.not_to raise_error
+        expect(result.success?).to be true
+        expect(result.data[:terminated_guest_present]).to eq([ dead.id ])
+      end
+    end
   end
 
   describe "#sync_region_instances" do

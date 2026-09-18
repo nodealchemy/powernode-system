@@ -473,7 +473,15 @@ module System
         # interval is the opt-in) and system.volume_snapshot_prunable → the
         # EXISTING system.volume_snapshot_delete row (require_approval), both
         # gated under the Storage Manager and both with an applier.
-        ::System::Fleet::Sensors::SnapshotPolicySensor
+        ::System::Fleet::Sensors::SnapshotPolicySensor,
+        # IMP-ff6d46f2c3e1 — the consumer for gap (1) of IMP-8225624f46b1.
+        # Reads the FleetEvent check trail CloudSyncService writes on every
+        # tick (never a live provider listing of its own) and emits
+        # system.cloud_sync_terminated_guest_present -> the
+        # system.cloud_sync_terminated_guest_investigate lane (notify-only; no
+        # applier exists — see the sensor's own doc for why) when a terminated
+        # row's guest is still listed at the provider.
+        ::System::Fleet::Sensors::TerminatedGuestPresentSensor
       ].freeze
 
       # Scoped to THIS account. The fleet agents are seeded global (account_id

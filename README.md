@@ -61,7 +61,7 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **38 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **40 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   external workload pressure (cross-extension stigmergic coordination), instance
   state drift, GitOps drift, package repository drift, project SLO breaches,

@@ -16,6 +16,29 @@ module System
     # instance synced in that narrow gap would be force-terminated.
     TERMINATION_SWEEP_GRACE_SECONDS = (ENV["CLOUD_SYNC_TERMINATION_GRACE_SECONDS"] || 900).to_i
 
+    # IMP-ff6d46f2c3e1: gap (1) of IMP-8225624f46b1 (a terminate that never
+    # reached the provider — the row reads terminated, the VM keeps running
+    # and billing) was computed on every successful region sync and reported
+    # through a warn log and a response field, both of which nothing
+    # downstream consumed. Every
+    # OTHER fleet sensor treats `terminated` as inert and stops looking, so
+    # this condition is invisible to the rest of the fleet by construction —
+    # if nothing reads THIS event, nothing reads it at all.
+    #
+    # Recorded on every SUCCESSFUL region sync — i.e. every call that reaches
+    # this point in #sync_region_instances, not literally every tick: a
+    # missing provider connection/adapter, a provider without :sync support,
+    # a failed list_instances, or a rescued provider error all return before
+    # this line and write no event for that region on that pass. Never only
+    # when the list is non-empty, though: the event's own presence is what
+    # tells Sensors::TerminatedGuestPresentSensor a measurement actually
+    # happened, distinct from a clean fleet — a missing event and an event
+    # naming zero instances must read differently to that consumer, or a
+    # stalled cron and a healthy region become the same silence. The sensor's
+    # own staleness arm is what notices when a region stops reaching this
+    # line at all.
+    TERMINATED_GUEST_CHECK_EVENT_KIND = "system.cloud_sync.terminated_guest_check"
+
     def self.sync_instance_state(instance:)
       new.sync_instance_state(instance: instance)
     end
@@ -348,6 +371,14 @@ module System
         end
       end
 
+      # IMP-8225624f46b1 gap (1): terminated rows whose OWN guest (same id,
+      # same recorded name) the provider still lists. InstanceControlService
+      # commits terminate! before the provider call, so a crash between the two
+      # leaves exactly this. Reported, never rewritten: a terminal status is not
+      # resurrected from a listing.
+      terminated_guest_ids = terminated_guest_present_ids(region, cloud_instances)
+      record_terminated_guest_check!(region: region, account: account, instance_ids: terminated_guest_ids)
+
       Runtime::Result.ok(data: {
         synced_count: synced_count,
         updated_count: updated_count,
@@ -359,12 +390,7 @@ module System
         held_count: held_count,
         guest_lost_count: guest_lost_count,
         ambiguous_count: ambiguous_count,
-        # IMP-8225624f46b1 gap (1): terminated rows whose OWN guest (same id,
-        # same recorded name) the provider still lists. InstanceControlService
-        # commits terminate! before the provider call, so a crash between the two
-        # leaves exactly this. Reported, never rewritten: a terminal status is not
-        # resurrected from a listing.
-        terminated_guest_present: terminated_guest_present_ids(region, cloud_instances),
+        terminated_guest_present: terminated_guest_ids,
         terminated_count: terminated_count,
         cloud_count: cloud_instances.size,
         page_count: page_count,
@@ -417,6 +443,35 @@ module System
           )
         end
         .map(&:id)
+    end
+
+    # The measured-zero form is explicit (an empty array, never an omitted
+    # key), so TerminatedGuestPresentSensor can tell "checked, found none"
+    # apart from "never checked" by the EVENT's presence alone.
+    #
+    # Rescued rather than left to propagate: this is bookkeeping ALONGSIDE the
+    # region's real reconciliation, which has already committed by the time
+    # this runs. Letting an audit-write failure bubble up would make the
+    # controller's per-region rescue report the whole region as failed despite
+    # every instance in it having synced correctly — the ancillary write must
+    # not be able to make a successful sync read as an error.
+    def record_terminated_guest_check!(region:, account:, instance_ids:)
+      ::System::FleetEvent.create!(
+        account: account,
+        kind: TERMINATED_GUEST_CHECK_EVENT_KIND,
+        severity: instance_ids.any? ? "high" : "low",
+        source: "cloud_sync_service",
+        payload: {
+          "provider_region_id" => region.id,
+          "checked_at" => Time.current.utc.iso8601,
+          "terminated_guest_present" => instance_ids
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.error(
+        "[CloudSyncService] failed to record terminated-guest check for region=#{region.id}: " \
+        "#{e.class}: #{e.message}"
+      )
     end
 
     def terminated_result(instance)

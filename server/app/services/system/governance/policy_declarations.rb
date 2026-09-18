@@ -623,6 +623,24 @@ module System
         # pre-boot/LKG agents it stands indefinitely.
         "system.node_lkg_investigate" => "notify_and_proceed",
 
+        # IMP-ff6d46f2c3e1 — TerminatedGuestPresentSensor (gap (1) of
+        # IMP-8225624f46b1). notify_and_proceed, never auto_approve: there is
+        # no applier and can be none — only a person can confirm with the
+        # provider that the guest is actually gone, or retry the destroy.
+        # "Proceed" means "notify the operator". Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person acts, and CloudSyncService keeps
+        # re-asserting it every hourly tick for as long as the provider keeps
+        # listing the guest.
+        "system.cloud_sync_terminated_guest_investigate" => "notify_and_proceed",
+
+        # IMP-ff6d46f2c3e1 — the STALENESS arm (D1, added in review). Same
+        # disposition as the presence lane above and the same reasoning:
+        # notify_and_proceed, never auto_approve, no applier — a person
+        # investigates why the sync stopped succeeding. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.cloud_sync_check_stale_investigate" => "notify_and_proceed",
+
         # StuckTaskBacklogSensor — "tasks are piling up behind the janitor".
         #
         # notify_and_proceed, never auto_approve: there is no applier and can be
