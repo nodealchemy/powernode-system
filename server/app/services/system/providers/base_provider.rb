@@ -325,8 +325,15 @@ module System
       # Get current instance state
       #
       # @param instance_id [String] Cloud instance ID
+      # @param expected_name [String, nil] The guest name this instance was
+      #   created with — same contract as #terminate_instance's expected_name.
+      #   Optional, and providers may ignore it; Proxmox uses it to refuse to
+      #   report state for a vmid that has been recycled onto a DIFFERENT
+      #   guest (error_code GUEST_NAME_MISMATCH) instead of describing that
+      #   guest as if it were this instance. Omitting it keeps the
+      #   conservative (unchecked) behaviour.
       # @return [Hash] Normalized instance data with current state
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         raise NotImplementedError, "#{self.class} must implement #get_instance"
       end
 
@@ -343,9 +350,10 @@ module System
       # the caller (the controller logs + skips it).
       #
       # @param instance_id [String] Cloud instance ID
+      # @param expected_name [String, nil] See #get_instance.
       # @return [Hash] { success:, status:, private_ip_address:, public_ip_address: }
-      def sync_status(instance_id)
-        result = get_instance(instance_id)
+      def sync_status(instance_id, expected_name: nil)
+        result = get_instance(instance_id, expected_name: expected_name)
         return result if result.is_a?(Hash) && result[:success]
 
         if result.is_a?(Hash) &&

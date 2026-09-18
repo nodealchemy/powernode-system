@@ -260,7 +260,7 @@ module System
         { success: true, instances: instances, page_count: page_count, truncated: truncated }
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         rg = resource_group
         response = arm_get(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}",

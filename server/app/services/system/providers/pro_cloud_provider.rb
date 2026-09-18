@@ -167,7 +167,7 @@ module System
         handle_api_error(e)
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         log_operation("get_instance", instance_id: instance_id)
         instance = api_client.get_instance(instance_id)
 

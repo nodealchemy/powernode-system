@@ -166,7 +166,7 @@ module System
         )
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         log_operation("get_instance", instance_id: instance_id)
 
         instance = @@instances[instance_id]

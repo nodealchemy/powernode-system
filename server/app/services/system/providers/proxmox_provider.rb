@@ -549,9 +549,9 @@ module System
         end
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         log_operation("get_instance", instance_id: instance_id)
-        sync_status(instance_id)
+        sync_status(instance_id, expected_name: expected_name)
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
@@ -1872,10 +1872,37 @@ module System
       # Status sync (common for VM + LXC)
       # ============================================================
 
-      def sync_status(instance_id)
+      # IMP-43f071c918e6 discovery (not part of the original finding, found
+      # while covering the InstanceStateDriftSensor call site below): this
+      # method has been PRIVATE since it was added — everything past the
+      # `private` marker above is — while BaseProvider declares #sync_status
+      # public and #get_instance (still public here, defined before that
+      # marker) calls it internally, so that self-call never surfaced the
+      # problem. But Sensors::InstanceStateDriftSensor,
+      # PromoteReplicaExecutor and NodeInstanceReconciliation all call
+      # `adapter.sync_status(...)` with an EXPLICIT receiver, which Ruby
+      # refuses for a private method regardless of the superclass's
+      # visibility — a real ProxmoxProvider instance raises NoMethodError on
+      # every one of those calls today. Each caller's own broad
+      # `rescue StandardError` swallows it as an ordinary failed read (no
+      # crash, no signal), which is exactly why this was invisible: existing
+      # specs against these callers double against BaseProvider/an
+      # interface-only instance_double, where #sync_status IS public, so
+      # they never exercise the concrete Proxmox override and could not see
+      # this. `public def` here (Ruby's `def` returns the method name, so
+      # this composes) restores the BaseProvider contract for this one
+      # method without moving it, or the private helper below it, out of
+      # this section.
+      public def sync_status(instance_id, expected_name: nil)
         c = require_client!
         node, kind, vmid = parse_instance_id!(instance_id)
         current = c.get("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/current") || {}
+
+        if (refusal = sync_guest_identity_refusal(current, instance_id: instance_id, node: node,
+                                                            kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal
+        end
+
         agent_iface = nil
         if kind == "qemu" && current["agent"].to_i == 1 && current["status"] == "running"
           # Best-effort IP from guest agent — soft-fail if agent isn't up yet
@@ -1897,6 +1924,60 @@ module System
           uptime: current["uptime"],
           qmpstatus: current["qmpstatus"]
         )
+      end
+
+      # IMP-43f071c918e6. #get_instance/#sync_status is the per-instance
+      # counterpart to the listing-path guest-name matching CloudSyncService
+      # already does in #sync_region_instances (IMP-8225624f46b1) — that path
+      # never reaches here (it walks list_instances), but every OTHER cloud
+      # sync route (#sync_instance_state, #sync_node_instances via it, and
+      # Sensors::InstanceStateDriftSensor, which all call get_instance/
+      # sync_status by id alone) does, and Proxmox recycles vmids. Without
+      # this check a recycled id makes those routes describe — and
+      # CloudSyncService then WRITE — a completely different guest's power
+      # state and addresses onto our row.
+      #
+      # No extra PVE call: `/status/current` already returns "name" in the
+      # SAME response #sync_status was already fetching and discarding (the
+      # existing qemu reboot/start specs stub it —
+      # e.g. proxmox_provider_spec.rb:64 — precisely because PVE's vmstatus
+      # sends it back unprompted for both qemu and lxc; #guest_identity in
+      # CloudSyncService and #recycled_vmid? here read the cluster/resources
+      # listing's "name" the same kind-agnostic way). A per-instance /config
+      # GET (the destructive #guest_identity_refusal's approach, one call per
+      # terminate) is deliberately NOT used here: this runs on every sync of
+      # every live instance, on a schedule, not once per operator action —
+      # doubling that call volume is not worth paying to protect a value we
+      # already have for free.
+      #
+      # Same "differ only when BOTH names are known" contract as
+      # #recycled_vmid? / CloudSyncService#guest_identity: a blank
+      # expected_name (row created before provider_guest_name was captured)
+      # or a blank observed name (PVE didn't send one — LXC's coverage of
+      # this field is unconfirmed in this codebase) is NOT a mismatch; it is
+      # "cannot verify", and an unverifiable identity is not a license to
+      # believe OR to refuse. Only a same-id/different-name pair is provably
+      # a recycled vmid, and that is refused.
+      def sync_guest_identity_refusal(current, instance_id:, node:, kind:, vmid:, expected_name:)
+        expected = expected_name.to_s.strip
+        return nil if expected.empty?
+
+        found = current["name"].to_s.strip
+        return nil if found.empty? || found == expected
+
+        message = "PVE sync refused: #{node}/#{kind}/#{vmid} is guest #{found.inspect}, not " \
+                  "#{expected.inspect} (the vmid was recycled onto another guest) — not writing its " \
+                  "state onto #{instance_id}"
+        # Durable and caller-independent: sync_instance_state/sync_node_instances
+        # surface this as a Result error (CloudSyncService logs it again with the
+        # platform-side instance id), but InstanceStateDriftSensor only checks
+        # result[:success] and silently skips on false — without a log HERE that
+        # path would leave a recycled-id mismatch with no trace at all, exactly
+        # the silent-skip failure mode this loop fixed an hour ago for the
+        # terminated-guest gap (IMP-ff6d46f2c3e1).
+        Rails.logger.warn("[ProxmoxProvider] #{message}")
+
+        build_error_response(message, code: GUEST_NAME_MISMATCH)
       end
 
       # ============================================================

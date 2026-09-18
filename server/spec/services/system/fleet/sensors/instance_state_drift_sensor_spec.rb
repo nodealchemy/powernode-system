@@ -27,7 +27,7 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
   describe "#sense" do
     it "emits system.instance_state_drifted when the provider reports the instance stopped" do
       instance = running_instance
-      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id)
+      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id, expected_name: nil)
         .and_return(success: true, status: "stopped")
 
       sig = sensor.sense.find { |s| s.kind == "system.instance_state_drifted" }
@@ -72,7 +72,7 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
         sensor.sense # tick 1: window consumed by the unstampables (attempts stamped)
         sensor.sense # tick 2: rotation must reach the stampable instance
 
-        expect(adapter).to have_received(:sync_status).with(reachable.cloud_instance_id)
+        expect(adapter).to have_received(:sync_status).with(reachable.cloud_instance_id, expected_name: nil)
       end
 
       it "stamps last_sync_attempted_at on every attempt while last_synced_at stays success-only" do
@@ -107,7 +107,7 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
         never = running_instance # nil last_sync_attempted_at sorts first
 
         seen = []
-        allow(adapter).to receive(:sync_status) do |cloud_id|
+        allow(adapter).to receive(:sync_status) do |cloud_id, **_kwargs|
           seen << cloud_id
           { success: true, status: "running" }
         end
@@ -120,7 +120,7 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
 
     it "returns no signal when the provider status still agrees with the DB" do
       instance = running_instance
-      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id)
+      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id, expected_name: nil)
         .and_return(success: true, status: "running")
 
       expect(sensor.sense).to be_empty
@@ -131,10 +131,40 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
     # drift signal from a stale/zeroed status.
     it "does not fabricate a drift signal when the provider call is unavailable" do
       instance = running_instance
-      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id)
+      allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id, expected_name: nil)
         .and_return(success: false, error: "timeout")
 
       expect(sensor.sense).to be_empty
+    end
+
+    # IMP-43f071c918e6. Proxmox recycles vmids, so a stale row's
+    # cloud_instance_id can now belong to a DIFFERENT guest. sync_status
+    # refuses (GuestNameMismatch, success: false) rather than describe that
+    # guest as ours — this sensor already treats any success:false as "no
+    # data, skip" (the case immediately above), so the decisive assertion is
+    # that the mismatch reaches the adapter call as expected_name AT ALL, and
+    # that it produces no drift signal and no crash when the adapter refuses.
+    describe "recycled vmid (guest identity mismatch)" do
+      it "passes the row's recorded provider_guest_name as expected_name" do
+        instance = running_instance
+        instance.update!(provider_guest_name: "ci-builder-pool-1-0")
+        expect(adapter).to receive(:sync_status)
+          .with(instance.cloud_instance_id, expected_name: "ci-builder-pool-1-0")
+          .and_return(success: true, status: "running")
+
+        sensor.sense
+      end
+
+      it "generates no drift signal when the adapter refuses on a name mismatch" do
+        instance = running_instance
+        instance.update!(provider_guest_name: "ci-builder-pool-1-0")
+        allow(adapter).to receive(:sync_status)
+          .with(instance.cloud_instance_id, expected_name: "ci-builder-pool-1-0")
+          .and_return(success: false, error: "PVE sync refused: is guest \"someone-else\", not \"ci-builder-pool-1-0\"",
+                     error_code: "GuestNameMismatch")
+
+        expect(sensor.sense).to be_empty
+      end
     end
   end
 

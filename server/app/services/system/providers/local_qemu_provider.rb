@@ -100,7 +100,12 @@ module System
          "crashed"     => "error"
        }.freeze
 
-      def sync_status(instance_id)
+      # expected_name is accepted and ignored — same rationale as
+      # #terminate_instance below: libvirt domains are keyed by NAME, not a
+      # recyclable numeric id, so there is no vmid-reuse identity question
+      # here. Declared so the shared callers (CloudSyncService,
+      # InstanceStateDriftSensor) can pass it uniformly across providers.
+      def sync_status(instance_id, expected_name: nil)
         log_operation("sync_status", domain: instance_id)
         runner = self.class.runner
         info = runner.dominfo!(name: instance_id)
@@ -169,7 +174,7 @@ module System
         build_instance_response(cloud_id: instance_id, status: "rebooting")
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         runner = self.class.runner
         result = runner.dominfo!(name: instance_id)
         return build_error_response(result[:error]) unless result[:ok]

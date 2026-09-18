@@ -1728,4 +1728,88 @@ RSpec.describe System::Providers::ProxmoxProvider do
         .to raise_error(System::Providers::BaseProvider::ResourceNotFoundError)
     end
   end
+
+  # IMP-43f071c918e6. #terminate_instance's "same-node guest identity check"
+  # above guards the destructive path; this is the SYNC path's counterpart —
+  # CloudSyncService#sync_instance_state and Sensors::InstanceStateDriftSensor
+  # both read state through #get_instance/#sync_status by cloud_instance_id
+  # alone, and Proxmox recycles vmids. The decisive example: the platform
+  # believes pve1/qemu/9004 is guest "ci-builder-pool-1-0"; PVE now answers
+  # for that id as guest "sdwan-testbed-a" (a DIFFERENT, unrelated guest that
+  # drew the recycled id). Reading that response as ours would let a caller
+  # overwrite ci-builder-pool-1-0's row with sdwan-testbed-a's power state
+  # and IP.
+  #
+  # No /config stub here (unlike terminate's check above): the name comes
+  # from the SAME /status/current response #sync_status already fetches for
+  # status/uptime/qmpstatus — no second API call.
+  describe "#sync_status / #get_instance guest identity check" do
+    def stub_status_current(node: "pve1", kind: "qemu", vmid: "9004", body:)
+      allow(client).to receive(:get)
+        .with("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/current")
+        .and_return(body)
+    end
+
+    it "refuses to describe a guest whose name differs from the one we created (recycled vmid)" do
+      stub_status_current(body: { "status" => "running", "name" => "sdwan-testbed-a" })
+
+      result = provider.sync_status("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+      expect(result[:success]).to be false
+      expect(result[:error_code]).to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+      expect(result[:error]).to include("sdwan-testbed-a", "ci-builder-pool-1-0")
+    end
+
+    it "get_instance carries the same refusal (CloudSyncService's actual entry point)" do
+      stub_status_current(body: { "status" => "running", "name" => "sdwan-testbed-a" })
+
+      result = provider.get_instance("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+      expect(result[:success]).to be false
+      expect(result[:error_code]).to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+    end
+
+    it "logs the mismatch so a caller that only checks result[:success] still leaves a trace" do
+      stub_status_current(body: { "status" => "running", "name" => "sdwan-testbed-a" })
+
+      expect(Rails.logger).to receive(:warn).with(
+        a_string_matching(/pve1\/qemu\/9004.*sdwan-testbed-a.*ci-builder-pool-1-0/)
+      )
+
+      provider.sync_status("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+    end
+
+    it "does not send a second PVE request to learn the name (no /config GET)" do
+      stub_status_current(body: { "status" => "running", "name" => "sdwan-testbed-a" })
+      expect(client).not_to receive(:get).with("/api2/json/nodes/pve1/qemu/9004/config")
+
+      provider.sync_status("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+    end
+
+    it "reports normally when the guest at that id is ours" do
+      stub_status_current(body: { "status" => "running", "name" => "ci-builder-pool-1-0" })
+
+      result = provider.sync_status("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+      expect(result[:success]).to be true
+      expect(result[:status]).to eq("running")
+    end
+
+    it "reports normally (unchecked) when no expected name is given — opt-in, not mandatory" do
+      stub_status_current(body: { "status" => "running", "name" => "sdwan-testbed-a" })
+
+      result = provider.sync_status("pve1/qemu/9004")
+
+      expect(result[:success]).to be true
+    end
+
+    it "does not treat a blank observed name as a mismatch — unverifiable, not disproven" do
+      stub_status_current(body: { "status" => "running" })
+
+      result = provider.sync_status("pve1/qemu/9004", expected_name: "ci-builder-pool-1-0")
+
+      expect(result[:success]).to be true
+      expect(result[:error_code]).not_to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+    end
+  end
 end

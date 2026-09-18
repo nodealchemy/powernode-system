@@ -80,7 +80,13 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
-      result = provider_adapter.get_instance(instance.cloud_instance_id)
+      # IMP-43f071c918e6: the per-instance counterpart to the listing path's
+      # guest-name matching (IMP-8225624f46b1, #sync_region_instances below).
+      # This is the id-only path that guarded: without expected_name, a
+      # recycled cloud_instance_id would make the adapter describe whatever
+      # guest now holds it, and this method would write THAT guest's status
+      # and addresses onto our row.
+      result = provider_adapter.get_instance(instance.cloud_instance_id, expected_name: instance.provider_guest_name)
 
       if result[:success]
         Runtime::Result.ok(data: {
@@ -90,6 +96,22 @@ module System
           instance_type: result[:instance_type],
           updated: state_changed?(instance, result)
         })
+      elsif result[:error_code] == "GuestNameMismatch"
+        # Refusing to write is the whole point (see the provider's own log,
+        # which names node/kind/vmid + expected/observed guest) — logged
+        # again HERE with the platform-side instance id, which the provider
+        # layer never sees, so the two log lines together are traceable from
+        # either side. No FleetEvent: both callers of #sync_instance_state
+        # (the internal/worker_api single-instance sync endpoints) already
+        # surface this Result's error synchronously to whoever requested the
+        # sync, the same way a GUEST_NAME_MISMATCH from #terminate_instance
+        # already does — this is that existing, established path, not a new
+        # notification channel.
+        Rails.logger.warn(
+          "[CloudSyncService] instance=#{instance.id} cloud_instance_id=#{instance.cloud_instance_id} " \
+          "guest identity mismatch — not writing provider state: #{result[:error]}"
+        )
+        Runtime::Result.err(error: result[:error])
       elsif result[:error_code] == "NotFound"
         terminated_result(instance)
       else

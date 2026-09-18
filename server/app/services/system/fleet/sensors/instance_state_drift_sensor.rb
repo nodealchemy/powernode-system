@@ -60,7 +60,13 @@ module System
           cloud_id = instance.config&.dig("cloud_instance_id")
           return nil if cloud_id.blank?
 
-          result = adapter.sync_status(cloud_id)
+          # IMP-43f071c918e6: expected_name guards against a recycled Proxmox
+          # vmid — without it a stale row's cloud_id could describe a
+          # DIFFERENT guest the provider now holds at that id. A mismatch
+          # comes back as result[:success] == false (logged by the provider
+          # itself), which the `return nil unless` below already treats the
+          # same as any other failed read: no drift signal, no state written.
+          result = adapter.sync_status(cloud_id, expected_name: instance.provider_guest_name)
           return nil unless result[:success]
 
           # A successful sync_status IS a provider sync — stamp it so the

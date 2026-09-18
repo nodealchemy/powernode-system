@@ -578,4 +578,93 @@ RSpec.describe System::CloudSyncService do
       end
     end
   end
+
+  # IMP-43f071c918e6. "guest identity on the region listing" above covers
+  # #sync_region_instances (the listing path, IMP-8225624f46b1). This is its
+  # id-only counterpart: #sync_instance_state and #sync_node_instances read a
+  # SINGLE instance via provider_adapter.get_instance(cloud_instance_id) with
+  # no listing to match a name against, so a recycled vmid previously made
+  # the adapter (correctly) describe whoever now holds that id — and this
+  # service would write that guest's status/IPs onto our row.
+  #
+  # The decisive example: the platform believes cloud_instance_id X is guest
+  # "web-a"; the provider adapter reports X as guest "someone-else" (a
+  # DIFFERENT, unrelated guest that drew the recycled id) via the
+  # GuestNameMismatch error_code #sync_status/#get_instance now returns
+  # (System::Providers::ProxmoxProvider spec covers producing that error_code
+  # from the raw PVE response; here we stub the adapter boundary directly,
+  # the same way every other test in this file does).
+  describe "recycled cloud_instance_id on the per-instance sync path (get_instance)" do
+    def row(cloud_instance_id, guest_name:, **attrs)
+      create(:system_node_instance, :running, account: account, provider_region: region,
+                                               cloud_instance_id: cloud_instance_id,
+                                               provider_guest_name: guest_name, **attrs).tap do |r|
+        r.update_columns(private_ip_address: "192.0.2.10", public_ip_address: nil, last_synced_at: 2.days.ago)
+      end.reload
+    end
+
+    def mismatch_result(observed_name)
+      {
+        success: false,
+        error: "PVE sync refused: is guest #{observed_name.inspect}, not the expected guest " \
+               "(the vmid was recycled onto another guest)",
+        error_code: "GuestNameMismatch",
+        provider_type: "proxmox"
+      }
+    end
+
+    it "sync_instance_state does NOT overwrite the row with the other guest's state" do
+      ours = row("pve1/qemu/9301", guest_name: "web-a")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).with(ours).and_return(provider)
+      allow(provider).to receive(:get_instance)
+        .with("pve1/qemu/9301", expected_name: "web-a")
+        .and_return(mismatch_result("someone-else"))
+
+      result = described_class.new.sync_instance_state(instance: ours)
+
+      expect(result.success?).to be(false)
+      ours.reload
+      expect(ours.status).to eq("running")
+      expect(ours.private_ip_address).to eq("192.0.2.10")
+    end
+
+    it "sync_instance_state passes the row's recorded guest name as expected_name" do
+      ours = row("pve1/qemu/9302", guest_name: "web-b")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).with(ours).and_return(provider)
+      expect(provider).to receive(:get_instance)
+        .with("pve1/qemu/9302", expected_name: "web-b")
+        .and_return(success: true, status: "running", private_ip_address: "192.0.2.10", public_ip_address: nil)
+
+      described_class.new.sync_instance_state(instance: ours)
+    end
+
+    it "sync_instance_state logs the refusal, naming the platform instance id" do
+      ours = row("pve1/qemu/9303", guest_name: "web-c")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).with(ours).and_return(provider)
+      allow(provider).to receive(:get_instance).and_return(mismatch_result("someone-else"))
+
+      expect(Rails.logger).to receive(:warn).with(a_string_matching(/#{ours.id}.*pve1\/qemu\/9303/))
+
+      described_class.new.sync_instance_state(instance: ours)
+    end
+
+    it "sync_node_instances leaves the row's status and addresses untouched on a mismatch" do
+      ours = row("pve1/qemu/9304", guest_name: "web-d")
+      provider = instance_double("System::Providers::BaseProvider")
+      allow(System::Providers::Registry).to receive(:for_instance).with(ours).and_return(provider)
+      allow(provider).to receive(:get_instance).and_return(mismatch_result("someone-else"))
+      synced_before = ours.last_synced_at
+
+      result = described_class.new.sync_node_instances(node: ours.node)
+
+      ours.reload
+      expect(ours.status).to eq("running")
+      expect(ours.private_ip_address).to eq("192.0.2.10")
+      expect(ours.last_synced_at).to be_within(1.second).of(synced_before)
+      expect(result.data[:errors]).not_to be_empty
+    end
+  end
 end

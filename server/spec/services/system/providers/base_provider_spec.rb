@@ -31,7 +31,7 @@ RSpec.describe System::Providers::BaseProvider do
         { success: true }
       end
 
-      def get_instance(instance_id)
+      def get_instance(instance_id, expected_name: nil)
         { success: true, status: "running" }
       end
 
@@ -57,11 +57,18 @@ RSpec.describe System::Providers::BaseProvider do
 
   describe "#sync_status (default reconciliation hook)" do
     it "delegates to get_instance and returns its state on success" do
-      allow(provider).to receive(:get_instance).with("i-1")
+      allow(provider).to receive(:get_instance).with("i-1", expected_name: nil)
         .and_return(success: true, status: "running", private_ip_address: "10.0.0.5")
 
       result = provider.sync_status("i-1")
       expect(result).to include(success: true, status: "running", private_ip_address: "10.0.0.5")
+    end
+
+    it "threads a given expected_name through to get_instance" do
+      allow(provider).to receive(:get_instance).with("i-1", expected_name: "web-a")
+        .and_return(success: true, status: "running")
+
+      provider.sync_status("i-1", expected_name: "web-a")
     end
 
     it "reconciles a NotFound error-hash (aws/gcp style) to :terminated" do
