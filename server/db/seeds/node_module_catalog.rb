@@ -93,50 +93,59 @@ modules = System::AccountBootstrapService.seed_templates_for(account, verbose: t
 #
 # Operator-facing dev/test infrastructure — NOT per-account-scoped, so
 # kept here in the seed file rather than in the bootstrap service.
+#
+# IMP-f1f96c292991 (2026-09-13 operator ruling): the local-qemu dev/test
+# provider block is SAMPLE content, behind Powernode::SampleContentGate,
+# default OFF. The Pro Cloud provider scaffold (AccountBootstrapService) is
+# product, not sample, and is never gated.
 
-provider = System::Provider.find_or_create_by!(account: account, provider_type: "local_qemu", name: "local-qemu") do |p|
-  p.enabled = true
-  p.config  = { "uri" => ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///session") }
-  p.capabilities = { "supports" => %w[provision start stop reboot terminate] }
-end
-puts "    ✓ Provider: local-qemu (id=#{provider.id}, type=local_qemu)"
+if ::Powernode::SampleContentGate.enabled?
+  provider = System::Provider.find_or_create_by!(account: account, provider_type: "local_qemu", name: "local-qemu") do |p|
+    p.enabled = true
+    p.config  = { "uri" => ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///session") }
+    p.capabilities = { "supports" => %w[provision start stop reboot terminate] }
+  end
+  puts "    ✓ Provider: local-qemu (id=#{provider.id}, type=local_qemu)"
 
-connection = System::ProviderConnection.find_or_create_by!(account: account, provider: provider, name: "qemu-conn") do |c|
-  c.access_key = "n/a-local"
-  c.secret_key = "n/a-local"
-  c.status     = "connected"
-  c.config     = { "uri" => ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///session") }
-end
-puts "    ✓ ProviderConnection: qemu-conn (status=#{connection.status})"
+  connection = System::ProviderConnection.find_or_create_by!(account: account, provider: provider, name: "qemu-conn") do |c|
+    c.access_key = "n/a-local"
+    c.secret_key = "n/a-local"
+    c.status     = "connected"
+    c.config     = { "uri" => ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///session") }
+  end
+  puts "    ✓ ProviderConnection: qemu-conn (status=#{connection.status})"
 
-region = System::ProviderRegion.find_or_create_by!(account: account, provider: provider, region_code: "local") do |r|
-  r.name        = "local"
-  r.enabled     = true
-  r.capabilities = {}
-end
-puts "    ✓ ProviderRegion: local (id=#{region.id})"
+  region = System::ProviderRegion.find_or_create_by!(account: account, provider: provider, region_code: "local") do |r|
+    r.name        = "local"
+    r.enabled     = true
+    r.capabilities = {}
+  end
+  puts "    ✓ ProviderRegion: local (id=#{region.id})"
 
-itype_small = System::ProviderInstanceType.find_or_create_by!(account: account, provider: provider, instance_type_code: "qemu.small") do |it|
-  it.name       = "qemu.small"
-  it.vcpus      = 1
-  it.memory_mb  = 1024
-  it.storage_gb = 4
-  it.enabled    = true
-end
-itype_medium = System::ProviderInstanceType.find_or_create_by!(account: account, provider: provider, instance_type_code: "qemu.medium") do |it|
-  it.name       = "qemu.medium"
-  it.vcpus      = 2
-  it.memory_mb  = 2048
-  it.storage_gb = 8
-  it.enabled    = true
-end
-puts "    ✓ ProviderInstanceType: qemu.small (#{itype_small.vcpus}/#{itype_small.memory_mb}MB), qemu.medium"
+  itype_small = System::ProviderInstanceType.find_or_create_by!(account: account, provider: provider, instance_type_code: "qemu.small") do |it|
+    it.name       = "qemu.small"
+    it.vcpus      = 1
+    it.memory_mb  = 1024
+    it.storage_gb = 4
+    it.enabled    = true
+  end
+  itype_medium = System::ProviderInstanceType.find_or_create_by!(account: account, provider: provider, instance_type_code: "qemu.medium") do |it|
+    it.name       = "qemu.medium"
+    it.vcpus      = 2
+    it.memory_mb  = 2048
+    it.storage_gb = 8
+    it.enabled    = true
+  end
+  puts "    ✓ ProviderInstanceType: qemu.small (#{itype_small.vcpus}/#{itype_small.memory_mb}MB), qemu.medium"
 
-# Wire instance types to the region so provisioning can resolve them
-[ itype_small, itype_medium ].each do |it|
-  rit = System::RegionInstanceType.find_or_initialize_by(provider_region: region, provider_instance_type: it)
-  rit.available = true
-  rit.save!
+  # Wire instance types to the region so provisioning can resolve them
+  [ itype_small, itype_medium ].each do |it|
+    rit = System::RegionInstanceType.find_or_initialize_by(provider_region: region, provider_instance_type: it)
+    rit.available = true
+    rit.save!
+  end
+else
+  puts "    ⏭️  Skipping local-qemu dev provider (sample content disabled — #{Powernode::SampleContentGate::SETTING_KEY})"
 end
 
 # ── Cleanup of legacy smoke-prefixed templates ──────────────────────────────

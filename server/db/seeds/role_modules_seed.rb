@@ -166,10 +166,28 @@ role_module_specs = [
   }
 ].freeze
 
+# IMP-f1f96c292991 (2026-09-13 operator ruling): 4 of the 5 role modules
+# above are used ONLY by smoke seeds — sample content, behind
+# Powernode::SampleContentGate, default OFF. `nodejs-runtime` is DELIBERATELY
+# EXCLUDED: verified 2026-09-18 that the live "powernode-ops-cell"
+# NodeTemplate carries 14 real System::NodeModuleAssignment rows for it (the
+# only one of the five with any), so it stays baseline product content and
+# is seeded unconditionally. `role_module_specs` above stays COMPLETE and
+# static for spec/db/seeds/seed_manifest_coverage_spec.rb's static scan;
+# gating happens per-iteration below instead.
+GATED_ROLE_MODULE_NAMES = %w[docker-runtime python-runtime postgres-server redis-cache].freeze
+sample_content = ::Powernode::SampleContentGate.enabled?
+
 created_count = 0
 updated_count = 0
+skipped_count = 0
 
 role_module_specs.each do |spec|
+  if !sample_content && GATED_ROLE_MODULE_NAMES.include?(spec[:name])
+    skipped_count += 1
+    next
+  end
+
   m = ::System::NodeModule.find_or_initialize_by(account: account, name: spec[:name])
   was_new = m.new_record?
 
@@ -199,5 +217,6 @@ role_module_specs.each do |spec|
   end
 end
 
-puts "    ✓ Role modules: #{created_count} created, #{updated_count} updated (#{role_module_specs.size} total)"
+puts "    ✓ Role modules: #{created_count} created, #{updated_count} updated, " \
+     "#{skipped_count} skipped (sample content disabled) (#{role_module_specs.size} total)"
 puts "  Done seeding role modules."

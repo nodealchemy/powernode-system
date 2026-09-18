@@ -39,7 +39,27 @@ RSpec.describe System::AccountBootstrapService do
       expect(types.first.hourly_price).to eq(0.007)
     end
 
-    it "seeds the node-template catalog (architectures, platforms, modules, templates)" do
+    it "seeds only the starter catalog by default (sample content OFF)" do
+      # IMP-f1f96c292991 (2026-09-13 operator ruling): the hobby/showcase
+      # templates (rpi4-base, rpi4-hardened, web-apache, web-nginx) and the
+      # modules only they use (apache, nginx, rpi4-firmware) are sample
+      # content, gated behind Powernode::SampleContentGate, default OFF.
+      described_class.call(account)
+
+      expect(::System::NodeArchitecture.canonical.pluck(:name)).to include("amd64", "arm64")
+      expect(::System::NodePlatform.where(account: account).pluck(:name)).to match_array(
+        %w[ubuntu-24.04-lts ubuntu-24.04-rpi4 ubuntu-24.04-arm64-uefi ubuntu-24.04-amd64-uefi]
+      )
+      expect(::System::NodeTemplate.where(account: account).pluck(:name)).to match_array(
+        %w[base hardened arm64-uefi-base]
+      )
+      expect(::System::NodeModule.where(account: account).pluck(:name)).to match_array(
+        %w[system-base security-hardening chrony]
+      )
+    end
+
+    it "seeds the full node-template catalog when sample content is enabled" do
+      SiteSetting.set(Powernode::SampleContentGate::SETTING_KEY, "true", setting_type: "boolean")
       described_class.call(account)
 
       # NodeArchitecture is platform-wide as of i-would-like-to-zesty-glade.md
@@ -105,7 +125,14 @@ RSpec.describe System::AccountBootstrapService do
       expect(::System::NodeTemplate.where(account: account).count).to eq(first_count)
     end
 
-    it "returns the modules hash keyed by name" do
+    it "returns only the starter-catalog modules hash by default (sample content OFF)" do
+      modules = described_class.seed_templates_for(account)
+      expect(modules.keys).to match_array(%w[system-base security-hardening chrony])
+      expect(modules["system-base"]).to be_a(::System::NodeModule)
+    end
+
+    it "returns the full modules hash when sample content is enabled" do
+      SiteSetting.set(Powernode::SampleContentGate::SETTING_KEY, "true", setting_type: "boolean")
       modules = described_class.seed_templates_for(account)
       expect(modules.keys).to match_array(
         %w[system-base security-hardening chrony apache nginx rpi4-firmware]
@@ -115,12 +142,18 @@ RSpec.describe System::AccountBootstrapService do
   end
 
   describe "Account.after_create_commit hook" do
-    it "auto-bootstraps a new account synchronously" do
+    it "auto-bootstraps a new account synchronously with the starter catalog only" do
       account = create(:account)
       expect(::System::Provider.where(account: account, name: "Pro Cloud").count).to eq(1)
       expect(::System::ProviderRegion.joins(:provider).where(
         system_providers: { account_id: account.id, name: "Pro Cloud" }
       ).count).to eq(2)
+      expect(::System::NodeTemplate.where(account: account).count).to eq(3)
+    end
+
+    it "auto-bootstraps the full catalog when sample content is enabled" do
+      SiteSetting.set(Powernode::SampleContentGate::SETTING_KEY, "true", setting_type: "boolean")
+      account = create(:account)
       expect(::System::NodeTemplate.where(account: account).count).to eq(7)
     end
 

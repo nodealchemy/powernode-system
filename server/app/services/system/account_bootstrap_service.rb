@@ -162,6 +162,18 @@ module System
       end
       log.call("    ✓ NodeModuleCategory: base, firmware, security, time, web")
 
+      # IMP-f1f96c292991 (2026-09-13 operator ruling): apache/nginx/
+      # rpi4-firmware are SAMPLE content — modules only the hobby/showcase
+      # templates below use — behind Powernode::SampleContentGate, default
+      # OFF. system-base/security-hardening/chrony are the starter catalog
+      # (product) and are never gated. The spec arrays below stay COMPLETE
+      # and static (never conditionally built) — spec/db/seeds/
+      # seed_manifest_coverage_spec.rb statically parses this shape, so
+      # gating happens per-iteration below instead.
+      sample_content = ::Powernode::SampleContentGate.enabled?
+      sample_module_names = %w[apache nginx rpi4-firmware].freeze
+      sample_template_names = %w[web-apache web-nginx rpi4-base rpi4-hardened].freeze
+
       # ── Modules + versions ───────────────────────────────────────────
       module_specs = [
         {
@@ -244,6 +256,8 @@ module System
 
       modules = {}
       module_specs.each do |spec|
+        next if !sample_content && sample_module_names.include?(spec[:name])
+
         m = ::System::NodeModule.find_or_create_by!(account: account, name: spec[:name]) do |mod|
           mod.node_platform = platform
           mod.category      = spec[:category]
@@ -308,6 +322,8 @@ module System
       ]
 
       template_specs.each do |spec|
+        next if !sample_content && sample_template_names.include?(spec[:name])
+
         t = ::System::NodeTemplate.find_or_create_by!(account: account, name: spec[:name]) do |tmpl|
           tmpl.node_platform = spec[:platform] || platform
           tmpl.enabled       = true
