@@ -88,19 +88,31 @@ module Api
             #     :311-321) — so InstanceStatusSensor never sees it. Nothing
             #     else watches a held row either.
             #   * guest-lost: AbandonedInstanceSensor.abandoned_relation scopes
-            #     instance_pool_id: nil, ops_hold_at: nil,
-            #     ABANDONABLE_VARIETIES = %w[cloud], and a 7-day window — so a
-            #     guest-lost row is only ever reachable there for an UNPOOLED,
-            #     NOT-ops-held `cloud` instance in starting/running/stopped/
+            #     instance_pool_id: nil, ops_hold_at: nil, and a 7-day window —
+            #     so a guest-lost row is only ever reachable there for an
+            #     UNPOOLED, NOT-ops-held instance in starting/running/stopped/
             #     error, and only after 7 days of silence. Pooled rows,
-            #     `physical`, `dynamic`, pending/provisioning/stopping/
-            #     rebooting statuses, and anything younger than 7 days are not
-            #     covered — and this method itself can mark a `dynamic` row
-            #     guest-lost (regions query below selects
-            #     variety: %w[cloud dynamic]), which AbandonedInstanceSensor's
-            #     `cloud`-only scope will never admit regardless of age.
-            # Neither gap is widened by this change — filed separately as
-            # 01a0b256.
+            #     `physical`, pending/provisioning/stopping/rebooting statuses,
+            #     and anything younger than 7 days are still not covered.
+            #     IMP-675374d30971 closed the `dynamic` half of this specific
+            #     gap: ABANDONABLE_VARIETIES (`cloud`, unconditional) now has a
+            #     sibling GUEST_LOST_ONLY_VARIETIES (`dynamic`, admitted ONLY
+            #     once already guest-lost — a live dynamic guest still gets no
+            #     new coverage, deliberately, since this sensor's applier really
+            #     does call the provider for a row that still carries a
+            #     cloud_instance_id). This method's own guest-lost write on a
+            #     `dynamic` row (regions query below selects
+            #     variety: %w[cloud dynamic]) is now reachable there like a
+            #     `cloud` one. The POOLED half of this gap remains open — filed
+            #     separately as 01a0b256, remediation tracked as 01a0b421 — and
+            #     is NOT the same fix: a pooled row's own reaper
+            #     (InstancePoolService#recycle_stale_members!)
+            #     is blind to provider_guest_lost? for a non-errored member
+            #     (its stale-ready/stale-claimed arms key on heartbeat/TTL, and
+            #     a guest-lost row's agent keeps heartbeating normally — the
+            #     guest is still running, which is the whole leak), so routing
+            #     it through AbandonedInstanceSensor instead would desync
+            #     pool_state/target_size bookkeeping rather than fix anything.
             held_total = 0
             # IMP-8225624f46b1: recycled ids given up, ids several rows share with
             # nothing to tell them apart, and terminated rows whose guest still runs.

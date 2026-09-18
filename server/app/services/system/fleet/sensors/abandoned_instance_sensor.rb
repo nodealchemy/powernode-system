@@ -114,6 +114,26 @@ module System
         ABANDONABLE_STATUSES = %w[starting running stopped error].freeze
         ABANDONABLE_VARIETIES = %w[cloud].freeze
 
+        # IMP-675374d30971 — a `dynamic` row that already lost its provider
+        # identity (NodeInstance#mark_provider_guest_lost!, written by
+        # CloudSyncService on a recycled/renamed provider id — IMP-8225624f46b1)
+        # was invisible to every sensor: InstanceStateDriftSensor skips it (no
+        # cloud_instance_id to poll) and this sensor excluded the whole variety
+        # regardless of age. Eligible ONLY once guest-lost, deliberately NOT a
+        # blanket widen of ABANDONABLE_VARIETIES: a LIVE dynamic guest (a
+        # cloud_instance_id still present) would satisfy TERMINATABLE_SQL too,
+        # and this sensor's applier (DecisionEngine#reap_abandoned_instance →
+        # ProvisioningService#terminate_instance) really does call the provider
+        # and destroy the guest for that shape — auto_approve in an unprotected
+        # plane, no human in the loop. Widening unconditionally would hand this
+        # sensor's existing destructive reap a NEW class of live target nobody
+        # asked for. The guest-lost sub-case carries no such risk: that same
+        # applier never reaches the provider for a provider_guest_lost row (see
+        # ProvisioningService#terminate_instance's `guest_lost` short-circuit) —
+        # it only finalizes a row that has already lost its provider identity,
+        # exact parity with what `cloud` already gets today.
+        GUEST_LOST_ONLY_VARIETIES = %w[dynamic].freeze
+
         # Statuses whose reap waits for a person, as approval reasons.
         APPROVAL_STATUSES = %w[running stopped].freeze
 
@@ -124,9 +144,18 @@ module System
         # query on the tick draw the same slice.
         ORDER_SQL = "#{LAST_SIGN_OF_LIFE_SQL} ASC, system_node_instances.id ASC"
 
+        GUEST_LOST_SQL = "NULLIF(system_node_instances.config->>'provider_guest_lost_at', '') IS NOT NULL"
+
         TERMINATABLE_SQL =
           "(NULLIF(system_node_instances.config->>'cloud_instance_id', '') IS NOT NULL " \
-          "OR NULLIF(system_node_instances.config->>'provider_guest_lost_at', '') IS NOT NULL)"
+          "OR #{GUEST_LOST_SQL})"
+
+        # See GUEST_LOST_ONLY_VARIETIES above: unconditional for ABANDONABLE_VARIETIES
+        # (`cloud`), conditional on guest-lost for GUEST_LOST_ONLY_VARIETIES (`dynamic`).
+        VARIETY_SQL =
+          "(system_node_instances.variety IN ('#{ABANDONABLE_VARIETIES.join("','")}') " \
+          "OR (system_node_instances.variety IN ('#{GUEST_LOST_ONLY_VARIETIES.join("','")}') " \
+          "AND #{GUEST_LOST_SQL}))"
 
         REPLACE_ACQUIRED_KIND =
           "#{::System::Ai::Skills::InstanceReplacementLedger::EVENT_PREFIX}.acquire_replacement"
@@ -149,7 +178,8 @@ module System
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(instance_pool_id: nil, ops_hold_at: nil)
-            .where(status: ABANDONABLE_STATUSES, variety: ABANDONABLE_VARIETIES)
+            .where(status: ABANDONABLE_STATUSES)
+            .where(VARIETY_SQL)
             .where("#{LAST_SIGN_OF_LIFE_SQL} < ?", now - window.seconds)
             .where(TERMINATABLE_SQL)
             .where("NOT EXISTS (SELECT 1 FROM #{events} WHERE #{events}.account_id = ? " \
@@ -177,10 +207,13 @@ module System
           window = window_seconds || self.window_seconds(account)
           sign = last_sign_of_life(instance)
 
+          variety_eligible = ABANDONABLE_VARIETIES.include?(instance.variety) ||
+            (GUEST_LOST_ONLY_VARIETIES.include?(instance.variety) && instance.provider_guest_lost?)
+
           instance.instance_pool_id.nil? &&
             instance.ops_hold_at.nil? &&
             ABANDONABLE_STATUSES.include?(instance.status) &&
-            ABANDONABLE_VARIETIES.include?(instance.variety) &&
+            variety_eligible &&
             sign.present? && sign < now - window.seconds &&
             (instance.cloud_instance_id.present? || instance.provider_guest_lost?) &&
             instance.node_id != self_hosting_node_id &&

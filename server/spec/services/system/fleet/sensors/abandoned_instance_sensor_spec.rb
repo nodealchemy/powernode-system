@@ -78,6 +78,34 @@ RSpec.describe System::Fleet::Sensors::AbandonedInstanceSensor do
 
       expect(emitted_ids).to eq([ inst.id ])
     end
+
+    # IMP-675374d30971 — before this, ABANDONABLE_VARIETIES = %w[cloud] meant a
+    # `dynamic` row that lost its provider identity (CloudSyncService, a
+    # recycled/renamed vmid) was invisible to every sensor: InstanceStateDriftSensor
+    # skips it (no cloud_instance_id to poll), and this sensor excluded the whole
+    # variety regardless of age. It would sit forever with no signal. Parity with
+    # what `cloud` already gets above: guest-lost is reapable (terminate finalizes,
+    # no provider call — see the next example for the asymmetry this leans on).
+    it "reports a dynamic row whose provider guest was lost, same as a lost cloud row" do
+      inst = instance(status: "error", variety: "dynamic", cloud_instance_id: nil,
+                      config: { "provider_guest_lost_at" => 10.days.ago.iso8601 })
+
+      expect(emitted_ids).to eq([ inst.id ])
+    end
+
+    # NOT a blanket variety widen. A `dynamic` row that still has a live
+    # cloud_instance_id (never went through mark_provider_guest_lost!) keeps
+    # today's zero coverage: unlike guest-lost, this sensor's applier
+    # (ProvisioningService#terminate_instance) WOULD call the provider and
+    # really destroy a guest for a row with a cloud_instance_id present
+    # (TERMINATABLE_SQL admits it), so this sensor's auto_approve destructive
+    # reap must not gain a live dynamic guest as a new target — only the
+    # guest-lost sub-case, where terminate never reaches the provider at all.
+    it "leaves a dynamic row that still has a live provider identity, unlike a lost one" do
+      instance(status: "error", variety: "dynamic")
+
+      expect(sensor.sense).to be_empty
+    end
   end
 
   # Review F1/F2: a terminate destroys every disk in the guest's config. Where
@@ -421,6 +449,9 @@ RSpec.describe System::Fleet::Sensors::AbandonedInstanceSensor do
       rows[:no_identity] = instance(status: "error", cloud_instance_id: nil)
       rows[:guest_lost] = instance(status: "error", cloud_instance_id: nil,
                                    config: { "provider_guest_lost_at" => 10.days.ago.iso8601 })
+      rows[:dynamic_guest_lost] = instance(status: "error", variety: "dynamic", cloud_instance_id: nil,
+                                           config: { "provider_guest_lost_at" => 10.days.ago.iso8601 })
+      rows[:dynamic_live] = instance(status: "error", variety: "dynamic")
       replacing = instance(status: "error")
       System::FleetEvent.create!(account: account, kind: "system.instance_replace.acquire_replacement",
                                  severity: "low", node_instance_id: replacing.id, emitted_at: 1.day.ago,
@@ -446,7 +477,8 @@ RSpec.describe System::Fleet::Sensors::AbandonedInstanceSensor do
           "#{label}: predicate and relation disagree"
       end
       expect(in_sql).to eq([ rows[:abandoned_starting].id, rows[:abandoned_never_enrolled].id,
-                             rows[:guest_lost].id, rows[:vip_holder].id, rows[:vip_failover].id ].to_set)
+                             rows[:guest_lost].id, rows[:dynamic_guest_lost].id,
+                             rows[:vip_holder].id, rows[:vip_failover].id ].to_set)
     end
   end
 end

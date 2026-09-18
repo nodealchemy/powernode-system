@@ -110,6 +110,19 @@ RSpec.describe System::Fleet::Sensors::OrphanPoolGuestSensor do
 
     # A row marked lost gave up its provider id, not its name: while it exists,
     # the guest it created is still accounted for.
+    #
+    # IMP-675374d30971 — that premise does NOT hold for a POOLED member: traced
+    # InstancePoolService#recycle_stale_members! in full and every one of its
+    # staleness arms (stale_ready/stale_claimed/heartbeat_stale_claimed) keys on
+    # last_heartbeat_at or a TTL, never on provider identity, and the one arm
+    # that DOES special-case a blank cloud_instance_id is scoped to
+    # pool_state: "errored" — nothing transitions a ready/claimed member there
+    # on losing its provider identity. A guest-lost pooled row's agent keeps
+    # heartbeating (the guest is still running — that's the leak), so it is
+    # genuinely NOT accounted for by anything once it leaves "errored". This
+    # sensor's own scope (zero-row orphans) still correctly excludes it — the
+    # fix belongs in InstancePoolService, not here — but do not read this
+    # example as proof the row is handled somewhere else. Filed as 01a0b421.
     it "stays quiet for a guest a row marked lost still names" do
       row = row_named("ci-builders-pool-1-0")
       row.mark_provider_guest_lost!(reason: "id recycled")
