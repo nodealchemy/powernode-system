@@ -58,12 +58,22 @@ module System
       #     an operator may have powered it off on purpose;
       #   * has a ProviderVolume attached — the applier detaches it first, but
       #     that is a person's call to make;
-      #   * holds, or is failover for, a virtual IP through one of its peers. A
-      #     terminate destroys the peers but not their ids in the VIP's holder
-      #     lists, and this lane does not move addresses: the card says so, and
-      #     the applier refuses until the address has been moved off the guest.
-      # So only `starting`/`error` guests holding nothing reap on the tick, and
-      # only in a plane that does not escalate the category.
+      #   * is the ACTIVE holder of a virtual IP through one of its peers
+      #     (`virtual_ip_active_holder`). A terminate destroys the peer but not
+      #     its id in the VIP's holder list, and this lane does not move
+      #     addresses: the card says so, and the applier refuses even when
+      #     approved — approval cannot fix a moved address — until the address
+      #     has been moved off the guest.
+      # A guest that is only a FAILOVER STANDBY for a virtual IP (never the
+      # active holder) is not an approval reason: VirtualIp#failover! would
+      # otherwise promote a dead peer into the holder seat, so the applier
+      # prunes the guest's peer ids from every failover_holder_peer_ids list
+      # itself, through the ordinary VIP update path, before terminating — the
+      # same way it detaches an attached volume, with no operator gate of its
+      # own.
+      # So only `starting`/`error` guests holding nothing (or only standing by
+      # for a VIP) reap on the tick, and only in a plane that does not escalate
+      # the category.
       #
       # WHAT IS BOUNDED, AND WHAT THE OTHER SENSORS STOP REPORTING
       #
@@ -179,14 +189,20 @@ module System
 
         # Why a reap of this instance must wait for a person, in any plane. The
         # batched sets are what #claimed already loaded; omitted, they are read.
-        def self.approval_reasons(instance, attached_volume_ids: nil, virtual_ip_holder_ids: nil)
+        #
+        # A failover-standby-only membership is deliberately NOT a reason: it is
+        # pruned by the applier itself before terminating (see
+        # DecisionEngine#reap_abandoned_instance and .virtual_ip_holdings below),
+        # the same way an attached volume is detached rather than parked forever.
+        # Only being the ACTIVE holder blocks — approval cannot move an address.
+        def self.approval_reasons(instance, account:, attached_volume_ids: nil, active_virtual_ip_holder_ids: nil)
           attached = attached_volume_ids ? attached_volume_ids.include?(instance.id) : attached_volume_instance_ids([ instance.id ]).any?
-          holder = virtual_ip_holder_ids ? virtual_ip_holder_ids.include?(instance.id) : virtual_ip_holder_instance_ids([ instance.id ]).any?
+          active_holder = active_virtual_ip_holder_ids ? active_virtual_ip_holder_ids.include?(instance.id) : active_holder_instance_ids([ instance.id ], account: account).any?
 
           reasons = []
           reasons << instance.status if APPROVAL_STATUSES.include?(instance.status)
           reasons << "attached_volumes" if attached
-          reasons << "virtual_ip_holder" if holder
+          reasons << "virtual_ip_active_holder" if active_holder
           reasons
         end
 
@@ -197,15 +213,62 @@ module System
             .distinct.pluck(:node_instance_id).to_set
         end
 
-        # Instances with a peer in any virtual IP's holder or failover list.
-        def self.virtual_ip_holder_instance_ids(instance_ids)
+        # Instances with a peer that is the ACTIVE holder of a virtual IP —
+        # never merely a failover candidate. See .virtual_ip_holdings for the
+        # per-VIP split the applier uses to prune failover-only membership.
+        #
+        # IMP-10c9b9634d4e review D4/D5 — scoped to `account`, the SAME array-
+        # overlap predicate .virtual_ip_holdings uses below (one spelling of
+        # "does this peer id sit in this VIP's holder list", not two), FILTERED
+        # IN POSTGRES rather than an EXISTS-per-peer subquery. The account
+        # filter matters here more than it looks: instance_ids is already
+        # account-scoped by the caller, but a VirtualIp is a separate table
+        # joined only through an array of peer ids, so nothing before this
+        # filter stops it matching a VIP row in a DIFFERENT account. Unscoped,
+        # this method (the approval CARD's source) could name a foreign VIP as
+        # an active-holder reason that .virtual_ip_holdings (the APPLIER,
+        # already account-scoped) would never see — the card would say
+        # "approval will not help" for a holding the applier doesn't believe
+        # exists. Scoped the same way here, the two cannot disagree.
+        def self.active_holder_instance_ids(instance_ids, account:)
           return Set.new if instance_ids.empty?
 
-          vips = ::Sdwan::VirtualIp.table_name
-          ::Sdwan::Peer.where(node_instance_id: instance_ids)
-            .where("EXISTS (SELECT 1 FROM #{vips} WHERE #{::Sdwan::Peer.table_name}.id = ANY(#{vips}.holder_peer_ids) " \
-                   "OR #{::Sdwan::Peer.table_name}.id = ANY(#{vips}.failover_holder_peer_ids))")
-            .distinct.pluck(:node_instance_id).to_set
+          peers = ::Sdwan::Peer.where(node_instance_id: instance_ids).pluck(:id, :node_instance_id)
+          return Set.new if peers.empty?
+
+          peer_ids = peers.map(&:first)
+          matched_peer_ids = ::Sdwan::VirtualIp.where(account_id: account.id)
+            .where("holder_peer_ids && ARRAY[:ids]::uuid[]", ids: peer_ids)
+            .pluck(:holder_peer_ids).flatten & peer_ids
+
+          peers.filter_map { |peer_id, instance_id| instance_id if matched_peer_ids.include?(peer_id) }.to_set
+        end
+
+        # The VIPs a peer of this instance appears in, split into ACTIVE (the
+        # reap refuses outright — approval cannot fix a moved address) and
+        # FAILOVER-ONLY (safe for the reap to prune before terminating: the
+        # guest never served that address, only queued behind it). Re-read
+        # fresh, not the sense-time batch #claimed built — the applier's reap
+        # can run hours after the signal, and holder state may have moved.
+        #
+        # IMP-10c9b9634d4e review D4 — FILTERED IN POSTGRES by the same
+        # array-overlap predicate PromoteReplicaExecutor#cutover_vips uses
+        # (`&&` on the uuid[] holder columns), not `Enumerable#select` on an
+        # unmaterialised relation: the earlier form loaded every VIP in the
+        # account on every reap application to find the handful (usually
+        # zero) this instance's peers touch. The partition below only walks
+        # the already-matched, typically tiny result.
+        def self.virtual_ip_holdings(instance, account:)
+          peer_ids = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
+          return { peer_ids: [], active: [], failover_only: [] } if peer_ids.empty?
+
+          touching = ::Sdwan::VirtualIp.where(account_id: account.id)
+            .where("holder_peer_ids && ARRAY[:ids]::uuid[] OR failover_holder_peer_ids && ARRAY[:ids]::uuid[]",
+                   ids: peer_ids)
+            .to_a
+          active, failover_only = touching.partition { |vip| (Array(vip.holder_peer_ids) & peer_ids).any? }
+
+          { peer_ids: peer_ids, active: active, failover_only: failover_only }
         end
 
         def self.replace_in_flight?(instance, account)
@@ -228,7 +291,7 @@ module System
               .to_a
             ids = rows.map(&:id)
             @attached_volume_ids = self.class.attached_volume_instance_ids(ids)
-            @virtual_ip_holder_ids = self.class.virtual_ip_holder_instance_ids(ids)
+            @active_virtual_ip_holder_ids = self.class.active_holder_instance_ids(ids, account: account)
             environments = ::Ai::Environment.where(id: rows.filter_map(&:environment_id).uniq).index_by(&:id)
             escalates = Hash.new { |memo, env_id| memo[env_id] = plane_escalates?(environments[env_id]) }
 
@@ -261,8 +324,8 @@ module System
         private
 
         def reasons_for(instance)
-          self.class.approval_reasons(instance, attached_volume_ids: @attached_volume_ids,
-                                                virtual_ip_holder_ids: @virtual_ip_holder_ids)
+          self.class.approval_reasons(instance, account: account, attached_volume_ids: @attached_volume_ids,
+                                                active_virtual_ip_holder_ids: @active_virtual_ip_holder_ids)
         end
 
         # The same rule the gate applies (Ai::EnvironmentPolicyOverlay), asked of

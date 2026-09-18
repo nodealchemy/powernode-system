@@ -120,23 +120,122 @@ RSpec.describe System::Fleet::Sensors::AbandonedInstanceSensor do
 
     # Round 3: excluding VIP holders left a dead failover standby on no lane
     # (VirtualIp#failover! puts the old holder there). It stays on this lane,
-    # parked, with the reason on the card.
-    it "asks for approval for a guest that holds a virtual IP through one of its peers" do
+    # parked, with the reason on the card — approval cannot fix a moved
+    # address, so being the ACTIVE holder is the reason that blocks.
+    it "asks for approval for a guest that is the ACTIVE holder of a virtual IP through one of its peers" do
       inst = instance(status: "error")
       peer = create(:sdwan_peer, account: account, node_instance: inst)
       create(:sdwan_virtual_ip, network: peer.network, account: account, holder_peer_ids: [ peer.id ])
 
       expect(signal_for(inst).payload).to include("requires_approval" => true,
-                                                  "approval_reasons" => [ "virtual_ip_holder" ])
+                                                  "approval_reasons" => [ "virtual_ip_active_holder" ])
     end
 
-    it "asks for approval for a guest that is failover for a virtual IP" do
+    # IMP-10c9b9634d4e VIP ruling: a guest that is only a FAILOVER STANDBY
+    # (never the active holder) is not an approval reason — the reap prunes
+    # it itself before terminating, the same way it detaches a volume, with
+    # no operator gate of its own.
+    it "does not ask for approval for a guest that is only a failover standby for a virtual IP" do
       inst = instance(status: "error")
       peer = create(:sdwan_peer, account: account, node_instance: inst)
       create(:sdwan_virtual_ip, network: peer.network, account: account, failover_holder_peer_ids: [ peer.id ])
 
-      expect(signal_for(inst).payload).to include("requires_approval" => true,
-                                                  "approval_reasons" => [ "virtual_ip_holder" ])
+      expect(signal_for(inst).payload).to include("requires_approval" => false, "approval_reasons" => [])
+    end
+  end
+
+  # IMP-10c9b9634d4e VIP ruling: the applier's own split between what it
+  # refuses on (active) and what it prunes itself (failover-only).
+  describe ".virtual_ip_holdings" do
+    it "splits a VIP where the peer is the active holder into :active" do
+      inst = instance(status: "error")
+      peer = create(:sdwan_peer, account: account, node_instance: inst)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account, holder_peer_ids: [ peer.id ])
+
+      holdings = described_class.virtual_ip_holdings(inst, account: account)
+
+      expect(holdings[:active]).to eq([ vip ])
+      expect(holdings[:failover_only]).to eq([])
+      expect(holdings[:peer_ids]).to eq([ peer.id ])
+    end
+
+    it "splits a VIP where the peer is only a failover standby into :failover_only" do
+      inst = instance(status: "error")
+      peer = create(:sdwan_peer, account: account, node_instance: inst)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account, failover_holder_peer_ids: [ peer.id ])
+
+      holdings = described_class.virtual_ip_holdings(inst, account: account)
+
+      expect(holdings[:active]).to eq([])
+      expect(holdings[:failover_only]).to eq([ vip ])
+    end
+
+    # D9(e) mixed membership: the same peer is the active holder of one VIP
+    # and only a failover standby for a different one. Neither set eclipses
+    # the other — this is exactly the shape the reap lane's own active-holder
+    # refusal + failover-only prune split depends on.
+    it "puts one VIP in :active and a different VIP in :failover_only for the same peer" do
+      inst = instance(status: "error")
+      peer = create(:sdwan_peer, account: account, node_instance: inst)
+      held = create(:sdwan_virtual_ip, network: peer.network, account: account, holder_peer_ids: [ peer.id ])
+      standby = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                          failover_holder_peer_ids: [ peer.id ])
+
+      holdings = described_class.virtual_ip_holdings(inst, account: account)
+
+      expect(holdings[:active]).to eq([ held ])
+      expect(holdings[:failover_only]).to eq([ standby ])
+    end
+
+    # D9(e) both lists on one VIP: an edge state (e.g. a mid-failover write)
+    # where a single VIP names the same peer in BOTH holder_peer_ids and
+    # failover_holder_peer_ids. It must land in :active only — the applier's
+    # prune must never touch a VIP this guest actually serves, so a VIP
+    # touching both lists is never double-counted into :failover_only too.
+    it "puts a VIP naming the peer in both holder and failover lists into :active only" do
+      inst = instance(status: "error")
+      peer = create(:sdwan_peer, account: account, node_instance: inst)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                      holder_peer_ids: [ peer.id ], failover_holder_peer_ids: [ peer.id ])
+
+      holdings = described_class.virtual_ip_holdings(inst, account: account)
+
+      expect(holdings[:active]).to eq([ vip ])
+      expect(holdings[:failover_only]).to eq([])
+    end
+
+    it "reports neither set for a guest with no VIP membership" do
+      inst = instance(status: "error")
+
+      expect(described_class.virtual_ip_holdings(inst, account: account)).to eq(peer_ids: [], active: [], failover_only: [])
+    end
+  end
+
+  # D5 review: .active_holder_instance_ids (the approval CARD's source, via
+  # #approval_reasons) must scope to `account` exactly like .virtual_ip_holdings
+  # (the APPLIER's source) does — otherwise a VIP in a DIFFERENT account naming
+  # this peer as a holder makes the card say "approval will not help" for a
+  # holding the applier, correctly account-scoped, does not believe exists.
+  describe ".active_holder_instance_ids account scoping (D5)" do
+    it "never counts a holder_peer_ids match on a different account's virtual IP" do
+      inst = instance(status: "error")
+      peer = create(:sdwan_peer, account: account, node_instance: inst)
+
+      other_account = create(:account)
+      other_template = create(:system_node_template, account: other_account)
+      other_node = create(:system_node, account: other_account, node_template: other_template)
+      other_peer = create(:sdwan_peer, account: other_account,
+                                       node_instance: create(:system_node_instance, node: other_node))
+      # No FK ties a VIP's holder_peer_ids entries to peers in its own
+      # account — bypass validation the way this suite's own instance()
+      # helper bypasses AASM, to simulate the data anomaly D5 guards against
+      # rather than asserting a shape the model would refuse to create.
+      foreign_vip = create(:sdwan_virtual_ip, network: other_peer.network, account: other_account,
+                                              holder_peer_ids: [ other_peer.id ])
+      foreign_vip.update_columns(holder_peer_ids: [ other_peer.id, peer.id ])
+
+      expect(described_class.active_holder_instance_ids([ inst.id ], account: account)).to eq(Set.new)
+      expect(described_class.approval_reasons(inst, account: account)).to eq([])
     end
   end
 

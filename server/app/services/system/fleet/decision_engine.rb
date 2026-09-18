@@ -2415,12 +2415,11 @@ module System
       #
       # WHAT IS AT STAKE IS RE-READ TOO. The sensor flags a reap
       # requires_approval, listing approval_reasons (last seen running, powered
-      # off, a volume attached, a virtual IP held), and #force_policy_for parks
-      # it; both ride the
-      # approval payload back here. An approval covers the reasons its card
-      # showed: a reason at stake NOW that it did not list has been weighed by
-      # no one, so the reap is refused and the next tick re-signals it with
-      # that reason on the card.
+      # off, a volume attached, ACTIVE virtual-IP holdership), and
+      # #force_policy_for parks it; both ride the approval payload back here. An
+      # approval covers the reasons its card showed: a reason at stake NOW that
+      # it did not list has been weighed by no one, so the reap is refused and
+      # the next tick re-signals it with that reason on the card.
       #
       # Attached volumes are DETACHED before the terminate, as the DR reap does
       # (ReplaceInstanceExecutor#reattach_volumes!): a provider terminate
@@ -2431,6 +2430,44 @@ module System
       # (ServiceBackendRelease, the order the DR reap uses): after the terminate
       # the rows can no longer be found by the instance and would keep the dead
       # host in every set.
+      #
+      # IMP-10c9b9634d4e (VIP-holder ruling): a terminate destroys the guest's
+      # Sdwan peers but leaves their ids in a VirtualIp's holder_peer_ids /
+      # failover_holder_peer_ids (no FK, no prune), and VirtualIp#failover!
+      # would promote a dead standby back into the holder seat. Split by
+      # AbandonedInstanceSensor.virtual_ip_holdings:
+      #   * ACTIVE holder — approval cannot fix a moved address, so this refuses
+      #     unconditionally, whether or not the reap was approved, and the
+      #     refusal (and the card, via #build_summary) names the remedy:
+      #     sdwan_update_virtual_ip (or a failover) to move the address off this
+      #     guest first. Re-checked again immediately before the terminate
+      #     (review D2): the volume detach and the backend release below are
+      #     real, slow, provider-facing steps, and a failover landing in that
+      #     window can promote this guest's peer into the holder seat — a
+      #     promotion the first check ran too early to see.
+      #   * FAILOVER-ONLY standby — safe to fix ourselves: pruned from every
+      #     failover_holder_peer_ids list through the SAME write path an
+      #     operator's sdwan_update_virtual_ip uses (Sdwan::Executors::
+      #     UpdateVirtualIp), not a second hand-rolled mutation, BEFORE the
+      #     volume detach and the backend release (review D3) — of the three,
+      #     it is the only one that is cheap and safely retryable, so a prune
+      #     failure leaves the guest untouched rather than stranding a
+      #     half-released instance forever. It also carries a replay baseline
+      #     (review D1): SdwanVipReachabilitySensor's own failover lane can
+      #     rewrite this same failover_holder_peer_ids column between the read
+      #     above and this write, and without the baseline
+      #     verify_replay_baseline! no-ops, silently dropping that concurrent
+      #     write. A prune that fails to write stops the reap, the same way an
+      #     unhealthy volume detach does, and is traced with a fleet event
+      #     (review D7) since it is an autonomous edit of an operator-
+      #     configured object.
+      #
+      # Attribution for the prune's DeferredOperation duck type — a Struct
+      # rather than a real Ai::DeferredOperation, matching
+      # MultiTenantIsolationExecutor::CompositionContext's precedent for an
+      # executor invoked outside an approval flow.
+      VIP_PRUNE_COMPOSITION_CONTEXT = Struct.new(:account, :requested_by)
+
       def reap_abandoned_instance(signal, _skill_result)
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         id = payload["instance_id"] || payload[:instance_id]
@@ -2450,24 +2487,86 @@ module System
                            "#{sensor.last_sign_of_life(instance)&.iso8601}, ops hold #{instance.ops_held?})" }
         end
 
+        # Review D6 — an approval parked before this ruling renamed the reason
+        # (`virtual_ip_holder` → `virtual_ip_active_holder`) still carries the
+        # OLD string in its stored request_data's approval_reasons, so
+        # `covered` below can legitimately never contain the new name. Nothing
+        # is keyed on the old string elsewhere in the repo, and this
+        # self-corrects rather than needing a migration: for a guest that was
+        # (and still is) the ACTIVE holder, `at_stake` now names
+        # `virtual_ip_active_holder`, `unweighed` below is non-empty, and the
+        # unweighed-reason refusal fires — the very next tick re-signals with
+        # the current name, so one cycle is the whole cost. For a guest that
+        # was only ever a FAILOVER standby, the old approval's reason is no
+        # longer required at all (failover-only membership stopped being an
+        # approval reason under this ruling), so the stale string in a
+        # replayed approval is simply harmless — honoured under the new
+        # contract instead of blocking it.
         approved = [ true, "true" ].include?(payload["requires_approval"] || payload[:requires_approval])
         covered = approved ? Array(payload["approval_reasons"] || payload[:approval_reasons]).map(&:to_s) : []
-        at_stake = sensor.approval_reasons(instance)
+        at_stake = sensor.approval_reasons(instance, account: account)
         unweighed = at_stake - covered
         if unweighed.any?
           return { applied: false, instance_id: instance.id,
                    reason: "not reaped without approval: #{unweighed.join(', ')} since it was reported" }
         end
 
-        # Approval does not clear this one: a terminate destroys the peers and
-        # leaves their ids in the VIP's holder lists, and this lane cannot move
-        # an address. Refused until the operator has moved it off the guest.
-        if at_stake.include?("virtual_ip_holder")
-          return { applied: false, instance_id: instance.id,
-                   reason: "holds or is failover for a virtual IP: move the address off this guest by removing " \
-                           "its peer from the VIP's holder and failover lists (sdwan_update_virtual_ip) before it " \
-                           "is reaped. A failover does not clear it: it moves a dead holder into the failover " \
-                           "list, or makes a dead failover peer the holder" }
+        holdings = sensor.virtual_ip_holdings(instance, account: account)
+        refusal = active_virtual_ip_holder_refusal(holdings)
+        return refusal.merge(instance_id: instance.id) if refusal
+
+        # Review D3: pruned FIRST, before the volume detach and the backend
+        # release below. Both of those are real, provider-facing steps, and
+        # the release is destructive with no undo on a later failure
+        # (ServiceBackendRelease deletes Sdwan::ServiceBackend rows and
+        # regenerates the reverse proxy) — the prune is the only one of the
+        # three that is cheap and safely retryable, so a prune failure must
+        # leave the guest exactly as it was found rather than stranding a
+        # half-released instance forever.
+        pruned = []
+        holdings[:failover_only].each do |vip|
+          stale = Array(vip.failover_holder_peer_ids) & holdings[:peer_ids]
+          next if stale.empty?
+
+          attributes = { failover_holder_peer_ids: Array(vip.failover_holder_peer_ids) - stale }
+          begin
+            ::Sdwan::Executors::UpdateVirtualIp.execute(
+              { vip_id: vip.id, attributes: attributes,
+                # Review D1 — without this, verify_replay_baseline! no-ops
+                # (params[:replay_baseline] blank) and a concurrent
+                # VirtualIp#failover! landing between the read above and this
+                # write (SdwanVipReachabilitySensor fires on any holder
+                # handshake stale past 5 minutes; an abandoned guest is stale
+                # for days) would be silently clobbered — the just-demoted
+                # holder it wrote into failover_holder_peer_ids would vanish
+                # along with this guest's own id. Built from `vip`, the same
+                # object `stale`/`attributes` above were computed from, so
+                # the baseline is exactly what this write believes is current.
+                replay_baseline: ::Sdwan::Executors::UpdateVirtualIp.replay_baseline(vip, attributes) },
+              deferred_operation: VIP_PRUNE_COMPOSITION_CONTEXT.new(account, nil)
+            )
+          rescue StandardError => e
+            return { applied: false, instance_id: instance.id,
+                     reason: "virtual IP #{vip.id} failover list did not prune: #{e.message}",
+                     pruned_virtual_ip_failover_ids: pruned }
+          end
+
+          # Review D7 — an un-gated autonomous edit of an operator-configured
+          # object leaves a trace through the subsystem's own sink, naming
+          # what moved, rather than dying with this method's return value.
+          ::System::Fleet::EventBroadcaster.emit!(
+            account: account,
+            kind: "system.virtual_ip_failover_pruned",
+            severity: :low,
+            payload: {
+              "virtual_ip_id" => vip.id,
+              "instance_id" => instance.id,
+              "removed_peer_ids" => stale
+            },
+            source: "decision_engine.abandoned_instance_reap"
+          )
+
+          pruned << vip.id
         end
 
         detached = []
@@ -2475,6 +2574,7 @@ module System
           detach = ::System::VolumeManagementService.detach(volume: volume)
           unless detach.success?
             return { applied: false, instance_id: instance.id, detached_volume_ids: detached,
+                     pruned_virtual_ip_failover_ids: pruned,
                      reason: "volume #{volume.id} did not detach: #{detach.error}" }
           end
 
@@ -2483,9 +2583,33 @@ module System
 
         backends = ::System::Fleet::ServiceBackendRelease.release!(account: account, instance: instance,
                                                                    log_tag: "FleetDecisionEngine")
+
         released = { detached_volume_ids: detached,
                      removed_sdwan_service_backend_ids: backends[:removed],
-                     stranded_sdwan_service_ids: backends[:stranded] }
+                     stranded_sdwan_service_ids: backends[:stranded],
+                     pruned_virtual_ip_failover_ids: pruned }
+
+        # Review D2 — TOCTOU: the refusal above was evaluated before the
+        # (real, provider-round-trip) volume detach and the destructive
+        # backend release just above. A failover landing in that window can
+        # promote this guest's own peer from standby into the VIP's holder
+        # seat; re-read immediately before the terminate so that promotion is
+        # honoured rather than tombstoned by this reap.
+        #
+        # ACCEPTED GAP, not missed: this re-check inspects :active only. A
+        # FAILOVER membership created in this same window (a concurrent
+        # sdwan_update_virtual_ip naming this guest's peer as a new standby,
+        # after the prune above already ran) is not re-pruned — the terminate
+        # proceeds and that VIP is left with a dead id in its
+        # failover_holder_peer_ids, same as any other post-prune write would.
+        # Considered and accepted rather than closed: the ruling only required
+        # refusing an ACTIVE holder, this is a narrower race than D1/D2 (it
+        # needs a concurrent OPERATOR write, not the routine sensor-driven
+        # failover D1 guards against), and the next tick's own prune clears it
+        # like any other stale failover-only membership would.
+        refusal = active_virtual_ip_holder_refusal(sensor.virtual_ip_holdings(instance, account: account),
+                                                    mid_reap: true, released: released)
+        return refusal.merge(instance_id: instance.id).merge(released) if refusal
 
         result = ::System::ProvisioningService.terminate_instance(instance: instance)
         unless result.success?
@@ -2493,6 +2617,45 @@ module System
         end
 
         { applied: true, instance_id: instance.id }.merge(released)
+      end
+
+      # Approval does not clear this one: a terminate destroys the peer and
+      # leaves its id in the VIP's holder list, and this lane does not move
+      # addresses. Refused unconditionally — an approval cannot fix a moved
+      # address, so there is nothing an approved payload could cover here.
+      # `mid_reap` names the review-D2 re-check's own wording, so the operator
+      # can tell a stale card apart from a promotion the reap itself raced.
+      #
+      # Review D2-followup — `released` is passed on the mid_reap branch only:
+      # by the time that re-check runs, the volume detach and the backend
+      # release have already happened (both real, both not undone by this
+      # refusal), so the guest is left half-dismantled AND still routes a
+      # live address. `detached_volume_ids` / `removed_sdwan_service_backend_ids`
+      # already carry that machine-readably; the human sentence must say it
+      # too, or an operator reading the reason alone has no idea the guest is
+      # no longer in the state it was in before the reap started.
+      def active_virtual_ip_holder_refusal(holdings, mid_reap: false, released: nil)
+        return nil if holdings[:active].empty?
+
+        names = holdings[:active].map(&:name).join(", ")
+        verb = mid_reap ? "became the active holder of virtual IP(s) #{names} during the reap (promoted mid-reap)" \
+                         : "is the active holder of virtual IP(s) #{names}"
+        { applied: false,
+          reason: "#{verb}: approval will not help — this lane does not move addresses. Move it off this guest " \
+                  "first with sdwan_update_virtual_ip (name a live peer as holder) or a failover to a standby, " \
+                  "then it can be reaped#{mid_reap_already_released_clause(released)}" }
+      end
+
+      # See active_virtual_ip_holder_refusal's D2-followup note above.
+      def mid_reap_already_released_clause(released)
+        return "" if released.blank?
+
+        parts = []
+        parts << "#{released[:detached_volume_ids].size} volume(s) already detached" if released[:detached_volume_ids].present?
+        parts << "its published service backends already removed" if released[:removed_sdwan_service_backend_ids].present?
+        return "" if parts.empty?
+
+        " — note: #{parts.join(' and ')} before this promotion was seen"
       end
 
       # IMP-555e29eeb4ab: the instance_state_drifted applier. Unlike
@@ -3347,6 +3510,19 @@ module System
         end
       end
 
+      # IMP-10c9b9634d4e: the note appended when the abandoned-instance card's
+      # own approval_reasons name the guest as a VIP's ACTIVE holder — approving
+      # such a card records no outcome (reap_abandoned_instance refuses it
+      # unconditionally), so without this the operator has no way to tell that
+      # apart from every other reason on the same lane that approval DOES
+      # clear, and re-approves it every tick. Named here, not just in the
+      # applier's refusal reason, because the card is what the operator reads
+      # BEFORE deciding.
+      ABANDONED_ACTIVE_VIP_HOLDER_NOTE =
+        "approval will not help — it is the active holder of a virtual IP and this lane never moves addresses; " \
+        "move it off this guest first with sdwan_update_virtual_ip (name a live peer as holder) or a failover to " \
+        "a standby"
+
       def build_summary(signal, skill_result)
         parts = [ "Fleet signal #{signal.kind} (severity=#{signal.severity})" ]
         if signal.payload.is_a?(Hash)
@@ -3361,7 +3537,15 @@ module System
         if skill_result.is_a?(Hash) && skill_result[:data].is_a?(Hash) && skill_result[:data][:disruption_pct]
           parts << "disruption=#{skill_result[:data][:disruption_pct]}%"
         end
+        parts << ABANDONED_ACTIVE_VIP_HOLDER_NOTE if abandoned_active_vip_holder_reason?(signal)
         parts.join(" — ")
+      end
+
+      def abandoned_active_vip_holder_reason?(signal)
+        return false unless signal.kind == "system.instance_abandoned"
+        return false unless signal.payload.is_a?(Hash)
+
+        Array(signal.payload["approval_reasons"]).include?("virtual_ip_active_holder")
       end
     end
   end

@@ -275,19 +275,233 @@ RSpec.describe "abandoned instance reap lane" do
       expect(System::ProvisioningService).not_to have_received(:terminate_instance)
     end
 
-    # An approval cannot clear this one: the lane does not move addresses, and a
-    # terminate would leave the dead peer in the VIP's holder lists.
-    it "refuses an approved reap of a virtual IP holder until the address is moved" do
+    # IMP-10c9b9634d4e VIP ruling: a failover-only standby is not an approval
+    # reason at all — the reap prunes it itself, through the same write path
+    # sdwan_update_virtual_ip uses, BEFORE the volume detach and the backend
+    # release (review D3), and BEFORE terminating.
+    it "prunes the guest's peer from a VIP's failover list before detaching volumes, releasing backends, and terminating an unapproved reap" do
       peer = create(:sdwan_peer, account: account, node_instance: dead)
-      create(:sdwan_virtual_ip, network: peer.network, account: account, failover_holder_peer_ids: [ peer.id ])
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                      failover_holder_peer_ids: [ peer.id ])
+      # Re-review (2): the earlier version of this example created no volume,
+      # so it could not pin prune-before-DETACH at all — only prune-before-
+      # release/terminate. A reorder putting the prune between the detach
+      # loop and the backend release would have stayed green while
+      # contradicting the comment at the top of the prune block and both
+      # FLEET_SENSORS.md / CAPACITY_MANAGER_AGENT.md passages.
+      volume = create(:system_provider_volume, :attached, account: account, node_instance_id: dead.id)
       signal = abandoned_signal
-      expect(signal.payload["approval_reasons"]).to eq([ "virtual_ip_holder" ])
+      expect(signal.payload["requires_approval"]).to be(true)
+      expect(signal.payload["approval_reasons"]).to eq([ "attached_volumes" ])
+
+      # Review D9(a): pin the full order review D3 requires, the same way the
+      # existing plain volume-detach example above pins detach-before-terminate.
+      expect(Sdwan::Executors::UpdateVirtualIp).to receive(:execute).ordered.and_call_original
+      expect(System::VolumeManagementService).to receive(:detach).with(volume: volume).ordered
+        .and_return(System::Runtime::Result.ok)
+      expect(System::Fleet::ServiceBackendRelease).to receive(:release!)
+        .with(hash_including(account: account, instance: dead)).ordered.and_call_original
+      expect(System::ProvisioningService).to receive(:terminate_instance).with(instance: dead).ordered
+        .and_return(System::Runtime::Result.ok)
+
+      result = apply!(signal)
+
+      expect(result).to include(applied: true, instance_id: dead.id, pruned_virtual_ip_failover_ids: [ vip.id ],
+                                detached_volume_ids: [ volume.id ])
+      expect(vip.reload.failover_holder_peer_ids).to eq([])
+    end
+
+    # Review D7: the prune is an un-gated autonomous edit of an
+    # operator-configured object — it must leave a trace of its own rather
+    # than dying with the method's return value.
+    it "emits a fleet event naming the VIP and the pruned peer id" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                      failover_holder_peer_ids: [ peer.id ])
+      signal = abandoned_signal
+
+      expect(apply!(signal)).to include(applied: true)
+
+      event = System::FleetEvent.where(account: account, kind: "system.virtual_ip_failover_pruned").last
+      expect(event).to be_present
+      expect(event.payload).to include("virtual_ip_id" => vip.id, "instance_id" => dead.id,
+                                       "removed_peer_ids" => [ peer.id ])
+    end
+
+    # Review D1: verify_replay_baseline! only fires when the write carries a
+    # baseline. A concurrent VirtualIp#failover! (SdwanVipReachabilitySensor's
+    # own lane, which fires on any holder handshake stale past 5 minutes — an
+    # abandoned guest is stale for days) landing between the read this reap
+    # took and the prune's write must stop the reap rather than being
+    # silently clobbered by it.
+    it "stops the reap when a concurrent write changes the failover list before the prune writes, destroying nothing" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      concurrent_peer = create(:sdwan_peer, account: account, network: peer.network)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                      failover_holder_peer_ids: [ peer.id ])
+      signal = abandoned_signal
+
+      allow(System::Fleet::Sensors::AbandonedInstanceSensor).to receive(:virtual_ip_holdings).and_wrap_original do |original, *args, **kwargs|
+        holdings = original.call(*args, **kwargs)
+        # The race: something else (a real failover) writes the row between
+        # this read and the prune's write, below, in the same method call.
+        ::Sdwan::VirtualIp.where(id: vip.id).update_all(failover_holder_peer_ids: [ concurrent_peer.id ])
+        holdings
+      end
+      expect(System::Fleet::ServiceBackendRelease).not_to receive(:release!)
+      expect(System::ProvisioningService).not_to receive(:terminate_instance)
 
       result = apply!(signal)
 
       expect(result[:applied]).to be(false)
-      expect(result[:reason]).to match(/move the address off this guest/)
+      expect(result[:reason]).to match(/did not prune/)
+      expect(vip.reload.failover_holder_peer_ids).to eq([ concurrent_peer.id ])
+    end
+
+    # Optional coverage flagged by re-review: N failover-only VIPs, the prune
+    # fails on VIP k, leaving 1..k-1 already written. Behaviour is correct by
+    # construction (the instance itself is untouched, the partial set is
+    # reported, each prune is independently idempotent on retry) — this pins
+    # it rather than changing anything.
+    it "reports a partial prune and runs nothing destructive when the second of two failover-only VIPs fails to prune" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      vip_a = create(:sdwan_virtual_ip, network: peer.network, account: account, failover_holder_peer_ids: [ peer.id ])
+      vip_b = create(:sdwan_virtual_ip, network: peer.network, account: account, failover_holder_peer_ids: [ peer.id ])
+      signal = abandoned_signal
+
+      call_count = 0
+      allow(Sdwan::Executors::UpdateVirtualIp).to receive(:execute).and_wrap_original do |original, params, **kwargs|
+        call_count += 1
+        raise "simulated write failure" if call_count == 2
+
+        original.call(params, **kwargs)
+      end
+      expect(System::Fleet::ServiceBackendRelease).not_to receive(:release!)
+      expect(System::ProvisioningService).not_to receive(:terminate_instance)
+
+      result = apply!(signal)
+
+      expect(result[:applied]).to be(false)
+      expect(result[:reason]).to match(/did not prune/)
+      expect(result[:pruned_virtual_ip_failover_ids].size).to eq(1)
+      succeeded_id = result[:pruned_virtual_ip_failover_ids].first
+      succeeded_vip, failed_vip = [ vip_a, vip_b ].partition { |v| v.id == succeeded_id }.map(&:first)
+      expect(succeeded_vip.reload.failover_holder_peer_ids).to eq([])
+      expect(failed_vip.reload.failover_holder_peer_ids).to eq([ peer.id ])
+      expect(dead.reload.status).not_to eq("terminated")
+    end
+
+    # Review D2 TOCTOU: the active-holder refusal is evaluated before the
+    # (real, provider-round-trip) volume detach and the destructive backend
+    # release. A failover promoting this guest's peer into the holder seat
+    # inside that window must be honoured, not tombstoned by the terminate.
+    it "refuses at the last moment when the guest is promoted to active holder mid-reap" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account)
+      volume = create(:system_provider_volume, :attached, account: account, node_instance_id: dead.id)
+      signal = abandoned_signal
+      expect(signal.payload["approval_reasons"]).to eq([ "attached_volumes" ])
+
+      # Re-review (3): a call-order LOG, not just a call COUNT — pinning "two
+      # calls happened" would stay green if the re-check were moved right
+      # next to the first check (before the detach/release), which silently
+      # restores the exact TOCTOU window D2 exists to close. The log asserts
+      # the SECOND virtual_ip_holdings read happens strictly after release!.
+      call_log = []
+      call_count = 0
+      allow(System::Fleet::Sensors::AbandonedInstanceSensor).to receive(:virtual_ip_holdings).and_wrap_original do |original, *args, **kwargs|
+        call_count += 1
+        call_log << :"virtual_ip_holdings_#{call_count}"
+        result = original.call(*args, **kwargs)
+        # The FIRST call (the pre-detach/release check) reads genuinely
+        # nothing at stake, above. Promote the peer to active holder only
+        # AFTER that read returns, simulating a failover landing during the
+        # detach/release window — the SECOND call (review D2's re-check)
+        # must see the promotion.
+        vip.update_columns(holder_peer_ids: [ peer.id ]) if call_count == 1
+        result
+      end
+      allow(System::VolumeManagementService).to receive(:detach).with(volume: volume)
+        .and_return(System::Runtime::Result.ok)
+      allow(System::Fleet::ServiceBackendRelease).to receive(:release!).and_wrap_original do |original, **kwargs|
+        call_log << :release!
+        original.call(**kwargs)
+      end
+      expect(System::ProvisioningService).not_to receive(:terminate_instance)
+
+      result = apply!(signal)
+
+      expect(result[:applied]).to be(false)
+      expect(result[:reason]).to match(/promoted mid-reap/)
+      expect(result[:reason]).to match(/approval will not help/)
+      expect(result[:reason]).to match(/already detached/)
+      expect(vip.reload.holder_peer_ids).to eq([ peer.id ])
+      expect(call_log).to eq([ :virtual_ip_holdings_1, :release!, :virtual_ip_holdings_2 ])
+    end
+
+    # D9(b): a peer that is the active holder of ONE VIP while only standing
+    # by for a DIFFERENT VIP must still refuse outright at the active-holder
+    # check, before the applier ever reaches the failover-only prune — so
+    # neither VIP is touched and no volume is detached.
+    it "refuses outright, touching neither VIP nor any volume, when the same peer holds one VIP and stands by for another" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      held_vip = create(:sdwan_virtual_ip, network: peer.network, account: account, holder_peer_ids: [ peer.id ])
+      standby_vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                              failover_holder_peer_ids: [ peer.id ])
+      volume = create(:system_provider_volume, :attached, account: account, node_instance_id: dead.id)
+      signal = abandoned_signal
+      expect(signal.payload["approval_reasons"]).to include("virtual_ip_active_holder")
+
+      result = apply!(signal)
+
+      expect(result[:applied]).to be(false)
+      expect(result[:reason]).to match(/approval will not help/)
+      expect(standby_vip.reload.failover_holder_peer_ids).to eq([ peer.id ])
+      expect(held_vip.reload.holder_peer_ids).to eq([ peer.id ])
+      expect(volume.reload.status).to eq("in-use")
       expect(System::ProvisioningService).not_to have_received(:terminate_instance)
+    end
+
+    it "refuses an active virtual IP holder even when approved, and the refusal names the remedy" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      vip = create(:sdwan_virtual_ip, network: peer.network, account: account,
+                                      holder_peer_ids: [ peer.id ])
+      signal = abandoned_signal
+      expect(signal.payload["approval_reasons"]).to eq([ "virtual_ip_active_holder" ])
+
+      result = apply!(signal)
+
+      expect(result[:applied]).to be(false)
+      expect(result[:reason]).to match(/approval will not help/)
+      expect(result[:reason]).to include(vip.name)
+      expect(result[:reason]).to match(/sdwan_update_virtual_ip/)
+      expect(System::ProvisioningService).not_to have_received(:terminate_instance)
+      expect(vip.reload.holder_peer_ids).to eq([ peer.id ])
+    end
+
+    # The card an operator reads BEFORE deciding must say the same thing —
+    # otherwise approving it looks like it should work and records no outcome,
+    # so a fresh card is raised every tick with no explanation.
+    it "names the same 'approval will not help' remedy on the approval card summary" do
+      peer = create(:sdwan_peer, account: account, node_instance: dead)
+      create(:sdwan_virtual_ip, network: peer.network, account: account, holder_peer_ids: [ peer.id ])
+      signal = abandoned_signal
+
+      summary = engine.send(:build_summary, signal, nil)
+
+      expect(summary).to match(/approval will not help/)
+      expect(summary).to match(/sdwan_update_virtual_ip/)
+    end
+
+    # D9(d): the note is keyed to THIS card's own reason, not stamped onto
+    # every card the lane raises — an unrelated reason must not carry it.
+    it "does not carry the VIP note on a card parked for an unrelated reason" do
+      create(:system_provider_volume, :attached, account: account, node_instance_id: dead.id)
+      signal = abandoned_signal
+
+      summary = engine.send(:build_summary, signal, nil)
+
+      expect(summary).not_to match(/approval will not help/)
     end
 
     it "refuses an instance outside the account" do
