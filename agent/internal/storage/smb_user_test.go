@@ -51,13 +51,29 @@ func sambaCredentialBody(password string) string {
 
 func sambaArgsContain(rec *mount.RecorderRunner, name, value string) bool {
 	for _, inv := range rec.Invocations {
-		if inv.Op != "Run" || inv.Name != name {
+		if inv.Name != name {
 			continue
 		}
 		for _, a := range inv.Args {
 			if a == value {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// sambaStdinContains checks the RunStdin-delivered secret, never argv —
+// IMP-ad2c66a838f2. Every samba-tool invocation that carries a password now
+// goes through RunStdin (see redactedRun), so this is the counterpart
+// sambaArgsContain's callers use for password assertions.
+func sambaStdinContains(rec *mount.RecorderRunner, name, value string) bool {
+	for _, inv := range rec.Invocations {
+		if inv.Op != "RunStdin" || inv.Name != name {
+			continue
+		}
+		if strings.Contains(inv.Stdin, value) {
+			return true
 		}
 	}
 	return false
@@ -79,15 +95,18 @@ func TestApplySambaUser_CreateResolvesPasswordFromCredentialEndpoint(t *testing.
 	if err := ApplySambaUser(context.Background(), rec, getter, task); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !sambaArgsContain(rec, "samba-tool", "fetched-pw") {
-		t.Fatalf("expected samba-tool to run with the fetched password; got %+v", rec.Invocations)
+	if !sambaStdinContains(rec, "samba-tool", "fetched-pw") {
+		t.Fatalf("expected samba-tool to run with the fetched password via stdin; got %+v", rec.Invocations)
+	}
+	if sambaArgsContain(rec, "samba-tool", "fetched-pw") {
+		t.Fatalf("the fetched password must never appear in argv; got %+v", rec.Invocations)
 	}
 }
 
 func TestApplySambaUser_CreateFallsThroughToSetPasswordOnExistingUser(t *testing.T) {
 	rec := &mount.RecorderRunner{
 		StubErr: map[string]error{
-			"samba-tool user create svc-share fetched-pw": errUserExists,
+			"samba-tool user create svc-share": errUserExists,
 		},
 	}
 	getter := stubGetter{body: sambaCredentialBody("fetched-pw")}
@@ -101,8 +120,11 @@ func TestApplySambaUser_CreateFallsThroughToSetPasswordOnExistingUser(t *testing
 	if err := ApplySambaUser(context.Background(), rec, getter, task); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !sambaArgsContain(rec, "samba-tool", "--newpassword=fetched-pw") {
-		t.Fatalf("expected the setpassword fallback to run with the fetched password; got %+v", rec.Invocations)
+	if !sambaStdinContains(rec, "samba-tool", "fetched-pw") {
+		t.Fatalf("expected the setpassword fallback to run with the fetched password via stdin; got %+v", rec.Invocations)
+	}
+	if sambaArgsContain(rec, "samba-tool", "--newpassword=fetched-pw") || sambaArgsContain(rec, "samba-tool", "fetched-pw") {
+		t.Fatalf("the fetched password must never appear in argv; got %+v", rec.Invocations)
 	}
 }
 
@@ -125,11 +147,14 @@ func TestApplySambaUser_SetPasswordPrefersNewCredentialOverCredential(t *testing
 	if err := ApplySambaUser(context.Background(), rec, getter, task); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !sambaArgsContain(rec, "samba-tool", "--newpassword=rotated-pw") {
-		t.Fatalf("expected setpassword to use the NEW credential's password; got %+v", rec.Invocations)
+	if !sambaStdinContains(rec, "samba-tool", "rotated-pw") {
+		t.Fatalf("expected setpassword to use the NEW credential's password via stdin; got %+v", rec.Invocations)
 	}
-	if sambaArgsContain(rec, "samba-tool", "--newpassword=old-pw") {
+	if sambaStdinContains(rec, "samba-tool", "old-pw") {
 		t.Fatalf("setpassword must not fall back to the old credential when a new one is present; got %+v", rec.Invocations)
+	}
+	if sambaArgsContain(rec, "samba-tool", "--newpassword=rotated-pw") || sambaArgsContain(rec, "samba-tool", "--newpassword=old-pw") {
+		t.Fatalf("neither password may ever appear in argv; got %+v", rec.Invocations)
 	}
 }
 
@@ -146,8 +171,11 @@ func TestApplySambaUser_SetPasswordFallsBackToCredentialWhenNoNewCredential(t *t
 	if err := ApplySambaUser(context.Background(), rec, getter, task); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !sambaArgsContain(rec, "samba-tool", "--newpassword=only-pw") {
-		t.Fatalf("expected setpassword to fall back to Credential's password; got %+v", rec.Invocations)
+	if !sambaStdinContains(rec, "samba-tool", "only-pw") {
+		t.Fatalf("expected setpassword to fall back to Credential's password via stdin; got %+v", rec.Invocations)
+	}
+	if sambaArgsContain(rec, "samba-tool", "--newpassword=only-pw") {
+		t.Fatalf("the password must never appear in argv; got %+v", rec.Invocations)
 	}
 }
 
@@ -244,8 +272,8 @@ func TestApplySambaUser_CreateFailureNeverEchoesThePasswordOnFallbackFailure(t *
 	const password = "s3cret-should-never-leak"
 	rec := &mount.RecorderRunner{
 		StubErr: map[string]error{
-			"samba-tool user create svc-share " + password:                    errUserExists,
-			"samba-tool user setpassword svc-share --newpassword=" + password: errors.New("samba-tool user setpassword svc-share --newpassword=" + password + ": exit status 1"),
+			"samba-tool user create svc-share":      errUserExists,
+			"samba-tool user setpassword svc-share": errors.New("samba-tool user setpassword svc-share: exit status 1 (output: bad password " + password + ")"),
 		},
 	}
 	getter := stubGetter{body: sambaCredentialBody(password)}
@@ -269,7 +297,7 @@ func TestApplySambaUser_SetPasswordFailureNeverEchoesThePassword(t *testing.T) {
 	const password = "another-secret-value"
 	rec := &mount.RecorderRunner{
 		StubErr: map[string]error{
-			"samba-tool user setpassword svc-share --newpassword=" + password: errors.New("samba-tool user setpassword svc-share --newpassword=" + password + ": exit status 1 (output: bad password " + password + ")"),
+			"samba-tool user setpassword svc-share": errors.New("samba-tool user setpassword svc-share: exit status 1 (output: bad password " + password + ")"),
 		},
 	}
 	getter := stubGetter{body: sambaCredentialBody(password)}
@@ -286,6 +314,174 @@ func TestApplySambaUser_SetPasswordFailureNeverEchoesThePassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), password) {
 		t.Fatalf("returned error echoed the password (including the stderr-capture copy): %v", err)
+	}
+}
+
+// --- RULE (IMP-ad2c66a838f2): the password is NEVER an argument to
+// samba-tool — not the "create" positional, not --newpassword= — and never
+// an environment variable either. It travels via stdin only. -------------
+
+// TestApplySambaUser_PasswordNeverInArgvAcrossAllActions is the
+// consolidated, red-first assertion for the finding itself: for every
+// action that touches a password (create, create-falls-through-to-
+// setpassword, and standalone set_password), no argv token anywhere in the
+// invocation list ever equals or embeds the secret, while RunStdin's Stdin
+// field carries it. Reverting redactedRun to its old argv-based form (or
+// re-adding the password/--newpassword= argument) turns this red.
+func TestApplySambaUser_PasswordNeverInArgvAcrossAllActions(t *testing.T) {
+	const password = "argv-must-never-see-this-9f3a"
+
+	cases := []struct {
+		name string
+		task *SmbUserApplyTask
+		rec  *mount.RecorderRunner
+	}{
+		{
+			name: "create",
+			task: &SmbUserApplyTask{
+				StorageID: "019f7cb5-3858-7000-8000-000000000006", AccountID: "019f7cb5-3858-7000-8000-000000000007",
+				Action: "create", Username: "svc-share",
+				Credential: CredentialRef{ID: smbTestCredID, URL: smbCredURL(smbTestCredID)},
+			},
+			rec: &mount.RecorderRunner{},
+		},
+		{
+			name: "create falls through to setpassword",
+			task: &SmbUserApplyTask{
+				StorageID: "019f7cb5-3858-7000-8000-000000000006", AccountID: "019f7cb5-3858-7000-8000-000000000007",
+				Action: "create", Username: "svc-share",
+				Credential: CredentialRef{ID: smbTestCredID, URL: smbCredURL(smbTestCredID)},
+			},
+			rec: &mount.RecorderRunner{StubErr: map[string]error{"samba-tool user create svc-share": errUserExists}},
+		},
+		{
+			name: "set_password",
+			task: &SmbUserApplyTask{
+				StorageID: "019f7cb5-3858-7000-8000-000000000006", AccountID: "019f7cb5-3858-7000-8000-000000000007",
+				Action: "set_password", Username: "svc-share",
+				Credential: CredentialRef{ID: smbTestCredID, URL: smbCredURL(smbTestCredID)},
+			},
+			rec: &mount.RecorderRunner{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			getter := stubGetter{body: sambaCredentialBody(password)}
+			if err := ApplySambaUser(context.Background(), tc.rec, getter, tc.task); err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if len(tc.rec.Invocations) == 0 {
+				t.Fatal("expected at least one samba-tool invocation")
+			}
+			// Pinned exactly, not just Contains: samba-tool's "New
+			// Password:" / "Retype Password:" prompts each read ONE line —
+			// a regression that sent the secret only once (secret+"\n")
+			// would raise EOFError on the second prompt in production
+			// (verified by execution — see redactedRun's doc comment), but
+			// a Contains-only check would stay green for it. Checked on
+			// EVERY RunStdin invocation in the case (the fallback case has
+			// two: the failed create attempt and the setpassword retry —
+			// both must conform).
+			wantStdin := password + "\n" + password + "\n"
+			sawStdin := false
+			for _, inv := range tc.rec.Invocations {
+				for _, a := range inv.Args {
+					if strings.Contains(a, password) {
+						t.Fatalf("password leaked into argv: %+v", inv)
+					}
+				}
+				if inv.Op != "RunStdin" {
+					continue
+				}
+				sawStdin = true
+				if inv.Stdin != wantStdin {
+					t.Fatalf("expected stdin to be the password written exactly twice (one line per samba-tool prompt); got %q", inv.Stdin)
+				}
+			}
+			if !sawStdin {
+				t.Fatalf("expected the password to be delivered via RunStdin's Stdin field; got %+v", tc.rec.Invocations)
+			}
+		})
+	}
+}
+
+// TestExecRunner_RunStdin_SecretNeverInArgvOrEnviron is the real-process
+// counterpart to the RecorderRunner-based tests above: it exercises
+// mount.ExecRunner directly (the production Runner — RecorderRunner never
+// actually execs anything, so it can't prove this on its own) to confirm
+// the stdin-delivery PLUMBING itself never leaks the secret into the child
+// process's argv or environment — the two channels readable by any other
+// user on the box via /proc/<pid>/cmdline and /proc/<pid>/environ. The
+// child deliberately dumps both, then exits non-zero, so ExecRunner's
+// existing captured-output-in-error behavior (mount/runner.go) surfaces
+// them to the assertion below without this test needing its own stdout
+// plumbing.
+func TestExecRunner_RunStdin_SecretNeverInArgvOrEnviron(t *testing.T) {
+	const secret = "leak-check-env-argv-7c21"
+	r := mount.ExecRunner{}
+	// The child (1) dumps its own argv and environ, proving neither channel
+	// carries the secret, then (2) echoes back exactly what it read from
+	// stdin via a bare `cat` — proving RunStdin actually DELIVERS it (a
+	// RunStdin that silently dropped stdin would produce no such echo, so
+	// this can't pass vacuously). Comparing INSIDE the shell (e.g.
+	// `[ "$x" = "<secret>" ]`) would put the literal secret into the
+	// child's own -c script argument and self-contaminate the very argv
+	// check this test exists to run — so the echoed value is compared by
+	// the Go test itself instead. Always exits 1 so ExecRunner's existing
+	// captured-output-in-error behavior (mount/runner.go) surfaces
+	// everything here without this test needing its own stdout plumbing.
+	err := r.RunStdin(context.Background(), secret+"\n", "sh", "-c",
+		"cat /proc/self/cmdline; echo; cat /proc/self/environ; echo; cat; exit 1")
+	if err == nil {
+		t.Fatal("expected the deliberate exit 1 to produce an error")
+	}
+	msg := err.Error()
+	if n := strings.Count(msg, secret); n != 1 {
+		t.Fatalf("expected the secret to appear EXACTLY once (the stdin echo) — 0 means RunStdin never delivered it, >1 means it ALSO leaked into argv or environ; got %d occurrences in: %q", n, msg)
+	}
+	if !strings.HasSuffix(strings.TrimRight(msg, ")"), secret+"\n") {
+		t.Fatalf("expected the secret's one occurrence to be the trailing stdin echo, not the argv/environ dump before it: %q", msg)
+	}
+}
+
+// --- RULE (IMP-ad2c66a838f2 review round 1): redactedRun fails CLOSED when
+// its runner doesn't support stdin-delivered secrets — it must return an
+// error and must NEVER fall back to running the command (via argv or
+// otherwise). -----------------------------------------------------------
+
+// argvOnlyRunner implements mount.Runner (Run/Output) but deliberately NOT
+// mount.StdinRunner — simulating a Runner that predates RunStdin. Records
+// whether Run/Output was ever invoked at all, so the test below can prove
+// redactedRun never executes anything through it.
+type argvOnlyRunner struct {
+	called bool
+}
+
+func (r *argvOnlyRunner) Run(_ context.Context, _ string, _ ...string) error {
+	r.called = true
+	return nil
+}
+
+func (r *argvOnlyRunner) Output(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	r.called = true
+	return nil, nil
+}
+
+func TestRedactedRun_FailsClosedWhenRunnerLacksStdinSupport(t *testing.T) {
+	const secret = "must-never-reach-argv-fallback"
+	r := &argvOnlyRunner{}
+
+	err := redactedRun(context.Background(), r, secret, "samba-tool", "user", "setpassword", "svc-share")
+
+	if err == nil {
+		t.Fatal("expected redactedRun to refuse a runner without stdin support")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the refusal echoed the secret: %v", err)
+	}
+	if r.called {
+		t.Fatal("redactedRun must never fall back to running the command (via argv or otherwise) when the runner lacks stdin support")
 	}
 }
 

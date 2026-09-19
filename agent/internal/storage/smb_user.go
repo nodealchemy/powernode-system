@@ -45,10 +45,11 @@ func createSambaUser(ctx context.Context, runner mount.Runner, client httpGetter
 		return fmt.Errorf("storage.smb_user.apply create: %w", err)
 	}
 	// samba-tool exits non-zero if the user already exists; we treat
-	// that as "make sure password matches" rather than fatal.
-	if err := redactedRun(ctx, runner, password, "samba-tool", "user", "create", task.Username, password); err != nil {
+	// that as "make sure password matches" rather than fatal. No password
+	// positional argument — see redactedRun.
+	if err := redactedRun(ctx, runner, password, "samba-tool", "user", "create", task.Username); err != nil {
 		// Fall through to set_password if create failed (existing user).
-		return redactedRun(ctx, runner, password, "samba-tool", "user", "setpassword", task.Username, "--newpassword="+password)
+		return redactedRun(ctx, runner, password, "samba-tool", "user", "setpassword", task.Username)
 	}
 	return nil
 }
@@ -68,7 +69,7 @@ func setSambaPassword(ctx context.Context, runner mount.Runner, client httpGette
 	if err != nil {
 		return fmt.Errorf("storage.smb_user.apply set_password: %w", err)
 	}
-	return redactedRun(ctx, runner, password, "samba-tool", "user", "setpassword", task.Username, "--newpassword="+password)
+	return redactedRun(ctx, runner, password, "samba-tool", "user", "setpassword", task.Username)
 }
 
 // fetchSambaPassword resolves the plaintext password for a CredentialRef via
@@ -89,17 +90,37 @@ func fetchSambaPassword(client httpGetter, ref CredentialRef) (string, error) {
 	return payload.Password, nil
 }
 
-// redactedRun runs a samba-tool invocation via runner.Run and, on failure,
-// strips the secret value out of the returned error before any caller ever
-// sees it. runner.Run's production implementation (mount.ExecRunner) formats
-// the FULL ARGV — including a positional password — and the command's
+// redactedRun runs a samba-tool invocation whose secret is delivered via
+// STDIN — never argv, never the environment — and, on failure, strips the
+// secret value out of the returned error before any caller ever sees it.
+//
+// IMP-ad2c66a838f2 — `args` used to carry the plaintext password as a
+// positional argument (create) or a `--newpassword=` flag (setpassword),
+// readable by any other user on the box via /proc/<pid>/cmdline or `ps`.
+// Verified BY EXECUTION against a real samba-tool AD DC (docker container,
+// `samba-tool domain provision`) that `samba-tool user create <user>` and
+// `samba-tool user setpassword <user>` — called with NEITHER the password
+// positional NOR --newpassword= — prompt "New Password:" / "Retype
+// Password:" and read BOTH from stdin when stdin is not a TTY, so writing
+// the secret there twice (one line per prompt) completes the exact same
+// operation the old argv-based call did. `-A/--authentication-file` was
+// also checked: it authenticates the samba-tool CLIENT itself (like -U),
+// not the new user's password, so it doesn't apply here.
+//
+// runner.Run's production implementation (mount.ExecRunner) used to format
+// the FULL ARGV — including the positional password — and the command's
 // captured stdout/stderr into the error it returns (mount/runner.go), and
 // the runtime loop posts that error's .Error() text verbatim as the task's
-// PERSISTED error_message (tasks/client.go Client.Fail) — so an unredacted
-// failure would put the plaintext password into a DB column exactly like the
-// options field this whole fix removed it from.
+// PERSISTED error_message (tasks/client.go Client.Fail) — so this redaction
+// stays in place as defense in depth even though the secret can no longer
+// reach argv at all. runner must implement mount.StdinRunner — both
+// mount.ExecRunner and mount.RecorderRunner do.
 func redactedRun(ctx context.Context, runner mount.Runner, secret, name string, args ...string) error {
-	err := runner.Run(ctx, name, args...)
+	sr, ok := runner.(mount.StdinRunner)
+	if !ok {
+		return fmt.Errorf("%s: runner %T does not support stdin-delivered secrets", name, runner)
+	}
+	err := sr.RunStdin(ctx, secret+"\n"+secret+"\n", name, args...)
 	if err == nil || secret == "" {
 		return err
 	}
