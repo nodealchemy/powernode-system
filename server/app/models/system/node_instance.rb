@@ -959,10 +959,14 @@ module System
     # calls #destroy per instance, not raw SQL). Declaring these here — same
     # pattern as node_certificates above — makes AR run the destroy (and this
     # model's own before_destroy callback) BEFORE the row disappears, on every
-    # one of those paths, without patching each caller. See
-    # StorageCredential's own before_destroy doc for why the same is not true
-    # of Ai::Tools::SystemFleetTool#destroy_instance (raw SQL, patched at its
-    # own call site instead).
+    # one of those paths, without patching each caller. Also covers
+    # Ai::Tools::SystemFleetTool#destroy_instance (review round 1): its
+    # raw-SQL DESTROY_INSTANCE_FKS cascade used to delete both tables
+    # directly, bypassing AR entirely — removing them from that list means
+    # its own `instance.destroy!` now reaches this same hook through these
+    # associations, instead of needing a hand-written equivalent at that
+    # call site. See StorageCredential's own before_destroy doc for the full
+    # picture across all destroy paths.
     has_many :storage_assignments, class_name: "System::StorageAssignment", dependent: :destroy
     has_many :storage_credentials, class_name: "System::StorageCredential", dependent: :destroy
     belongs_to :enrollment_token, class_name: "System::BootstrapToken", optional: true
