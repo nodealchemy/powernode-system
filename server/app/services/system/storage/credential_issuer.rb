@@ -68,7 +68,7 @@ module System
           new_cred = issue_credential_row!
 
           if @storage.smb?
-            SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_cred)
+            rotate_smb_user!(credential: credential, new_credential: new_cred)
           else
             materialize_backend_side!(new_cred)
           end
@@ -254,22 +254,32 @@ module System
       # proceed, which is why the backend check exists alongside the
       # username check rather than replacing it.
       #
-      # NOT FIXED by increment 1 (documented, not silently dropped):
-      # #rotate!'s set_password dispatch for ONE assignment's credential
-      # still changes the password of a samba user a SIBLING assignment
-      # (same node, same backend, same derived username) is relying on —
-      # this method only gates the DELETE dispatch (deprovision), never
-      # rotation's set_password. Increment 2 (a per-assignment-derived
-      # username, which also fixes a UUIDv7 millisecond-collision edge
-      # case) and increment 3 (#rotate! provisioning under the new username
-      # first, then revoking the old one ONLY when it differs) are what
-      # actually fix rotation; both are follow-up tasks, not covered here.
-      def smb_username_superseded?(credential, successor)
+      # FIXED by increment 3 (IMP-eb6a3c299f4b), for rotation specifically:
+      # #rotate! now provisions the NEW username first and only revokes the
+      # OLD one when the two differ (see #rotate_smb_user!) — that revoke
+      # goes through this same method, so a same-backend sibling still on
+      # the OLD username is still protected.
+      #
+      # `successor` is intentionally UNUSED here (increment 3 review) — it
+      # used to short-circuit candidates to `[successor]` alone, which was
+      # only ever correct because a rotation's successor PRE-increment-3
+      # always shared the outgoing credential's username (so `[successor]`
+      # trivially "superseded" it). Increment 2/3 make that false the
+      # moment a rotation crosses from an old-scheme username to a new one:
+      # the successor's username genuinely differs, so `[successor]` alone
+      # would wrongly report "not superseded" even when some OTHER
+      # same-backend sibling is still on the OLD username. Always
+      # consulting #other_live_credentials fixes this — it is a super*set*
+      # of `[successor]` already (a rotation's successor is itself a live,
+      # same-account, same-backend credential the moment this runs, since
+      # #rotate! commits new_cred.activate! before calling #revoke! — see
+      # that method's own ordering comment — so it is always found by this
+      # query on its own, without needing the shortcut).
+      def smb_username_superseded?(credential, _successor)
         username = credential.vault_credentials["username"]
         return false if username.blank?
 
-        candidates = successor ? [ successor ] : other_live_credentials(credential)
-        candidates.any? { |c| c.vault_credentials["username"] == username }
+        other_live_credentials(credential).any? { |c| c.vault_credentials["username"] == username }
       end
 
       def other_live_credentials(credential)
@@ -349,6 +359,43 @@ module System
           NfsExportManager.new(assignment: @assignment).grant!(credential: credential)
         when "smb"
           SmbUserManager.new(assignment: @assignment).provision_user!(credential: credential)
+        end
+      end
+
+      # IMP-eb6a3c299f4b increment 3 — StorageProviders::SmbStorage
+      # #issue_node_credential (increment 2) now derives the samba-tool
+      # username per-(instance, storage) instead of per-instance-alone, so
+      # an OLD-scheme credential (issued before that change, still on its
+      # original 90-day TTL — NOT force-migrated, see below) and its
+      # rotated successor can end up with DIFFERENT usernames.
+      # #rotate_user! (agent: setSambaPassword) only ever changes an
+      # EXISTING user's password — it cannot rename one — so a scheme
+      # switch must PROVISION the new username (action "create") instead.
+      #
+      # The OLD username's delete still happens, unchanged, via #rotate!'s
+      # own subsequent #revoke!(credential, successor: new_cred, ...) call
+      # — #smb_username_superseded? (the increment-1 same-backend guard,
+      # now always consulted — see that method's own comment) still decides
+      # whether some OTHER same-backend sibling still needs the old
+      # username before deleting it. This method does not need to (and
+      # must not) dispatch that delete itself.
+      #
+      # Same-username rotations — the common case until every credential
+      # has naturally rotated onto the new scheme — still use the cheaper
+      # single set_password dispatch, unchanged.
+      #
+      # NOT a forced migration: an old-scheme credential is left exactly
+      # alone until ITS OWN next scheduled rotation (#ensure_credential!'s
+      # expiry?/needs_rotation? check, untouched by this change) decides to
+      # rotate it — no sweep is dispatched here or anywhere else.
+      def rotate_smb_user!(credential:, new_credential:)
+        old_username = credential.vault_credentials["username"]
+        new_username = new_credential.vault_credentials["username"]
+
+        if old_username == new_username
+          SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_credential)
+        else
+          SmbUserManager.new(assignment: @assignment).provision_user!(credential: new_credential)
         end
       end
     end

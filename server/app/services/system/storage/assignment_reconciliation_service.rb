@@ -144,6 +144,14 @@ module System
       # its own comment for why the mechanism has to differ (NFS's rebuild
       # is per-STORAGE, not per-credential, so there is no credential id in
       # the payload to match against the way smb_tasks_for_credential does).
+      # IMP-eb6a3c299f4b increment 3 review — still correct after the
+      # username-derivation scheme switch (increment 2) and PROVISION-then-
+      # REVOKE rotation (increment 3): this always dispatches "create" for
+      # `credential`'s OWN CURRENT username, whatever scheme it happens to
+      # be on — it never compares against another credential's username or
+      # assumes a particular derivation. createSambaUser (agent) is
+      # idempotent regardless of the username's shape (old "node-<12hex>"
+      # or new "n-<16hex>"), so this needed no change.
       def redispatch_stalled_smb_credential!(credential)
         return unless @assignment.file_storage&.smb?
 

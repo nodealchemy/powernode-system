@@ -420,9 +420,27 @@ RSpec.describe System::Storage::CredentialIssuer do
   # assignment — it missed the cross-assignment case entirely, so revoking
   # one assignment's credential could delete a samba user a SIBLING
   # assignment still needed.
-  describe "SMB cross-assignment username collision (IMP-0376a1471f99 increment 1)" do
+  # IMP-0376a1471f99 increment 1 / IMP-eb6a3c299f4b increments 2+3 —
+  # increment 2 makes the samba-tool username derivation per-(instance,
+  # storage) instead of per-instance-alone, so two REAL, freshly-issued
+  # credentials on different storages no longer share a username by
+  # construction (a genuine SHA256 collision is not something a test
+  # should rely on). These specs exist to prove the CROSS-ASSIGNMENT
+  # COLLISION GUARD's own logic, so they force a shared username onto two
+  # otherwise-normal credentials explicitly — standing in for the LEGACY
+  # state increment 2 exists to eventually retire (an old-scheme credential
+  # that has not yet hit its own next rotation).
+  describe "SMB cross-assignment username collision" do
     let(:backend_instance) { create(:system_node_instance, account: account) }
     let(:other_backend_instance) { create(:system_node_instance, account: account) }
+
+    before do
+      # vault_credentials stubbed to mirror metadata so the forced,
+      # shared username below can be controlled purely through the
+      # metadata column, without touching real Vault.
+      allow_any_instance_of(System::StorageCredential)
+        .to receive(:vault_credentials) { |instance| instance.metadata.slice("username") }
+    end
 
     def smb_storage_for(backend_id, share:)
       create(:file_storage, :smb, :node_mountable, account: account,
@@ -432,14 +450,15 @@ RSpec.describe System::Storage::CredentialIssuer do
         })
     end
 
-    def build_assignment_and_credential(storage, mount_path:)
+    def build_assignment_and_credential(storage, mount_path:, username: nil)
       assignment = create(:system_storage_assignment,
         account: account, file_storage_id: storage.id, node_instance: node_instance, mount_path: mount_path)
-      # StorageAssignment#after_commit auto-issues its OWN credential for
-      # this same deterministic username — clear it so the explicit
-      # #issue! below is the only live credential for this assignment.
+      # StorageAssignment#after_commit auto-issues its OWN credential —
+      # clear it so the explicit #issue! below is the only live credential
+      # for this assignment.
       assignment.storage_credentials.update_all(status: "revoked")
       credential = described_class.new(assignment: assignment).issue!
+      credential.update_columns(metadata: credential.metadata.merge("username" => username)) if username
       [ assignment, credential ]
     end
 
@@ -450,10 +469,9 @@ RSpec.describe System::Storage::CredentialIssuer do
     it "dispatches NO delete when a sibling assignment on the SAME backend still uses the same username" do
       storage_a = smb_storage_for(backend_instance.id, share: "share-a")
       storage_b = smb_storage_for(backend_instance.id, share: "share-b")
-      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-a")
-      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-b")
-
-      expect(credential_a.vault_credentials["username"]).to eq(credential_b.vault_credentials["username"]) # sanity — same node ⇒ same derived username
+      shared_username = "n-legacyshared0001"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-a", username: shared_username)
+      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-b", username: shared_username)
 
       before_ids = smb_tasks.pluck(:id)
       described_class.new(assignment: assignment_a).revoke!(credential_a)
@@ -466,10 +484,9 @@ RSpec.describe System::Storage::CredentialIssuer do
     it "DOES dispatch a delete when the sibling assignment's storage has a DIFFERENT backend" do
       storage_a = smb_storage_for(backend_instance.id, share: "share-c")
       storage_b = smb_storage_for(other_backend_instance.id, share: "share-d")
-      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-c")
-      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-d")
-
-      expect(credential_a.vault_credentials["username"]).to eq(credential_b.vault_credentials["username"]) # sanity — still the same NOMINAL username; only the BACKEND differs, which is why this must proceed
+      shared_username = "n-legacyshared0002"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-c", username: shared_username)
+      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-d", username: shared_username)
 
       before_ids = smb_tasks.pluck(:id)
       described_class.new(assignment: assignment_a).revoke!(credential_a)
@@ -479,28 +496,48 @@ RSpec.describe System::Storage::CredentialIssuer do
       expect(delete_task.options["credential"]["id"]).to eq(credential_a.id)
     end
 
-    # NOT fixed by increment 1 (see #smb_username_superseded?'s own
-    # comment) — locks in the current, still-broken behavior as a
-    # documented scope boundary, not a silently accepted regression. This
-    # passes identically before and after this change, since #rotate! never
-    # consults the collision guard at all — that guard only gates the
-    # DELETE dispatch inside #deprovision!, never rotation's set_password.
-    # Increments 2 and 3 are what actually fix this.
-    it "rotating one assignment's credential still dispatches set_password for the shared username (increment 1 does not fix this)" do
+    # FLIPPED for IMP-eb6a3c299f4b increment 3 — this used to prove
+    # rotation was NOT protected (increment 1 only gated the delete path,
+    # never set_password). Increment 3 fixes exactly this: a rotation whose
+    # new username differs from the old one now PROVISIONS the new
+    # username instead of running set_password against the shared OLD one,
+    # so the sibling still on that old username is never touched.
+    it "rotating an old-scheme credential provisions the new username and leaves the sibling's password untouched" do
       storage_a = smb_storage_for(backend_instance.id, share: "share-e")
       storage_b = smb_storage_for(backend_instance.id, share: "share-f")
-      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-e")
-      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-f")
+      shared_username = "n-legacyshared0003"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-e", username: shared_username)
+      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-f", username: shared_username)
 
-      shared_username = credential_a.vault_credentials["username"]
-      expect(credential_b.vault_credentials["username"]).to eq(shared_username) # sanity
+      before_ids = smb_tasks.pluck(:id)
+      new_cred = described_class.new(assignment: assignment_a).rotate!(credential_a)
+
+      # A "create" for the NEW (real, un-forced, genuinely distinct)
+      # username — never a "set_password" naming the shared old one.
+      expect(smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'set_password'")).to be_empty
+      create_task = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'create'").last
+      expect(create_task).to be_present
+      expect(create_task.options["username"]).to eq(new_cred.vault_credentials["username"])
+      expect(create_task.options["username"]).not_to eq(shared_username)
+
+      expect(credential_b.reload.status).to eq("active") # sibling's password never touched
+    end
+
+    # The delete of the OLD username still happens once nothing else needs
+    # it — unchanged from increment 1, just now reached via #rotate! taking
+    # the provision-then-revoke path instead of set_password.
+    it "still deletes the old username after rotation once no sibling needs it" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-g")
+      shared_username = "n-legacyshared0004"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-g", username: shared_username)
 
       before_ids = smb_tasks.pluck(:id)
       described_class.new(assignment: assignment_a).rotate!(credential_a)
 
-      new_task = smb_tasks.where.not(id: before_ids).last
-      expect(new_task.options["action"]).to eq("set_password")
-      expect(new_task.options["username"]).to eq(shared_username)
+      delete_task = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'").last
+      expect(delete_task).to be_present
+      expect(delete_task.options["credential"]["id"]).to eq(credential_a.id)
+      expect(credential_a.reload.status).to eq("revoked")
     end
   end
 end

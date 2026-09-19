@@ -237,14 +237,58 @@ RSpec.describe "Api::V1::System::NodeApi::StorageAssignments#credential", type: 
       expect(json_response_data["password"]).to eq(new_cred.vault_credentials["password"])
     end
 
-    it "never queues a delete task for the rotated-out username" do
+    # IMP-eb6a3c299f4b increment 3 review — this used to assert rotation
+    # NEVER queues a delete, full stop. That was only ever true because,
+    # pre-increment-2, a rotation's new credential ALWAYS shared the
+    # outgoing one's username — deleting it would have deleted the very
+    # user the new credential needs (the original IMP-9045875d3cb8 bug).
+    # #rotate_credential_for forces `credential` onto the OLD-SCHEME
+    # "node-<12hex>" username, while #rotate! issues its successor through
+    # the REAL (increment-2) derivation — the two genuinely differ here, so
+    # this is a scheme-crossing rotation, and increment 3 correctly
+    # provisions the new username and deletes the OLD one (nothing else in
+    # this spec's fixtures needs it). The actual invariant this endpoint's
+    # spec exists to protect — never touching the NEW credential's own
+    # username — is asserted directly below instead.
+    it "deletes only the OLD username after a scheme-crossing rotation, never the new one" do
       old_credential = rotate_credential_for(client_instance)
+      old_username = old_credential.vault_credentials["username"]
 
-      ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(old_credential)
+      new_cred = ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(old_credential)
+      new_username = new_cred.vault_credentials["username"]
+      expect(new_username).not_to eq(old_username) # sanity — this really is a scheme-crossing rotation
 
-      delete_tasks = ::System::Task.where(command: "storage.smb_user.apply")
-        .where("options ->> 'action' = 'delete'")
-      expect(delete_tasks).to be_empty
+      tasks = ::System::Task.where(command: "storage.smb_user.apply").order(:created_at)
+      expect(tasks.where("options ->> 'action' = 'set_password'")).to be_empty
+
+      delete_task = tasks.where("options ->> 'action' = 'delete'").last
+      expect(delete_task).to be_present
+      expect(delete_task.options["username"]).to eq(old_username)
+      expect(delete_task.options["username"]).not_to eq(new_username)
+    end
+
+    # The common case going forward (both usernames derived for real, no
+    # forced old-scheme override): a rotation of an already-current-scheme
+    # credential still uses the cheaper single set_password dispatch and
+    # never queues a delete — the original IMP-9045875d3cb8 invariant,
+    # unchanged by increment 3.
+    it "never queues a delete task when the rotation stays on the same (current-scheme) username" do
+      # The `credential` let! is deliberately forced onto a hardcoded
+      # "node-abc123" username for the OTHER specs in this file — it is
+      # NOT what the real provider would derive, so it can't stand in for
+      # a same-scheme rotation. Revoke it and issue a REAL credential (its
+      # username genuinely derived, unforced) instead, so rotating it is
+      # actually a same-scheme rotation.
+      credential.update_columns(status: "revoked")
+      real_credential = ::System::Storage::CredentialIssuer.new(assignment: assignment).issue!
+      before_ids = ::System::Task.where(command: "storage.smb_user.apply").pluck(:id)
+
+      new_cred = ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(real_credential)
+
+      tasks = ::System::Task.where(command: "storage.smb_user.apply").where.not(id: before_ids).order(:created_at)
+      expect(tasks.where("options ->> 'action' = 'delete'")).to be_empty
+      expect(tasks.where("options ->> 'action' = 'set_password'")).not_to be_empty
+      expect(new_cred.vault_credentials["username"]).to eq(real_credential.reload.vault_credentials["username"])
     end
   end
 end
