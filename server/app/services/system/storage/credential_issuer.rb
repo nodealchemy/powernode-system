@@ -45,19 +45,38 @@ module System
       # with an unconditional #revoke! on the OLD credential, which
       # deprovisioned that SAME username: every rotation deleted the SMB
       # user it had just set a new password on).
+      # Row-locked + status-rechecked: two callers can legitimately race here
+      # (the operator's rotate_credential action, AssignmentReconciliationService
+      # #ensure_credential! running from a heartbeat/drift sweep, and any
+      # future caller) all resolving the SAME @assignment.active_credential
+      # before either has written anything. Without the lock, both proceed to
+      # issue an independent new row and dispatch an independent set_password
+      # — samba ends up with whichever task's password the agent applied
+      # last, while active_credential serves whichever row committed last;
+      # the two can disagree. #with_lock (transaction + SELECT ... FOR
+      # UPDATE) serializes them on the credential ROW being rotated: the
+      # second caller blocks until the first's entire rotation (issue +
+      # dispatch + activate + revoke) has committed, then re-reads this same
+      # row (with_lock reloads under the lock) and finds it no longer
+      # rotatable — so it returns the FIRST caller's successor instead of
+      # racing to mint a second one.
       def rotate!(credential)
-        credential.mark_rotating!
-        new_cred = issue_credential_row!
+        credential.with_lock do
+          return existing_successor_or(credential) unless rotatable?(credential)
 
-        if @storage.smb?
-          SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_cred)
-        else
-          materialize_backend_side!(new_cred)
+          credential.mark_rotating!
+          new_cred = issue_credential_row!
+
+          if @storage.smb?
+            SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_cred)
+          else
+            materialize_backend_side!(new_cred)
+          end
+          new_cred.activate!
+
+          revoke!(credential, successor: new_cred)
+          new_cred
         end
-        new_cred.activate!
-
-        revoke!(credential, successor: new_cred)
-        new_cred
       end
 
       # successor: the StorageCredential replacing this one, if this call is
@@ -90,6 +109,25 @@ module System
       end
 
       private
+
+      # "issued" (first-issuance not yet activated) and "active" (the normal
+      # steady state #ensure_credential! rotates out of) are the only
+      # statuses a rotation legitimately starts from. Anything else —
+      # "rotating" (a concurrent caller is mid-flight, or genuinely
+      # impossible once the lock above is in place since the whole rotation
+      # is one transaction), "revoked"/"expired"/"failed" (someone already
+      # rotated this row out) — means this call lost the race.
+      def rotatable?(credential)
+        %w[issued active].include?(credential.status)
+      end
+
+      # What a lost-race caller returns instead of a second new row: the
+      # assignment's current active_credential (the winner's successor), or
+      # the credential it was asked to rotate if, somehow, nothing is active
+      # (defensive — should not happen once a winner has committed).
+      def existing_successor_or(credential)
+        @assignment.active_credential || credential
+      end
 
       def issue_credential_row!
         raise IssuanceError, "Storage #{@assignment.file_storage_id} not found" unless @storage

@@ -84,4 +84,118 @@ RSpec.describe System::Storage::AssignmentReconciliationService do
       expect(System::Task.where(operable: node_instance, command: "storage.unmount").count).to eq(1)
     end
   end
+
+  # IMP-026b8017d0b0 — #ensure_credential!'s expiry/needs_rotation? check
+  # only catches a credential aging OUT; it says nothing about whether the
+  # backend actually APPLIED the currently-active one. Without this, a
+  # failed (or never-dispatched) storage.smb_user.apply task leaves samba on
+  # the OLD password for up to ~89 days.
+  describe "SMB stalled set_password re-dispatch" do
+    let(:backend_instance) { create(:system_node_instance, account: account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: account,
+        configuration: {
+          "mount_path" => "/mnt/smb-reconcile",
+          "server_address" => "192.168.1.210",
+          "share_name" => "reconcile-share",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:smb_assignment) do
+      create(:system_storage_assignment,
+        account: account, file_storage_id: smb_storage.id,
+        node_instance: node_instance, mount_path: "/mnt/smb-reconcile")
+    end
+
+    def smb_tasks
+      System::Task.where(command: "storage.smb_user.apply", account_id: account.id).order(:created_at)
+    end
+
+    it "re-dispatches with create (never set_password) when the active credential's most recent task failed" do
+      smb_assignment # materialize — after_commit reconcile auto-issues + dispatches "create"
+      active = smb_assignment.reload.active_credential
+      initial_task = smb_tasks.last
+      initial_task.start!
+      initial_task.fail!("samba-tool unreachable")
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      new_task = smb_tasks.last
+      expect(new_task.id).not_to eq(initial_task.id)
+      expect(new_task.options["action"]).to eq("create")
+      expect(new_task.options["credential"]["id"]).to eq(active.id)
+    end
+
+    # The agent's setSambaPassword ONLY runs `samba-tool user setpassword`
+    # (agent/internal/storage/smb_user.go) — it never creates a user. If the
+    # credential's history includes a set_password dispatch (e.g. it is
+    # itself the successor of an earlier rotation) and THAT is the most
+    # recent failed task, re-dispatching with set_password again would fail
+    # forever whenever the samba user does not actually exist yet.
+    # createSambaUser creates-or-falls-through-to-setpassword, so "create"
+    # is correct regardless of what the failed task's own action was.
+    it "re-dispatches with create even when the most recently failed task was itself a set_password" do
+      smb_assignment
+      active = smb_assignment.reload.active_credential
+      smb_tasks.first.start!
+      smb_tasks.first.complete! # the original create succeeded
+
+      failed_rotate_task = create(:system_task,
+        account: account, operable: backend_instance, command: "storage.smb_user.apply",
+        status: "pending",
+        options: { "action" => "set_password", "credential" => { "id" => active.id }, "new_credential" => { "id" => active.id } })
+      failed_rotate_task.start!
+      failed_rotate_task.fail!("samba-tool unreachable")
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      new_task = smb_tasks.order(:created_at).last
+      expect(new_task.id).not_to eq(failed_rotate_task.id)
+      expect(new_task.options["action"]).to eq("create")
+    end
+
+    it "re-dispatches when no task exists at all for the active credential (defensive)" do
+      smb_assignment
+      smb_tasks.destroy_all
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      new_task = smb_tasks.last
+      expect(new_task).to be_present
+      expect(new_task.options["action"]).to eq("create")
+    end
+
+    it "re-dispatches when the active credential's most recent task was cancelled" do
+      smb_assignment
+      initial_task = smb_tasks.last
+      initial_task.cancel!("stale task")
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      new_task = smb_tasks.last
+      expect(new_task.id).not_to eq(initial_task.id)
+      expect(new_task.options["action"]).to eq("create")
+    end
+
+    it "does not re-dispatch while a pending task for the active credential still exists" do
+      smb_assignment
+      before_count = smb_tasks.count
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      expect(smb_tasks.count).to eq(before_count)
+    end
+
+    it "does not re-dispatch once the task has completed" do
+      smb_assignment
+      initial_task = smb_tasks.last
+      initial_task.start!
+      initial_task.complete!
+      before_count = smb_tasks.count
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      expect(smb_tasks.count).to eq(before_count)
+    end
+  end
 end

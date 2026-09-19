@@ -151,6 +151,97 @@ RSpec.describe System::Storage::CredentialIssuer do
     end
   end
 
+  # IMP-026b8017d0b0 — two callers (the operator's rotate_credential action,
+  # AssignmentReconciliationService#ensure_credential! on a heartbeat/drift
+  # tick, or any future one) can both resolve the SAME active_credential
+  # before either has written anything, and both used to issue an
+  # independent new row + dispatch — samba ends up with whichever task's
+  # password the agent applied last, while active_credential serves
+  # whichever row committed last, and the two can disagree.
+  #
+  # This tests the STATUS RE-CHECK #rotate!'s row lock gates, not the LOCK'S
+  # BLOCKING behavior itself: a same-connection thread/lock probe proves
+  # nothing under RSpec's transactional fixtures (a single pinned connection
+  # sees its own row locks as re-entrant — the same reason a session
+  # advisory-lock self-probe is worthless), and matches this file's own
+  # existing "storage.unmount dispatch dedupe" spec's approach — two
+  # SEPARATELY LOADED references to the same row, both loaded BEFORE either
+  # caller has written anything, called sequentially.
+  #
+  # The separate load matters for what this actually proves: `stale` is
+  # fetched before the first #rotate! runs, so its OWN in-memory `status`
+  # attribute still reads "active"/"issued" at the moment it is handed to
+  # the second #rotate! call — exactly what a second real caller's copy
+  # would look like. A version of #rotate! that checked rotatable?(credential)
+  # from that cached attribute — e.g. outside #with_lock, before the reload
+  # — would see "active" and wrongly proceed to mint a third row. Only a
+  # version that RELOADS under the lock (#with_lock's #lock! does this) sees
+  # what the first call actually left behind. Passing the SAME object twice
+  # would not distinguish these two implementations, because that object's
+  # own `status` attribute gets mutated in-memory by the first call whether
+  # or not anything reloads under a lock.
+  describe "#rotate! concurrency (row lock + status re-check)" do
+    it "for NFS: a second rotate! call on a stale, separately-loaded reference to the same row returns the winner's successor, not a third row" do
+      credential = issuer.issue!
+      stale = System::StorageCredential.find(credential.id)
+
+      first_new = issuer.rotate!(credential)
+      before_task_count = System::Task.where(command: "storage.exports.apply").count
+      before_credential_count = System::StorageCredential.where(storage_assignment: assignment).count
+
+      second_result = issuer.rotate!(stale)
+
+      expect(second_result.id).to eq(first_new.id)
+      expect(System::StorageCredential.where(storage_assignment: assignment).count).to eq(before_credential_count)
+      expect(System::Task.where(command: "storage.exports.apply").count).to eq(before_task_count)
+    end
+
+    context "for SMB" do
+      let(:backend_instance) { create(:system_node_instance, account: account) }
+      let(:smb_storage) do
+        create(:file_storage, :smb, :node_mountable, account: account,
+          configuration: {
+            "mount_path" => "/mnt/smb-race",
+            "server_address" => "192.168.1.203",
+            "share_name" => "storage-race",
+            "export_host_node_instance_id" => backend_instance.id
+          })
+      end
+      let(:smb_assignment) do
+        create(:system_storage_assignment,
+          account: account, file_storage_id: smb_storage.id,
+          node_instance: node_instance, mount_path: "/mnt/smb-race")
+      end
+      subject(:smb_issuer) { described_class.new(assignment: smb_assignment) }
+
+      def smb_tasks
+        System::Task.where(command: "storage.smb_user.apply").order(:created_at)
+      end
+
+      it "a double rotate! on a stale, separately-loaded reference to the same active credential yields exactly one new row and one set_password dispatch" do
+        # StorageAssignment#after_commit auto-issues its OWN credential for
+        # this same deterministic username on create — revoke it first so
+        # the count assertions below are about THIS test's rotation, not
+        # that auto-issued sibling (same gotcha the SMB rotation-fix task
+        # hit; see credential_issuer_spec's other "revoke!" describe block).
+        smb_assignment.storage_credentials.update_all(status: "revoked")
+
+        credential = smb_issuer.issue!
+        stale = System::StorageCredential.find(credential.id)
+        before_ids = smb_tasks.pluck(:id)
+
+        first_new = smb_issuer.rotate!(credential)
+        second_result = smb_issuer.rotate!(stale)
+
+        expect(second_result.id).to eq(first_new.id)
+        expect(System::StorageCredential.where(storage_assignment: smb_assignment, status: %w[issued active]).count).to eq(1)
+        new_tasks = smb_tasks.where.not(id: before_ids)
+        expect(new_tasks.count).to eq(1)
+        expect(new_tasks.first.options["action"]).to eq("set_password")
+      end
+    end
+  end
+
   # The "true removal" case #rotate! deliberately does NOT exercise: no
   # successor exists, so #revoke! must still deprovision — this is the case
   # the username-collision guard must never swallow.
