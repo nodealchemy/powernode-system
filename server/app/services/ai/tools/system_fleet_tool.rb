@@ -4859,6 +4859,15 @@ module Ai
       # Direct FK dependents of system_node_instances that have NO dependent:destroy
       # on the NodeInstance model. Order doesn't matter inside the set — they're
       # all peers of the same parent.
+      #
+      # system_storage_assignments/system_storage_credentials are deliberately
+      # NOT here (IMP-e88b38770d13 review round 1) — NodeInstance now declares
+      # `has_many ..., dependent: :destroy` for both, so `instance.destroy!`
+      # below already destroys them through ActiveRecord (running
+      # StorageCredential's own before_destroy deprovision hook) once this
+      # loop's raw-SQL DELETEs for everything else are done. Deleting them
+      # here too, ahead of that, would restore the exact bypass this task
+      # fixed — the row would be gone via raw SQL before AR ever saw it.
       DESTROY_INSTANCE_FKS = [
         [ "system_node_modules", "node_instance_id" ],
         [ "system_bootstrap_tokens", "node_instance_id" ],
@@ -4866,10 +4875,8 @@ module Ai
         [ "system_sdwan_ovn_logical_switch_ports", "host_node_instance_id" ],
         [ "system_unclaimed_devices", "claimed_node_instance_id" ],
         [ "system_node_instance_peers", "node_instance_id" ],
-        [ "system_storage_assignments", "node_instance_id" ],
         [ "devops_kubernetes_nodes", "node_instance_id" ],
         [ "devops_docker_hosts", "node_instance_id" ],
-        [ "system_storage_credentials", "node_instance_id" ],
         [ "system_mount_encryption_keys", "node_instance_id" ],
         [ "business_billing_provisioning_usage_records", "node_instance_id" ],
         [ "ai_provisioning_code_deployments", "node_instance_id" ],

@@ -111,6 +111,52 @@ RSpec.describe System::Node, type: :model do
     end
   end
 
+  # IMP-e88b38770d13 review round 1 — Node's own `has_many :node_instances,
+  # dependent: :destroy` calls #destroy per instance (not raw SQL), so this
+  # path was ALREADY routed through NodeInstance's before_destroy callback
+  # chain once that model declared `has_many :storage_assignments/
+  # :storage_credentials, dependent: :destroy` — see node_instance_spec.rb's
+  # own "storage credential deprovisioning" describe block for the direct
+  # instance.destroy coverage. This proves the SAME thing survives one more
+  # level up, through Node#destroy.
+  describe 'storage credential deprovisioning on cascade (IMP-e88b38770d13)' do
+    let(:node) { create(:system_node) }
+    let(:instance) { create(:system_node_instance, node: node) }
+    let(:backend_instance) { create(:system_node_instance, account: node.account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: node.account,
+        configuration: {
+          "mount_path" => "/mnt/smb-node-destroy",
+          "server_address" => "192.168.1.222",
+          "share_name" => "node-destroy-share",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:smb_assignment) do
+      create(:system_storage_assignment,
+        account: node.account, file_storage_id: smb_storage.id,
+        node_instance: instance, mount_path: "/mnt/smb-node-destroy")
+    end
+
+    def smb_tasks
+      System::Task.where(command: "storage.smb_user.apply").order(:created_at)
+    end
+
+    it 'deprovisions the SMB user when Node#destroy cascades down to the instance' do
+      smb_assignment.storage_credentials.update_all(status: "revoked")
+      credential = ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!
+      before_ids = smb_tasks.pluck(:id)
+
+      node.destroy
+
+      new_tasks = smb_tasks.where.not(id: before_ids)
+      expect(new_tasks.count).to eq(1)
+      expect(new_tasks.first.options["action"]).to eq("delete")
+      expect(::System::StorageCredential.where(id: credential.id)).not_to exist
+      expect(::System::NodeInstance.where(id: instance.id)).not_to exist
+    end
+  end
+
   describe 'module assignments' do
     let(:node) { create(:system_node) }
     let(:node_module) { create(:system_node_module) }

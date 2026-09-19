@@ -160,9 +160,19 @@ module Api
         # DELETE /api/v1/system/nodes/:node_id/node_instances/:id?force=true
         #
         # Default (force omitted/false): plain destroy. Will fail with
-        # FOREIGN_KEY_VIOLATION if any child rows reference this instance
-        # — but the error payload now includes a `blocking_refs` summary
-        # so the operator knows exactly which dependents to clean up.
+        # FOREIGN_KEY_VIOLATION if any of the CASCADE_DEPENDENTS `optional:
+        # false` child rows reference this instance — but the error payload
+        # now includes a `blocking_refs` summary so the operator knows
+        # exactly which dependents to clean up. NOT true of storage
+        # assignments/credentials specifically (IMP-e88b38770d13): they stay
+        # listed in CASCADE_DEPENDENTS (and so still show up in
+        # `blocking_refs` — harmless, and blast-radius previews depend on
+        # that list) but no longer BLOCK a plain destroy, because
+        # NodeInstance now separately declares `has_many ...
+        # dependent: :destroy` for both, so a plain destroy here cleans them
+        # up itself — routing through StorageCredential's own before_destroy
+        # deprovision hook — before Postgres's own FK cascade would ever be
+        # reached.
         #
         # With force=true: runs the dependent-cascade cleanup
         # (NodeInstance#cascade_destroy_dependents!) which nulls all

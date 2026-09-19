@@ -99,8 +99,25 @@ module System
       # credential_issuer_spec.rb's ordering spec, which asserts the
       # node_api endpoint still serves new_cred's material, live, AFTER
       # #rotate! (including this revoke) has returned.
-      def revoke!(credential, successor: nil)
-        deprovision!(credential, successor: successor)
+      # defer_nfs_reconcile: IMP-e88b38770d13 review round 1 — the NFS branch
+      # of #deprovision! dispatches a SINGLE-entry "revoke" storage.exports.apply
+      # payload (TaskPayloadBuilder#build_exports_apply_payload always builds
+      # exactly one entry, for THIS credential's peer). The agent's
+      # ApplyExports (agent/internal/storage/exports.go) only DELETES the
+      # exports file when a revoke arrives with zero entries; a non-empty
+      # revoke — this one, always — instead OVERWRITES the file with just
+      # those entries, so a teardown would leave ONLY the destroyed peer
+      # exported and cut off every other client on the storage. Pre-existing
+      # (also present on the #grant! issue-time path — reported separately,
+      # not fixed here); true for THIS caller too before this flag existed.
+      # A destroy-driven caller passes true to skip the single-entry dispatch
+      # entirely and instead rebuild the WHOLE file from live DB state once
+      # the row (and possibly its assignment) is actually gone — see
+      # StorageCredential's after_destroy_commit. Rotation's revoke of the
+      # old credential and any other #revoke! caller keep the old (still
+      # buggy, unchanged) behavior — only the teardown path opts in.
+      def revoke!(credential, successor: nil, defer_nfs_reconcile: false)
+        deprovision!(credential, successor: successor, defer_nfs_reconcile: defer_nfs_reconcile)
 
         handle = credential.metadata["export_handle"] || credential.metadata["smb_user_handle"] || credential.metadata["sts_handle"]
         @storage.storage_provider.revoke_node_credential(handle) if handle
@@ -153,9 +170,11 @@ module System
         ::System::StorageCredential.find(credential.id)
       end
 
-      def deprovision!(credential, successor:)
+      def deprovision!(credential, successor:, defer_nfs_reconcile: false)
         case @storage.provider_type
         when "nfs"
+          return if defer_nfs_reconcile
+
           NfsExportManager.new(assignment: @assignment).revoke!(credential: credential)
         when "smb"
           return if smb_username_superseded?(credential, successor)

@@ -1743,6 +1743,67 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-e88b38770d13 — system_destroy_instance's DESTROY_INSTANCE_FKS cascade
+  # deletes system_storage_credentials via raw SQL (ActiveRecord::Base
+  # .connection.exec_delete), which bypasses every AR callback — including
+  # StorageCredential's own before_destroy deprovision hook (see
+  # storage_credential_spec.rb's "#before_destroy deprovisioning" for that
+  # hook's own coverage). This is the one destroy path the model callback
+  # cannot see, so #destroy_instance revokes live credentials explicitly,
+  # in the same transaction, before the raw deletes run.
+  describe "system_destroy_instance storage-credential deprovisioning (IMP-e88b38770d13)" do
+    let(:backend_instance) { create(:system_node_instance, account: account) }
+    let(:target_instance) { create(:system_node_instance, account: account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: account,
+        configuration: {
+          "mount_path" => "/mnt/smb-fleet-destroy",
+          "server_address" => "192.168.1.221",
+          "share_name" => "fleet-destroy-share",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:smb_assignment) do
+      create(:system_storage_assignment,
+        account: account, file_storage_id: smb_storage.id,
+        node_instance: target_instance, mount_path: "/mnt/smb-fleet-destroy")
+    end
+
+    def smb_tasks
+      System::Task.where(command: "storage.smb_user.apply").order(:created_at)
+    end
+
+    # StorageAssignment#after_commit auto-issues its own credential for this
+    # same deterministic username on create — revoke it so "the last live
+    # credential" assertion below is about the ONE credential this test
+    # actually manages, matching storage_credential_spec.rb's own setup.
+    before { smb_assignment.storage_credentials.update_all(status: "revoked") }
+
+    it "revokes the live SMB credential (dispatching a delete) before destroying the instance" do
+      credential = ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!
+      before_ids = smb_tasks.pluck(:id)
+
+      r = call("system_destroy_instance", instance_id: target_instance.id)
+
+      expect(r[:success]).to be true
+      new_tasks = smb_tasks.where.not(id: before_ids)
+      expect(new_tasks.count).to eq(1)
+      expect(new_tasks.first.options["action"]).to eq("delete")
+      expect(::System::StorageCredential.where(id: credential.id)).not_to exist
+      expect(::System::NodeInstance.where(id: target_instance.id)).not_to exist
+    end
+
+    it "does not dispatch anything when the credential is already revoked" do
+      ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!.update!(status: "revoked")
+      before_count = smb_tasks.count
+
+      r = call("system_destroy_instance", instance_id: target_instance.id)
+
+      expect(r[:success]).to be true
+      expect(smb_tasks.count).to eq(before_count)
+    end
+  end
+
   # F8-02: every ACTION_PERMISSIONS slug must be grantable — the audit found
   # mission-core actions mapped to "system.node_instances.control", which has
   # no Permission record anywhere, permanently denying all non-super-admins.

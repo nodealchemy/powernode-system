@@ -626,6 +626,67 @@ RSpec.describe System::NodeInstance, type: :model do
     end
   end
 
+  # IMP-e88b38770d13 review round 1 — system_storage_assignments.node_instance_id
+  # and system_storage_credentials.node_instance_id are ON DELETE CASCADE at the
+  # DB level (db/migrate/20250101000009_system_baseline.rb), and this model
+  # declared NO association for either table at all before this fix. A PLAIN
+  # `instance.destroy` (no force, no #cascade_destroy_dependents!) therefore let
+  # Postgres cascade these rows away with ZERO ActiveRecord callbacks —
+  # StorageCredential's own before_destroy deprovision hook never ran. This is
+  # the gap the two new `has_many ..., dependent: :destroy` declarations close.
+  describe 'storage credential deprovisioning on destroy (IMP-e88b38770d13)' do
+    let(:instance) { create(:system_node_instance, node: node) }
+    let(:backend_instance) { create(:system_node_instance, account: node.account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: node.account,
+        configuration: {
+          "mount_path" => "/mnt/smb-plain-destroy",
+          "server_address" => "192.168.1.223",
+          "share_name" => "plain-destroy-share",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:smb_assignment) do
+      create(:system_storage_assignment,
+        account: node.account, file_storage_id: smb_storage.id,
+        node_instance: instance, mount_path: "/mnt/smb-plain-destroy")
+    end
+
+    def smb_tasks
+      System::Task.where(command: "storage.smb_user.apply").order(:created_at)
+    end
+
+    def issue_smb_credential!
+      smb_assignment.storage_credentials.update_all(status: "revoked")
+      ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!
+    end
+
+    it 'a PLAIN instance.destroy (no force) deprovisions the live SMB credential' do
+      credential = issue_smb_credential!
+      before_ids = smb_tasks.pluck(:id)
+
+      expect(instance.destroy).to be_truthy
+
+      new_tasks = smb_tasks.where.not(id: before_ids)
+      expect(new_tasks.count).to eq(1)
+      expect(new_tasks.first.options["action"]).to eq("delete")
+      expect(::System::StorageCredential.where(id: credential.id)).not_to exist
+    end
+
+    it 'the force cascade_destroy_dependents! + .destroy combo also deprovisions' do
+      credential = issue_smb_credential!
+      before_ids = smb_tasks.pluck(:id)
+
+      instance.cascade_destroy_dependents!
+      expect(instance.destroy).to be_truthy
+
+      new_tasks = smb_tasks.where.not(id: before_ids)
+      expect(new_tasks.count).to eq(1)
+      expect(new_tasks.first.options["action"]).to eq("delete")
+      expect(::System::StorageCredential.where(id: credential.id)).not_to exist
+    end
+  end
+
   # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor's pivot-vs-cloud_init
   # remediation split depends on this predicate reading the boot mode the
   # instance was ACTUALLY provisioned with. IMP-831a81e02d25: that is the

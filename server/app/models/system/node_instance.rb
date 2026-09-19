@@ -946,6 +946,25 @@ module System
     MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
 
     has_many :node_certificates, class_name: "System::NodeCertificate", dependent: :destroy
+
+    # IMP-e88b38770d13 review round 1 — both FKs are ON DELETE CASCADE at the
+    # DB level (db/migrate/20250101000009_system_baseline.rb), and NodeInstance
+    # declared NO association for either table at all. A plain `instance.destroy`
+    # (no force, no #cascade_destroy_dependents!) therefore let Postgres cascade
+    # these rows away with ZERO ActiveRecord callbacks — bypassing
+    # StorageCredential's own before_destroy deprovision hook entirely. That
+    # silent path reached every non-force NodeInstance destroy: the two
+    # NodeInstance-destroy controllers, the worker_api controller, AND
+    # System::Node's `has_many :node_instances, dependent: :destroy` (which
+    # calls #destroy per instance, not raw SQL). Declaring these here — same
+    # pattern as node_certificates above — makes AR run the destroy (and this
+    # model's own before_destroy callback) BEFORE the row disappears, on every
+    # one of those paths, without patching each caller. See
+    # StorageCredential's own before_destroy doc for why the same is not true
+    # of Ai::Tools::SystemFleetTool#destroy_instance (raw SQL, patched at its
+    # own call site instead).
+    has_many :storage_assignments, class_name: "System::StorageAssignment", dependent: :destroy
+    has_many :storage_credentials, class_name: "System::StorageCredential", dependent: :destroy
     belongs_to :enrollment_token, class_name: "System::BootstrapToken", optional: true
 
     # Only these can be cancelled — System::Task's `cancel` event transitions
@@ -1940,8 +1959,18 @@ module System
     # optional: true vs (default required) declarations on the child
     # side. Optional FKs get NULLed; required FKs get destroyed.
     # Polymorphic + already-dependent-destroy declarations on the
-    # NodeInstance side (tasks, node_certificates)
-    # are omitted — Rails handles those automatically on .destroy.
+    # NodeInstance side (tasks, node_certificates) are omitted — Rails
+    # handles those automatically on .destroy.
+    #
+    # StorageAssignment/StorageCredential stay listed here even though
+    # NodeInstance now ALSO declares `has_many ..., dependent: :destroy` for
+    # both (IMP-e88b38770d13 review round 1) — `.destroy_all` still runs
+    # every callback exactly like the has_many does, so listing them is not
+    # redundant with respect to the deprovision hook. Removing them broke
+    # review round 2: System::BlastRadiusService#direct_dependents builds its
+    # preview buckets FROM this constant (plus DIRECT_LABEL_OVERRIDES for
+    # these two classes), so the system_blast_radius preview would stop
+    # showing the assignments/credentials a destroy is about to remove.
     CASCADE_DEPENDENTS = [
       # Required FK — must be destroyed before the parent
       { klass: "System::NodeInstancePeer",     fk: :node_instance_id, optional: false },
