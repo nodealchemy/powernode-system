@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +82,77 @@ func TestApplyExports_RunsExportfs(t *testing.T) {
 	// test — that's a permission limitation of the unit-test environment, not
 	// a logic error. Skip rather than fail.
 	t.Skip("exportfs not invoked — likely /etc/exports.d not writable in test env; logic verified by other tests")
+}
+
+// IMP-ba7956c5b38d — the platform's NfsExportManager#reconcile! (the full-
+// rebuild path #grant!/#revoke! now ALWAYS use, not just teardown) sends
+// action:"revoke" specifically so that revoking the LAST client on a
+// storage (entries: []) removes the exports file instead of leaving a
+// stale, comment-only one behind. This test locks in the agent-side half
+// of that contract — it was already implemented (the special case below
+// predates this change) but had NO test coverage at all.
+func TestApplyExports_RevokeWithEmptyEntriesRemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	origDir := ExportsDir
+	ExportsDir = dir
+	defer func() { ExportsDir = origDir }()
+
+	task := &ExportsApplyTask{
+		StorageID:  "s-empty",
+		AccountID:  "acc-empty",
+		ExportPath: "/srv/exports/empty",
+		Action:     "revoke",
+		Entries:    []ExportsEntry{},
+	}
+	path := filepath.Join(dir, "powernode-acc-empty-s-empty.exports")
+
+	// A pre-existing file, as if a prior grant left one behind — the case
+	// this behavior exists to clean up.
+	if err := os.WriteFile(path, []byte("stale content"), 0o644); err != nil {
+		t.Fatalf("failed to seed pre-existing exports file: %v", err)
+	}
+
+	rec := &mount.RecorderRunner{}
+	if err := ApplyExports(context.Background(), rec, task); err != nil {
+		t.Fatalf("ApplyExports returned error: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected exports file to be removed; stat error: %v", err)
+	}
+}
+
+// Contrasts with the above: a NON-empty revoke (or any other action) still
+// just WRITES the rendered file, same as before this task — only the
+// action:"revoke" + zero-entries combination triggers removal.
+func TestApplyExports_RevokeWithEntriesWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	origDir := ExportsDir
+	ExportsDir = dir
+	defer func() { ExportsDir = origDir }()
+
+	task := &ExportsApplyTask{
+		StorageID:  "s-nonempty",
+		AccountID:  "acc-nonempty",
+		ExportPath: "/srv/exports/nonempty",
+		Action:     "revoke",
+		Entries: []ExportsEntry{
+			{PeerIP: "fd00::1", UID: 100100, GID: 100100, Options: []string{"rw"}},
+		},
+	}
+	path := filepath.Join(dir, "powernode-acc-nonempty-s-nonempty.exports")
+
+	if err := ApplyExports(context.Background(), &mount.RecorderRunner{}, task); err != nil {
+		t.Fatalf("ApplyExports returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected exports file to be written: %v", err)
+	}
+	if !strings.Contains(string(content), "fd00::1/128") {
+		t.Errorf("expected fd00::1 entry in written file; got:\n%s", content)
+	}
 }
 
 func TestDropMarkerBlock(t *testing.T) {

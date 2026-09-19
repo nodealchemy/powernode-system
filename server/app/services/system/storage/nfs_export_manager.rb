@@ -18,30 +18,45 @@ module System
         @storage = storage || assignment&.file_storage
       end
 
+      # IMP-ba7956c5b38d — used to build a SINGLE-entry storage.exports.apply
+      # payload for just this credential's peer (TaskPayloadBuilder#build_exports_apply_payload).
+      # The agent's ApplyExports (agent/internal/storage/exports.go) OVERWRITES
+      # the whole exports file with whatever entries a task carries — a grant
+      # for one client wiped out every OTHER client already exported on this
+      # storage, the same class of bug IMP-e88b38770d13 already fixed for
+      # teardown by rebuilding from live DB state instead of dispatching a
+      # single entry. `credential:` is kept only for interface compatibility
+      # with existing callers (CredentialIssuer) — the full rebuild reads
+      # live StorageAssignment/#active_credential rows itself and does not
+      # need this specific row. The new credential must already be
+      # "issued" or "active" (StorageAssignment#active_credential's own
+      # filter) by the time this runs, or the rebuild will exclude it —
+      # true today: CredentialIssuer calls this AFTER creating the row
+      # (status "issued") and before #activate!.
       def grant!(credential:)
         return unless @storage&.nfs?
 
-        with_lock do
-          payload = TaskPayloadBuilder.build_exports_apply_payload(
-            assignment: @assignment, credential: credential
-          )
-          dispatch_task("storage.exports.apply", payload)
-        end
+        reconcile!
       end
 
+      # IMP-ba7956c5b38d — same fix as #grant!, and the same ORDERING
+      # requirement it implies: the credential being revoked must already
+      # be excluded from StorageAssignment#active_credential (status not
+      # "issued"/"active") by the time this runs, or the rebuild will
+      # still include the peer this call exists to remove. CredentialIssuer#revoke!
+      # updates the row's status to "revoked" before calling this (see that
+      # method's own comment) — both statements share ONE DB transaction/
+      # connection, so Postgres's read-your-own-writes guarantee makes this
+      # correct without needing an actual COMMIT boundary.
       def revoke!(credential:)
         return unless @storage&.nfs?
 
-        with_lock do
-          payload = TaskPayloadBuilder.build_exports_apply_payload(
-            assignment: @assignment, credential: credential
-          ).merge(action: "revoke")
-          dispatch_task("storage.exports.apply", payload)
-        end
+        reconcile!
       end
 
       # Full rewrite of the exports file from current StorageAssignment rows
-      # pointing at this storage. Drift-recovery path; rarely invoked.
+      # pointing at this storage. Now the ONLY path #grant!/#revoke! use too
+      # (IMP-ba7956c5b38d), not just the drift-recovery/teardown path.
       def self.reconcile!(storage:)
         new(storage: storage).reconcile!
       end
@@ -55,8 +70,22 @@ module System
               cred = a.active_credential
               next unless cred
 
+              peer_ip = cred.vault_credentials.dig("peer_ip") || cred.metadata["peer_ip"]
+              # Review round — a single partially-provisioned row (peer
+              # enrollment failed after the credential row was created, or
+              # any other path that leaves peer_ip blank) must not fail the
+              # WHOLE storage's rebuild: the agent's ApplyExports validation
+              # rejects a nil/non-address peer_ip outright (agent/internal/
+              # storage/validate.go), so one bad row would have cut off
+              # every OTHER client on this storage too. Skip it and log
+              # just the ids — never log credential material.
+              if peer_ip.blank?
+                Rails.logger.warn("[NfsExportManager] skipping assignment #{a.id} / credential #{cred.id}: no peer_ip")
+                next
+              end
+
               {
-                peer_ip: cred.vault_credentials.dig("peer_ip") || cred.metadata["peer_ip"],
+                peer_ip: peer_ip,
                 # effective_export_uid/gid preserves OLD ownership
                 # during an in-flight chown so consumers don't see
                 # EACCES storms; otherwise the assignment's current
@@ -72,7 +101,17 @@ module System
             account_id: @storage.account_id,
             export_path: export_path_for_shape,
             deployment_shape: @storage.deployment_shape,
-            action: "reconcile",
+            # IMP-ba7956c5b38d — the agent's ApplyExports only removes the
+            # exports file (rather than writing an empty one) when
+            # action == "revoke" AND entries is empty (agent/internal/
+            # storage/exports.go). This full rebuild uses "revoke"
+            # unconditionally, not "reconcile": with a NON-empty entries
+            # list the agent treats every action value identically (just
+            # writes the rendered file), so this changes nothing for the
+            # common case, but it means revoking the LAST client on a
+            # storage correctly deletes the file instead of leaving a
+            # stale, comment-only one behind.
+            action: "revoke",
             entries: entries
           }
           dispatch_task("storage.exports.apply", payload)

@@ -108,12 +108,19 @@ module System
     # assignment.file_storage, which is a hand-written account-scoped
     # lookup, not an FK, so it can legitimately resolve nil).
     #
-    # defer_nfs_reconcile: true for an NFS-backed credential — skips
-    # CredentialIssuer#revoke!'s single-entry storage.exports.apply dispatch
-    # (which would overwrite the WHOLE exports file with just this one
-    # peer — see CredentialIssuer#revoke!'s own doc) and instead stashes
-    # @storage for #reconcile_nfs_exports_after_destroy! to rebuild the
-    # full file from every OTHER still-live peer, once this row is gone.
+    # defer_nfs_reconcile: true for an NFS-backed credential — skips the
+    # dispatch inside CredentialIssuer#revoke! entirely and instead stashes
+    # @storage for #reconcile_nfs_exports_after_destroy! to rebuild the full
+    # file once this row is gone. NfsExportManager#revoke! (as of
+    # IMP-ba7956c5b38d) already does a full rebuild from live
+    # StorageAssignment#active_credential rows rather than a single-entry
+    # dispatch, but that rebuild is only correct once THIS row — and, for a
+    # whole-assignment/instance teardown, its storage_assignment too — is
+    # actually gone from the DB: calling it from inside this before_destroy
+    # hook, before the row is deleted, would still see this credential (or a
+    # sibling mid-cascade) as live and wrongly re-include it. Deferring to
+    # after_destroy_commit is what guarantees the row is truly gone, and the
+    # whole destroy transaction has committed, before the rebuild runs.
     #
     # requires_new: true opens a SAVEPOINT rather than joining the caller's
     # destroy transaction. Without it, a DB-level error inside revoke! — a

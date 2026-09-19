@@ -71,6 +71,22 @@ RSpec.describe System::Storage::CredentialIssuer do
       issuer.revoke!(credential)
       expect(credential.reload.status).to eq("revoked")
     end
+
+    # IMP-ba7956c5b38d review round — reordering credential.revoke! to run
+    # BEFORE deprovision! (needed so the NFS rebuild excludes the peer being
+    # revoked) reopened a gap the original "deprovision, then revoke last"
+    # ordering never had: without a transaction wrapping the whole method, a
+    # caller with no surrounding transaction of its own would persist the
+    # status flip even when deprovision! then raised. Calling #revoke!
+    # directly here, with no enclosing transaction, is exactly that case.
+    it "rolls back the status flip when deprovision fails, with no surrounding transaction" do
+      credential = issuer.issue!
+      allow_any_instance_of(System::Storage::NfsExportManager)
+        .to receive(:revoke!).and_raise(StandardError, "backend unreachable")
+
+      expect { issuer.revoke!(credential) }.to raise_error(StandardError, "backend unreachable")
+      expect(credential.reload.status).to eq("active")
+    end
   end
 
   # IMP-9045875d3cb8 — CredentialIssuer#rotate! called #issue! (dispatching a
@@ -92,6 +108,58 @@ RSpec.describe System::Storage::CredentialIssuer do
         expect(credential.reload.status).to eq("revoked")
         expect(System::Task.where(command: "storage.exports.apply").count).to be > before_count
         expect(System::Task.where(command: "storage.smb_user.apply")).to be_empty
+      end
+
+      # IMP-ba7956c5b38d — #grant!/#revoke! now do a FULL exports-file
+      # rebuild (System::Storage::NfsExportManager#reconcile!) instead of a
+      # single-entry dispatch. A storage with only ONE client can't catch a
+      # regression back to single-entry dispatch (both look identical with
+      # one entry) — this uses a SECOND, unrelated client on the same
+      # storage to prove the rebuild is genuinely storage-wide.
+      it "keeps a surviving OTHER client exported across rotation, dispatching exactly one exports.apply task" do
+        # assignment's own after_commit auto-issues a credential sharing the
+        # SAME underlying Sdwan::Peer (and therefore the same peer_ip) this
+        # test's explicit #issue! call below also resolves — clear it first
+        # or a stale, still-"active" sibling with an IDENTICAL peer_ip would
+        # make the "excluded" assertion below pass or fail for the wrong
+        # reason regardless of this task's actual fix.
+        assignment.storage_credentials.update_all(status: "revoked")
+        credential = issuer.issue!
+
+        other_instance = create(:system_node_instance, account: account)
+        ::Sdwan::PeerEnroller.call(network: network, node_instance: other_instance)
+        other_assignment = create(:system_storage_assignment,
+          account: account, file_storage_id: file_storage.id, node_instance: other_instance,
+          sdwan_network: network, mount_path: "/mnt/other")
+        # See the top-level SMB fixtures' own comment: StorageAssignment's
+        # after_commit auto-issues a credential the moment the row is
+        # created — clear it so the explicit #issue! below is the only
+        # live credential for this second assignment.
+        other_assignment.storage_credentials.update_all(status: "revoked")
+        other_credential = described_class.new(assignment: other_assignment).issue!
+
+        before_ids = System::Task.where(command: "storage.exports.apply").pluck(:id)
+        new_cred = issuer.rotate!(credential)
+
+        # ONE dispatch, not two (see #rotate!'s own comment: the #grant!
+        # dispatch for new_cred already rebuilds the whole file correctly —
+        # a second one from #revoke!(credential) would be redundant).
+        new_tasks = System::Task.where(command: "storage.exports.apply").where.not(id: before_ids)
+        expect(new_tasks.count).to eq(1)
+
+        # NOT a not_to-include(credential.metadata["peer_ip"]) check: rotation
+        # replaces the credential ROW but resolves the SAME Sdwan::Peer for
+        # the same (node_instance_id, sdwan_network_id) — new_cred's peer_ip
+        # is therefore IDENTICAL to the old credential's, by construction
+        # (CredentialIssuer#ensure_peer! reuses an existing peer). Entries
+        # are built one per LIVE ASSIGNMENT (StorageAssignment#active_credential),
+        # not one per credential row, so what this fix actually guarantees is
+        # exactly one entry per live assignment — no duplicate/stale row left
+        # over from the old, now-revoked credential.
+        entries = new_tasks.first.options["entries"]
+        expect(entries.size).to eq(2)
+        peer_ips = entries.map { |e| e["peer_ip"] }
+        expect(peer_ips).to contain_exactly(new_cred.metadata["peer_ip"], other_credential.metadata["peer_ip"])
       end
     end
 
@@ -246,6 +314,41 @@ RSpec.describe System::Storage::CredentialIssuer do
   # successor exists, so #revoke! must still deprovision — this is the case
   # the username-collision guard must never swallow.
   describe "#revoke! (true removal, no successor)" do
+    # IMP-ba7956c5b38d — proves the ORDERING fix directly: #revoke! now
+    # flips credential.status to "revoked" BEFORE calling into
+    # NfsExportManager#revoke! (which rebuilds the whole exports file from
+    # live StorageAssignment#active_credential rows, status
+    # issued/active only). Rebuilding before that status flip would still
+    # see this credential as active and re-include the very peer this
+    # call exists to remove — a storage with only ONE client can't catch
+    # that regression (it would just look like the file being removed
+    # instead of overwritten either way), hence the second client here.
+    it "for NFS: excludes the revoked peer while keeping a second client exported" do
+      # Same auto-issued-sibling fixture gotcha as the rotation test above —
+      # clear it before the explicit #issue! or a stale, still-"active"
+      # sibling with the SAME peer_ip masks whether the revoke actually
+      # excluded this credential's own peer.
+      assignment.storage_credentials.update_all(status: "revoked")
+      credential = issuer.issue!
+
+      other_instance = create(:system_node_instance, account: account)
+      ::Sdwan::PeerEnroller.call(network: network, node_instance: other_instance)
+      other_assignment = create(:system_storage_assignment,
+        account: account, file_storage_id: file_storage.id, node_instance: other_instance,
+        sdwan_network: network, mount_path: "/mnt/other-revoke")
+      other_assignment.storage_credentials.update_all(status: "revoked")
+      other_credential = described_class.new(assignment: other_assignment).issue!
+
+      before_ids = System::Task.where(command: "storage.exports.apply").pluck(:id)
+      issuer.revoke!(credential)
+
+      new_tasks = System::Task.where(command: "storage.exports.apply").where.not(id: before_ids)
+      peer_ips = new_tasks.last.options["entries"].map { |e| e["peer_ip"] }
+      expect(peer_ips).not_to include(credential.metadata["peer_ip"])
+      expect(peer_ips).to include(other_credential.metadata["peer_ip"])
+      expect(credential.reload.status).to eq("revoked")
+    end
+
     it "still deprovisions the SMB user when it is the last live credential for that username" do
       backend_instance = create(:system_node_instance, account: account)
       smb_storage = create(:file_storage, :smb, :node_mountable, account: account,

@@ -21,10 +21,6 @@ module System
         new(assignment: assignment).build_unmount_payload
       end
 
-      def self.build_exports_apply_payload(assignment:, credential:)
-        new(assignment: assignment).build_exports_apply_payload(credential: credential)
-      end
-
       def self.build_gateway_provision_payload(storage:)
         new(storage: storage).build_gateway_provision_payload
       end
@@ -62,34 +58,6 @@ module System
           assignment_id: @assignment.id,
           unit_name: systemd_unit_for(@assignment),
           mount_path: @assignment.mount_path
-        }
-      end
-
-      def build_exports_apply_payload(credential:)
-        peer_ip = credential.vault_credentials.dig("peer_ip") || credential.metadata.dig("peer_ip")
-        export_path = if @storage.gateway_proxy?
-          @storage.configuration["re_export_path"]
-        else
-          @storage.configuration["export_path"]
-        end
-
-        {
-          storage_id: @storage.id,
-          account_id: @storage.account_id,
-          export_path: export_path,
-          deployment_shape: @storage.deployment_shape,
-          entries: [
-            {
-              peer_ip: peer_ip,
-              # During an in-flight chown, NFS export keeps using the
-              # PREVIOUS owner so consumers don't see EACCES while the
-              # agent rewrites file ownership. After completion, the
-              # standard anonuid/anongid take effect.
-              uid: @assignment.effective_export_uid,
-              gid: @assignment.effective_export_gid,
-              options: %w[rw sync no_subtree_check all_squash sec=sys]
-            }
-          ]
         }
       end
 

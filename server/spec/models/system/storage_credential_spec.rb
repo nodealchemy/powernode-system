@@ -141,7 +141,10 @@ RSpec.describe System::StorageCredential, type: :model do
         new_tasks = exports_tasks.where.not(id: before_ids)
         expect(new_tasks.count).to eq(1)
         task = new_tasks.first
-        expect(task.options["action"]).to eq("reconcile")
+        # IMP-ba7956c5b38d — NfsExportManager#reconcile! now always dispatches
+        # action: "revoke" (not "reconcile"), so that an empty rebuild (see
+        # the sibling context below) hits the agent's file-removal branch.
+        expect(task.options["action"]).to eq("revoke")
         peer_ips = task.options["entries"].map { |e| e["peer_ip"] }
         expect(peer_ips).not_to include("fd00::1")
         expect(peer_ips).to include("fd00::2")
@@ -156,6 +159,46 @@ RSpec.describe System::StorageCredential, type: :model do
         credential.destroy
 
         expect(exports_tasks.count).to eq(before_count)
+      end
+    end
+
+    # IMP-ba7956c5b38d — no survivor sibling in this context (unlike "for
+    # NFS" above): destroying the ONLY live credential on a storage must
+    # rebuild to entries: [] with action: "revoke" — the one shape the
+    # agent's ApplyExports treats as "remove the exports file" rather than
+    # "write an empty one" (agent/internal/storage/exports.go).
+    context "for NFS, destroying the last/only client" do
+      let(:file_storage) do
+        create(:file_storage, :nfs, :node_mountable, account: account,
+          configuration: {
+            "export_path" => "/srv/exports/lastclient",
+            "mount_path" => "/srv/exports/lastclient",
+            "share_path" => "/srv/exports/lastclient",
+            "server_address" => "127.0.0.1",
+            "export_host_node_instance_id" => create(:system_node_instance, account: account).id
+          })
+      end
+
+      def exports_tasks
+        System::Task.where(command: "storage.exports.apply").order(:created_at)
+      end
+
+      it "produces an empty rebuild (entries: [], action: revoke)" do
+        # assignment's own after_commit auto-issues a credential — clear it
+        # so `credential` really is the ONLY live one on this storage once
+        # saved (same fixture gotcha as nfs_export_manager_spec.rb and
+        # credential_issuer_spec.rb).
+        assignment.storage_credentials.update_all(status: "revoked")
+        credential.save!
+        before_ids = exports_tasks.pluck(:id)
+
+        credential.destroy
+
+        new_tasks = exports_tasks.where.not(id: before_ids)
+        expect(new_tasks.count).to eq(1)
+        task = new_tasks.first
+        expect(task.options["entries"]).to eq([])
+        expect(task.options["action"]).to eq("revoke")
       end
     end
 
