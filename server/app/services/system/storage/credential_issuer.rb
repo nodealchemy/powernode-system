@@ -225,9 +225,7 @@ module System
         end
       end
 
-      # True exactly when some OTHER still-live credential on this
-      # assignment (the explicit successor, if this came from #rotate!, or
-      # any other issued/active/rotating row otherwise) names the SAME
+      # True exactly when some OTHER still-live credential names the SAME
       # samba-tool username as the one being revoked — i.e. deprovisioning
       # here would delete a user something else still needs. Checking every
       # live credential (not only an explicit successor) keeps a standalone
@@ -235,6 +233,37 @@ module System
       # correct too: it must still skip deprovision if a DIFFERENT live
       # credential already covers that username, and still deprovision when
       # this really is the last one.
+      #
+      # IMP-0376a1471f99 increment 1 — StorageProviders::SmbStorage
+      # #issue_node_credential derives the samba-tool username
+      # DETERMINISTICALLY from node_instance_id ALONE (see #rotate!'s own
+      # comment above), so TWO DIFFERENT StorageAssignments for the SAME
+      # node_instance (one node mounting two separate SMB shares) mint
+      # credentials with the IDENTICAL username. #other_live_credentials
+      # used to only look at OTHER credential rows on THIS SAME assignment
+      # — it missed the sibling-assignment case entirely: revoking/
+      # destroying one assignment's credential could still deprovision a
+      # samba user a SIBLING assignment (different StorageAssignment row,
+      # same node, same derived username) still needs.
+      #
+      # Widened to every live SMB credential, on ANY assignment in this
+      # account, whose storage resolves to the SAME BACKEND node instance —
+      # not just the same username. Same username on a DIFFERENT backend is
+      # NOT a real collision (a different samba server has its own local
+      # user namespace); deleting one there is correct and must still
+      # proceed, which is why the backend check exists alongside the
+      # username check rather than replacing it.
+      #
+      # NOT FIXED by increment 1 (documented, not silently dropped):
+      # #rotate!'s set_password dispatch for ONE assignment's credential
+      # still changes the password of a samba user a SIBLING assignment
+      # (same node, same backend, same derived username) is relying on —
+      # this method only gates the DELETE dispatch (deprovision), never
+      # rotation's set_password. Increment 2 (a per-assignment-derived
+      # username, which also fixes a UUIDv7 millisecond-collision edge
+      # case) and increment 3 (#rotate! provisioning under the new username
+      # first, then revoking the old one ONLY when it differs) are what
+      # actually fix rotation; both are follow-up tasks, not covered here.
       def smb_username_superseded?(credential, successor)
         username = credential.vault_credentials["username"]
         return false if username.blank?
@@ -244,9 +273,44 @@ module System
       end
 
       def other_live_credentials(credential)
-        @assignment.storage_credentials
+        backend_id = smb_backend_node_instance_id(@storage)
+
+        # #smb_same_backend? below reads c.storage_assignment for every row
+        # this scope returns — .includes avoids an N+1 SELECT per candidate
+        # credential (file_storage itself is a hand-written lookup, not a
+        # declared association, so it can't be chained into the same
+        # .includes; only the storage_assignment join is eager-loadable).
+        ::System::StorageCredential
+          .includes(:storage_assignment)
+          .joins(:storage_assignment)
+          .merge(::System::StorageAssignment.where(account_id: @assignment.account_id))
           .where(status: %w[issued active rotating])
           .where.not(id: credential.id)
+          .select { |c| smb_same_backend?(c, backend_id) }
+      end
+
+      # backend_id nil (no backend configured at all — shouldn't happen for
+      # a live SMB storage, defensive) never matches anything, rather than
+      # every other backend-less storage matching each other.
+      def smb_same_backend?(other_credential, backend_id)
+        return false unless backend_id
+
+        other_storage = other_credential.storage_assignment&.file_storage
+        other_storage&.smb? && smb_backend_node_instance_id(other_storage) == backend_id
+      end
+
+      # Mirrors SmbUserManager#backend_node_instance_id EXACTLY (also
+      # duplicated, unchanged, in NfsExportManager) — reused, not
+      # reinvented, per the operator's explicit direction for this
+      # increment.
+      def smb_backend_node_instance_id(storage)
+        return nil unless storage
+
+        if storage.gateway_proxy?
+          storage.configuration["gateway_node_instance_id"]
+        else
+          storage.configuration["export_host_node_instance_id"]
+        end
       end
 
       def ensure_peer!
