@@ -1,0 +1,58 @@
+# Documented exceptions to the "no `user: root` service without a reason"
+# manifest policy (IMP-94977647c24c), enforced by
+# System::ModuleRootUserPolicy for the in-scope hub modules
+# (System::ModuleRootUserPolicy::IN_SCOPE_MODULES). Every entry must carry
+# BOTH a real `reason` and the `task` (IMP id) that landed it — removing
+# either, not just the entry, is what makes the check start failing again.
+#
+# NOT a blanket policy: modules outside IN_SCOPE_MODULES (postgres-primary,
+# postgres-replica, redis, ...) are untouched by this file and this policy.
+# They already run `user: root` and drop privileges INTERNALLY
+# (postgres-start.sh's runuser, redis-server's own setuid handling) — a
+# different, pre-existing, reviewed pattern this task does not judge.
+#
+# Shape: module_name => service_name => {reason:, task:, review_by:}
+# review_by (~60 days out at time of writing) forces a re-check that the
+# cited prerequisite still holds — an exception is a snapshot, not a
+# permanent grant. The check FAILS once review_by has passed; bump the
+# date only after actually re-verifying, never as a mechanical renewal.
+powernode-hub-worker:
+  sidekiq:
+    reason: >-
+      Spawns stdio MCP child processes (Mcp::McpTransportClient) that must
+      run under McpSecurityService's systemd-run sandbox
+      (-p DynamicUser=yes, network deny-by-default) once
+      mcp.stdio_sandbox=required. A non-root worker user can only invoke
+      `systemd-run` on the system bus with a polkit rule granting it
+      org.freedesktop.systemd1.manage-units, scoped to mcp-stdio-* unit
+      names. Measured directly on the live hub (2026-09): polkit is NOT
+      present — `systemctl is-active polkit` -> inactive, no pkaction/
+      pkcheck binaries, no /etc/polkit-1/rules.d. Until that prerequisite
+      ships (see IMP-94977647c24c's part (B) design question), dropping
+      root here would fail every stdio MCP call closed.
+    task: IMP-94977647c24c
+    review_by: "2026-11-18"
+  worker-web:
+    reason: >-
+      Same worker app/process family and same unmet polkit prerequisite as
+      sidekiq above — worker-web and sidekiq are two services of the one
+      powernode-hub-worker module, sharing identity and PKI material.
+    task: IMP-94977647c24c
+    review_by: "2026-11-18"
+
+# TRANSIENT — removed in the same commit that lands IMP-94977647c24c's
+# part (A) (the rails-setup oneshot + non-root rails service). Recorded
+# here only so the registry accurately reflects hub-backend's REAL,
+# current state (still root) while that work is in progress and under
+# review, per policy: nothing in IN_SCOPE_MODULES may run as root without
+# an exception, even mid-implementation.
+powernode-hub-backend:
+  rails:
+    reason: >-
+      Part (A) of IMP-94977647c24c (drop root for hub-backend) is
+      implemented and under independent review but not yet landed. This
+      entry exists ONLY to keep the registry honest about the current
+      shipped manifest state; it is deleted as part of the same change
+      that switches rails' `user:` away from root.
+    task: IMP-94977647c24c
+    review_by: "2026-11-18"
