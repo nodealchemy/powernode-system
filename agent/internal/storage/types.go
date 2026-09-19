@@ -81,16 +81,20 @@ type ExportsEntry struct {
 }
 
 // SmbUserApplyTask drives samba-tool user create/delete/set_password
-// on the backend peer.
+// on the backend peer. Password material is never sent inline — Credential
+// (and, for set_password, NewCredential) points the agent at the same
+// node_api credential endpoint the CIFS mount path already fetches from
+// (see fetchCredential in credentials.go), so it never lands in
+// System::Task#options, a plaintext jsonb column.
 type SmbUserApplyTask struct {
-	StorageID       string `json:"storage_id"`
-	AccountID       string `json:"account_id"`
-	Action          string `json:"action"` // create | delete | set_password
-	Username        string `json:"username"`
-	Password        string `json:"password,omitempty"`
-	NewPassword     string `json:"new_password,omitempty"`
-	DeploymentShape string `json:"deployment_shape"`
-	ReShareName     string `json:"re_share_name,omitempty"`
+	StorageID       string        `json:"storage_id"`
+	AccountID       string        `json:"account_id"`
+	Action          string        `json:"action"` // create | delete | set_password
+	Username        string        `json:"username"`
+	Credential      CredentialRef `json:"credential"`
+	NewCredential   CredentialRef `json:"new_credential,omitempty"`
+	DeploymentShape string        `json:"deployment_shape"`
+	ReShareName     string        `json:"re_share_name,omitempty"`
 }
 
 // GatewayProvisionTask configures a gateway powernode (Shape 2) to

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/taskguard"
 )
@@ -199,11 +200,44 @@ func (t *ExportsApplyTask) Validate() error {
 	return nil
 }
 
+// smbCredentialURLPattern pins the EXACT shape
+// System::Storage::SmbUserManager#credential_ref produces: the node_api
+// credential endpoint for a specific assignment, addressed by an explicit
+// credential_id query param naming the one StorageCredential to serve.
+// taskguard.PlatformPath is deliberately not reused here — it refuses any
+// query string outright, and this shape needs one, on purpose: the platform
+// side (StorageAssignmentsController#resolve_credential) now serves that
+// EXACT id to a non-owning (SMB backend) requester, gated on a live per-task
+// grant, rather than "whatever's active" — so the id in the URL is
+// load-bearing and this pins its shape rather than accepting anything
+// path-like.
+var smbCredentialURLPattern = regexp.MustCompile(
+	`^/api/v1/system/node_api/storage_assignments/[0-9a-fA-F-]{36}/credential\?credential_id=[0-9a-fA-F-]{36}$`,
+)
+
+// validateSmbCredentialRef requires BOTH id and url — a ref with only one is
+// not merely incomplete, it is a ref the fetch path (fetchSambaPassword)
+// cannot resolve, or resolves to the wrong shape.
+func validateSmbCredentialRef(field string, ref CredentialRef) error {
+	if err := taskguard.Identifier(field+".id", ref.ID); err != nil {
+		return err
+	}
+	if ref.URL == "" {
+		return fmt.Errorf("storage.smb_user.apply: %w: %s.url: must not be empty", taskguard.ErrRefused, field)
+	}
+	if !smbCredentialURLPattern.MatchString(ref.URL) {
+		return fmt.Errorf("storage.smb_user.apply: %w: %s.url: does not match the expected credential endpoint shape", taskguard.ErrRefused, field)
+	}
+	return nil
+}
+
 // Validate checks the samba payload. samba-tool is invoked without a shell, so
-// the exposure is argv rather than metacharacters: a username or password that
-// begins with a dash becomes an OPTION to samba-tool. Passwords are checked
-// with the value-free rule so a refusal never lands the secret in a task's
-// error_message.
+// the exposure is argv rather than metacharacters: a username that begins
+// with a dash becomes an OPTION to samba-tool. The password itself is never
+// on this payload — create and set_password resolve it at apply time via
+// Credential (falling back to it from NewCredential when unset), the same
+// node_api round-trip the CIFS mount path uses — so what this validates is
+// that the REFERENCE is well-formed, not a secret value.
 func (t *SmbUserApplyTask) Validate() error {
 	if t == nil {
 		return fmt.Errorf("storage.smb_user.apply: %w: nil task", taskguard.ErrRefused)
@@ -217,19 +251,19 @@ func (t *SmbUserApplyTask) Validate() error {
 	if err := taskguard.Identifier("username", t.Username); err != nil {
 		return err
 	}
-	// An empty password is not merely unvalidated, it is a live weak
-	// credential: smb_user.go passes it positionally, so `samba-tool user
-	// create <user> ""` provisions a share principal with no password.
-	if t.Action == "create" || t.Password != "" {
-		if err := taskguard.Secret("password", t.Password); err != nil {
+	// An absent credential ref is not merely unvalidated, it is a live weak
+	// credential: without it setSambaPassword/createSambaUser have nothing to
+	// fetch and would provision a share principal with no password at all.
+	if t.Action == "create" || t.Action == "set_password" {
+		if err := validateSmbCredentialRef("credential", t.Credential); err != nil {
 			return err
 		}
 	}
-	if t.Action == "set_password" && t.NewPassword == "" && t.Password == "" {
-		return fmt.Errorf("storage.smb_user.apply: %w: new_password: required for set_password", taskguard.ErrRefused)
-	}
-	if t.NewPassword != "" {
-		if err := taskguard.Secret("new_password", t.NewPassword); err != nil {
+	// new_credential is optional (set_password falls back to Credential when
+	// unset), but a PARTIAL ref — an id with no url, or vice versa — is worse
+	// than an absent one, so any sign of one present requires both fields.
+	if t.NewCredential.ID != "" || t.NewCredential.URL != "" {
+		if err := validateSmbCredentialRef("new_credential", t.NewCredential); err != nil {
 			return err
 		}
 	}

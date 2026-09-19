@@ -8,7 +8,11 @@ module Api
         # mTLS through BaseController; current_instance is resolved from
         # the forwarded client-cert CN.
         class StorageAssignmentsController < BaseController
-          before_action :set_assignment, only: %i[update_status credential encryption_key]
+          # credential is NOT here. update_status and encryption_key stay
+          # owning-client-only; credential has its own, narrower lookup
+          # (#resolve_credential) because it alone also serves a non-owning
+          # requester (the SMB backend/gateway peer) — see #resolve_credential.
+          before_action :set_assignment, only: %i[update_status encryption_key]
 
           # GET /api/v1/system/node_api/storage_assignments
           # List enabled assignments for the calling instance.
@@ -42,23 +46,19 @@ module Api
           end
 
           # GET /api/v1/system/node_api/storage_assignments/:id/credential
-          # Vault round-trip — returns decrypted credential material for
-          # the active credential. Use Model.find (not .reload) to bypass
-          # the @vault_credentials cache reload bug.
+          # GET .../credential?credential_id=<uuid> (SMB backend/gateway peer only)
+          #
+          # Vault round-trip — returns decrypted credential material.
           def credential
-            credential = ::System::StorageCredential.find(@assignment.active_credential&.id)
+            assignment = ::System::StorageAssignment.find_by(id: params[:id])
+            unless assignment && assignment.account_id == current_instance.account_id
+              return render_error("Storage assignment not found", status: :not_found)
+            end
+
+            credential = resolve_credential(assignment)
             return render_error("No active credential", status: :not_found) unless credential
 
             material = credential.vault_credentials || {}
-            render_success(
-              kind: credential.kind,
-              credential_id: credential.id
-            ).tap { |_r|
-              # Merge the decrypted material into the success envelope's
-              # data hash. render_success builds {"success":true,"data":{...}};
-              # since we want a flat payload the agent's FetchCredential
-              # decodes, we expose the credential fields at the top level.
-            } if false # noop — kept for documentation
             payload = material.merge(kind: credential.kind, credential_id: credential.id)
             render json: { success: true, data: payload }
           end
@@ -87,6 +87,59 @@ module Api
             )
           rescue ActiveRecord::RecordNotFound
             render_error("Storage assignment not found", status: :not_found)
+          end
+
+          # #credential alone also serves a requester that is NOT the
+          # assignment's own client: System::Storage::SmbUserManager dispatches
+          # storage.smb_user.apply to the storage's SMB backend/gateway peer, a
+          # DIFFERENT node instance than the assignment's client, to actually
+          # run samba-tool — that peer has no assignment of its own.
+          #
+          # Two DIFFERENT trust rules, not one relaxed rule:
+          #   owning client  — unchanged: always the assignment's active_credential,
+          #                    no credential_id needed (the existing CIFS mount
+          #                    path keeps working exactly as before).
+          #   SMB backend    — must name the EXACT credential id it wants
+          #                    (?credential_id=) AND there must exist a LIVE
+          #                    (pending/running) storage.smb_user.apply
+          #                    System::Task, in the same account, whose
+          #                    operable IS this requesting instance, and whose
+          #                    options name that same credential id (as either
+          #                    "credential" or "new_credential"). Deriving the
+          #                    grant from the STORAGE'S CURRENT configuration
+          #                    (e.g. "you're the configured export host") was
+          #                    reviewed and rejected: it would keep granting a
+          #                    peer access after a gateway reconfiguration, or
+          #                    to a completed task's now-stale credential id,
+          #                    long after that peer had any legitimate reason
+          #                    to fetch it. A live, per-task grant expires
+          #                    exactly when the work it was issued for does.
+          def resolve_credential(assignment)
+            if assignment.node_instance_id == current_instance.id
+              return ::System::StorageCredential.find_by(id: assignment.active_credential&.id)
+            end
+
+            requested_id = params[:credential_id].to_s
+            return nil if requested_id.blank?
+            return nil unless smb_backend_task_grants?(assignment, requested_id)
+
+            ::System::StorageCredential.find_by(
+              id: requested_id,
+              storage_assignment_id: assignment.id,
+              status: %w[issued active rotating]
+            )
+          end
+
+          def smb_backend_task_grants?(assignment, credential_id)
+            ::System::Task
+              .where(command: "storage.smb_user.apply", status: %w[pending running])
+              .where(operable_type: "System::NodeInstance", operable_id: current_instance.id)
+              .where(account_id: assignment.account_id)
+              .where(
+                "options -> 'credential' ->> 'id' = :cred_id OR options -> 'new_credential' ->> 'id' = :cred_id",
+                cred_id: credential_id
+              )
+              .exists?
           end
 
           def serialize_for_agent(a)

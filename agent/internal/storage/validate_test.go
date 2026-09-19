@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -277,19 +278,65 @@ func TestApplyAcceptsNFSMountWithNoCredentialID(t *testing.T) {
 	}
 }
 
-func TestApplySambaUserRefusesCreateWithNoPassword(t *testing.T) {
+func TestApplySambaUserRefusesCreateWithNoCredential(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	task := &SmbUserApplyTask{
 		StorageID: "019f7cb5-3858-7000-8000-000000000006",
 		AccountID: "019f7cb5-3858-7000-8000-000000000007",
 		Action:    "create",
 		Username:  "svc-share",
-		Password:  "",
 	}
-	// smb_user.go passes the password positionally, so an empty one
-	// provisions a share principal with no password at all.
-	if err := ApplySambaUser(context.Background(), rec, task); !errors.Is(err, taskguard.ErrRefused) {
-		t.Fatalf("expected a refusal for a create with no password, got %v", err)
+	// With no credential ref, createSambaUser has nothing to fetch a
+	// password from and would provision a share principal with none at all.
+	if err := ApplySambaUser(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a create with no credential ref, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected samba-tool never to run, got %+v", rec.Invocations)
+	}
+}
+
+func TestApplySambaUserRefusesCredentialURLThatEscapesThePlatform(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	task := &SmbUserApplyTask{
+		StorageID:  "019f7cb5-3858-7000-8000-000000000006",
+		AccountID:  "019f7cb5-3858-7000-8000-000000000007",
+		Action:     "create",
+		Username:   "svc-share",
+		Credential: CredentialRef{ID: "cred-1", URL: "https://evil.example/steal"},
+	}
+	// transport.Client builds its request URL by concatenation; a credential
+	// URL that isn't platform-relative would re-point the agent's
+	// mTLS-authenticated fetch at a host of the caller's choosing.
+	if err := ApplySambaUser(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a non-platform-relative credential url, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected samba-tool never to run, got %+v", rec.Invocations)
+	}
+}
+
+// Discriminates the review-round-2 pin from the earlier, weaker PlatformPath
+// check: this URL IS a valid platform-relative path (no host, no query
+// string, "/"-prefixed) — PlatformPath alone would accept it — but it is
+// missing the ?credential_id= the platform's own #resolve_credential now
+// requires from a non-owning (SMB backend) requester. A same-origin path
+// that lacks it is exactly the "give me whatever's active" shape the fix
+// closed server-side, so the agent refuses to even send it.
+func TestApplySambaUserRefusesCredentialURLMissingCredentialIDParam(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	task := &SmbUserApplyTask{
+		StorageID: "019f7cb5-3858-7000-8000-000000000006",
+		AccountID: "019f7cb5-3858-7000-8000-000000000007",
+		Action:    "create",
+		Username:  "svc-share",
+		Credential: CredentialRef{
+			ID:  "cred-1",
+			URL: "/api/v1/system/node_api/storage_assignments/019f7cb5-3858-7000-8000-0000000000a1/credential",
+		},
+	}
+	if err := ApplySambaUser(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a credential url with no credential_id param, got %v", err)
 	}
 	if len(rec.Invocations) != 0 {
 		t.Fatalf("expected samba-tool never to run, got %+v", rec.Invocations)
@@ -620,13 +667,13 @@ func TestProvisionGatewayRefusesSymlinkedPathResolvingIntoACriticalRoot(t *testi
 func TestApplySambaUserRefusesFlagLikeUsername(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	task := &SmbUserApplyTask{
-		StorageID: "019f7cb5-3858-7000-8000-000000000006",
-		AccountID: "019f7cb5-3858-7000-8000-000000000007",
-		Action:    "create",
-		Username:  "--option=zz",
-		Password:  "s3cret",
+		StorageID:  "019f7cb5-3858-7000-8000-000000000006",
+		AccountID:  "019f7cb5-3858-7000-8000-000000000007",
+		Action:     "create",
+		Username:   "--option=zz",
+		Credential: CredentialRef{ID: "cred-1"},
 	}
-	if err := ApplySambaUser(context.Background(), rec, task); err == nil {
+	if err := ApplySambaUser(context.Background(), rec, nil, task); err == nil {
 		t.Fatal("expected ApplySambaUser to refuse a flag-like username")
 	}
 	if len(rec.Invocations) != 0 {
@@ -634,22 +681,39 @@ func TestApplySambaUserRefusesFlagLikeUsername(t *testing.T) {
 	}
 }
 
-func TestApplySambaUserRefusalDoesNotEchoThePassword(t *testing.T) {
-	rec := &mount.RecorderRunner{}
-	const secret = "correct-horse-battery-staple"
+// The password used to be an inline field on this payload, and a refusal
+// that echoed a bad value (e.g. one carrying a newline) risked leaking it
+// into a task's error_message. Now the payload can't carry a password at
+// all — pinned structurally: the wire JSON never has a "password" or
+// "new_password" key, whatever the task's action or credential refs are.
+func TestSmbUserApplyTaskHasNoPlaintextPasswordField(t *testing.T) {
 	task := &SmbUserApplyTask{
 		StorageID: "019f7cb5-3858-7000-8000-000000000006",
 		AccountID: "019f7cb5-3858-7000-8000-000000000007",
-		Action:    "create",
+		Action:    "set_password",
 		Username:  "svc-share",
-		Password:  secret + "\nZZ",
+		Credential: CredentialRef{
+			ID: "cred-1", Kind: "cifs_user_pass",
+			URL: "/api/v1/system/node_api/storage_assignments/a-1/credential",
+		},
+		NewCredential: CredentialRef{
+			ID: "cred-2", Kind: "cifs_user_pass",
+			URL: "/api/v1/system/node_api/storage_assignments/a-1/credential",
+		},
 	}
-	err := ApplySambaUser(context.Background(), rec, task)
-	if err == nil {
-		t.Fatal("expected ApplySambaUser to refuse a password containing a newline")
+	body, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(err.Error(), secret) {
-		t.Fatal("refusal message echoed the password")
+	var wire map[string]any
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := wire["password"]; ok {
+		t.Fatal("SmbUserApplyTask must never carry a plaintext password field on the wire")
+	}
+	if _, ok := wire["new_password"]; ok {
+		t.Fatal("SmbUserApplyTask must never carry a plaintext new_password field on the wire")
 	}
 }
 

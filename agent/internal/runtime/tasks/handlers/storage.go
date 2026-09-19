@@ -67,7 +67,7 @@ func (h *StorageHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.R
 		if err := json.Unmarshal(body, &st); err != nil {
 			return nil, fmt.Errorf("storage.smb_user.apply unmarshal: %w", err)
 		}
-		if err := storage.ApplySambaUser(ctx, runner, &st); err != nil {
+		if err := storage.ApplySambaUser(ctx, runner, client, &st); err != nil {
 			return nil, err
 		}
 		return tasks.Result{"storage_id": st.StorageID, "username": st.Username, "action": st.Action}, nil
