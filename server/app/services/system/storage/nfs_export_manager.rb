@@ -63,6 +63,8 @@ module System
 
       def reconcile!
         with_lock do
+          included_credential_ids = []
+
           entries = ::System::StorageAssignment
             .where(file_storage_id: @storage.id, enabled: true)
             .includes(:storage_credentials, :sdwan_virtual_ip)
@@ -83,6 +85,8 @@ module System
                 Rails.logger.warn("[NfsExportManager] skipping assignment #{a.id} / credential #{cred.id}: no peer_ip")
                 next
               end
+
+              included_credential_ids << cred.id
 
               {
                 peer_ip: peer_ip,
@@ -112,7 +116,21 @@ module System
             # storage correctly deletes the file instead of leaving a
             # stale, comment-only one behind.
             action: "revoke",
-            entries: entries
+            entries: entries,
+            # IMP-9ffb9b2407da — credential ids only (never peers/secrets)
+            # that actually made it into `entries` above (a peerless row,
+            # see the WARN-and-skip just above, is NOT listed here either).
+            # AssignmentReconciliationService's stalled-rebuild redispatch
+            # uses this as a MEMBERSHIP watermark — "was THIS credential
+            # actually included in the last completed rebuild" — instead of
+            # a timestamp comparison. A timing check alone gives a false
+            # "safe": disable an assignment, let a rebuild correctly
+            # exclude it and complete (AFTER the credential row's
+            # created_at, same as any other rebuild), then re-enable it
+            # with the SAME credential — a timing-only check would call
+            # that rebuild "safe" even though it deliberately left the peer
+            # out, and the peer would never get re-exported.
+            included_credential_ids: included_credential_ids
           }
           dispatch_task("storage.exports.apply", payload)
         end

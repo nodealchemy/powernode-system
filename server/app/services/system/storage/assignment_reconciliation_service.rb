@@ -94,6 +94,7 @@ module System
 
         if active && !active.expired? && !active.needs_rotation?
           redispatch_stalled_smb_credential!(active)
+          redispatch_stalled_nfs_reconcile!(active)
           return active
         end
 
@@ -138,14 +139,11 @@ module System
       # (e.g. the agent reports the mount missing, or the assignment is
       # updated).
       #
-      # NFS is NOT covered by this method, and that omission is
-      # deliberate, not "already handled elsewhere": record_failure! only
-      # catches an EXCEPTION raised synchronously inside reconcile! (e.g.
-      # CredentialIssuer#issue! raising), never an agent-side
-      # storage.exports.apply task failure reported back asynchronously —
-      # and NfsExportManager has no #reconcile! of its own to catch it
-      # either. A stalled/failed NFS export is a real, separate gap; it is
-      # out of scope for this change.
+      # NFS gets the same treatment via the sibling
+      # #redispatch_stalled_nfs_reconcile! below (IMP-9ffb9b2407da) — see
+      # its own comment for why the mechanism has to differ (NFS's rebuild
+      # is per-STORAGE, not per-credential, so there is no credential id in
+      # the payload to match against the way smb_tasks_for_credential does).
       def redispatch_stalled_smb_credential!(credential)
         return unless @assignment.file_storage&.smb?
 
@@ -168,6 +166,106 @@ module System
             "options -> 'credential' ->> 'id' = :cred_id OR options -> 'new_credential' ->> 'id' = :cred_id",
             cred_id: credential.id
           )
+      end
+
+      # NFS counterpart of #redispatch_stalled_smb_credential! (IMP-9ffb9b2407da)
+      # — same gap: a credential's DB-side status can be "active" while the
+      # agent-side effect it was supposed to cause never actually landed —
+      # the storage.exports.apply task dispatched when this credential was
+      # granted (CredentialIssuer#issue!/#rotate! via NfsExportManager#grant!)
+      # can fail, abort, get cancelled, or (pre-existing credentials from
+      # before this change existed) simply never have been dispatched.
+      #
+      # UNLIKE SMB, there is no credential id anywhere IN THE PAYLOAD SHAPE
+      # to match against — as of IMP-ba7956c5b38d, storage.exports.apply is
+      # a per-STORAGE full rebuild (storage_id/account_id/export_path/
+      # entries), not a per-credential dispatch. What NfsExportManager
+      # #reconcile! DOES record (IMP-9ffb9b2407da) is
+      # `included_credential_ids` — the credential ids that actually made
+      # it into that rebuild's entries — and that membership list, not a
+      # timestamp, is the right watermark. A TIMING check (was the latest
+      # task created at/after this credential row) looks equivalent at
+      # first but is wrong: disable an assignment, let a rebuild correctly
+      # EXCLUDE it and complete (still created after the credential row,
+      # like any other rebuild), then re-enable the SAME credential — a
+      # timing check calls that "safe" even though it deliberately left the
+      # peer out, and the peer would never get re-exported; the drift
+      # sensor would re-run and skip forever. Membership doesn't have this
+      # gap: a rebuild that excluded this credential simply won't list it.
+      #
+      # Safe-status handling mirrors SMB's allowlist, split in two because
+      # the two cases need different tests:
+      #   - pending/scheduled/running (#nfs_exports_task_in_flight?): skip
+      #     unconditionally, no membership check needed. This is also the
+      #     COALESCING guard — several assignments on the SAME storage can
+      #     all reconcile in one tick (after_commit fan-out, a drift
+      #     sweep); one in-flight rebuild is enough for all of them, since
+      #     it reads live DB state at completion time and will reflect
+      #     every assignment's current credential regardless of when it was
+      #     dispatched. Without this, each assignment would fire its own
+      #     #reconcile! and storm the storage's advisory lock / exports.d
+      #     file with redundant rewrites.
+      #   - complete: safe only if its included_credential_ids contains
+      #     this credential's id.
+      # Anything else (failed/aborted/cancelled/no task at all) redispatches.
+      #
+      # COVERAGE IS REACTIVE, not a background sweep — same caveat as SMB's
+      # #redispatch_stalled_smb_credential!: this only runs when something
+      # triggers reconcile! for this (or a sibling) assignment; a healthy,
+      # already-mounted assignment whose export rebuild silently failed is
+      # not proactively re-checked.
+      #
+      # Pre-existing credentials with no exports task at all (`latest` nil)
+      # get ONE rebuild the first time they're reconciled under this
+      # change. That's safe to run unconditionally: NfsExportManager#reconcile!
+      # always computes its entries from live DB state, so a rebuild that
+      # turns out to have been unnecessary is a no-op in effect, not a
+      # regression — no separate de-duplication needed beyond the
+      # coalescing check above.
+      def redispatch_stalled_nfs_reconcile!(credential)
+        storage = @assignment.file_storage
+        return unless storage&.nfs?
+
+        # A credential with no peer_ip can never be exported —
+        # NfsExportManager#reconcile! itself skips it (WARN-and-continue,
+        # see that method). Without this guard, EVERY reconcile tick for
+        # this assignment would see "not included in the last rebuild" (it
+        # never can be) and queue another rebuild, forever, for a row
+        # nothing can fix by rebuilding again.
+        if nfs_credential_peer_ip(credential).blank?
+          Rails.logger.warn("[AssignmentReconciliationService] skipping NFS re-export check for assignment #{@assignment.id} / credential #{credential.id}: no peer_ip")
+          return
+        end
+
+        return if nfs_exports_task_in_flight?(storage)
+
+        latest = latest_exports_task_for(storage)
+        return if latest&.status == "complete" && nfs_task_includes_credential?(latest, credential)
+
+        ::System::Storage::NfsExportManager.reconcile!(storage: storage)
+      end
+
+      def nfs_credential_peer_ip(credential)
+        credential.vault_credentials.dig("peer_ip") || credential.metadata["peer_ip"]
+      end
+
+      def nfs_task_includes_credential?(task, credential)
+        Array(task.options["included_credential_ids"]).include?(credential.id)
+      end
+
+      def nfs_exports_task_in_flight?(storage)
+        ::System::Task.active
+          .where(account_id: @assignment.account_id, command: "storage.exports.apply")
+          .where("options ->> 'storage_id' = :id", id: storage.id)
+          .exists?
+      end
+
+      def latest_exports_task_for(storage)
+        ::System::Task
+          .where(command: "storage.exports.apply", account_id: @assignment.account_id)
+          .where("options ->> 'storage_id' = :id", id: storage.id)
+          .order(created_at: :desc, id: :desc) # tiebreaker for same-timestamp inserts
+          .first
       end
 
       def ensure_encryption_key!

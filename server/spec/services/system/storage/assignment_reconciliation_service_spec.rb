@@ -198,4 +198,237 @@ RSpec.describe System::Storage::AssignmentReconciliationService do
       expect(smb_tasks.count).to eq(before_count)
     end
   end
+
+  # IMP-9ffb9b2407da — NFS counterpart of the SMB re-dispatch above. Reuses
+  # the top-level `assignment`/`file_storage` (already NFS-configured).
+  # Unlike SMB, the exports.apply payload names no credential in its shape
+  # — it's a per-STORAGE full rebuild (IMP-ba7956c5b38d) — so "does this
+  # task cover my credential" is a MEMBERSHIP check against the rebuild's
+  # own `included_credential_ids`, not a timing comparison. A timing-only
+  # check (task created at/after the credential row) looks equivalent but
+  # is wrong: a rebuild while the assignment is disabled correctly
+  # EXCLUDES it and still completes AFTER the credential row exists, which
+  # a timing check would wrongly call "safe" — see the disable/re-enable
+  # spec below, which is the exact bug this membership check exists to
+  # close.
+  describe "NFS stalled exports rebuild re-dispatch" do
+    # Overrides the outer node_instance/assignment (scoped to this describe
+    # block only) with a peer-enrolled one — the top-level `assignment`
+    # fixture never enrolls an Sdwan::Peer, so its credential's metadata
+    # peer_ip is always nil and every entry gets WARN-skipped (invisible to
+    # every pre-existing test here, none of which inspect entries/
+    # included_credential_ids content — this block is the first to).
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:node_instance) do
+      instance = create(:system_node_instance, account: account)
+      ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)
+      instance
+    end
+    let(:assignment) do
+      create(:system_storage_assignment,
+        account: account, file_storage_id: file_storage.id, node_instance: node_instance,
+        sdwan_network: network, mount_path: "/mnt/test")
+    end
+
+    def exports_tasks
+      System::Task.where(command: "storage.exports.apply", account_id: account.id).order(:created_at)
+    end
+
+    def backend_node_instance
+      System::NodeInstance.find(file_storage.configuration["export_host_node_instance_id"])
+    end
+
+    # A hand-built exports.apply task for this storage, independent of any
+    # real assignment's reconcile — lets the membership tests below craft
+    # exactly the included_credential_ids a real rebuild would have
+    # produced without needing a second real assignment.
+    def build_exports_task(included_credential_ids:)
+      create(:system_task,
+        account: account, operable: backend_node_instance, command: "storage.exports.apply",
+        status: "pending",
+        options: {
+          "storage_id" => file_storage.id, "account_id" => account.id,
+          "action" => "revoke", "entries" => [], "included_credential_ids" => included_credential_ids
+        })
+    end
+
+    it "rebuilds (reconcile!) when the storage's most recent exports task failed" do
+      assignment # materialize — after_commit reconcile auto-issues + dispatches a rebuild
+      active = assignment.reload.active_credential
+      initial_task = exports_tasks.last
+      initial_task.start!
+      initial_task.fail!("agent unreachable")
+
+      described_class.reconcile_assignment!(assignment)
+
+      new_task = exports_tasks.last
+      expect(new_task.id).not_to eq(initial_task.id)
+      expect(new_task.options["action"]).to eq("revoke")
+      expect(active.reload.status).to eq("active") # unaffected — this is a rebuild, not a rotation
+    end
+
+    it "rebuilds when the storage's most recent exports task was cancelled" do
+      assignment
+      initial_task = exports_tasks.last
+      initial_task.cancel!("stale task")
+
+      described_class.reconcile_assignment!(assignment)
+
+      new_task = exports_tasks.last
+      expect(new_task.id).not_to eq(initial_task.id)
+    end
+
+    it "rebuilds when no exports task exists at all for the storage (defensive / pre-existing credential)" do
+      assignment
+      exports_tasks.destroy_all
+
+      described_class.reconcile_assignment!(assignment)
+
+      expect(exports_tasks.last).to be_present
+    end
+
+    it "does not rebuild while a pending exports task for the storage still exists" do
+      assignment
+      before_count = exports_tasks.count
+
+      described_class.reconcile_assignment!(assignment)
+
+      expect(exports_tasks.count).to eq(before_count)
+    end
+
+    it "does not rebuild once a completed exports task's included_credential_ids contains the credential" do
+      assignment
+      active = assignment.reload.active_credential
+      initial_task = exports_tasks.last
+      initial_task.start!
+      initial_task.complete!
+      expect(initial_task.options["included_credential_ids"]).to include(active.id) # sanity — precondition for the assertion below
+      before_count = exports_tasks.count
+
+      described_class.reconcile_assignment!(assignment)
+
+      expect(exports_tasks.count).to eq(before_count)
+    end
+
+    # The critical regression guard: a timing-only check (task created
+    # at/after the credential row) would call this SAFE — excluding_task is
+    # created strictly after the credential exists. Membership correctly
+    # says otherwise, because the rebuild that produced it didn't include
+    # this credential.
+    it "rebuilds when the latest completed exports task was created after the credential but does not include it" do
+      assignment
+      active = assignment.reload.active_credential
+      initial_task = exports_tasks.last
+      initial_task.start!
+      initial_task.complete!
+
+      excluding_task = build_exports_task(included_credential_ids: [])
+      excluding_task.start!
+      excluding_task.complete!
+
+      described_class.reconcile_assignment!(assignment)
+
+      new_task = exports_tasks.last
+      expect(new_task.id).not_to eq(excluding_task.id)
+      expect(new_task.options["included_credential_ids"]).to include(active.id)
+    end
+
+    # Mutation guard: the ORIGINAL (pre-membership) timing check would also
+    # have caught this simpler case — a completed task that predates the
+    # credential entirely can't possibly include it. Kept so a future
+    # change can't silently regress this case while "fixing" something
+    # else.
+    it "rebuilds when the latest completed exports task predates the credential" do
+      assignment
+      active = assignment.reload.active_credential
+      exports_tasks.destroy_all
+
+      predating_task = build_exports_task(included_credential_ids: [])
+      predating_task.start!
+      predating_task.complete!
+      predating_task.update_columns(created_at: active.created_at - 1.hour)
+
+      described_class.reconcile_assignment!(assignment)
+
+      new_task = exports_tasks.last
+      expect(new_task.id).not_to eq(predating_task.id)
+    end
+
+    # The exact reported bug: a rebuild while disabled correctly excludes
+    # the assignment and completes AFTER the credential row exists — a
+    # TIMING check would call that "safe" forever (the drift sensor would
+    # re-run and skip every time); membership correctly sees this
+    # credential was never actually re-exported once re-enabled.
+    it "re-exports a credential once re-enabled, after a rebuild while disabled correctly excluded it" do
+      assignment
+      active = assignment.reload.active_credential
+      exports_tasks.last.tap { |t| t.start!; t.complete! } # settle the initial dispatch — an unrelated still-pending task would mask everything below behind the coalescing guard
+
+      assignment.update_columns(enabled: false) # bypass callbacks — isolate the rebuild below from dispatch_unmount!/mark_status! noise
+      ::System::Storage::NfsExportManager.reconcile!(storage: file_storage)
+      excluding_task = exports_tasks.last
+      excluding_task.start!
+      excluding_task.complete!
+      expect(excluding_task.options["included_credential_ids"]).not_to include(active.id) # sanity — it really was excluded while disabled
+
+      assignment.update_columns(enabled: true, status: "provisioning", error_message: nil)
+
+      described_class.reconcile_assignment!(assignment)
+
+      new_task = exports_tasks.last
+      expect(new_task.id).not_to eq(excluding_task.id)
+      expect(new_task.options["included_credential_ids"]).to include(active.id)
+    end
+
+    # Coalescing — the operator's explicit "storm" concern: several
+    # assignments sharing ONE storage all reconciling in the same tick must
+    # not each fire their own rebuild while one is already in flight.
+    it "does not fire a redundant rebuild when a SIBLING assignment on the same storage already has one pending" do
+      assignment # materialize — dispatches the first rebuild for this storage
+      exports_tasks.last.tap { |t| t.start!; t.complete! } # settle it before the sibling's own dispatch
+
+      other_instance = create(:system_node_instance, account: account)
+      create(:system_storage_assignment, # other_assignment — its own after_commit issue! dispatches a fresh, still-pending rebuild for the SAME storage
+        account: account, file_storage_id: file_storage.id,
+        node_instance: other_instance, mount_path: "/mnt/other-reconcile")
+      before_count = exports_tasks.count
+
+      described_class.reconcile_assignment!(assignment)
+
+      expect(exports_tasks.count).to eq(before_count)
+    end
+
+    # A credential with no peer_ip can never be exported —
+    # NfsExportManager#reconcile! itself WARN-skips it. Without an early
+    # return here, this assignment would look "not included in the last
+    # rebuild" (it never can be) on EVERY reconcile tick and queue another
+    # rebuild forever, for a row nothing can fix by rebuilding again.
+    it "does not queue a rebuild for a credential with no peer_ip, logging at WARN instead" do
+      allow_any_instance_of(System::StorageCredential)
+        .to receive(:vault_credentials) { |instance| instance.metadata.slice("peer_ip") }
+
+      assignment # materialize
+      active = assignment.reload.active_credential
+      exports_tasks.last.tap { |t| t.start!; t.complete! } # settle the initial dispatch, or the coalescing (still-pending) guard masks everything below
+      active.update_columns(metadata: active.metadata.merge("peer_ip" => nil))
+
+      # A rebuild while the credential is already peerless correctly
+      # excludes it (see nfs_export_manager_spec's own peerless test) and
+      # completes — WITHOUT the early-return guard below, the next
+      # reconcile tick would see "not included in the last rebuild" (true,
+      # but unfixable by rebuilding again) and queue yet another one,
+      # forever.
+      ::System::Storage::NfsExportManager.reconcile!(storage: file_storage)
+      exports_tasks.last.tap { |t| t.start!; t.complete! }
+      before_count = exports_tasks.count
+
+      warnings = []
+      allow(Rails.logger).to receive(:warn) { |msg| warnings << msg }
+
+      described_class.reconcile_assignment!(assignment)
+
+      expect(exports_tasks.count).to eq(before_count)
+      expect(warnings.any? { |w| w.include?(assignment.id) && w.include?(active.id) }).to be true
+    end
+  end
 end

@@ -176,6 +176,10 @@ RSpec.describe System::Storage::NfsExportManager do
         credential_a.metadata["peer_ip"], credential_b.metadata["peer_ip"]
       )
       expect(task.options["action"]).to eq("revoke")
+      # IMP-9ffb9b2407da — AssignmentReconciliationService's stalled-rebuild
+      # redispatch uses this as a membership watermark; it must match the
+      # credentials actually built into `entries` above, not just count.
+      expect(task.options["included_credential_ids"]).to contain_exactly(credential_a.id, credential_b.id)
     end
 
     # IMP-ba7956c5b38d review round — a single partially-provisioned row
@@ -206,6 +210,10 @@ RSpec.describe System::Storage::NfsExportManager do
       task = exports_tasks.where.not(id: before_ids).last
       expect(peer_ips_of(task)).to contain_exactly(credential_a.metadata["peer_ip"])
       expect(warnings.any? { |w| w.include?(assignment_b.id) && w.include?(credential_b.id) }).to be true
+      # The skipped, peerless credential must NOT show up in the membership
+      # watermark either — it wasn't actually exported.
+      expect(task.options["included_credential_ids"]).to contain_exactly(credential_a.id)
+      expect(task.options["included_credential_ids"]).not_to include(credential_b.id)
     end
   end
 end
