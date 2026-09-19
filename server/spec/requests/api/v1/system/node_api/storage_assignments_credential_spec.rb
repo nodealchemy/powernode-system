@@ -202,4 +202,49 @@ RSpec.describe "Api::V1::System::NodeApi::StorageAssignments#credential", type: 
       expect(response).to have_http_status(:not_found)
     end
   end
+
+  # IMP-9045875d3cb8 — end-to-end ordering proof, through the REAL
+  # System::Storage::CredentialIssuer#rotate! (not the live_smb_task! stub):
+  # the credential the agent's set_password task actually needs
+  # (new_credential) must still be fetchable to the backend AFTER #rotate!
+  # — including its own synchronous revoke of the OLD credential — has fully
+  # returned.
+  describe "rotate! ordering" do
+    # A credential's OWN vault material is never re-readable off the SAME
+    # in-memory object after a second #store_in_vault call — #store_in_vault
+    # only nils @vault_credentials, which leaves the ivar DEFINED (just nil),
+    # so #vault_credentials's `return @vault_credentials if defined?(...)`
+    # short-circuits to that nil forever after. Every other caller in this
+    # codebase works around it by re-fetching via Model.find(id) rather than
+    # reusing the object (see CredentialIssuer#issue_credential_row!'s own
+    # comment) — do the same here rather than rediscovering it as a failure.
+    def rotate_credential_for(client_instance)
+      short_id = client_instance.id.to_s.delete("-").first(12)
+      credential.store_in_vault("username" => "node-#{short_id}", "password" => "s3cr3t-pw")
+      ::System::StorageCredential.find(credential.id)
+    end
+
+    it "still serves the new credential to the backend after the old one is revoked" do
+      old_credential = rotate_credential_for(client_instance)
+
+      new_cred = ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(old_credential)
+
+      expect(old_credential.reload.status).to eq("revoked")
+
+      get "/api/v1/system/node_api/storage_assignments/#{assignment.id}/credential",
+          params: { credential_id: new_cred.id }, headers: mtls_headers_for(backend_instance)
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data["password"]).to eq(new_cred.vault_credentials["password"])
+    end
+
+    it "never queues a delete task for the rotated-out username" do
+      old_credential = rotate_credential_for(client_instance)
+
+      ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(old_credential)
+
+      delete_tasks = ::System::Task.where(command: "storage.smb_user.apply")
+        .where("options ->> 'action' = 'delete'")
+      expect(delete_tasks).to be_empty
+    end
+  end
 end

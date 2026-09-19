@@ -24,6 +24,74 @@ module System
       end
 
       def issue!
+        credential = issue_credential_row!
+        materialize_backend_side!(credential)
+        credential.activate!
+        credential
+      end
+
+      # Rotation REPLACES the same backend identity — it is not "issue a new
+      # one, then tear down the old one as if it were unrelated". This
+      # matters concretely for SMB: StorageProviders::SmbStorage#issue_node_credential
+      # derives the samba-tool username DETERMINISTICALLY from
+      # node_instance_id, so the credential this creates shares its username
+      # with the one being rotated out. The backend must run exactly one
+      # set_password against that shared user — never the "create" dispatch
+      # #issue! uses for a brand-new identity, and never a delete of that
+      # same username afterward (the bug this method used to have: calling
+      # #issue! here dispatched "create" — which the agent's idempotent
+      # createSambaUser falls through to setpassword on since the user
+      # already exists, so this accidentally worked — but then paired it
+      # with an unconditional #revoke! on the OLD credential, which
+      # deprovisioned that SAME username: every rotation deleted the SMB
+      # user it had just set a new password on).
+      def rotate!(credential)
+        credential.mark_rotating!
+        new_cred = issue_credential_row!
+
+        if @storage.smb?
+          SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_cred)
+        else
+          materialize_backend_side!(new_cred)
+        end
+        new_cred.activate!
+
+        revoke!(credential, successor: new_cred)
+        new_cred
+      end
+
+      # successor: the StorageCredential replacing this one, if this call is
+      # part of a rotation. nil means a TRUE removal — the last live
+      # credential for this backend identity, or the assignment being torn
+      # down — and deprovisioning always runs for that case.
+      #
+      # ORDERING: the credential row itself is revoked (DB status ->
+      # "revoked") synchronously, at the end of this method, exactly as
+      # before this change — there is no task-completion callback for
+      # storage.smb_user.apply to gate on (unlike storage.chown's
+      # chown_complete). This is safe for the set_password/rotate path
+      # specifically because the agent's setSambaPassword ALWAYS prefers
+      # NewCredential over Credential when both are present
+      # (agent/internal/storage/smb_user.go) — the old credential's ref
+      # in the payload is validated for shape but never actually
+      # dereferenced once a successor exists, so revoking it immediately
+      # cannot 404 anything the live task will fetch. What DOES need to
+      # stay fetchable through the whole flow is the SUCCESSOR — see
+      # credential_issuer_spec.rb's ordering spec, which asserts the
+      # node_api endpoint still serves new_cred's material, live, AFTER
+      # #rotate! (including this revoke) has returned.
+      def revoke!(credential, successor: nil)
+        deprovision!(credential, successor: successor)
+
+        handle = credential.metadata["export_handle"] || credential.metadata["smb_user_handle"] || credential.metadata["sts_handle"]
+        @storage.storage_provider.revoke_node_credential(handle) if handle
+
+        credential.revoke!
+      end
+
+      private
+
+      def issue_credential_row!
         raise IssuanceError, "Storage #{@assignment.file_storage_id} not found" unless @storage
 
         peer = ensure_peer!
@@ -44,34 +112,43 @@ module System
         credential.store_in_vault(provider_result[:payload] || {})
 
         # Re-fetch (NOT reload) to bypass the @vault_credentials cache reload bug
-        credential = ::System::StorageCredential.find(credential.id)
-        materialize_backend_side!(credential)
-        credential.activate!
-        credential
+        ::System::StorageCredential.find(credential.id)
       end
 
-      def rotate!(credential)
-        credential.mark_rotating!
-        new_cred = issue!
-        revoke!(credential)
-        new_cred
-      end
-
-      def revoke!(credential)
+      def deprovision!(credential, successor:)
         case @storage.provider_type
         when "nfs"
           NfsExportManager.new(assignment: @assignment).revoke!(credential: credential)
         when "smb"
+          return if smb_username_superseded?(credential, successor)
+
           SmbUserManager.new(assignment: @assignment).deprovision_user!(credential: credential)
         end
-
-        handle = credential.metadata["export_handle"] || credential.metadata["smb_user_handle"] || credential.metadata["sts_handle"]
-        @storage.storage_provider.revoke_node_credential(handle) if handle
-
-        credential.revoke!
       end
 
-      private
+      # True exactly when some OTHER still-live credential on this
+      # assignment (the explicit successor, if this came from #rotate!, or
+      # any other issued/active/rotating row otherwise) names the SAME
+      # samba-tool username as the one being revoked — i.e. deprovisioning
+      # here would delete a user something else still needs. Checking every
+      # live credential (not only an explicit successor) keeps a standalone
+      # #revoke! call (no successor — e.g. retiring one of several rows)
+      # correct too: it must still skip deprovision if a DIFFERENT live
+      # credential already covers that username, and still deprovision when
+      # this really is the last one.
+      def smb_username_superseded?(credential, successor)
+        username = credential.vault_credentials["username"]
+        return false if username.blank?
+
+        candidates = successor ? [ successor ] : other_live_credentials(credential)
+        candidates.any? { |c| c.vault_credentials["username"] == username }
+      end
+
+      def other_live_credentials(credential)
+        @assignment.storage_credentials
+          .where(status: %w[issued active rotating])
+          .where.not(id: credential.id)
+      end
 
       def ensure_peer!
         return nil unless @assignment.sdwan_network_id
