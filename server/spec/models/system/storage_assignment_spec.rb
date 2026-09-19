@@ -240,4 +240,78 @@ RSpec.describe System::StorageAssignment, type: :model do
       expect(described_class.mounted).not_to include(pending_assignment)
     end
   end
+
+  # IMP-e48612a32273 — the drift-detection half of the remount fix. A
+  # rotation never touches an ASSIGNMENT field, so pending_reconcile alone
+  # (deliberately excluding "mounted") never re-admits a row whose consumer
+  # never actually remounted; this scope is the safety net that does.
+  describe ".mount_credential_mismatch" do
+    let(:mounted_node_instance) { create(:system_node_instance, account: account) }
+    let(:backend_instance) { create(:system_node_instance, account: account) }
+    let(:file_storage) do
+      create(:file_storage, :nfs, :node_mountable, account: account,
+        configuration: {
+          "export_path" => "/srv/exports/test", "mount_path" => "/srv/exports/test",
+          "share_path" => "/srv/exports/test", "server_address" => "127.0.0.1",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:mounted) do
+      a = create(:system_storage_assignment,
+        account: account, file_storage_id: file_storage.id, node_instance: mounted_node_instance)
+      a.update_columns(status: "mounted")
+      a
+    end
+    let!(:unmounted_assignment) do
+      create(:system_storage_assignment,
+        account: account, file_storage_id: file_storage.id, node_instance: create(:system_node_instance, account: account))
+    end
+
+    # StorageAssignment#after_commit auto-issues its OWN credential — clear
+    # it so each test's own explicit #issue! is the only live credential.
+    def clear_auto_issued!
+      mounted.storage_credentials.update_all(status: "revoked")
+    end
+
+    # IMP-e48612a32273 BLOCKER 1 (review) — FLIPPED from "matches": NULL
+    # means "never confirmed" (the migration's backfill legitimately
+    # skipped it, or this is a genuinely new assignment whose first mount
+    # hasn't completed yet), not "mismatch". Treating NULL as a mismatch
+    # would have every already-mounted share in the fleet with an
+    # unbackfilled row match on the first drift tick after deploy and get
+    # remounted all at once.
+    it "excludes a mounted assignment whose mounted_credential_id is nil, even while active_credential exists" do
+      clear_auto_issued!
+      System::Storage::CredentialIssuer.new(assignment: mounted).issue!
+      mounted.update_columns(mounted_credential_id: nil)
+
+      expect(described_class.mount_credential_mismatch).not_to include(mounted)
+    end
+
+    it "matches a mounted assignment whose mounted_credential_id points at a DIFFERENT (stale) credential" do
+      clear_auto_issued!
+      active = System::Storage::CredentialIssuer.new(assignment: mounted).issue!
+      stale = create(:system_storage_credential,
+        storage_assignment: mounted, node_instance: mounted_node_instance, kind: active.kind, status: "revoked")
+      mounted.update_columns(mounted_credential_id: stale.id)
+
+      expect(described_class.mount_credential_mismatch).to include(mounted)
+    end
+
+    it "excludes a mounted assignment whose mounted_credential_id matches its active_credential" do
+      clear_auto_issued!
+      active = System::Storage::CredentialIssuer.new(assignment: mounted).issue!
+      mounted.update_columns(mounted_credential_id: active.id)
+
+      expect(described_class.mount_credential_mismatch).not_to include(mounted)
+    end
+
+    it "excludes a non-mounted assignment even with a stale mounted_credential_id" do
+      clear_auto_issued!
+      stale = System::Storage::CredentialIssuer.new(assignment: mounted).issue!
+      unmounted_assignment.update_columns(mounted_credential_id: stale.id)
+
+      expect(described_class.mount_credential_mismatch).not_to include(unmounted_assignment)
+    end
+  end
 end

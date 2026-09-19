@@ -37,10 +37,23 @@ func (h *StorageHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.R
 		if err := json.Unmarshal(body, &mt); err != nil {
 			return nil, fmt.Errorf("storage.mount unmarshal: %w", err)
 		}
-		if err := storage.Apply(ctx, runner, client, &mt); err != nil {
+		confirmed, err := storage.Apply(ctx, runner, client, &mt)
+		if err != nil {
 			return nil, err
 		}
-		return tasks.Result{"assignment_id": mt.AssignmentID, "mounted": true}, nil
+		result := tasks.Result{"assignment_id": mt.AssignmentID, "mounted": true}
+		// IMP-e48612a32273 (rollout-skew review) — mounted_credential_id is
+		// the platform's proof that the consumer actually picked up THIS
+		// credential, not just that some earlier command line already
+		// mounted with a different one. Only claim it when Apply confirms a
+		// real (re)start happened; otherwise report already_active so the
+		// platform's log line names the actual cause rather than guessing.
+		if confirmed {
+			result["mounted_credential_id"] = mt.Credential.ID
+		} else {
+			result["already_active"] = true
+		}
+		return result, nil
 
 	case "storage.unmount":
 		var ut storage.UnmountTask

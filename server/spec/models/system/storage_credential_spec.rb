@@ -276,6 +276,57 @@ RSpec.describe System::StorageCredential, type: :model do
         expect { credential.destroy! }.not_to raise_error
         expect(::System::StorageCredential.where(id: credential.id)).not_to exist
       end
+
+      # IMP-e48612a32273 (review correction) — teardown-mid-rotation. A
+      # scheme-crossing rotation's outgoing credential stays "rotating" (not
+      # "revoked") until the consumer's remount confirms — see
+      # CredentialIssuer#revoke!'s own comment for the concrete bug this
+      # fixes (a "revoked" row whose samba user is still live would be
+      # SKIPPED by this very guard below). Because it stays "rotating", THIS
+      # pre-existing guard (issued/active/rotating) already covers teardown
+      # mid-rotation on its own — no special-case breadcrumb check needed
+      # (an earlier version of this file added one; the state-derived
+      # "rotating" design made it unnecessary).
+      context "teardown mid-rotation (a scheme-crossing rotation with no confirmed remount)" do
+        before do
+          allow_any_instance_of(::System::StorageCredential)
+            .to receive(:vault_credentials) { |cred| cred.metadata.slice("username") }
+        end
+
+        def perform_scheme_crossing_rotation!
+          old_credential = ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!
+          old_credential.update_columns(metadata: old_credential.metadata.merge("username" => "n-legacyforced0099"))
+          new_credential = ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).rotate!(old_credential)
+          [ old_credential, new_credential ]
+        end
+
+        it "leaves the old credential 'rotating' (not 'revoked') right after the rotation" do
+          old_credential, = perform_scheme_crossing_rotation!
+          expect(old_credential.reload.status).to eq("rotating")
+        end
+
+        it "dispatches the old identity's delete when the whole ASSIGNMENT is destroyed before the consumer ever confirms" do
+          old_credential, = perform_scheme_crossing_rotation!
+
+          before_ids = smb_tasks.pluck(:id)
+          smb_assignment.destroy
+
+          delete_tasks = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'")
+          old_delete = delete_tasks.detect { |t| t.options["credential"]["id"] == old_credential.id }
+          expect(old_delete).to be_present
+        end
+
+        it "dispatches the old identity's delete when the OLD (still-rotating) credential is destroyed directly" do
+          old_credential, = perform_scheme_crossing_rotation!
+
+          before_ids = smb_tasks.pluck(:id)
+          old_credential.destroy
+
+          delete_task = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'").last
+          expect(delete_task).to be_present
+          expect(delete_task.options["credential"]["id"]).to eq(old_credential.id)
+        end
+      end
     end
   end
 end

@@ -13,33 +13,47 @@ import (
 // mount must succeed first. Encryption fails closed (see setupEncryption) —
 // if it errors, the whole assignment fails rather than serving plaintext
 // under an "encrypted" label.
-func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
+//
+// The bool return (IMP-e48612a32273, rollout-skew review) is CONFIRMED —
+// true only when the unit was ACTUALLY (re)started, meaningless when err !=
+// nil. StorageHandler#Execute uses it to decide whether the task's
+// completion result may claim `mounted_credential_id` at all: an old agent
+// (pre-remount) always calls plain `start`, which is a no-op on an
+// already-active unit, yet used to report success unconditionally — the
+// platform can no longer tell "the consumer genuinely picked up this
+// credential" from "nothing happened" without this signal. NFS and object
+// mounts are unconditionally `true`: neither has CIFS's local, client-
+// cached-credential staleness risk (NFS auth is peer-IP/server-side; object
+// mounts re-fetch their credential file fresh on every dispatch already),
+// so there is nothing here for an old agent to silently no-op past.
+func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) (bool, error) {
 	// The single validation seam for storage.mount. It runs before the recipe
 	// switch so no driver — and no os.MkdirAll on the caller-chosen mount
 	// path — happens for a payload the agent will refuse. See validate.go.
 	if err := task.Validate(); err != nil {
-		return err
+		return false, err
 	}
 
 	var mountErr error
+	confirmed := true
 	switch task.Recipe.Type {
 	case "nfs4", "nfs":
 		mountErr = mountNFS(ctx, runner, task)
 	case "cifs":
-		mountErr = mountCIFS(ctx, runner, client, task)
+		confirmed, mountErr = mountCIFS(ctx, runner, client, task)
 	case "s3fs", "gcsfuse", "rclone":
 		mountErr = mountObject(ctx, runner, client, task)
 	default:
-		return fmt.Errorf("unsupported recipe type: %s", task.Recipe.Type)
+		return false, fmt.Errorf("unsupported recipe type: %s", task.Recipe.Type)
 	}
 	if mountErr != nil {
-		return mountErr
+		return false, mountErr
 	}
 
 	if err := setupEncryption(ctx, runner, client, task); err != nil {
-		return fmt.Errorf("encryption setup: %w", err)
+		return false, fmt.Errorf("encryption setup: %w", err)
 	}
-	return nil
+	return confirmed, nil
 }
 
 // Unapply unmounts and tears down encryption for the assignment.

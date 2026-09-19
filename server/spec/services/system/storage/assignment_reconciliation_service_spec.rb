@@ -199,6 +199,280 @@ RSpec.describe System::Storage::AssignmentReconciliationService do
     end
   end
 
+  # IMP-e48612a32273 — the server-side remount decision. Reuses the same
+  # SMB fixtures/helpers as the describe block above.
+  describe "SMB remount decision" do
+    let(:backend_instance) { create(:system_node_instance, account: account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: account,
+        configuration: {
+          "mount_path" => "/mnt/smb-remount",
+          "server_address" => "192.168.1.211",
+          "share_name" => "remount-share",
+          "export_host_node_instance_id" => backend_instance.id
+        })
+    end
+    let(:smb_assignment) do
+      create(:system_storage_assignment,
+        account: account, file_storage_id: smb_storage.id,
+        node_instance: node_instance, mount_path: "/mnt/smb-remount")
+    end
+
+    def mount_tasks
+      System::Task.where(command: "storage.mount", account_id: account.id).order(:created_at)
+    end
+
+    # smb_assignment's own after_commit already dispatched a FIRST
+    # storage.mount task while materializing — settle it (start!+complete!)
+    # or dispatch_mount!'s own mount_task_already_pending? guard would block
+    # every "second dispatch" assertion below regardless of the remount
+    # logic under test.
+    # Forced usernames (mirrors credential_issuer_spec.rb's own "SMB
+    # cross-assignment username collision" fixture) — post-increment-2 real
+    # derivation makes a genuinely scheme-crossing rotation unconstructable
+    # naturally, and a scheme-crossing rotation is what leaves an old
+    # credential "rotating" (see CredentialIssuer#revoke!'s own comment).
+    before do
+      allow_any_instance_of(System::StorageCredential)
+        .to receive(:vault_credentials) { |cred| cred.metadata.slice("username") }
+    end
+
+    def smb_tasks
+      System::Task.where(command: "storage.smb_user.apply", account_id: account.id).order(:created_at)
+    end
+
+    # Settles BOTH tasks the initial reconcile! dispatches for an SMB
+    # assignment — the smb_user.apply "create" for the auto-issued
+    # credential (to the backend) AND the storage.mount (to the consumer).
+    # BLOCKER 2's #smb_provisioning_confirmed? guard reads the FORMER, so
+    # any later test that manufactures a "genuinely differs" remount
+    # scenario reusing this same active credential needs it already
+    # "complete", exactly as a real, fully-settled first mount would be —
+    # otherwise the guard (correctly) blocks a remount for a credential
+    # whose OWN provisioning was never confirmed.
+    # Rollout-skew review — completing a storage.mount task directly (not
+    # through the real /complete endpoint) must ALSO stamp the "result" a
+    # genuinely-confirming NEW agent would send: RemountCoordinator's
+    # confirmation gate reads the "completed" event's "result" key (what the
+    # AGENT reported), never `options` (what the SERVER dispatched) — see
+    # that method's own comment. AASM's own #complete! bang method stages
+    # its event under "data", never "result" (System::Task#stage_event's
+    # default), so a bare start!+complete! here would silently never
+    # confirm anything post-review — this helper is the fix.
+    def complete_mount!(task)
+      task.start! if task.pending?
+      credential_id = task.options.dig("credential", "id")
+      task.update!(
+        status: "complete", progress: 100, completed_at: Time.current,
+        events: (task.events || []) + [ {
+          "type" => "completed", "message" => "ok",
+          "result" => { "mounted_credential_id" => credential_id },
+          "timestamp" => Time.current.iso8601
+        } ]
+      )
+    end
+
+    def settle_initial_mount!
+      smb_assignment # materialize — after_commit reconcile dispatches both tasks
+      smb_tasks.last&.tap { |t| t.start!; t.complete! }
+      complete_mount!(mount_tasks.last)
+    end
+
+    def latest_create_task_for(credential)
+      smb_tasks.where("options ->> 'action' = 'create'")
+               .where("options -> 'credential' ->> 'id' = ?", credential.id).last
+    end
+
+    # A genuine scheme-crossing rotation via the real #rotate! path — leaves
+    # `old_username`'s credential "rotating" (BLOCKER 3/rework fixture: NOT
+    # "revoked" — see CredentialIssuer#revoke!'s own comment) and its
+    # storage.smb_user.apply "create" task PENDING by default, so callers
+    # exercising BLOCKER 2's provisioning-race guard get it un-settled.
+    def rotate!(old_username: "n-legacyforced-ar#{SecureRandom.hex(4)}")
+      settle_initial_mount!
+      smb_assignment.update_columns(status: "mounted")
+      old_credential = smb_assignment.reload.active_credential
+      old_credential.update_columns(metadata: old_credential.metadata.merge("username" => old_username))
+      new_credential = System::Storage::CredentialIssuer.new(assignment: smb_assignment).rotate!(old_credential)
+      [ old_credential, new_credential ]
+    end
+
+    it "does NOT dispatch remount for the assignment's very first mount" do
+      # smb_assignment's own after_commit already dispatched the FIRST
+      # storage.mount task while materializing — inspect that one directly
+      # rather than triggering a second reconcile (which would hit the
+      # pending-task coalescing guard and dispatch nothing at all).
+      smb_assignment
+      task = mount_tasks.last
+      expect(task).to be_present
+      expect(task.options["remount"]).to be(false).or be_nil
+    end
+
+    # BLOCKER 3 (review) — a needless remount: the OLD signal
+    # (@previously_mounted, "this assignment has been mounted before") is
+    # gone entirely. A routine reconcile of an already-healthy, unchanged
+    # mount must never ask for remount:true.
+    it "does NOT remount when nothing rotated — mounted_credential_id already matches the credential being mounted" do
+      settle_initial_mount! # RemountCoordinator's completion hook already set mounted_credential_id here
+      smb_assignment.update_columns(status: "mounted")
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      expect(mount_tasks.order(:created_at).last.options["remount"]).to be(false).or be_nil
+    end
+
+    it "dispatches remount: true once mounted_credential_id genuinely differs from the credential being mounted" do
+      settle_initial_mount!
+      smb_assignment.update_columns(status: "mounted")
+      active = smb_assignment.reload.active_credential
+      stale = create(:system_storage_credential,
+        storage_assignment: smb_assignment, node_instance: node_instance, kind: active.kind, status: "rotating")
+      smb_assignment.update_columns(mounted_credential_id: stale.id)
+      before_ids = mount_tasks.pluck(:id)
+
+      described_class.reconcile_assignment!(smb_assignment)
+
+      new_task = mount_tasks.where.not(id: before_ids).last
+      expect(new_task).to be_present
+      expect(new_task.options["remount"]).to be true
+    end
+
+    # BLOCKER 2 (review) — a remount must never race ahead of the samba
+    # provisioning it depends on: reconcile! can rotate a credential (via
+    # ensure_credential!) and dispatch_mount! in the SAME tick — this guard
+    # is what stops that same-tick dispatch from racing the backend.
+    describe "provisioning-race guard" do
+      it "dispatches NO mount task while the smb create task for the new credential is still pending" do
+        _old, new_credential = rotate!
+        before_ids = mount_tasks.pluck(:id)
+
+        described_class.reconcile_assignment!(smb_assignment)
+
+        expect(mount_tasks.where.not(id: before_ids)).to be_empty
+        expect(latest_create_task_for(new_credential).status).to eq("pending")
+      end
+
+      it "dispatches exactly one remount once the smb create task completes" do
+        _old, new_credential = rotate!
+        before_ids = mount_tasks.pluck(:id)
+        described_class.reconcile_assignment!(smb_assignment) # no-ops per the guard above
+
+        task = latest_create_task_for(new_credential)
+        task.start!
+        task.complete! # RemountCoordinator's after_update_commit hook dispatches the remount here
+
+        new_mount_tasks = mount_tasks.where.not(id: before_ids)
+        expect(new_mount_tasks.count).to eq(1)
+        expect(new_mount_tasks.first.options["remount"]).to be true
+        expect(new_mount_tasks.first.options["credential"]["id"]).to eq(new_credential.id)
+      end
+
+      it "does not block forever when no smb_user.apply task exists at all for the credential (defensive)" do
+        # Via #dispatch_remount! directly (never routes through
+        # ensure_credential!/#redispatch_stalled_smb_credential!, which
+        # would otherwise dispatch one itself the moment it found none) —
+        # #smb_provisioning_confirmed? must treat "no task record names
+        # this credential" as confirmed, not as "wait forever".
+        settle_initial_mount!
+        smb_assignment.update_columns(status: "mounted")
+        smb_assignment.storage_credentials.update_all(status: "revoked")
+        active = create(:system_storage_credential,
+          storage_assignment: smb_assignment, node_instance: node_instance, kind: "cifs_user_pass", status: "active")
+        stale = create(:system_storage_credential,
+          storage_assignment: smb_assignment, node_instance: node_instance, kind: "cifs_user_pass", status: "rotating")
+        smb_assignment.update_columns(mounted_credential_id: stale.id)
+        before_ids = mount_tasks.pluck(:id)
+
+        described_class.dispatch_remount!(smb_assignment)
+
+        new_task = mount_tasks.where.not(id: before_ids).last
+        expect(new_task).to be_present
+        expect(new_task.options["remount"]).to be true
+        expect(new_task.options["credential"]["id"]).to eq(active.id)
+      end
+    end
+
+    describe "previous_credential_ids" do
+      it "carries every ROTATING credential's id (plural — rework hole (b))" do
+        before_ids = mount_tasks.pluck(:id)
+        old1, new1 = rotate!
+        latest_create_task_for(new1).tap { |t| t.start!; t.complete! } # dispatches the remount for new1
+
+        remount_task = mount_tasks.where.not(id: before_ids).last
+        expect(remount_task.options["previous_credential_ids"]).to contain_exactly(old1.id)
+      end
+
+      it "omits previous_credential_ids on a non-remount dispatch" do
+        smb_assignment
+        task = mount_tasks.last
+        expect(task.options).not_to have_key("previous_credential_ids")
+      end
+    end
+
+    describe ".dispatch_remount!" do
+      it "dispatches a remount using the assignment's current active_credential" do
+        settle_initial_mount!
+        smb_assignment.update_columns(status: "mounted")
+        active = smb_assignment.reload.active_credential
+        stale = create(:system_storage_credential,
+          storage_assignment: smb_assignment, node_instance: node_instance, kind: active.kind, status: "rotating")
+        smb_assignment.update_columns(mounted_credential_id: stale.id)
+        before_ids = mount_tasks.pluck(:id)
+
+        described_class.dispatch_remount!(smb_assignment)
+
+        new_task = mount_tasks.where.not(id: before_ids).last
+        expect(new_task).to be_present
+        expect(new_task.options["remount"]).to be true
+        expect(new_task.options["credential"]["id"]).to eq(active.id)
+      end
+
+      it "does nothing when the assignment has no active credential" do
+        settle_initial_mount!
+        smb_assignment.update_columns(status: "mounted")
+        smb_assignment.storage_credentials.update_all(status: "revoked")
+        before_count = mount_tasks.count
+
+        described_class.dispatch_remount!(smb_assignment)
+
+        expect(mount_tasks.count).to eq(before_count)
+      end
+    end
+
+    # IMP-e48612a32273 — the drift-detection safety net: reconcile_instance!
+    # (the heartbeat-triggered per-instance sweep) now also picks up a
+    # mounted assignment whose mounted_credential_id has drifted from its
+    # own active_credential, even though pending_reconcile alone would
+    # exclude it (status "mounted" is deliberately excluded there).
+    describe ".reconcile_instance! drift pickup" do
+      it "re-dispatches a mounted assignment whose mounted_credential_id no longer matches its active credential" do
+        settle_initial_mount!
+        smb_assignment.update_columns(status: "mounted")
+        active = smb_assignment.reload.active_credential
+        stale = create(:system_storage_credential,
+          storage_assignment: smb_assignment, node_instance: node_instance, kind: active.kind, status: "revoked")
+        smb_assignment.update_columns(mounted_credential_id: stale.id)
+        before_ids = mount_tasks.pluck(:id)
+
+        described_class.reconcile_instance!(node_instance)
+
+        expect(mount_tasks.where.not(id: before_ids)).not_to be_empty
+      end
+
+      it "does not re-dispatch a mounted assignment whose mounted_credential_id already matches" do
+        settle_initial_mount!
+        smb_assignment.update_columns(status: "mounted")
+        active = smb_assignment.reload.active_credential
+        smb_assignment.update_columns(mounted_credential_id: active.id)
+        before_count = mount_tasks.count
+
+        described_class.reconcile_instance!(node_instance)
+
+        expect(mount_tasks.count).to eq(before_count)
+      end
+    end
+  end
+
   # IMP-9ffb9b2407da — NFS counterpart of the SMB re-dispatch above. Reuses
   # the top-level `assignment`/`file_storage` (already NFS-configured).
   # Unlike SMB, the exports.apply payload names no credential in its shape

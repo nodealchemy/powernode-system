@@ -53,6 +53,63 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
     expect(::System::Storage::AssignmentReconciliationService).not_to have_received(:reconcile_assignment!)
   end
 
+  # IMP-e48612a32273 — the .or(mount_credential_mismatch) safety net: a
+  # MOUNTED assignment (never caught by pending_reconcile alone — see that
+  # scope's own comment) whose mounted_credential_id no longer matches its
+  # active_credential is a missed/never-fired remount-on-completion
+  # callback. Still gated on the SAME staleness window as every other
+  # signal this sensor emits (see #sense's own `.where("last_status_at
+  # IS NULL OR ...")`, applied AFTER the .or) — a freshly-mismatched row is
+  # picked up on the very next reconcile_instance! heartbeat regardless
+  # (no staleness filter there), so it isn't lost, just not this sensor's
+  # concern until it's also stale.
+  let(:mountable_file_storage) do
+    create(:file_storage, :nfs, :node_mountable, account: account,
+      configuration: {
+        "export_path" => "/srv/exports/drift-sensor", "mount_path" => "/srv/exports/drift-sensor",
+        "share_path" => "/srv/exports/drift-sensor", "server_address" => "127.0.0.1",
+        "export_host_node_instance_id" => create(:system_node_instance, account: account).id
+      })
+  end
+
+  def mounted_assignment_with_mismatch!(last_status_at:)
+    assignment = create(:system_storage_assignment, account: account, node_instance: instance,
+                         file_storage_id: mountable_file_storage.id)
+    assignment.storage_credentials.update_all(status: "revoked")
+    active = System::Storage::CredentialIssuer.new(assignment: assignment).issue!
+    stale_credential = create(:system_storage_credential,
+      storage_assignment: assignment, node_instance: instance, kind: active.kind, status: "revoked")
+    assignment.update_columns(status: "mounted", mounted_credential_id: stale_credential.id, last_status_at: last_status_at)
+    assignment
+  end
+
+  it "emits a drift signal for a MOUNTED assignment with a stale mounted_credential_id, past the window" do
+    assignment = mounted_assignment_with_mismatch!(last_status_at: 10.minutes.ago)
+
+    signals = sensor.sense
+
+    expect(signals.size).to eq(1)
+    expect(signals.first.kind).to eq("system.storage_assignment_drift")
+    expect(signals.first.payload["storage_assignment_id"] || signals.first.payload[:storage_assignment_id])
+      .to eq(assignment.id)
+  end
+
+  it "does not emit for a MOUNTED assignment with a stale mounted_credential_id that is still fresh" do
+    mounted_assignment_with_mismatch!(last_status_at: 1.minute.ago)
+
+    expect(sensor.sense).to be_empty
+  end
+
+  it "does not emit for a MOUNTED assignment whose mounted_credential_id already matches" do
+    assignment = create(:system_storage_assignment, account: account, node_instance: instance,
+                         file_storage_id: mountable_file_storage.id)
+    assignment.storage_credentials.update_all(status: "revoked")
+    active = System::Storage::CredentialIssuer.new(assignment: assignment).issue!
+    assignment.update_columns(status: "mounted", mounted_credential_id: active.id, last_status_at: 10.minutes.ago)
+
+    expect(sensor.sense).to be_empty
+  end
+
   # IMP-8d444c6437a3: system.storage_assignment_reconcile seeds fine but was
   # never added to the core autonomy registry in the Engine, so
   # AutonomyActions#update rejects any operator disposition change for it

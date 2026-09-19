@@ -67,8 +67,9 @@ module System
           credential.mark_rotating!
           new_cred = issue_credential_row!
 
+          smb_scheme_crossing = false
           if @storage.smb?
-            rotate_smb_user!(credential: credential, new_credential: new_cred)
+            smb_scheme_crossing = rotate_smb_user!(credential: credential, new_credential: new_cred)
           else
             materialize_backend_side!(new_cred)
           end
@@ -84,7 +85,14 @@ module System
           # incorrect. Chose ONE rebuild per rotation over two idempotent
           # ones since avoiding it is this cheap; skipped only for NFS
           # (the flag has no effect on the SMB branch).
-          revoke!(credential, successor: new_cred, skip_nfs_reconcile: true)
+          #
+          # defer_smb_deprovision: IMP-e48612a32273 Amendment A — when this
+          # rotation crosses samba-username schemes, skip the delete-old-user
+          # dispatch here entirely; RemountCoordinator dispatches it later,
+          # once (and only if) the consumer's own remount completes. A
+          # same-username rotation has no old identity to retire, so this is
+          # always false there — #revoke! runs exactly as before increment 3.
+          revoke!(credential, successor: new_cred, skip_nfs_reconcile: true, defer_smb_deprovision: smb_scheme_crossing)
           new_cred
         end
       end
@@ -155,12 +163,24 @@ module System
       # ActiveRecord::Base.transaction without requires_new: true joins an
       # existing transaction as a savepoint rather than opening a second
       # real one, so this is a no-op for the two callers already inside one.
-      def revoke!(credential, successor: nil, defer_nfs_reconcile: false, skip_nfs_reconcile: false)
+      def revoke!(credential, successor: nil, defer_nfs_reconcile: false, skip_nfs_reconcile: false, defer_smb_deprovision: false)
         ActiveRecord::Base.transaction do
-          credential.revoke!
+          # IMP-e48612a32273 (review correction) — a scheme-crossing SMB
+          # rotation's outgoing credential stays "rotating" (set by #rotate!'s
+          # own #mark_rotating! earlier), NOT "revoked", until its samba user
+          # is ACTUALLY retired (#retire_rotating_smb_credentials!, called by
+          # RemountCoordinator once the consumer's remount confirms).
+          # Flipping to "revoked" here while the samba identity is still
+          # alive would let StorageCredential#deprovision_before_destroy!'s
+          # status guard (issued/active/rotating) SKIP it if the assignment
+          # is torn down mid-rotation — leaking a live backend identity
+          # forever, since nothing else would ever retire it. Leaving it
+          # "rotating" means that guard, unchanged, already covers teardown-
+          # mid-rotation on its own; no special case needed there.
+          credential.revoke! unless defer_smb_deprovision
 
           deprovision!(credential, successor: successor, defer_nfs_reconcile: defer_nfs_reconcile,
-                                    skip_nfs_reconcile: skip_nfs_reconcile)
+                                    skip_nfs_reconcile: skip_nfs_reconcile, defer_smb_deprovision: defer_smb_deprovision)
 
           handle = credential.metadata["export_handle"] || credential.metadata["smb_user_handle"] || credential.metadata["sts_handle"]
           @storage.storage_provider.revoke_node_credential(handle) if handle
@@ -212,13 +232,18 @@ module System
         ::System::StorageCredential.find(credential.id)
       end
 
-      def deprovision!(credential, successor:, defer_nfs_reconcile: false, skip_nfs_reconcile: false)
+      def deprovision!(credential, successor:, defer_nfs_reconcile: false, skip_nfs_reconcile: false, defer_smb_deprovision: false)
         case @storage.provider_type
         when "nfs"
           return if defer_nfs_reconcile || skip_nfs_reconcile
 
           NfsExportManager.new(assignment: @assignment).revoke!(credential: credential)
         when "smb"
+          # IMP-e48612a32273 Amendment A — checked BEFORE the same-backend
+          # guard below: a deferred delete isn't "not needed yet", it's
+          # "not decided yet" — the decision (and the guard check) happens
+          # later, in RemountCoordinator, once the consumer has confirmed.
+          return if defer_smb_deprovision
           return if smb_username_superseded?(credential, successor)
 
           SmbUserManager.new(assignment: @assignment).deprovision_user!(credential: credential)
@@ -388,16 +413,76 @@ module System
       # alone until ITS OWN next scheduled rotation (#ensure_credential!'s
       # expiry?/needs_rotation? check, untouched by this change) decides to
       # rotate it — no sweep is dispatched here or anywhere else.
+      #
+      # Returns whether this was a SCHEME-CROSSING rotation (old/new
+      # usernames differ) — IMP-e48612a32273 Amendment A: #rotate! uses
+      # this to decide whether an old-user retire is owed at all (a
+      # same-username rotation has nothing to retire) and, if so, to defer
+      # it until the consumer's remount confirms (see #rotate!'s own
+      # comment and RemountCoordinator).
       def rotate_smb_user!(credential:, new_credential:)
         old_username = credential.vault_credentials["username"]
         new_username = new_credential.vault_credentials["username"]
 
         if old_username == new_username
           SmbUserManager.new(assignment: @assignment).rotate_user!(credential: credential, new_credential: new_credential)
+          false
         else
           SmbUserManager.new(assignment: @assignment).provision_user!(credential: new_credential)
+          true
         end
       end
+
+      public
+
+      # IMP-e48612a32273 (review correction, replaces the earlier metadata-
+      # breadcrumb design) — the deferred half of a scheme-crossing
+      # rotation's #deprovision!. Called ONLY by
+      # System::Storage::RemountCoordinator, once a storage.mount task
+      # confirms the consumer is actually running on `confirmed_credential`
+      # (StorageAssignment#mounted_credential_id == the assignment's current
+      # active_credential) — never from #rotate! itself.
+      #
+      # STATE-DERIVED, not breadcrumb-derived: the retire set is simply
+      # "every OTHER credential on this assignment still 'rotating'" (see
+      # #revoke!'s own comment for why the outgoing credential of a scheme-
+      # crossing rotation stays "rotating" instead of "revoked" until this
+      # runs). This also naturally covers rotate-rotate-confirm: if the
+      # assignment rotated AGAIN before the first rotation's remount ever
+      # confirmed, two (or more) credentials can be "rotating"
+      # simultaneously — an intermediate one that was never itself mounted
+      # includes — and confirming the LATEST one retires every earlier one
+      # in the same pass.
+      #
+      # Re-runs #smb_username_superseded? per credential, at THIS later
+      # point, rather than trusting whatever was true back at each rotate!
+      # time: something else (another rotation, another assignment sharing
+      # this backend) could have changed in the interim, and this check is
+      # the one that actually gates each real delete.
+      #
+      # COALESCING / IDEMPOTENCY: each candidate's status is re-checked
+      # UNDER ITS OWN ROW LOCK before acting — the query that finds
+      # candidates runs outside any lock, so two callers racing this method
+      # (e.g. a duplicate task-completion event) could both see the same
+      # still-"rotating" row; the second to acquire the lock finds it
+      # already "revoked" and no-ops. A second call after the first has
+      # fully committed finds nothing "rotating" at all (the query itself
+      # comes back empty), so it is a no-op end to end.
+      def retire_rotating_smb_credentials!(confirmed_credential)
+        return unless @storage.smb?
+
+        @assignment.storage_credentials.where(status: "rotating")
+                   .where.not(id: confirmed_credential.id).find_each do |old_credential|
+          old_credential.with_lock do
+            next unless old_credential.status == "rotating"
+
+            deprovision!(old_credential, successor: confirmed_credential)
+            old_credential.revoke!
+          end
+        end
+      end
+
+      private
     end
   end
 end

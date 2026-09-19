@@ -12,7 +12,13 @@ import (
 // MountCredsDir is where we stage transient credential files for the
 // kernel-mode mount(8) helpers (e.g. CIFS credentials=...). Lives on
 // tmpfs so contents never hit persistent disk; mode 0600 per file.
-const MountCredsDir = "/run/sdwan/mount-creds"
+//
+// A var rather than a const ONLY so the package's own tests can redirect
+// the write into t.TempDir() and assert, on real files, remount's
+// write-new/remove-old behavior (IMP-e48612a32273) — the same test-seam
+// shape as `var SystemdUnitDir` in systemd.go and `var ExportsDir` in
+// exports.go. Production never reassigns it.
+var MountCredsDir = "/run/sdwan/mount-creds"
 
 // fetchCredential calls the node_api credential endpoint and unpacks
 // the response envelope. Returns the decoded payload bytes (so the

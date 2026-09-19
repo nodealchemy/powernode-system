@@ -111,7 +111,7 @@ func TestApplyRefusesUnitNameEscapingUnitDir(t *testing.T) {
 	task.UnitName = "../../escaped.mount"
 
 	rec := &mount.RecorderRunner{}
-	err := Apply(context.Background(), rec, nil, task)
+	_, err := Apply(context.Background(), rec, nil, task)
 
 	if err == nil {
 		t.Fatal("expected Apply to refuse a unit_name that escapes the unit directory")
@@ -137,7 +137,7 @@ func TestApplyRefusesUnitNameNamingAServiceUnit(t *testing.T) {
 	task.UnitName = mountUnitPrefix + "rails.service"
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err == nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err == nil {
 		t.Fatal("expected Apply to refuse a non-.mount unit_name")
 	}
 	if entries, _ := os.ReadDir(unitDir); len(entries) != 0 {
@@ -165,7 +165,7 @@ func TestApplyRefusesUnitNameWithoutThePlatformPrefix(t *testing.T) {
 		task.UnitName = name
 
 		rec := &mount.RecorderRunner{}
-		if err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+		if _, err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
 			t.Fatalf("expected a refusal for unprefixed unit_name %q, got %v", name, err)
 		}
 		if entries, _ := os.ReadDir(unitDir); len(entries) != 0 {
@@ -184,7 +184,7 @@ func TestApplyRefusesEmptyUnitName(t *testing.T) {
 	task.UnitName = ""
 
 	rec := &mount.RecorderRunner{}
-	err := Apply(context.Background(), rec, nil, task)
+	_, err := Apply(context.Background(), rec, nil, task)
 	if !errors.Is(err, taskguard.ErrRefused) {
 		t.Fatalf("expected a taskguard refusal for an empty unit_name, got %v", err)
 	}
@@ -233,7 +233,7 @@ func TestApplyAcceptsRequiresWGWithNoInterfaceHint(t *testing.T) {
 	task.WGInterfaceHint = ""
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err != nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err != nil {
 		t.Fatalf("the LAN-fallback mount shape was refused: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(unitDir, task.UnitName))
@@ -256,11 +256,48 @@ func TestApplyRefusesCredentialFileRecipeWithNoCredentialID(t *testing.T) {
 	task.Credential.ID = ""
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+	if _, err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
 		t.Fatalf("expected a refusal for a cifs mount with no credential id, got %v", err)
 	}
 	if len(rec.Invocations) != 0 {
 		t.Fatalf("expected no actuation after refusal, got %+v", rec.Invocations)
+	}
+}
+
+// IMP-e48612a32273 (Amendment C) — each PreviousCredentialIDs entry (plural,
+// server review correction) becomes a filename under /run/sdwan/mount-creds
+// exactly like Credential.ID, via os.Remove in cifs.go's remount path. Same
+// guard, same reason: an unvalidated value reaching os.Remove is a
+// path-traversal / arbitrary-file-delete primitive.
+func TestApplyRefusesPathTraversalInPreviousCredentialIDs(t *testing.T) {
+	redirectUnitDir(t)
+
+	task := legitMountTask(t)
+	task.Recipe.Type = "cifs"
+	task.Remount = true
+	task.PreviousCredentialIDs = []string{"019f7cb5-3858-7000-8000-0000000000c2", "../../etc/passwd"}
+
+	rec := &mount.RecorderRunner{}
+	if _, err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a path-traversal previous_credential_ids entry, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected no actuation after refusal, got %+v", rec.Invocations)
+	}
+}
+
+// Well-formed PreviousCredentialIDs (or none at all — the common,
+// non-remount case) must not be refused.
+func TestApplyAcceptsWellFormedPreviousCredentialIDs(t *testing.T) {
+	redirectUnitDir(t)
+
+	task := legitMountTask(t)
+	task.Recipe.Type = "cifs"
+	task.Remount = true
+	task.PreviousCredentialIDs = []string{"019f7cb5-3858-7000-8000-0000000000c2", "019f7cb5-3858-7000-8000-0000000000c3"}
+
+	if err := task.Validate(); err != nil {
+		t.Fatalf("expected well-formed previous_credential_ids to validate, got %v", err)
 	}
 }
 
@@ -273,7 +310,7 @@ func TestApplyAcceptsNFSMountWithNoCredentialID(t *testing.T) {
 	task.Credential = CredentialRef{}
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err != nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err != nil {
 		t.Fatalf("an nfs4 mount with no credential id was refused: %v", err)
 	}
 }
@@ -413,7 +450,7 @@ func TestApplyRefusesMountOptionContainingNewline(t *testing.T) {
 	task.Options = append(task.Options, "rw\nZZInjectedDirective=1")
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err == nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err == nil {
 		t.Fatal("expected Apply to refuse a mount option containing a newline")
 	}
 
@@ -438,7 +475,7 @@ func TestApplyRefusesWGInterfaceHintContainingNewline(t *testing.T) {
 	task.WGInterfaceHint = "wg-sdwan-abc123\nZZInjectedDirective=1"
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err == nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err == nil {
 		t.Fatal("expected Apply to refuse a wg_interface_hint containing a newline")
 	}
 	if body, readErr := os.ReadFile(filepath.Join(unitDir, "powernode-storage-mnt-data.mount")); readErr == nil {
@@ -455,7 +492,7 @@ func TestApplyRefusesMountPathMaskingEtc(t *testing.T) {
 	task.MountPath = "/etc" // Where=/etc masks the node's configuration tree
 
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err == nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err == nil {
 		t.Fatal("expected Apply to refuse mount_path /etc")
 	}
 	if entries, _ := os.ReadDir(unitDir); len(entries) != 0 {
@@ -724,7 +761,7 @@ func TestApplyAcceptsLegitimateMountTask(t *testing.T) {
 
 	task := legitMountTask(t)
 	rec := &mount.RecorderRunner{}
-	if err := Apply(context.Background(), rec, nil, task); err != nil {
+	if _, err := Apply(context.Background(), rec, nil, task); err != nil {
 		t.Fatalf("legitimate mount task was refused: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(unitDir, task.UnitName))

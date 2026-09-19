@@ -133,10 +133,22 @@ module System
     # keep the destroy alive. A savepoint rollback is scoped to just this
     # block, leaving the outer destroy transaction usable.
     def deprovision_before_destroy!
-      return unless %w[issued active rotating].include?(status)
-
       assignment = storage_assignment
       storage = assignment&.file_storage
+
+      # IMP-e48612a32273 (review correction) — teardown-mid-rotation: a
+      # scheme-crossing rotation's outgoing credential now stays "rotating"
+      # (not "revoked") until the consumer's remount confirms — see
+      # CredentialIssuer#revoke!'s own comment for why. That means THIS
+      # pre-existing guard (issued/active/rotating) already covers a
+      # "rotating" credential whose assignment is destroyed before that
+      # confirmation ever arrives: it falls straight through to the normal
+      # #revoke! call below, exactly like any other live credential being
+      # torn down, with no special case needed. (An earlier version of this
+      # method added a breadcrumb-specific pre-check here; the breadcrumb
+      # design was replaced by the state-derived "rotating" approach, which
+      # made that pre-check unnecessary.)
+      return unless %w[issued active rotating].include?(status)
       return unless storage
 
       nfs_teardown = storage.nfs?

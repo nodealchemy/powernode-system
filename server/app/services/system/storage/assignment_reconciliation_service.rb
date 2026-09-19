@@ -23,8 +23,15 @@ module System
       BACKOFF_MAX = 30.minutes
 
       def self.reconcile_instance!(instance)
+        # IMP-e48612a32273 — .or(mount_credential_mismatch) is the safety
+        # net for a missed/never-fired remount-on-completion callback: a
+        # mounted assignment whose mounted_credential_id has drifted from
+        # its own active_credential needs re-dispatching even though
+        # pending_reconcile alone would skip it (mounted is excluded there
+        # on purpose — see that scope's own comment).
         ::System::StorageAssignment
           .pending_reconcile
+          .or(::System::StorageAssignment.mount_credential_mismatch)
           .where(node_instance_id: instance.id)
           .find_each { |a| reconcile_assignment!(a) }
       end
@@ -300,11 +307,61 @@ module System
         end
       end
 
+      # remount (IMP-e48612a32273) — a plain `systemctl start` on an
+      # already-active .mount unit is a no-op, which is the bug this whole
+      # task exists to fix, so a dispatch for an assignment already
+      # confirmed-mounted on a DIFFERENT credential must ask the agent to
+      # restart instead. Scoped to SMB specifically: NFS auth is peer-IP/
+      # server-side — nothing client-local ever goes stale on an NFS
+      # credential rotation — so forcing a restart there would only add
+      # EBUSY risk with no benefit.
+      #
+      # BLOCKER 3 (review correction) — the SOLE signal is now
+      # mounted_credential_id present and DIFFERENT from the credential
+      # about to be dispatched. The old second signal ("this assignment has
+      # been mounted/degraded before", @previously_mounted) is gone
+      # entirely: it fired on every routine reconcile of an already-healthy
+      # mount even when the credential hadn't changed at all (e.g. a
+      # stalled-task re-dispatch), forcing a needless restart. A confirmed
+      # mounted_credential_id mismatch is both necessary AND sufficient on
+      # its own — it already implies "this has been mounted before with
+      # something else", so nothing is lost by dropping the other signal.
+      #
+      # BLOCKER 2 (review) — a remount must never race ahead of the samba
+      # provisioning it depends on: reconcile! can rotate a credential (via
+      # ensure_credential!) and call this method in the SAME tick, dispatching
+      # a remount to the CONSUMER before the backend has even run
+      # samba-tool. #smb_provisioning_confirmed? refuses to dispatch
+      # anything at all until the latest storage.smb_user.apply task naming
+      # this credential is "complete" — RemountCoordinator
+      # #dispatch_remount_for_completed_smb_task! is what actually dispatches
+      # it once that task completes.
+      #
+      # previous_credential_ids (rework hole (b), review correction — plural,
+      # array, derived from LIVE STATE, not a metadata breadcrumb): every
+      # credential on this assignment still "rotating" at dispatch time.
+      # Plural rather than "just the latest" because rotate-rotate-confirm
+      # can leave more than one stale cred file on the agent (an
+      # intermediate rotation that was never itself mounted still wrote one)
+      # — cleaning up all of them in one remount avoids a bounded but real
+      # tmpfs leak, and costs the agent nothing beyond a loop instead of a
+      # single Remove call.
       def dispatch_mount!(credential:, encryption_key:)
         return if mount_task_already_pending?
 
+        remount = !!(@assignment.file_storage&.smb? &&
+          @assignment.mounted_credential_id.present? &&
+          @assignment.mounted_credential_id != credential.id)
+
+        if remount
+          return unless smb_provisioning_confirmed?(credential)
+        end
+
+        previous_credential_ids = remount ? @assignment.storage_credentials.where(status: "rotating").pluck(:id) : []
+
         payload = TaskPayloadBuilder.build_mount_payload(
-          assignment: @assignment, credential: credential, encryption_key: encryption_key
+          assignment: @assignment, credential: credential, encryption_key: encryption_key,
+          remount: remount, previous_credential_ids: previous_credential_ids
         )
 
         ::System::Task.create!(
@@ -315,6 +372,57 @@ module System
           status: "pending"
         )
       end
+
+      # BLOCKER 2 — true when there's nothing to wait for (no
+      # storage.smb_user.apply task has ever named this credential — should
+      # not normally happen for a genuine rotation, but a missing task
+      # record must not block remounts forever) OR the latest one naming it
+      # has actually completed. False (skip) for pending/scheduled/running/
+      # failed/cancelled — RemountCoordinator's own completion hook is what
+      # dispatches the remount once it lands.
+      def smb_provisioning_confirmed?(credential)
+        task = ::System::Task
+          .where(command: "storage.smb_user.apply", account_id: @assignment.account_id)
+          .where(
+            "options -> 'credential' ->> 'id' = :id OR options -> 'new_credential' ->> 'id' = :id",
+            id: credential.id
+          )
+          .order(created_at: :desc)
+          .first
+
+        task.nil? || task.status == "complete"
+      end
+
+      public
+
+      # IMP-e48612a32273 — the one PUBLIC entry point for "make sure this
+      # assignment's mount matches its current credential", used by
+      # System::Storage::RemountCoordinator after a samba provisioning task
+      # completes. Deliberately NOT `.send(:dispatch_mount!, ...)` from
+      # outside this class — a real public method so the seam is visible
+      # and typed, not a private-method reach-around.
+      #
+      # Resolves its own credential/encryption_key rather than taking them
+      # as arguments: by the time this runs, #ensure_credential! has
+      # already run (as part of the #rotate! that triggered the samba task
+      # this follows), so @assignment.active_credential IS the credential
+      # that needs mounting. #ensure_encryption_key! is idempotent (returns
+      # the EXISTING key if one is already escrowed; only creates one for
+      # an assignment that has never had one) so calling it again here for
+      # an already-mounted assignment is a safe no-op, not a second mint.
+      def self.dispatch_remount!(assignment)
+        new(assignment: assignment).dispatch_remount!
+      end
+
+      def dispatch_remount!
+        credential = @assignment.active_credential
+        return unless credential
+
+        encryption_key = ensure_encryption_key! if @assignment.effective_encryption_mode != "none"
+        dispatch_mount!(credential: credential, encryption_key: encryption_key)
+      end
+
+      private
 
       # Reconcile can be triggered from three independent sources
       # (after_commit, heartbeat missing-mount, drift sweep) that can fire

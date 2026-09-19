@@ -523,10 +523,21 @@ RSpec.describe System::Storage::CredentialIssuer do
       expect(credential_b.reload.status).to eq("active") # sibling's password never touched
     end
 
-    # The delete of the OLD username still happens once nothing else needs
-    # it — unchanged from increment 1, just now reached via #rotate! taking
-    # the provision-then-revoke path instead of set_password.
-    it "still deletes the old username after rotation once no sibling needs it" do
+    # IMP-e48612a32273 (review correction, state-derived design — no
+    # metadata breadcrumb) — a SCHEME-CROSSING rotation (this one:
+    # shared_username differs from the newly-derived one) no longer deletes
+    # the old samba user at rotate! time, even once no sibling needs it, AND
+    # its DB #status stays "rotating" rather than flipping to "revoked" (the
+    # concrete bug this correction fixes: a "revoked" row whose samba user
+    # is still live would be SKIPPED by StorageCredential
+    # #deprovision_before_destroy!'s status guard if the assignment were
+    # torn down mid-rotation). The old identity stays alive until the
+    # CONSUMER confirms its own remount
+    # (System::Storage::RemountCoordinator, exercised below via the same
+    # #retire_rotating_smb_credentials! entry point that callback uses) —
+    # never immediately, so a consumer still mid-reconnect on the old
+    # username isn't locked out from under it.
+    it "defers the old username's delete until the consumer's remount confirms, leaving the old credential 'rotating'" do
       storage_a = smb_storage_for(backend_instance.id, share: "share-g")
       shared_username = "n-legacyshared0004"
       assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-g", username: shared_username)
@@ -534,10 +545,99 @@ RSpec.describe System::Storage::CredentialIssuer do
       before_ids = smb_tasks.pluck(:id)
       described_class.new(assignment: assignment_a).rotate!(credential_a)
 
+      expect(smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'")).to be_empty
+      expect(credential_a.reload.status).to eq("rotating") # NOT "revoked" — see the comment above
+    end
+
+    it "dispatches the old username's delete once the consumer's remount confirms (#retire_rotating_smb_credentials!)" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-h")
+      shared_username = "n-legacyshared0005"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-h", username: shared_username)
+
+      new_cred = described_class.new(assignment: assignment_a).rotate!(credential_a)
+
+      before_ids = smb_tasks.pluck(:id)
+      described_class.new(assignment: assignment_a).retire_rotating_smb_credentials!(new_cred)
+
       delete_task = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'").last
       expect(delete_task).to be_present
       expect(delete_task.options["credential"]["id"]).to eq(credential_a.id)
       expect(credential_a.reload.status).to eq("revoked")
+    end
+
+    it "is idempotent: calling #retire_rotating_smb_credentials! twice dispatches only ONE delete (coalescing)" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-i")
+      shared_username = "n-legacyshared0006"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-i", username: shared_username)
+
+      new_cred = described_class.new(assignment: assignment_a).rotate!(credential_a)
+
+      before_ids = smb_tasks.pluck(:id)
+      issuer = described_class.new(assignment: assignment_a)
+      issuer.retire_rotating_smb_credentials!(new_cred)
+      issuer.retire_rotating_smb_credentials!(new_cred) # second completion racing/duplicating the first
+
+      expect(smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'").count).to eq(1)
+    end
+
+    it "does not dispatch a delete for a SAME-username rotation (no old identity to retire)" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-j")
+      # No forced username override here: real derivation for the SAME
+      # assignment/backend on a fresh credential produces the SAME username
+      # as the one it replaces (see the "shares that username" spec above),
+      # i.e. a same-scheme rotation — nothing to defer.
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-j")
+
+      new_cred = described_class.new(assignment: assignment_a).rotate!(credential_a)
+
+      expect(credential_a.reload.status).to eq("revoked") # same-username: revoked immediately, exactly as before this task
+
+      before_ids = smb_tasks.pluck(:id)
+      described_class.new(assignment: assignment_a).retire_rotating_smb_credentials!(new_cred)
+      expect(smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'")).to be_empty
+    end
+
+    it "does not re-delete an old username a SIBLING still shares, even after the deferred retire runs" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-k")
+      storage_b = smb_storage_for(backend_instance.id, share: "share-l")
+      shared_username = "n-legacyshared0007"
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-k", username: shared_username)
+      _assignment_b, credential_b = build_assignment_and_credential(storage_b, mount_path: "/mnt/share-l", username: shared_username)
+
+      new_cred = described_class.new(assignment: assignment_a).rotate!(credential_a)
+
+      before_ids = smb_tasks.pluck(:id)
+      described_class.new(assignment: assignment_a).retire_rotating_smb_credentials!(new_cred)
+
+      expect(smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'")).to be_empty
+      expect(credential_b.reload.status).to eq("active") # sibling's samba user untouched
+    end
+
+    # Pin (2), review — rotated again before confirmation: two (or more)
+    # credentials can be "rotating" simultaneously, including an
+    # intermediate one that was never itself mounted. Confirming the LATEST
+    # one must retire EVERY earlier one in a single pass.
+    it "rotate, rotate again before confirmation, then confirm: both old samba users are deleted, the new one survives" do
+      storage_a = smb_storage_for(backend_instance.id, share: "share-m")
+      assignment_a, credential_a = build_assignment_and_credential(storage_a, mount_path: "/mnt/share-m", username: "n-legacyforced-rr01")
+
+      cred_b = described_class.new(assignment: assignment_a).rotate!(credential_a)
+      cred_b.update_columns(metadata: cred_b.metadata.merge("username" => "n-legacyforced-rr02"))
+      cred_c = described_class.new(assignment: assignment_a).rotate!(cred_b)
+
+      expect(credential_a.reload.status).to eq("rotating")
+      expect(cred_b.reload.status).to eq("rotating")
+      expect(cred_c.reload.status).to eq("active")
+
+      before_ids = smb_tasks.pluck(:id)
+      described_class.new(assignment: assignment_a).retire_rotating_smb_credentials!(cred_c)
+
+      delete_tasks = smb_tasks.where.not(id: before_ids).where("options ->> 'action' = 'delete'")
+      deleted_ids = delete_tasks.map { |t| t.options["credential"]["id"] }
+      expect(deleted_ids).to contain_exactly(credential_a.id, cred_b.id)
+      expect(credential_a.reload.status).to eq("revoked")
+      expect(cred_b.reload.status).to eq("revoked")
+      expect(cred_c.reload.status).to eq("active") # survivor untouched
     end
   end
 end

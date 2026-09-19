@@ -45,6 +45,13 @@ module System
     has_many :storage_credentials, class_name: "System::StorageCredential", dependent: :destroy
     has_many :mount_encryption_keys, class_name: "System::MountEncryptionKey", dependent: :destroy
 
+    # IMP-e48612a32273 — the confirmation record for what the consumer is
+    # ACTUALLY mounted with; see the migration's own comment for why this is
+    # distinct from #active_credential (the DB's notion of "should be
+    # mounted with") and what it gates. optional: true — unset until the
+    # first storage.mount task for this assignment completes.
+    belongs_to :mounted_credential, class_name: "System::StorageCredential", optional: true
+
     validates :file_storage_id, presence: true
     validates :mount_path, presence: true, format: { with: %r{\A/[\w/.\-]+\z}, message: "must be an absolute path" }
     validates :status, inclusion: { in: STATUSES }
@@ -63,6 +70,38 @@ module System
     scope :auto_mounting, -> { enabled.where(auto_mount: true) }
     scope :pending_reconcile, -> { enabled.where(status: %w[pending provisioning degraded failed]) }
     scope :mounted, -> { where(status: "mounted") }
+
+    # IMP-e48612a32273 — the drift-detection half of the remount fix.
+    # pending_reconcile deliberately excludes "mounted" (a healthy, already-
+    # mounted assignment isn't swept), and nothing about a credential
+    # rotation touches an ASSIGNMENT field, so a rotation alone never
+    # re-admits a mounted row to reconcile. This scope is the safety net:
+    # a mounted, enabled assignment whose mounted_credential_id no longer
+    # matches its own #active_credential (same status filter/ordering as
+    # that method, expressed in SQL) needs re-dispatching even though
+    # nothing on the assignment record itself changed. Sweeps that already
+    # union pending_reconcile (reconcile_instance!, StorageAssignmentDriftSensor)
+    # also union this one, so a missed/never-fired remount-on-completion
+    # callback is still eventually repaired.
+    # NULL mounted_credential_id is deliberately EXCLUDED, not treated as a
+    # mismatch (BLOCKER 1, review) — the migration backfills every existing
+    # mounted/degraded row, but NULL IS DISTINCT FROM <anything non-null> is
+    # TRUE in Postgres, so a naive version of this predicate would have
+    # matched (and remounted) every already-working mount in the fleet on
+    # the very first drift tick after deploy for any row the backfill
+    # couldn't resolve. NULL here means "never confirmed" (a row the
+    # backfill legitimately skipped, or a genuinely new assignment whose
+    # first storage.mount hasn't completed yet) — that is reconcile!'s and
+    # the ordinary first-mount path's job, not this drift scope's.
+    scope :mount_credential_mismatch, -> do
+      enabled.mounted.where.not(mounted_credential_id: nil).where(
+        "mounted_credential_id IS DISTINCT FROM (" \
+        "SELECT id FROM system_storage_credentials " \
+        "WHERE storage_assignment_id = system_storage_assignments.id " \
+        "AND status IN ('issued', 'active') " \
+        "ORDER BY created_at DESC LIMIT 1)"
+      )
+    end
     scope :chown_in_flight, -> { where(chown_state: %w[pending running]) }
 
     before_update :capture_pending_chown,

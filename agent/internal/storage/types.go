@@ -25,6 +25,25 @@ type MountTask struct {
 	// Never sent by the platform (json:"-"); set by mountObject before writeMountUnit.
 	SystemdType string `json:"-"`
 	SystemdWhat string `json:"-"`
+
+	// Remount (IMP-e48612a32273) — `systemctl start` on an already-active
+	// .mount unit is a no-op, so a credential rotation's rewritten unit
+	// file/cred file are never picked up without this. When true, mountCIFS
+	// restarts the unit instead of starting it. Currently only meaningful
+	// for cifs (see agent/internal/storage/cifs.go); NFS auth is peer-IP/
+	// server-side and never needs a client-local remount.
+	Remount bool `json:"remount,omitempty"`
+
+	// PreviousCredentialIDs, present only on a remount, names EVERY
+	// credential this one is REPLACING (server review correction — plural:
+	// a rotate-rotate-confirm sequence can leave more than one stale cred
+	// file on this node, since an intermediate rotation that was never
+	// itself mounted still wrote one). On a successful restart, mountCIFS
+	// removes each one's /run/sdwan/mount-creds/<id>.cred file — never on
+	// failure, so a failed restart leaves the old and new cred files all in
+	// place (the old mount, if still active, keeps working on its existing
+	// session).
+	PreviousCredentialIDs []string `json:"previous_credential_ids,omitempty"`
 }
 
 // MountRecipe is the per-mount-type instruction set built by the

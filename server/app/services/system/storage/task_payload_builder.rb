@@ -11,9 +11,10 @@ module System
     class TaskPayloadBuilder
       MOUNT_UNIT_PREFIX = "powernode-storage-"
 
-      def self.build_mount_payload(assignment:, credential:, encryption_key: nil)
+      def self.build_mount_payload(assignment:, credential:, encryption_key: nil, remount: false, previous_credential_ids: [])
         new(assignment: assignment).build_mount_payload(
-          credential: credential, encryption_key: encryption_key
+          credential: credential, encryption_key: encryption_key,
+          remount: remount, previous_credential_ids: previous_credential_ids
         )
       end
 
@@ -34,9 +35,23 @@ module System
         @storage = storage || assignment&.file_storage
       end
 
-      def build_mount_payload(credential:, encryption_key: nil)
+      # remount / previous_credential_ids (IMP-e48612a32273) — ids only,
+      # never secret material: `credential` above already only ever carries
+      # id/kind/url (the agent fetches the actual password via that url,
+      # through node_api, exactly as on a first mount). remount tells the
+      # agent to `systemctl restart` instead of `systemctl start` — a start
+      # on an already-active .mount unit is a no-op, which is the whole bug
+      # this task exists to fix. previous_credential_ids (plural — rework
+      # hole (b), review correction: derived from every credential still
+      # "rotating" on this assignment, not a single metadata breadcrumb, so
+      # rotate-rotate-confirm cleans up every stale cred file in one
+      # remount, not just the latest) lets the agent clean up those OLD
+      # credential files (keyed by credential id under
+      # /run/sdwan/mount-creds) once — and only once — the restart actually
+      # succeeds; see agent/internal/storage/cifs.go.
+      def build_mount_payload(credential:, encryption_key: nil, remount: false, previous_credential_ids: [])
         recipe = recipe_for(@assignment)
-        {
+        payload = {
           assignment_id: @assignment.id,
           unit_name: systemd_unit_for(@assignment),
           mount_path: @assignment.mount_path,
@@ -49,8 +64,11 @@ module System
           },
           encryption: encryption_payload(encryption_key),
           requires_wg_interface: requires_wg?(recipe),
-          wg_interface_hint: wg_interface_hint
+          wg_interface_hint: wg_interface_hint,
+          remount: remount
         }
+        payload[:previous_credential_ids] = previous_credential_ids if previous_credential_ids.present?
+        payload
       end
 
       def build_unmount_payload

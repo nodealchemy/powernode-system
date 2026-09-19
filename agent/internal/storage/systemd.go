@@ -43,6 +43,31 @@ func startMountUnit(ctx context.Context, runner mount.Runner, unitName string) e
 	return nil
 }
 
+// restartMountUnit re-applies a rewritten unit file to an ALREADY-active
+// .mount unit (IMP-e48612a32273) — `systemctl start` on an active unit is a
+// no-op, so a credential rotation's new credentials= path/password would
+// never take effect without this. `restart` is stop-then-start under the
+// hood, which is systemd's own supported lifecycle op for a Type=Mount
+// unit; it is also safe to call on an INACTIVE unit (stop on an inactive
+// unit is a no-op), though the platform only ever asks for it once an
+// assignment has been mounted before — see
+// AssignmentReconciliationService#dispatch_mount!.
+//
+// Deliberately NOT `-l`/lazy and NOT forced: if umount(8) fails EBUSY (an
+// open fd, cwd, or mmap under the mount), that failure is returned as-is
+// and surfaces as a normal task failure — see cifs.go's caller. A lazy
+// unmount would "succeed" while leaving in-flight I/O against a DETACHED
+// mount, which for CIFS specifically is a correctness risk (silent stale
+// access to a filesystem that no longer exists at that path), not merely a
+// UX one. Retry-on-next-reconcile is the deliberate tradeoff; see the
+// server-side "degraded" handling this failure feeds into.
+func restartMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
+	if err := runner.Run(ctx, "systemctl", "restart", unitName); err != nil {
+		return fmt.Errorf("systemctl restart %s: %w", unitName, err)
+	}
+	return nil
+}
+
 // stopAndRemoveMountUnit stops the mount and removes the unit file.
 func stopAndRemoveMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
 	// Best-effort stop — ignore error if already inactive.

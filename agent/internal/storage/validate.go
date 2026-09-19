@@ -121,6 +121,20 @@ func (t *MountTask) Validate() error {
 			return err
 		}
 	}
+	// PreviousCredentialIDs (IMP-e48612a32273, plural — server review
+	// correction) each become a filename under /run/sdwan/mount-creds
+	// exactly like Credential.ID above — same guard, same reason: an empty
+	// check is not enough here since a malformed value (e.g. "../x") could
+	// otherwise reach os.Remove. Validated individually so ONE malformed id
+	// in the slice refuses the whole task rather than silently skipping it.
+	for _, id := range t.PreviousCredentialIDs {
+		if id == "" {
+			continue
+		}
+		if err := taskguard.Identifier("previous_credential_ids", id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -368,6 +368,22 @@ module System
     # === Live updates to subscribed clients ===
     after_commit :broadcast_update, on: :update, if: :should_broadcast?
 
+    # === SMB consumer remount-on-rotation (IMP-e48612a32273) ===
+    # Plain ActiveRecord after_update_commit, NOT an AASM `after` callback —
+    # the only production write path to "complete"
+    # (NodeApi::StatusController#complete_task) does
+    # `operation.update!(status: "complete", ...)` directly, never the
+    # AASM-generated #complete! bang method, so an AASM callback here would
+    # silently never fire. Command-specific logic lives in
+    # System::Storage::RemountCoordinator, not inline here (review round 1)
+    # — each hook below is a one-line dispatch plus its own rescue-and-log,
+    # matching System::StorageCredential's existing deprovision-on-destroy
+    # style, so one bad row can't take the whole after_update_commit chain
+    # down for every other task.
+    after_commit :dispatch_smb_remount_if_needed, on: :update, if: :smb_provisioning_just_completed?
+    after_commit :handle_completed_mount_if_needed, on: :update, if: :mount_task_just_completed?
+    after_commit :handle_failed_mount_if_needed, on: :update, if: :mount_task_just_failed?
+
     # === State machine (AASM — platform standard) ===
     # AASM auto-generates predicates (pending?, running?, ...), guard predicates
     # (may_start?, may_complete?, ...), and bang methods (start!, complete!,
@@ -575,6 +591,40 @@ module System
 
     def should_broadcast?
       saved_change_to_status? || saved_change_to_progress?
+    end
+
+    # IMP-e48612a32273 — never "delete": that action tears the samba user
+    # down, it never provisions the identity a consumer would need to
+    # remount onto.
+    def smb_provisioning_just_completed?
+      saved_change_to_status? && status == "complete" &&
+        command == "storage.smb_user.apply" && options["action"].in?(%w[create set_password])
+    end
+
+    def mount_task_just_completed?
+      saved_change_to_status? && status == "complete" && command == "storage.mount"
+    end
+
+    def mount_task_just_failed?
+      saved_change_to_status? && status == "failed" && command == "storage.mount"
+    end
+
+    def dispatch_smb_remount_if_needed
+      ::System::Storage::RemountCoordinator.dispatch_remount_for_completed_smb_task!(self)
+    rescue StandardError => e
+      Rails.logger.error("[Task##{id}] SMB remount dispatch failed: #{e.class}: #{e.message}")
+    end
+
+    def handle_completed_mount_if_needed
+      ::System::Storage::RemountCoordinator.handle_completed_mount_task!(self)
+    rescue StandardError => e
+      Rails.logger.error("[Task##{id}] mount completion handling failed: #{e.class}: #{e.message}")
+    end
+
+    def handle_failed_mount_if_needed
+      ::System::Storage::RemountCoordinator.handle_failed_mount_task!(self)
+    rescue StandardError => e
+      Rails.logger.error("[Task##{id}] mount failure handling failed: #{e.class}: #{e.message}")
     end
 
     # Per-task progress broadcasts are throttled to one per

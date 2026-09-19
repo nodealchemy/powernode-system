@@ -18,8 +18,13 @@ module System
         STALE_WINDOW = 5.minutes
 
         def sense
+          # IMP-e48612a32273 — .or(mount_credential_mismatch): same safety-
+          # net reasoning as AssignmentReconciliationService.reconcile_instance!
+          # — a mounted assignment whose consumer never actually remounted
+          # after a rotation is invisible to pending_reconcile alone.
           ::System::StorageAssignment
             .pending_reconcile
+            .or(::System::StorageAssignment.mount_credential_mismatch)
             .where(account: account)
             .where("last_status_at IS NULL OR last_status_at < ?", STALE_WINDOW.ago)
             .find_each.map do |assignment|
