@@ -14,16 +14,24 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 // testAttachStamp mirrors Reconciler.attachStamp for fixtures that seed a
-// "this module is already in sync" stamp (IMP-01a05efa). Computed the same way
-// production computes it — rendered unit bodies plus the agent version, empty
-// in tests — rather than restating a literal, so a fixture cannot claim
-// in-sync with a value the gate would never produce.
+// "this module is already in sync" stamp (IMP-01a05efa, IMP-f5c0afa7183a).
+// Computed the same way production computes it — rendered unit bodies, the
+// rendered security policy for a manifest with no security: block (all four
+// callers below construct a services-only manifest — two pass a real
+// services slice, two pass nil for a service-less fixture), and the agent
+// version, empty in tests — rather than restating a literal, so a fixture
+// cannot claim in-sync with a value the gate would never produce.
 func testAttachStamp(moduleID string, services []manifest.Service) string {
-	return lifecycle.RenderedServicesHash(moduleID, services, pivotAwareRootMode()) + "|"
+	mf := &manifest.Manifest{Services: services}
+	policy := buildPolicy(mf)
+	hasUnits := len(mf.UnitNames()) > 0
+	return lifecycle.RenderedServicesHash(moduleID, services, pivotAwareRootMode()) +
+		"|" + security.RenderedPolicyHash(policy, hasUnits) + "|"
 }
 
 var (

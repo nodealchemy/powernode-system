@@ -127,6 +127,19 @@ func WriteSeccompDropInAt(root, unit, profilePath string) error {
 	return writeSeccompDropInAt(base, unit, profilePath)
 }
 
+// renderSeccompDropInBody is WriteSeccompDropIn's file body, factored out to
+// a pure function for the same reason renderCapabilityDropInBody is
+// (capabilities.go) — RenderedPolicyHash (policy_stamp.go) and the writer
+// must share one render, or a future fix to this rendering logic could ship
+// with the stamp never moving (IMP-f5c0afa7183a).
+func renderSeccompDropInBody(profilePath string) (string, error) {
+	name, err := SeccompFilterName(profilePath)
+	if err != nil {
+		return "", err
+	}
+	return "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n", nil
+}
+
 func writeSeccompDropInAt(base, unit, profilePath string) error {
 	if unit == "" {
 		return errors.New("WriteSeccompDropIn: empty unit")
@@ -137,7 +150,7 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 	if strings.HasPrefix(unit, "-") {
 		return errors.New("WriteSeccompDropIn: invalid unit name (leading dash)")
 	}
-	name, err := SeccompFilterName(profilePath)
+	body, err := renderSeccompDropInBody(profilePath)
 	if err != nil {
 		return fmt.Errorf("WriteSeccompDropIn: %w", err)
 	}
@@ -147,7 +160,6 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 		return errors.New("WriteSeccompDropIn: mkdir " + dropInDir + ": " + err.Error())
 	}
 	dropInPath := filepath.Join(dropInDir, "seccomp.conf")
-	body := "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n"
 	// Atomic tmp+rename (parity with WriteCapabilityDropIn / userns) so a
 	// mid-write failure can never leave a TRUNCATED directive that systemd would
 	// still load — which on the pivot path (drop-in writes are non-fatal/OnError)

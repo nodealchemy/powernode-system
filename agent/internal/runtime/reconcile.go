@@ -1450,9 +1450,10 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 // silent no-op is the right behavior. The detach path below mirrors
 // this: it skips DetachServices when Services is empty without
 // surfacing anything to OnError.
-// attachStamp is the value the re-attach gate compares (IMP-01a05efa).
+// attachStamp is the value the re-attach gate compares (IMP-01a05efa,
+// IMP-f5c0afa7183a).
 //
-// TWO INPUTS, for two different failure modes:
+// THREE INPUTS, for three different failure modes:
 //
 //   - The RENDERED unit bodies (lifecycle.RenderedServicesHash), not the
 //     manifest. The unit body is not a function of the manifest alone — the
@@ -1461,22 +1462,68 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     manifest-hash stamp byte-identical, queued no module for re-attach, and
 //     never replaced the stale unit on disk.
 //
-//   - The AGENT VERSION, so a change in an input the render path does not
-//     cover still forces one pass. This is the belt to the rendered hash's
+//   - The rendered SECURITY POLICY (security.RenderedPolicyHash), not the
+//     manifest's security: block either. attachModule applies a module's
+//     entire resolved Policy — capability/seccomp/user-namespace drop-ins AND
+//     SELinux/AppArmor profile loads — and NONE of that is a function of
+//     mf.Services, so it was invisible to the unit-body hash above by
+//     construction. A manifest edit confined to security: (a capability
+//     added, a profile swapped) left this stamp byte-identical, so the
+//     change never reached an already-attached node until an unrelated
+//     unit-body change or an agent-version bump forced a pass. Fixing this
+//     the way IMP-01a05efa fixed the unit-body half — stamp the manifest's
+//     security: block directly — would have repeated that exact defect one
+//     layer over: RenderedPolicyHash stamps what the drop-in writers and MAC
+//     loaders actually RENDER/RESOLVE, via the same render functions they
+//     use to produce their bytes, for the identical reason
+//     RenderedServicesHash stamps rendered unit bodies rather than manifest
+//     content. See security.RenderedPolicyHash's own doc for the full
+//     reasoning, including why it is scoped to the cloud-init hot-reconcile
+//     path only — ComposeForPivot (boot / soft-recompose) rebuilds every
+//     module's units and drop-ins from scratch on every invocation and has
+//     no stamp to go stale.
+//
+//   - The AGENT VERSION, so a change in an input neither render path covers
+//     still forces one pass. This is the belt to both rendered hashes'
 //     braces: it re-attaches every module once per agent upgrade whether or
 //     not rendering changed.
 //
-// A false-positive re-attach is deliberately cheap and the design already
-// says so: attachModule is idempotent on its mount/cosign/fs-verity/policy
-// steps, each unit goes through writeIfChanged, daemon-reload runs only if
-// something was written, and an unchanged unit gets a start that is a no-op on
-// a running service. So paying one extra pass per agent upgrade buys the
-// guarantee that a renderer fix actually ships.
+// Adding a second stamp segment does NOT add an incremental one-time cost of
+// its own, and that is worth stating precisely rather than assuming a
+// re-attach is cheap merely because the drop-in writers are small files.
+// It is not: mountModuleArtifact's Puller.Pull, called at the start of every
+// attachModule regardless of which stamp segment changed, streams the ENTIRE
+// cached erofs blob through SHA-256 on its cache-hit path (oci.readDigest)
+// before returning, then VerifyBlob runs on top of that — real, size-
+// proportional work per module, not a bounded three-small-files-plus-
+// daemon-reload cost. (WriteCapabilityDropIn / WriteSeccompDropIn /
+// WriteUserNamespaceDropIn are themselves an unconditional tmp-write +
+// rename with no existing-content comparison — not writeIfChanged the way
+// the unit-body path is — but that is a small piece of a pass whose real
+// cost lives in the pull/verify step above it, not in the drop-ins.)
+//
+// The reason this stamp change is still safe to ship is not "the extra pass
+// is cheap" — it's that THIS FIX SHIPS INSIDE A NEW AGENT BINARY, which is
+// necessarily a new AgentVersion, which was ALREADY the third stamp segment
+// before this change existed. Shipping this fix therefore forces exactly one
+// fleet-wide re-attach pass on THIS upgrade regardless of whether the
+// security-policy segment is also new — the new segment adds no additional
+// fleet-wide pass beyond the one an agent upgrade already causes every time.
+// semodule -i / apparmor_parser -r (the SELinux/AppArmor re-application, when
+// either profile is declared) are the standard idempotent-reload idiom those
+// tools document for exactly this case, but that is UNVERIFIED against a
+// real LSM host from this codebase, and currently unexercised on this fleet
+// because no module declares selinux_profile/apparmor_profile — it is a
+// precondition to verify before the first module does, not a closed
+// question. See docs/ATTACH_STAMP_SECURITY_POLICY_SURVEY.md.
 func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string {
 	if mf == nil {
 		return ""
 	}
+	policy := buildPolicy(mf)
+	hasUnits := len(mf.UnitNames()) > 0
 	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
+		"|" + security.RenderedPolicyHash(policy, hasUnits) +
 		"|" + r.cfg.AgentVersion
 }
 
