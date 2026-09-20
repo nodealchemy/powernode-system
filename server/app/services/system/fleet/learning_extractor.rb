@@ -23,10 +23,67 @@ module System
       IMPORTANCE_BY_CATEGORY = { "pattern" => 0.45, "discovery" => 0.35 }.freeze
       DEFAULT_IMPORTANCE = 0.35
 
+      # IMP-3c9a6dc8f0a9 — kill switch for this producer (one learning per
+      # fleet signal kind per tick, #submit_learning below). SiteSetting
+      # (core model, read directly here — extension may reference core; no
+      # core->extension dependency is introduced by this file reading a core
+      # model).
+      #
+      # DEFAULTS TO ON, and the garbage-value polarity is INVERTED from
+      # Ai::Learning::EvaluationService.enabled? — same reasoning as the two
+      # sibling switches in Ai::Memory::SharedKnowledgeService and
+      # Ai::Learning::CompoundLearningService (core): OFF is the dangerous
+      # direction here (silently stops the platform learning from fleet
+      # ticks), so a garbage value fails toward ON, not OFF. See either
+      # sibling's constant comment for the full reasoning — restated at each
+      # of the three sites deliberately, so whoever copies this pattern into
+      # a fourth producer sees the warning at the site they're editing.
+      FLEET_TICK_RECORDING_ENABLED_SETTING = "ai.knowledge_purge.fleet_tick_recording_enabled"
+
+      # IMP-3c9a6dc8f0a9 review round (blocker 4) — reads SiteSetting#value
+      # directly rather than through ::SiteSetting.get, whose per-
+      # setting_type cast destroys the "this was garbage" signal for a
+      # "boolean"-typed row before we ever see it (a typo collapses
+      # straight to Ruby `false`, indistinguishable from a deliberate
+      # false, so the fail-toward-ON parsing below never actually runs on
+      # it). Same fix as the two core sibling switches — see either's
+      # identical comment (Ai::Memory::SharedKnowledgeService.
+      # import_from_learnings_enabled?, Ai::Learning::CompoundLearningService.
+      # promote_cross_team_enabled?) for the full reasoning.
+      #
+      # IMP-3c9a6dc8f0a9 review round — REGRESSION FIX: accepts "1"/"yes"/
+      # "0"/"no"/"off" too, a superset of what ::SiteSetting.get's own cast
+      # already accepted — see SharedKnowledgeService's identical comment
+      # for the full trace.
+      def self.fleet_tick_recording_enabled?
+        setting = ::SiteSetting.find_by(key: FLEET_TICK_RECORDING_ENABLED_SETTING)
+        return true if setting.nil?
+
+        case setting.value.to_s.strip.downcase
+        when "true", "1", "yes" then true
+        when "false", "0", "no", "off" then false
+        else
+          Rails.logger.warn(
+            "[FleetLearningExtractor] #{FLEET_TICK_RECORDING_ENABLED_SETTING}=#{setting.value.inspect} is not " \
+            "true/false; treating it as ON — OFF is the dangerous direction for this switch " \
+            "(silently stops fleet-tick learning), so a garbage value fails toward ON, not OFF"
+          )
+          true
+        end
+      end
+
       module_function
 
       def record_tick!(account:, decisions:)
         return if decisions.blank?
+
+        unless fleet_tick_recording_enabled?
+          Rails.logger.info(
+            "[FleetLearningExtractor] Recording skipped — kill switch " \
+            "#{FLEET_TICK_RECORDING_ENABLED_SETTING} is OFF"
+          )
+          return
+        end
 
         # `internal: true` is REQUIRED, not decorative. LearningTool gained a
         # per-action permission gate (G4): create_learning now demands

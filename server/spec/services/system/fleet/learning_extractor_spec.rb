@@ -38,6 +38,64 @@ RSpec.describe System::Fleet::LearningExtractor do
       end
     end
 
+    # IMP-3c9a6dc8f0a9 — the SiteSetting kill switch for this producer.
+    context "kill switch (ai.knowledge_purge.fleet_tick_recording_enabled)" do
+      it "records when the setting is absent (default ON)" do
+        expect(SiteSetting.get("ai.knowledge_purge.fleet_tick_recording_enabled")).to be_nil
+
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
+      end
+
+      it "records nothing when the setting is explicitly false" do
+        SiteSetting.set("ai.knowledge_purge.fleet_tick_recording_enabled", "false")
+
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.not_to change(Ai::CompoundLearning, :count)
+      end
+
+      it "fails toward ON (not OFF) for a garbage value, inverted from EvaluationService" do
+        SiteSetting.set("ai.knowledge_purge.fleet_tick_recording_enabled", "maybe")
+        allow(Rails.logger).to receive(:warn)
+
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
+        expect(Rails.logger).to have_received(:warn).with(a_string_including("treating it as ON"))
+      end
+
+      # IMP-3c9a6dc8f0a9 review round (blocker 4) — the shape that FIRES the
+      # guard: a row typed "boolean" (not the default "string" every other
+      # example here uses) with a garbage value. ::SiteSetting.get casts a
+      # boolean-typed row's value BEFORE this method ever sees it — a typo
+      # collapses straight to Ruby `false`, indistinguishable from a
+      # deliberate false, so the fail-toward-ON parsing silently never ran
+      # on it. Reading SiteSetting#value directly (this method's fix) is
+      # what makes this pass — same case as the two core sibling switches.
+      it "still fails toward ON for a garbage value on a setting_type: boolean row" do
+        SiteSetting.set("ai.knowledge_purge.fleet_tick_recording_enabled", "ture", setting_type: "boolean")
+        allow(Rails.logger).to receive(:warn)
+
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.to change { Ai::CompoundLearning.where(account: account).count }.by(1)
+        expect(Rails.logger).to have_received(:warn).with(a_string_including("treating it as ON"))
+      end
+
+      # IMP-3c9a6dc8f0a9 review round — REGRESSION: see the identical
+      # example on Ai::Memory::SharedKnowledgeService for the full trace.
+      # "0" on a boolean-typed row must still mean OFF, not "garbage -> ON".
+      it "still respects an explicit OFF written as \"0\" on a setting_type: boolean row" do
+        SiteSetting.set("ai.knowledge_purge.fleet_tick_recording_enabled", "0", setting_type: "boolean")
+
+        expect {
+          described_class.record_tick!(account: account, decisions: decisions)
+        }.not_to change(Ai::CompoundLearning, :count)
+      end
+    end
+
     context "with empty decisions list" do
       it "is a no-op" do
         expect(Rails.logger).not_to receive(:info)
