@@ -115,18 +115,48 @@ services:
     # operator edit to BOTH vault.hcl (listener) and this port declaration, and
     # it must not be done while tls_disable is set — see the runbook.
     exposed_ports: []
-    capabilities: []
+    # IMP-e75df089523d — deliberately NO capabilities key (inherit the
+    # module's full ceiling below). This one is the clearest of the four
+    # audited services: vault-start.sh's OWN header comment states, and
+    # its `setpriv --ambient-caps=+ipc_lock` command line confirms, that
+    # CAP_IPC_LOCK is deliberately carried ACROSS the privilege drop
+    # into the running `vault server` process — Vault's mlockall() is
+    # fatal without it. So unlike postgres/redis, this is not only "the
+    # root-prep phase needs the ceiling" — the long-running DAEMON
+    # itself genuinely needs one of the ceiling's capabilities at
+    # runtime, which is exactly the "narrowed non-empty set the daemon
+    # genuinely needs" outcome, established from the script's own
+    # explicit reasoning rather than assumed. The other six capabilities
+    # (see the security block below) cover the same root-prep-then-drop
+    # shape as postgres-primary/redis — this service needs the whole
+    # ceiling, not a proper subset of it.
 
 security:
   # CAP_IPC_LOCK       — Vault mlock()s its memory so secrets are never paged
   #                      to disk. The alternative (disable_mlock = true) is a
-  #                      real weakening and is NOT taken here.
+  #                      real weakening and is NOT taken here. Deliberately
+  #                      carried ACROSS the privilege drop into the running
+  #                      vault process (see vault-start.sh's own comment and
+  #                      its `setpriv --ambient-caps=+ipc_lock`) — the only
+  #                      one of these seven the long-running daemon itself
+  #                      still needs once it has dropped to the vault user.
   # CAP_CHOWN,
   # CAP_DAC_OVERRIDE,
   # CAP_FOWNER         — vault-start.sh preps the /persist storage dir as root.
   # CAP_SETUID/GID,
-  # CAP_SETPCAP        — runuser drops to the vault user before exec'ing the
-  #                      server (mirrors redis/postgres-primary).
+  # CAP_SETPCAP        — setpriv (NOT runuser — a real uid transition clears
+  #                      the permitted/effective/ambient sets, which would
+  #                      silence CAP_IPC_LOCK above too) drops to the vault
+  #                      user before exec'ing the server. Kept because it is
+  #                      the script's own documented rationale for the
+  #                      inheritable-bit raise that carries CAP_IPC_LOCK
+  #                      across the drop, NOT asserted as strictly
+  #                      necessary here: raising an inheritable bit needs
+  #                      the capability in the permitted set OR
+  #                      CAP_SETPCAP, and root already holds CAP_IPC_LOCK
+  #                      permitted, so setpriv may not require this one.
+  #                      Same root-prep shape as redis/postgres-primary
+  #                      otherwise.
   # With RootDirectory=/sysroot the agent emits an empty CapabilityBoundingSet=
   # unless caps are declared here, which strips even root's ability to chown.
   capabilities:
