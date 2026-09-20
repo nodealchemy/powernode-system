@@ -54,21 +54,51 @@ RSpec.describe "module manifest: root-user-exceptions registry" do
     end
   end
 
-  # TRANSIENT, mirrors the powernode-hub-backend entry in
-  # root-user-exceptions.yml: part (A) is implemented and under review but
-  # not yet landed, so rails still runs as root today. This whole
-  # `describe` — and the registry entry it checks — is removed in the
-  # same commit that switches rails' `user:` away from root.
-  describe "powernode-hub-backend (TRANSIENT exception, pending part A)" do
+  # IMP-94977647c24c part A landed: rails runs as the dedicated
+  # powernode-rails user (see the manifest's users:/services:), not root
+  # — no exception needed, and none is recorded for this module anymore.
+  describe "powernode-hub-backend (root dropped, part A)" do
     manifest = YAML.safe_load(File.read(hub_backend_path))
 
-    it "still declares user: root on rails (remove this whole example when part A lands)" do
+    it "does not declare user: root on any service" do
       root_services = manifest["services"].select { |s| s["user"] == "root" }.map { |s| s["name"] }
-      expect(root_services).to include("rails")
+      expect(root_services).to be_empty
     end
 
-    it "passes System::ModuleRootUserPolicy with the shipped registry" do
-      expect(System::ModuleRootUserPolicy.violations(manifest, exceptions)).to be_empty
+    it "declares rails running as the dedicated powernode-rails user" do
+      rails_service = manifest["services"].find { |s| s["name"] == "rails" }
+      expect(rails_service["user"]).to eq("powernode-rails")
+    end
+
+    it "declares the powernode-rails user with traefik as a supplementary group" do
+      user = manifest["users"].find { |u| u["name"] == "powernode-rails" }
+      expect(user).to be_present
+      expect(user["supplementary_groups"]).to include("traefik")
+    end
+
+    # Review round (blocker 2): supplementary_groups: [traefik] alone is
+    # not enough on a FRESH/golden-origin seed import. ManifestImportService
+    # only accepts a reference to a group that is EITHER already live OR
+    # declared in THIS SAME manifest's own `groups:` — and modules import
+    # in name order, so powernode-hub-backend would run before
+    # reverse-proxy-traefik with no traefik group live yet. Declaring it
+    # here too is safe: GroupAllocator.allocate! is idempotent find-or-create
+    # by groupname, so whichever module's import runs first creates the row
+    # and the other just adopts it — no duplicate group, no duplicate GID.
+    it "declares its own groups: entry for traefik (fresh-seed import order safety)" do
+      group_names = manifest["groups"].map { |g| g["name"] }
+      expect(group_names).to include("traefik", "powernode-rails")
+    end
+
+    it "passes System::ModuleRootUserPolicy even with an EMPTY registry — it needs no exception at all" do
+      expect(System::ModuleRootUserPolicy.violations(manifest, {})).to be_empty
+    end
+
+    it "orders rails after rails-setup (start_before)" do
+      rails_service = manifest["services"].find { |s| s["name"] == "rails" }
+      edge = rails_service["dependencies"]&.find { |d| d["service"] == "rails-setup" }
+      expect(edge).to be_present
+      expect(edge["kind"]).to eq("start_before")
     end
   end
 end

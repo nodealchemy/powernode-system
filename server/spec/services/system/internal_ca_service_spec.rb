@@ -706,5 +706,136 @@ RSpec.describe System::InternalCaService do
         end
       end
     end
+
+    # IMP-94977647c24c blocker 2 (part A review round) — File.exist?/
+    # File.symlink? swallow EVERY stat failure, not just ENOENT. Before
+    # this fix, a legacy store that exists but is UNTRAVERSABLE (root-
+    # owned, read by a rails process that dropped root) read IDENTICALLY
+    # to "nothing here yet": load_live(dir: DEFAULT_PERSIST_DIR) just
+    # returned false, adopt_legacy_store!'s fail-closed guard never even
+    # engaged, and generate_anchor! minted and PERSISTED a brand-new
+    # anchor at the new (writable) path — successfully. Every certificate
+    # chained to the legacy anchor stops verifying, silently.
+    #
+    # Genuinely EXECUTES the real code path (not a text/regex assertion
+    # on source). File.stat(dir/".") (not chmod) is mocked specifically
+    # for legacy_dir, deliberately NOT making the whole tree unwritable: a
+    # naive "make everything fail" fixture would have the SUBSEQUENT
+    # persist-at-new_dir step also fail, for an unrelated reason, and
+    # incorrectly look like coverage for this guard. A permission-bit
+    # fixture (chmod 0000) was rejected for the same reason the sibling
+    # "unwritable store" test above already documents: this suite may run
+    # as root in CI, and root ignores mode bits, so a chmod-based fixture
+    # would pass vacuously there while genuinely testing something on a
+    # non-root box — the mock is uid-independent by construction.
+    #
+    # Mutation-resistance (review round): File.symlink?/File.exist? on
+    # the specific paths load_live/load_legacy_pair check are ALSO
+    # stubbed to their normal "nothing readable here" answers (false).
+    # Without this, a mutant that moved assert_dir_traversable!'s call
+    # below those checks would still see this example pass — the method
+    # would just return false from the ORIGINAL File.symlink?/File.exist?
+    # checks instead of raising, silently restoring the real-world silent
+    # mint while the spec stayed green. Stubbing them removes that
+    # ambiguity: the CaError this test expects can only come from the
+    # top-of-method guard now, not from an incidental interaction.
+    it "raises CaError and does NOT mint a new anchor when the legacy store exists but is not traversable (EACCES, not absent)" do
+      Dir.mktmpdir do |legacy_dir|
+        seed_store_at(legacy_dir)
+
+        Dir.mktmpdir do |new_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+
+          allow(File).to receive(:stat).and_call_original
+          allow(File).to receive(:stat).with(File.join(legacy_dir, ".")).and_raise(Errno::EACCES, "permission denied")
+          allow(File).to receive(:symlink?).and_call_original
+          allow(File).to receive(:symlink?).with(File.join(legacy_dir, "live")).and_return(false)
+          allow(File).to receive(:exist?).and_call_original
+          allow(File).to receive(:exist?).with(File.join(legacy_dir, "root.key")).and_return(false)
+          allow(File).to receive(:exist?).with(File.join(legacy_dir, "root.crt")).and_return(false)
+
+          expect { described_class::LocalCaAdapter.new }
+            .to raise_error(described_class::CaError, /#{Regexp.escape(legacy_dir)}.*not accessible/m)
+
+          # Fail closed: no anchor minted over evidence that a legacy CA
+          # existed — same oracle the dangling-symlink (ENOENT) sibling
+          # test above uses.
+          expect(File.symlink?(File.join(new_dir, "live"))).to be(false)
+        end
+      end
+    end
+
+    # Same defect, the OTHER reachable shape: the CURRENT (not legacy)
+    # persist dir itself is present but untraversable — this never even
+    # reaches adopt_legacy_store!, since load_live(dir: @persist_dir) now
+    # raises directly from load_or_create_ca's first call.
+    it "raises CaError (not a silent mint) when the CURRENT persist dir itself exists but is not traversable" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+
+        allow(File).to receive(:stat).and_call_original
+        allow(File).to receive(:stat).with(File.join(dir, ".")).and_raise(Errno::EACCES, "permission denied")
+        allow(File).to receive(:symlink?).and_call_original
+        allow(File).to receive(:symlink?).with(File.join(dir, "live")).and_return(false)
+        allow(File).to receive(:exist?).and_call_original
+        allow(File).to receive(:exist?).with(File.join(dir, "root.key")).and_return(false)
+        allow(File).to receive(:exist?).with(File.join(dir, "root.crt")).and_return(false)
+
+        expect { described_class::LocalCaAdapter.new }
+          .to raise_error(described_class::CaError, /#{Regexp.escape(dir)}.*not accessible/m)
+        # File.exist?, not File.symlink? (review round): File.symlink? on
+        # THIS path is stubbed to false three lines above, so asserting
+        # on it here reads the stub this same example installed — true
+        # whether or not an anchor was minted, a dead check dressed as an
+        # oracle. File.exist? on this path is NOT stubbed (only root.key/
+        # root.crt/dir-"." are), so it falls through to the real
+        # filesystem — a genuine "no anchor got minted here" read.
+        expect(File.exist?(File.join(dir, "live"))).to be(false)
+      end
+    end
+
+    # BLOCKER 2 review round — the probe itself, at the exact modes
+    # measured to distinguish it from the rejected Dir.children
+    # alternative. Real directories, real filesystem, no mocking: this is
+    # what makes the choice of probe an oracle rather than an assertion
+    # about which method name got called.
+    describe "the traversability probe at specific real permission modes" do
+      # This suite may run as root in CI (documented on the sibling
+      # "unwritable store" test above) — root ignores permission bits, so
+      # these examples are SKIPPED rather than silently vacuous there.
+      before { skip "runs as root — permission bits are not enforced" if Process.uid.zero? }
+
+      it "does NOT refuse a store at 0311 (traverse-only, no read/list) — the loaders only ever open KNOWN names" do
+        Dir.mktmpdir do |dir|
+          seed_store_at(dir)
+          File.chmod(0o311, dir)
+
+          begin
+            # .allocate, not .new: avoids running #initialize (and hence
+            # #load_or_create_ca) — this probes assert_dir_traversable!
+            # in isolation, not the whole load path.
+            expect(described_class::LocalCaAdapter.allocate.send(:assert_dir_traversable!, dir)).to be_nil
+          ensure
+            File.chmod(0o700, dir) # so Dir.mktmpdir's own cleanup can remove it
+          end
+        end
+      end
+
+      it "DOES refuse a store at 0400 (read-only, no traverse) — the exact blind spot Dir.children had" do
+        Dir.mktmpdir do |dir|
+          seed_store_at(dir)
+          File.chmod(0o400, dir)
+
+          begin
+            expect {
+              described_class::LocalCaAdapter.allocate.send(:assert_dir_traversable!, dir)
+            }.to raise_error(described_class::CaError, /not accessible/)
+          ensure
+            File.chmod(0o700, dir)
+          end
+        end
+      end
+    end
   end
 end

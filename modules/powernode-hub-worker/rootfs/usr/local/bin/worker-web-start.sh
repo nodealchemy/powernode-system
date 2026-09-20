@@ -14,9 +14,23 @@
 # that reads as "mostly healthy". Historically it ran only on the dev box as a
 # hand-managed systemd unit (scripts/systemd/powernode-worker-web.sh), which is
 # why it was missing from the module set entirely.
+#
+# IMP-94977647c24c: same STATE_DIR cross-module-contract read as
+# sidekiq-start.sh — see that script's comment for why (hub-backend's
+# rails dropped root and can no longer publish to /etc/powernode).
 set -euo pipefail
 
-SECRETS_FILE=/etc/powernode/backend-default.conf
+# Derive STATE_DIR with the EXACT same skeleton hub-backend's own
+# rails-setup.sh/rails-start.sh use (byte-identical block, checked by
+# spec/scripts/rails_setup_root_prep_spec.rb) — this is the cross-module
+# contract's enforcement mechanism: two scripts computing the same path a
+# different way is exactly how the contract silently drifts.
+if mountpoint -q /persist 2>/dev/null; then
+  STATE_DIR=/persist/powernode-rails
+else
+  STATE_DIR=/var/lib/powernode-rails
+fi
+SECRETS_FILE="$STATE_DIR/backend-default.conf"
 WORKER_DIR=/opt/powernode/worker
 
 WORKER_WEB_HOST="${SIDEKIQ_WEB_HOST:-127.0.0.1}"

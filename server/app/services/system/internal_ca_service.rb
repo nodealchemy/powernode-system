@@ -303,10 +303,65 @@ module System
 
       private
 
+      # IMP-94977647c24c (blocker 2, part A) — "assert it, don't assume",
+      # the same shape core's Core::IngressConfigWriter#ca_source_readable?
+      # applies to a trust bundle, at the STRONGER end here: that writer's
+      # finding degrades a bundle down to the sources it COULD read; a false
+      # "absent" HERE mints a brand-new anchor OVER a legacy CA it silently
+      # failed to read, and every certificate chained to the original stops
+      # verifying with nothing in the logs to explain why.
+      #
+      # File.symlink?/File.exist? (used immediately below and in
+      # #load_legacy_pair) swallow EVERY stat failure, not just ENOENT — a
+      # present-but-untraversable directory (root-owned 0700, read by a
+      # rails process that dropped root — see rails-setup.sh's chown of
+      # this exact tree) reads IDENTICALLY to "nothing here yet".
+      #
+      # The probe is `File.stat(File.join(dir, "."))`, NOT `Dir.children`
+      # (review round correction — measured, not assumed, on real
+      # directories at three modes):
+      #
+      #   mode 0311: Dir.children => EACCES   File.stat(dir/".") => OK
+      #   mode 0400: Dir.children => OK       File.stat(dir/".") => EACCES
+      #   mode 0700: Dir.children => OK       File.stat(dir/".") => OK
+      #
+      # `Dir.children` tests whether this process can LIST the directory's
+      # contents, which is governed by the READ bit — but the loaders
+      # below (load_live/load_legacy_pair) never list anything; they only
+      # ever open KNOWN names (live, root.key, root.crt). That is governed
+      # by the EXECUTE bit (traversal to a child by name), which
+      # `File.stat` on the directory's OWN "." entry tests directly and
+      # `File.stat`/`File.exist?` on some path INSIDE it (which only need
+      # +x on the PARENT, not the target) do not. `Dir.children` was
+      # therefore both OVER-inclusive (0311: a store the loaders read
+      # perfectly gets refused, stopping issuance on a store that was
+      # never actually a problem) and — the more serious defect — BLIND
+      # at 0400 (passes this probe, then read as absent by
+      # File.exist?/File.symlink? below, and gets minted over: the
+      # ORIGINAL bug, unfixed by the wrong probe). ENOENT/ENOTDIR still
+      # mean "not there yet" (the normal empty-store path, left alone);
+      # any other SystemCallError (EACCES chief among them) means "there,
+      # but I can't get to it", and must fail CLOSED via CaError rather
+      # than let the caller's `false` be read as "safe to mint a new one".
+      def assert_dir_traversable!(dir)
+        File.stat(File.join(dir, "."))
+        nil
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        nil
+      rescue SystemCallError => e
+        raise CaError,
+              "internal CA store directory #{dir} exists but is not accessible (#{e.class}: " \
+              "#{e.message}) — refusing to treat it as absent, which would mint a NEW anchor " \
+              "over a legacy CA and de-authenticate every certificate chained to it. Fix " \
+              "directory ownership/permissions, or move it aside deliberately if a NEW CA is " \
+              "genuinely intended."
+      end
+
       # Resolves `live` ONCE (§3.1 F-6) and reads the generation through the
       # resolved path, so every file comes from the same version dir even if a
       # flip lands mid-load. Returns false when there is no live generation.
       def load_live(dir: @persist_dir)
+        assert_dir_traversable!(dir)
         link = File.join(dir, LIVE_LINK)
         return false unless File.symlink?(link)
 
@@ -324,6 +379,7 @@ module System
       # comment above). A v1 store is by construction depth-1: its chain is the
       # single self-signed root, so issuing and anchor coincide.
       def load_legacy_pair(dir: @persist_dir)
+        assert_dir_traversable!(dir)
         key_path  = File.join(dir, "root.key")
         cert_path = File.join(dir, "root.crt")
         key_present  = File.exist?(key_path)

@@ -9,9 +9,37 @@
 # Worker has its OWN Gemfile.lock so it needs its OWN vendor/bundle
 # (rails sidekiq + worker-specific gems differ from the backend's
 # server Gemfile).
+#
+# IMP-94977647c24c: reads hub-backend's STATE_DIR directly instead of
+# the old /etc/powernode/backend-default.conf symlink — hub-backend's
+# rails service dropped root and can no longer publish there (root-owned
+# parent). STATE_DIR is now a CROSS-MODULE CONTRACT between these two
+# modules (same mountpoint-based resolution both sides must agree on),
+# not a hub-backend-private detail. This is safe TODAY: sidekiq reads
+# $STATE_DIR/backend-default.conf AS ROOT, and STATE_DIR is now
+# 0700-mode, owned by powernode-rails (not root) — root ignores Unix
+# permission bits entirely, so that mode/ownership is no obstacle to
+# THIS process. Part B (dropping hub-worker off root too — deferred, see
+# modules/.schema/root-user-exceptions.yml: unmet polkit prerequisite for
+# the sandboxed stdio-MCP systemd-run it needs) LOSES this read the
+# moment it lands: a non-root worker user, not in the powernode-rails
+# group, could no longer even traverse into STATE_DIR to reach this
+# file. Whoever does part B needs a supplementary-group grant (mirroring
+# how rails itself joins the traefik group for the ingress dirs) or an
+# equivalent, not just a manifest `user:` change.
 set -euo pipefail
 
-SECRETS_FILE=/etc/powernode/backend-default.conf
+# Derive STATE_DIR with the EXACT same skeleton hub-backend's own
+# rails-setup.sh/rails-start.sh use (byte-identical block, checked by
+# spec/scripts/rails_setup_root_prep_spec.rb) — this is the cross-module
+# contract's enforcement mechanism: two scripts computing the same path a
+# different way is exactly how the contract silently drifts.
+if mountpoint -q /persist 2>/dev/null; then
+  STATE_DIR=/persist/powernode-rails
+else
+  STATE_DIR=/var/lib/powernode-rails
+fi
+SECRETS_FILE="$STATE_DIR/backend-default.conf"
 WORKER_DIR=/opt/powernode/worker
 
 # Wait for hub-backend's rails-start.sh to publish secrets (it runs

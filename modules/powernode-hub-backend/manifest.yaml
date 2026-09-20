@@ -40,6 +40,32 @@ dependencies:
     - powernode/redis@^1.0
 
 services:
+  # IMP-94977647c24c part A: root-only prep for the non-root `rails`
+  # service below, mirroring reverse-proxy-traefik's `restore-dynamic`
+  # oneshot (same problem, same fix — the structured service fields
+  # cannot express ExecStartPre, so root-only setup is a SEPARATE
+  # Type=oneshot/RemainAfterExit=yes unit, ordered before the real
+  # service via `dependencies:` on it). Runs on every boot (idempotent):
+  # not because ownership can change, but because the writable overlay
+  # upper / non-persist STATE_DIR fallback can be wiped clean on a
+  # pivot-composed reboot even though the target user's UID never does.
+  # See rails-setup.sh for exactly what it does and why each piece
+  # needed root.
+  - name: rails-setup
+    unit_body: |
+      [Unit]
+      Description=Root-only prep for the non-root rails service (IMP-94977647c24c)
+      DefaultDependencies=no
+      After=local-fs.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/rails-setup.sh
+      StandardOutput=journal
+      StandardError=journal
+      [Install]
+      WantedBy=multi-user.target
+
   - name: rails
     # Wrapper handles first-boot bootstrap: generates Rails secrets
     # (secret_key_base + AR encryption keys), waits for postgres,
@@ -50,9 +76,16 @@ services:
     # /persist/powernode-rails when /persist is mounted; /etc/powernode
     # keeps symlinks. Admin password persists at admin-credentials.json
     # (mode 0600) for operator retrieval.
+    #
+    # IMP-94977647c24c part A: runs as the dedicated powernode-rails
+    # user, not root. rails-setup (above) does every root-only step
+    # (STATE_DIR/vendor-bundle ownership, config/database.yml render,
+    # the traefik ingress dirs' setgid) before this service starts —
+    # see `dependencies:` below and rails-setup.sh's own header comment
+    # for the full inventory of what moved and why.
     start_command: "/usr/local/bin/rails-start.sh"
     restart_policy: always
-    user: root
+    user: powernode-rails
     working_directory: /opt/powernode/server
     env:
       RAILS_ENV: production
@@ -144,13 +177,46 @@ services:
       timeout_seconds: 5
       initial_delay_seconds: 30
     # Cross-module ordering (postgres + redis must be up first) is
-    # expressed at the top-level `dependencies.requires` above. The
-    # service-level `dependencies` array is intra-module only —
-    # hub-backend has just one service so it stays empty.
+    # expressed at the top-level `dependencies.requires` above.
+    # start_before here is INTRA-module: rails-setup must be running
+    # (RemainAfterExit=yes counts as "running" once its ExecStart
+    # completes) before this service starts.
+    dependencies:
+      - { service: rails-setup, kind: start_before }
     metadata:
       ruby_version: "3.3"
       rails_version: "8.0"
       notes: "ActionCable shares port 3000 via Rack-mounted /cable path."
+
+# Fleet-managed Unix identity for the rails service (IMP-94977647c24c
+# part A). supplementary_groups: [traefik] joins the group
+# reverse-proxy-traefik's OWN manifest also declares.
+#
+# `traefik` is declared HERE TOO (review round: fresh-seed import
+# order) — not because this module owns it, but because
+# ManifestImportService's supplementary_groups check
+# (validate_users_block!) only accepts a reference that is EITHER
+# already live (System::ServiceGroup.live.exists?) OR declared in this
+# SAME manifest's own `groups:` block. On a fresh/golden-origin seed,
+# modules import in name order, so `powernode-hub-backend` runs before
+# `reverse-proxy-traefik` and the `traefik` group would not exist yet —
+# import would fail (or degrade with no services/users at all) without
+# this. GroupAllocator.allocate! is idempotent find-or-create by
+# groupname (System::Identity::GroupAllocator#allocate!): whichever
+# module's import runs first creates the row at one GID, the other's
+# call for the same name just returns the existing row — so both
+# modules declaring `traefik` is safe and does not create two groups
+# or two GIDs.
+groups:
+  - name: powernode-rails
+  - name: traefik
+users:
+  - name: powernode-rails
+    primary_group: powernode-rails
+    shell: /usr/sbin/nologin
+    home: /var/lib/powernode-rails
+    gecos: Powernode Rails service account
+    supplementary_groups: [traefik]
 
 security:
   capabilities: []

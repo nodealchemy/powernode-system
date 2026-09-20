@@ -7,12 +7,19 @@
 # needs before puma can serve:
 #   1. Generate Rails secrets (secret_key_base + AR encryption keys)
 #      — stored in the durable STATE_DIR (/persist when mounted) so
-#      subsequent boots AND reboots reuse them; /etc/powernode keeps
-#      symlinks for consumers (hub-worker sources the same file).
+#      subsequent boots AND reboots reuse them. hub-worker reads this
+#      SAME path directly (see sidekiq-start.sh/worker-web-start.sh) —
+#      STATE_DIR is a cross-module contract, not a hub-backend-private
+#      detail; it stays root-readable regardless of who owns it, since
+#      hub-worker's services still run as root (IMP-94977647c24c part
+#      B — polkit is not yet present on the live hub for the sandboxed
+#      stdio-MCP systemd-run hub-worker needs).
 #   2. Wait for postgres (sibling module on the same instance) to be
 #      reachable on localhost:5432.
 #   3. Create the powernode role + powernode_production database via
-#      psql (as the postgres superuser; trust auth from initdb).
+#      psql (as the postgres superuser; trust auth from initdb, no OS
+#      privilege of any kind required for this — a TCP connection with
+#      `-U postgres` isn't peer-auth'd).
 #   4. Vendor gems via bundle install --deployment — first-boot only,
 #      slow (~5min) but cached for restarts.
 #   5. db:migrate + first-admin bootstrap (bootstrap-first-admin.rb,
@@ -20,11 +27,27 @@
 #      skips already-applied migrations + seeds check find_or_create).
 #   6. exec puma.
 #
-# The manifest sets user: root on this service so the wrapper can
-# mkdir /etc/powernode + chown things. Puma itself runs as root for
-# the duration (acceptable for the dogfood; production hardening
-# would drop to a dedicated 'powernode' OS user via Puma config).
+# IMP-94977647c24c part A: this service runs as the dedicated
+# powernode-rails user, not root. Every step that genuinely needed root
+# (STATE_DIR/vendor-bundle ownership, config/database.yml's render, the
+# traefik ingress dirs' setgid + retroactive ownership fix) moved to
+# the sibling rails-setup.service (root, oneshot, runs first — see the
+# manifest's `dependencies:` on this service and rails-setup.sh's own
+# header comment for the full inventory). Nothing below this comment
+# needs root; if a future change makes it seem like it does, that is a
+# sign the new code belongs in rails-setup.sh instead, not a reason to
+# put user: root back on this service.
 set -euo pipefail
+
+# Non-default: rails now shares the traefik ingress dirs via a setgid
+# group-write bit (root:traefik 2775 on the dirs), not root's usual
+# create-anything. A file this process CREATES must actually respect
+# the group-write bit for a DIFFERENT process (traefik) to read/replace
+# it later; the default umask (022) would strip the group-write bit
+# right back off. 002 keeps group-write intact everywhere without
+# widening world access (still no world-write anywhere this process
+# creates).
+umask 002
 
 RAILS_DIR=/opt/powernode/server
 
@@ -42,8 +65,10 @@ if mountpoint -q /persist 2>/dev/null; then
 else
   STATE_DIR=/var/lib/powernode-rails
 fi
-mkdir -p "$STATE_DIR" /etc/powernode
-chmod 700 "$STATE_DIR"
+# mkdir/chown/chmod of STATE_DIR itself now happens in rails-setup.sh
+# (root, runs first) — this process can't create it if it's missing
+# (both /persist and /var/lib are root-owned by default), only use it
+# once it exists and is already owned by this user.
 
 # --- Internal CA store on the durable state dir ---
 # System::InternalCaService defaults POWERNODE_CA_LOCAL_DIR to
@@ -75,20 +100,16 @@ export POWERNODE_CA_LOCAL_DIR
 SECRETS_FILE=$STATE_DIR/backend-default.conf
 ADMIN_CREDS=$STATE_DIR/admin-credentials.json
 
-# Migrate secrets a pre-STATE_DIR revision left at the old /etc paths
-# (persistent-root hosts only; on pivot cells /etc is empty after reboot).
-for f in backend-default.conf admin-credentials.json; do
-  if [ -f "/etc/powernode/$f" ] && [ ! -L "/etc/powernode/$f" ] && [ ! -f "$STATE_DIR/$f" ]; then
-    mv "/etc/powernode/$f" "$STATE_DIR/$f"
-  fi
-done
-
-# Stable consumer paths: sidekiq-start.sh (hub-worker) sources
-# /etc/powernode/backend-default.conf — keep both /etc names as symlinks into
-# the durable store. `-f` follows symlinks, so the worker's wait loop still
-# works (a dangling link reads as absent until the target is written).
-ln -sfn "$SECRETS_FILE" /etc/powernode/backend-default.conf
-ln -sfn "$ADMIN_CREDS" /etc/powernode/admin-credentials.json
+# IMP-94977647c24c: no longer published to /etc/powernode. This process
+# can't write there (root-owned parent, not this user's), and
+# maintaining a symlink was only ever in service of hub-worker's read —
+# hub-worker's own scripts now read $STATE_DIR/backend-default.conf
+# directly (they stay root, so this file's ownership/mode is no
+# obstacle to them). A pre-STATE_DIR host's leftover /etc/powernode/*
+# file (predates the durable-STATE_DIR revision entirely) is simply not
+# migrated by this process anymore — it was always a narrow, one-time
+# historical-upgrade path, and this hub has been on STATE_DIR for a
+# while; a stray unmigrated file there is harmless (unread, unwritten).
 
 # --- Derive service hosts (loopback by default for the all-in-one image) ---
 # postgres + redis are sibling modules co-located on this instance, so
@@ -245,19 +266,10 @@ export POWERNODE_CA_LOCAL_DIR
 
 cd "$RAILS_DIR"
 
-# --- Render config/database.yml from the shipped template ---
-# database.yml is gitignored, so the module ships only database.yml.example.
-# Rails needs the FILE (not just DATABASE_URL) for its multi-database config —
-# the production primary/cache/queue/cable connections that solid_cache /
-# solid_queue / solid_cable resolve via connects_to. Without it, eager_load
-# (config.eager_load=true in production) fails on SolidQueue::Record and puma
-# cannot boot. The template renders entirely from ENV (DATABASE_HOST, trust
-# auth), so a straight copy is the whole config. The overlay upper is ephemeral
-# on pivot cells, so regenerate whenever it is missing.
-if [ ! -f config/database.yml ]; then
-  cp config/database.yml.example config/database.yml
-  echo "[rails-start] Rendered config/database.yml from template"
-fi
+# config/database.yml: rendered by rails-setup.sh (root; the module
+# mount's config/ dir is root-owned and this process can't create a
+# NEW file there). world-readable (644) — this process only ever reads
+# it from here on.
 
 # --- Wait for postgres (sibling module powernode-postgres) ---
 echo "[rails-start] Waiting for postgres on ${DB_HOST}:5432..."
@@ -294,10 +306,45 @@ fi
 # discover_extension_gems resolves the in-memory Gemfile to the mounted set;
 # the build-time cache ran with the same set staged, so the shipped lock
 # matches and --local resolves cleanly without --deployment's fatal-on-drift.
-if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
+#
+# IMP-94977647c24c: BUNDLE_PATH points into STATE_DIR (pre-created +
+# owned by this user in rails-setup.sh), not vendor/bundle under
+# RAILS_DIR — the module mount is root-owned and this process can't
+# create a new directory there. Exported as an ENV VAR, not
+# `bundle config set` (--local would write .bundle/config under the
+# same root-owned RAILS_DIR; --global would write it under this user's
+# HOME, which is under /var/lib and therefore NOT durable on a
+# pivot-composed reboot — a config file that vanishes on the very next
+# boot would silently fall back to the default, root-owned,
+# never-populated vendor/bundle). BUNDLE_PATH is re-derived from
+# STATE_DIR every boot instead, so it never depends on anything
+# surviving a reboot except STATE_DIR itself (which rails-setup.sh
+# re-asserts every boot for exactly this reason).
+export BUNDLE_PATH="$STATE_DIR/vendor/bundle"
+export BUNDLE_WITHOUT="development:test"
+# rails-setup.sh (root) also persists these same two settings to
+# $STATE_DIR/.bundle/config, so an operator's OUT-OF-BAND
+# `bundle exec rails runner`/`console` (run manually, not via this unit)
+# resolves the same vendored gem path without needing to know/re-export
+# BUNDLE_PATH itself — just BUNDLE_APP_CONFIG, which this exports for
+# THIS process too, for the same reason the explicit exports above stay:
+# never depend on anything surviving a reboot except STATE_DIR itself.
+export BUNDLE_APP_CONFIG="$STATE_DIR/.bundle"
+
+# Non-blocking (review round): without this, bootsnap's default cache
+# dir resolves under RAILS_DIR (the module mount's writable overlay
+# upper, root-owned by default — nothing chowns it, unlike STATE_DIR).
+# bootsnap's own Store#dump_data rescues SystemCallError silently
+# (verified by reading vendor/bundle's bootsnap-1.24.6 source: a bare
+# `rescue SystemCallError` with an empty body) — so this is a SLOW-BOOT
+# regression, not a correctness one: every boot redoes the iseq/load-path
+# caching work it would otherwise persist across restarts. Point it at
+# STATE_DIR instead, the same durable, rails-owned root everything else
+# in this section already uses; bootsnap creates the subdirectory itself
+# on first write, so nothing here needs pre-creating it.
+export BOOTSNAP_CACHE_DIR="$STATE_DIR/bootsnap"
+if [ ! -d "$BUNDLE_PATH" ] || [ -z "$(ls -A "$BUNDLE_PATH" 2>/dev/null)" ]; then
   echo "[rails-start] Installing gems from vendored cache (offline)"
-  /usr/local/bin/bundle config set --local path 'vendor/bundle'
-  /usr/local/bin/bundle config set --local without 'development:test'
   /usr/local/bin/bundle install --local --jobs 4
 fi
 
@@ -305,11 +352,11 @@ fi
 # The marker lives in the durable STATE_DIR: on the ephemeral overlay upper it
 # vanished on every reboot, re-running the full first-boot seed forever.
 MIGRATED_MARKER=$STATE_DIR/.db-initialized
-# Carry over a marker written by a pre-STATE_DIR revision (persistent-root
-# hosts; no-op when STATE_DIR already is /var/lib/powernode-rails).
-if [ -f /var/lib/powernode-rails/.db-initialized ] && [ ! -f "$MIGRATED_MARKER" ]; then
-  mv /var/lib/powernode-rails/.db-initialized "$MIGRATED_MARKER"
-fi
+# The pre-STATE_DIR marker migration now runs in rails-setup.sh (root),
+# not here: the old /var/lib/powernode-rails location may be root-owned
+# from before this service dropped root, and this (non-root) process has
+# no permission to touch a root-owned file it doesn't own. Root has no
+# such problem, so the migration is reliable there instead of best-effort.
 if [ ! -f "$MIGRATED_MARKER" ]; then
   echo "[rails-start] db:migrate + first-admin bootstrap + db:seed (first boot)"
   /usr/local/bin/bundle exec rails db:migrate
@@ -391,14 +438,37 @@ if [ -d /etc/traefik ]; then
     TRAEFIK_CERT_DIR=/var/lib/powernode-traefik/certs
   fi
   echo "[rails-start] Ensuring host login ingress (self-signed, host-agnostic) -> $TRAEFIK_CERT_DIR"
+  # IMP-94977647c24c: both dirs already exist, root:traefik 2775 (setgid),
+  # created by rails-setup.sh. This process is a traefik-group member
+  # (see the manifest's users:/supplementary_groups:), so it can write
+  # into them and any NEW file it creates inherits the traefik group
+  # automatically (the setgid bit) — no chown needed here at all. The
+  # mkdir is a harmless no-op safety net (a hub-backend-only instance
+  # with no co-located traefik module has neither dir nor group; the
+  # outer `if [ -d /etc/traefik ]` already skips this whole block then).
   mkdir -p /etc/traefik/dynamic "$TRAEFIK_CERT_DIR" || true
-  cat > /tmp/ensure-host-login-ingress.rb <<RUBY
+  # review round (BLOCKER 3): this used to `cat >` a FIXED-name file under
+  # /tmp (/tmp/ensure-host-login-ingress.rb). /tmp is world-writable +
+  # sticky, so the name survives across every boot/restart regardless of
+  # which user created it — a prior ROOT-era run (before this service
+  # dropped root) leaves that file root-owned. The sticky bit stops
+  # rails from UNLINKING it, but grants no write access either: the
+  # O_WRONLY|O_TRUNC `cat >` then gets EACCES, and under this script's
+  # `set -euo pipefail` that kills rails-start before `exec puma` —
+  # every restart-without-reboot after the drop (a module refresh +
+  # `systemctl restart`, not a full reboot) crash-loops the backend. Feed
+  # the runner script on STDIN instead (a Rails `runner` feature: `-` in
+  # place of a filename) — no temp file, no name for a stale root-owned
+  # leftover to collide with, ever. Built into a variable (not inlined
+  # per-attempt) so the retry loop below can reuse it via a here-string.
+  ingress_ruby="$(cat <<RUBY
 result = Core::IngressConfigWriter.ensure_host_login_ingress!(
   dynamic_dir: "/etc/traefik/dynamic",
   cert_dir:    "${TRAEFIK_CERT_DIR}"
 )
 abort("host-login ingress file missing after write: #{result[:output_path]}") unless File.exist?(result[:output_path])
 RUBY
+)"
   # Verify+retry (ops-hub incident 2026-07-21): on a fresh boot, this
   # module-composed root is still being unioned together, and the
   # traefik module's own /etc/traefik layer can settle AFTER this script
@@ -411,7 +481,7 @@ RUBY
   ingress_ready=0
   for attempt in 1 2 3 4 5; do
     if POWERNODE_INGRESS_HOST="${POWERNODE_INGRESS_HOST:-$(hostname -f 2>/dev/null || hostname)}" \
-         /usr/local/bin/bundle exec rails runner /tmp/ensure-host-login-ingress.rb; then
+         /usr/local/bin/bundle exec rails runner - <<< "$ingress_ruby"; then
       ingress_ready=1
       break
     fi
@@ -419,10 +489,12 @@ RUBY
     sleep 2
   done
   if [ "$ingress_ready" = "1" ]; then
-    # The traefik service runs as User=traefik and must read the serving key
-    # (written 0600). chown the durable cert tree to it; best-effort so a
-    # missing user identity never aborts the boot.
-    chown -R traefik:traefik "$(dirname "$TRAEFIK_CERT_DIR")" 2>/dev/null || true
+    # IMP-94977647c24c: no chown here anymore — Core::IngressConfigWriter
+    # itself now writes the serving key group-readable by traefik
+    # (0640, chowned to the resolved traefik GID) when a "traefik" OS
+    # group exists; see that class's write_baseline_key!. This process
+    # has no chown capability at all post-drop (correctly — it doesn't
+    # need one).
     echo "[rails-start] host login ingress ready"
   else
     echo "[rails-start] host login ingress generation failed after retries (non-fatal — backend still starts)"
