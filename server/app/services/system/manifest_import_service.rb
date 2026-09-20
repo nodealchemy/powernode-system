@@ -905,6 +905,20 @@ module System
       mod.module_services.where.not(name: declared_names).destroy_all if declared_names.any?
       mod.module_services.destroy_all if services_yaml.empty?
 
+      # The module-level `security.capabilities` block (manifest.yaml's
+      # top-level `security:`, NOT per-service) is the CEILING every
+      # service's own `capabilities:` must stay within — see
+      # #validate_capability_ceiling! below for the full model. `dig` is
+      # nil-safe through both levels (no `security:` block, or a
+      # `security:` block with no `capabilities:` key), and `Array(nil)`
+      # is `[]` — an ABSENT ceiling means an EMPTY one (grant nothing),
+      # matching what buildPolicy already does on the agent side for a
+      # module with no security.capabilities. It must never mean
+      # "unrestricted": a privilege field defaulting to unlimited when a
+      # key is merely omitted is the wrong failure direction, and
+      # omitting the key is exactly what an author does by accident.
+      capability_ceiling = Array(manifest.dig("security", "capabilities"))
+
       service_records_by_name = {}
 
       services_yaml.each do |svc|
@@ -922,8 +936,17 @@ module System
         record.working_directory = svc["working_directory"]
         record.env           = svc["env"] || {}
         record.exposed_ports = svc["exposed_ports"] || []
-        record.capabilities  = svc["capabilities"] || []
+        # No `|| []` here (review follow-up, IMP-074fcd68284f): a service
+        # that never declares `capabilities:` must store nil (inherit
+        # the module ceiling above), distinct from one that declares
+        # `capabilities: []` (explicit zero) — `svc["capabilities"]` is
+        # already nil for a genuinely absent key, so this is the whole
+        # fix; no extra presence check needed. Coalescing both to `[]`
+        # is exactly what made them indistinguishable by the time this
+        # reached the agent.
+        record.capabilities  = svc["capabilities"]
         record.metadata      = svc["metadata"] || {}
+        validate_capability_ceiling!(mod, svc, record, capability_ceiling)
 
         health = svc["health"] || {}
         record.health_endpoint              = health["endpoint"]
@@ -1038,6 +1061,36 @@ module System
       desired_group_ids.each do |gid|
         ::System::ModuleUserDeclaration.find_or_create_by!(node_module_id: mod.id, service_group_id: gid)
       end
+    end
+
+    # Refuses a service whose declared capabilities exceed its module's
+    # ceiling (IMP-074fcd68284f, stage 1 of the per-service Linux
+    # capabilities design). Module `security.capabilities` is a CEILING
+    # for every unit the module owns; a service's own `capabilities:` is
+    # that unit's EFFECTIVE set and must be a SUBSET of the ceiling —
+    # never a union, override, or silent intersection (see the
+    # capability_ceiling comment above #apply_services for why each of
+    # those was rejected; silent intersection in particular reproduces
+    # the outage this design exists to prevent: a service asks for
+    # CAP_CHOWN, the module lacks it, something strips it quietly, and
+    # root takes EPERM from a drop-in that looks correct).
+    #
+    # `record.capabilities` nil (the service never declared the key) is
+    # always valid — it means "inherit the whole ceiling", not a
+    # narrower set to check. Only a NON-nil value (explicit `[]` or a
+    # real list) is checked against the ceiling, which is itself already
+    # normalized to an Array by the caller (never nil), so this never
+    # raises NoMethodError on a ceiling-less module — it correctly
+    # refuses ANY service-level capability under one instead.
+    def validate_capability_ceiling!(mod, svc, record, capability_ceiling)
+      return if record.capabilities.nil?
+
+      excess = record.capabilities - capability_ceiling
+      return if excess.empty?
+
+      raise ImportError,
+            "services[#{svc['name']}].capabilities #{excess.inspect} exceed module #{mod.name.inspect}'s " \
+            "security.capabilities ceiling #{capability_ceiling.inspect}"
     end
 
     # Assigns the right user-source field on a ModuleService row from

@@ -193,7 +193,18 @@ module System
           working_directory:             svc.working_directory,
           env:                           svc.env || {},
           exposed_ports:                 svc.exposed_ports || [],
-          capabilities:                  svc.capabilities || [],
+          # No `|| []` here (IMP-074fcd68284f) — `svc.capabilities` nil
+          # ("inherit the module's security.capabilities ceiling") must
+          # reach the agent as JSON `null`/an absent key, distinct from
+          # an explicit `[]` ("grant nothing"). Confirmed this survives
+          # the render pipeline: ApiResponse#sanitize_for_json only
+          # transforms VALUES (Hash#transform_values), it never strips a
+          # nil-valued key, so this reaches the wire as `"capabilities":
+          # null` — and Go's json.Unmarshal treats a JSON null and an
+          # absent key identically for a []string field (both leave it
+          # nil), so either wire shape resolves correctly on the agent
+          # side. See spec/serializers/... for the pinned contract.
+          capabilities:                  svc.capabilities,
           health_endpoint:               svc.health_endpoint,
           health_method:                 svc.health_method,
           health_interval_seconds:       svc.health_interval_seconds,

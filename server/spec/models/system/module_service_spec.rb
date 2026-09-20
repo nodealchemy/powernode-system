@@ -102,12 +102,23 @@ RSpec.describe System::ModuleService, type: :model do
   end
 
   describe "jsonb default initialization" do
-    it "initializes env, exposed_ports, capabilities, metadata to safe defaults" do
+    it "initializes env, exposed_ports, metadata to safe defaults" do
       svc = described_class.new
       expect(svc.env).to eq({})
       expect(svc.exposed_ports).to eq([])
-      expect(svc.capabilities).to eq([])
       expect(svc.metadata).to eq({})
+    end
+
+    # IMP-074fcd68284f — deliberately NOT [] here, unlike its jsonb
+    # siblings above. nil is a real, distinct value: "this service
+    # inherits its module's security.capabilities ceiling", not "not
+    # yet set". A default of [] would silently make every new,
+    # never-explicitly-set row mean "explicit zero" instead — the
+    # opposite of what an author who never wrote `capabilities:`
+    # intended, and the opposite of what buildPolicy already does for a
+    # module with no ceiling at all.
+    it "leaves capabilities nil rather than defaulting to [] — nil and [] are different declarations here" do
+      expect(described_class.new.capabilities).to be_nil
     end
   end
 end
