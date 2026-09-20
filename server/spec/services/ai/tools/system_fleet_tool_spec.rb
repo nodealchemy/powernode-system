@@ -854,6 +854,42 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-7e08feaf4ebf / IMP-095a5fe91b4a. delete_node's InvalidForeignKey
+  # rescue interpolated the raw driver message straight into its
+  # error_result — the exact leak class the parent security work exists to
+  # close, in a rescue arm the exception-forwarding scanner had not reached
+  # yet. The guidance sentence itself is real and safe (system_destroy_instance
+  # is a declared action, verified rather than assumed) and must survive;
+  # only the interpolated driver text goes.
+  describe "system_delete_node InvalidForeignKey (IMP-7e08feaf4ebf)" do
+    it "does not forward the raw FK violation message" do
+      auto_approve_policy!
+      n = create(:system_node, account: account, node_template: template, name: "fk-node")
+      raw = 'PG::ForeignKeyViolation: ERROR:  update or delete on table "system_nodes" violates ' \
+            'foreign key constraint "fk_rails_abc123" on table "system_node_instances"'
+      allow_any_instance_of(System::Node).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+
+      r = call("system_delete_node", node_id: n.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq(
+        "FK blocks destroy — destroy underlying NodeInstances first via system_destroy_instance"
+      )
+      expect(r[:error]).not_to include("fk_rails_abc123")
+      expect(r[:error]).not_to include("PG::ForeignKeyViolation")
+    end
+
+    it "still logs the raw FK violation server-side" do
+      auto_approve_policy!
+      n = create(:system_node, account: account, node_template: template, name: "fk-node-log")
+      raw = 'PG::ForeignKeyViolation: ERROR:  ... constraint "fk_rails_xyz789" ...'
+      allow_any_instance_of(System::Node).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+      expect(Rails.logger).to receive(:warn).with(a_string_including("fk_rails_xyz789"))
+
+      call("system_delete_node", node_id: n.id)
+    end
+  end
+
   describe "Templates" do
     let!(:other_account_template) { create(:system_node_template, account: create(:account)) }
 
@@ -1688,6 +1724,44 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       r = call("system_unmark_module_canary", module_id: m.id)
       expect(r[:success]).to be true
       expect(System::Honeypot::CanaryModuleService.canary?(node_module: m.reload)).to be false
+    end
+  end
+
+  # IMP-7e08feaf4ebf. delete_module's InvalidForeignKey rescue had NO
+  # guidance at all, just the bare driver message — unlike delete_node's
+  # arm, there was nothing safe to preserve. Traced the actual blocker
+  # (schema.rb + System::NodeModule's associations) rather than writing a
+  # generic line: system_slo_definitions has an FK on node_module_id with
+  # neither on_delete: :cascade nor a corresponding has_many on NodeModule
+  # — the one uncovered association among nine, and the real cause. No MCP
+  # action manages SLO definitions to point to by name, so the message
+  # names the real obstacle without inventing one.
+  describe "system_delete_module InvalidForeignKey (IMP-7e08feaf4ebf)" do
+    it "does not forward the raw FK violation message" do
+      auto_approve_policy!
+      m = create(:system_node_module, account: account, node_platform: platform_record,
+                 category: category, name: "fk-module")
+      raw = 'PG::ForeignKeyViolation: ERROR:  update or delete on table "system_node_modules" violates ' \
+            'foreign key constraint "fk_rails_def456" on table "system_slo_definitions"'
+      allow_any_instance_of(System::NodeModule).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+
+      r = call("system_delete_module", module_id: m.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("FK blocks destroy — remove dependent SLO definitions for this module first")
+      expect(r[:error]).not_to include("fk_rails_def456")
+      expect(r[:error]).not_to include("PG::ForeignKeyViolation")
+    end
+
+    it "still logs the raw FK violation server-side" do
+      auto_approve_policy!
+      m = create(:system_node_module, account: account, node_platform: platform_record,
+                 category: category, name: "fk-module-log")
+      raw = 'PG::ForeignKeyViolation: ERROR:  ... constraint "fk_rails_ghi012" ...'
+      allow_any_instance_of(System::NodeModule).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+      expect(Rails.logger).to receive(:warn).with(a_string_including("fk_rails_ghi012"))
+
+      call("system_delete_module", module_id: m.id)
     end
   end
 

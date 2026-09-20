@@ -3534,7 +3534,11 @@ module Ai
         node.destroy!
         success_result(deleted: true, node_id: params[:node_id], name: name, instances_cascaded: instance_count)
       rescue ActiveRecord::InvalidForeignKey => e
-        error_result("FK blocks destroy — destroy underlying NodeInstances first via system_destroy_instance: #{e.message}")
+        # IMP-7e08feaf4ebf. The guidance is real and safe (system_destroy_instance
+        # is a declared action, verified rather than assumed); only the raw
+        # driver message — table/constraint names — is dropped.
+        Rails.logger.warn("[SystemFleetTool] delete_node blocked by FK: #{e.message}")
+        error_result("FK blocks destroy — destroy underlying NodeInstances first via system_destroy_instance")
       end
 
       # IMP-259f180d9af6 — the primitive that completes the reuse-first loop:
@@ -4102,7 +4106,20 @@ module Ai
         success_result(deleted: true, module_id: params[:module_id], name: name,
                        versions_cascaded: versions, assignments_cascaded: assignments)
       rescue ActiveRecord::InvalidForeignKey => e
-        error_result("FK blocks destroy: #{e.message}")
+        # IMP-7e08feaf4ebf. Traced the actual blocker rather than dropping a
+        # generic line: system_slo_definitions has an FK on node_module_id
+        # with neither on_delete: :cascade nor a has_many on NodeModule —
+        # the one uncovered association among nine (versions,
+        # node_module_assignments, template_modules,
+        # module_puppet_assignments, module_dependencies,
+        # dependent_relationships, package_module_link, module_services,
+        # module_user_declarations, sudoers_grants, child_modules,
+        # environment_pins are all either dependent: :destroy or
+        # on_delete: :cascade). No MCP action manages SLO definitions to
+        # point to by name (a wrong action name would be worse than none),
+        # so this names the obstacle without inventing a pointer.
+        Rails.logger.warn("[SystemFleetTool] delete_module blocked by FK: #{e.message}")
+        error_result("FK blocks destroy — remove dependent SLO definitions for this module first")
       end
 
       # IMP-cdf18862a7c1 — the STATUS arm refuses, the silence arm warns.
