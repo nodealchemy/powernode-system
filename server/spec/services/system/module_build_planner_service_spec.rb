@@ -575,6 +575,65 @@ RSpec.describe System::ModuleBuildPlannerService do
       }.to raise_error(System::ModuleBuildPlannerService::PlanningError, /Gitea compare/)
     end
 
+    # IMP-1a5c145c24eb — the test above proves PlanningError is raised and its
+    # message mentions "Gitea compare" (present before AND after this fix, so
+    # it can't discriminate the change). Reviewer round 3, design decision P1:
+    # status-only on BOTH branches — a structured (Hash) body's message/error
+    # field is STILL infrastructure-authored (a WAF/gateway can put an
+    # internal hostname straight into it), so it goes to the log only, never
+    # the raised message, on EITHER branch. Each test uses a UNIQUE token so
+    # absence can be asserted concretely, not by shape.
+
+    it "forwards only the status code when the upstream body is structured (Hash) — the field goes to the log only" do
+      fake_client = instance_double(Devops::Git::GiteaApiClient)
+      allow(Devops::Git::ApiClient).to receive(:for).and_return(fake_client)
+      unique_token = "internal-gitea-upstream-01.example.test-#{SecureRandom.hex(4)}"
+      allow(fake_client).to receive(:compare_commits)
+        .and_raise(Devops::Git::ApiClient::ServerError.new(
+          "Server error (502): proxying to #{unique_token} failed",
+          502,
+          { "message" => "proxying to #{unique_token} failed" }
+        ))
+      expect(Rails.logger).to receive(:warn).with(a_string_including(unique_token))
+
+      expect {
+        described_class.plan(base_sha: base_sha, head_sha: head_sha)
+      }.to raise_error(System::ModuleBuildPlannerService::PlanningError) { |e|
+        expect(e.message).to include("Gitea compare")
+        expect(e.message).to include("status 502")
+        expect(e.message).not_to include(unique_token)
+        expect(e.message).not_to include("Devops::Git::ApiClient::ServerError")
+        # P2 (reviewer-mutated the bound onto the composed string last round,
+        # and all three specs passed because nothing asserted the tail) — the
+        # actionable guidance must SURVIVE, a positive assertion, not just an
+        # absence one.
+        expect(e.message).to include("pass source_repo")
+        expect(e.message).to include(System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT)
+      }
+    end
+
+    it "forwards only the status code when the upstream body is non-JSON (HTML proxy page) — same as the Hash branch" do
+      fake_client = instance_double(Devops::Git::GiteaApiClient)
+      allow(Devops::Git::ApiClient).to receive(:for).and_return(fake_client)
+      unique_token = "UPSTREAM-HOST-internal-gitea-01.example.test:3000-#{SecureRandom.hex(4)}"
+      html_body = ("<html><body>Bad Gateway</body></html> " * 10) + unique_token
+      allow(fake_client).to receive(:compare_commits)
+        .and_raise(Devops::Git::ApiClient::ServerError.new("Server error (502): #{html_body}", 502, html_body))
+      expect(Rails.logger).to receive(:warn).with(a_string_including(unique_token))
+
+      expect {
+        described_class.plan(base_sha: base_sha, head_sha: head_sha)
+      }.to raise_error(System::ModuleBuildPlannerService::PlanningError) { |e|
+        expect(e.message).to include("Gitea compare")
+        expect(e.message).to include("status 502")
+        expect(e.message).not_to include(unique_token)
+        expect(e.message).not_to include("Devops::Git::ApiClient::ServerError")
+        expect(e.message).not_to include("<html>")
+        expect(e.message).to include("pass source_repo")
+        expect(e.message).to include(System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT)
+      }
+    end
+
     # HARD-FAIL guard: a real commit range that returns zero changed files (via
     # both the compare list AND the per-commit walk) is the silent-diff-failure
     # signature the whole increment exists to catch — the batch must fail loudly

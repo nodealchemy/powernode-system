@@ -676,8 +676,20 @@ module System
 
       files
     rescue ::Devops::Git::ApiClient::ApiError => e
+      # IMP-1a5c145c24eb — reviewer round 3, design decision P1 (operator
+      # call, not a mechanical fix): status-only on BOTH branches, not just
+      # the non-JSON one. The task objective names upstream API bodies
+      # explicitly, and a structured (Hash) body's message/error field is
+      # STILL infrastructure-authored, not app-authored — a JSON-speaking
+      # gateway or WAF can put an internal hostname straight into it, head-
+      # first, exactly where a bound would have kept it. Only the STATUS
+      # CODE — which still distinguishes what an agent can act on (404:
+      # check the shas/repo; 401: credentials; 5xx: infrastructure, retry or
+      # escalate) — reaches the caller. The structured field goes to the log
+      # only, for whoever debugs the failure.
+      Rails.logger.warn("[ModuleBuildPlannerService] Gitea compare failed: #{e.message}")
       raise PlanningError,
-            "Gitea compare of #{repo_full_name} #{base_sha}..#{head_sha} failed: #{e.class}: #{e.message} " \
+            "Gitea compare of #{repo_full_name} #{base_sha}..#{head_sha} failed: status #{e.status} " \
             "— if these shas live in a different repo, pass source_repo (core changes need " \
             "source_repo: #{CORE_SOURCE_REPO_DEFAULT})"
     end
