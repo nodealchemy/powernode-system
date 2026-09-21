@@ -39,6 +39,23 @@ RSpec.describe Ai::Tools::SystemBlastRadiusTool do
       expect(result[:success]).to be false
       expect(result[:error]).to include("no-such-node-anywhere")
     end
+
+    # IMP-1a5c145c24eb — BlastRadiusService#trace has no raises of its own;
+    # anything reaching the tool's blanket StandardError arm is incidental
+    # (AR/traversal internals), so it must not forward #{e.class}: #{e.message}
+    # verbatim as it did before this fix.
+    it "sanitizes an unexpected exception rather than forwarding class+message, and still logs it" do
+      allow_any_instance_of(::System::BlastRadiusService).to receive(:trace)
+        .and_raise(NoMethodError, "undefined method `node_instances' for nil:NilClass")
+      expect(Rails.logger).to receive(:error).with(/NoMethodError.*node_instances.*nil:NilClass/)
+
+      result = tool.execute(params: { node: "ops-hub" })
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("NoMethodError")
+      expect(result[:error]).not_to include("node_instances")
+      expect(result[:error]).to eq("blast-radius computation failed")
+    end
   end
 
   describe "registry wiring" do

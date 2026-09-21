@@ -54,8 +54,12 @@ module Ai
         service = ::System::BlastRadiusService.new(account: account)
         service.trace(node)
       rescue StandardError => e
-        Rails.logger.error("[SystemBlastRadiusTool] #{e.class}: #{e.message}")
-        error_result("blast-radius computation failed: #{e.class}: #{e.message}")
+        # IMP-1a5c145c24eb — BlastRadiusService#trace has no raises of its
+        # own, so anything reaching here is incidental (AR/traversal
+        # internals across many models) — never a confirmed-safe raiser.
+        # Logged in full server-side; the caller gets a safe, still-useful
+        # label without the class/message that used to ride along with it.
+        rescued_error_result(e, message: "blast-radius computation failed")
       end
     end
   end
