@@ -122,11 +122,47 @@ fi
 #     BUNDLE_APP_CONFIG at this file instead of relying on the service's
 #     env. Idempotent: rewritten every boot so a STATE_DIR path change
 #     (mountpoint gained/lost) is never left stale.
+#
+# BUNDLE_FROZEN (IMP-01a0c508-0121 part 2): RAILS_DIR (/opt/powernode/server)
+# is the erofs-backed module mount (root:root, read-only lower) — see the
+# header comment above re: why bundler state was moved OUT of it in the
+# first place. Bundler still tries to WRITE Gemfile.lock on every
+# `Bundler.setup` whenever its computed lock content differs even slightly
+# from what's on disk (whitespace, BUNDLED WITH version, platform list),
+# and that `File.open(path, "wb")` in bundler/definition.rb#write_lock hits
+# EACCES on the read-only mount — observed live on ops-hub: rails
+# crash-looped (NRestarts=20) on "Permission denied @ rb_sysopen -
+# /opt/powernode/server/Gemfile.lock (Errno::EACCES)". Do NOT fix this by
+# chowning RAILS_DIR: erofs-backed, and a `chown -R` there forces copy-up
+# of every inode into the writable overlay upper (measured live: ~480M for
+# one recursive chown) — the bundler-state move this script already makes
+# is deliberate, not incidental.
+#
+# Verified against the vendored bundler-2.7.1 source (not assumed):
+# `frozen` is a Settings::BOOL_KEYS entry (settings.rb), so a YAML config
+# key of `BUNDLE_FROZEN` — the same "prefix the upcased setting name with
+# BUNDLE_" transform `Settings.key_for` applies to every other key here
+# (`path` -> BUNDLE_PATH, `without` -> BUNDLE_WITHOUT) — sets
+# `Bundler.settings[:frozen]`, and `Bundler.frozen_bundle?` reads exactly
+# that key (bundler.rb, falling back to `:deployment` only if `:frozen` is
+# unset). `Definition#write_lock` (definition.rb) checks
+# `Bundler.frozen_bundle?` BEFORE ever calling `File.open` — both when the
+# computed lock content is unchanged (returns before the `FileUtils.touch`)
+# and when it differs (logs "Cannot write a changed lockfile while frozen."
+# and returns) — so the EACCES path is never reached either way. This
+# config file IS what rails actually resolves at runtime, not just an
+# out-of-band convenience: rails-start.sh exports
+# `BUNDLE_APP_CONFIG="$STATE_DIR/.bundle"`, and Bundler's own
+# `app_config_path`/`local_config_file` (bundler.rb, settings.rb) read the
+# config file at exactly `$BUNDLE_APP_CONFIG/config` — this file's actual
+# path — ahead of the `env` config layer in `Settings#[]`'s lookup order,
+# so this takes effect regardless of what ENV also happens to export.
 mkdir -p "$STATE_DIR/.bundle"
 cat > "$STATE_DIR/.bundle/config" <<EOF
 ---
 BUNDLE_PATH: "$BUNDLE_STATE_DIR"
 BUNDLE_WITHOUT: "development:test"
+BUNDLE_FROZEN: "true"
 EOF
 
 # FATAL: STATE_DIR itself and the two secrets files rails reads at boot.
@@ -324,6 +360,194 @@ if [ -d "$AGENT_PKI_PARENT" ]; then
   fi
 else
   echo "[rails-setup] no agent PKI dir at $AGENT_PKI_PARENT — no enrolled mTLS material yet, skipping"
+fi
+
+# --- OCI blob proxy cache dir (IMP-01a0c508-0121 part 1). Rails
+#     (RAILS_USER) serves /api/v1/system/node_api/files/modules/<id> and
+#     must CREATE "<digest>.lock"/"<digest>.cfs" entries in
+#     System::OciBlobProxyService::CACHE_ROOT on every blob fetch. A
+#     directory that pre-existed root:root 0755 (created by a prior
+#     root-run boot, before the non-root migration) blocks every write
+#     with EACCES — observed live on ops-hub: "OCI blob fetch failed:
+#     Errno::EACCES ... /persist/powernode-oci-cache/<digest>.lock",
+#     silently 502ing every agent module/blob fetch (module delivery had
+#     been dead since 2026-09-20).
+#
+#     CROSS-FILE CONTRACT, not a hardcoded literal (review round —
+#     hardcoding the flat "/persist/powernode-oci-cache" path here was
+#     WRONG: it happens to be right for ops-hub TODAY only because
+#     POWERNODE_OCI_CACHE_DIR is set out-of-band there). Mirrors ONLY the
+#     UNSET-OVERRIDE fallback of OciBlobProxyService.default_cache_root
+#     (oci_blob_proxy_service.rb:79-84):
+#       1. /persist/var/lib/powernode/oci-cache when /persist EXISTS —
+#          `[ -d /persist ]`, not this script's usual `mountpoint -q`,
+#          deliberately: matching File.directory?("/persist"), the exact
+#          check the Ruby class itself makes, not this script's own
+#          pivot-boot idiom;
+#       2. else /var/lib/powernode/oci-cache.
+#     spec/scripts/rails_setup_root_prep_spec.rb pins this against the
+#     ACTUAL literals read out of oci_blob_proxy_service.rb, not
+#     hand-copied constants, so a change to that method's defaults fails
+#     this spec until mirrored here.
+#
+#     DELIBERATELY DOES NOT resolve or act on an explicit
+#     POWERNODE_OCI_CACHE_DIR override, even though the Ruby class itself
+#     honors one (review round, F2 — two earlier attempts at this, a sed
+#     parse and then a `.`-sourced subshell, were both REMOVED; do not
+#     reintroduce either):
+#
+#       backend-default.conf is NOT root-controlled. This script chowns it
+#       to $RAILS_USER itself (see the secrets block above), and
+#       rails-start.sh WRITES it as that non-root user. So:
+#         - SOURCING it from this root script would execute
+#           rails-written code AS ROOT on the next boot — a privilege
+#           escalation in the one script that is the root half of the
+#           drop-root split.
+#         - PARSING it is safe to READ, but the value then became the
+#           argument of a root `chown`. POWERNODE_OCI_CACHE_DIR=/etc would
+#           hand $RAILS_USER ownership of /etc. The escalation is in the
+#           CHOWN, not the parse, so a better parser does not fix it.
+#
+#     Therefore this script chowns ONLY paths it hardcodes itself, and no
+#     conf-derived value ever reaches a privileged operation. A custom
+#     override is DETECTED and WARNED ABOUT (below), never acted on.
+#     Do not reintroduce a read that feeds $OCI_CACHE_DIR.
+#
+#     The same escalation via POWERNODE_CA_LOCAL_DIR -> `chown -R` earlier
+#     in this file is pre-existing and tracked separately
+#     (IMP 01a0c53e-2374); deliberately untouched here.
+if [ -d /persist ]; then
+  OCI_CACHE_DIR=/persist/var/lib/powernode/oci-cache
+else
+  OCI_CACHE_DIR=/var/lib/powernode/oci-cache
+fi
+echo "[rails-setup] OCI blob cache dir resolved to $OCI_CACHE_DIR"
+
+# WARN-ONLY override detection — never a chown/mkdir input (see above).
+# Trigger is the KEY'S PRESENCE, not a parsed value: `grep -q` for the
+# bare key name preceded by start-of-line OR whitespace — deliberately
+# NOT anchored to "only an optional `export ` prefix may precede it",
+# which is exactly the shape a value-oriented parse gets wrong. `export
+# FOO=1 POWERNODE_OCI_CACHE_DIR=/x` sharing one line has a SECOND
+# assignment, not just an export prefix, between the start of the line
+# and our key — a stricter anchor would silently miss it (reads as
+# "not present"), producing neither a warning nor a chown. This looser
+# presence check still fires because the key is preceded by whitespace,
+# regardless of what precedes THAT.
+if [ -f "$STATE_DIR/backend-default.conf" ] && \
+   grep -qE '(^|[[:space:]])POWERNODE_OCI_CACHE_DIR=' "$STATE_DIR/backend-default.conf" 2>/dev/null; then
+  oci_cache_override_hint="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?POWERNODE_OCI_CACHE_DIR=//p' \
+    "$STATE_DIR/backend-default.conf" 2>/dev/null | tail -n1)"
+  echo "[rails-setup] WARNING: POWERNODE_OCI_CACHE_DIR is set in $STATE_DIR/backend-default.conf (value: ${oci_cache_override_hint:-<unparsed>}) — ownership of a custom OCI cache root is NOT managed by this script (root cannot safely act on a value from a file a non-root process writes); module delivery will 502 with EACCES on that path until an operator fixes its ownership by hand" >&2
+fi
+
+# --- M1 safety: the nested default's parent, /persist/var/lib/powernode,
+#     is the SAME directory the agent-PKI block above deliberately hardens
+#     to 0710 root:$RAILS_USER — but that block only fixes an EXISTING
+#     parent's ownership/mode (a fresh, not-yet-enrolled host takes the
+#     "no agent PKI dir ... skipping" branch and creates nothing) and has
+#     ALREADY RUN by the time this section executes (it's textually
+#     earlier), so it will not run again to fix what this section creates.
+#     A plain `mkdir -p` of the nested OCI_CACHE_DIR below would then
+#     create /persist/var/lib/powernode itself as root:root 0755 — WIDER
+#     than the hardening this script exists to enforce, silently exposing
+#     the agent's state root (state.json, boot-slot.json, hostname,
+#     modules/) to listing on a fresh host (keys stay 0600 regardless —
+#     this is a listability regression, not key exposure). Scoped to
+#     exactly the nested path (the flat legacy path and the /var/lib
+#     fallback share no such security-relevant parent) and to "parent
+#     doesn't exist yet" — an existing parent was already handled above,
+#     regardless of which mountpoint-vs-directory check produced it (that
+#     block uses `mountpoint -q /persist`, this section uses `[ -d
+#     /persist ]` to match the Ruby class — so "/persist exists but isn't
+#     a mountpoint" can reach here on a parent the block above never
+#     touched; this check is self-contained and covers that case too).
+if [ "$OCI_CACHE_DIR" = "/persist/var/lib/powernode/oci-cache" ] && [ ! -d /persist/var/lib/powernode ]; then
+  mkdir -p /persist/var/lib/powernode
+  chgrp "$RAILS_USER" /persist/var/lib/powernode 2>/dev/null || true
+  chmod 0710 /persist/var/lib/powernode 2>/dev/null || true
+fi
+
+# --- Ownership sweep helper (REVIEW ROUND, F1): chowning only the
+#     directory NODE is insufficient. OciBlobProxyService#with_cache_lock
+#     opens each "<digest>.lock" with File::RDWR | File::CREAT
+#     (oci_blob_proxy_service.rb:355-358) and nothing ever unlinks one —
+#     RDWR on an EXISTING root-owned file raises EACCES even once the
+#     directory itself is rails-owned, so every lock file left over from
+#     the root era keeps 502ing regardless of the directory fix above.
+#     Mirrors the STATE_DIR sweep idiom a few sections up (find + per-entry
+#     chown + fixed/failed counters) rather than a blind `chown -R`: only
+#     touches entries that actually need fixing and self-reports what it
+#     did, matching this file's own established style. Non-fatal, same as
+#     everything else in this section — a stray unchownable cache entry
+#     must not take rails-setup down with it.
+#
+#     `! -type l` (review round): `find ... -print0` lists a symlink ENTRY
+#     itself without descending into it, and a bare `chown` on a symlink
+#     argument follows it to the REFERENT. This cache dir is
+#     rails-writable (that's the whole point of this section), so a rails
+#     process — buggy or compromised — could drop a symlink to an
+#     arbitrary root-owned path inside it; the next boot's sweep would
+#     then hand $RAILS_USER ownership of whatever that link points at.
+#     Excluding symlink entries outright closes that without needing to
+#     reason about `-h`/`-P`/`-L` chown semantics per entry. Deliberately
+#     scoped to THIS new sweep only — the pre-existing STATE_DIR sweep a
+#     few sections up and the CA store's `chown -R` carry the same shape
+#     and are tracked as their own separate finding, not this one.
+sweep_ownership_for_rails() {
+  local target="$1"
+  local fixed=0 failed=0
+  while IFS= read -r -d '' entry; do
+    if chown "$RAILS_USER:$RAILS_USER" "$entry" 2>/dev/null; then
+      fixed=$((fixed + 1))
+    else
+      failed=$((failed + 1))
+      echo "[rails-setup] WARNING: could not fix ownership of $entry" >&2
+    fi
+  done < <(find "$target" ! -type l \( ! -user "$RAILS_USER" -o ! -group "$RAILS_USER" \) -print0 2>/dev/null)
+  echo "[rails-setup] ownership sweep for $target: fixed=$fixed failed=$failed"
+}
+
+# --- Simple ownership-only directories: no chmod, non-fatal on failure. A
+#     single shared list (not a bare inline enumeration) so a future
+#     addition of the SAME shape can't add the create/chown step here
+#     without the spec's parity check also seeing it — a bare enumeration
+#     is exactly what let two prior write paths (STATE_DIR, the internal
+#     CA store) drift out of sync with what this script actually chowned,
+#     each needing its own review round to catch (IMP-94977647c24c). Each
+#     entry is a fully-resolved absolute path; the resolution logic for
+#     each lives where it's computed (above, for the OCI cache dir) — this
+#     array and loop only own the "make it exist, make rails own it (node
+#     AND contents), never abort the boot over it" part.
+RAILS_OWNED_PERSIST_SIBLINGS=(
+  "$OCI_CACHE_DIR"
+)
+for dir in "${RAILS_OWNED_PERSIST_SIBLINGS[@]}"; do
+  if mkdir -p "$dir" 2>/dev/null && chown "$RAILS_USER:$RAILS_USER" "$dir" 2>/dev/null; then
+    echo "[rails-setup] ownership ok: $dir"
+    sweep_ownership_for_rails "$dir"
+  else
+    echo "[rails-setup] WARNING: could not create/chown $dir" >&2
+  fi
+done
+
+# Legacy flat layout adoption: this deployment's OCI cache may already
+# live at the flat /persist/powernode-oci-cache path (a hand-set
+# POWERNODE_OCI_CACHE_DIR override, or a pre-move layout) even though this
+# script no longer resolves or acts on that override (see above). ADOPT
+# the directory if it already EXISTS — the `[ -d ]` test below, not a
+# content check — and never CREATE it: a fresh host has no reason to grow
+# a second, unreferenced cache root next to the one Rails will actually
+# use. Sweeps CONTENTS too (F1), same as the primary resolved path above —
+# this is exactly the path that was chowned by hand on ops-hub, contents
+# included.
+if [ -d /persist/powernode-oci-cache ] && [ "$OCI_CACHE_DIR" != "/persist/powernode-oci-cache" ]; then
+  if chown "$RAILS_USER:$RAILS_USER" /persist/powernode-oci-cache 2>/dev/null; then
+    echo "[rails-setup] legacy flat OCI cache dir ownership ok: /persist/powernode-oci-cache"
+    sweep_ownership_for_rails /persist/powernode-oci-cache
+  else
+    echo "[rails-setup] WARNING: could not chown legacy flat OCI cache dir /persist/powernode-oci-cache" >&2
+  fi
 fi
 
 # config/database.yml — see the header comment above re: build-time vs.

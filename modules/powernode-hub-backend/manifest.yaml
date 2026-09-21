@@ -219,7 +219,47 @@ users:
     supplementary_groups: [traefik]
 
 security:
-  capabilities: []
+  # CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE — rails-setup.sh (the root-only
+  # prep unit, IMP-94977647c24c part A) does unconditional chown/chmod
+  # under `set -e` starting at :183-184 (STATE_DIR + the two secrets
+  # files), and throughout the rest of the script (the internal CA store,
+  # the OCI blob cache dir, the traefik ingress dirs, the agent-PKI
+  # parent). Root without these capabilities gets EPERM on plain ext4 —
+  # "root ignores Unix permission bits" is true only while it HOLDS them.
+  # The agent renders THIS list into a per-unit
+  # CapabilityBoundingSet=/AmbientCapabilities= drop-in: an empty list left
+  # rails-setup at uid 0 with CapEff=0, so it died at :183-184 before the
+  # executable-bit fix (landed elsewhere this same round) ever mattered,
+  # and rails' `Requires=` on rails-setup then CANCELLED rails' own start
+  # job. A "root-only prep" unit with no root capabilities.
+  #
+  # The only reason this has worked on ops-hub is a HAND-APPLIED
+  # /etc/systemd/system/<unit>.d/zz-operator-restore-caps.conf from the
+  # 2026-09-20 incident, itself commented "TEMPORARY: the agent overwrites
+  # drop-ins on reconcile. The durable fix is the module manifest security
+  # policy." That drop-in lives in /run/powernode/scratch/upper — tmpfs,
+  # gone on reboot; ops-hub has been one reboot away from rails-setup
+  # dying at :183-184 since that incident.
+  #
+  # This MUST stay in the TOP-LEVEL security block, not a per-service
+  # `capabilities:` key: agent buildPolicy reads
+  # config["security"]["capabilities"] and applies ONE module-level policy
+  # to every unit in the module (reconcile.go: `for _, unit := range
+  # mf.UnitNames()`) — a per-service key never reaches the drop-in, so
+  # granting it there is a no-op that reads exactly like a fix. Same
+  # defect shape as hub-worker's CAP_DAC_READ_SEARCH grant in this
+  # manifest's sibling module (see that manifest's own comment for the
+  # parallel incident). Pinned by
+  # spec/integration/system/hub_backend_services_spec.rb.
+  #
+  # This exact set is EMPIRICAL, not guessed: it is what the operator's
+  # restore drop-in grants, and `systemctl show` on the live unit confirms
+  # cap_chown, cap_dac_override, cap_fowner in its effective set. Do not
+  # add more without the same live verification.
+  capabilities:
+    - CAP_CHOWN
+    - CAP_FOWNER
+    - CAP_DAC_OVERRIDE
   # The Rails backend calls OUT to Gitea's API directly
   # (System::DevCellBootstrapService's per-repo deploy-key provisioning,
   # disk-image CI's Gitea Actions dispatch/webhook flow), but that host is
