@@ -312,6 +312,12 @@ module Ai
         # Toggle a NodeModuleAssignment's enabled flag (mirrors the
         # NodeModuleAssignmentsController enable/disable member actions).
         "system_update_module_assignment"      => "system.modules.update",
+        # The node-level half. Reading takes system.modules.read — the REST
+        # read of an assignment (NodeModuleAssignmentsController#show) and the
+        # node-scoped module index both gate there; creating takes the same
+        # system.modules.update as the enable/disable toggle beside it.
+        "system_list_node_module_assignments"  => "system.modules.read",
+        "system_assign_module_to_node"         => "system.modules.update",
 
         # === Gap remediation slice 3 — pool ops + canary marking ===
         "system_return_pooled_instance"        => "system.instances.control",
@@ -344,6 +350,10 @@ module Ai
         # dispatched — unable to stop it, which is the whole finding. Its own
         # permission is registered to admin/manager alongside ...read.
         "system_cancel_module_build_batch"           => "system.module_builds.cancel",
+        # Same reasoning as cancel: the operator's recovery when the worker's
+        # sweep is not running, so its own admin/owner/manager permission
+        # rather than the worker-only ...dispatch.
+        "system_readvance_module_build_batch"        => "system.module_builds.readvance",
         # Operator recovery after a bad publish — admin-granted, not worker.
         "system_rollback_module_version"             => "system.modules.rollback",
 
@@ -647,6 +657,7 @@ module Ai
       declare_action "system_acquire_pooled_instance", mutating: true
       declare_action "system_agent_fleet_status", mutating: false
       declare_action "system_approve_storage_migration", mutating: true
+      declare_action "system_assign_module_to_node", mutating: true
       declare_action "system_assign_module_to_template", mutating: true
       declare_action "system_attach_volume", mutating: true
       declare_action "system_attribute_failure", mutating: false
@@ -868,6 +879,7 @@ module Ai
       declare_action "system_list_isolation_tiers", mutating: false
       declare_action "system_list_module_versions", mutating: false
       declare_action "system_list_modules", mutating: false
+      declare_action "system_list_node_module_assignments", mutating: false
       declare_action "system_list_nodes", mutating: false
       declare_action "system_list_provider_connections", mutating: false
       declare_action "system_list_providers", mutating: false
@@ -959,6 +971,7 @@ module Ai
                      gate_context: :reap_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
       declare_action "system_reboot_instance", mutating: true, destructive: true
+      declare_action "system_readvance_module_build_batch", mutating: true
       declare_action "system_recent_signals", mutating: false
       declare_action "system_recycle_pool", mutating: true, destructive: true
       declare_action "system_refresh_instance_modules", mutating: true
@@ -2229,6 +2242,21 @@ module Ai
               module_id:   { type: "string", required: true, description: "UUID of the NodeModule to unassign from the template" }
             }
           },
+          "system_list_node_module_assignments" => {
+            description: "List a node's NodeModuleAssignments, one page at a time — the per-(node, module) rows that decide what the node's agent is served (only ENABLED rows reach it). Each row carries the module id + name, `enabled`, priority, `source_template_module_id` (set when template-apply produced the row; null for a hand-authored one) and created/updated. system_get_node carries only module_count; this is the read behind it. Read count and has_more to tell a complete answer from a truncated one.",
+            parameters: {
+              node_id: { type: "string", required: true, description: "UUID of the node whose assignments to list (account-scoped)" },
+              **PAGINATION_PARAMETERS
+            }
+          },
+          "system_assign_module_to_node" => {
+            description: "Create a NODE-level NodeModuleAssignment — the way a node gains a module its template does not name (a node whose template carries no modules can gain one no other way). Refuses a module disabled in the catalog (the row would never ship). Refuses when the module is already assigned to the node, enabled or not: toggle that row with system_update_module_assignment instead; a duplicate is never created. Refuses when the module has a HARD dependency (a required edge, transitively) that the node neither has assigned and enabled nor gets from its template's closure, or that is disabled in the catalog, and names the missing modules — nothing is auto-assigned for it; assign them first (template-apply expands a closure, a single node-level row does not). Refuses when the assignment would introduce an error-severity composition conflict against the node's ENABLED assignments (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved — the same check system_assign_module_to_template runs, applied here whatever `enabled` is (as is the dependency check), because system_update_module_assignment runs neither check when it later enables the row. Soft protected_spec overlaps come back under `warnings` without blocking. The row is hand-authored (source_template_module_id null, auto_resolved false), so template reconciliation neither adds nor reaps it. Nothing is pushed to the node: its agent picks the row up on its next module sync, exactly as after system_update_module_assignment. Note the conflict check only sees DECLARED relations — two modules that provide the same thing without declaring a conflict are not detected.",
+            parameters: {
+              node_id:   { type: "string", required: true, description: "UUID of the node to assign the module to (account-scoped)" },
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign (account-scoped)" },
+              enabled:   { type: "boolean", required: false, description: "Whether the node is served the module (default true). false stages the row without delivering it; the conflict check runs either way." }
+            }
+          },
           "system_update_module_assignment" => {
             description: "Enable or disable a NodeModuleAssignment (per-(node, module) toggle). enabled=true enables the assignment; enabled=false disables it. The assignment row is preserved either way — disabling drops the module from neighbor union mounts / rsync_spec generation without losing priority/config. Mirrors the NodeModuleAssignmentsController enable/disable member actions. Idempotent.",
             parameters: {
@@ -2361,6 +2389,13 @@ module Ai
             parameters: {
               batch_id: { type: "string", required: true,  description: "System::ModuleBuildBatch id to cancel" },
               reason:   { type: "string", required: false, description: "Operator-supplied reason, recorded on the batch's error_message for audit" }
+            }
+          },
+
+          "system_readvance_module_build_batch" => {
+            description: "Re-advance ONE stalled native module-build batch now — the operator door onto the lease sweep's readvance backstop, for when the hub-worker cron that normally runs it is down. A member is stalled when its entry is still `dispatched` but its ci.module_build task has finished (system_get_module_build_batch shows it as `stalled: true`); re-advancing runs the orchestrator's advance exactly as the sweep would: a completed build is signed + published (which PROMOTES the new version unless the batch is a shadow batch or promotion is withheld), a failed one is retried or marked failed, and any member still queued in the batch is dispatched onto a free builder. It builds nothing outside the batch's own plan. Like the unattended sweep, it publishes and promotes WITHOUT the release-promote autonomy gate (system_promote_module_version's approval) — a deliberate design, since this is the sweep's own step run on demand; the kill-switch and control-plane gates still apply. Honours the sweep's gates: refused while the account's emergency kill switch is engaged or when this control plane is not the active one in dual-plane mode. A batch with no stalled member, or not in dispatched/awaiting_signature/publishing, is a no-op (readvanced: false with the reason), not an error; so is a batch another advance is already holding.",
+            parameters: {
+              batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id to re-advance (account-scoped)" }
             }
           },
 
@@ -2733,6 +2768,8 @@ module Ai
         when "system_delete_cve"                    then delete_cve(params)
         when "system_unassign_module_from_template" then unassign_module_from_template(params)
         when "system_update_module_assignment"      then update_module_assignment(params)
+        when "system_list_node_module_assignments"  then list_node_module_assignments(params)
+        when "system_assign_module_to_node"         then assign_module_to_node(params)
         # Gap remediation slice 3 — pool ops + canary marking
         when "system_return_pooled_instance"        then return_pooled_instance(params)
         when "system_delete_instance_pool"          then delete_instance_pool(params)
@@ -2752,6 +2789,7 @@ module Ai
         # Campaign 019f5885 inc9 — native module-build batch orchestration
         when "system_dispatch_module_build_batch"   then dispatch_module_build_batch(params)
         when "system_cancel_module_build_batch"     then cancel_module_build_batch(params)
+        when "system_readvance_module_build_batch"  then readvance_module_build_batch(params)
         when "system_rollback_module_version"       then rollback_module_version(params)
         # Missing-features slice 6a — GitOps reconciler
         when "system_gitops_register_repository"    then gitops_register_repository(params)
@@ -7964,6 +8002,82 @@ module Ai
         )
       end
 
+      def list_node_module_assignments(params)
+        node = account_nodes.find(params[:node_id])
+        paginated_result(:assignments, node.node_module_assignments.includes(:node_module), params) do |a|
+          serialize_module_assignment(a).merge(
+            module_name: a.node_module&.name,
+            source_template_module_id: a.source_template_module_id,
+            auto_resolved: a.auto_resolved
+          )
+        end
+      end
+
+      # A node-level row, created through the model so its validations and
+      # create callbacks (module-skill registration, honeypot canary observe)
+      # run. Not through System::TemplateApplyService: that materializes a
+      # template's closure and has no single-module entry, and a row created
+      # here names no TemplateModule — like Sdwan::FlowExporterDeployer#attach!,
+      # it carries source_template_module_id NULL and auto_resolved false, so
+      # template reconciliation neither adds nor reaps it.
+      #
+      # Downstream parity with update_module_assignment: nothing is dispatched.
+      # The enable toggle writes the column and stops; the agent pulls enabled
+      # assignments on its next module sync (node_api/modules). Same here.
+      def assign_module_to_node(params)
+        node = account_nodes.find(params[:node_id])
+        node_module = account_modules.find(params[:module_id])
+
+        # A row for a catalog-disabled module is created fine and does nothing:
+        # the resolver's catalog is enabled-only, so it would never ship.
+        unless node_module.enabled?
+          raise CallerFacingError, "Module '#{node_module.name}' is disabled in the catalog — enable it " \
+                                   "(system_update_module) before assigning it to a node"
+        end
+
+        existing = node.node_module_assignments.find_by(node_module_id: node_module.id)
+        if existing
+          return error_result("Module '#{node_module.name}' is already assigned to node '#{node.name}' " \
+                              "(assignment #{existing.id}, enabled=#{existing.enabled}) — use " \
+                              "system_update_module_assignment to enable or disable it")
+        end
+
+        # Unlike assign_module_to_template, the check runs for a DISABLED
+        # create too: a template join is re-checked when it is enabled
+        # (update_template_module), but system_update_module_assignment runs no
+        # composition check, so skipping it here would make create-disabled-
+        # then-enable a way around it.
+        analysis = ::System::TemplateCompositionAnalysis.new(@account)
+        verdict = analysis.node_additions_verdict(node: node, node_modules: [ node_module ])
+        return error_result(verdict.message) if verdict.blocked?
+
+        # Refuse rather than auto-create: a dependency row the caller did not
+        # ask for is a second, unreviewed module on the node. Runs for a
+        # disabled create for the same reason as the conflict check.
+        missing = analysis.missing_node_dependencies(node: node, node_module: node_module)
+        if missing.any?
+          raise CallerFacingError, "Module '#{node_module.name}' requires #{missing.join(', ')}, which node " \
+                                   "'#{node.name}' neither has assigned and enabled nor gets from its template " \
+                                   "(or which is disabled in the catalog) — assign #{missing.size == 1 ? 'it' : 'them'} " \
+                                   "first with system_assign_module_to_node"
+        end
+
+        enabled = ::ActiveModel::Type::Boolean.new.cast(params[:enabled])
+        assignment = node.node_module_assignments.create!(
+          node_module: node_module,
+          priority: node_module.priority.to_i,
+          enabled: enabled.nil? ? true : enabled
+        )
+
+        payload = { assigned: true, assignment: serialize_module_assignment(assignment) }
+        payload[:warnings] = verdict.warnings if verdict.warnings.any?
+        success_result(payload)
+      rescue ActiveRecord::RecordNotUnique
+        # Lost a race with a concurrent create of the same (node, module).
+        error_result("Module '#{node_module.name}' is already assigned to node '#{node.name}' — " \
+                     "use system_update_module_assignment to enable or disable it")
+      end
+
       def serialize_cve(cve)
         {
           id: cve.id,
@@ -8650,6 +8764,28 @@ module Ai
         end
 
         success_result(module_build_batch: serialize_module_build_batch(batch.reload))
+      end
+
+      # The lease sweep's readvance backstop for one batch, through the sweep
+      # service itself (#readvance_batch!) so the gates, the stalled-member rule
+      # and the orchestrator call are the sweep's own and not a copy.
+      def readvance_module_build_batch(params)
+        batch_id = params[:batch_id].to_s
+        return error_result("batch_id is required") if batch_id.blank?
+
+        batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
+        return error_result("Module build batch '#{batch_id}' not found") unless batch
+
+        outcome = ::System::CiRunnerLeaseSweepService.new(account: @account).readvance_batch!(batch)
+        return error_result("Re-advance refused: #{outcome[:reason]}") unless outcome[:ok]
+
+        success_result(outcome.except(:ok).merge(module_build_batch: serialize_module_build_batch(batch.reload)))
+      rescue StandardError => e
+        # The sweep swallows an advance failure into a log line; an operator
+        # calling this directly needs a refusal rather than a -32603 transport
+        # error they would retry — but not the exception's text, which can
+        # carry driver/host detail. rescued_error_result logs it instead.
+        rescued_error_result(e, message: "Re-advance of batch '#{batch_id}' failed")
       end
 
       def get_module_build_batch(params)

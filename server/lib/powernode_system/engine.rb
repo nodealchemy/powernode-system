@@ -349,6 +349,18 @@ module PowernodeSystem
                      grant: { admin: true }
           permission "system.marketplace.read", "Browse the system node-module marketplace (CatalogPage MarketplaceTab)",
                      grant: { admin: true, owner: true, manager: true, member: true }
+          # The operator's half of the lease sweep's readvance backstop
+          # (system_readvance_module_build_batch). Same audience as
+          # system.module_builds.cancel (registered below) and for the same
+          # reason: it is the recovery a human reaches for when the worker-driven
+          # path is down, so it cannot sit on the worker-only .dispatch. It
+          # cannot add anything to the plan .dispatch made — it runs the sweep's
+          # own advance on that batch (resolve finished members, dispatch queued
+          # ones). Like the sweep, it publishes and promotes without the
+          # release-promote autonomy gate; kill switch + control-plane still apply.
+          permission "system.module_builds.readvance",
+                     "Re-advance a stalled native module-build batch (resolve finished member builds: sign + publish, or retry/fail)",
+                     grant: { admin: true, owner: true, manager: true }
 
           # ---------------------------------------------------------------
           # Platform dashboard (singular `platform`) — operator deploy/scale/health.
