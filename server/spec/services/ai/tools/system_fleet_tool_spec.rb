@@ -5424,6 +5424,36 @@ end
       expect(result[:success]).to be(false)
       expect(mod.reload.current_version_id).to eq(current.id)
     end
+
+    # IMP-2d0bc859fb40 — rollback_module_version_gate_context's own admission
+    # raises (migrated off bare ArgumentError). The three fleet-global-path
+    # examples below never omit module_id or supply an unknown one, so they
+    # cannot see these; "No usable rollback target" is already pinned in
+    # system_fleet_release_gating_spec.rb.
+    it "requires module_id" do
+      result = call("system_rollback_module_version", module_id: "")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("module_id is required")
+    end
+
+    it "returns not-found for an unknown module_id" do
+      unknown_id = SecureRandom.uuid
+      result = call("system_rollback_module_version", module_id: unknown_id)
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("not found")
+    end
+
+    it "requires version_id for an environment rollback" do
+      current = version_with_digest(1)
+      mod.promote_to_version!(current)
+
+      result = call("system_rollback_module_version", module_id: mod.id, environment: "staging")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("version_id is required for an environment rollback")
+    end
   end
 
   # Closes the "author a module over MCP" gap: create/update now route a raw
@@ -6139,6 +6169,34 @@ end
     end
   end
 
+  # IMP-2d0bc859fb40 — deploy_platform_gate_context's own two admission raises
+  # (mode allowlist, name presence), migrated off bare ArgumentError. Distinct
+  # from PlatformDeploymentOrchestrator's own "Unknown mode"/"name is required"
+  # validation (platform_deployment_orchestrator_spec.rb) — that is a different
+  # layer the gate context never reaches for these payloads, so this tool-level
+  # raise needed its own coverage.
+  describe "system_deploy_platform gate context validation" do
+    before { auto_approve_policy! }
+
+    let(:deploy_template) { create(:system_node_template, account: account, name: "powernode-hub-gatecheck") }
+
+    it "refuses an unknown mode with the allowed list" do
+      r = call("system_deploy_platform", mode: "sideways", name: "child-platform",
+                                         template_slug: deploy_template.name)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("Unknown mode")
+      expect(r[:error]).to include("allowed:")
+    end
+
+    it "requires a name" do
+      r = call("system_deploy_platform", mode: "standalone", template_slug: deploy_template.name)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("name is required for deployment")
+    end
+  end
+
   # IMP-0b6d91ec76a0 — the seven instance-pool actions called
   # Ai::Tools::BaseTool#success_result(data: { ... }) against a POSITIONAL
   # parameter (base_tool.rb: `def success_result(data)`), so the keyword
@@ -6264,6 +6322,40 @@ end
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool)
       expect(::System::InstancePool.find(r[:data][:pool][:id]).name).to eq("nesting-created")
+    end
+
+    # IMP-2d0bc859fb40 — create_instance_pool_gate_context's own validation
+    # raise (CallerFacingError, migrated off bare ArgumentError). Omitting
+    # `name` fails InstancePool's presence validation before the gate ever
+    # parks anything, so the specific message must survive to the caller.
+    it "surfaces the candidate's validation errors when the pool is invalid" do
+      r = call("system_create_instance_pool", template_id: template.id, target_size: 1)
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("instance pool validation failed")
+      expect(r[:error]).to include("Name can't be blank")
+    end
+
+    # IMP-2d0bc859fb40 — ARM 2 of the regression's oracle, once, against the
+    # shared seam. ARM 1 (the migrated raise-site specs throughout this file)
+    # cannot by itself distinguish a real migration from a widened base
+    # clause, because CallerFacingError IS-A ArgumentError and both would
+    # forward verbatim. This proves the other direction, through a REAL
+    # extension gate_context (not a synthetic double): an ArgumentError this
+    # task did not touch — because nothing here raises it — still gets
+    # reduced to BaseTool's generic default by run_through_autonomy_gate's
+    # rescue order. Mirrors base_tool_rescued_error_result_spec.rb's
+    # "incidental ArgumentError" example, but through this extension's own
+    # inherited seam rather than a stub subclass of BaseTool.
+    it "still sanitizes an incidental (non-migrated) ArgumentError raised from inside an extension gate_context" do
+      allow_any_instance_of(described_class).to receive(:instance_pool_create_attributes) do
+        Integer("not-a-number-internal-detail")
+      end
+
+      r = call("system_create_instance_pool", name: "seam-check", template_id: template.id, target_size: 1)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("An internal error occurred processing this request.")
+      expect(r[:error]).not_to include("not-a-number-internal-detail")
     end
 
     # Same, and target_size 2 -> 3 is the raise that parks.
