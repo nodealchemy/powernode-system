@@ -82,6 +82,62 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       r = call("system_acme_get_certificate", certificate_id: other.id)
       expect(r[:success]).to be false
     end
+
+    # IMP-1a5c145c24eb — reviewer finding A1 (round 3). system_acme_renew_
+    # certificate correctly withholds raw exception text, but
+    # last_renewal_error is a PERSISTED column CertificateManager writes it
+    # to, and this SAME tool's get_certificate action re-serialized it
+    # verbatim — a completely different action, same read permission,
+    # defeating the fix in one extra round trip.
+    it "generalizes a persisted last_renewal_error to a boolean, never the raw exception text" do
+      cert.update_columns(last_renewal_error: "PG::ConnectionBad: driver-internal detail nobody should see")
+      r = call("system_acme_get_certificate", certificate_id: cert.id)
+      data = r[:data][:certificate]
+
+      expect(data[:last_renewal_error_present]).to be(true)
+      expect(data.keys).not_to include(:last_renewal_error)
+      flat = deep_values(data)
+      expect(flat).not_to include(a_string_matching(/driver-internal detail/))
+    end
+
+    # IMP-1a5c145c24eb — reviewer finding P3: the tool specs stub renew!/
+    # revoke! wholesale, which is exactly why A1 was invisible — a stubbed
+    # Result never touches the real persistence path at all. This exercises
+    # the REAL CertificateManager.renew! (with a raising ACME client, not a
+    # stubbed Result) so the model actually writes last_renewal_error, then
+    # reads the certificate back through THIS tool's own get_certificate
+    # action — the round-trip path finally has an oracle.
+    it "round-trips through the real renew! persistence path without ever exposing the raw text via get_certificate" do
+      cert.update_columns(
+        vault_path_certificate: "acme-certificates/#{account.id}/#{cert.id}/cert",
+        vault_path_private_key: "acme-certificates/#{account.id}/#{cert.id}/key"
+      )
+      # The factory's dns_credential is untested/unprovisioned — renew!'s own
+      # DNS-shape validation (with_validated_provider) fails BEFORE ever
+      # reaching the ACME client otherwise, which would make this test pass
+      # for the wrong reason (a validation error, not the round-trip this
+      # test exists to exercise). Stub Vault the same way certificate_
+      # manager_spec.rb does so the real renew! call reaches the ACME client.
+      fake_vault = instance_double("Security::VaultCredentialProvider")
+      allow(::Security::VaultCredentialProvider).to receive(:new).and_return(fake_vault)
+      allow(fake_vault).to receive(:get_credential).and_return("api_token" => "stub-token")
+
+      raising_client = instance_double("Acme::LegoClient",
+                                       renew: nil).tap do |c|
+        allow(c).to receive(:renew).and_raise(StandardError, "lego subprocess exited 1: real stderr nobody should see")
+      end
+
+      result = ::Acme::CertificateManager.renew!(certificate: cert, acme_client: raising_client)
+      expect(result.ok?).to be false
+      expect(cert.reload.last_renewal_error).to include("real stderr nobody should see") # sanity: persistence actually happened
+
+      r = call("system_acme_get_certificate", certificate_id: cert.id)
+      data = r[:data][:certificate]
+
+      expect(data[:last_renewal_error_present]).to be(true)
+      flat = deep_values(data)
+      expect(flat).not_to include(a_string_matching(/real stderr nobody should see/))
+    end
   end
 
   describe "system_acme_renew_certificate" do
@@ -108,16 +164,61 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
     end
 
     it "returns error_result with the manager's error on failure" do
-      result = ::Acme::CertificateManager::Result.new(ok?: false, error: "lego timeout", certificate: cert)
+      # IMP-1a5c145c24eb — reviewer finding A3: the tool now requires
+      # caller_safe explicitly truthy to forward (fail-safe consumer, matching
+      # CertificateManager's own fail-safe default) — an unmarked Result is
+      # no longer treated as safe.
+      result = ::Acme::CertificateManager::Result.new(
+        ok?: false, error: "lego timeout", certificate: cert, caller_safe: true
+      )
       allow(::Acme::CertificateManager).to receive(:renew!).and_return(result)
       r = call("system_acme_renew_certificate", certificate_id: cert.id)
       expect(r[:success]).to be false
       expect(r[:error]).to include("lego timeout")
     end
 
+    # IMP-1a5c145c24eb — reviewer finding A. CertificateManager.renew!'s 3
+    # blanket `rescue StandardError` sites absorb their exception into a
+    # Result (caller_safe: false) rather than raising — the rescue arm below
+    # never sees this path at all. A test that only asserts the rescue arm
+    # (as above) cannot discriminate this leak; this one goes through
+    # `result.error`, exactly like the safe-failure test above, but with
+    # caller_safe: false and dangerous content.
+    it "does not forward a Result marked caller_safe: false, and still logs it" do
+      result = ::Acme::CertificateManager::Result.new(
+        ok?: false, certificate: cert, caller_safe: false,
+        error: "Errno::ECONNREFUSED: lego subprocess stderr: connection refused to acme-v02.api.letsencrypt.org:443"
+      )
+      allow(::Acme::CertificateManager).to receive(:renew!).and_return(result)
+      expect(Rails.logger).to receive(:error).with(/lego subprocess stderr/)
+
+      r = call("system_acme_renew_certificate", certificate_id: cert.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("Renewal failed")
+      expect(r[:error]).not_to include("lego subprocess stderr")
+      expect(r[:error]).not_to include("acme-v02.api.letsencrypt.org")
+    end
+
     it "errors for an unknown id" do
       r = call("system_acme_renew_certificate", certificate_id: SecureRandom.uuid)
       expect(r[:success]).to be false
+    end
+
+    # IMP-1a5c145c24eb — CertificateManager.renew! absorbs every ACME/DNS
+    # exception internally and returns a Result; nothing confirmed-safe
+    # reaches this outer StandardError arm, so an unexpected raise here
+    # (a bug in this method's OWN helpers, not the ACME call) must not
+    # forward raw driver text to the model provider.
+    it "sanitizes an unexpected exception rather than forwarding its message, and still logs it" do
+      allow(::Acme::CertificateManager).to receive(:renew!)
+        .and_raise(StandardError, "PG::ConnectionBad: driver-internal detail nobody should see")
+      expect(Rails.logger).to receive(:error).with(/PG::ConnectionBad: driver-internal detail/)
+
+      r = call("system_acme_renew_certificate", certificate_id: cert.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).not_to include("driver-internal detail")
+      expect(r[:error]).to eq(::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
     end
   end
 
@@ -153,11 +254,45 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
     end
 
     it "returns error_result with the manager's error on failure" do
-      result = ::Acme::CertificateManager::Result.new(ok?: false, error: "acme unreachable", certificate: cert)
+      # IMP-1a5c145c24eb — reviewer finding A3, revoke_certificate's sibling.
+      result = ::Acme::CertificateManager::Result.new(
+        ok?: false, error: "acme unreachable", certificate: cert, caller_safe: true
+      )
       allow(::Acme::CertificateManager).to receive(:revoke!).and_return(result)
       r = call("system_acme_revoke_certificate", certificate_id: cert.id)
       expect(r[:success]).to be false
       expect(r[:error]).to include("acme unreachable")
+    end
+
+    # IMP-1a5c145c24eb — reviewer finding A, revoke_certificate's sibling.
+    it "does not forward a Result marked caller_safe: false, and still logs it" do
+      result = ::Acme::CertificateManager::Result.new(
+        ok?: false, certificate: cert, caller_safe: false,
+        error: "Errno::ECONNREFUSED: lego subprocess stderr: connection refused to acme-v02.api.letsencrypt.org:443"
+      )
+      allow(::Acme::CertificateManager).to receive(:revoke!).and_return(result)
+      expect(Rails.logger).to receive(:error).with(/lego subprocess stderr/)
+
+      r = call("system_acme_revoke_certificate", certificate_id: cert.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("Revoke failed")
+      expect(r[:error]).not_to include("lego subprocess stderr")
+      expect(r[:error]).not_to include("acme-v02.api.letsencrypt.org")
+    end
+
+    # IMP-1a5c145c24eb — same shape as renew_certificate's sibling test:
+    # revoke! also absorbs every ACME-server exception internally (best-effort
+    # revoke), so this outer StandardError arm has no confirmed-safe raiser.
+    it "sanitizes an unexpected exception rather than forwarding its message, and still logs it" do
+      allow(::Acme::CertificateManager).to receive(:revoke!)
+        .and_raise(StandardError, "Errno::ENOENT: /var/lib/powernode/vault/internal/path")
+      expect(Rails.logger).to receive(:error).with(/Errno::ENOENT.*internal\/path/)
+
+      r = call("system_acme_revoke_certificate", certificate_id: cert.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).not_to include("internal/path")
+      expect(r[:error]).to eq(::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
     end
   end
 

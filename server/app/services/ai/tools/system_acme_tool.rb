@@ -179,6 +179,16 @@ module Ai
 
       # Mirrors AcmeCertificatesController#renew: guard status=valid, then
       # reuse Acme::CertificateManager.renew!. Result.ok? → reload + serialize.
+      #
+      # NOTE ON THE MIRRORED CONTROLLER (reviewer finding A, stated not
+      # incidental): AcmeCertificatesController#renew (acme_certificates_
+      # controller.rb) forwards `result.error` unconditionally, with no
+      # caller_safe check at all, and that is CORRECT for it — it answers an
+      # authenticated browser session (a different trust boundary than this
+      # MCP tool, which answers the model provider), the same boundary
+      # distinction already established for RecordInvalid/RecordNotFound
+      # elsewhere in this family. Do not read the controller's unconditional
+      # forward as evidence this tool's own check is unnecessary.
       def renew_certificate(params)
         cert = find_certificate(params[:certificate_id])
         return error_result("Certificate not found") unless cert
@@ -190,12 +200,27 @@ module Ai
         result = ::Acme::CertificateManager.renew!(certificate: cert)
         if result.ok?
           success_result(renewed: true, certificate: serialize_certificate(cert.reload))
+        elsif !result.caller_safe
+          # IMP-1a5c145c24eb — reviewer finding A: CertificateManager
+          # absorbs its OWN exceptions into a Result rather than raising
+          # (see the rescue below), so raw text from a failed lego
+          # subprocess crosses THROUGH THIS BRANCH, not through the rescue
+          # arm — the rescue arm alone was never sufficient. caller_safe
+          # DEFAULTS TO FALSE in CertificateManager (fail-safe: true only at
+          # its caller-authored precondition messages) — this branch is
+          # therefore the one taken unless CertificateManager explicitly
+          # marked the failure forwardable.
+          Rails.logger.error("[SystemAcmeTool#renew_certificate] #{result.error}")
+          error_result("Renewal failed")
         else
           error_result("Renewal failed: #{result.error}")
         end
       rescue StandardError => e
-        ::Rails.logger.error("[SystemAcmeTool#renew_certificate] #{e.class}: #{e.message}")
-        error_result("Renewal raised: #{e.message}")
+        # This arm covers exceptions escaping THIS method's own code
+        # (find_certificate, serialize_certificate) — CertificateManager.
+        # renew! itself never raises; see the Result-path handling above.
+        Rails.logger.error("[SystemAcmeTool#renew_certificate] #{e.class}: #{e.message}")
+        error_result(::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
       end
 
       # Mirrors AcmeCertificatesController#revoke: guard !terminal?, then
@@ -214,12 +239,18 @@ module Ai
         )
         if result.ok?
           success_result(revoked: true, certificate: serialize_certificate(cert.reload))
+        elsif !result.caller_safe
+          # IMP-1a5c145c24eb — same reasoning as renew_certificate above.
+          Rails.logger.error("[SystemAcmeTool#revoke_certificate] #{result.error}")
+          error_result("Revoke failed")
         else
           error_result("Revoke failed: #{result.error}")
         end
       rescue StandardError => e
-        ::Rails.logger.error("[SystemAcmeTool#revoke_certificate] #{e.class}: #{e.message}")
-        error_result("Revoke raised: #{e.message}")
+        # revoke! itself never raises (see above); this covers this method's
+        # own code (find_certificate, serialize_certificate).
+        Rails.logger.error("[SystemAcmeTool#revoke_certificate] #{e.class}: #{e.message}")
+        error_result(::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
       end
 
       # === DNS credentials ===
@@ -327,7 +358,17 @@ module Ai
           revoked_at: cert.revoked_at&.iso8601,
           days_until_expiry: days_until_expiry(cert),
           terminal: cert.terminal?,
-          last_renewal_error: cert.last_renewal_error,
+          # IMP-1a5c145c24eb — reviewer finding A1 (round 3). Fixed at the
+          # SERIALIZER, not at persistence: the raw column exists so an
+          # OPERATOR can see why renewal failed (AcmeCertificatesController
+          # forwards it verbatim — correct for that browser boundary), but
+          # `last_renewal_error` is written EXCLUSIVELY from `e.message` at
+          # CertificateManager's 2 blanket-rescue sites (issue!/renew!) —
+          # there is no caller-safe variant to distinguish, so this MCP path
+          # generalizes it the same way `vault_paths_present` already
+          # generalizes Vault materialization below: a boolean, never the
+          # raw text.
+          last_renewal_error_present: cert.last_renewal_error.present?,
           # Boolean only — operators learn the cert has been materialized in
           # Vault without ever seeing the paths or secret values.
           vault_paths_present: cert.vault_path_certificate.present?,

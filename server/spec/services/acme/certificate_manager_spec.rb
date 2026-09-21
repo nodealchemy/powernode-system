@@ -88,6 +88,10 @@ RSpec.describe Acme::CertificateManager, type: :service do
       expect(result.ok?).to be false
       expect(cert.reload.status).to eq("failed")
       expect(cert.last_renewal_error).to include("ACME server unreachable")
+      # IMP-1a5c145c24eb — reviewer finding A: this is the blanket-rescue
+      # path (an arbitrary exception, not a declared precondition), so the
+      # Result must be marked unsafe for a caller to forward.
+      expect(result.caller_safe).to be false
     end
 
     it "fails when DNS credential shape is invalid" do
@@ -132,12 +136,17 @@ RSpec.describe Acme::CertificateManager, type: :service do
       expect(result.ok?).to be false
       expect(cert.reload.status).to eq("failed")
       expect(cert.last_renewal_error).to include("challenge timeout")
+      # IMP-1a5c145c24eb — reviewer finding A: the blanket-rescue path.
+      expect(result.caller_safe).to be false
     end
 
     it "rejects renewal of a non-valid cert" do
       cert.update!(status: "pending")
       result = described_class.renew!(certificate: cert, acme_client: stub_client)
       expect(result.ok?).to be false
+      # IMP-1a5c145c24eb — the OTHER arm: a declared precondition failure
+      # (not the blanket rescue) must stay forwardable.
+      expect(result.caller_safe).to be true
     end
 
     # Concurrency: a second overlapping renewal sweep must not place a
@@ -187,6 +196,22 @@ RSpec.describe Acme::CertificateManager, type: :service do
       result = described_class.revoke!(certificate: cert, acme_client: stub_client)
       expect(result.ok?).to be false
       expect(result.error).to match(/terminal state/)
+      # IMP-1a5c145c24eb — a declared precondition failure, not the blanket
+      # rescue below — must stay forwardable.
+      expect(result.caller_safe).to be true
+    end
+
+    # IMP-1a5c145c24eb — reviewer finding A. revoke!'s OUTER blanket rescue
+    # (distinct from the ACME-server best-effort rescue exercised by "revokes
+    # locally even if ACME-server revoke fails" above) had no test before
+    # this: trigger it via the state-machine transition, past the ACME call.
+    it "marks the Result unsafe when the outer blanket rescue fires (not the ACME-server best-effort one)" do
+      allow(cert).to receive(:transition_to!).with("revoked", any_args)
+        .and_raise(StandardError, "PG::LockNotAvailable: could not obtain lock on row")
+      result = described_class.revoke!(certificate: cert, reason: "audit", acme_client: stub_client)
+      expect(result.ok?).to be false
+      expect(result.error).to include("PG::LockNotAvailable")
+      expect(result.caller_safe).to be false
     end
 
     # Security: revoke! must drive `→ revoked` through the state machine

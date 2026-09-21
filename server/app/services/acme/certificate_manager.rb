@@ -20,7 +20,19 @@ module Acme
   #
   # Plan reference: Decentralized Federation §J + P2.5.4.
   class CertificateManager
-    Result = Struct.new(:ok?, :error, :certificate, keyword_init: true)
+    # IMP-1a5c145c24eb — `caller_safe` distinguishes a caller-authored
+    # precondition message from the 3 blanket `rescue StandardError => e`
+    # sites below that embed `e.message` verbatim (a failed lego subprocess
+    # call can put real process stderr here). DEFAULTS TO FALSE (see
+    # `failure` below) — true ONLY at the caller-authored `failure(...)`
+    # call sites, which mark themselves explicitly. This is deliberately
+    # fail-safe, not an enumeration: a future `failure(...)` call added here
+    # without a `caller_safe: true` annotation withholds by default rather
+    # than leaking, and the 3 rescue sites need no annotation at all — the
+    # dangerous path is the quiet one. Callers of this Result (e.g.
+    # SystemAcmeTool) must not forward `.error` to the model provider unless
+    # `caller_safe` is truthy.
+    Result = Struct.new(:ok?, :error, :certificate, :caller_safe, keyword_init: true)
 
     class << self
       def issue!(certificate:, acme_client: nil)
@@ -55,7 +67,7 @@ module Acme
       certificate.with_lock do
         certificate.reload
         unless certificate.can_transition_to?("issuing")
-          return failure(certificate, "certificate not eligible for issuance (got status=#{certificate.status})")
+          return failure(certificate, "certificate not eligible for issuance (got status=#{certificate.status})", caller_safe: true)
         end
 
         certificate.transition_to!("issuing")
@@ -78,7 +90,7 @@ module Acme
       if apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
         Result.new(ok?: true, certificate: certificate)
       else
-        failure(certificate, "certificate was revoked mid-issuance; issue result discarded")
+        failure(certificate, "certificate was revoked mid-issuance; issue result discarded", caller_safe: true)
       end
     rescue StandardError => e
       Rails.logger.error("[Acme::CertificateManager#issue!] #{e.class}: #{e.message}")
@@ -96,7 +108,7 @@ module Acme
       certificate.with_lock do
         certificate.reload
         unless certificate.status == "valid"
-          return failure(certificate, "certificate not in valid state (got #{certificate.status})")
+          return failure(certificate, "certificate not in valid state (got #{certificate.status})", caller_safe: true)
         end
 
         certificate.transition_to!("renewing")
@@ -129,7 +141,7 @@ module Acme
       if apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
         Result.new(ok?: true, certificate: certificate)
       else
-        failure(certificate, "certificate was revoked mid-renewal; renew result discarded")
+        failure(certificate, "certificate was revoked mid-renewal; renew result discarded", caller_safe: true)
       end
     rescue StandardError => e
       Rails.logger.error("[Acme::CertificateManager#renew!] #{e.class}: #{e.message}")
@@ -139,7 +151,7 @@ module Acme
 
     def revoke!(certificate:, reason: nil)
       if certificate.terminal?
-        return failure(certificate, "certificate already in terminal state (#{certificate.status})")
+        return failure(certificate, "certificate already in terminal state (#{certificate.status})", caller_safe: true)
       end
 
       # Attempt ACME-server revocation if we have material to revoke.
@@ -188,7 +200,7 @@ module Acme
       end
 
       unless revoked
-        return failure(certificate, "certificate already in terminal state (#{certificate.status})")
+        return failure(certificate, "certificate already in terminal state (#{certificate.status})", caller_safe: true)
       end
 
       # Local cleanup. Order matters:
@@ -469,8 +481,8 @@ module Acme
                             "user with one of these roles: #{ADMIN_EQUIVALENT_ROLES.join(', ')}."
     end
 
-    def failure(certificate, message)
-      Result.new(ok?: false, certificate: certificate, error: message)
+    def failure(certificate, message, caller_safe: false)
+      Result.new(ok?: false, certificate: certificate, error: message, caller_safe: caller_safe)
     end
   end
 end

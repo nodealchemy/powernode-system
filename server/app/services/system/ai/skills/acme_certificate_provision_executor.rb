@@ -179,7 +179,18 @@ module System
           result = ::Acme::CertificateManager.issue!(certificate: cert)
           cert.reload
 
-          return failure("Certificate issuance failed: #{result.error}") unless result.ok?
+          unless result.ok?
+            # IMP-1a5c145c24eb — reviewer finding A2: system_acme_provision_
+            # certificate maps here (system_ingress_tool.rb) with run_executor
+            # returning this Hash directly as the tool result — the same
+            # Result-path leak already fixed at SystemAcmeTool#renew_
+            # certificate/#revoke_certificate, unguarded here.
+            if result.caller_safe == false
+              Rails.logger.error("[AcmeCertificateProvisionExecutor] #{result.error}")
+              return failure("Certificate issuance failed")
+            end
+            return failure("Certificate issuance failed: #{result.error}")
+          end
 
           success(certificate_attrs(cert))
         end

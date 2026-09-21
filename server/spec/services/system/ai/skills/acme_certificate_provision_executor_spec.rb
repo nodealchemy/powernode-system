@@ -200,6 +200,36 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
       end
     end
 
+    # IMP-1a5c145c24eb — reviewer finding A2: this Result-path forward had no
+    # caller_safe check at all before this fix (system_acme_provision_
+    # certificate maps here via run_executor, unguarded, unlike SystemAcmeTool's
+    # own renew_certificate/revoke_certificate which the earlier rounds fixed).
+    context "when issuance fails on CertificateManager's blanket-rescue path (caller_safe: false)" do
+      before do
+        allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:|
+          certificate.transition_to!("failed", error_message: "PG::ConnectionBad: driver-internal detail")
+          ::Acme::CertificateManager::Result.new(
+            ok?: false, certificate: certificate, caller_safe: false,
+            error: "PG::ConnectionBad: driver-internal detail nobody should see"
+          )
+        end
+      end
+
+      it "does not forward the raw text, and still logs it" do
+        expect(Rails.logger).to receive(:error).with(/driver-internal detail/)
+
+        r = exec.execute(
+          common_name: "ops2.example.com",
+          issuer: "letsencrypt-prod",
+          challenge_type: "http-01"
+        )
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to eq("Certificate issuance failed")
+        expect(r[:error]).not_to include("driver-internal detail")
+      end
+    end
+
     # Re-provision idempotency. The model scopes common_name uniqueness to
     # NON-terminal rows (only `revoked` is terminal), so a leftover `failed`
     # / `pending` / `issuing` row blocks a fresh `create!` for the same CN.
