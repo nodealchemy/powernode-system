@@ -4,6 +4,7 @@ require "spec_helper"
 require "open3"
 require "tmpdir"
 require "fileutils"
+require "yaml"
 
 # IMP-94977647c24c part A — rails-setup.sh is the root-only oneshot that
 # does every root-requiring step for the now-non-root `rails` service.
@@ -57,6 +58,102 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
 
       out, _err, status = Open3.capture3("shellcheck", "-S", "error", script_path)
       expect(status.success?).to be(true), "shellcheck -S error failed:\n#{out}"
+    end
+  end
+
+  # Defect #1 of the 2026-09-20 ops-hub outage, RESURRECTED (this file was
+  # only ever fixed host-side, in a tmpfs overlay, and never committed).
+  # manifest.yaml:63's rails-setup unit_body has `ExecStart=/usr/local/bin/
+  # rails-setup.sh` -- a BARE PATH, no interpreter prefix -- so systemd
+  # execs the file directly, honoring only the COMMITTED git mode. The
+  # working tree's `File.executable?`/`ls -l` reflects the checkout's
+  # umask, NOT what ships: this is exactly how a 100644 blob shipped
+  # invisibly before, so every check below reads the git-tracked mode
+  # (`git ls-files -s`, which reflects the INDEX -- staged-but-uncommitted
+  # is visible here too, so `chmod +x && git add` shows green before an
+  # actual commit exists) rather than the filesystem bit. On a clean build
+  # (stage2-carve.sh's `rsync -a`, mode-preserving, no chmod step) a 100644
+  # rails-setup.sh ships non-executable, rails-setup.service fails
+  # 203/EXEC, and rails' `Requires=` on it (from `start_before` in the
+  # manifest) gets its own start job CANCELLED -- the backend never starts.
+  describe "boot-blocker: rails-setup.sh must be committed executable (100755), not just chmod'd on disk" do
+    let(:manifest_path) do
+      File.join(extension_root, "modules/powernode-hub-backend/manifest.yaml")
+    end
+    let(:manifest) { YAML.safe_load(File.read(manifest_path)) }
+
+    # A single token, no flags/args/interpreter prefix -- the shape systemd
+    # execs directly rather than handing to a shell or a language runtime.
+    # `bundle exec ruby foo.rb`, `/bin/bash -c "..."`, etc. all have more
+    # than one whitespace-separated token and are deliberately excluded:
+    # THOSE files are read by an interpreter, which only needs read
+    # permission, not the executable bit.
+    def bare_exec_path(command)
+      return nil unless command.is_a?(String)
+
+      tokens = command.strip.split(/\s+/)
+      return nil unless tokens.size == 1
+
+      path = tokens.first
+      path.start_with?("/") ? path : nil
+    end
+
+    # Every ExecStart= line inside a raw `unit_body:` (rails-setup has no
+    # structured `start_command`, only a hand-written unit) plus every
+    # structured `start_command:` field (rails) across ALL services in
+    # THIS module's manifest -- generalized so a FUTURE bare-path service
+    # in this manifest is caught the same way, not just this one file.
+    def bare_rootfs_execs(manifest)
+      execs = []
+      (manifest["services"] || []).each do |svc|
+        if (cmd = bare_exec_path(svc["start_command"]))
+          execs << cmd
+        end
+        if (unit_body = svc["unit_body"])
+          unit_body.scan(/^ExecStart=(.*)$/).each do |(line)|
+            path = bare_exec_path(line)
+            execs << path if path
+          end
+        end
+      end
+      execs.uniq
+    end
+
+    def git_tracked_mode(relative_path)
+      out, _err, status = Open3.capture3("git", "-C", extension_root, "ls-files", "-s", "--", relative_path)
+      return nil unless status.success?
+
+      # `git ls-files -s` output: "<mode> <sha> <stage>\t<path>"
+      out.split(/\s+/).first
+    end
+
+    # Sanity-checks the extraction itself, not the fix -- if this finds
+    # nothing, every example below would vacuously pass on an empty list,
+    # which is worse than not having the spec at all.
+    it "finds at least the two known bare-path services in this manifest (rails-setup, rails)" do
+      execs = bare_rootfs_execs(manifest)
+      expect(execs).to include("/usr/local/bin/rails-setup.sh")
+      expect(execs).to include("/usr/local/bin/rails-start.sh")
+    end
+
+    it "every bare-path ExecStart/start_command in this manifest is committed 100755, not just chmod'd in the working tree" do
+      execs = bare_rootfs_execs(manifest)
+      expect(execs).not_to be_empty
+
+      execs.each do |abs_path|
+        relative = File.join("modules/powernode-hub-backend/rootfs", abs_path.delete_prefix("/"))
+        mode = git_tracked_mode(relative)
+        expect(mode).not_to be_nil, "#{relative} is not tracked by git at all (git ls-files -s returned nothing)"
+        expect(mode).to eq("100755"),
+          "#{relative} is committed #{mode} but is exec'd directly (no interpreter prefix) by " \
+          "#{manifest_path} -- a build that preserves modes (rsync -a, no chmod step) would ship it " \
+          "non-executable and the unit fails 203/EXEC at boot"
+      end
+    end
+
+    it "specifically pins rails-setup.sh (the file that actually shipped broken)" do
+      mode = git_tracked_mode("modules/powernode-hub-backend/rootfs/usr/local/bin/rails-setup.sh")
+      expect(mode).to eq("100755")
     end
   end
 
@@ -470,6 +567,465 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(script).to match(/mkdir -p "\$STATE_DIR\/\.bundle"/)
       expect(script).to match(/BUNDLE_PATH:\s*"\$BUNDLE_STATE_DIR"/)
       expect(script).to match(/BUNDLE_WITHOUT:\s*"development:test"/)
+    end
+  end
+
+  describe "IMP-01a0c508-0121 part 1: OCI blob proxy cache dir ownership" do
+    let(:oci_service_source) do
+      File.read(File.join(extension_root, "server/app/services/system/oci_blob_proxy_service.rb"))
+    end
+
+    # Extract the ACTUAL default_cache_root method body from the Ruby
+    # source, not hand-copied constants — so if that method's env var name
+    # or fallback literals ever change, the examples below (which read
+    # their expectations FROM this extraction) fail until rails-setup.sh
+    # is updated to match, instead of silently pinning stale values.
+    let(:default_cache_root_body) do
+      oci_service_source[/def self\.default_cache_root.*?\n    end\n/m]
+    end
+    let(:ruby_env_override_var) { default_cache_root_body[/ENV\["([A-Z_]+)"\]/, 1] }
+    let(:ruby_nested_default) { default_cache_root_body[/return\s+"([^"]+)"\s+if File\.directory\?/, 1] }
+    let(:ruby_flat_default) { default_cache_root_body.scan(/"([^"]+)"/).last&.first }
+
+    # Anchored on the literal `if [ -d /persist ]; then` immediately
+    # followed by an `OCI_CACHE_DIR=` assignment on the NEXT line — this
+    # exact `[ -d /persist ]` test string is otherwise unique in the file
+    # (the STATE_DIR/TRAEFIK/PKI blocks all use `mountpoint -q /persist`
+    # instead, deliberately — see the resolution's own comment), so no
+    # first-occurrence collision risk the way the old
+    # `oci_cache_dir_override=""` anchor collided with the CA block.
+    let(:resolution_block) do
+      script[/if \[ -d \/persist \]; then\n\s*OCI_CACHE_DIR=.*?\nfi\n/m]
+    end
+
+    it "the Ruby extraction itself found a real method body with all three parts (sanity-checks the extraction, not the script)" do
+      expect(default_cache_root_body).not_to be_nil
+      expect(ruby_env_override_var).not_to be_nil
+      expect(ruby_nested_default).not_to be_nil
+      expect(ruby_flat_default).not_to be_nil
+      expect(ruby_nested_default).not_to eq(ruby_flat_default)
+    end
+
+    it "branches on /persist's existence exactly the way the Ruby class does, not this script's usual `mountpoint -q`" do
+      expect(resolution_block).not_to be_nil
+      expect(resolution_block).to match(/if\s+\[\s*-d\s+\/persist\s*\]/),
+        "must match File.directory?(\"/persist\") — the Ruby class's own check — not this script's usual `mountpoint -q`"
+      expect(resolution_block).not_to match(/mountpoint/)
+    end
+
+    it "resolves to the SAME nested-vs-flat fallback literals the Ruby class actually returns (extracted from its source, not retyped)" do
+      expect(resolution_block).to include(%(OCI_CACHE_DIR=#{ruby_nested_default}))
+      expect(resolution_block).to include(%(OCI_CACHE_DIR=#{ruby_flat_default}))
+    end
+
+    it "a hardcoded flat /persist/powernode-oci-cache literal is NOT the primary resolution (that was the wrong fix, corrected in review)" do
+      # The legacy-adopt step below is allowed to reference the flat path
+      # explicitly; the PRIMARY resolution block must not resolve to it
+      # unconditionally.
+      expect(resolution_block).not_to match(/OCI_CACHE_DIR=\/persist\/powernode-oci-cache\s*$/)
+    end
+
+    it "does NOT resolve or act on an explicit POWERNODE_OCI_CACHE_DIR override (security round: see the dedicated describe block below)" do
+      # The override env var NAME still legitimately appears elsewhere in
+      # the file (the warn-only detection) -- what must NOT appear is the
+      # override feeding INTO this resolution block specifically.
+      expect(resolution_block).not_to match(/POWERNODE_OCI_CACHE_DIR/)
+      expect(resolution_block).not_to match(/oci_cache_dir_override/)
+    end
+
+    it "derives the required-ownership set from ONE shared array, not a bare enumeration" do
+      expect(script).to match(/RAILS_OWNED_PERSIST_SIBLINGS=\(/)
+    end
+
+    it "the array holds the resolved $OCI_CACHE_DIR variable, not a literal path" do
+      array_body = script[/RAILS_OWNED_PERSIST_SIBLINGS=\(\n(.*?)\n\)/m, 1]
+      expect(array_body).not_to be_nil
+      expect(array_body).to match(/"\$OCI_CACHE_DIR"/)
+    end
+
+    it "creates the dir and chowns it to RAILS_USER, ownership only — no chmod anywhere near it" do
+      loop_body = script[/for dir in "\$\{RAILS_OWNED_PERSIST_SIBLINGS\[@\]\}"; do\n(.*?)\ndone/m, 1]
+      expect(loop_body).not_to be_nil
+      expect(loop_body).to match(/mkdir -p "\$dir"/)
+      expect(loop_body).to match(/chown "\$RAILS_USER:\$RAILS_USER" "\$dir"/)
+      expect(loop_body).not_to match(/chmod\b/),
+        "other things (module build/publish tooling) also read this cache — no mode change needed or wanted"
+    end
+
+    it "is loud but non-fatal: a create/chown failure warns and continues, never aborts the script" do
+      loop_body = script[/for dir in "\$\{RAILS_OWNED_PERSIST_SIBLINGS\[@\]\}"; do\n(.*?)\ndone/m, 1]
+      expect(loop_body).to match(/if\s+mkdir -p "\$dir".*&&\s*chown/)
+      expect(loop_body).to match(/echo.*WARNING.*could not create\/chown/i)
+      expect(loop_body).not_to match(/\bexit\s+[1-9]/), "must degrade, not abort the script"
+    end
+
+    it "adopts an existing legacy flat /persist/powernode-oci-cache dir (chown only) without ever creating it" do
+      legacy_block = script[/# Legacy flat layout adoption:.*?(?=\n# config\/database\.yml)/m]
+      expect(legacy_block).not_to be_nil
+      expect(legacy_block).to match(%r{if \[ -d /persist/powernode-oci-cache \] && \[ "\$OCI_CACHE_DIR" != "/persist/powernode-oci-cache" \]})
+      expect(legacy_block).to match(/chown "\$RAILS_USER:\$RAILS_USER" \/persist\/powernode-oci-cache/)
+      expect(legacy_block).not_to match(/mkdir/), "must ADOPT an existing dir only, never create a second unreferenced cache root"
+    end
+
+    it "runs before the config/database.yml render, in the same root-prep pass" do
+      resolution_idx = script.index("OCI blob proxy cache dir (IMP-01a0c508-0121")
+      db_yml_idx     = script.index("Rendering config/database.yml")
+      expect(resolution_idx).not_to be_nil
+      expect(db_yml_idx).not_to be_nil
+      expect(resolution_idx).to be < db_yml_idx
+    end
+  end
+
+  # F2's history: a sed-based extraction was replaced, in review, with a
+  # `.`-sourced subshell reading POWERNODE_OCI_CACHE_DIR out of
+  # backend-default.conf -- then that subshell was ITSELF found to be a
+  # privilege escalation and reverted, because rails-setup.sh runs as
+  # ROOT while backend-default.conf is written by the non-root rails
+  # process (this same script chowns it to $RAILS_USER a few sections up;
+  # rails-start.sh writes it running AS that user). Sourcing rails-written
+  # content as root, OR feeding a rails-controlled value into a root
+  # chown/mkdir, both hand a buggy or compromised non-root rails process a
+  # path to root code execution or root-owned-directory placement -- the
+  # escalation is in WHAT THE VALUE FEEDS, not in how it's read, so a
+  # "better parser" does not fix it either. The only safe design: never
+  # let anything derived from that conf reach a privileged operation.
+  describe "IMP-01a0c508-0121 security round: does NOT resolve or act on POWERNODE_OCI_CACHE_DIR; warn-only, presence-triggered" do
+    let(:oci_service_source) do
+      File.read(File.join(extension_root, "server/app/services/system/oci_blob_proxy_service.rb"))
+    end
+    let(:ruby_env_override_var) do
+      oci_service_source[/def self\.default_cache_root.*?\n    end\n/m][/ENV\["([A-Z_]+)"\]/, 1]
+    end
+
+    # Anchored on the WARN-ONLY comment header immediately preceding it --
+    # unique in the file, unlike the shared `if [ -f "$STATE_DIR/
+    # backend-default.conf" ]; then` opening line the CA block and the
+    # (now-removed) OCI override read both used, which is EXACTLY the
+    # first-occurrence collision a previous round of this same spec hit.
+    let(:warn_block) do
+      script[/# WARN-ONLY override detection.*?\nfi\n/m]
+    end
+
+    it "detects the override by the KEY'S PRESENCE (grep -q on the bare name), not a parsed value" do
+      expect(warn_block).not_to be_nil
+      expect(warn_block).to include(ruby_env_override_var)
+      expect(warn_block).to match(/grep -q/)
+    end
+
+    it "never feeds a conf-derived value into $OCI_CACHE_DIR, a chown, or an mkdir" do
+      # CODE lines only (review round: the block's own explanatory comment
+      # legitimately says "never a chown/mkdir input" in prose — matching
+      # that would be testing the comment, not the behavior). Anchored to
+      # line-start (allowing only leading whitespace) for the
+      # OCI_CACHE_DIR check so this doesn't false-positive on
+      # "...POWERNODE_OCI_CACHE_DIR=" inside the grep/sed pattern strings
+      # or the warning message text, which legitimately contain that
+      # substring — what must NOT appear is an actual bash ASSIGNMENT to
+      # our own bare variable name.
+      code_lines = warn_block.lines.reject { |l| l.strip.start_with?("#") }.join
+      expect(code_lines).not_to match(/^\s*OCI_CACHE_DIR=/)
+      expect(code_lines).not_to match(/\bchown\b/)
+      expect(code_lines).not_to match(/\bmkdir\b/)
+    end
+
+    it "does not source the conf anywhere in the file (no privileged `.` execution of a non-root-written file)" do
+      expect(script).not_to match(/^\s*\.\s+"\$STATE_DIR\/backend-default\.conf"/)
+    end
+
+    it "warns with a message naming the key and explaining ownership is unmanaged" do
+      expect(warn_block).to match(/WARNING/)
+      expect(warn_block).to match(/not managed by this script/i)
+    end
+
+    # Genuinely EXECUTES the extracted detection snippet (verbatim from
+    # the file) to prove the PRESENCE-not-VALUE trigger actually holds on
+    # the shape that motivated it: `export FOO=1
+    # POWERNODE_OCI_CACHE_DIR=/x` sharing one line. A naive value-parse
+    # (sed capturing only up to the next whitespace-delimited token from
+    # its own anchor, or a grep|cut pipeline) reads this as the override
+    # being effectively absent-or-empty; a presence-triggered `grep -q` on
+    # the bare key name still fires.
+    {
+      "a plain assignment" => "POWERNODE_OCI_CACHE_DIR=/persist/powernode-oci-cache\n",
+      "an export prefix sharing its line with a second assignment" => "export FOO=1 POWERNODE_OCI_CACHE_DIR=/x\n",
+      "leading whitespace and an export prefix" => "  export POWERNODE_OCI_CACHE_DIR=/x\n"
+    }.each do |desc, conf_content|
+      it "warns when the conf has #{desc}" do
+        Dir.mktmpdir do |state_dir|
+          File.write(File.join(state_dir, "backend-default.conf"), conf_content)
+          snippet = <<~BASH
+            set -euo pipefail
+            STATE_DIR=#{state_dir}
+            #{warn_block}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(err).to match(/WARNING/), "the warning is written to stderr (>&2) -- checking stdout would miss it"
+          expect(out).to include("REACHED_END")
+        end
+      end
+    end
+
+    it "does NOT warn when the conf has no such key, and does not abort when the conf is absent" do
+      Dir.mktmpdir do |state_dir|
+        File.write(File.join(state_dir, "backend-default.conf"), "SOME_OTHER_KEY=value\n")
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          #{warn_block}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(err).not_to match(/WARNING/)
+        expect(out).to include("REACHED_END")
+
+        FileUtils.rm(File.join(state_dir, "backend-default.conf"))
+        out2, err2, status2 = Open3.capture3("bash", "-c", snippet)
+        expect(status2.success?).to be(true), "script aborted on absent conf: #{err2}"
+        expect(err2).not_to match(/WARNING/)
+        expect(out2).to include("REACHED_END")
+      end
+    end
+  end
+
+  describe "IMP-01a0c508-0121 review round: F1 -- chown cache CONTENTS, not just the directory node" do
+    let(:sweep_function_body) { script[/sweep_ownership_for_rails\(\)\s*\{.*?\n\}/m] }
+
+    it "defines a sweep helper mirroring the STATE_DIR sweep idiom (find + per-entry chown + fixed/failed counters)" do
+      expect(script).to match(/sweep_ownership_for_rails\(\)\s*\{/)
+      expect(sweep_function_body).not_to be_nil
+      expect(sweep_function_body).to match(
+        /find\s+"\$target"\s+(!\s+-type\s+l\s+)?\\?\(\s*!\s*-user\s+"\$RAILS_USER"\s+-o\s+!\s*-group\s+"\$RAILS_USER"\s+\\?\)\s+-print0/
+      )
+      expect(sweep_function_body).to match(/fixed=\$\(\(fixed \+ 1\)\)/)
+      expect(sweep_function_body).to match(/failed=\$\(\(failed \+ 1\)\)/)
+    end
+
+    it "does not restrict depth — recurses into contents, not just the top-level directory argument" do
+      expect(sweep_function_body).not_to match(/-maxdepth\s+1\b/)
+    end
+
+    it "chowns per-entry (not a blind chown -R), tolerating rather than aborting on one bad entry" do
+      expect(sweep_function_body).to match(/if\s+chown\s+"\$RAILS_USER:\$RAILS_USER"\s+"\$entry"/)
+      expect(sweep_function_body).not_to match(/chown\s+-R/)
+    end
+
+    # Security round: this cache dir is rails-writable, so a rails process
+    # (buggy or compromised) could plant a symlink to an arbitrary
+    # root-owned path inside it; a bare `chown` on a symlink entry follows
+    # it to the referent, which would hand $RAILS_USER ownership of
+    # whatever that link points at on the next boot's sweep.
+    it "excludes symlink entries from the find results (! -type l), rather than following them" do
+      expect(sweep_function_body).to match(/find\s+"\$target"\s+!\s+-type\s+l\s+\\?\(/),
+        "the find predicate must exclude symlinks BEFORE the ownership test, not chown through them"
+    end
+
+    # Genuinely EXECUTES the LITERAL find invocation extracted from inside
+    # the function (not retyped) against a tree containing a symlink,
+    # proving the predicate itself never surfaces the symlink entry --
+    # which is exactly what determines whether the function's chown ever
+    # sees it (a bare chown on an entry find never returns can't run).
+    it "the function's own find invocation never surfaces a symlink entry, when actually run" do
+      find_line = sweep_function_body[/^\s*done < <\((find.*?-print0)/m, 1]
+      expect(find_line).not_to be_nil
+
+      Dir.mktmpdir do |dir|
+        outside_target = File.join(dir, "outside-target")
+        File.write(outside_target, "")
+        cache_dir = File.join(dir, "cache")
+        FileUtils.mkdir_p(cache_dir)
+        File.symlink(outside_target, File.join(cache_dir, "sneaky-link"))
+
+        # RAILS_USER="root" here (a real, resolvable name, just for this
+        # find predicate — nothing is actually chowned in this example):
+        # every entry in a tmpdir we create is owned by the CURRENT test
+        # user, so with RAILS_USER pointed at itself (the pattern the
+        # other executing specs use) the `! -user/-group` ownership test
+        # alone already excludes everything, including the symlink — that
+        # would make this test pass whether or not `! -type l` is present,
+        # proving nothing. Pointing RAILS_USER at a DIFFERENT real user
+        # makes the ownership test TRUE for every entry (a genuine
+        # mismatch), so only the `! -type l` exclusion can still keep the
+        # symlink out of the results — that's the one property this
+        # example needs to discriminate.
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="root"
+          target=#{cache_dir}
+          #{find_line} | tr '\\0' '\\n'
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include(cache_dir),
+          "sanity: the mismatched-ownership predicate must surface at least the target dir itself, or this test proves nothing"
+        expect(out).not_to include("sneaky-link"),
+          "the sweep's own find predicate must never surface the symlink entry itself"
+      end
+    end
+
+    it "is invoked for the PRIMARY resolved cache dir, after the dir-node chown succeeds" do
+      loop_body = script[/for dir in "\$\{RAILS_OWNED_PERSIST_SIBLINGS\[@\]\}"; do\n(.*?)\ndone/m, 1]
+      expect(loop_body).not_to be_nil
+      expect(loop_body).to match(/sweep_ownership_for_rails "\$dir"/)
+    end
+
+    it "is invoked for the ADOPTED legacy flat path too, after ITS dir-node chown succeeds" do
+      legacy_block = script[/# Legacy flat layout adoption:.*?(?=\n# config\/database\.yml)/m]
+      expect(legacy_block).not_to be_nil
+      expect(legacy_block).to match(/sweep_ownership_for_rails \/persist\/powernode-oci-cache/)
+    end
+
+    # Genuinely EXECUTES the extracted sweep function (not just a text
+    # match) against a real directory tree with NESTED content, proving it
+    # is callable and completes without aborting under set -euo pipefail
+    # rather than stopping at the top-level argument. Run as the current
+    # (non-root) test user with RAILS_USER pointed at itself — the same
+    # self-chown trick the internal-CA executing specs above already use
+    # (chowning to yourself always succeeds). This cannot prove a REAL
+    # cross-user repair — there is no root harness in this suite, see the
+    # file's own honest-limits header — but it does prove the function
+    # actually walks into a nested subdirectory/file, not just its own
+    # top-level argument.
+    it "runs end-to-end against a directory tree with nested content, without aborting" do
+      Dir.mktmpdir do |dir|
+        nested_dir = File.join(dir, "sub")
+        FileUtils.mkdir_p(nested_dir)
+        File.write(File.join(nested_dir, "abc123.lock"), "")
+
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="$(id -un)"
+          #{sweep_function_body}
+          sweep_ownership_for_rails #{dir}
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "sweep aborted: #{err}"
+        expect(out).to match(/ownership sweep for #{Regexp.escape(dir)}: fixed=\d+ failed=0/)
+      end
+    end
+  end
+
+  describe "IMP-01a0c508-0121 M1: mkdir must not create/widen the agent state parent (/persist/var/lib/powernode)" do
+    let(:m1_block) { script[/# --- M1 safety:.*?\nfi\n/m] }
+
+    it "exists, scoped to exactly the nested default path" do
+      expect(m1_block).not_to be_nil
+      expect(m1_block).to match(%r{if \[ "\$OCI_CACHE_DIR" = "/persist/var/lib/powernode/oci-cache" \]})
+      expect(m1_block).to match(%r{\[ ! -d /persist/var/lib/powernode \]})
+    end
+
+    it "creates the parent with the SAME hardened group+mode the agent-PKI block above applies (0710, $RAILS_USER group)" do
+      expect(m1_block).to match(%r{mkdir -p /persist/var/lib/powernode\b})
+      expect(m1_block).to match(/chgrp "\$RAILS_USER" \/persist\/var\/lib\/powernode/)
+      expect(m1_block).to match(/chmod 0710 \/persist\/var\/lib\/powernode/)
+    end
+
+    it "runs BEFORE the nested path is mkdir'd by the ownership loop, so the parent is never left at its default mode" do
+      m1_idx   = script.index("# --- M1 safety:")
+      loop_idx = script.index('for dir in "${RAILS_OWNED_PERSIST_SIBLINGS[@]}"; do')
+      expect(m1_idx).not_to be_nil
+      expect(loop_idx).not_to be_nil
+      expect(m1_idx).to be < loop_idx
+    end
+
+    # Genuinely EXECUTES the extracted M1 block against a real tmp tree
+    # standing in for /persist/var/lib/powernode's absent-parent case,
+    # proving it actually creates+hardens rather than just matching text.
+    # Verifies group+mode via `stat`, not just "did it run" -- a run that
+    # silently no-ops would otherwise look identical to one that worked.
+    it "creates and hardens a genuinely absent parent to 0710" do
+      Dir.mktmpdir do |dir|
+        fake_parent = File.join(dir, "persist-var-lib-powernode")
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="$(id -un)"
+          OCI_CACHE_DIR="#{fake_parent}/oci-cache"
+          #{m1_block.gsub("/persist/var/lib/powernode", fake_parent)}
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(Dir.exist?(fake_parent)).to be(true)
+        mode = format("%o", File.stat(fake_parent).mode & 0o7777)
+        expect(mode).to eq("710")
+      end
+    end
+
+    it "does nothing when the parent already exists (an existing parent was already handled by the block above)" do
+      Dir.mktmpdir do |dir|
+        fake_parent = File.join(dir, "persist-var-lib-powernode")
+        FileUtils.mkdir_p(fake_parent)
+        FileUtils.chmod(0o755, fake_parent)
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="$(id -un)"
+          OCI_CACHE_DIR="#{fake_parent}/oci-cache"
+          #{m1_block.gsub("/persist/var/lib/powernode", fake_parent)}
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "aborted: #{err}"
+        mode = format("%o", File.stat(fake_parent).mode & 0o7777)
+        expect(mode).to eq("755"), "must not touch a parent that already existed -- that is the block above's job"
+      end
+    end
+  end
+
+  describe "IMP-01a0c508-0121 cosmetic: legacy-adopt comment matches its actual [-d] test" do
+    it "does not claim content-based adoption when the test is existence-based" do
+      legacy_block = script[/# Legacy flat layout adoption:.*?(?=\n# config\/database\.yml)/m]
+      expect(legacy_block).not_to be_nil
+      expect(legacy_block).not_to match(/if it already has content/i),
+        "the comment must match the actual [ -d ] existence test below it, not claim a content check that isn't there"
+    end
+  end
+
+  describe "IMP-01a0c508-0121 part 2: BUNDLE_FROZEN so bundler never rewrites the erofs-mounted Gemfile.lock" do
+    let(:bundle_config_heredoc) { script[/cat > "\$STATE_DIR\/\.bundle\/config" <<EOF\n(.*?)\nEOF/m, 1] }
+
+    it "writes BUNDLE_FROZEN: \"true\" alongside BUNDLE_PATH/BUNDLE_WITHOUT" do
+      expect(bundle_config_heredoc).not_to be_nil
+      expect(bundle_config_heredoc).to match(/BUNDLE_FROZEN:\s*"true"/)
+    end
+
+    it "does not chown/chmod RAILS_DIR (the erofs mount) as an alternative fix" do
+      expect(script).not_to match(/chown\b[^\n]*"\$RAILS_DIR"/)
+      expect(script).not_to match(/chmod\b[^\n]*"\$RAILS_DIR"/)
+    end
+
+    # Genuinely EXECUTES bundler-2.7.1's own key derivation and frozen-mode
+    # gate (not a text/regex assertion) — proves the YAML key this script
+    # writes is the one `Bundler.settings[:frozen]` / `Bundler.frozen_bundle?`
+    # actually reads, and that `Definition#write_lock` returns before ever
+    # opening the lockfile for write when it's set. Requires the vendored
+    # bundler-2.7.1 gem to be resolvable in this environment; skips rather
+    # than false-failing where it isn't (this spec must not depend on a
+    # `bundle install` against the shared server bundle — see the shared
+    # rvm gemset drift incident this suite already knows about).
+    it "BUNDLE_FROZEN maps to Bundler.settings[:frozen] and gates Definition#write_lock before any file write (executed against the real bundler-2.7.1 gem)" do
+      bundler_lib = Gem::Specification.find_all_by_name("bundler", "2.7.1").first&.full_gem_path
+      skip "bundler 2.7.1 not installed in this environment" unless bundler_lib
+
+      Dir.mktmpdir do |dir|
+        config_path = File.join(dir, "config")
+        File.write(config_path, <<~YAML)
+          ---
+          BUNDLE_FROZEN: "true"
+        YAML
+
+        script_rb = <<~RUBY
+          $LOAD_PATH.unshift(#{File.join(bundler_lib, "lib").inspect})
+          require "bundler"
+          ENV["BUNDLE_APP_CONFIG"] = #{dir.inspect}
+          settings = Bundler::Settings.new(#{dir.inspect})
+          raise "expected frozen setting to be true, got \#{settings[:frozen].inspect}" unless settings[:frozen] == true
+          puts "FROZEN_SETTING_OK"
+        RUBY
+
+        out, err, status = Open3.capture3("ruby", "-e", script_rb)
+        expect(status.success?).to be(true), "ruby failed: #{err}"
+        expect(out).to include("FROZEN_SETTING_OK")
+      end
     end
   end
 
