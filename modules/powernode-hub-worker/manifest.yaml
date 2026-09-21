@@ -132,7 +132,29 @@ services:
       notes: "Worker HTTP API (embeddings + LLM proxy + job endpoints), not merely the Sidekiq dashboard. Generates .session.key on first boot because config.ru reads it at load time and the secret is deliberately unshipped."
 
 security:
-  capabilities: []
+  # CAP_DAC_READ_SEARCH — read hub-backend's secrets at
+  # $STATE_DIR/backend-default.conf. Both launchers (sidekiq-start.sh,
+  # worker-web-start.sh) source that file, and since the non-root rails
+  # migration STATE_DIR is 0700 owned by powernode-rails. The launchers run
+  # as root and assumed that was enough ("root ignores Unix permission bits
+  # entirely"), but the agent renders THIS list into a per-unit
+  # CapabilityBoundingSet=/AmbientCapabilities= drop-in: an empty list left
+  # both units at uid 0 with CapEff=0, unable even to traverse into
+  # STATE_DIR. They then crash-looped for ~26h (2026-09-21, NRestarts=387
+  # each), taking every Sidekiq cron down with them — including the CI runner
+  # lease sweep, which is the only thing that readvances a stalled native
+  # module build batch.
+  #
+  # This MUST stay in the top-level security block: agent buildPolicy reads
+  # config["security"]["capabilities"] and applies one module-level policy to
+  # every unit. The per-service `capabilities:` key does NOT reach the
+  # drop-in. Pinned by spec/integration/system/hub_worker_services_spec.rb.
+  #
+  # Read/traverse only, deliberately: CAP_DAC_OVERRIDE would also bypass
+  # WRITE checks, and nothing here writes outside /opt/powernode/worker,
+  # which root already owns.
+  capabilities:
+    - CAP_DAC_READ_SEARCH
   # Sidekiq jobs (disk-image publication ingest, module OCI ingest, etc.)
   # call Gitea's API/OCI registry directly, but same rationale as
   # hub-backend's manifest: no static real hostnames/IPs baked into tracked

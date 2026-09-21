@@ -94,4 +94,67 @@ RSpec.describe "powernode-hub-worker module services" do
       expect(launcher_body).to include(".session.key")
     end
   end
+
+  # 2026-09-21, ops-hub: BOTH services of this module crash-looped for ~26h
+  # (NRestarts=387 each), so NO Sidekiq cron ran at all. That silently stalled
+  # native module build batches too, because the only thing that readvances a
+  # batch whose member finished but was never recorded is the CI runner lease
+  # sweep — and that sweep ticks solely from this module's 60s cron.
+  #
+  # The cause is a stale assumption written into both launchers. They read
+  # hub-backend's secrets at $STATE_DIR/backend-default.conf, and
+  # sidekiq-start.sh asserts this is "safe TODAY: sidekiq reads [it] AS ROOT,
+  # and STATE_DIR is now 0700-mode, owned by powernode-rails (not root) — root
+  # ignores Unix permission bits entirely". Root only ignores those bits while
+  # it holds CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE). The agent writes a
+  # per-unit drop-in from this manifest's security policy, and `capabilities:
+  # []` renders an EMPTY CapabilityBoundingSet=, so both units run as uid 0
+  # with no capabilities and cannot even traverse into STATE_DIR. Observed on
+  # the live host, not inferred:
+  #   Uid: 0 0 0 0   CapEff: 0000000000000000
+  # while rails itself was fine at Uid 71005 — it OWNS the directory and so
+  # never needed the override.
+  #
+  # The grant MUST live in the TOP-LEVEL security block. The agent's
+  # buildPolicy reads config["security"]["capabilities"] and applies that one
+  # module-level policy to every unit (reconcile.go: `for _, unit := range
+  # mf.UnitNames()`). The per-SERVICE `capabilities:` key never reaches the
+  # drop-in, so granting it there is a no-op that reads exactly like a fix.
+  describe "the module security policy" do
+    let(:rootfs_bin) do
+      Rails.root.join("../extensions/system/modules/powernode-hub-worker/rootfs/usr/local/bin")
+    end
+
+    # Derived from the launchers themselves rather than hardcoded, so that a
+    # service which STOPS reading the cross-module secrets file drops out of
+    # the premise instead of quietly keeping a grant it no longer needs.
+    let(:services_reading_backend_secrets) do
+      services.filter_map do |service|
+        launcher = rootfs_bin.join(File.basename(service.fetch("start_command")))
+        next unless File.exist?(launcher)
+
+        service["name"] if File.read(launcher).include?("backend-default.conf")
+      end
+    end
+
+    it "has services that read hub-backend's root-only secrets file as root" do
+      # The premise of the grant below. If this changes, the capability should
+      # be re-justified or removed — not silently retained.
+      expect(services_reading_backend_secrets).to contain_exactly("sidekiq", "worker-web")
+      expect(services.map { |s| s["user"] }.uniq).to eq([ "root" ])
+    end
+
+    it "grants CAP_DAC_READ_SEARCH at the TOP LEVEL, where the agent reads it" do
+      expect(manifest.dig("security", "capabilities")).to include("CAP_DAC_READ_SEARCH")
+    end
+
+    it "keeps the grant minimal — read/traverse only, and not privileged" do
+      # CAP_DAC_OVERRIDE would additionally bypass WRITE checks; nothing here
+      # writes outside /opt/powernode/worker, which root already owns.
+      # privileged:true would skip the capability drop-in entirely, and
+      # policy.Validate() rejects privileged combined with explicit caps.
+      expect(manifest.dig("security", "capabilities")).to contain_exactly("CAP_DAC_READ_SEARCH")
+      expect(manifest.dig("security", "privileged")).to be false
+    end
+  end
 end
