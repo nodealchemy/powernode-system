@@ -88,6 +88,8 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_update_template` | Edit any field `system_create_template` accepts: name, description, enabled, public, node_platform_id, admin_user, config (`config` replaces the stored hash) |
 | `system_assign_module_to_template` | Add a module to a Template, with the join's own `priority`, `enabled`, `config` and `recommends_override`. (`config` is stored verbatim and is delivered by whatever consumes it; `target_cluster_id` on a `k3s-agent` assignment is delivered to the agent as of IMP-a5f236e8cc56, see [CONTAINER_RUNTIMES.md](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--implemented-imp-a5f236e8cc56).) Refuses error-severity composition conflicts; `enabled: false` stages the assignment without shipping it and skips the conflict check |
 | `system_update_template_module` | Edit an existing assignment in place (priority/enabled/config/recommends_override). **`enabled: false` is the correct way to remove a module** — unassigning destroys the join, which nullifies `source_template_module_id` on every derived NodeModuleAssignment and orphans them permanently. Re-enabling runs the conflict check |
+| `system_list_node_module_assignments` | List a Node's NodeModuleAssignments (paginated, `limit` / `cursor`): module id + name, `enabled`, priority, `source_template_module_id` (null = hand-authored) and timestamps. Only enabled rows are served to the node's agent. Requires `system.modules.read` |
+| `system_assign_module_to_node` | Create a NODE-level assignment — how a node gains a module its template does not name. Refuses a module disabled in the catalog. Refuses a module with a hard (required, transitive) dependency the node neither has assigned-and-enabled nor gets from its template closure, or that is catalog-disabled, naming the missing modules — nothing is auto-assigned; assign them first. Refuses a module already assigned to the node (enabled or not — use `system_update_module_assignment`), and refuses error-severity composition conflicts against the node's enabled assignments, whatever `enabled` is; the dependency check likewise (the toggle runs neither, so create-disabled-then-enable would otherwise bypass them). Only DECLARED conflicts are seen. The row is hand-authored (`source_template_module_id` null), so template reconciliation never reaps it. Nothing is pushed: the agent picks it up on its next module sync. Requires `system.modules.update` |
 | `system_list_modules` | List NodeModules |
 | `system_get_module` | Fetch a Module + its categories + dependencies |
 | `system_list_module_versions` | List versions of a module |
@@ -201,6 +203,14 @@ names are `read` / `write` / `sync` / `reconcile` (`server/lib/powernode_system/
 **Permissions:** `system.disk_image_publications.{view,set_default,retain}`, `system.disk_image_webhooks.view`
 
 See [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) for the operator-facing workflow that uses these actions in concert with `bootstrap_disk_image_ci` + `provision_disk_image_webhook`.
+
+#### Native module-build batches
+
+`system_dispatch_module_build_batch`, `system_get_module_build_batch` and `system_cancel_module_build_batch` are described in the machine catalog. The recovery verb:
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_readvance_module_build_batch` | Re-advance ONE batch whose member build finished while its entry is still `dispatched` (`stalled: true` on `system_get_module_build_batch`) — the lease sweep's readvance backstop, on demand, for when the hub-worker cron that normally runs it is down. Calls the sweep service itself, so it does exactly what the sweep would: a completed build is signed + published (and promoted, unless shadow or withheld), a failed one retried or failed, and still-queued members of the batch dispatched. Like the unattended sweep, it publishes and promotes **without** the release-promote autonomy gate — deliberate, since it is the sweep's own step run on demand; the kill-switch and control-plane gates still apply. Refused under the account kill switch or on a standby control plane; a batch with nothing stalled, not in `dispatched`/`awaiting_signature`/`publishing`, or already being advanced is a no-op (`readvanced: false` + `reason`). Requires `system.module_builds.readvance` (admin / owner / manager, like `system.module_builds.cancel`) | operator |
 
 #### CI worker provisioning
 
