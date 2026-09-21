@@ -117,6 +117,42 @@ RSpec.describe System::Compliance::ComplianceSnapshotService, "drift disclosure"
 
     expect(summary[:assessed_count] + summary[:not_reporting_count] + summary[:not_assessed_count])
       .to eq(summary[:instance_count])
-    expect(summary[:drifted_count] + summary[:reconciled_count]).to eq(summary[:assessed_count])
+    expect(summary[:drifted_count] + summary[:unverifiable_count] + summary[:reconciled_count])
+      .to eq(summary[:assessed_count])
+  end
+
+  # Offer 01a0c60b-ee60 — an instance running an assigned module whose served
+  # version has no oci_digest is not drifted, but its running digest was never
+  # compared, so the evidence document must not attest it `reconciled`. It is
+  # named in its own bucket, like not_reporting / not_assessed.
+  describe "an instance running a module whose served version has no digest" do
+    let(:digestless) do
+      m = create(:system_node_module, account: account, node_platform: platform,
+                 category: category, name: "digestless-mod")
+      m.update!(current_version_id: create(:system_node_module_version, node_module: m, version_number: 1,
+                                                                        oci_digest: nil).id)
+      m
+    end
+    let(:other_node) { create(:system_node, account: account, node_template: template) }
+    let!(:unverifiable) do
+      create(:system_node_module_assignment, node: other_node, node_module: digestless)
+      create(:system_node_instance, :running, node: other_node,
+             running_module_digests: { digestless.id => "sha256:unknown" })
+    end
+
+    it "discloses it under unverifiable and does NOT count it reconciled" do
+      expect(summary[:unverifiable_count]).to eq(1)
+      expect(summary[:unverifiable_instances])
+        .to contain_exactly(hash_including(id: unverifiable.id,
+                                           unverifiable: { digestless.id => { have: "sha256:unknown" } }))
+      expect(summary[:reconciled_count]).to eq(1) # `converged` alone
+      expect(summary[:drifted_count]).to eq(0)
+    end
+
+    it "keeps the identity: drifted + unverifiable + reconciled == assessed" do
+      expect(summary[:assessed_count]).to eq(2)
+      expect(summary[:drifted_count] + summary[:unverifiable_count] + summary[:reconciled_count])
+        .to eq(summary[:assessed_count])
+    end
   end
 end

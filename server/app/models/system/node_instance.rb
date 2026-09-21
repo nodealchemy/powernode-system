@@ -611,9 +611,29 @@ module System
     # (running_module_digests, keyed by node_module_id) versus the current
     # version of every module its node is assigned.
     #
-    #   missing    — assigned, nothing reported mounted for it
-    #   extra      — reported mounted, no longer assigned
-    #   mismatched — reported mounted at a digest other than current
+    #   missing      — assigned, nothing reported mounted for it
+    #   extra        — reported mounted, no longer assigned
+    #   mismatched   — reported mounted at a digest other than current
+    #   unverifiable — assigned, but the version its plane is served carries
+    #                  no oci_digest (or the plane is served no version), so
+    #                  there is nothing to compare against. `have` is the
+    #                  mounted digest, nil when nothing is mounted for it.
+    #
+    # Offer 01a0c60b-ee60: those modules used to be dropped from the
+    # assignment, so a running copy fell into `extra` and DriftRemediateExecutor
+    # planned to DETACH an assigned module (live: a self-hosted control plane's
+    # only reverse proxy). They are assigned, so never `extra`; their digest is
+    # unknown, so never `missing`/`mismatched` either. `unverifiable` does NOT
+    # count toward #module_drifted?: every drift consumer remediates with
+    # sync_modules, which cannot supply a digest the version record lacks, so
+    # counting it would hold a correctly composed node in permanent drift. It
+    # is surfaced by name instead (system_drift_report's unverifiable bucket;
+    # the compliance snapshot and drift_check, which attest rather than
+    # remediate, name it as its own bucket and never count it converged).
+    # `node.node_modules` carries no `enabled` filter while the node API serves
+    # only enabled modules, so a disabled digestless module still mounted
+    # lands here rather than in `extra` (the same pre-existing divergence
+    # applies to a disabled module that has a digest: it counts as assigned).
     #
     # The one definition of module drift. It was copied into
     # SystemFleetTool#drift_report and ModuleDriftSensor, and a third caller
@@ -642,22 +662,32 @@ module System
       # incr. 4): a pinned plane's pin, else current_version — the same read
       # the node API answers, so a pinned instance is not "mismatched" merely
       # because a publish moved the fleet-global pointer.
-      assigned = node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
+      assigned = {}
+      digestless = []
+      node.node_modules.includes(:current_version).each do |m|
         digest = m.served_version_for(environment)&.oci_digest
-        acc[m.id] = digest if digest
+        if digest
+          assigned[m.id] = digest
+        else
+          digestless << m.id
+        end
       end
       running = running_module_digests || {}
+      unverifiable = digestless.index_with { |id| { have: running[id.to_s] || running[id] } }
 
       missing = assigned.reject { |id, _| running.key?(id.to_s) || running.key?(id) }
-      extra   = running.reject { |id, _| assigned.key?(id) || assigned.key?(id.to_s) }
+      extra   = running.reject do |id, _|
+        assigned.key?(id) || assigned.key?(id.to_s) || unverifiable.key?(id) || unverifiable.key?(id.to_s)
+      end
       mismatched = assigned.each_with_object({}) do |(id, want), acc|
         have = running[id.to_s] || running[id]
         acc[id] = { want: want, have: have } if have && have != want
       end
 
-      { missing: missing, extra: extra, mismatched: mismatched }
+      { missing: missing, extra: extra, mismatched: mismatched, unverifiable: unverifiable }
     end
 
+    # `unverifiable` is left out on purpose — see #module_drift.
     def module_drifted?
       drift = module_drift
       drift[:missing].any? || drift[:extra].any? || drift[:mismatched].any?

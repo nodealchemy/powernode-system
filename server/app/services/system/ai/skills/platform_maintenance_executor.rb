@@ -162,6 +162,7 @@ module System
           summaries = deployments.map { |d| drift_summary_for(d) }
           drifted_total = summaries.sum { |s| s[:drift_count] }
           silent_total = summaries.sum { |s| s[:not_reporting_count] }
+          unverifiable_total = summaries.sum { |s| s[:unverifiable_count] }
           unassessed = summaries.flat_map { |s| s[:not_assessed_instances] }
           unassessed_total = unassessed.size
 
@@ -169,12 +170,13 @@ module System
           recs << "No deployments declared — drift check is a no-op." if deployments.empty?
           recs << "#{drifted_total} instance(s) drifted from their assigned modules — call system_refresh_instance_modules per instance to remediate." if drifted_total.positive?
           recs << "#{silent_total} instance(s) have never heartbeated — drift is UNKNOWN for them, not clear." if silent_total.positive?
+          recs << "#{unverifiable_total} instance(s) run an assigned module whose served version has no digest — its running digest cannot be compared, so they are NOT verified converged; the gap is on the module version record, which a sync_modules reconcile cannot fill." if unverifiable_total.positive?
           if unassessed_total.positive?
             breakdown = unassessed.group_by { |i| i[:status] }.transform_values(&:size)
                                   .sort.map { |status, n| "#{status}: #{n}" }.join(", ")
             recs << "#{unassessed_total} instance(s) are mid-lifecycle or errored (#{breakdown}) — drift was NOT assessed for them; re-run once they settle."
           end
-          if deployments.any? && drifted_total.zero? && silent_total.zero? && unassessed_total.zero?
+          if deployments.any? && drifted_total.zero? && unverifiable_total.zero? && silent_total.zero? && unassessed_total.zero?
             recs << "All reporting instances match their assigned modules — nothing to remediate."
           end
 
@@ -228,19 +230,26 @@ module System
           assessable, unassessed =
             all_instances.partition { |inst| ::System::NodeInstance::ACTIVE_STATUSES.include?(inst.status) }
           reporting, silent = assessable.partition { |inst| inst.last_heartbeat_at.present? }
-          drifted = reporting.select(&:module_drifted?)
+          drifted, answered = reporting.partition(&:module_drifted?)
+          # Offer 01a0c60b-ee60 — an instance running an assigned module whose
+          # served version has no oci_digest is not drifted (sync_modules cannot
+          # remedy a digest the version record lacks), but it is not converged
+          # either: its running digest was never compared. Same rule again —
+          # named, never folded into the converged remainder. Drifted wins, so
+          # the buckets stay disjoint; a drifted row's detail still carries it.
+          unverifiable = answered.select { |inst| inst.module_drift[:unverifiable].any? }
 
-          base_drift_row(deployment, all_instances.size, drifted, silent, unassessed)
+          base_drift_row(deployment, all_instances.size, drifted, unverifiable, silent, unassessed)
         end
 
-        # `instance_count` is the DENOMINATOR the three buckets are read
+        # `instance_count` is the DENOMINATOR the four buckets are read
         # against: without it a reader cannot tell "every instance was assessed
         # and none needed remediation" from "a whole status class was filtered
         # out of the question", which is precisely how IMP-351be1c674e0 hid.
         # The buckets name only the instances that need attention, so the
-        # identity is drift + not_reporting + not_assessed + converged =
-        # instance_count — the converged remainder is not enumerated.
-        def base_drift_row(deployment, instance_count, drifted, silent, unassessed)
+        # identity is drift + unverifiable + not_reporting + not_assessed +
+        # converged = instance_count — the converged remainder is not enumerated.
+        def base_drift_row(deployment, instance_count, drifted, unverifiable, silent, unassessed)
           {
             deployment_id: deployment.id,
             deployment_name: deployment.name,
@@ -248,6 +257,8 @@ module System
             instance_count: instance_count,
             drift_count: drifted.size,
             drifted_instances: drifted.map { |i| instance_row(i).merge(drift: i.module_drift) },
+            unverifiable_count: unverifiable.size,
+            unverifiable_instances: unverifiable.map { |i| instance_row(i).merge(unverifiable: i.module_drift[:unverifiable]) },
             not_reporting_count: silent.size,
             not_reporting_instances: silent.map { |i| instance_row(i) },
             not_assessed_count: unassessed.size,

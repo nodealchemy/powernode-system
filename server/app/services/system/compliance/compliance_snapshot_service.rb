@@ -210,18 +210,29 @@ module System
         # reported it clean.
         reporting, silent = assessable.partition { |i| answers_drift?(i) }
 
-        drifted, reconciled = reporting.partition(&:module_drifted?)
+        drifted, answered = reporting.partition(&:module_drifted?)
+
+        # THIRD CUT (offer 01a0c60b-ee60). An instance running an assigned
+        # module whose served version has no oci_digest is not drifted —
+        # #module_drift files it under :unverifiable, which #module_drifted?
+        # leaves out because sync_modules cannot remedy it — but its running
+        # digest was never compared, so this evidence document must not attest
+        # it `reconciled`. Named, like not_reporting / not_assessed. Drifted
+        # wins, so the buckets stay disjoint.
+        unverifiable, reconciled = answered.partition { |i| i.module_drift[:unverifiable].any? }
 
         {
           # The DENOMINATOR the buckets are read against. Without it a reader
           # cannot tell "every instance was assessed and none drifted" from
           # "a whole status class was filtered out of the question".
           # Identity: assessed + not_reporting + not_assessed == instance_count,
-          # and drifted + reconciled == assessed.
+          # and drifted + unverifiable + reconciled == assessed.
           instance_count: all_instances.size,
           assessed_count: reporting.size,
           drifted_count: drifted.size,
           reconciled_count: reconciled.size,
+          unverifiable_count: unverifiable.size,
+          unverifiable_instances: unverifiable.map { |i| instance_row(i).merge(unverifiable: i.module_drift[:unverifiable]) },
           not_reporting_count: silent.size,
           not_reporting_instances: silent.map { |i| instance_row(i) },
           not_assessed_count: unassessed.size,

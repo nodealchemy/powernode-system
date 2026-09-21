@@ -843,9 +843,8 @@ RSpec.describe System::NodeInstance, type: :model do
     let(:instance) { create(:system_node_instance, node: node) }
 
     # An assigned module whose CURRENT version carries `want` — the digest an
-    # instance of this node is supposed to be running. A module with no
-    # current-version digest is not part of the assignment #module_drift
-    # measures against, so every fixture here needs one.
+    # instance of this node is supposed to be running. `want: nil` builds the
+    # digestless assignment the :unverifiable examples need.
     def assign_module(want:)
       node_module = create(:system_node_module, account: account)
       version = create(:system_node_module_version, node_module: node_module, oci_digest: want)
@@ -898,8 +897,100 @@ RSpec.describe System::NodeInstance, type: :model do
         node_module = assign_module(want: "sha256:want")
         instance.update!(running_module_digests: { node_module.id.to_s => "sha256:want" })
 
-        expect(instance.module_drift).to eq(missing: {}, extra: {}, mismatched: {})
+        expect(instance.module_drift).to eq(missing: {}, extra: {}, mismatched: {}, unverifiable: {})
         expect(instance.module_drifted?).to be false
+      end
+    end
+
+    # Offer 01a0c60b-ee60 — an assigned module whose served version carries
+    # no oci_digest used to be dropped from the assignment, so its running
+    # copy fell into :extra and DriftRemediateExecutor planned a DETACH for a
+    # module the node is assigned (live: a control plane's only reverse
+    # proxy). It is assigned, so it is never :extra; its digest is unknown, so
+    # it is never :missing or :mismatched either. It lands in :unverifiable —
+    # asserted by bucket, not by module_drifted?, because a fix that dropped
+    # the module from BOTH sides would also read "not drifted".
+    context 'when an assigned module has no served digest (unverifiable)' do
+      let!(:digestless) { assign_module(want: nil) }
+
+      it 'lists a running copy under :unverifiable, never :extra, and is not drifted' do
+        instance.update!(running_module_digests: { digestless.id.to_s => "sha256:mounted" })
+
+        drift = instance.module_drift
+        expect(drift[:unverifiable]).to eq(digestless.id => { have: "sha256:mounted" })
+        expect(drift[:extra]).to be_empty
+        expect(drift[:missing]).to be_empty
+        expect(drift[:mismatched]).to be_empty
+        expect(instance.module_drifted?).to be false
+      end
+
+      it 'lists it under :unverifiable with no have when nothing is mounted for it' do
+        instance.update!(running_module_digests: {})
+
+        drift = instance.module_drift
+        expect(drift[:unverifiable]).to eq(digestless.id => { have: nil })
+        expect(drift[:missing]).to be_empty
+      end
+
+      # The inverse oracle: a fix that stopped reporting extras at all would
+      # pass the examples above. An unassigned running module is still :extra
+      # beside the unverifiable one, and still drifts the instance.
+      it 'still reports a genuinely unassigned running module as :extra' do
+        unassigned_id = SecureRandom.uuid
+        instance.update!(running_module_digests: { digestless.id.to_s => "sha256:mounted",
+                                                   unassigned_id => "sha256:orphan" })
+
+        drift = instance.module_drift
+        expect(drift[:extra]).to eq(unassigned_id => "sha256:orphan")
+        expect(drift[:unverifiable].keys).to eq([ digestless.id ])
+        expect(instance.module_drifted?).to be true
+      end
+    end
+
+    # The digest compared is the one the instance's PLANE is served
+    # (NodeModule#served_version_for), not current_version: a pinned plane
+    # with a digested pin is measured against the pin even when current has
+    # no digest, and a pinned plane with no pin serves nothing — unverifiable.
+    context 'on a pinned plane' do
+      let(:staging) { account.environments.find_by!(slug: "staging") }
+      let(:instance) { create(:system_node_instance, node: node, environment: staging) }
+
+      it 'measures against the pin, so a digestless current_version does not make it unverifiable' do
+        node_module = assign_module(want: "sha256:pinned")
+        pinned = node_module.current_version
+        System::ModuleEnvironmentPin.create!(account_id: account.id, node_module: node_module, environment: staging,
+                                             node_module_version: pinned, promoted_at: Time.current)
+        node_module.set_current_version!(
+          create(:system_node_module_version, node_module: node_module, version_number: pinned.version_number + 1,
+                                              oci_digest: nil)
+        )
+        instance.update!(running_module_digests: { node_module.id.to_s => "sha256:pinned" })
+
+        expect(instance.module_drift).to eq(missing: {}, extra: {}, mismatched: {}, unverifiable: {})
+      end
+
+      it 'reports a module whose PIN has no digest as :unverifiable, even when current_version has one' do
+        node_module = assign_module(want: "sha256:current")
+        digestless_pin = create(:system_node_module_version, node_module: node_module,
+                                                             version_number: node_module.current_version.version_number + 1,
+                                                             oci_digest: nil)
+        System::ModuleEnvironmentPin.create!(account_id: account.id, node_module: node_module, environment: staging,
+                                             node_module_version: digestless_pin, promoted_at: Time.current)
+        instance.update!(running_module_digests: { node_module.id.to_s => "sha256:current" })
+
+        drift = instance.module_drift
+        expect(drift[:unverifiable]).to eq(node_module.id => { have: "sha256:current" })
+        expect(drift[:extra]).to be_empty
+        expect(drift[:mismatched]).to be_empty
+      end
+
+      it 'reports a module with no pin on the plane as :unverifiable, not :extra' do
+        node_module = assign_module(want: "sha256:current")
+        instance.update!(running_module_digests: { node_module.id.to_s => "sha256:current" })
+
+        drift = instance.module_drift
+        expect(drift[:unverifiable]).to eq(node_module.id => { have: "sha256:current" })
+        expect(drift[:extra]).to be_empty
       end
     end
   end

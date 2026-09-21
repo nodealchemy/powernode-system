@@ -1680,7 +1680,10 @@ module Ai
 
           # === Reconcile / Drift ===
           "system_drift_report" => {
-            description: "Compare a node instance's running modules vs assigned",
+            description: "Compare a node instance's running modules vs assigned. Returns missing / extra / mismatched " \
+                         "(each with a *_count; any of them sets drift: true) plus unverifiable / unverifiable_count: " \
+                         "assigned modules whose served version has no oci_digest, so the running digest cannot be " \
+                         "compared. unverifiable does NOT set drift and is never reported as extra.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to compute module drift for" } }
           },
 
@@ -5414,15 +5417,20 @@ module Ai
         missing    = drift[:missing]
         extra      = drift[:extra]
         mismatched = drift[:mismatched]
+        # Assigned modules with no served digest — reported, but not drift
+        # (NodeInstance#module_drift says why).
+        unverifiable = drift[:unverifiable]
 
         success_result(
           drift: missing.any? || extra.any? || mismatched.any?,
           missing_count: missing.size,
           extra_count: extra.size,
           mismatched_count: mismatched.size,
+          unverifiable_count: unverifiable.size,
           missing: missing,
           extra: extra,
           mismatched: mismatched,
+          unverifiable: unverifiable,
           last_heartbeat_at: instance.last_heartbeat_at&.iso8601,
           # Boot-image drift (campaign 019f505f) — is the node running a stale
           # disk image relative to its platform's promoted image? booted is the

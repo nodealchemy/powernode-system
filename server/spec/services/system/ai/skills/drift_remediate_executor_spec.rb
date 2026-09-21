@@ -197,5 +197,39 @@ RSpec.describe System::Ai::Skills::DriftRemediateExecutor do
         expect(actions[:detach]).to include(other_mod.id)
       end
     end
+
+    # Offer 01a0c60b-ee60 — an ASSIGNED module whose current version has no
+    # oci_digest (live: a control plane's only reverse proxy) was reported
+    # :extra by NodeInstance#module_drift, so this executor planned to DETACH
+    # it. The unassigned extra beside it keeps the arm drifted, so the plan is
+    # actually built: detach names the orphan and never the assigned module.
+    context "with an assigned module whose current version has no digest" do
+      let(:digestless) do
+        m = create(:system_node_module, account: account, node_platform: platform,
+                   category: category, variety: "subscription", name: "digestless-mod")
+        v = System::NodeModuleVersion.create!(node_module: m, version_number: 1,
+                                              mask: [], file_spec: [], package_spec: [], config: {},
+                                              oci_digest: nil)
+        m.update!(current_version_id: v.id)
+        m
+      end
+      let(:orphan_id) { SecureRandom.uuid }
+
+      before do
+        System::NodeModuleAssignment.create!(node: node, node_module: digestless, enabled: true, priority: 0)
+        instance.update!(running_module_digests: {
+          digestless.id => "sha256:#{'e' * 64}",
+          orphan_id => "sha256:#{'f' * 64}"
+        })
+      end
+
+      it "never plans a detach for the assigned module" do
+        actions = exec.execute(instance_id: instance.id)[:data][:planned_actions]
+        expect(actions[:detach]).to eq([ orphan_id ])
+        expect(actions[:detach]).not_to include(digestless.id)
+        expect(actions[:attach]).to be_empty
+        expect(actions[:update]).to be_empty
+      end
+    end
   end
 end

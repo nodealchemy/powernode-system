@@ -2030,6 +2030,19 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:data][:drift]).to be true
       expect(r[:data][:mismatched_count]).to eq(1)
     end
+
+    # Offer 01a0c60b-ee60 — a running copy of an assigned module whose
+    # current version has no oci_digest is exposed in its own bucket, not as
+    # an unassigned extra, and does not by itself drift the instance.
+    it "reports an assigned module with no current digest as unverifiable, not extra" do
+      version.update!(oci_digest: nil)
+      instance.update!(running_module_digests: { mod.id => "sha256:#{'b' * 64}" })
+      r = call("system_drift_report", instance_id: instance.id)
+      expect(r[:data][:unverifiable_count]).to eq(1)
+      expect(r[:data][:unverifiable]).to eq(mod.id => { have: "sha256:#{'b' * 64}" })
+      expect(r[:data][:extra_count]).to eq(0)
+      expect(r[:data][:drift]).to be false
+    end
   end
 
   describe "boot image drift (campaign 019f505f)" do

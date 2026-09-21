@@ -157,6 +157,64 @@ RSpec.describe System::Ai::Skills::PlatformMaintenanceExecutor do
       expect(drift_check[:data][:recommendations].join(" ")).to include("nothing to remediate")
     end
 
+    # Offer 01a0c60b-ee60 — an instance running an assigned module whose
+    # served version has no oci_digest is not drifted (NodeInstance#module_drift
+    # files it under :unverifiable), but it is not converged either: its
+    # running digest was never compared. Before the unverifiable bucket it fell
+    # into the non-enumerated converged remainder and drift_check reassured
+    # "nothing to remediate". A state that cannot be answered is named.
+    describe "an instance running a module whose served version has no digest" do
+      def unverifiable_instance
+        node = create(:system_node, account: account, node_template: template)
+        node_module = assign_module(node, want_digest: nil)
+        create(:system_node_instance, :running, node: node,
+               running_module_digests: { node_module.id.to_s => "sha256:unknown" },
+               last_heartbeat_at: 1.minute.ago)
+      end
+
+      it "discloses an unverifiable-ONLY instance in its own bucket, not the converged remainder" do
+        instance = unverifiable_instance
+        node_module_id = instance.node.node_modules.first.id
+
+        row = deployment_row(drift_check)
+
+        expect(row[:unverifiable_count]).to eq(1)
+        expect(row[:unverifiable_instances])
+          .to contain_exactly(hash_including(id: instance.id,
+                                             unverifiable: { node_module_id => { have: "sha256:unknown" } }))
+        expect(row[:drift_count]).to eq(0)
+        # Conservation: the one instance is in a named bucket, so nothing is
+        # left for the converged remainder.
+        expect(row[:drift_count] + row[:unverifiable_count] + row[:not_reporting_count] +
+               row[:not_assessed_count]).to eq(row[:instance_count])
+      end
+
+      it "withholds the all-clear and says the digests could not be compared" do
+        unverifiable_instance
+
+        recs = drift_check[:data][:recommendations].join(" ")
+
+        expect(recs).not_to include("nothing to remediate")
+        expect(recs).to include("1 instance(s) run an assigned module whose served version has no digest")
+      end
+
+      # Drifted wins: the buckets stay disjoint, and the drifted row's detail
+      # still names the unverifiable module beside the real drift.
+      it "keeps an instance that is ALSO drifted in drifted_instances only" do
+        instance = unverifiable_instance
+        instance.update!(running_module_digests: instance.running_module_digests.merge(
+          SecureRandom.uuid => "sha256:orphan"
+        ))
+
+        row = deployment_row(drift_check)
+
+        expect(row[:drifted_instances].map { |i| i[:id] }).to eq([ instance.id ])
+        expect(row[:drifted_instances].first[:drift][:unverifiable].keys)
+          .to eq([ instance.node.node_modules.first.id ])
+        expect(row[:unverifiable_count]).to eq(0)
+      end
+    end
+
     # IMP-351be1c674e0 — the sweep scoped with `NodeInstance.active`
     # (pending/provisioning/running/stopped), so an instance in `starting`,
     # `stopping`, `rebooting` or `error` reached NEITHER count and nothing in
