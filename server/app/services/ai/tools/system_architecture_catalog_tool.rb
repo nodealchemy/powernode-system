@@ -157,9 +157,28 @@ module Ai
       rescue ActiveRecord::RecordNotFound => e
         error_result(e.message)
       rescue ActiveRecord::RecordInvalid => e
-        error_result(e.record.errors.full_messages.join("; "))
+        # IMP-1a5c145c24eb — CURRENTLY UNREACHABLE, not a live leak: no
+        # create!/update!/save! (bang persistence) exists anywhere in this
+        # file today (create/update/delete_architecture all use non-bang
+        # .save/.update/.destroy, handled inline via .errors.full_messages).
+        # Kept as a defensive catch-all rather than deleted, and sanitized
+        # rather than left forwarding e.record.errors: an unreachable clause
+        # that forwards raw content is a latent leak that arms itself the
+        # moment someone adds bang persistence here, without necessarily
+        # re-auditing this rescue arm against whatever model/validations
+        # that change introduces. NOT covered by a spec — it cannot be
+        # exercised today, and a spec that passes only because the arm never
+        # runs would be worse than no spec.
+        rescued_error_result(e)
       rescue ActiveRecord::DeleteRestrictionError => e
-        error_result("Cannot delete: #{e.message}")
+        # IMP-1a5c145c24eb — CURRENTLY UNREACHABLE, same reasoning as above:
+        # `ActiveRecord::DeleteRestrictionError` is raised only by
+        # `dependent: :restrict_with_exception`, and no model reachable from
+        # this file's actions declares it (System::NodeArchitecture uses
+        # `dependent: :restrict_with_error`, which returns false rather than
+        # raising). Kept + sanitized as a defensive catch-all; not tested,
+        # for the same reason as the clause above.
+        rescued_error_result(e)
       end
 
       private
