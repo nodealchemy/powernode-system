@@ -381,6 +381,33 @@ RSpec.describe Ai::Tools::SystemIngressTool do
         expect(svc.reload.name).to eq("Renamed")
       end
     end
+
+    # IMP-1a5c145c24eb — the sibling above proves the leak doesn't escape
+    # UNCAUGHT, but its raise message ("dynamic dir unwritable") never
+    # contained anything dangerous, so it couldn't discriminate a fix from
+    # the original raw-forwarding code. WriteError's real sole raiser
+    # (service_exposure_writer.rb:112) embeds "#{e.class}: #{e.message}" from
+    # a bare rescue around real filesystem I/O — reproduce that shape here.
+    describe "the raw driver text inside a WriteError is dropped, not just the WriteError itself caught" do
+      before do
+        allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+          .and_raise(::Sdwan::ServiceExposureWriter::WriteError,
+                     "ServiceExposureWriter failed: Errno::EACCES: Permission denied @ rb_sysopen - /var/lib/powernode/traefik/dynamic/local-services-#{SecureRandom.uuid}.yaml")
+      end
+
+      it "keeps the caller-useful prefix, drops the embedded driver/path text, and still logs it" do
+        svc = create_service!(slug: "off-werr-raw", local_enabled: true)
+        expect(Rails.logger).to receive(:error).with(/Errno::EACCES.*rb_sysopen/)
+
+        result = tool.execute(params: { action: "system_unexpose_service_local", service_id: svc.id })
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to eq("service change saved but reverse-proxy regen failed (stale route may still be live)")
+        expect(result[:error]).not_to include("Errno::EACCES")
+        expect(result[:error]).not_to include("rb_sysopen")
+        expect(result[:error]).not_to include("/var/lib/powernode")
+      end
+    end
   end
 
   describe "permission gating" do

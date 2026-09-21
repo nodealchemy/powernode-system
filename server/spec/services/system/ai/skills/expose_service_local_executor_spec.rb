@@ -143,5 +143,27 @@ RSpec.describe System::Ai::Skills::ExposeServiceLocalExecutor do
       expect(r[:error]).to include("system_set_service_backends")
       expect(service.reload.local_enabled).to be true
     end
+
+    # IMP-1a5c145c24eb — reviewer finding B: `run_executor` returns this
+    # executor's own failure(...) Hash directly as the tool result, so this
+    # WriteError rescue is what actually answers system_expose_service_local
+    # — SystemIngressTool#call's own (already-sanitized) WriteError arm never
+    # sees this exception at all. WriteError's real sole raiser embeds
+    # Errno-shaped text naming real on-disk paths.
+    it "keeps the caller-useful message, drops the embedded driver/path text, and still logs it" do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_raise(::Sdwan::ServiceExposureWriter::WriteError,
+                   "ServiceExposureWriter failed: Errno::EACCES: Permission denied @ rb_sysopen - /etc/traefik/dynamic/#{account.id}.yml")
+      expect(Rails.logger).to receive(:error).with(/Errno::EACCES.*rb_sysopen/)
+
+      r = exec.execute(service_id: service.id, auth_mode: "authenticated")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("service saved but reverse-proxy regen failed (stale route may still be live)")
+      expect(r[:error]).not_to include("Errno::EACCES")
+      expect(r[:error]).not_to include("/etc/traefik")
+      # the facet flip is idempotent and already persisted before the regen call.
+      expect(service.reload.local_enabled).to be true
+    end
   end
 end

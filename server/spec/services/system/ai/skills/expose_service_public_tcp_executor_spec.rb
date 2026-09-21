@@ -167,4 +167,41 @@ RSpec.describe System::Ai::Skills::ExposeServicePublicTcpExecutor do
       expect(foreign_svc.reload.public_enabled).to be true
     end
   end
+
+  # IMP-1a5c145c24eb — reviewer finding B, same shape as
+  # ExposeServiceLocalExecutor's sibling spec: `run_executor` returns this
+  # executor's own failure(...) Hash directly as the tool result, so this
+  # rescue is what actually answers BOTH system_expose_service_public_tcp
+  # AND system_unexpose_service_public_tcp — SystemIngressTool#call's own
+  # WriteError arm never sees this exception.
+  describe "the raw driver text inside a WriteError is dropped for both EXPOSE and UNEXPOSE" do
+    before do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_raise(::Sdwan::ServiceExposureWriter::WriteError,
+                   "ServiceExposureWriter failed: Errno::EACCES: Permission denied @ rb_sysopen - /etc/traefik/dynamic/#{account.id}.yml")
+    end
+
+    it "keeps the caller-useful message, drops the embedded driver/path text, and still logs it (EXPOSE)" do
+      svc = create_service!
+      expect(Rails.logger).to receive(:error).with(/Errno::EACCES.*rb_sysopen/)
+
+      r = exec.execute(service_id: svc.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("service saved but reverse-proxy regen failed (stale route may still be live)")
+      expect(r[:error]).not_to include("Errno::EACCES")
+      expect(r[:error]).not_to include("/etc/traefik")
+    end
+
+    it "keeps the caller-useful message, drops the embedded driver/path text, and still logs it (UNEXPOSE)" do
+      svc = create_service!(public_enabled: true)
+      expect(Rails.logger).to receive(:error).with(/Errno::EACCES.*rb_sysopen/)
+
+      r = exec.execute(service_id: svc.id, enabled: false)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("service saved but reverse-proxy regen failed (stale route may still be live)")
+      expect(r[:error]).not_to include("Errno::EACCES")
+    end
+  end
 end

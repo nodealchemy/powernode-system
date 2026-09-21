@@ -408,7 +408,15 @@ module Ai
         # clean error instead of a raw exception, and flag that the stale
         # on-disk YAML may still be routing the old state until a regen
         # succeeds (system_reverse_proxy_compose, or retry this action).
-        error_result("service change saved but reverse-proxy regen failed (stale route may still be live): #{e.message}")
+        #
+        # IMP-1a5c145c24eb — WriteError's sole raiser (service_exposure_
+        # writer.rb) wraps a bare `rescue StandardError` around real
+        # filesystem I/O and embeds "#{e.class}: #{e.message}" in its own
+        # message, so forwarding e.message here could carry Errno-shaped
+        # text naming real on-disk paths. The prefix below is real,
+        # caller-actionable guidance and stays; only the embedded driver
+        # text goes. Logged in full server-side via rescued_error_result.
+        rescued_error_result(e, message: "service change saved but reverse-proxy regen failed (stale route may still be live)")
       end
 
       # Hoists the per-action permission check so a GATED action — which

@@ -145,7 +145,17 @@ module System
         rescue ActiveRecord::RecordInvalid => e
           failure(e.record.errors.full_messages.join("; "))
         rescue ::Sdwan::ServiceExposureWriter::WriteError => e
-          failure("reverse-proxy regen failed: #{e.message}")
+          # IMP-1a5c145c24eb — reviewer finding B: WriteError's sole raiser
+          # (service_exposure_writer.rb) wraps a bare `rescue StandardError`
+          # around real filesystem I/O and embeds "#{e.class}: #{e.message}"
+          # in its own message — the same shape already fixed at
+          # SystemIngressTool#call's WriteError arm, but reached HERE first:
+          # `run_executor` returns this executor's own failure(...) Hash
+          # directly as the tool result, before the tool's own rescue chain
+          # ever sees it. The facet flip is already persisted (comment
+          # above), so this is purely the regen-failure diagnostic.
+          Rails.logger.error("[ExposeServiceLocalExecutor] #{e.message}")
+          failure("service saved but reverse-proxy regen failed (stale route may still be live)")
         end
 
         private

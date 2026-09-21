@@ -126,7 +126,14 @@ module System
         rescue ActiveRecord::RecordInvalid => e
           failure(e.record.errors.full_messages.join("; "))
         rescue ::Sdwan::ServiceExposureWriter::WriteError => e
-          failure("reverse-proxy regen failed: #{e.message}")
+          # IMP-1a5c145c24eb — reviewer finding B, same shape as
+          # ExposeServiceLocalExecutor's sibling fix: reached before
+          # SystemIngressTool#call's own WriteError arm ever sees it, and
+          # WriteError's raiser embeds real Errno/path text. Covers both
+          # system_expose_service_public_tcp and system_unexpose_service_
+          # public_tcp (this executor handles both via enabled:).
+          Rails.logger.error("[ExposeServicePublicTcpExecutor] #{e.message}")
+          failure("service saved but reverse-proxy regen failed (stale route may still be live)")
         end
 
         private
