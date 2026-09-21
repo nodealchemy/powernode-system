@@ -20,17 +20,36 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
   let(:dns_credential) { create(:system_acme_dns_credential, :valid, account: account) }
   let(:exec)           { described_class.new(account: account) }
 
+  # Recursively collect every scalar value in a nested hash/array — mirrors
+  # system_acme_tool_spec.rb's own helper of the same name, used the same way.
+  def deep_values(obj)
+    case obj
+    when Hash  then obj.flat_map { |k, v| [ k ] + deep_values(v) }
+    when Array then obj.flat_map { |v| deep_values(v) }
+    else [ obj ]
+    end
+  end
+
   # A Result-like stub: the manager mutates the row's lifecycle columns on a
   # real issuance; here we stamp the post-issuance attrs and return ok?=true.
+  #
+  # IMP-3b0e956d1d5e — reviewer finding: the paths below were a fictional
+  # shape ("acme-certificates/<acct>/<id>/cert") this test invented; a
+  # negative scan for THAT literal string proves nothing about the real
+  # production shape, which certificate_manager_spec.rb documents as
+  # on-disk paths ending in "<id>.crt"/"<id>.key" (P2.5.10). Use the SAME
+  # path-building method CertificateManager/TraefikConfigWriter actually use
+  # (Acme::TraefikConfigWriter.cert_file_path etc.) so the scan tests the
+  # shape that would really leak, not an allowlisted alternative.
   def stub_successful_issue!
     allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:|
       certificate.update_columns(
         status: "valid",
         issued_at: Time.current,
         expires_at: 90.days.from_now,
-        vault_path_certificate: "acme-certificates/#{account.id}/#{certificate.id}/cert",
-        vault_path_private_key: "acme-certificates/#{account.id}/#{certificate.id}/key",
-        vault_path_chain: "acme-certificates/#{account.id}/#{certificate.id}/chain"
+        vault_path_certificate: ::Acme::TraefikConfigWriter.cert_file_path(certificate),
+        vault_path_private_key: ::Acme::TraefikConfigWriter.key_file_path(certificate),
+        vault_path_chain: ::Acme::TraefikConfigWriter.chain_file_path(certificate)
       )
       ::Acme::CertificateManager::Result.new(ok?: true, certificate: certificate)
     end
@@ -45,6 +64,20 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
       expect(d.dig(:inputs, :common_name, :required)).to be true
       expect(d.dig(:inputs, :issuer, :required)).to be true
       expect(d.dig(:inputs, :challenge_type, :required)).to be true
+    end
+
+    # IMP-3b0e956d1d5e — reviewer finding: the body was fixed but the
+    # declared OUTPUTS contract still advertised the 3 literal vault_path_*
+    # keys, one of them the certificate's PRIVATE KEY path — a model reading
+    # this descriptor was told the disclosure was intentional and documented.
+    # descriptor[:outputs] is a live, spec-asserted contract elsewhere in
+    # this repo (e.g. system_fleet_tool_spec.rb's PlatformDeployExecutor
+    # descriptor pin) — mirrored here.
+    it "declares vault_paths_present, never the literal vault_path_* keys" do
+      outputs = described_class.descriptor[:outputs]
+      expect(outputs).to have_key(:vault_paths_present)
+      expect(outputs[:vault_paths_present]).to eq(:boolean)
+      expect(outputs.keys).not_to include(:vault_path_certificate, :vault_path_private_key, :vault_path_chain)
     end
   end
 
@@ -71,7 +104,15 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
         expect(cert.dns_credential_id).to eq(dns_credential.id)
       end
 
-      it "returns the certificate attributes after a successful issue" do
+      # IMP-3b0e956d1d5e — reviewer-pinned bug: this test previously asserted
+      # the leak was correct behavior (vault_path_certificate/_private_key/
+      # _chain present verbatim in the result). `r` here is exactly the
+      # object `run_executor` returns as the MCP tool result for
+      # system_acme_provision_certificate (SystemIngressTool#run_executor
+      # calls `build_skill_executor(klass).execute(**inputs)` and returns it
+      # unchanged) -- this is the serialized-MCP-result boundary the task
+      # requires asserting against, not an intermediate hash.
+      it "returns the certificate attributes after a successful issue, with NO literal Vault path anywhere" do
         r = exec.execute(
           common_name: "ops.example.com",
           sans: [ "www.ops.example.com" ],
@@ -90,9 +131,24 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
         expect(d[:certificate_id]).to be_present
         expect(d[:issued_at]).to be_present
         expect(d[:expires_at]).to be_present
-        expect(d[:vault_path_certificate]).to include("cert")
-        expect(d[:vault_path_private_key]).to include("key")
-        expect(d[:vault_path_chain]).to include("chain")
+        # Mirrors system_acme_tool.rb:371's vault_paths_present shape exactly
+        # -- the fix is agreement between the two actions, not a new one.
+        expect(d[:vault_paths_present]).to be(true)
+        expect(d.keys).not_to include(:vault_path_certificate, :vault_path_private_key, :vault_path_chain)
+
+        # IMP-3b0e956d1d5e — reviewer finding: scan the WHOLE result (r), not
+        # just r[:data], and scan for the REAL production-shaped paths
+        # (computed the same way CertificateManager/TraefikConfigWriter
+        # actually compute them — see stub_successful_issue! above), not an
+        # invented literal that only this test's own fixture ever produced.
+        cert = System::AcmeCertificate.find(d[:certificate_id])
+        real_paths = [
+          ::Acme::TraefikConfigWriter.cert_file_path(cert),
+          ::Acme::TraefikConfigWriter.key_file_path(cert),
+          ::Acme::TraefikConfigWriter.chain_file_path(cert)
+        ]
+        flat = deep_values(r)
+        expect(flat.none? { |v| v.is_a?(String) && real_paths.any? { |p| v.include?(p) } }).to be true
       end
 
       it "persists acme_email into metadata" do
@@ -328,6 +384,14 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
         expect(result[:success]).to be true
         expect(result[:data][:certificate_id]).to eq(existing.id)
         expect(result[:data][:status]).to eq("valid")
+        # IMP-3b0e956d1d5e — the OTHER call site of certificate_attrs (the
+        # reuse fast-path, not drive_issuance): presence must be reported
+        # TRUTHFULLY, not hardcoded. This factory-built cert never had Vault
+        # paths materialized, so presence is false here -- an assertion that
+        # only ever checks "true" cannot fail differently from a fix that
+        # hardcodes the boolean.
+        expect(result[:data][:vault_paths_present]).to be(false)
+        expect(result[:data].keys).not_to include(:vault_path_certificate, :vault_path_private_key, :vault_path_chain)
       end
 
       it "does not silently treat a valid-but-expired row as live (routes to renewal)" do

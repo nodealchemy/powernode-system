@@ -9,8 +9,11 @@ module System
       # through issuance via `::Acme::CertificateManager.issue!`. The
       # certificate material (PEM / private key / chain / ACME account key)
       # is written to Vault + on-disk by the manager; this skill returns the
-      # row's identifying + lifecycle attributes (including the operator-
-      # visible `vault_path_*` labels) so the caller can locate the bundle.
+      # row's identifying + lifecycle attributes plus a `vault_paths_present`
+      # boolean (IMP-3b0e956d1d5e) -- never the literal `vault_path_*` paths,
+      # one of which points at the certificate's PRIVATE KEY. Mirrors
+      # system_acme_tool.rb's own read action, which already generalizes
+      # this the same way.
       #
       # Issuance is approval-gated (`requires_approval: true`) — a real ACME
       # transaction reaches out to Let's Encrypt and publishes DNS / HTTP
@@ -46,9 +49,12 @@ module System
             status: :string,
             issued_at: :string,
             expires_at: :string,
-            vault_path_certificate: :string,
-            vault_path_private_key: :string,
-            vault_path_chain: :string
+            # IMP-3b0e956d1d5e — was vault_path_certificate/_private_key/
+            # _chain (:string each); this declared contract still advertised
+            # the literal paths, including the private-key one, after the
+            # body itself was fixed. Mirrors system_acme_tool.rb's own
+            # vault_paths_present shape.
+            vault_paths_present: :boolean
           }
         )
 
@@ -204,9 +210,20 @@ module System
             status: cert.status,
             issued_at: cert.issued_at&.iso8601,
             expires_at: cert.expires_at&.iso8601,
-            vault_path_certificate: cert.vault_path_certificate,
-            vault_path_private_key: cert.vault_path_private_key,
-            vault_path_chain: cert.vault_path_chain
+            # IMP-3b0e956d1d5e — this action (system_acme_provision_certificate)
+            # was returning the 3 literal Vault paths, including the pointer
+            # to the certificate's PRIVATE KEY, on the same tool whose OWN
+            # read action (system_acme_tool.rb#serialize_certificate) already
+            # generalizes this to a boolean and says so in its class comment
+            # and action description. Mirrors that exact shape rather than
+            # inventing a new one -- the defect was two actions on one tool
+            # disagreeing. Traced both non-MCP callers of this method
+            # (run_executor via SystemIngressTool, and
+            # ExposeServicePubliclyExecutor#ensure_certificate's internal
+            # executor-to-executor call) -- neither reads vault_path_* at
+            # all, only certificate_id/status, so nothing legitimate needs
+            # the literal paths and no split-by-boundary is required.
+            vault_paths_present: cert.vault_path_certificate.present?
           }
         end
       end
