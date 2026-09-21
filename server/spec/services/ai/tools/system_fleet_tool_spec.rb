@@ -683,6 +683,40 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:success]).to be false
     end
 
+    # IMP-1a5c145c24eb — OrchestratorService is core and out of this task's
+    # scope to edit, so rather than migrating its 2 OrchestrationError raise
+    # sites to CallerFacingError, launch_agent_fleet gained its OWN
+    # OrchestrationError clause (extension-only) ordered ahead of the generic
+    # StandardError arm. Both arms need their own oracle: the safe class must
+    # still surface verbatim, and an unrelated StandardError must not.
+    it "forwards an OrchestrationError's message verbatim (both of its raise sites reachable from #start! are static/caller-authored)" do
+      spec = { "size" => 1, "source" => "provision", "node_id" => node.id,
+               "provider_region_id" => "r", "provider_instance_type_id" => "t",
+               "subtasks" => [], "delegation" => "hybrid" }
+      allow_any_instance_of(::Ai::Missions::OrchestratorService).to receive(:start!)
+        .and_raise(::Ai::Missions::OrchestratorService::OrchestrationError, "Mission must have an objective")
+
+      r = fleet_tool.execute(params: { action: "system_launch_agent_fleet", fleet_spec: spec })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("Mission must have an objective")
+    end
+
+    it "sanitizes an unrelated StandardError from #start! rather than forwarding it, and still logs it" do
+      spec = { "size" => 1, "source" => "provision", "node_id" => node.id,
+               "provider_region_id" => "r", "provider_instance_type_id" => "t",
+               "subtasks" => [], "delegation" => "hybrid" }
+      allow_any_instance_of(::Ai::Missions::OrchestratorService).to receive(:start!)
+        .and_raise(StandardError, "NoMethodError-shaped internal detail nobody should see")
+      expect(Rails.logger).to receive(:error).with(/internal detail nobody should see/)
+
+      r = fleet_tool.execute(params: { action: "system_launch_agent_fleet", fleet_spec: spec })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("agent fleet launch failed")
+      expect(r[:error]).not_to include("internal detail")
+    end
+
     it "system_agent_fleet_status summarizes the fleet" do
       mission = create(:ai_mission, account: account, mission_type: "agent_fleet",
                                     mission_template: fleet_template,
@@ -1943,6 +1977,50 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
       expect(r[:success]).to be true
       expect(smb_tasks.count).to eq(before_count)
+    end
+  end
+
+  # IMP-1a5c145c24eb — a THIRD occurrence of the same InvalidForeignKey leak
+  # IMP-7e08feaf4ebf fixed at delete_node/delete_module (above); this one was
+  # not in that task's own count and stayed open. Same shape, same fix: the
+  # guidance sentence (DESTROY_INSTANCE_FKS/DESTROY_SDWAN_PEER_FKS are real,
+  # declared constants an operator can extend) is real and safe and must
+  # survive; only the interpolated driver text goes.
+  describe "system_destroy_instance InvalidForeignKey (IMP-1a5c145c24eb)" do
+    # DESTROY_INSTANCE_FKS unconditionally raw-SQL-deletes against 13 tables
+    # including one owned by a private extension not present in
+    # this (core-mode) checkout — a pre-existing environment gap, not
+    # something this fix introduces: the untouched storage-credential specs
+    # two describe blocks above fail identically against current code.
+    # Flagged separately; stub the cascade so this test exercises what it's
+    # actually about — the InvalidForeignKey rescue arm on instance.destroy!.
+    before { allow(ActiveRecord::Base.connection).to receive(:exec_delete).and_return(0) }
+
+    it "does not forward the raw FK violation message" do
+      inst = create(:system_node_instance, account: account, name: "fk-instance")
+      raw = 'PG::ForeignKeyViolation: ERROR:  update or delete on table "system_node_instances" violates ' \
+            'foreign key constraint "fk_rails_def456" on table "system_slo_definitions"'
+      allow_any_instance_of(System::NodeInstance).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+
+      r = call("system_destroy_instance", instance_id: inst.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq(
+        "FK blocks destroy — this instance has a dependent row this destroy path does not clear " \
+        "(developer action required: extend DESTROY_INSTANCE_FKS or DESTROY_SDWAN_PEER_FKS in " \
+        "system_fleet_tool.rb; no MCP action works around this today)"
+      )
+      expect(r[:error]).not_to include("fk_rails_def456")
+      expect(r[:error]).not_to include("PG::ForeignKeyViolation")
+    end
+
+    it "still logs the raw FK violation server-side" do
+      inst = create(:system_node_instance, account: account, name: "fk-instance-log")
+      raw = 'PG::ForeignKeyViolation: ERROR:  ... constraint "fk_rails_uvw321" ...'
+      allow_any_instance_of(System::NodeInstance).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
+      expect(Rails.logger).to receive(:warn).with(a_string_including("fk_rails_uvw321"))
+
+      call("system_destroy_instance", instance_id: inst.id)
     end
   end
 

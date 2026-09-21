@@ -126,6 +126,31 @@ RSpec.describe System::CiRunnerLeaseService do
         expect(member.reload.pool_state).to eq("draining") # InstancePoolService.release! recycle path
         expect(::System::ProvisioningService).to have_received(:terminate_instance).with(instance: member)
       end
+
+      # IMP-1a5c145c24eb — the test above proves the LEASEERROR is raised
+      # (a class-level check), but its message ("failed to create lease") is
+      # identical before and after the fix, so it can't discriminate a
+      # regression that re-embeds e.message. This rescue is a BLANKET
+      # StandardError, not scoped to RecordInvalid, so reproduce that with a
+      # raiser whose message actually carries something dangerous.
+      it "does not embed the raw exception message in the raised LeaseError, but still logs it with a correlator" do
+        allow(::System::CiRunnerLease).to receive(:create!)
+          .and_raise(StandardError, "PG::UniqueViolation: duplicate key value violates unique constraint \"idx_runner_name\"")
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+        # IMP-1a5c145c24eb — reviewer finding G: the log line must carry a
+        # correlator (the claimed instance's id) since the caller only ever
+        # sees the generic "failed to create lease" — without one, neither
+        # end can be tied to the other.
+        expect(Rails.logger).to receive(:warn).with(a_string_matching(/instance=#{member.id}.*PG::UniqueViolation.*idx_runner_name/))
+
+        expect {
+          described_class.lease!(account: account, pool_name: pool.name, correlate_timeout: 0)
+        }.to raise_error(System::CiRunnerLeaseService::LeaseError) { |e|
+          expect(e.message).to eq("failed to create lease")
+          expect(e.message).not_to include("PG::UniqueViolation")
+          expect(e.message).not_to include("idx_runner_name")
+        }
+      end
     end
   end
 

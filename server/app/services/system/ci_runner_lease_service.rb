@@ -166,7 +166,19 @@ module System
     rescue StandardError => e
       # Never strand a claimed pool member if lease bookkeeping fails.
       return_instance(instance)
-      raise LeaseError, "failed to create lease: #{e.message}"
+      # IMP-1a5c145c24eb — this is a blanket rescue around CiRunnerLease.create!
+      # plus resolver calls above it, so e.message is not a confirmed-safe
+      # raiser (unlike the sibling AASM::InvalidTransition rescue in #release!,
+      # which composes a safe message). Keep the caller-facing message static;
+      # the raw exception is logged here instead of embedded in the raise.
+      # NOTE (reviewer finding F.1, narrowed): this does NOT make LeaseError's
+      # own message safe everywhere in this file — #acquire_instance (below)
+      # raises the sibling PoolUnavailableError carrying PoolError#message
+      # verbatim, which names pool/member identifiers and an account UUID.
+      # That is a separate, already-classified-safe raiser (authored, not
+      # driver text); this comment only ever covered THIS rescue.
+      Rails.logger.warn("[CiRunnerLeaseService#build_lease] instance=#{instance.id}: #{e.class}: #{e.message}")
+      raise LeaseError, "failed to create lease"
     end
 
     def deregister_runner(lease, runner)

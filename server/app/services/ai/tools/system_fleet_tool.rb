@@ -4718,8 +4718,32 @@ module Ai
           current_phase: mission.current_phase,
           template: template.name
         )
+      rescue ::Ai::Missions::OrchestratorService::OrchestrationError => e
+        # IMP-1a5c145c24eb — forwards OrchestrationError's message BY INTENT,
+        # ordered before the generic StandardError arm below so it isn't
+        # shadowed. Justified by an ENUMERATION, not a class-level guarantee:
+        # OrchestratorService::OrchestrationError has 8 raise sites total,
+        # only 2 reachable from #start! (the only OrchestratorService method
+        # this action calls) — "Mission must be in draft status to start" /
+        # "Mission must have an objective", both static/caller-authored.
+        #
+        # THIS CLAUSE IS FAIL-OPEN, UNLIKE A CALLERFACINGERROR MIGRATION. A
+        # new OrchestrationError raise site added anywhere in the class later
+        # (e.g. to #pause!/#resume!, which this action doesn't call today) is
+        # forwarded verbatim the moment it exists, with nothing to notice —
+        # the opposite failure mode from migrating the 2 raisers to
+        # CallerFacingError (fail-safe: a new raise site is generic by
+        # default until someone opts it in). The durable fix IS that
+        # migration; it is deferred, not abandoned, only because
+        # OrchestratorService is CORE (server/app/services/ai/missions/) and
+        # out of this task's staged scope. Follow-up filed by the driver.
+        error_result(e.message)
       rescue StandardError => e
-        error_result("agent fleet launch failed: #{e.message}")
+        # Not OrchestrationError: OrchestratorService#start! has no rescue of
+        # its own, so create_conversation!/transition_to_phase!/
+        # dispatch_phase_job! (called past the 2 safe raise sites above) are
+        # unbounded — no confirmed-safe raiser reaches this arm.
+        rescued_error_result(e, message: "agent fleet launch failed")
       end
 
       # L3: read-only fleet mission summary (status + per-phase fleet state).
@@ -5500,9 +5524,23 @@ module Ai
           dependent_rows_deleted: deleted
         )
       rescue ActiveRecord::InvalidForeignKey => e
-        error_result(
-          "FK still blocks destroy — extend DESTROY_INSTANCE_FKS or DESTROY_SDWAN_PEER_FKS: #{e.message}"
-        )
+        # IMP-1a5c145c24eb — same pattern as delete_node/delete_module above
+        # (IMP-7e08feaf4ebf): a third occurrence of the same leak, not
+        # counted by that task. Only the raw DRIVER message (the constraint
+        # name PG's own exception carries) is dropped here — this method's
+        # SUCCESS payload (`dependent_rows_deleted`, above) already names
+        # every DESTROY_INSTANCE_FKS/DESTROY_SDWAN_PEER_FKS table.column
+        # pair on the happy path, so this arm is not claiming those names
+        # are secret, only that PG's own constraint-name text is not
+        # forwarded. Unlike delete_node/delete_module's guidance (which name
+        # an MCP action / a domain object an agent can act on), extending
+        # these two constants is a CODE change — developer-facing, not
+        # agent-actionable — so the message says that plainly rather than
+        # naming a remedy the calling agent cannot perform.
+        Rails.logger.warn("[SystemFleetTool] destroy_instance blocked by FK: #{e.message}")
+        error_result("FK blocks destroy — this instance has a dependent row this destroy path " \
+                     "does not clear (developer action required: extend DESTROY_INSTANCE_FKS or " \
+                     "DESTROY_SDWAN_PEER_FKS in system_fleet_tool.rb; no MCP action works around this today)")
       end
 
       # === Templates ===
