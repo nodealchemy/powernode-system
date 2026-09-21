@@ -980,52 +980,48 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     end
   end
 
-  describe "IMP-01a0c508-0121 part 2: BUNDLE_FROZEN so bundler never rewrites the erofs-mounted Gemfile.lock" do
+  # REGRESSION GUARD, 2026-09-21. BUNDLE_FROZEN was added here that morning to
+  # stop bundler rewriting Gemfile.lock on the erofs-backed read-only RAILS_DIR
+  # (it hit EACCES and crash-looped rails), and REVERTED the same day because it
+  # took ops-hub down on the next reboot.
+  #
+  # The part that was verified held up: frozen mode does gate
+  # Definition#write_lock before File.open. The part nobody asked was what
+  # frozen mode does when the lockfile is genuinely STALE — it does not skip the
+  # write quietly, it ABORTS boot with Bundler::ProductionError ("the gemspecs
+  # for path gems changed, but the lockfile can't be updated because frozen mode
+  # is set"). On ops-hub the Gemfile and Gemfile.lock DO disagree over the
+  # extension PATH gems, and bundler had been silently papering over that by
+  # rewriting the lockfile every boot. Freezing converted a silent workaround
+  # into a hard failure: rails crash-looped 308 times until the line was removed.
+  #
+  # So these examples assert the ABSENCE of the setting. The lockfile write is a
+  # symptom of lockfile drift; the EACCES is a symptom of RAILS_DIR ownership.
+  # Fix either of those — do not silence the writer.
+  describe "bundler config must NOT freeze the lockfile (2026-09-21 regression guard)" do
     let(:bundle_config_heredoc) { script[/cat > "\$STATE_DIR\/\.bundle\/config" <<EOF\n(.*?)\nEOF/m, 1] }
 
-    it "writes BUNDLE_FROZEN: \"true\" alongside BUNDLE_PATH/BUNDLE_WITHOUT" do
+    it "writes BUNDLE_PATH and BUNDLE_WITHOUT" do
       expect(bundle_config_heredoc).not_to be_nil
-      expect(bundle_config_heredoc).to match(/BUNDLE_FROZEN:\s*"true"/)
+      expect(bundle_config_heredoc).to match(/BUNDLE_PATH:/)
+      expect(bundle_config_heredoc).to match(/BUNDLE_WITHOUT:/)
+    end
+
+    it "does NOT set BUNDLE_FROZEN or BUNDLE_DEPLOYMENT anywhere in the config it writes" do
+      expect(bundle_config_heredoc).not_to match(/BUNDLE_FROZEN/),
+        "frozen mode aborts boot when the lockfile is stale — it took ops-hub down on 2026-09-21"
+      expect(bundle_config_heredoc).not_to match(/BUNDLE_DEPLOYMENT/),
+        "deployment mode implies frozen and has the same failure"
+    end
+
+    it "does not export frozen/deployment mode by any other route either" do
+      expect(script).not_to match(/bundle\s+config\s+set[^\n]*\b(frozen|deployment)\b/)
+      expect(script).not_to match(/BUNDLE_(FROZEN|DEPLOYMENT)=/)
     end
 
     it "does not chown/chmod RAILS_DIR (the erofs mount) as an alternative fix" do
       expect(script).not_to match(/chown\b[^\n]*"\$RAILS_DIR"/)
       expect(script).not_to match(/chmod\b[^\n]*"\$RAILS_DIR"/)
-    end
-
-    # Genuinely EXECUTES bundler-2.7.1's own key derivation and frozen-mode
-    # gate (not a text/regex assertion) — proves the YAML key this script
-    # writes is the one `Bundler.settings[:frozen]` / `Bundler.frozen_bundle?`
-    # actually reads, and that `Definition#write_lock` returns before ever
-    # opening the lockfile for write when it's set. Requires the vendored
-    # bundler-2.7.1 gem to be resolvable in this environment; skips rather
-    # than false-failing where it isn't (this spec must not depend on a
-    # `bundle install` against the shared server bundle — see the shared
-    # rvm gemset drift incident this suite already knows about).
-    it "BUNDLE_FROZEN maps to Bundler.settings[:frozen] and gates Definition#write_lock before any file write (executed against the real bundler-2.7.1 gem)" do
-      bundler_lib = Gem::Specification.find_all_by_name("bundler", "2.7.1").first&.full_gem_path
-      skip "bundler 2.7.1 not installed in this environment" unless bundler_lib
-
-      Dir.mktmpdir do |dir|
-        config_path = File.join(dir, "config")
-        File.write(config_path, <<~YAML)
-          ---
-          BUNDLE_FROZEN: "true"
-        YAML
-
-        script_rb = <<~RUBY
-          $LOAD_PATH.unshift(#{File.join(bundler_lib, "lib").inspect})
-          require "bundler"
-          ENV["BUNDLE_APP_CONFIG"] = #{dir.inspect}
-          settings = Bundler::Settings.new(#{dir.inspect})
-          raise "expected frozen setting to be true, got \#{settings[:frozen].inspect}" unless settings[:frozen] == true
-          puts "FROZEN_SETTING_OK"
-        RUBY
-
-        out, err, status = Open3.capture3("ruby", "-e", script_rb)
-        expect(status.success?).to be(true), "ruby failed: #{err}"
-        expect(out).to include("FROZEN_SETTING_OK")
-      end
     end
   end
 

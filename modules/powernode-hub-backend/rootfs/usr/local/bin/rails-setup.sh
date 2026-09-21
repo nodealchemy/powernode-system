@@ -123,46 +123,35 @@ fi
 #     env. Idempotent: rewritten every boot so a STATE_DIR path change
 #     (mountpoint gained/lost) is never left stale.
 #
-# BUNDLE_FROZEN (IMP-01a0c508-0121 part 2): RAILS_DIR (/opt/powernode/server)
-# is the erofs-backed module mount (root:root, read-only lower) — see the
-# header comment above re: why bundler state was moved OUT of it in the
-# first place. Bundler still tries to WRITE Gemfile.lock on every
-# `Bundler.setup` whenever its computed lock content differs even slightly
-# from what's on disk (whitespace, BUNDLED WITH version, platform list),
-# and that `File.open(path, "wb")` in bundler/definition.rb#write_lock hits
-# EACCES on the read-only mount — observed live on ops-hub: rails
-# crash-looped (NRestarts=20) on "Permission denied @ rb_sysopen -
-# /opt/powernode/server/Gemfile.lock (Errno::EACCES)". Do NOT fix this by
-# chowning RAILS_DIR: erofs-backed, and a `chown -R` there forces copy-up
-# of every inode into the writable overlay upper (measured live: ~480M for
-# one recursive chown) — the bundler-state move this script already makes
-# is deliberate, not incidental.
+# NO BUNDLE_FROZEN HERE — it was added 2026-09-21 and REVERTED the same day
+# after it took ops-hub down. Recording why, so nobody re-adds it:
 #
-# Verified against the vendored bundler-2.7.1 source (not assumed):
-# `frozen` is a Settings::BOOL_KEYS entry (settings.rb), so a YAML config
-# key of `BUNDLE_FROZEN` — the same "prefix the upcased setting name with
-# BUNDLE_" transform `Settings.key_for` applies to every other key here
-# (`path` -> BUNDLE_PATH, `without` -> BUNDLE_WITHOUT) — sets
-# `Bundler.settings[:frozen]`, and `Bundler.frozen_bundle?` reads exactly
-# that key (bundler.rb, falling back to `:deployment` only if `:frozen` is
-# unset). `Definition#write_lock` (definition.rb) checks
-# `Bundler.frozen_bundle?` BEFORE ever calling `File.open` — both when the
-# computed lock content is unchanged (returns before the `FileUtils.touch`)
-# and when it differs (logs "Cannot write a changed lockfile while frozen."
-# and returns) — so the EACCES path is never reached either way. This
-# config file IS what rails actually resolves at runtime, not just an
-# out-of-band convenience: rails-start.sh exports
-# `BUNDLE_APP_CONFIG="$STATE_DIR/.bundle"`, and Bundler's own
-# `app_config_path`/`local_config_file` (bundler.rb, settings.rb) read the
-# config file at exactly `$BUNDLE_APP_CONFIG/config` — this file's actual
-# path — ahead of the `env` config layer in `Settings#[]`'s lookup order,
-# so this takes effect regardless of what ENV also happens to export.
+#   The intent was sound: bundler rewrites Gemfile.lock on Bundler.setup
+#   whenever its computed content differs, RAILS_DIR is the erofs-backed
+#   read-only module mount, and that write hit EACCES and crash-looped
+#   rails. `frozen` does stop the write — write_lock checks
+#   frozen_bundle? before File.open, on both branches. That much was
+#   verified against bundler-2.7.1's source and is true.
+#
+#   What was NOT asked: what frozen mode does when the lockfile is
+#   genuinely STALE. It does not skip the write quietly — it ABORTS boot
+#   with Bundler::ProductionError "the gemspecs for path gems changed,
+#   but the lockfile can't be updated because frozen mode is set". On
+#   ops-hub the Gemfile and Gemfile.lock DO disagree (the extension PATH
+#   gems), and bundler had been silently papering over it by rewriting
+#   the lockfile every boot. Setting frozen converted that silent
+#   workaround into a hard failure: the 2026-09-21 reboot crash-looped
+#   rails 308 times until this line was removed.
+#
+#   So the write is a SYMPTOM of lockfile drift, and the EACCES is a
+#   SYMPTOM of RAILS_DIR ownership. Freezing treats neither and removes
+#   the only thing making boot survivable. Fix the drift, or make the
+#   lockfile writable — do not silence the writer.
 mkdir -p "$STATE_DIR/.bundle"
 cat > "$STATE_DIR/.bundle/config" <<EOF
 ---
 BUNDLE_PATH: "$BUNDLE_STATE_DIR"
 BUNDLE_WITHOUT: "development:test"
-BUNDLE_FROZEN: "true"
 EOF
 
 # FATAL: STATE_DIR itself and the two secrets files rails reads at boot.
