@@ -14,6 +14,8 @@ module System
   #     system_assign_module_to_template MCP action), which refuse the
   #     error-severity conflicts this analysis reports rather than leaving a
   #     disabled React button as the only enforcement.
+  #   - the node-level assignment write (the system_assign_module_to_node MCP
+  #     action, #node_additions_verdict), which refuses on the same terms.
   #   - the other TemplateModule writers, which used to bypass that guard
   #     entirely and so could land a conflict as permanent BASELINE — which
   #     the delta then treats as acceptable forever after. Gitops::ApplyService
@@ -157,12 +159,42 @@ module System
     # Scoped to ENABLED joins, matching TemplateExpansionService's view of what
     # actually ships — a disabled join can't collide with anything.
     def additions_verdict(template:, node_modules:)
-      assigned_ids = template.template_modules.enabled.pluck(:node_module_id)
-      baseline     = conflicts_for(assigned_ids).map { |c| conflict_key(c) }.to_set
-      introduced   = conflicts_for(assigned_ids + ids_for(node_modules))
-                     .reject { |c| baseline.include?(conflict_key(c)) }
+      introduced_verdict(template.template_modules.enabled.pluck(:node_module_id), node_modules)
+    end
 
-      verdict(introduced) { |blocking| blocking_message(blocking) }
+    # The same delta for a NODE-level assignment (system_assign_module_to_node):
+    # the baseline is what the node itself carries — its ENABLED
+    # NodeModuleAssignments, which is what node_api/modules serves the agent —
+    # not its template, because a node-level row is exactly the way a node gains
+    # a module its template does not name.
+    def node_additions_verdict(node:, node_modules:)
+      introduced_verdict(node.node_module_assignments.enabled.pluck(:node_module_id), node_modules)
+    end
+
+    # Names of the HARD dependencies (required edges, transitively, through the
+    # same resolver and enabled catalog as #conflicts_for) that attaching
+    # `node_module` to `node` would leave undelivered: neither assigned and
+    # enabled on the node nor in its template's expansion closure. A required
+    # dependency the enabled catalog cannot supply at all (disabled, or never
+    # imported) is missing too. Recommends/optional edges are not hard
+    # dependencies — TemplateExpansionService decides those per template.
+    #
+    # TemplateApplyService expands a template module's closure into
+    # assignments; a single node-level row does not, and node_api/modules adds
+    # nothing that is missing, so the module would ship without its dependency.
+    def missing_node_dependencies(node:, node_module:)
+      resolution = DependencyResolutionService.new(catalog, include_optional: false, detect_conflicts: false)
+                                              .resolve(modules_for([ node_module.id ]))
+
+      supplied = node.node_module_assignments.enabled.pluck(:node_module_id).to_set
+      if node.node_template
+        supplied.merge(TemplateExpansionService.new(template_modules: node.node_template.template_modules)
+                                               .expand.modules.map(&:id))
+      end
+
+      closure_missing = resolution.modules.reject { |m| m.id == node_module.id || supplied.include?(m.id) }.map(&:name)
+      unavailable = resolution.errors.select { |e| e[:type] == :missing_required }.map { |e| e[:dependency].name }
+      (closure_missing + unavailable).uniq.sort
     end
 
     # Verdict over a module set judged WHOLE, with no baseline to diff
@@ -179,6 +211,14 @@ module System
     end
 
     private
+
+    def introduced_verdict(assigned_ids, node_modules)
+      baseline   = conflicts_for(assigned_ids).map { |c| conflict_key(c) }.to_set
+      introduced = conflicts_for(assigned_ids + ids_for(node_modules))
+                   .reject { |c| baseline.include?(conflict_key(c)) }
+
+      verdict(introduced) { |blocking| blocking_message(blocking) }
+    end
 
     def verdict(conflicts)
       blocking = conflicts.reject { |c| warning?(c) }

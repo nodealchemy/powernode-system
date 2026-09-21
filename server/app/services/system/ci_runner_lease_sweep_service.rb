@@ -35,6 +35,9 @@ module System
 
     TERMINAL_RUN_STATUSES = %w[completed failed cancelled skipped].freeze
 
+    # The batch statuses #readvance_stalled_batches! will re-advance.
+    READVANCE_STATUSES = %w[dispatched awaiting_signature publishing].freeze
+
     def self.run!(account:)
       new(account: account).run!
     end
@@ -63,6 +66,36 @@ module System
       @summary[:readvanced]     = readvance_stalled_batches!
       @summary[:redispatched]   = redispatch_queued_batches!
       @summary
+    end
+
+    # The readvance backstop below for ONE batch, on demand — the operator door
+    # (system_readvance_module_build_batch) for when the cron that drives #run!
+    # is not running: that tick is the only caller of the backstop, so a dead
+    # hub-worker left a finished-but-unresolved member stranded with nothing
+    # able to sign + publish it. Same two gates as #run!, same candidate rule
+    # as #readvance_stalled_batches!, same orchestrator call — there is no
+    # second sign/publish path.
+    #
+    # Returns the gate's summary (ok: false, halted/standby) when a gate is
+    # closed; otherwise { ok: true, readvanced:, reason: } — readvanced false is
+    # a no-op, not a failure.
+    def readvance_batch!(batch)
+      return halted_tick_result if kill_switch_engaged?
+      return standby_tick_result unless control_plane_active?
+
+      unless batch.account_id == @account.id && READVANCE_STATUSES.include?(batch.status)
+        return { ok: true, readvanced: false, reason: "batch is #{batch.status} — only a #{READVANCE_STATUSES.join('/')} batch is re-advanced" }
+      end
+      unless stalled_member?(batch)
+        return { ok: true, readvanced: false, reason: "no stalled member (no dispatched entry whose build task has finished)" }
+      end
+
+      result = ::System::NativeModuleBuildOrchestrator.advance!(batch: batch)
+      if result.busy
+        return { ok: true, readvanced: false, reason: "batch lock is held by an advance already in progress — re-check shortly" }
+      end
+
+      { ok: true, readvanced: true, succeeded: result.succeeded, retried: result.retried, failed: result.failed }
     end
 
     private
@@ -104,7 +137,7 @@ module System
     # sign + publish and nothing else.
     def readvance_stalled_batches!
       readvanced = 0
-      non_terminal_batches.where(status: %w[dispatched awaiting_signature publishing]).find_each do |batch|
+      non_terminal_batches.where(status: READVANCE_STATUSES).find_each do |batch|
         next unless stalled_member?(batch)
 
         ::System::NativeModuleBuildOrchestrator.advance!(batch: batch)
