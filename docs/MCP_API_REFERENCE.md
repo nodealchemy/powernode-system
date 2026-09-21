@@ -77,7 +77,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_terminate_instance` | Destroy provider VM; cascade-FK cleanup | operator, agent |
 | `system_replace_instance` | DR: move an unrecoverable instance's volumes, SDWAN membership and VIPs onto a warm pool member. Approval-gated (`system.instance_replace`); terminates nothing — pass `reap: true` for a SECOND, separately-gated terminate. Refused for a target still running and still reporting unless `accept_running: true`; denied outright to MCP instance principals by the deny overlay (`*replace_instance*`), so `reap: true` cannot be smuggled through it | operator |
 | `system_reap_instance` | DR: terminate the unrecoverable instance whose workload `system_replace_instance` has already moved. Approval-gated (`system.instance_reap`); denied outright to MCP instance principals by the deny overlay | operator |
-| `system_drift_report` | Compare running module digests vs assigned modules | operator, agent |
+| `system_drift_report` | Compare running module digests vs assigned modules. Returns `missing` / `extra` / `mismatched` (each with a `*_count`; any sets `drift: true`) plus `unverifiable` / `unverifiable_count` — assigned modules whose served version has no `oci_digest`, so the running digest cannot be compared; they do not set `drift` and are never `extra` | operator, agent |
 
 #### Templates + modules
 

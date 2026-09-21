@@ -398,6 +398,8 @@ platform.system_platform_maintenance({
 //                              instance_count,
 //                              drift_count,
 //                              drifted_instances: [ { id, status, name, drift } ],
+//                              unverifiable_count,
+//                              unverifiable_instances: [ { id, status, name, unverifiable } ],
 //                              not_reporting_count,
 //                              not_reporting_instances: [ { id, status, name } ],
 //                              not_assessed_count,
@@ -419,11 +421,19 @@ carefully as `drift_count`:
   and they also suppress the all-clear, so re-run once they settle. Two of
   those states are what the platform's own remediation produces, so expect
   this bucket during a repair.
-- The three buckets name only the instances that need attention: a
+- `unverifiable_count` is reporting instances with no drift that run an
+  assigned module whose served version has **no `oci_digest`**. The running
+  digest cannot be compared, so they are **not** verified converged and also
+  suppress the all-clear. `unverifiable_instances` names each one with the
+  module ids and mounted digests; the gap is on the module version record,
+  so a node-side `sync_modules` cannot close it. An instance that is also drifted is counted under
+  `drift_count` only, and its `drift` detail carries the `unverifiable` map.
+- The four buckets name only the instances that need attention: a
   **converged, reporting** instance is in none of them. Read them against
   `instance_count`, which is every non-terminated instance of the template —
-  so `drift_count + not_reporting_count + not_assessed_count + the converged
-  remainder = instance_count`. Zero across all three with a non-zero
+  so `drift_count + unverifiable_count + not_reporting_count +
+  not_assessed_count + the converged remainder = instance_count`. Zero across
+  all four with a non-zero
   `instance_count` means every instance was assessed and none needs
   remediation; it never means a subset was filtered out of the question.
 
