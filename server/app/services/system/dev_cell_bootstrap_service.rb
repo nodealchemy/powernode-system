@@ -67,8 +67,22 @@ module System
       platform.create_skill
     ].freeze
 
-    # The full grant handed to every dev-cell peer (dev-loop + MCP-first).
-    DEV_CELL_MCP_TOOLS = (DEV_LOOP_MCP_TOOLS + MCP_FIRST_MCP_TOOLS).freeze
+    # GOVERNANCE_REQUEST_MCP_TOOLS — governance writes a dev cell may REQUEST but
+    # never apply: each is a human_only action in core, so from an instance
+    # principal it parks for a person's own-session approval and replays as that
+    # person under their own permission. This is what lets a release canary be
+    # staged from the cell (pin `ops`, publish, verify, promote) without handing
+    # it the write itself. Only human_only actions belong here — the spec checks
+    # that premise against the live declaration. environment_list is the read
+    # that confirms the outcome.
+    GOVERNANCE_REQUEST_MCP_TOOLS = %w[
+      platform.environment_list
+      platform.environment_update
+    ].freeze
+
+    # The full grant handed to every dev-cell peer (dev-loop + MCP-first +
+    # governance requests).
+    DEV_CELL_MCP_TOOLS = (DEV_LOOP_MCP_TOOLS + MCP_FIRST_MCP_TOOLS + GOVERNANCE_REQUEST_MCP_TOOLS).freeze
 
     # Capability marker recorded on the peer so fleet views / the operator UI
     # can distinguish a dev-cell executor peer from a general announced peer.
