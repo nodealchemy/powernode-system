@@ -71,7 +71,27 @@ fi
 BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
 
 echo "[rails-setup] STATE_DIR=$STATE_DIR"
-mkdir -p "$STATE_DIR" "$BUNDLE_STATE_DIR"
+mkdir -p "$STATE_DIR"
+# SECURITY (IMP-3731023204f2, review round): STATE_DIR is rails-owned
+# 0700, so rails can plant "$STATE_DIR/vendor" as a symlink to an
+# arbitrary existing directory (e.g. /etc) before a reboot. `mkdir -p
+# "$BUNDLE_STATE_DIR"` (= "$STATE_DIR/vendor/bundle") walks that path
+# component by component -- if "vendor" already resolves through such a
+# symlink, root ends up creating/entering a "bundle" directory OUTSIDE
+# STATE_DIR entirely. Refuse rather than walk through it.
+if [ -L "$STATE_DIR/vendor" ]; then
+  echo "[rails-setup] WARNING: $STATE_DIR/vendor is a symlink -- refusing to create $BUNDLE_STATE_DIR through it (STATE_DIR is rails-writable; a symlink here could redirect bundler's install path outside STATE_DIR)" >&2
+elif [ -L "$BUNDLE_STATE_DIR" ]; then
+  # N1 (review round): a DANGLING "$BUNDLE_STATE_DIR" symlink makes
+  # `mkdir -p` fail outright ("File exists" -- the leaf name is taken by
+  # the symlink itself, even though it resolves to nothing) and, under
+  # this script's `set -e`, that aborts rails-setup.service entirely --
+  # self-DoS, not an escalation, but trivial to avoid the same way as the
+  # vendor check just above.
+  echo "[rails-setup] WARNING: $BUNDLE_STATE_DIR is a symlink -- refusing to create/use it (STATE_DIR is rails-writable; a symlink here, dangling or not, would abort this boot's mkdir under set -e, or redirect bundler's install path elsewhere)" >&2
+else
+  mkdir -p "$BUNDLE_STATE_DIR"
+fi
 
 # --- One-time migration of a pre-STATE_DIR host's leftover /etc/powernode
 #     files. Symlink-aware (-L excludes a symlink — never moves/follows
@@ -89,10 +109,48 @@ mkdir -p "$STATE_DIR" "$BUNDLE_STATE_DIR"
 for f in backend-default.conf admin-credentials.json; do
   src="/etc/powernode/$f"
   dest="$STATE_DIR/$f"
-  if [ -f "$src" ] && [ ! -L "$src" ] && [ ! -f "$dest" ]; then
+  # F1 (review round): checked FIRST, independent of $src -- a symlink at
+  # $dest (STATE_DIR is rails-writable) must refuse outright rather than
+  # ever reach `mv`. `[ ! -f "$dest" ]` alone (the old guard) is FALSE for
+  # a symlink to a regular file (correctly treated as "already migrated"
+  # by accident) but also FALSE for a symlink to a DIRECTORY or a dangling
+  # symlink -- both of those slipped through as "not yet migrated" and
+  # reached the migration below.
+  if [ -L "$dest" ]; then
+    echo "[rails-setup] WARNING: $dest is a symlink -- refusing to migrate $src over it (STATE_DIR is rails-writable; a symlink here could redirect the migrated file elsewhere, or have $src's content land INSIDE a directory it points at)" >&2
+  # F2 (review round): $src itself must be symlink-excluded too -- this
+  # was already true for the /etc/powernode loop ([ ! -L "$src" ]) but
+  # missing from the sibling db-initialized migration below, where a
+  # planted /var/lib/powernode-rails/.db-initialized -> /etc/shadow would
+  # get `cp`'d into STATE_DIR and then chowned to rails: an arbitrary
+  # root-readable-file read, not just a write.
+  elif [ -f "$src" ] && [ ! -L "$src" ] && [ ! -e "$dest" ]; then
     echo "[rails-setup] migrating legacy $src -> $dest"
-    cp "$src" "$dest.tmp-$$"
-    mv "$dest.tmp-$$" "$dest"
+    # `mktemp`, not the fixed "$dest.tmp-$$" name (SECURITY,
+    # IMP-3731023204f2 review round): STATE_DIR is rails-owned 0700, so
+    # rails could pre-plant a symlink at a PREDICTED "$dest.tmp-<pid>"
+    # name pointing at an arbitrary file -- `cp` to an existing
+    # destination follows a symlink there and overwrites the referent.
+    # `mktemp` creates the temp file exclusively (no pre-existing name can
+    # collide).
+    #
+    # F1 (review round correction): the final step is `mv -T`, NOT a bare
+    # `mv`. rename(2) itself never dereferences its destination -- true,
+    # but irrelevant here, because plain `mv` (the coreutils COMMAND, not
+    # the syscall) special-cases a destination that resolves to an
+    # existing DIRECTORY (including via a symlink): it treats that as a
+    # target directory and moves the source INSIDE it
+    # ("$dest/$(basename "$migrate_tmp")") instead of replacing "$dest"
+    # itself. $dest is already excluded from being a symlink by the `[ -L
+    # ]` branch above, but a dest that is a REAL directory would hit the
+    # exact same failure mode. `-T`/`--no-target-directory` disables that
+    # special-casing unconditionally, so `mv -T` always replaces the
+    # DIRECTORY ENTRY named "$dest" via rename() -- never moves into it --
+    # which is the property this comment used to (incorrectly) attribute
+    # to a bare `mv`.
+    migrate_tmp="$(mktemp "$dest.tmp.XXXXXX")"
+    cp "$src" "$migrate_tmp"
+    mv -T "$migrate_tmp" "$dest"
     rm -f "$src"
   fi
 done
@@ -103,13 +161,37 @@ done
 # permission to touch a file /var/lib/powernode-rails left root-owned —
 # root has no such problem, so this now either succeeds outright or
 # genuinely doesn't apply (the marker was never there).
-if [ -f /var/lib/powernode-rails/.db-initialized ] && [ ! -f "$STATE_DIR/.db-initialized" ]; then
+# F2 (review round): `[ ! -L ]` on the SOURCE, mirroring the /etc/powernode
+# migration loop above -- this marker migration was missing it. Without
+# it, a planted /var/lib/powernode-rails/.db-initialized ->
+# /etc/shadow gets `cp`'d into STATE_DIR and then chowned to rails a few
+# sections down: an arbitrary root-readable-file READ (rails ends up with
+# a copy of, and ownership of, whatever the symlink pointed at), the
+# mirror image of the WRITE-side symlink risks fixed elsewhere in this
+# script.
+if [ -f /var/lib/powernode-rails/.db-initialized ] && \
+   [ ! -L /var/lib/powernode-rails/.db-initialized ] && \
+   [ ! -e "$STATE_DIR/.db-initialized" ] && \
+   [ ! -L "$STATE_DIR/.db-initialized" ]; then
   echo "[rails-setup] migrating legacy db-initialized marker into $STATE_DIR"
   # Same crash-safety reasoning as the secrets migration above: /var/lib
   # and /persist can be different filesystems, so a bare `mv` isn't atomic
-  # here either.
-  cp /var/lib/powernode-rails/.db-initialized "$STATE_DIR/.db-initialized.tmp-$$"
-  mv "$STATE_DIR/.db-initialized.tmp-$$" "$STATE_DIR/.db-initialized"
+  # here either. `mktemp`, not a fixed "$$"-suffixed name, for the same
+  # reason as the secrets migration's own fix (IMP-3731023204f2 review
+  # round) -- a predictable temp name under rails-writable STATE_DIR could
+  # be pre-planted as a symlink.
+  #
+  # F1 (review round correction): `mv -T`, NOT a bare `mv` -- plain `mv`
+  # (the coreutils command, not the rename(2) syscall) treats a
+  # destination that resolves to an existing DIRECTORY as a target
+  # directory and moves the source INSIDE it rather than replacing the
+  # entry named "$STATE_DIR/.db-initialized". The `[ ! -L ]` guard above
+  # already excludes a symlink destination, but `-T` closes the same gap
+  # unconditionally (including a literal pre-existing directory at that
+  # name) rather than relying solely on the guard.
+  migrate_tmp="$(mktemp "$STATE_DIR/.db-initialized.tmp.XXXXXX")"
+  cp /var/lib/powernode-rails/.db-initialized "$migrate_tmp"
+  mv -T "$migrate_tmp" "$STATE_DIR/.db-initialized"
   rm -f /var/lib/powernode-rails/.db-initialized
 fi
 
@@ -147,12 +229,52 @@ fi
 #   SYMPTOM of RAILS_DIR ownership. Freezing treats neither and removes
 #   the only thing making boot survivable. Fix the drift, or make the
 #   lockfile writable — do not silence the writer.
-mkdir -p "$STATE_DIR/.bundle"
-cat > "$STATE_DIR/.bundle/config" <<EOF
+BUNDLE_CONFIG_DIR="$STATE_DIR/.bundle"
+BUNDLE_CONFIG_FILE="$BUNDLE_CONFIG_DIR/config"
+# SECURITY (IMP-3731023204f2, review round): STATE_DIR is rails-owned
+# 0700, so rails can plant $BUNDLE_CONFIG_DIR itself as a symlink to an
+# arbitrary directory -- refuse rather than write through it (there is no
+# safe "replace" for a directory component the way there is for the leaf
+# file below).
+if [ -L "$BUNDLE_CONFIG_DIR" ]; then
+  echo "[rails-setup] WARNING: $BUNDLE_CONFIG_DIR is a symlink -- refusing to write the bundler app config through it (STATE_DIR is rails-writable; a symlink here could redirect the write outside STATE_DIR)" >&2
+else
+  mkdir -p "$BUNDLE_CONFIG_DIR"
+  if [ -L "$BUNDLE_CONFIG_FILE" ]; then
+    # F1 (review round correction): "replacing it" below is only true
+    # because of `mv -T` a few lines down -- a bare `mv` against a
+    # symlink that resolves to a DIRECTORY would move the temp file
+    # INSIDE that directory instead (see the comment on the `mv -T` line
+    # itself for why).
+    echo "[rails-setup] NOTICE: $BUNDLE_CONFIG_FILE was a symlink -- replacing it (mv -T never writes through a symlink or treats it as a target directory, so this is safe)" >&2
+  fi
+  # `mktemp` + `mv -T`, NOT `cat > "$BUNDLE_CONFIG_FILE"` directly: a bare
+  # O_WRONLY|O_TRUNC open follows an existing symlink at that name and
+  # TRUNCATES/OVERWRITES the referent (e.g. rails plants config ->
+  # /etc/passwd) as root. `mktemp` creates a fresh, exclusively-named file
+  # (no pre-existing symlink can collide with it).
+  bundle_config_tmp="$(mktemp "$BUNDLE_CONFIG_DIR/config.tmp.XXXXXX")"
+  cat > "$bundle_config_tmp" <<EOF
 ---
 BUNDLE_PATH: "$BUNDLE_STATE_DIR"
 BUNDLE_WITHOUT: "development:test"
 EOF
+  # F1 (review round correction): `mv -T`, NOT a bare `mv`. rename(2)
+  # itself never dereferences its destination -- true, but irrelevant on
+  # its own, because plain `mv` (the coreutils COMMAND, not the syscall)
+  # special-cases a destination that resolves to an existing DIRECTORY
+  # (including via a symlink, e.g. a rails-planted "config" -> some_dir):
+  # it treats that as a target directory and moves the source file INSIDE
+  # it ("$BUNDLE_CONFIG_FILE/$(basename "$bundle_config_tmp")") instead of
+  # replacing the entry named "$BUNDLE_CONFIG_FILE" -- root would then be
+  # creating a new file OUTSIDE where BUNDLE_CONFIG_FILE was ever meant to
+  # be, silently. `-T`/`--no-target-directory` disables that
+  # special-casing unconditionally, so this always replaces the DIRECTORY
+  # ENTRY via rename() -- never moves into it -- which is the property the
+  # comment above this block used to (incorrectly) attribute to a bare
+  # `mv`.
+  mv -T "$bundle_config_tmp" "$BUNDLE_CONFIG_FILE"
+fi
 
 # FATAL: STATE_DIR itself and the two secrets files rails reads at boot.
 # Adoption (b) originally made the WHOLE recursive sweep below fatal too
@@ -173,8 +295,22 @@ chown "$RAILS_USER:$RAILS_USER" "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 for f in backend-default.conf admin-credentials.json; do
   secret_path="$STATE_DIR/$f"
-  if [ -e "$secret_path" ]; then
-    chown "$RAILS_USER:$RAILS_USER" "$secret_path"
+  # SECURITY (IMP-3731023204f2, review round): STATE_DIR is rails-owned
+  # 0700, and this loop's own chown is what makes these two files
+  # rails-writable in the first place — rails could replace either with a
+  # symlink to an arbitrary path (e.g. admin-credentials.json ->
+  # /etc/shadow). `[ -L ]` is checked FIRST (unlike `[ -e ]`, it never
+  # follows the link, so this also catches a symlink to a NONEXISTENT
+  # target) and refuses rather than chowning through it. `-h` on the
+  # actual chown is defense in depth: lchown() never dereferences its
+  # argument, so even a TOCTOU window between this check and the chown
+  # call can't turn into a root chown of the referent — and lchown on a
+  # genuine regular file behaves identically to chown, so this is a safe
+  # no-op change for the common case.
+  if [ -L "$secret_path" ]; then
+    echo "[rails-setup] WARNING: $secret_path is a symlink -- refusing to chown through it (STATE_DIR is rails-writable; a symlink here could redirect ownership to an arbitrary path)" >&2
+  elif [ -e "$secret_path" ]; then
+    chown -h "$RAILS_USER:$RAILS_USER" "$secret_path"
   fi
 done
 
@@ -291,7 +427,36 @@ ca_local_dir="$(readlink -m "$ca_local_dir")"
 # was invisible in the journal — only the failure branch spoke up.
 echo "[rails-setup] internal CA store resolved to $ca_local_dir"
 if [ -d "$ca_local_dir" ]; then
-  chown -R "$RAILS_USER:$RAILS_USER" "$ca_local_dir"
+  # SECURITY (IMP-3731023204f2, closing the escalation this file's OCI
+  # section used to track as "IMP 01a0c53e-2374; deliberately untouched
+  # here"): ca_local_dir above is a VALUE READ OUT OF backend-default.conf
+  # — a file rails-start.sh (the NON-ROOT rails process) writes and this
+  # script itself chowns to $RAILS_USER a few lines up. Handing that value
+  # straight to a root `chown -R` is a privilege escalation: a
+  # compromised/buggy rails process sets POWERNODE_CA_LOCAL_DIR=/etc, and
+  # the very next boot's root chown recursively hands $RAILS_USER
+  # ownership of /etc. Gate the chown on a hardcoded allowlist — the same
+  # shape the OCI cache section below uses (IMP-01a0c508-0121): the
+  # resolved value is used to find an EXISTING legitimate store (unlike
+  # the OCI section, this one genuinely needs to locate one), but the
+  # chown itself only fires when that resolved path is one of the two
+  # paths this deployment is known to actually use — rails-start.sh's own
+  # unset-default ($STATE_DIR/internal-ca) and the confirmed-live ops-hub
+  # sibling layout (/persist/powernode-internal-ca, created directly under
+  # root-owned /persist, never under rails-writable STATE_DIR). Anything
+  # else is warned about, never acted on.
+  ca_allowed=0
+  for ca_candidate in "$STATE_DIR/internal-ca" /persist/powernode-internal-ca; do
+    if [ "$ca_local_dir" = "$ca_candidate" ]; then
+      ca_allowed=1
+      break
+    fi
+  done
+  if [ "$ca_allowed" = "1" ]; then
+    chown -R "$RAILS_USER:$RAILS_USER" "$ca_local_dir"
+  else
+    echo "[rails-setup] WARNING: POWERNODE_CA_LOCAL_DIR resolved to $ca_local_dir, which is not one of the ownership-managed paths (\"$STATE_DIR/internal-ca\", \"/persist/powernode-internal-ca\") — refusing to chown it (a value read from backend-default.conf, written by the non-root rails process, must never reach a root chown); rails may be unable to read/extend that store until an operator fixes its ownership by hand" >&2
+  fi
 else
   echo "[rails-setup] no internal CA store yet at $ca_local_dir — nothing to chown (first boot)"
 fi
@@ -302,6 +467,17 @@ fi
 # secrets-regeneration path. Per-entry (not a single `-exec ... {} +`
 # batch) specifically so a failure on one file doesn't cancel the whole
 # batched invocation and so fixed/failed can be counted and reported.
+#
+# `! -type l` (IMP-3731023204f2): STATE_DIR is rails-owned 0700 — a
+# compromised/buggy rails process can plant a symlink anywhere under it
+# pointing at an arbitrary root-owned path. `find ... -print0` lists a
+# symlink ENTRY itself without descending into it, but the bare `chown`
+# below (no `-h`) follows a symlink ARGUMENT to its referent — so without
+# this exclusion, the next boot's root sweep would chown whatever that
+# planted link points at. Mirrors the SAME exclusion the OCI-cache sweep
+# helper uses further down (sweep_ownership_for_rails, IMP-01a0c508-0121
+# F1) — this is the pre-existing sweep that predates that helper and
+# never got the same fix.
 fixed=0
 failed=0
 while IFS= read -r -d '' entry; do
@@ -311,7 +487,7 @@ while IFS= read -r -d '' entry; do
     failed=$((failed + 1))
     echo "[rails-setup] WARNING: could not fix ownership of $entry" >&2
   fi
-done < <(find "$STATE_DIR" \( ! -user "$RAILS_USER" -o ! -group "$RAILS_USER" \) -print0)
+done < <(find "$STATE_DIR" ! -type l \( ! -user "$RAILS_USER" -o ! -group "$RAILS_USER" \) -print0)
 # Unconditional (review round): "swept, nothing to fix" and "this sweep
 # never ran" must not look identical in the journal — gating the echo on
 # fixed/failed > 0 made a clean sweep silent, indistinguishable from the
@@ -403,8 +579,12 @@ fi
 #     Do not reintroduce a read that feeds $OCI_CACHE_DIR.
 #
 #     The same escalation via POWERNODE_CA_LOCAL_DIR -> `chown -R` earlier
-#     in this file is pre-existing and tracked separately
-#     (IMP 01a0c53e-2374); deliberately untouched here.
+#     in this file (tracked as IMP 01a0c53e-2374) is now closed the same
+#     way, under IMP-3731023204f2: gated on a hardcoded allowlist instead
+#     of acting on the conf value directly. That section still has to
+#     PARSE the value (unlike this one, which never needs to) because an
+#     existing legitimate store must still be located — only the CHOWN
+#     itself is gated on the allowlist. See that section for the fix.
 if [ -d /persist ]; then
   OCI_CACHE_DIR=/persist/var/lib/powernode/oci-cache
 else
@@ -594,6 +774,24 @@ TRAEFIK_DURABLE_DYNAMIC_DIR="$TRAEFIK_DURABLE_ROOT/dynamic"
 # failed secrets migration must never look like "no secrets yet, generate
 # fresh ones", which would rotate SECRET_KEY_BASE under a live database.
 setup_traefik_ingress_dirs() {
+  # SECURITY (IMP-3731023204f2, review round): every one of these dirs
+  # ends up 2775 root:traefik, and $RAILS_USER is a traefik-group member
+  # (that's the whole point of the setgid grant below — rails can write
+  # here without any capability). Rails could therefore rename one of
+  # these away and plant a symlink to an arbitrary existing directory
+  # (e.g. $TRAEFIK_CERT_DIR -> /etc) in its place. `mkdir -p` on an
+  # existing symlink-to-a-directory is a silent no-op, and neither `chown`
+  # nor `chmod` below takes `-h` — both would follow the link and act on
+  # whatever it points at, handing $RAILS_USER write access to it via the
+  # 2775/traefik-group grant. Refuse up front rather than walk through
+  # one; this is exactly the "symlink where a directory was expected" case
+  # the caller's own WARNING message already anticipated.
+  for traefik_dir_candidate in "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic "$TRAEFIK_CERT_DIR" "$TRAEFIK_DURABLE_DYNAMIC_DIR"; do
+    if [ -L "$traefik_dir_candidate" ]; then
+      echo "[rails-setup] WARNING: $traefik_dir_candidate is a symlink, not a real directory -- refusing to chown/chmod through it" >&2
+      return 1
+    fi
+  done
   mkdir -p /etc/traefik/dynamic "$TRAEFIK_CERT_DIR" "$TRAEFIK_DURABLE_DYNAMIC_DIR" || return 1
   # 2775 on every directory in the tree, including the durable ROOT
   # itself (not just its certs/dynamic children): setgid on a PARENT
@@ -613,7 +811,18 @@ if getent group traefik >/dev/null 2>&1; then
     # setgid covers everything created from now on. Only reached once the
     # base setup above actually succeeded — fixing up files under dirs
     # that may not exist (or aren't owned right yet) isn't meaningful.
-    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -mindepth 1 -exec chown root:traefik {} \; 2>/dev/null || true
+    #
+    # `! -type l` (IMP-3731023204f2): these dirs are 2775 root:traefik and
+    # $RAILS_USER is a traefik-group member (that's the whole point of the
+    # setgid grant above — rails can write here without any capability),
+    # so rails can plant a symlink to an arbitrary root-owned path. `find`
+    # lists a symlink ENTRY without descending into it, but the bare
+    # `chown` below (no `-h`) follows a symlink ARGUMENT to its referent —
+    # excluding link entries here keeps root's retroactive-fix pass from
+    # ever chowning through one. The chmod pass right after is already
+    # safe (`-type d` never matches a symlink's own type), so only this
+    # line needed the exclusion.
+    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -mindepth 1 ! -type l -exec chown root:traefik {} \; 2>/dev/null || true
     find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -mindepth 1 -type d -exec chmod 2775 {} \; 2>/dev/null || true
     # blocker 5: mode split by CONTENT, not by directory — a single 660
     # pass over the whole tree hit core-self-signed.key (private key

@@ -384,12 +384,21 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     # branch — the happy path (a store that already EXISTS, so `chown -R`
     # actually runs) had never been proven not to abort. Cheap to prove:
     # as a non-root user chowning a directory TO YOURSELF always succeeds.
-    it "takes the existing-store branch and runs chown -R without aborting (happy path)" do
+    #
+    # IMP-3731023204f2: repointed at the MANAGED DEFAULT path
+    # ($STATE_DIR/internal-ca, no conf override at all) rather than an
+    # arbitrary tmp subdirectory — since the security fix below gates the
+    # chown on a hardcoded allowlist, an arbitrary existing_store path no
+    # longer takes the chown branch at all (it takes the WARN branch
+    # instead, exercised in the dedicated allowlist describe block). This
+    # example now specifically proves the LEGITIMATE happy path still
+    # chowns, not merely that this ca_section extraction is order-agnostic
+    # to which store dir path was used.
+    it "takes the existing-store branch and runs chown -R without aborting, for the managed default path (happy path)" do
       Dir.mktmpdir do |state_dir|
-        existing_store = File.join(state_dir, "existing-ca-store")
-        FileUtils.mkdir_p(existing_store)
-        File.write(File.join(state_dir, "backend-default.conf"),
-                   "POWERNODE_CA_LOCAL_DIR=#{existing_store}\n")
+        default_store = File.join(state_dir, "internal-ca")
+        FileUtils.mkdir_p(default_store)
+        File.write(File.join(state_dir, "backend-default.conf"), "SOME_OTHER_KEY=value\n")
 
         snippet = <<~BASH
           set -euo pipefail
@@ -404,6 +413,8 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         expect(out).to include("REACHED_END")
         expect(out).not_to include("no internal CA store yet"),
           "an EXISTING store must take the chown -R branch, not the first-boot one"
+        expect(out).not_to include("WARNING"),
+          "the managed default path ($STATE_DIR/internal-ca) must be recognized and chowned, not warned about"
       end
     end
 
@@ -455,6 +466,220 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         expect(out).to include("internal CA store resolved to #{existing_store}"),
           "an export-prefixed assignment must resolve the same as a bare one"
         expect(out).not_to include("no internal CA store yet")
+      end
+    end
+  end
+
+  # IMP-3731023204f2 (SECURITY): POWERNODE_CA_LOCAL_DIR, resolved above out
+  # of backend-default.conf, used to reach `chown -R "$RAILS_USER:$RAILS_USER"
+  # "$ca_local_dir"` UNCONDITIONALLY once the resolved path existed as a
+  # directory — no allowlist gate. backend-default.conf is written by the
+  # NON-ROOT rails process (rails-start.sh, running as $RAILS_USER); this
+  # script itself chowns that same conf file to $RAILS_USER a few lines
+  # above. So a compromised/buggy rails process could set
+  # POWERNODE_CA_LOCAL_DIR=/etc and the next boot's root prep would
+  # recursively hand $RAILS_USER ownership of /etc.
+  #
+  # The self-chown trick the other executing specs in this file use (RAILS_USER
+  # pointed at the CURRENT user) cannot distinguish "chown ran against the
+  # disallowed path and trivially no-op-succeeded" from "chown never ran at
+  # all" — chowning a directory to yourself always succeeds either way. These
+  # examples instead shim `chown` via PATH with a recorder that logs every
+  # invocation's arguments before forwarding to the real binary; the
+  # assertion is on what does/doesn't appear in that log, not on exit status.
+  describe "IMP-3731023204f2: POWERNODE_CA_LOCAL_DIR must never reach chown outside a hardcoded allowlist" do
+    let(:ca_section) { script[/ca_local_dir=""\n.*?(?=\n# LOUD BUT NON-FATAL)/m] }
+
+    def with_chown_recorder(dir)
+      fake_bin = File.join(dir, "fakebin")
+      FileUtils.mkdir_p(fake_bin)
+      chown_log = File.join(dir, "chown.log")
+      real_chown = `which chown`.strip
+      File.write(File.join(fake_bin, "chown"), <<~SH)
+        #!/bin/bash
+        echo "$@" >> #{chown_log}
+        exec #{real_chown} "$@"
+      SH
+      FileUtils.chmod(0o755, File.join(fake_bin, "chown"))
+      yield(fake_bin, chown_log)
+    end
+
+    def chown_log_contents(chown_log)
+      File.exist?(chown_log) ? File.read(chown_log) : ""
+    end
+
+    it "never invokes chown on a conf-supplied path outside the managed allowlist" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-target") # stands in for /etc
+        FileUtils.mkdir_p(outside_target)
+        File.write(File.join(state_dir, "backend-default.conf"),
+                   "POWERNODE_CA_LOCAL_DIR=#{outside_target}\n")
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{ca_section}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(out).to include("REACHED_END")
+          log = chown_log_contents(chown_log)
+          expect(log).not_to include(outside_target),
+            "a POWERNODE_CA_LOCAL_DIR value read from backend-default.conf (written by the non-root rails process) must never reach chown -- got: #{log.inspect}"
+        end
+      end
+    end
+
+    it "warns (stderr) rather than silently skipping, when the conf value is outside the allowlist" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-target")
+        FileUtils.mkdir_p(outside_target)
+        File.write(File.join(state_dir, "backend-default.conf"),
+                   "POWERNODE_CA_LOCAL_DIR=#{outside_target}\n")
+
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="$(id -un)"
+          STATE_DIR=#{state_dir}
+          #{ca_section}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/WARNING/)
+        expect(err).to match(/not one of the ownership-managed paths/i)
+      end
+    end
+
+    it "DOES chown the hardcoded $STATE_DIR/internal-ca default when it exists" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        default_store = File.join(state_dir, "internal-ca")
+        FileUtils.mkdir_p(default_store)
+        File.write(File.join(state_dir, "backend-default.conf"), "SOME_OTHER_KEY=value\n")
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{ca_section}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          log = chown_log_contents(chown_log)
+          expect(log).to include(default_store),
+            "the managed default path must still be chowned when it legitimately exists -- got: #{log.inspect}"
+        end
+      end
+    end
+
+    # Review round nit (a): the confirmed-live sibling literal is an
+    # ABSOLUTE path directly under root-owned /persist (drwxr-xr-x
+    # root:root on every real host, verified in this sandbox too) — this
+    # test cannot create a real directory there without root, so an
+    # earlier version of this example only ever reached the "no internal
+    # CA store yet" first-boot branch and never actually exercised the
+    # allowlist match for this candidate at all (vacuous). Rather than add
+    # a prod-reachable env-var override purely for testability (which
+    # would reopen a smaller version of the exact defect this fix closes),
+    # this extracts and runs ONLY the allowlist for-loop itself -- a pure
+    # string comparison against `$ca_local_dir`, with no `[ -d ]`
+    # dependency -- so the match can be proven genuinely, without needing
+    # the literal directory to exist on disk.
+    let(:ca_allowlist_loop) { script[/ca_allowed=0\n.*?\n\s*done\n/m] }
+
+    it "the extraction itself found the real allowlist loop (sanity-checks the extraction, not the script)" do
+      expect(ca_allowlist_loop).not_to be_nil
+      expect(ca_allowlist_loop).to match(/for ca_candidate in/)
+    end
+
+    it "matches the confirmed-live ops-hub sibling literal /persist/powernode-internal-ca" do
+      snippet = <<~BASH
+        set -euo pipefail
+        STATE_DIR=/tmp/some-state-dir
+        ca_local_dir="/persist/powernode-internal-ca"
+        #{ca_allowlist_loop}
+        echo "ca_allowed=$ca_allowed"
+      BASH
+      out, _err, status = Open3.capture3("bash", "-c", snippet)
+      expect(status.success?).to be(true)
+      expect(out).to include("ca_allowed=1")
+    end
+
+    it "matches the $STATE_DIR/internal-ca default literal" do
+      snippet = <<~BASH
+        set -euo pipefail
+        STATE_DIR=/tmp/some-state-dir
+        ca_local_dir="$STATE_DIR/internal-ca"
+        #{ca_allowlist_loop}
+        echo "ca_allowed=$ca_allowed"
+      BASH
+      out, _err, status = Open3.capture3("bash", "-c", snippet)
+      expect(status.success?).to be(true)
+      expect(out).to include("ca_allowed=1")
+    end
+
+    it "does NOT match an arbitrary third path" do
+      snippet = <<~BASH
+        set -euo pipefail
+        STATE_DIR=/tmp/some-state-dir
+        ca_local_dir="/etc"
+        #{ca_allowlist_loop}
+        echo "ca_allowed=$ca_allowed"
+      BASH
+      out, _err, status = Open3.capture3("bash", "-c", snippet)
+      expect(status.success?).to be(true)
+      expect(out).to include("ca_allowed=0")
+    end
+
+    # Review round nit (b): the allowlist compares the RESOLVED path
+    # (after `readlink -m`), not the literal "$STATE_DIR/internal-ca"
+    # string -- so a rails-planted symlink AT that exact managed path,
+    # pointing OUTSIDE it, must still be refused. Proves the ordering
+    # (readlink-then-compare) actually holds when run, not just that both
+    # pieces of text are present somewhere in the section.
+    it "does NOT chown through $STATE_DIR/internal-ca when it is itself a symlink pointing outside the allowlist" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-ca-target")
+        FileUtils.mkdir_p(outside_target)
+        File.symlink(outside_target, File.join(state_dir, "internal-ca"))
+        File.write(File.join(state_dir, "backend-default.conf"), "SOME_OTHER_KEY=value\n")
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{ca_section}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(out).to include("REACHED_END")
+          log = chown_log_contents(chown_log)
+          expect(log).not_to include(outside_target),
+            "a $STATE_DIR/internal-ca symlink resolving OUTSIDE the allowlist must never be chowned through -- got: #{log.inspect}"
+          expect(err).to match(/not one of the ownership-managed paths/i)
+        end
       end
     end
   end
@@ -516,7 +741,50 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     end
 
     it "retroactively fixes existing content under the durable root, not just the live /etc/traefik pair" do
-      expect(script).to match(/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-mindepth 1\s+-exec chown root:traefik/)
+      expect(script).to match(/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-mindepth 1\s+!\s+-type\s+l\s+-exec chown root:traefik/)
+    end
+
+    # IMP-3731023204f2 (SECURITY): these dirs are 2775 root:traefik and
+    # $RAILS_USER is a traefik-group member (the whole point of the setgid
+    # grant -- rails can write here without any capability), so rails can
+    # plant a symlink to an arbitrary root-owned path. `find` used to list
+    # a symlink ENTRY without excluding it, and the bare `chown` (no `-h`)
+    # follows a symlink ARGUMENT to its referent -- excluding link entries
+    # keeps root's retroactive-fix pass from ever chowning through one. The
+    # companion chmod pass right after was already safe (`-type d` never
+    # matches a symlink's own type) and needed no change.
+    it "the retroactive chown's own find invocation never surfaces a symlink entry, when actually run" do
+      # Extracted VERBATIM from the script -- the exact command that ships,
+      # not retyped. Only the ACTION is swapped (chown root:traefik -> echo
+      # SEEN:{}) so this can run unprivileged and observe which entries the
+      # find PREDICATE (including the `! -type l` this fix added) actually
+      # surfaces; the two path tokens are substituted with temp dirs the
+      # same way the STATE_DIR sweep's own executing spec does it.
+      find_cmd = script[/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-mindepth 1\s+!\s+-type\s+l\s+-exec\s+chown\s+root:traefik\s+\{\}\s+\\;\s+2>\/dev\/null\s+\|\|\s+true/]
+      expect(find_cmd).not_to be_nil
+
+      Dir.mktmpdir do |dir|
+        outside_target = File.join(dir, "outside-target")
+        File.write(outside_target, "")
+        durable_root = File.join(dir, "durable")
+        etc_dynamic = File.join(dir, "etc-dynamic")
+        FileUtils.mkdir_p(durable_root)
+        FileUtils.mkdir_p(etc_dynamic)
+        File.symlink(outside_target, File.join(durable_root, "sneaky-link"))
+        File.write(File.join(durable_root, "real-file"), "")
+
+        observed_cmd = find_cmd
+          .sub('"$TRAEFIK_DURABLE_ROOT"', durable_root)
+          .sub("/etc/traefik/dynamic", etc_dynamic)
+          .sub(/-exec\s+chown\s+root:traefik\s+\{\}\s+\\;/, "-exec echo SEEN:{} \\;")
+
+        out, err, status = Open3.capture3("bash", "-c", "set -euo pipefail\n#{observed_cmd}")
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include("SEEN:#{File.join(durable_root, "real-file")}"),
+          "sanity: the predicate must still surface a real file, or this test proves nothing"
+        expect(out).not_to include("sneaky-link"),
+          "the retroactive-fix find predicate must never surface the symlink entry itself"
+      end
     end
   end
 
@@ -524,9 +792,21 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     it "moves real files only (never a symlink) and never clobbers an existing STATE_DIR file" do
       migration = script[/for f in backend-default\.conf.*?\ndone/m]
       expect(migration).not_to be_nil
-      expect(migration).to match(/\[\s*-f\s+"\$src"\s*\]/)
-      expect(migration).to match(/!\s*-L\s+"\$src"/), "must exclude symlinks — never follow/move one"
-      expect(migration).to match(/!\s*-f\s+"\$dest"/), "must never overwrite an existing STATE_DIR file"
+      # CODE lines only (F1 review round: this section's own explanatory
+      # comments legitimately QUOTE the old `[ ! -f "$dest" ]` guard while
+      # explaining why it was insufficient — matching those would test the
+      # comment, not the behavior, and would have kept this example green
+      # through the F1 fix that actually changed the guard).
+      code_lines = migration.lines.reject { |l| l.strip.start_with?("#") }.join
+      expect(code_lines).to match(/\[\s*-f\s+"\$src"\s*\]/)
+      expect(code_lines).to match(/!\s*-L\s+"\$src"/), "must exclude symlinks — never follow/move one"
+      # F1 (review round): the dest guard is now `[ -L "$dest" ]` (checked
+      # first, refuse) + `[ ! -e "$dest" ]` (proceed only if genuinely
+      # absent) — `[ ! -f "$dest" ]` alone let a symlink-to-directory or
+      # dangling-symlink dest slip through as "not yet migrated".
+      expect(code_lines).to match(/if\s+\[\s*-L\s+"\$dest"\s*\]/), "must refuse outright when dest is itself a symlink"
+      expect(code_lines).to match(/!\s*-e\s+"\$dest"/), "must never overwrite an existing STATE_DIR entry of any kind"
+      expect(code_lines).not_to match(/!\s*-f\s+"\$dest"/), "the old -f-only guard let a symlinked dest slip through"
     end
 
     it "runs the migration before the fatal secrets-ownership fix, so the moved file ends up owned by RAILS_USER" do
@@ -539,7 +819,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       # either loop's shape changed — the exact first-occurrence-retargets
       # shape a round-2 spec bug already caught elsewhere in this file.
       migration_idx = script.index("migrating legacy $src")
-      chown_idx     = script.index('chown "$RAILS_USER:$RAILS_USER" "$secret_path"')
+      chown_idx     = script.index('chown -h "$RAILS_USER:$RAILS_USER" "$secret_path"')
       expect(migration_idx).not_to be_nil
       expect(chown_idx).not_to be_nil
       expect(migration_idx).to be < chown_idx
@@ -564,7 +844,9 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
 
   describe "non-blocking: bundler app config persisted for out-of-band operator use" do
     it "writes $STATE_DIR/.bundle/config with the same BUNDLE_PATH/BUNDLE_WITHOUT rails-start.sh exports" do
-      expect(script).to match(/mkdir -p "\$STATE_DIR\/\.bundle"/)
+      expect(script).to match(/BUNDLE_CONFIG_DIR="\$STATE_DIR\/\.bundle"/)
+      expect(script).to match(/BUNDLE_CONFIG_FILE="\$BUNDLE_CONFIG_DIR\/config"/)
+      expect(script).to match(/mkdir -p "\$BUNDLE_CONFIG_DIR"/)
       expect(script).to match(/BUNDLE_PATH:\s*"\$BUNDLE_STATE_DIR"/)
       expect(script).to match(/BUNDLE_WITHOUT:\s*"development:test"/)
     end
@@ -999,7 +1281,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
   # symptom of lockfile drift; the EACCES is a symptom of RAILS_DIR ownership.
   # Fix either of those — do not silence the writer.
   describe "bundler config must NOT freeze the lockfile (2026-09-21 regression guard)" do
-    let(:bundle_config_heredoc) { script[/cat > "\$STATE_DIR\/\.bundle\/config" <<EOF\n(.*?)\nEOF/m, 1] }
+    let(:bundle_config_heredoc) { script[/cat > "\$bundle_config_tmp" <<EOF\n(.*?)\nEOF/m, 1] }
 
     it "writes BUNDLE_PATH and BUNDLE_WITHOUT" do
       expect(bundle_config_heredoc).not_to be_nil
@@ -1031,8 +1313,16 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(migration).not_to be_nil
       expect(migration).not_to match(/^\s*mv\s+"\$src"\s+"\$dest"\s*$/),
         "a bare mv across /etc (tmpfs/overlay) and /persist degrades to copy+unlink — not atomic, a crash leaves a truncated dest"
-      expect(migration).to match(/cp\s+"\$src"\s+"\$dest\.tmp-\$\$"/)
-      expect(migration).to match(/mv\s+"\$dest\.tmp-\$\$"\s+"\$dest"/)
+      # `mktemp`, not a fixed "$dest.tmp-$$" name (IMP-3731023204f2 review
+      # round: a predictable name under rails-writable STATE_DIR could be
+      # pre-planted as a symlink) — same-directory-as-$dest still holds,
+      # so the rename below stays same-filesystem/atomic.
+      expect(migration).to match(/migrate_tmp="\$\(mktemp "\$dest\.tmp\.XXXXXX"\)"/)
+      expect(migration).to match(/cp\s+"\$src"\s+"\$migrate_tmp"/)
+      # `-T` (F1, review round): a bare `mv` treats a destination that
+      # resolves to an existing DIRECTORY as a target directory and moves
+      # the source INSIDE it instead of replacing "$dest" itself.
+      expect(migration).to match(/mv\s+-T\s+"\$migrate_tmp"\s+"\$dest"/)
       expect(migration).to match(/rm\s+-f\s+"\$src"/)
     end
 
@@ -1041,9 +1331,545 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(marker_block).not_to be_nil
       expect(marker_block).not_to match(/^\s*mv\s+\/var\/lib\/powernode-rails\/\.db-initialized\s+"\$STATE_DIR\/\.db-initialized"\s*$/),
         "same cross-filesystem hazard as the secrets migration"
-      expect(marker_block).to match(/cp\s+\/var\/lib\/powernode-rails\/\.db-initialized\s+"\$STATE_DIR\/\.db-initialized\.tmp-\$\$"/)
-      expect(marker_block).to match(/mv\s+"\$STATE_DIR\/\.db-initialized\.tmp-\$\$"\s+"\$STATE_DIR\/\.db-initialized"/)
+      expect(marker_block).to match(/migrate_tmp="\$\(mktemp "\$STATE_DIR\/\.db-initialized\.tmp\.XXXXXX"\)"/)
+      expect(marker_block).to match(/cp\s+\/var\/lib\/powernode-rails\/\.db-initialized\s+"\$migrate_tmp"/)
+      expect(marker_block).to match(/mv\s+-T\s+"\$migrate_tmp"\s+"\$STATE_DIR\/\.db-initialized"/)
       expect(marker_block).to match(/rm\s+-f\s+\/var\/lib\/powernode-rails\/\.db-initialized/)
+    end
+
+    # IMP-3731023204f2 (SECURITY, follow-up review round): STATE_DIR is
+    # rails-owned 0700, so rails could plant "$STATE_DIR/vendor" as a
+    # symlink to an arbitrary existing directory before a reboot --
+    # `mkdir -p "$BUNDLE_STATE_DIR"` (= "$STATE_DIR/vendor/bundle") would
+    # then walk through it and create/enter a "bundle" dir OUTSIDE
+    # STATE_DIR entirely. Genuinely executes the guard, proving it refuses
+    # rather than silently walking through the symlink.
+    it "refuses to create BUNDLE_STATE_DIR when $STATE_DIR/vendor is a symlink" do
+      vendor_guard = script[/mkdir -p "\$STATE_DIR"\n.*?\nfi\n/m]
+      expect(vendor_guard).not_to be_nil
+      expect(vendor_guard).to match(/if\s+\[\s*-L\s+"\$STATE_DIR\/vendor"\s*\]/)
+
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-target")
+        FileUtils.mkdir_p(outside_target)
+        File.symlink(outside_target, File.join(state_dir, "vendor"))
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{vendor_guard}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/WARNING/)
+        expect(Dir.exist?(File.join(outside_target, "bundle"))).to be(false),
+          "must never create a directory through the planted symlink, outside STATE_DIR"
+      end
+    end
+
+    it "still creates BUNDLE_STATE_DIR normally when $STATE_DIR/vendor is absent or a real directory" do
+      vendor_guard = script[/mkdir -p "\$STATE_DIR"\n.*?\nfi\n/m]
+
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{vendor_guard}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(err).not_to match(/WARNING/)
+        expect(Dir.exist?(File.join(state_dir, "vendor", "bundle"))).to be(true)
+      end
+    end
+
+    # N1 (review round, self-DoS, not an escalation): a DANGLING
+    # "$BUNDLE_STATE_DIR" symlink makes `mkdir -p` fail with "File exists"
+    # (the leaf name is taken by the symlink even though it resolves to
+    # nothing), which aborts the whole script under `set -e`. Genuinely
+    # proves the script no longer aborts, not just that guard text exists.
+    it "N1: does not abort when $BUNDLE_STATE_DIR is a dangling symlink" do
+      vendor_guard = script[/mkdir -p "\$STATE_DIR"\n.*?\nfi\n/m]
+
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(File.join(state_dir, "vendor"))
+        File.symlink("/does/not/exist", File.join(state_dir, "vendor", "bundle"))
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{vendor_guard}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/WARNING/)
+        expect(File.symlink?(File.join(state_dir, "vendor", "bundle"))).to be(true),
+          "the dangling symlink itself must be left untouched (refused, not removed/recreated)"
+      end
+    end
+  end
+
+  # IMP-3731023204f2 (SECURITY, follow-up review round): the two secrets
+  # files are chowned inside the FATAL section above, and this loop's own
+  # chown is what makes them rails-writable in the first place -- rails
+  # could replace either with a symlink to an arbitrary path (e.g.
+  # admin-credentials.json -> /etc/shadow), and the pre-fix `chown` (no
+  # `-h`, guarded only by `[ -e ]` which itself follows the link) would
+  # hand $RAILS_USER ownership of the referent as root.
+  describe "IMP-3731023204f2: the secrets ownership loop must never chown through a symlink" do
+    let(:secrets_loop) { script[/for f in backend-default\.conf admin-credentials\.json; do\n  secret_path=.*?\ndone\n/m] }
+
+    def with_chown_recorder(dir)
+      fake_bin = File.join(dir, "fakebin")
+      FileUtils.mkdir_p(fake_bin)
+      chown_log = File.join(dir, "chown.log")
+      real_chown = `which chown`.strip
+      File.write(File.join(fake_bin, "chown"), <<~SH)
+        #!/bin/bash
+        echo "$@" >> #{chown_log}
+        exec #{real_chown} "$@"
+      SH
+      FileUtils.chmod(0o755, File.join(fake_bin, "chown"))
+      yield(fake_bin, chown_log)
+    end
+
+    def chown_log_contents(chown_log)
+      File.exist?(chown_log) ? File.read(chown_log) : ""
+    end
+
+    it "the extraction found the real loop, checking [ -L ] before chowning" do
+      expect(secrets_loop).not_to be_nil
+      expect(secrets_loop).to match(/if\s+\[\s*-L\s+"\$secret_path"\s*\]/)
+      expect(secrets_loop).to match(/chown\s+-h\s+"\$RAILS_USER:\$RAILS_USER"\s+"\$secret_path"/)
+    end
+
+    it "never invokes chown on the referent of a secrets-file symlink" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-target") # stands in for /etc/shadow
+        File.write(outside_target, "")
+        File.symlink(outside_target, File.join(state_dir, "admin-credentials.json"))
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{secrets_loop}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(out).to include("REACHED_END")
+          expect(err).to match(/WARNING/)
+          log = chown_log_contents(chown_log)
+          expect(log).not_to include(outside_target),
+            "a symlinked secrets file must never reach chown -- got: #{log.inspect}"
+        end
+      end
+    end
+
+    it "never invokes chown on a symlink pointing at a NONEXISTENT target either (the [ -L ] check, not [ -e ], must catch this)" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        dangling_target = File.join(dir, "does-not-exist")
+        File.symlink(dangling_target, File.join(state_dir, "backend-default.conf"))
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{secrets_loop}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(out).to include("REACHED_END")
+          log = chown_log_contents(chown_log)
+          expect(log.strip).to eq(""), "a dangling symlink must never reach chown either -- got: #{log.inspect}"
+        end
+      end
+    end
+
+    it "still chowns a genuine (non-symlink) secrets file" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        real_secret = File.join(state_dir, "backend-default.conf")
+        File.write(real_secret, "SOME_KEY=value\n")
+
+        with_chown_recorder(dir) do |fake_bin, chown_log|
+          snippet = <<~BASH
+            set -euo pipefail
+            export PATH=#{fake_bin}:$PATH
+            RAILS_USER="$(id -un)"
+            STATE_DIR=#{state_dir}
+            #{secrets_loop}
+            echo "REACHED_END"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "script aborted: #{err}"
+          expect(err).not_to match(/WARNING/)
+          log = chown_log_contents(chown_log)
+          expect(log).to include(real_secret),
+            "a genuine secrets file must still be chowned -- got: #{log.inspect}"
+        end
+      end
+    end
+  end
+
+  # IMP-3731023204f2 (SECURITY, follow-up review round): every one of
+  # these traefik dirs ends up 2775 root:traefik, and $RAILS_USER is a
+  # traefik-group member (the whole point of the setgid grant -- rails
+  # can write here without any capability). Rails could rename one away
+  # and plant a symlink to an arbitrary existing directory in its place;
+  # neither the pre-fix `chown` nor `chmod` took `-h`, so both would
+  # follow the link and act on whatever it points at.
+  describe "IMP-3731023204f2: setup_traefik_ingress_dirs must refuse when a target is a symlink" do
+    let(:traefik_setup_fn) { script[/setup_traefik_ingress_dirs\s*\(\)\s*\{.*?\n\}/m] }
+
+    it "checks all four dirs for -L before any mkdir/chown/chmod" do
+      expect(traefik_setup_fn).not_to be_nil
+      guard = traefik_setup_fn[/for traefik_dir_candidate in.*?\n\s*done\n/m]
+      expect(guard).not_to be_nil
+      expect(guard).to match(/if\s+\[\s*-L\s+"\$traefik_dir_candidate"\s*\]/)
+      expect(guard).to match(/return 1/)
+      # The guard loop must appear textually BEFORE the first mkdir in the
+      # function, so it can never run through a symlink it hasn't checked
+      # yet.
+      guard_idx = traefik_setup_fn.index("for traefik_dir_candidate in")
+      mkdir_idx = traefik_setup_fn.index("mkdir -p /etc/traefik/dynamic")
+      expect(guard_idx).not_to be_nil
+      expect(mkdir_idx).not_to be_nil
+      expect(guard_idx).to be < mkdir_idx
+    end
+
+    # Genuinely EXECUTES the extracted function against a real tmp tree
+    # standing in for TRAEFIK_CERT_DIR being replaced by a symlink,
+    # proving the function returns non-zero (which the caller's own `if
+    # setup_traefik_ingress_dirs; then ... else WARNING ...` already
+    # degrades to a warning, not a boot abort) rather than chowning/
+    # chmoding through it.
+    it "returns non-zero and never chowns/chmods through a symlinked cert dir" do
+      Dir.mktmpdir do |dir|
+        outside_target = File.join(dir, "outside-target")
+        FileUtils.mkdir_p(outside_target)
+        durable_root = File.join(dir, "durable")
+        FileUtils.mkdir_p(durable_root)
+        cert_dir = File.join(durable_root, "certs")
+        File.symlink(outside_target, cert_dir)
+        dynamic_dir = File.join(durable_root, "dynamic")
+        etc_dynamic = File.join(dir, "etc-dynamic")
+
+        snippet = <<~BASH
+          set -euo pipefail
+          TRAEFIK_DURABLE_ROOT=#{durable_root}
+          TRAEFIK_CERT_DIR=#{cert_dir}
+          TRAEFIK_DURABLE_DYNAMIC_DIR=#{dynamic_dir}
+          #{traefik_setup_fn.gsub("/etc/traefik/dynamic", etc_dynamic)}
+          if setup_traefik_ingress_dirs; then
+            echo "SETUP_SUCCEEDED"
+          else
+            echo "SETUP_REFUSED"
+          fi
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include("SETUP_REFUSED")
+        expect(out).not_to include("SETUP_SUCCEEDED")
+        expect(err).to match(/is a symlink, not a real directory/)
+        # The referent must be untouched -- neither chowned nor chmoded.
+        expect(File.stat(outside_target).mode.to_s(8)).not_to match(/2775$/)
+      end
+    end
+
+    # NOT asserting overall success here: `chown root:traefik` genuinely
+    # fails in this sandbox (no "traefik" group, and no privilege to
+    # chown to root) for reasons that have nothing to do with symlinks --
+    # that's the caller's existing "read-only/full /persist?" degrade
+    # path, unrelated to this fix. What THIS fix owns is that the guard
+    # loop must not spuriously fire for real directories/absent paths, so
+    # assert directly on that: no "is a symlink" warning, and the mkdir
+    # step (which runs strictly AFTER the guard) actually created the
+    # directories on disk before the unrelated chown failure occurs.
+    it "does not trigger the symlink guard for real directories or absent paths, and still runs the mkdir step" do
+      Dir.mktmpdir do |dir|
+        durable_root = File.join(dir, "durable")
+        cert_dir = File.join(durable_root, "certs")
+        dynamic_dir = File.join(durable_root, "dynamic")
+        etc_dynamic = File.join(dir, "etc-dynamic")
+
+        snippet = <<~BASH
+          set -euo pipefail
+          TRAEFIK_DURABLE_ROOT=#{durable_root}
+          TRAEFIK_CERT_DIR=#{cert_dir}
+          TRAEFIK_DURABLE_DYNAMIC_DIR=#{dynamic_dir}
+          #{traefik_setup_fn.gsub("/etc/traefik/dynamic", etc_dynamic)}
+          setup_traefik_ingress_dirs || true
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(err).not_to match(/is a symlink, not a real directory/)
+        expect(Dir.exist?(cert_dir)).to be(true)
+        expect(Dir.exist?(dynamic_dir)).to be(true)
+        expect(Dir.exist?(etc_dynamic)).to be(true)
+      end
+    end
+  end
+
+  # IMP-3731023204f2 (SECURITY, follow-up review round): STATE_DIR is
+  # rails-owned 0700, so rails could plant BUNDLE_CONFIG_DIR itself as a
+  # symlink to an arbitrary directory, or plant BUNDLE_CONFIG_FILE
+  # ("config") as a symlink to an arbitrary file (e.g. /etc/passwd). The
+  # pre-fix `cat > "$STATE_DIR/.bundle/config"` was a bare O_WRONLY|O_TRUNC
+  # open, which follows either kind of symlink and overwrites the referent
+  # as root.
+  describe "IMP-3731023204f2: the bundler app config write must never write through a symlink" do
+    let(:bundle_write_block) { script[/BUNDLE_CONFIG_DIR="\$STATE_DIR\/\.bundle"\n.*?\nfi\n/m] }
+
+    it "refuses when $STATE_DIR/.bundle itself is a symlink" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        outside_target = File.join(dir, "outside-target")
+        FileUtils.mkdir_p(outside_target)
+        File.symlink(outside_target, File.join(state_dir, ".bundle"))
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{bundle_write_block}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/WARNING/)
+        expect(File.exist?(File.join(outside_target, "config"))).to be(false),
+          "must never write into the directory the planted symlink points at"
+      end
+    end
+
+    it "safely REPLACES a pre-existing symlink at the config file's own name, never writing through it" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        bundle_dir = File.join(state_dir, ".bundle")
+        FileUtils.mkdir_p(bundle_dir)
+        victim = File.join(dir, "victim-file") # stands in for /etc/passwd
+        File.write(victim, "root:x:0:0:root:/root:/bin/bash\n")
+        File.symlink(victim, File.join(bundle_dir, "config"))
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{bundle_write_block}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/NOTICE/)
+        # The victim file itself must be completely untouched.
+        expect(File.read(victim)).to eq("root:x:0:0:root:/root:/bin/bash\n"),
+          "the pre-existing symlink's REFERENT must never be written to"
+        # The config name itself must now be a real file with the real content.
+        expect(File.symlink?(File.join(bundle_dir, "config"))).to be(false)
+        expect(File.read(File.join(bundle_dir, "config"))).to include("BUNDLE_PATH:")
+      end
+    end
+
+    it "writes the real config normally when nothing is a symlink" do
+      Dir.mktmpdir do |dir|
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          BUNDLE_STATE_DIR="$STATE_DIR/vendor/bundle"
+          #{bundle_write_block}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(err).not_to match(/WARNING|NOTICE/)
+        expect(File.read(File.join(state_dir, ".bundle", "config"))).to include("BUNDLE_PATH:")
+      end
+    end
+  end
+
+  # IMP-3731023204f2 (SECURITY, follow-up review round): STATE_DIR is
+  # rails-owned 0700, so rails could pre-plant a symlink at the FIXED
+  # "$dest.tmp-$$" / "$STATE_DIR/.db-initialized.tmp-$$" temp name a
+  # migration used to `cp` into -- `cp` to an existing destination follows
+  # a symlink there and overwrites the referent. `mktemp` closes this by
+  # creating the temp file exclusively, so no pre-existing name (planted
+  # or not) can ever be the one `cp` writes into.
+  describe "IMP-3731023204f2: the legacy migrations must never cp through a pre-planted symlink at the temp name" do
+    let(:secrets_migration) { script[/for f in backend-default\.conf admin-credentials\.json; do\n  src=.*?\ndone\n/m] }
+    let(:marker_migration) { script[/if \[ -f \/var\/lib\/powernode-rails\/\.db-initialized \].*?\nfi\n/m] }
+    # Isolates the if/elif/fi body from the two hardcoded `src=`/`dest=`
+    # assignment lines that precede it in the real file (those derive from
+    # STATE_DIR/$f, which this describe block's tests need to override with
+    # their own tmp paths) — reused verbatim, not retyped, by every F1/F2
+    # example below.
+    let(:secrets_migration_body) { secrets_migration[/if \[ -L "\$dest" \]; then\n.*?\n\s*fi\n/m] }
+
+    it "the secrets migration uses mktemp, not a fixed $$-suffixed name" do
+      expect(secrets_migration).not_to be_nil
+      expect(secrets_migration).to match(/migrate_tmp="\$\(mktemp "\$dest\.tmp\.XXXXXX"\)"/)
+      code_lines = secrets_migration.lines.reject { |l| l.strip.start_with?("#") }.join
+      expect(code_lines).not_to match(/\.tmp-\$\$/)
+    end
+
+    # F1 (review round): the vacuous predecessor of this example planted a
+    # symlink at a GUESSED tmp name and asserted the victim survived — but
+    # `mktemp`'s random suffix means that guess essentially never collides
+    # regardless of whether mktemp is even used correctly, so the example
+    # passed on both the vulnerable and the fixed script (proves nothing).
+    # This instead targets the REAL remaining gap the reviewer found: a
+    # DEST that is a symlink to a DIRECTORY, which a bare `mv` treats as a
+    # target directory and moves the temp file INSIDE — landing content
+    # OUTSIDE STATE_DIR and never getting refused.
+    it "F1: refuses when the migration dest is a symlink to a directory (nothing lands inside it)" do
+      Dir.mktmpdir do |dir|
+        src_file = File.join(dir, "src-secret")
+        File.write(src_file, "SOME_KEY=value\n")
+        victim_dir = File.join(dir, "victim-dir")
+        FileUtils.mkdir_p(victim_dir)
+        dest_path = File.join(dir, "dest-link")
+        File.symlink(victim_dir, dest_path)
+
+        snippet = <<~BASH
+          set -euo pipefail
+          src=#{src_file}
+          dest=#{dest_path}
+          #{secrets_migration_body}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(err).to match(/WARNING/)
+        expect(Dir.children(victim_dir)).to be_empty,
+          "nothing must ever land inside the directory a symlinked dest points at"
+        expect(File.symlink?(dest_path)).to be(true), "the symlink itself must be left untouched (refused, not replaced)"
+        expect(File.read(src_file)).to eq("SOME_KEY=value\n"), "src must survive -- never rm'd when the migration is refused"
+      end
+    end
+
+    it "F1: still migrates normally when dest genuinely does not exist" do
+      Dir.mktmpdir do |dir|
+        src_file = File.join(dir, "src-secret")
+        File.write(src_file, "SOME_KEY=value\n")
+        dest_path = File.join(dir, "dest-file")
+
+        snippet = <<~BASH
+          set -euo pipefail
+          src=#{src_file}
+          dest=#{dest_path}
+          #{secrets_migration_body}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(err).not_to match(/WARNING/)
+        expect(File.read(dest_path)).to eq("SOME_KEY=value\n")
+        expect(File.exist?(src_file)).to be(false), "src must be removed on a successful migration"
+      end
+    end
+
+    it "the db-initialized marker migration uses mktemp, not a fixed $$-suffixed name" do
+      expect(marker_migration).not_to be_nil
+      expect(marker_migration).to match(/migrate_tmp="\$\(mktemp "\$STATE_DIR\/\.db-initialized\.tmp\.XXXXXX"\)"/)
+      code_lines = marker_migration.lines.reject { |l| l.strip.start_with?("#") }.join
+      expect(code_lines).not_to match(/\.tmp-\$\$/)
+    end
+
+    # F2 (review round): the sibling migration loop above already excluded
+    # a symlinked SOURCE ([ ! -L "$src" ]); this one didn't. A planted
+    # /var/lib/powernode-rails/.db-initialized -> /etc/shadow would get
+    # `cp`'d into STATE_DIR and then chowned to rails a few sections down
+    # -- an arbitrary root-readable-file READ, the mirror image of the
+    # write-side risk F1 closes.
+    it "F2: refuses to migrate the db-initialized marker when its SOURCE is a symlink" do
+      Dir.mktmpdir do |dir|
+        victim = File.join(dir, "victim-file")
+        File.write(victim, "victim-content\n")
+        marker_src = File.join(dir, "legacy-marker")
+        File.symlink(victim, marker_src)
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          #{marker_migration.gsub("/var/lib/powernode-rails/.db-initialized", marker_src)}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include("REACHED_END")
+        expect(File.exist?(File.join(state_dir, ".db-initialized"))).to be(false),
+          "a symlinked marker source must never be migrated"
+        expect(File.symlink?(marker_src)).to be(true), "the source symlink itself must be left untouched (never rm'd)"
+      end
+    end
+
+    it "F2: still migrates the marker normally when the source is a genuine regular file" do
+      Dir.mktmpdir do |dir|
+        marker_src = File.join(dir, "legacy-marker")
+        File.write(marker_src, "marker-content\n")
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+
+        snippet = <<~BASH
+          set -euo pipefail
+          STATE_DIR=#{state_dir}
+          #{marker_migration.gsub("/var/lib/powernode-rails/.db-initialized", marker_src)}
+          echo "REACHED_END"
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(File.read(File.join(state_dir, ".db-initialized"))).to eq("marker-content\n")
+        expect(File.exist?(marker_src)).to be(false), "source must be removed on a successful migration"
+      end
     end
   end
 
@@ -1056,7 +1882,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       fatal_section = script[/# FATAL: STATE_DIR itself.*?(?=\n# LOUD BUT NON-FATAL)/m]
       expect(fatal_section).not_to be_nil
       expect(fatal_section).to match(/^chown "\$RAILS_USER:\$RAILS_USER" "\$STATE_DIR"\s*$/)
-      expect(fatal_section).to match(/chown "\$RAILS_USER:\$RAILS_USER" "\$secret_path"/)
+      expect(fatal_section).to match(/chown -h "\$RAILS_USER:\$RAILS_USER" "\$secret_path"/)
       expect(fatal_section).to match(/chown -R "\$RAILS_USER:\$RAILS_USER" "\$ca_local_dir"/)
 
       # `not_to match(/\|\|\s*true/)` alone is NOT a fatality check
@@ -1091,10 +1917,61 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     it "sweeps everything else per-entry, tolerating (not swallowing silently) a per-file failure, and reports counts" do
       sweep_section = script[/# LOUD BUT NON-FATAL:.*?\z/m]
       expect(sweep_section).not_to be_nil
-      expect(sweep_section).to match(/find\s+"\$STATE_DIR"\s+\\?\(\s*!\s*-user\s+"\$RAILS_USER"\s+-o\s+!\s*-group\s+"\$RAILS_USER"\s+\\?\)\s+-print0/)
+      expect(sweep_section).to match(/find\s+"\$STATE_DIR"\s+!\s+-type\s+l\s+\\?\(\s*!\s*-user\s+"\$RAILS_USER"\s+-o\s+!\s*-group\s+"\$RAILS_USER"\s+\\?\)\s+-print0/)
       expect(sweep_section).to match(/fixed=\$\(\(fixed \+ 1\)\)/)
       expect(sweep_section).to match(/failed=\$\(\(failed \+ 1\)\)/)
       expect(sweep_section).to match(/echo.*fixed=\$fixed failed=\$failed/)
+    end
+
+    # IMP-3731023204f2 (SECURITY): STATE_DIR is rails-owned 0700 -- a
+    # compromised/buggy rails process can plant a symlink under it pointing
+    # at an arbitrary root-owned path. `find ... -print0` used to list a
+    # symlink ENTRY without excluding it, and the bare `chown` a few lines
+    # below (no `-h`) follows a symlink ARGUMENT to its referent -- so the
+    # next boot's root sweep would chown whatever that planted link points
+    # at. Mirrors the identical exclusion + proof-by-execution pattern the
+    # OCI-cache sweep helper's own spec above already uses.
+    it "excludes symlink entries from the STATE_DIR sweep's find (! -type l), rather than chowning through them" do
+      sweep_section = script[/# LOUD BUT NON-FATAL:.*?\z/m]
+      expect(sweep_section).to match(/find\s+"\$STATE_DIR"\s+!\s+-type\s+l\s+\\?\(/),
+        "the STATE_DIR sweep's find predicate must exclude symlinks BEFORE the ownership test, not chown through them"
+    end
+
+    # Genuinely EXECUTES the LITERAL find invocation extracted from the
+    # script (not retyped) against a tree containing a symlink, proving the
+    # predicate itself never surfaces the symlink entry -- exactly what
+    # determines whether the sweep's chown ever sees it.
+    it "the STATE_DIR sweep's own find invocation never surfaces a symlink entry, when actually run" do
+      find_line = script[/done < <\((find\s+"\$STATE_DIR".*?-print0)\)/m, 1]
+      expect(find_line).not_to be_nil
+
+      Dir.mktmpdir do |dir|
+        outside_target = File.join(dir, "outside-target")
+        File.write(outside_target, "")
+        state_dir = File.join(dir, "state")
+        FileUtils.mkdir_p(state_dir)
+        File.symlink(outside_target, File.join(state_dir, "sneaky-link"))
+
+        # RAILS_USER pointed at a DIFFERENT real user (not the current
+        # one), same reasoning as the OCI sweep's own spec: with RAILS_USER
+        # pointed at ITSELF, every entry (including the symlink) already
+        # fails the `-user`/`-group` test on its own, which would make this
+        # example pass whether or not `! -type l` is present -- proving
+        # nothing. A genuine ownership mismatch is the one shape where only
+        # the `! -type l` exclusion can still keep the symlink out.
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER="root"
+          STATE_DIR=#{state_dir}
+          #{find_line} | tr '\\0' '\\n'
+        BASH
+        out, err, status = Open3.capture3("bash", "-c", snippet)
+        expect(status.success?).to be(true), "aborted: #{err}"
+        expect(out).to include(state_dir),
+          "sanity: the mismatched-ownership predicate must surface at least the target dir itself, or this test proves nothing"
+        expect(out).not_to include("sneaky-link"),
+          "the STATE_DIR sweep's own find predicate must never surface the symlink entry itself"
+      end
     end
 
     it "echoes the sweep summary UNCONDITIONALLY, not only when something was fixed/failed" do
