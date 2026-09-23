@@ -36,6 +36,14 @@ import (
 // lifecycle/service.go itself uses internally (rootFSType).
 var pivotAwareRootMode = lifecycle.PivotAwareRootMode
 
+// pivotAwareRootModeChecked indirects lifecycle.PivotAwareRootModeChecked,
+// same reason and same pattern as pivotAwareRootMode above. Kept as a
+// SEPARATE var (not folded into pivotAwareRootMode's signature) because
+// every existing caller of the unchecked form deliberately wants the
+// swallow-to-chroot default — only the union-mount step below needs the
+// error (IMP-81aa3112).
+var pivotAwareRootModeChecked = lifecycle.PivotAwareRootModeChecked
+
 // applyIdentity, applySudoers and reconcileHomeOwnership indirect
 // etcidentity.Apply / etcsudoers.Apply / etcidentity.ReconcileHomeOwnership
 // so tests can observe (or stub) the host-global render without touching
@@ -1068,7 +1076,28 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Skipped when no modules are attached — the sysroot has nothing
 	// to union and overlay's lowerdir requires at least one entry.
 	if !r.cfg.DryRun && len(current.AttachedModules) > 0 {
-		if lifecycle.PivotAwareRootMode() == lifecycle.RootModeNative {
+		// FAIL CLOSED on an unresolved root-mode probe (IMP-81aa3112): using
+		// the swallow-to-chroot lifecycle.PivotAwareRootMode() here would read
+		// a statfs failure as "definitely chroot" and take the MUTATING else
+		// branch below — mounting a second overlay. On a node that is
+		// genuinely pivot-booted that shares the live root's upperdir/workdir
+		// with a second mount, which the kernel documents as undefined
+		// behavior (see the RootModeNative comment just below). The
+		// asymmetry is the same one already established for detachModule's
+		// unmountWouldStripLiveRoot: an unreadable probe resolves to the
+		// non-mutating outcome, never the mutating one. Declining costs one
+		// deferred tick (current.UnionMounted is left exactly as it was);
+		// guessing wrong costs a kernel-UB double mount.
+		rootMode, rmErr := pivotAwareRootModeChecked()
+		if rmErr != nil {
+			// noteUnconverged (not a bare OnError) so this pass is not
+			// reported as having converged: the union step was declined, so
+			// whatever lowerdir is live right now may already be stale
+			// relative to current.AttachedModules, and the caller must know
+			// this tick did not resolve that.
+			r.noteUnconverged("reconciler:root_mode_probe_failed", "", fmt.Errorf(
+				"could not determine pivot-vs-chroot root mode this tick (%w); declining the union-mount step rather than guessing — a wrong chroot guess on an actually-pivoted root risks a double overlay mount", rmErr))
+		} else if rootMode == lifecycle.RootModeNative {
 			// Pivot-booted node: / is ALREADY the composed module union
 			// (switch_root'd into it at boot). Re-mounting a second union at
 			// /sysroot here creates two overlays sharing this live root's

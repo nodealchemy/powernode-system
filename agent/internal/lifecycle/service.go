@@ -413,6 +413,36 @@ func PivotAwareRootMode() RootMode {
 	return RootModeChroot
 }
 
+// PivotAwareRootModeChecked is PivotAwareRootMode's error-surfacing twin.
+// PivotAwareRootMode silently downgrades a probe failure to RootModeChroot,
+// which is the SAFE default for its callers today: every one of them gates a
+// non-mutating render/skip decision on == RootModeNative, so treating an
+// unreadable probe as chroot only ever costs a deferred no-op (see e.g.
+// attachModuleServices, hotReconcileIfNeeded).
+//
+// A caller whose == RootModeNative branch is the SAFE one and whose ELSE
+// branch performs a MUTATING, potentially destructive action must not use
+// PivotAwareRootMode: reaching that else branch on a probe failure would
+// treat "unknown" as "definitely chroot" and perform the mutation even when
+// the root is genuinely native. Such a caller uses this function instead and
+// fails CLOSED on its own error return — the same asymmetry already applied
+// in this package's sibling case, unmountWouldStripLiveRoot (runtime package,
+// reconcile.go): an unreadable probe there resolves to "would strip" (skip
+// the unmount), never to "safe to unmount". The reconcile loop's union-mount
+// step is the first caller (IMP-81aa3112): re-mounting a shadow overlay on an
+// already-pivoted root shares its live upperdir/workdir with the running
+// union, which the kernel documents as undefined behavior.
+func PivotAwareRootModeChecked() (RootMode, error) {
+	t, err := rootFSType(rootProbePath)
+	if err != nil {
+		return RootModeChroot, err
+	}
+	if t == overlayfsMagic {
+		return RootModeNative, nil
+	}
+	return RootModeChroot, nil
+}
+
 // RenderUnit renders a unit in the default chroot mode (cloud_init model).
 // Equivalent to RenderUnitMode(svc, moduleID, RootModeChroot).
 func RenderUnit(svc manifest.Service, moduleID string) string {
