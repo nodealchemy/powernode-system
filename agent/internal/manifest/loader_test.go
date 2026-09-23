@@ -76,6 +76,60 @@ func TestFetchAndCacheRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFetchAndCacheDoesNotOverwriteAGoodCacheWithADigestlessResponse is
+// IMP-2dfbd7f62441 review finding R2-N1: the on-disk cache is a fallback of
+// LAST KNOWN GOOD, not last fetched. A response with no digest (a live but
+// degraded view — see the no-digest branch's comment in runtime/reconcile.go
+// for why this is reachable for a genuinely assigned module) must not
+// destroy a previously-cached manifest that DID have a real digest — a later
+// tick's fallback read would get the degraded copy instead of anything
+// usable. The in-memory return value is unaffected: the caller still sees
+// this tick's real (degraded) response.
+func TestFetchAndCacheDoesNotOverwriteAGoodCacheWithADigestlessResponse(t *testing.T) {
+	root := t.TempDir()
+
+	// Seed a GOOD cache, as if an earlier tick had fetched one.
+	good := Manifest{ID: "mod-1", Name: "nginx", Digest: "sha256:good",
+		Users: []ManifestUser{{Name: "svc-nginx", UID: 5001, PrimaryGID: 5001}}}
+	goodBody, _ := json.Marshal(good)
+	dir := filepath.Join(root, "mod-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), goodBody, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// This tick's fetch succeeds but comes back digest-less (degraded).
+	degradedBody := `{
+		"success": true,
+		"data": {"id": "mod-1", "name": "nginx", "priority": 100, "effective_priority": 100}
+	}`
+	c := &stubClient{resp: makeResp(200, degradedBody)}
+
+	m, err := FetchAndCache(c, root, "mod-1")
+	if err != nil {
+		t.Fatalf("FetchAndCache: %v", err)
+	}
+	// Caller still sees THIS tick's real (degraded) response.
+	if m.Digest != "" {
+		t.Errorf("expected the returned manifest to reflect the real degraded fetch (empty digest), got %q", m.Digest)
+	}
+
+	// But the ON-DISK cache must still be the GOOD one -- a later tick's
+	// fallback read must not see the degraded copy.
+	onDisk, err := LoadFromDisk(root, "mod-1")
+	if err != nil {
+		t.Fatalf("LoadFromDisk: %v", err)
+	}
+	if onDisk.Digest != "sha256:good" {
+		t.Errorf("expected the on-disk cache to remain the last KNOWN GOOD manifest (digest=sha256:good), got digest=%q — a digest-less response overwrote it", onDisk.Digest)
+	}
+	if len(onDisk.Users) != 1 || onDisk.Users[0].Name != "svc-nginx" {
+		t.Errorf("expected the good cache's users to survive, got %+v", onDisk.Users)
+	}
+}
+
 func TestLoadFromDiskMissing(t *testing.T) {
 	root := t.TempDir()
 	_, err := LoadFromDisk(root, "nope")
