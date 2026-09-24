@@ -78,8 +78,12 @@ module System
           { "icon" => "Globe", "label" => "Federation peer", "group_order" => 100 }
         end
 
+        # fc-25: /system/federation/* was deleted outright (no redirect) once
+        # FederationHubPage's control surfaces merged into ServiceDeliveryPage's
+        # Peers tab — that tab is the only reachable destination for a
+        # federation peer record now.
         def links_for(_record)
-          [ { "label" => "Federation", "path" => "/app/system/federation" } ]
+          [ { "label" => "Federation", "path" => "/app/system/service-delivery/peers" } ]
         end
 
         # No node edge of any kind exists on this model — its only structural

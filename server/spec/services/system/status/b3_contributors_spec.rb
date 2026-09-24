@@ -539,6 +539,16 @@ RSpec.describe "B3 status contributors" do
       expect(components(contributor).map(&:id)).to include(own.id)
       expect(components(contributor).map(&:id)).not_to include(other.id)
     end
+
+    # fc-25 deleted the /system/federation/* frontend route outright (no
+    # redirect) — FederationHubPage was merged into ServiceDeliveryPage's
+    # Peers tab. A component-status link at the old path would 404.
+    it "links to the peers tab on the merged Service Delivery page, not the deleted federation route" do
+      record = peer!(status: "active")
+
+      expect(contributor.links_for(record))
+        .to eq([ { "label" => "Federation", "path" => "/app/system/service-delivery/peers" } ])
+    end
   end
 
   # ── end to end ───────────────────────────────────────────────────────────
