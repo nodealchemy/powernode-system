@@ -2,6 +2,7 @@ import { ComponentType, lazy } from 'react';
 import { featureRegistry } from '@/shared/services/featureRegistry';
 import { registerSystemEntities } from './features/system/entityRegistry';
 import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet/signalsFilterColumns';
+import { providerCredentialsApi } from './features/system/services/api/providerCredentialsApi';
 
 // Helper: widen the lazy-loaded module's default-export type from the
 // concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
@@ -176,5 +177,15 @@ export function register(): void {
         signalsView,
       ])
     ),
+  });
+
+  // Cloud provider credentials. Core's setup wizard shows the cloud category
+  // only while these are registered, and saves/tests through them rather than
+  // naming this extension's route. A first-run save has no provider row yet,
+  // so the type slug stands in for the id and the server creates the provider.
+  featureRegistry.registerProviderCategoryHandlers('cloud', {
+    createCredential: ({ providerType, credentials }) =>
+      providerCredentialsApi.create({ providerId: providerType, providerType, credentials }),
+    testCredential: (request) => providerCredentialsApi.test(request),
   });
 }

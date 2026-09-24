@@ -2,13 +2,13 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Cloud, KeyRound } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { apiClient } from '@/shared/services/apiClient';
 import { logger } from '@/shared/utils/logger';
 import {
   type CredentialTestStatus,
   type ProviderCredentialValues,
 } from '@/features/onboarding/ProviderCredentialForm';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { providerCredentialsApi } from '@system/features/system/services/api/providerCredentialsApi';
 import type { SystemProvider } from '@system/features/system/types/system.types';
 import { toOnboardingType, type ProviderFormData } from './providerFormHelpers';
 import { ProviderGeneralTab } from './ProviderGeneralTab';
@@ -390,9 +390,9 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     if (!credentialsValid) return;
     setSavingCredentials(true);
     try {
-      await apiClient.post('/system/provider_credentials', {
-        provider_id: effectiveProvider.id,
-        provider_type: effectiveProvider.provider_type,
+      await providerCredentialsApi.create({
+        providerId: effectiveProvider.id,
+        providerType: effectiveProvider.provider_type,
         credentials: credentialValues,
       });
       setCredentialSaved(true);

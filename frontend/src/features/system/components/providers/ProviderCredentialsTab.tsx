@@ -9,6 +9,7 @@ import {
   type ProviderCredentialValues,
 } from '@/features/onboarding/ProviderCredentialForm';
 import type { SystemProvider } from '@system/features/system/types/system.types';
+import { providerCredentialsApi } from '@system/features/system/services/api/providerCredentialsApi';
 import { CREDENTIAL_TAB_EXCLUDE_SCOPES } from './providerFormHelpers';
 
 export interface ProviderCredentialsTabProps {
@@ -69,6 +70,7 @@ export const ProviderCredentialsTab: React.FC<ProviderCredentialsTabProps> = ({
           excludeScopes={CREDENTIAL_TAB_EXCLUDE_SCOPES}
           onChange={onCredentialsChange}
           onTestStatusChange={onTestStatusChange}
+          testCredentials={providerCredentialsApi.test}
         />
         <div className="flex flex-wrap items-center gap-3 border-t border-theme pt-3">
           <Button

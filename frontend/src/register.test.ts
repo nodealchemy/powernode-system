@@ -16,12 +16,25 @@
 const mockRegisterRoutes = jest.fn();
 const mockRegisterNavSections = jest.fn();
 const mockRegisterComponentSlots = jest.fn();
+const mockRegisterProviderCategoryHandlers = jest.fn();
 
 jest.mock('@/shared/services/featureRegistry', () => ({
   featureRegistry: {
     registerRoutes: (...args: unknown[]) => mockRegisterRoutes(...args),
     registerNavSections: (...args: unknown[]) => mockRegisterNavSections(...args),
     registerComponentSlots: (...args: unknown[]) => mockRegisterComponentSlots(...args),
+    registerProviderCategoryHandlers: (...args: unknown[]) =>
+      mockRegisterProviderCategoryHandlers(...args),
+  },
+}));
+
+const mockCreate = jest.fn();
+const mockTest = jest.fn();
+
+jest.mock('./features/system/services/api/providerCredentialsApi', () => ({
+  providerCredentialsApi: {
+    create: (...args: unknown[]) => mockCreate(...args),
+    test: (...args: unknown[]) => mockTest(...args),
   },
 }));
 
@@ -385,5 +398,53 @@ describe('registerSystemEntities delegation', () => {
     register();
 
     expect(callOrder).toEqual(['routes', 'navSections', 'entities']);
+  });
+});
+
+// =============================================================================
+// Cloud provider credentials: the category core's setup wizard shows only
+// when an extension serves it
+// =============================================================================
+
+describe('register() — cloud provider credentials', () => {
+  beforeEach(() => {
+    mockRegisterProviderCategoryHandlers.mockReset();
+    mockCreate.mockReset();
+    mockTest.mockReset();
+  });
+
+  it('registers create/test handlers for the cloud category exactly once', () => {
+    register();
+
+    expect(mockRegisterProviderCategoryHandlers).toHaveBeenCalledTimes(1);
+    expect(mockRegisterProviderCategoryHandlers).toHaveBeenCalledWith('cloud', {
+      createCredential: expect.any(Function),
+      testCredential: expect.any(Function),
+    });
+  });
+
+  it('creates through the extension client, resolving the provider from its type', async () => {
+    mockCreate.mockResolvedValue('cred-1');
+    register();
+    const [, handlers] = mockRegisterProviderCategoryHandlers.mock.calls[0];
+
+    await expect(
+      handlers.createCredential({ providerType: 'hetzner', credentials: { api_token: 't' } })
+    ).resolves.toBe('cred-1');
+    expect(mockCreate).toHaveBeenCalledWith({
+      providerId: 'hetzner',
+      providerType: 'hetzner',
+      credentials: { api_token: 't' },
+    });
+  });
+
+  it('tests through the extension client', async () => {
+    mockTest.mockResolvedValue({ valid: true });
+    register();
+    const [, handlers] = mockRegisterProviderCategoryHandlers.mock.calls[0];
+    const request = { providerId: 'aws', providerType: 'aws', category: 'cloud', credentials: {} };
+
+    await expect(handlers.testCredential(request)).resolves.toEqual({ valid: true });
+    expect(mockTest).toHaveBeenCalledWith(request);
   });
 });

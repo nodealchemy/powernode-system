@@ -77,6 +77,7 @@ jest.mock('@/features/onboarding/ProviderCredentialForm', () => {
   const ProviderCredentialForm = ({
     onChange,
     onTestStatusChange,
+    testCredentials,
   }: {
     category: string;
     providerType: string;
@@ -84,8 +85,23 @@ jest.mock('@/features/onboarding/ProviderCredentialForm', () => {
     excludeScopes?: string[];
     onChange?: (values: Record<string, string>, valid: boolean) => void;
     onTestStatusChange?: (status: string) => void;
+    testCredentials?: (request: Record<string, unknown>) => Promise<unknown>;
   }) => (
     <div data-testid="provider-credential-form">
+      <button
+        data-testid="mock-cred-run-test-btn"
+        onClick={() =>
+          testCredentials &&
+          void testCredentials({
+            providerId: 'prov-1',
+            providerType: 'aws',
+            category: 'cloud',
+            credentials: { access_key: 'AKID' },
+          })
+        }
+      >
+        Run the test the form was given
+      </button>
       <button
         data-testid="mock-cred-valid-btn"
         onClick={() => onChange && onChange({ access_key: 'AKID', secret_key: 'SECRET' }, true)}
@@ -861,6 +877,24 @@ describe('ProviderFormModal', () => {
       fireEvent.click(screen.getByTestId('provider-form-tab-credentials'));
       await waitFor(() =>
         expect(screen.getByTestId('provider-credential-form')).toBeInTheDocument(),
+      );
+    });
+
+    it('hands the form a test function that tests on the extension test route', async () => {
+      mockPost.mockResolvedValue(envelope({ valid: true }));
+      renderModal({ editProvider: PROVIDER_AWS });
+      fireEvent.click(screen.getByTestId('provider-form-tab-credentials'));
+      await waitFor(() => screen.getByTestId('provider-credential-form'));
+
+      fireEvent.click(screen.getByTestId('mock-cred-run-test-btn'));
+
+      await waitFor(() =>
+        expect(mockPost).toHaveBeenCalledWith('/system/provider_credentials/test', {
+          provider_id: 'prov-1',
+          provider_type: 'aws',
+          provider_category: 'cloud',
+          credentials: { access_key: 'AKID' },
+        }),
       );
     });
 
