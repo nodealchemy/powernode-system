@@ -134,6 +134,20 @@ RSpec.describe "SystemIngressTool set_service_backends gating (APO-3d)" do
       expect(service.reload.backends.count).to eq(0)
     end
 
+    # IMP-fdaab67b6fc5 — set_service_backends_gate_context resolves
+    # `account_services.find`, a SCOPED relation; since 046a545bc the bare
+    # RecordNotFound it raises was flattening to the generic dispatch
+    # fallback. Also pins that the caller-facing message never leaks the
+    # scoped relation's SQL predicate (see
+    # system_fleet_disk_image_gating_spec.rb's sibling assertion).
+    it "names the missing service in the inline error, not the generic fallback" do
+      response = set!(service_id: SecureRandom.uuid)
+
+      expect(response[:success]).to be(false)
+      expect(response[:error]).to include("Couldn't find Sdwan::Service")
+      expect(response[:error]).not_to include("WHERE")
+    end
+
     it "refuses a caller without system.ingress.manage before the gate, parking nothing" do
       reader = create(:user, account: account, permissions: %w[system.ingress.read])
       reader_tool = Ai::Tools::SystemIngressTool.new(account: account, user: reader)

@@ -277,5 +277,22 @@ RSpec.describe "SystemFleetTool terminate approval gating (IMP-d410a587d6bf)" do
       expect(Ai::DeferredOperation.where(account_id: account.id)).to be_empty
       expect(other_instance.reload.status).not_to eq("terminated")
     end
+
+    # IMP-fdaab67b6fc5 — terminate_instance_gate_context resolves
+    # `account_instances.find`, a SCOPED relation; since 046a545bc,
+    # BaseTool#run_through_autonomy_gate's gate_context rescue only forwards
+    # a raise verbatim when it opts into CallerFacingError, so the bare
+    # ActiveRecord::RecordNotFound this find raises was flattening to the
+    # generic dispatch fallback. Also pins that the caller-facing message
+    # names the model + the caller's own id, and never leaks the scoped
+    # relation's SQL predicate (a scoped `.find`'s default message has Rails
+    # append `[WHERE ...]`, which is not authored for the caller).
+    it "names the missing instance in the inline error, not the generic fallback" do
+      response = tool.execute(params: { action: "system_terminate_instance",
+                                        instance_id: other_instance.id })
+
+      expect(response[:error]).to include("Couldn't find System::NodeInstance")
+      expect(response[:error]).not_to include("WHERE")
+    end
   end
 end

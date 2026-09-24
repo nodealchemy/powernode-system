@@ -396,12 +396,25 @@ module Ai
 
       # The backend-set verb's gate context: VALIDATE FIRST (service in
       # account scope, well-formed members, known override keys), then pack
-      # the replay through the generic seam. Both raises are the ones
-      # BaseTool#run_through_autonomy_gate converts to an error envelope, so a
+      # the replay through the generic seam. Every validation failure here
+      # raises CallerFacingError (IMP-fdaab67b6fc5) with a literal message —
+      # the class BaseTool#run_through_autonomy_gate forwards verbatim — so a
       # payload that could only ever fail never parks an approval an operator
       # has to dispose of.
       def set_service_backends_gate_context(params)
-        svc = account_services.find(params[:service_id])
+        svc =
+          begin
+            account_services.find(params[:service_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message, never
+            # e.message: account_services is a scoped relation, and Rails
+            # appends the SQL WHERE predicate to a scoped .find's
+            # RecordNotFound#message — not something authored for the
+            # caller. See system_fleet_tool.rb's
+            # set_default_disk_image_publication_gate_context for the same
+            # pattern.
+            raise CallerFacingError, "Couldn't find Sdwan::Service with 'id'=#{params[:service_id].inspect}"
+          end
         members = normalize_backend_specs(params[:backends])
         normalize_load_balancer_overrides(params[:load_balancer])
 
@@ -533,20 +546,26 @@ module Ai
         error_result(e.message)
       end
 
-      # The member list, checked shape by shape. Raises ArgumentError — the
+      # The member list, checked shape by shape. Raises CallerFacingError — the
       # gate context and the write both call this, so a malformed list is
-      # refused identically before the gate and on replay.
+      # refused identically before the gate and on replay. CallerFacingError
+      # (IMP-fdaab67b6fc5), not bare ArgumentError: since 046a545bc,
+      # BaseTool#run_through_autonomy_gate only forwards a gate_context raise
+      # verbatim when it opts into that class; every message below is
+      # authored for the caller, and the plain `rescue ArgumentError` in
+      # #set_service_backends still catches it unchanged (CallerFacingError IS
+      # an ArgumentError).
       def normalize_backend_specs(raw)
-        raise ArgumentError, "backends is required (an array of members; [] clears the set)" unless raw.is_a?(Array)
+        raise CallerFacingError, "backends is required (an array of members; [] clears the set)" unless raw.is_a?(Array)
 
         raw.each_with_index.map do |entry, index|
           member = entry.respond_to?(:to_h) ? entry.to_h.transform_keys(&:to_sym) : nil
-          raise ArgumentError, "backends[#{index}] must be an object" unless member.is_a?(Hash)
+          raise CallerFacingError, "backends[#{index}] must be an object" unless member.is_a?(Hash)
 
           vip  = member[:backend_vip_id].presence
           host = member[:backend_host].presence
           if vip.present? == host.present?
-            raise ArgumentError, "backends[#{index}]: exactly one of backend_host or backend_vip_id is required"
+            raise CallerFacingError, "backends[#{index}]: exactly one of backend_host or backend_vip_id is required"
           end
 
           # Account-scoped, not merely well-formed. A service id alone is no
@@ -557,22 +576,22 @@ module Ai
           # the refusal happens before the gate, in the same place as every
           # other shape error.
           if vip && !::Sdwan::VirtualIp.where(account_id: @account.id, id: vip).exists?
-            raise ArgumentError, "backends[#{index}]: backend_vip_id #{vip} not found in this account"
+            raise CallerFacingError, "backends[#{index}]: backend_vip_id #{vip} not found in this account"
           end
 
           port = Integer(member[:backend_port].to_s, exception: false)
           unless port&.between?(1, 65_535)
-            raise ArgumentError, "backends[#{index}]: backend_port is required (1-65535)"
+            raise CallerFacingError, "backends[#{index}]: backend_port is required (1-65535)"
           end
 
           weight = member.key?(:weight) && !member[:weight].nil? ? Integer(member[:weight].to_s, exception: false) : ::Sdwan::ServiceBackend::DEFAULT_WEIGHT
           unless weight&.between?(::Sdwan::ServiceBackend::MIN_WEIGHT, ::Sdwan::ServiceBackend::MAX_WEIGHT)
-            raise ArgumentError, "backends[#{index}]: weight must be #{::Sdwan::ServiceBackend::MIN_WEIGHT}-#{::Sdwan::ServiceBackend::MAX_WEIGHT}"
+            raise CallerFacingError, "backends[#{index}]: weight must be #{::Sdwan::ServiceBackend::MIN_WEIGHT}-#{::Sdwan::ServiceBackend::MAX_WEIGHT}"
           end
 
           status = member[:status].presence&.to_s || "active"
           unless ::Sdwan::ServiceBackend::STATUSES.include?(status)
-            raise ArgumentError, "backends[#{index}]: status must be one of #{::Sdwan::ServiceBackend::STATUSES.join(', ')}"
+            raise CallerFacingError, "backends[#{index}]: status must be one of #{::Sdwan::ServiceBackend::STATUSES.join(', ')}"
           end
 
           { backend_vip_id: vip, backend_host: host, backend_port: port, weight: weight, status: status }
@@ -581,15 +600,16 @@ module Ai
 
       # nil when no overrides were supplied (leave metadata alone); else a
       # string-keyed hash restricted to LOAD_BALANCER_KEYS, nil values kept as
-      # the "clear this key" signal.
+      # the "clear this key" signal. CallerFacingError (IMP-fdaab67b6fc5) — see
+      # #normalize_backend_specs above.
       def normalize_load_balancer_overrides(raw)
         return nil if raw.nil?
-        raise ArgumentError, "load_balancer must be an object" unless raw.respond_to?(:to_h)
+        raise CallerFacingError, "load_balancer must be an object" unless raw.respond_to?(:to_h)
 
         overrides = raw.to_h.transform_keys(&:to_s)
         unknown = overrides.keys - LOAD_BALANCER_KEYS
         if unknown.any?
-          raise ArgumentError, "load_balancer: unknown key(s) #{unknown.join(', ')} " \
+          raise CallerFacingError, "load_balancer: unknown key(s) #{unknown.join(', ')} " \
                                "(allowed: #{LOAD_BALANCER_KEYS.join(', ')})"
         end
         overrides

@@ -292,6 +292,21 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
         expect(result[:success]).to be(false)
       }.not_to change(::Ai::DeferredOperation, :count)
     end
+
+    # IMP-fdaab67b6fc5 — dr_lane_instance resolves `account_instances.find`, a
+    # SCOPED relation, whose bare RecordNotFound was flattening to the
+    # generic dispatch fallback (046a545bc). Also pins that the caller-facing
+    # message never leaks the scoped relation's SQL predicate (see
+    # set_default_disk_image_publication_gate_context).
+    it "names the missing instance in the inline error, not the generic fallback" do
+      other = create(:system_node_instance, name: "not-mine")
+
+      result = tool.execute(params: { action: "system_replace_instance",
+                                      instance_id: other.id, operation_id: "x-account" })
+
+      expect(result[:error]).to include("Couldn't find System::NodeInstance")
+      expect(result[:error]).not_to include("WHERE")
+    end
   end
 
   describe "driving a reap over MCP" do
