@@ -5,10 +5,9 @@ require "rails_helper"
 # IMP-ee57d0fbe859 — the LISTED approval card. PeersController#destroy passes
 # `description:` to Ai::AutonomyGate, which persists it on the
 # Ai::DeferredOperation and copies it onto the Ai::ApprovalRequest
-# (autonomy_gate.rb:124). Both approvals serializers read
-# ApprovalRequest#description — Ai::AutonomyApprovalActions#approval_request_json
-# and Api::V1::Ai::GovernanceController#approval_request_json — so this string
-# IS what an operator reads in the approvals list.
+# (autonomy_gate.rb:124). The approvals serializer reads
+# ApprovalRequest#description — Ai::AutonomyApprovalActions#serialize_approval_request
+# — so this string IS what an operator reads in the approvals list.
 #
 # It previously interpolated `@peer.try(:endpoint) || @peer.id`, and Sdwan::Peer
 # defines no `endpoint` method and system_sdwan_peers has no `endpoint` column
