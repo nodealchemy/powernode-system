@@ -254,7 +254,7 @@ Rules worth knowing before you write one:
 - `dependencies.requires` — modules pulled in transitively. Either a name pin (`<owner>/<module>@<version-constraint>`) or a capability requirement (`capability:<tag>[@<constraint>]`) — see [The two `requires` forms](#the-two-requires-forms) above.
 - `dependencies.provides` — capability tags this module advertises, bare (`http-server`) or versioned (`http-server@1.26`). Denormalized into the `capabilities` column at import so capability requirements can be resolved without scanning every manifest. Only the versioned form can satisfy a versioned requirement.
 
-**Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new`, or as the `category_id:` argument to `system_create_module_from_package`). They are not validated by the manifest schema. The `NodeModuleCategory` a module belongs to is a **platform-side DB row** selected at registration — the seeded slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on that row, never a manifest field. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
+**Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI's Catalog ▸ Modules page — `/app/system/catalog/modules` — using its "Create Module" action, which opens a form modal; there is no separate `/new` route — or as the `category_id:` argument to `system_create_module_from_package`). They are not validated by the manifest schema. The `NodeModuleCategory` a module belongs to is a **platform-side DB row** selected at registration — the seeded slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on that row, never a manifest field. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
 
 For the authoritative shape see `extensions/system/templates/module-repo/manifest.yaml` and `extensions/system/modules/.schema/module-manifest.schema.json`. The [`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md) doc (in the parent `docs/` directory) is the operator-facing prose reference.
 
@@ -320,7 +320,8 @@ malformed `capability:<tag>[@<constraint>]` constraints.
 
 **Verify against the platform's compatibility check** (no upload, but
 requires an *existing* `NodeModule` — register the module first via the
-operator UI at `/app/system/modules/new` or `system_create_module_from_package`,
+operator UI's Catalog ▸ Modules page (`/app/system/catalog/modules`) using
+its "Create Module" action, or via `system_create_module_from_package`,
 then use this to validate subsequent manifest revisions against it):
 
 ```javascript

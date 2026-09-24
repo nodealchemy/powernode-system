@@ -1043,7 +1043,16 @@ describe('FleetDashboardPage — module links in event feed', () => {
     capturedOnError = null;
   });
 
-  it('renders a module link when event has node_module_id', async () => {
+  // fc-25 review item 9: this used to be a plain <Link> to
+  // `/app/system/catalog/modules?module_id=...` — a query param ModuleList
+  // never read (it only seeds `parent_module_id`/`platform`), so the "view
+  // module" link silently did nothing useful. It is now the same EntityLink
+  // pattern already used two lines below in this same file's detail view
+  // (`module_id: <EntityLink type="node_module" .../>`), which opens the
+  // module's own detail modal directly — no route/query-param plumbing
+  // needed. EntityLink is stubbed above to a `data-testid="entity-link"`
+  // span, so these assert against that stub's shape, not an <a href>.
+  it('renders a module reference (EntityLink) when event has node_module_id', async () => {
     const ev = makeEvent({
       id: 'e-mod',
       kind: 'system.module_published',
@@ -1054,8 +1063,10 @@ describe('FleetDashboardPage — module links in event feed', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('nginx-module')).toBeInTheDocument());
-    const link = screen.getByRole('link', { name: /nginx-module/ });
-    expect(link).toHaveAttribute('href', '/app/system/catalog/modules?module_id=mod-abc');
+    // The label passed to EntityLink wraps the icon+text in its own <span>,
+    // so the stub's outer `data-testid="entity-link"` span is an ancestor of
+    // the text node, not the element getByText itself resolves to.
+    expect(screen.getByText('nginx-module').closest('[data-testid="entity-link"]')).not.toBeNull();
   });
 
   it('falls back to "view module" text when payload has no module_name', async () => {
@@ -1068,9 +1079,8 @@ describe('FleetDashboardPage — module links in event feed', () => {
     mockPost.mockResolvedValue(signalsResponse([ev]));
     renderDashboard();
 
-    await waitFor(() =>
-      expect(screen.getByRole('link', { name: /view module/ })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText('view module')).toBeInTheDocument());
+    expect(screen.getByText('view module').closest('[data-testid="entity-link"]')).not.toBeNull();
   });
 
   it('does NOT render a module link when event has no node_module_id', async () => {
@@ -1086,7 +1096,7 @@ describe('FleetDashboardPage — module links in event feed', () => {
     await waitFor(() =>
       expect(screen.getByText('system.no_module')).toBeInTheDocument(),
     );
-    expect(screen.queryByRole('link', { name: /view module/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('view module')).not.toBeInTheDocument();
   });
 });
 

@@ -1,5 +1,4 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
 import { Package } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
@@ -38,18 +37,26 @@ export function FleetEventRow({ event: e, selected = false, onSelect }: FleetEve
       <div className="flex items-center gap-3 mt-0.5 text-xs text-theme-tertiary">
         {e.source && <span>source: {e.source}</span>}
         {/* When an event references a specific module (e.g.
-            system.module_published), give the operator one-
-            click navigation to that module's detail page. */}
+            system.module_published), give the operator one-click
+            navigation to that module's OWN detail modal. A route/query-param
+            link (`?module_id=...`) doesn't work here: ModuleList only seeds
+            `parent_module_id` (dependents) and `platform` from the URL, never
+            a bare module id, so that used to render "view module" text that
+            went nowhere. EntityLink is the established open-this-entity
+            mechanism (same pattern used in the detail view below) and needs
+            no route support at all — it opens ModuleDetailModal directly. */}
         {e.node_module_id && (
-          <Link
-            to={`/app/system/catalog/modules?module_id=${e.node_module_id}`}
-            onClick={(ev) => ev.stopPropagation()}
-            className="inline-flex items-center gap-1 text-theme-link hover:underline"
-            title="View module"
-          >
-            <Package size={12} />
-            {(e.payload?.module_name as string | undefined) ?? 'view module'}
-          </Link>
+          <EntityLink
+            type="node_module"
+            id={e.node_module_id}
+            label={
+              <span className="inline-flex items-center gap-1">
+                <Package size={12} />
+                {(e.payload?.module_name as string | undefined) ?? 'view module'}
+              </span>
+            }
+            className="text-theme-link hover:underline"
+          />
         )}
       </div>
     </li>

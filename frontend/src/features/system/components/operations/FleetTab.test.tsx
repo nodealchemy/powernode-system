@@ -733,7 +733,17 @@ describe('FleetDashboardPage — module links', () => {
     mockWsSubscribe.mockImplementation(wsSubscribeImpl);
   });
 
-  it('renders a module link when event has node_module_id', async () => {
+  // fc-25 review item 9: this used to be a plain <Link> to
+  // `/app/system/catalog/modules?module_id=...` — a query param ModuleList
+  // never read (it only seeds `parent_module_id`/`platform`), so the "view
+  // module" link silently did nothing useful. It is now the same EntityLink
+  // pattern already used elsewhere in this file's detail view. This suite
+  // does not register the "node_module" entity type (no `register()` call),
+  // so EntityLink degrades to its plain-text fallback here rather than a
+  // clickable button — the discriminating assertion is therefore NOT "is it
+  // a button" (environment-dependent) but "it is no longer the OLD dead <a
+  // href> link", which holds regardless of registry state.
+  it('renders a module reference (EntityLink, not the old dead query-param link) when event has node_module_id', async () => {
     const ev = makeEvent({
       id: 'e-mod',
       kind: 'system.module_published',
@@ -744,8 +754,7 @@ describe('FleetDashboardPage — module links', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('nginx-module')).toBeInTheDocument());
-    const link = screen.getByRole('link', { name: /nginx-module/ });
-    expect(link).toHaveAttribute('href', '/app/system/catalog/modules?module_id=mod-abc');
+    expect(screen.queryByRole('link', { name: /nginx-module/ })).not.toBeInTheDocument();
   });
 
   it('falls back to "view module" text when payload has no module_name', async () => {
@@ -758,6 +767,7 @@ describe('FleetDashboardPage — module links', () => {
     mockPost.mockResolvedValue(signalsResponse([ev]));
     renderDashboard();
 
-    await waitFor(() => expect(screen.getByRole('link', { name: /view module/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('view module')).toBeInTheDocument());
+    expect(screen.queryByRole('link', { name: /view module/ })).not.toBeInTheDocument();
   });
 });

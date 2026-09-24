@@ -215,7 +215,7 @@ warnings here — they'll fail later much more expensively.
 
 ## Step 5 — Register the module on the platform
 
-**Use the operator UI today.** Navigate to `/app/system/modules/new` in your platform UI. The form collects:
+**Use the operator UI today.** Navigate to `/app/system/catalog/modules` (Catalog ▸ Modules) in your platform UI and use its "Create Module" action — it opens a form modal in place; there is no separate `/new` route. The form collects:
 
 - `name` — must match the `name` in your `manifest.yaml`
 - `display_name`, `description`

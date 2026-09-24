@@ -47,7 +47,7 @@ import type { SystemOverviewStats, SystemRecentActivity } from '../types/system.
 // `register.ts`. The pre-rebuild page linked at the *legacy* standalone
 // paths (`/app/system/nodes`, `/app/system/templates`, …); those paths were
 // deleted outright (fc-25), not aliased, and `/app/system/puppet` never
-// resolved at all — the registered path is `/system/puppet-modules`.
+// resolved at all — the registered path is `/app/system/catalog/puppet-modules`.
 const ROUTES = {
   topology: '/app/system/topology',
   nodes: '/app/system/compute/nodes',
