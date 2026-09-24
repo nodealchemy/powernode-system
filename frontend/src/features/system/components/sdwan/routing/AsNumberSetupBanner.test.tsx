@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AsNumberSetupBanner } from './AsNumberSetupBanner';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 import type { SdwanAccountBgp } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
@@ -263,7 +264,7 @@ describe('AsNumberSetupBanner', () => {
           expect.objectContaining({
             type: 'info',
             message: expect.stringMatching(/approval required/i),
-            link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+            link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
           }),
         ),
       );

@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import SdwanRoutingPage from './SdwanRoutingPage';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 import type { SdwanRoutingOverview, SdwanRoutePolicy } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
@@ -755,7 +756,7 @@ describe('SdwanRoutingPage', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );

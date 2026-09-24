@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { CreateHostBridgeModal } from './CreateHostBridgeModal';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 
 // =============================================================================
 // Mocks
@@ -256,7 +257,7 @@ describe('CreateHostBridgeModal', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=appr-3` }),
         }),
       ),
     );

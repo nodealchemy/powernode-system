@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { NetworkFormModal } from './NetworkFormModal';
+import { APPROVALS_SURFACE_PATH } from '../../utils/pendingApproval';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
 // =============================================================================
@@ -828,7 +829,7 @@ describe('NetworkFormModal — create mode (network=null)', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );
@@ -1351,7 +1352,7 @@ describe('NetworkFormModal — edit mode (network given)', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         })
       )
     );

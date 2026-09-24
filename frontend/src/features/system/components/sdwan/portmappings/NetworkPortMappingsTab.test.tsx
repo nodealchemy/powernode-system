@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { NetworkPortMappingsTab } from './NetworkPortMappingsTab';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 import type { SdwanPortMapping, SdwanPeer, SdwanVirtualIp } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
@@ -460,7 +461,7 @@ describe('NetworkPortMappingsTab', () => {
       expect(mockAddNotification).toHaveBeenCalledWith(
         expect.objectContaining({
           message: expect.stringContaining('my-mapping'),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );

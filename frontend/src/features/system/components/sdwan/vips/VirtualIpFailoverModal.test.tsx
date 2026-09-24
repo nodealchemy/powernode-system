@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { VirtualIpFailoverModal } from './VirtualIpFailoverModal';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 import type { SdwanVirtualIp } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
@@ -345,7 +346,7 @@ describe('VirtualIpFailoverModal', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );

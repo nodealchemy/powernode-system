@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PeerAttachModal } from './PeerAttachModal';
+import { APPROVALS_SURFACE_PATH } from '../../utils/pendingApproval';
 
 // =============================================================================
 // Mocks
@@ -1102,7 +1103,7 @@ describe('PeerAttachModal', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringMatching(/approval required/i),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );

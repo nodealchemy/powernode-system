@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PortMappingCreateModal } from './PortMappingCreateModal';
+import { APPROVALS_SURFACE_PATH } from '@system/features/system/utils/pendingApproval';
 import type { SdwanPeer, SdwanVirtualIp, SdwanPortMapping } from '@system/features/system/types/sdwan.types';
 
 // =============================================================================
@@ -1329,7 +1330,7 @@ describe('PortMappingCreateModal', () => {
         expect.objectContaining({
           type: 'info',
           message: expect.stringContaining('my-map'),
-          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          link: expect.objectContaining({ to: `${APPROVALS_SURFACE_PATH}?request=ar-1` }),
         }),
       ),
     );
