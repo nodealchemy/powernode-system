@@ -155,7 +155,7 @@ module Ai
         else error_result("Unknown action: #{action}")
         end
       rescue ActiveRecord::RecordNotFound => e
-        error_result(e.message)
+        not_found_result(e)
       rescue ActiveRecord::RecordInvalid => e
         # IMP-1a5c145c24eb — CURRENTLY UNREACHABLE, not a live leak: no
         # create!/update!/save! (bang persistence) exists anywhere in this

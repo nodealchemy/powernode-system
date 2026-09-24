@@ -399,7 +399,7 @@ module Ai
           send(INLINE_ACTIONS.fetch(action), params)
         end
       rescue ActiveRecord::RecordNotFound => e
-        error_result(e.message)
+        not_found_result(e)
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
       rescue ::Sdwan::ServiceExposureWriter::WriteError => e

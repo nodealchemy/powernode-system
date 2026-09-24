@@ -3059,7 +3059,7 @@ module Ai
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
-        error_result(e.message)
+        not_found_result(e)
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
       rescue ArgumentError, AASM::InvalidTransition => e
@@ -4333,7 +4333,7 @@ module Ai
         instance.merge_config!("network_profile_source" => "operator") if stamp_operator_profile
         success_result(instance: serialize_instance(instance))
       rescue ActiveRecord::RecordNotFound => e
-        error_result(e.message)
+        not_found_result(e)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Instance update failed: #{e.record.errors.full_messages.join(', ')}")
       end

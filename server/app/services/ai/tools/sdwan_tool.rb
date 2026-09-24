@@ -1193,7 +1193,7 @@ module Ai
       rescue ::Sdwan::UserDeviceIssuer::GrantError => e
         error_result(e.message)
       rescue ActiveRecord::RecordNotFound => e
-        error_result(e.message)
+        not_found_result(e)
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
       rescue ::Sdwan::PeerEnroller::CrossAccountError => e

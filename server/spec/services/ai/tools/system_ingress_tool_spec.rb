@@ -238,6 +238,21 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(result.dig(:data, :service, :slug)).to eq("lookup")
     end
 
+    # IMP-f6f80b585b19 — account_services.find(id) raises ActiveRecord::
+    # RecordNotFound with a ` [WHERE "sdwan_services"."account_id" = $1]`
+    # suffix (Rails 8.1) naming the table and column; #call's rescue must
+    # never forward that to the caller (it is replayed to the model
+    # provider). Pins BaseTool#not_found_result end to end, not just the
+    # helper in isolation.
+    it "answers a missing service with a generic not-found error, never the raw scoped-relation message" do
+      result = tool.execute(params: { action: "system_get_service", service_id: "does-not-exist" })
+
+      expect(result[:success]).to be(false)
+      expect(result[:error]).not_to include("WHERE")
+      expect(result[:error]).not_to include("sdwan_services")
+      expect(result[:error]).to include("does-not-exist")
+    end
+
     it "updates backend plumbing and regenerates when locally exposed" do
       svc = create_service!(slug: "upd", local_enabled: true)
       result = tool.execute(params: {

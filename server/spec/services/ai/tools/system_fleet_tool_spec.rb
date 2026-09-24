@@ -4765,6 +4765,20 @@ end
       expect(System::Provider.find_by(id: provider.id)).to be_nil
     end
 
+    # IMP-f6f80b585b19 — get_provider does `.where(account_id: @account.id)
+    # .find(params[:provider_id])`, so ActiveRecord::RecordNotFound#message carries a
+    # ` [WHERE "system_providers"."account_id" = $1]` suffix (Rails 8.1). The
+    # #call rescue must never forward that to the caller — it replays to the
+    # model provider. Pins BaseTool#not_found_result end to end.
+    it "system_get_provider answers a missing id with a generic not-found error, never the raw scoped message" do
+      r = call("system_get_provider", provider_id: "does-not-exist")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).not_to include("WHERE")
+      expect(r[:error]).not_to include("system_providers")
+      expect(r[:error]).to include("does-not-exist")
+    end
+
     it "system_delete_provider scopes to the current account" do
       other = create(:system_provider) # different account
       r = call("system_delete_provider", provider_id: other.id)
