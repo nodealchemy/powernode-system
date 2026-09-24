@@ -54,6 +54,29 @@ RSpec.describe System::NodeInstance, type: :model do
 
       expect(other_instance).to be_valid
     end
+
+    # IMP-caedd1ae9f07: #account_matches_node's error message interpolated
+    # BOTH the instance's own account_id and the node's account_id — a
+    # cross-account UUID disclosure, since the instance's account_id is
+    # attacker-influenceable (whatever the caller passes) while the node's
+    # account_id belongs to a DIFFERENT tenant the caller may have no other
+    # visibility into. The message must be generic instead.
+    it 'does not disclose either account UUID when account_id mismatches the node account' do
+      other_account = create(:account)
+      instance = build(:system_node_instance, node: node, account_id: other_account.id)
+
+      instance.valid?
+
+      # Reviewer round: assert the guard actually FIRED, not just that its
+      # absence (e.g. the validate line deleted) leaves errors[:account_id]
+      # empty and the "not to include" assertions below vacuously true.
+      expect(instance).not_to be_valid
+      expect(instance.errors[:account_id]).to include("must match the node's account")
+
+      messages = instance.errors[:account_id].join(' ')
+      expect(messages).not_to include(other_account.id.to_s)
+      expect(messages).not_to include(node.account_id.to_s)
+    end
   end
 
   describe 'delegations' do

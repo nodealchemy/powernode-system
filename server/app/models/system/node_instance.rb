@@ -1802,7 +1802,12 @@ module System
     def account_matches_node
       return if node.nil? || account_id.nil?
       return if account_id == node.account_id
-      errors.add(:account_id, "must match node.account_id (got #{account_id.inspect}; node has #{node.account_id.inspect})")
+      # IMP-caedd1ae9f07: the message used to interpolate BOTH account_id
+      # values — a cross-account UUID disclosure, since the instance's
+      # account_id is attacker-influenceable while node.account_id belongs
+      # to a different tenant the caller may have no other visibility into.
+      # Generic on purpose: no UUID from either side.
+      errors.add(:account_id, "must match the node's account")
     end
 
     public
