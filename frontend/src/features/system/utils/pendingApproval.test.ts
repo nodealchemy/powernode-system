@@ -10,13 +10,25 @@ const PENDING: PendingApproval = {
 };
 
 describe('pendingApprovalNotice', () => {
-  it('builds an info notification naming the subject and linking to the approvals surface', () => {
+  it('builds an info notification naming the subject and linking to the approvals surface with its request id', () => {
     const notice = pendingApprovalNotice("deleting port mapping 'web-443'", PENDING);
 
     expect(notice.type).toBe('info');
     expect(notice.message).toContain("deleting port mapping 'web-443'");
     expect(notice.message).toMatch(/approval required/i);
     expect(notice.message).toMatch(/no change has been applied/i);
+    expect(notice.link).toEqual({
+      label: 'Review approvals',
+      to: `${APPROVALS_SURFACE_PATH}?request=ar-1`,
+    });
+  });
+
+  it('links to the bare approvals surface when the gate returned no request id', () => {
+    const notice = pendingApprovalNotice('deleting the thing', {
+      ...PENDING,
+      approval_request_id: null,
+    });
+
     expect(notice.link).toEqual({ label: 'Review approvals', to: APPROVALS_SURFACE_PATH });
   });
 

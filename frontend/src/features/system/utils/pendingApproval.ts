@@ -10,12 +10,13 @@
 import type { PendingApproval } from '../services/api/helpers';
 
 /**
- * Route of the operator approvals surface: the Autonomy tab of the AI Agents
- * page (its Approvals section lists pending `Ai::ApprovalRequest` rows).
- * Existing route — see core `DashboardPage` (`/ai/agents/autonomy` under
- * `/app/*`). Do not invent a deeper link; the section is state-selected.
+ * Route of the operator approvals surface: the Autonomy tab's Approvals
+ * section, which lists pending `Ai::ApprovalRequest` rows. The section is now
+ * URL-addressable — see core `DashboardPage` (`/ai/agents/autonomy/*` under
+ * `/app/*`) and `AutonomyDashboardPage`'s section routing — so this links
+ * straight to it rather than to the tab's Overview.
  */
-export const APPROVALS_SURFACE_PATH = '/app/ai/agents/autonomy';
+export const APPROVALS_SURFACE_PATH = '/app/ai/agents/autonomy/approvals';
 
 export interface PendingApprovalNotice {
   type: 'info';
@@ -39,10 +40,16 @@ export function pendingApprovalNotice(
     details.approval_request_id = pending.approval_request_id;
   }
   details.deferred_operation_id = pending.deferred_operation_id;
+  // Named, not just landed on the section: the queue reads this id off the
+  // URL and expands that row, so the operator does not have to hunt for it
+  // among every other pending request.
+  const linkTo = pending.approval_request_id
+    ? `${APPROVALS_SURFACE_PATH}?request=${encodeURIComponent(pending.approval_request_id)}`
+    : APPROVALS_SURFACE_PATH;
   return {
     type: 'info',
     message: `Approval required: ${subject} is awaiting review — no change has been applied yet.`,
     details,
-    link: { label: 'Review approvals', to: APPROVALS_SURFACE_PATH },
+    link: { label: 'Review approvals', to: linkTo },
   };
 }
