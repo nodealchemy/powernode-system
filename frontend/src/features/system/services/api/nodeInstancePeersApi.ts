@@ -14,6 +14,7 @@ import type {
 } from '@system/features/system/types/system.types';
 import { extractData, extractPaginated } from './helpers';
 import type { ApiEnvelope, PaginationMeta } from './types';
+import type { MentionMember } from '@/shared/services/featureRegistry';
 
 const BASE = '/system/node_instance_peers';
 
@@ -89,5 +90,15 @@ export const nodeInstancePeersApi = {
       body
     );
     return extractData(response);
+  },
+
+  // Peer operators the chat @-mention picker may offer. Registered with core
+  // as a mention source (register.ts); core names no route of this extension.
+  mentionable: async (): Promise<MentionMember[]> => {
+    const response = await apiClient.get<ApiEnvelope<{ members?: MentionMember[] }>>(
+      `${BASE}/mentionable`
+    );
+    const members = extractData(response).members;
+    return Array.isArray(members) ? members : [];
   },
 };

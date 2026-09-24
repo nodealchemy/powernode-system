@@ -48,7 +48,7 @@ jest.mock('@/shared/utils/logger', () => ({
 // PlatformDeploymentWizardCard — stub so we can inspect the `card` prop
 // without needing all of its deep dependencies (provisioningApi, notifications, etc.)
 const mockWizardCard = jest.fn();
-jest.mock('@/features/ai/provisioning/PlatformDeploymentWizardCard', () => ({
+jest.mock('./PlatformDeploymentWizardCard', () => ({
   PlatformDeploymentWizardCard: (props: { card: unknown; className?: string }) => {
     mockWizardCard(props);
     return <div data-testid="wizard-card">WizardCardStub</div>;

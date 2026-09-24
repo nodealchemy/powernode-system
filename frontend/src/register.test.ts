@@ -25,7 +25,15 @@ jest.mock('@/shared/services/featureRegistry', () => ({
     registerComponentSlots: (...args: unknown[]) => mockRegisterComponentSlots(...args),
     registerProviderCategoryHandlers: (...args: unknown[]) =>
       mockRegisterProviderCategoryHandlers(...args),
+    registerMentionSources: (...args: unknown[]) => mockRegisterMentionSources(...args),
   },
+}));
+
+const mockRegisterMentionSources = jest.fn();
+const mockMentionable = jest.fn();
+
+jest.mock('./features/system/services/api/nodeInstancePeersApi', () => ({
+  nodeInstancePeersApi: { mentionable: (...args: unknown[]) => mockMentionable(...args) },
 }));
 
 const mockCreate = jest.fn();
@@ -105,13 +113,18 @@ describe('registered component slots', () => {
     slots = mockRegisterComponentSlots.mock.calls[0][0] as Record<string, unknown>;
   });
 
-  it('registers boot_replay and one signals view per filterable kind, and nothing else', () => {
+  it('registers the deployment wizard chat card, boot_replay and one signals view per filterable kind, and nothing else', () => {
     expect(Object.keys(slots).sort()).toEqual([
+      'ai.chat.card.platform_deployment_wizard',
       'platform.status.drawer.acme_certificate.signals',
       'platform.status.drawer.node_instance.boot_replay',
       'platform.status.drawer.node_instance.signals',
       'platform.status.drawer.node_module.signals',
     ]);
+  });
+
+  it('the deployment wizard chat card slot is a lazy component, not undefined', () => {
+    expect(slots['ai.chat.card.platform_deployment_wizard']).toBeDefined();
   });
 
   it('the boot_replay slot is a lazy component, not undefined', () => {
@@ -446,5 +459,28 @@ describe('register() — cloud provider credentials', () => {
 
     await expect(handlers.testCredential(request)).resolves.toEqual({ valid: true });
     expect(mockTest).toHaveBeenCalledWith(request);
+  });
+});
+
+// =============================================================================
+// Chat @-mention members: peer operators, contributed to core's picker
+// =============================================================================
+
+describe('register() — mention sources', () => {
+  beforeEach(() => {
+    mockRegisterMentionSources.mockReset();
+    mockMentionable.mockReset();
+  });
+
+  it('registers one mention source that reads the mentionable peers', async () => {
+    const members = [{ id: 'a1', name: 'peer-op', role: 'operator', agent_type: 'peer', is_lead: false }];
+    mockMentionable.mockResolvedValue(members);
+    register();
+
+    expect(mockRegisterMentionSources).toHaveBeenCalledTimes(1);
+    const [namespace, sources] = mockRegisterMentionSources.mock.calls[0];
+    expect(namespace).toBe('system');
+    expect(sources).toHaveLength(1);
+    await expect(sources[0]()).resolves.toEqual(members);
   });
 });

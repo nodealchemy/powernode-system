@@ -244,3 +244,19 @@ describe('nodeInstancePeersApi.execute', () => {
     });
   });
 });
+
+describe('nodeInstancePeersApi.mentionable', () => {
+  it('reads the mentionable members from the collection route', async () => {
+    const members = [{ id: 'a1', name: 'peer-op', role: 'operator', agent_type: 'peer', is_lead: false }];
+    mockGet.mockResolvedValueOnce({ data: { success: true, data: { members } } });
+
+    await expect(nodeInstancePeersApi.mentionable()).resolves.toEqual(members);
+    expect(mockGet).toHaveBeenCalledWith('/system/node_instance_peers/mentionable');
+  });
+
+  it('returns an empty list when the payload has no members array', async () => {
+    mockGet.mockResolvedValueOnce({ data: { success: true, data: {} } });
+
+    await expect(nodeInstancePeersApi.mentionable()).resolves.toEqual([]);
+  });
+});

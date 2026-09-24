@@ -3,7 +3,7 @@ import { Rocket } from 'lucide-react';
 import { apiClient } from '@/shared/services/apiClient';
 import { logger } from '@/shared/utils/logger';
 import type { ChatCard } from '@/shared/types/ai';
-import { PlatformDeploymentWizardCard } from '@/features/ai/provisioning/PlatformDeploymentWizardCard';
+import { PlatformDeploymentWizardCard } from './PlatformDeploymentWizardCard';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**

@@ -3,6 +3,7 @@ import { featureRegistry } from '@/shared/services/featureRegistry';
 import { registerSystemEntities } from './features/system/entityRegistry';
 import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet/signalsFilterColumns';
 import { providerCredentialsApi } from './features/system/services/api/providerCredentialsApi';
+import { nodeInstancePeersApi } from './features/system/services/api/nodeInstancePeersApi';
 
 // Helper: widen the lazy-loaded module's default-export type from the
 // concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
@@ -168,6 +169,11 @@ export function register(): void {
     () => import('./features/system/components/fleet/SignalsDrawerView')
   );
   featureRegistry.registerComponentSlots({
+    // The concierge chat's platform deployment wizard card: core renders a
+    // card kind it does not own through 'ai.chat.card.<kind>'.
+    'ai.chat.card.platform_deployment_wizard': lazyPage(
+      () => import('./features/system/components/platform/PlatformDeploymentWizardCard')
+    ),
     'platform.status.drawer.node_instance.boot_replay': lazyPage(
       () => import('./features/system/components/fleet/boot-replay/BootReplayDrawerView')
     ),
@@ -188,4 +194,8 @@ export function register(): void {
       providerCredentialsApi.create({ providerId: providerType, providerType, credentials }),
     testCredential: (request) => providerCredentialsApi.test(request),
   });
+
+  // Peer operators join the chat @-mention picker through a mention source,
+  // so core's conversation view names no route of this extension.
+  featureRegistry.registerMentionSources('system', [() => nodeInstancePeersApi.mentionable()]);
 }
