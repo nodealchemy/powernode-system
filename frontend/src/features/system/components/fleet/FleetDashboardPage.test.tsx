@@ -56,11 +56,23 @@ jest.mock('@/shared/hooks/useAuth', () => ({
 // EntityLink pulls in usePermissions (redux useSelector), which needs a
 // <Provider> this suite doesn't set up. Stub it down to its label, matching
 // the mock convention used across the extension's other EntityLink-consuming
-// tests (e.g. VolumeList.test.tsx) — the id/type wiring is exercised by
-// EntityLink's own test suite, not the callers'.
+// tests (e.g. VolumeList.test.tsx). Unlike that convention, this stub ALSO
+// surfaces `type`/`id` as `data-*` attributes — fc-25 review item 3 (round 2)
+// wants the module-link tests below to fail if the CALLER ever passes the
+// wrong entity type or the wrong id, not just "some EntityLink rendered".
 jest.mock('@/shared/components/entity', () => ({
-  EntityLink: ({ label }: { label?: React.ReactNode }) => (
-    <span data-testid="entity-link">{label}</span>
+  EntityLink: ({
+    type,
+    id,
+    label,
+  }: {
+    type?: string;
+    id?: string | null;
+    label?: React.ReactNode;
+  }) => (
+    <span data-testid="entity-link" data-type={type} data-id={id ?? undefined}>
+      {label}
+    </span>
   ),
 }));
 
@@ -1063,10 +1075,12 @@ describe('FleetDashboardPage — module links in event feed', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('nginx-module')).toBeInTheDocument());
-    // The label passed to EntityLink wraps the icon+text in its own <span>,
-    // so the stub's outer `data-testid="entity-link"` span is an ancestor of
-    // the text node, not the element getByText itself resolves to.
-    expect(screen.getByText('nginx-module').closest('[data-testid="entity-link"]')).not.toBeNull();
+    // Asserts the CALLER passed the right type/id, not just "some
+    // EntityLink rendered" — a wrong type or a stale/mismatched id fails
+    // this exactly like a missing EntityLink would.
+    const link = screen.getByTestId('entity-link');
+    expect(link).toHaveAttribute('data-type', 'node_module');
+    expect(link).toHaveAttribute('data-id', 'mod-abc');
   });
 
   it('falls back to "view module" text when payload has no module_name', async () => {
@@ -1080,7 +1094,9 @@ describe('FleetDashboardPage — module links in event feed', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('view module')).toBeInTheDocument());
-    expect(screen.getByText('view module').closest('[data-testid="entity-link"]')).not.toBeNull();
+    const link = screen.getByTestId('entity-link');
+    expect(link).toHaveAttribute('data-type', 'node_module');
+    expect(link).toHaveAttribute('data-id', 'mod-xyz');
   });
 
   it('does NOT render a module link when event has no node_module_id', async () => {

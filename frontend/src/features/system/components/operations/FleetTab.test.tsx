@@ -75,6 +75,28 @@ jest.mock('@/shared/services/WebSocketManager', () => ({
   },
 }));
 
+// EntityLink degrades to a plain, non-interactive fallback in this suite
+// (no `register()` call means the "node_module" entity type is never
+// registered, so `canOpen` is always false) — stubbing it, matching
+// FleetDashboardPage.test.tsx's convention, surfaces `type`/`id` as
+// `data-*` attributes so the module-link tests below fail on a wrong
+// entity type or a wrong/stale id, not just "no EntityLink rendered".
+jest.mock('@/shared/components/entity', () => ({
+  EntityLink: ({
+    type,
+    id,
+    label,
+  }: {
+    type?: string;
+    id?: string | null;
+    label?: React.ReactNode;
+  }) => (
+    <span data-testid="entity-link" data-type={type} data-id={id ?? undefined}>
+      {label}
+    </span>
+  ),
+}));
+
 // Child tiles — stub them to prevent their own API calls from interfering.
 jest.mock('@system/features/system/components/fleet/HoneypotCanaryTile', () => ({
   HoneypotCanaryTile: () => <div data-testid="honeypot-tile">HoneypotCanaryTile</div>,
@@ -737,12 +759,10 @@ describe('FleetDashboardPage — module links', () => {
   // `/app/system/catalog/modules?module_id=...` — a query param ModuleList
   // never read (it only seeds `parent_module_id`/`platform`), so the "view
   // module" link silently did nothing useful. It is now the same EntityLink
-  // pattern already used elsewhere in this file's detail view. This suite
-  // does not register the "node_module" entity type (no `register()` call),
-  // so EntityLink degrades to its plain-text fallback here rather than a
-  // clickable button — the discriminating assertion is therefore NOT "is it
-  // a button" (environment-dependent) but "it is no longer the OLD dead <a
-  // href> link", which holds regardless of registry state.
+  // pattern already used elsewhere in this file's detail view (EntityLink is
+  // stubbed above to surface `type`/`id` as `data-*` attributes), so these
+  // assert the CALLER passed the right type/id, not just "some EntityLink
+  // rendered" — a wrong type or a stale/mismatched id fails.
   it('renders a module reference (EntityLink, not the old dead query-param link) when event has node_module_id', async () => {
     const ev = makeEvent({
       id: 'e-mod',
@@ -754,7 +774,9 @@ describe('FleetDashboardPage — module links', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('nginx-module')).toBeInTheDocument());
-    expect(screen.queryByRole('link', { name: /nginx-module/ })).not.toBeInTheDocument();
+    const link = screen.getByTestId('entity-link');
+    expect(link).toHaveAttribute('data-type', 'node_module');
+    expect(link).toHaveAttribute('data-id', 'mod-abc');
   });
 
   it('falls back to "view module" text when payload has no module_name', async () => {
@@ -768,6 +790,8 @@ describe('FleetDashboardPage — module links', () => {
     renderDashboard();
 
     await waitFor(() => expect(screen.getByText('view module')).toBeInTheDocument());
-    expect(screen.queryByRole('link', { name: /view module/ })).not.toBeInTheDocument();
+    const link = screen.getByTestId('entity-link');
+    expect(link).toHaveAttribute('data-type', 'node_module');
+    expect(link).toHaveAttribute('data-id', 'mod-xyz');
   });
 });
