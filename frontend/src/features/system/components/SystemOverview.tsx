@@ -45,9 +45,9 @@ import type { SystemOverviewStats, SystemRecentActivity } from '../types/system.
 //
 // Every hub path here is the post-Phase-B.5 canonical form registered in
 // `register.ts`. The pre-rebuild page linked at the *legacy* standalone
-// paths (`/app/system/nodes`, `/app/system/templates`, …) which now only
-// resolve through a redirect, and `/app/system/puppet` resolved nowhere
-// at all — the registered path is `/system/puppet-modules`.
+// paths (`/app/system/nodes`, `/app/system/templates`, …); those paths were
+// deleted outright (fc-25), not aliased, and `/app/system/puppet` never
+// resolved at all — the registered path is `/system/puppet-modules`.
 const ROUTES = {
   topology: '/app/system/topology',
   nodes: '/app/system/compute/nodes',

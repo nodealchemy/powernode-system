@@ -42,7 +42,7 @@ export function FleetEventRow({ event: e, selected = false, onSelect }: FleetEve
             click navigation to that module's detail page. */}
         {e.node_module_id && (
           <Link
-            to={`/app/system/modules?module_id=${e.node_module_id}`}
+            to={`/app/system/catalog/modules?module_id=${e.node_module_id}`}
             onClick={(ev) => ev.stopPropagation()}
             className="inline-flex items-center gap-1 text-theme-link hover:underline"
             title="View module"

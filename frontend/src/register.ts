@@ -1,5 +1,4 @@
-import React, { ComponentType, lazy } from 'react';
-import { Navigate } from 'react-router-dom';
+import { ComponentType, lazy } from 'react';
 import { featureRegistry } from '@/shared/services/featureRegistry';
 import { registerSystemEntities } from './features/system/entityRegistry';
 import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet/signalsFilterColumns';
@@ -13,51 +12,6 @@ import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet
 const lazyPage = <P,>(
   loader: () => Promise<{ default: ComponentType<P> }>
 ) => lazy(loader as () => Promise<{ default: ComponentType<unknown> }>);
-
-// Phase B.5 — redirect helper for legacy URLs. Each old standalone
-// route (e.g. /system/nodes) now maps to its hub equivalent (e.g.
-// /system/compute/nodes) with `replace` so the URL bar updates and
-// back-button doesn't loop. Bookmarks and external links survive.
-//
-// Cast to `ComponentType<unknown>` matches the `lazyPage` boundary —
-// FeatureRoute.component stores all routes in one typed list and
-// `FC<{}>` doesn't satisfy `FC<unknown>` due to React's strict prop
-// variance. The cast happens here, once, instead of at every call site.
-const redirectTo = (to: string): ComponentType<unknown> =>
-  function LegacyRedirect() {
-    return React.createElement(Navigate, { to, replace: true });
-  } as ComponentType<unknown>;
-
-// C10 review FIX-2: a splat redirect built from `redirectTo` closes over a
-// CONSTANT target, so the `*` is discarded and every old sub-path collapses
-// to the same destination. That is fine when no old sub-path has a single
-// clean equivalent (e.g. /system/federation/monitor — its content split
-// three ways, see PlatformInfraTab.tsx and SdwanHubPage.tsx), but wrong for
-// /system/federation/control, which has an exact new home
-// (ServiceDeliveryPage's Peers tab).
-//
-// Reads `window.location.pathname` directly rather than `useLocation()` so
-// this stays a plain function — callable directly (as register.test.ts
-// does) or mounted by the router — with no Router-context dependency
-// either way. Locates `matchSegment` by NAME rather than assuming a fixed
-// prefix, so it does not need to know what this route is mounted under
-// (`/app/system/federation/control` vs a bare `/system/federation/control`
-// in a future remount both resolve the same way).
-const redirectBySubpath = (
-  matchSegment: string,
-  subpathTargets: Record<string, string>,
-  fallback: string,
-): ComponentType<unknown> =>
-  function LegacySubpathRedirect() {
-    const segments = window.location.pathname.split('/').filter(Boolean);
-    const rest = segments[segments.indexOf(matchSegment) + 1];
-    // Own-key check (C10 review NEW-1): a plain `subpathTargets[rest]` lookup
-    // resolves through Object.prototype, so a sub-path literally named
-    // "constructor" (or "toString", "hasOwnProperty", ...) would return that
-    // prototype member instead of falling through to `fallback`.
-    const to = (rest && Object.prototype.hasOwnProperty.call(subpathTargets, rest) ? subpathTargets[rest] : null) || fallback;
-    return React.createElement(Navigate, { to, replace: true });
-  } as ComponentType<unknown>;
 
 const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverviewPage'));
 // Drill-down pages still routed standalone (no tab equivalent).
@@ -79,8 +33,9 @@ const SdwanHubPage = lazyPage(() => import('./pages/app/system/SdwanHubPage'));
 // this page (fe-dupes.md §10 item 16): its federation control surfaces (peer
 // control, governance findings) moved into a new Peers tab here; its
 // non-federation content (peer liveness, topology, OVN isolation, service
-// discovery) moved to ComputePage's Platform tab instead. /system/federation
-// now redirects here — see the route below.
+// discovery) moved to ComputePage's Platform tab instead. The old
+// /system/federation path was deleted outright, not aliased (fc-25) —
+// /system/service-delivery[/peers] is the only way in now.
 const ServiceDeliveryPage = lazyPage(() => import('./pages/app/system/ServiceDeliveryPage'));
 // ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
 // Plan reference: Decentralized Federation §J + P2.5.8.
@@ -102,29 +57,6 @@ export function register(): void {
   // is "System" (set on nav sections below).
   featureRegistry.registerRoutes('system', [
     { path: '/system', component: SystemOverviewPage },
-    { path: '/system/overview', component: SystemOverviewPage },
-
-    // Phase B.5 — legacy redirects to hub-tab equivalents. Old
-    // bookmarks + external links survive; URL bar updates to canonical
-    // path on land. Underlying page files remain on disk for now (no
-    // deletions in this commit) since the hub tab orchestrators import
-    // their inner list/modal components.
-    { path: '/system/nodes', component: redirectTo('/app/system/compute/nodes') },
-    { path: '/system/unclaimed-devices', component: redirectTo('/app/system/compute/unclaimed-devices') },
-    { path: '/system/volumes', component: redirectTo('/app/system/compute/volumes') },
-    { path: '/system/providers', component: redirectTo('/app/system/compute/providers') },
-    { path: '/system/networks', component: redirectTo('/app/system/compute/networks') },
-    { path: '/system/templates', component: redirectTo('/app/system/catalog/templates') },
-    { path: '/system/modules', component: redirectTo('/app/system/catalog/modules') },
-    { path: '/system/puppet-modules', component: redirectTo('/app/system/catalog/puppet-modules') },
-    { path: '/system/scripts', component: redirectTo('/app/system/catalog/scripts') },
-    { path: '/system/architectures', component: redirectTo('/app/system/catalog/architectures') },
-    { path: '/system/platforms', component: redirectTo('/app/system/catalog/platforms') },
-    { path: '/system/marketplace', component: redirectTo('/app/system/catalog/marketplace') },
-    { path: '/system/fleet', component: redirectTo('/app/system/operations/fleet') },
-    { path: '/system/tasks', component: redirectTo('/app/system/operations/tasks') },
-    { path: '/system/ci-workers', component: redirectTo('/app/system/operations/ci-workers') },
-    { path: '/system/disk-image-webhooks', component: redirectTo('/app/system/operations/ci-webhooks') },
 
     // Drill-down pages routed standalone (no tab equivalent).
     { path: '/system/templates/compose', component: TemplateComposerPage },
@@ -145,22 +77,6 @@ export function register(): void {
     // P4.5.8 adds the `topology` tab (system-wide SDWAN + federation
     // graph via @xyflow/react).
     { path: '/system/sdwan/*', component: SdwanHubPage },
-
-    // FederationHubPage (the Phase 3 standalone multi-site hub) was merged
-    // into ServiceDeliveryPage (fe-dupes.md §10 item 16). Old
-    // /system/federation deep-links redirect to the merged page — /control
-    // has an exact equivalent (the Peers tab); every other sub-path
-    // (including bare /system/federation and /monitor, whose content split
-    // three ways) lands on the page root, which forwards to the operator's
-    // first accessible tab.
-    {
-      path: '/system/federation/*',
-      component: redirectBySubpath(
-        'federation',
-        { control: '/app/system/service-delivery/peers' },
-        '/app/system/service-delivery',
-      ),
-    },
 
     // Service Delivery — federated service catalog (Offerings +
     // Subscriptions + Catalog Browser + Children + Fulfillment) plus, since
@@ -188,8 +104,8 @@ export function register(): void {
 
   // Top-level "System" nav section. Phase B.5 collapses the previous
   // 21 entries to 6 hubs + drill-downs. Operators reach individual
-  // resources via the hub's tab nav; old paths still resolve via the
-  // redirects above.
+  // resources via the hub's tab nav; the old standalone paths were
+  // deleted outright (fc-25), not aliased.
   featureRegistry.registerNavSections('system', [
     {
       id: 'system',
@@ -215,8 +131,8 @@ export function register(): void {
         { label: 'SDWAN',            path: '/app/system/sdwan',            icon: 'ShieldCheck',     order: 8 },
         // 'Federation' nav entry removed — FederationHubPage was merged into
         // ServiceDeliveryPage (fe-dupes.md §10 item 16); a separate nav item
-        // pointing at the same destination would be redundant. Old
-        // /system/federation deep-links still redirect via the route above.
+        // pointing at the same destination would be redundant. The old
+        // /system/federation path is gone outright (fc-25), not redirected.
         { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 10 },
         { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 11 },
         { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 12, permission: 'system.ingress.read' },

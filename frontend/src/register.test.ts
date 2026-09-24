@@ -1,7 +1,7 @@
 // Unit tests for register.ts
 //
 // register() is a pure side-effect entry point. It calls:
-//   1. featureRegistry.registerRoutes('system', [...])   — 30 routes
+//   1. featureRegistry.registerRoutes('system', [...])   — 12 routes
 //   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 13 items
 //   3. registerSystemEntities()                          — cross-reference wiring
 //   4. featureRegistry.registerComponentSlots({...})     — drawer views
@@ -131,8 +131,8 @@ describe('registered routes', () => {
     routes = mockRegisterRoutes.mock.calls[0][1] as typeof routes;
   });
 
-  it('registers 30 routes in total', () => {
-    expect(routes).toHaveLength(30);
+  it('registers 12 routes in total', () => {
+    expect(routes).toHaveLength(12);
   });
 
   // Primary pages
@@ -143,10 +143,10 @@ describe('registered routes', () => {
     expect(r!.permission).toBeUndefined();
   });
 
-  it('registers /system/overview (SystemOverviewPage)', () => {
-    const r = routes.find((x) => x.path === '/system/overview');
-    expect(r).toBeDefined();
-    expect(r!.component).toBeDefined();
+  // /system/overview was a duplicate alias of /system (same component) —
+  // deleted outright, not redirected (fc-25).
+  it('does not register a duplicate /system/overview alias', () => {
+    expect(routes.find((x) => x.path === '/system/overview')).toBeUndefined();
   });
 
   it('registers /system/templates/compose (TemplateComposerPage)', () => {
@@ -202,52 +202,10 @@ describe('registered routes', () => {
   });
 
   // FederationHubPage was merged into ServiceDeliveryPage (fe-dupes.md §10
-  // item 16); old /system/federation deep-links now redirect, ungated (the
-  // destination page enforces its own tab-level permissions).
-  //
-  // C10 review FIX-2: the redirect used to close over a constant target, so
-  // every old sub-path collapsed onto the same destination even where one
-  // had an exact new home. /control now branches to the Peers tab; every
-  // other sub-path (monitor, or bare /federation) still lands on the page
-  // root, since their content split across multiple destinations with no
-  // single equivalent.
-  describe('/system/federation/* — sub-path-aware redirect', () => {
-    const { Navigate } = jest.requireActual('react-router-dom') as typeof import('react-router-dom');
-
-    const renderAt = (pathname: string) => {
-      window.history.pushState({}, '', pathname);
-      const r = routes.find((x) => x.path === '/system/federation/*');
-      expect(r).toBeDefined();
-      expect(r!.permission).toBeUndefined();
-      const RedirectComponent = r!.component as () => React.ReactElement;
-      return RedirectComponent();
-    };
-
-    it('sends /system/federation (bare) to the page root', () => {
-      const el = renderAt('/app/system/federation');
-      expect(el.type).toBe(Navigate);
-      expect((el.props as { to: string; replace: boolean }).to).toBe('/app/system/service-delivery');
-      expect((el.props as { to: string; replace: boolean }).replace).toBe(true);
-    });
-
-    it('sends /system/federation/monitor to the page root (content split three ways, no single equivalent)', () => {
-      const el = renderAt('/app/system/federation/monitor');
-      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery');
-    });
-
-    it('sends /system/federation/control to the Peers tab, its exact new home', () => {
-      const el = renderAt('/app/system/federation/control');
-      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery/peers');
-    });
-
-    // C10 review NEW-1: a plain `subpathTargets[rest]` lookup resolves
-    // through Object.prototype, so a sub-path literally named "constructor"
-    // would return that prototype member (a function) instead of falling
-    // through to the page-root fallback.
-    it('sends /system/federation/constructor to the page root, not Object.prototype.constructor', () => {
-      const el = renderAt('/app/system/federation/constructor');
-      expect((el.props as { to: string }).to).toBe('/app/system/service-delivery');
-    });
+  // item 16); the old /system/federation path was deleted outright, not
+  // redirected (fc-25) — /system/service-delivery[/peers] is the only way in.
+  it('does not register /system/federation/* (deleted, not redirected)', () => {
+    expect(routes.find((x) => x.path === '/system/federation/*')).toBeUndefined();
   });
 
   it('registers /system/ingress/* gated on system.ingress.read', () => {
@@ -256,66 +214,33 @@ describe('registered routes', () => {
     expect(r!.permission).toBe('system.ingress.read');
   });
 
-  // Legacy redirect routes — exact list from Phase B.5
-  const legacyRedirects: Array<[string, string]> = [
-    ['/system/nodes', '/app/system/compute/nodes'],
-    ['/system/unclaimed-devices', '/app/system/compute/unclaimed-devices'],
-    ['/system/volumes', '/app/system/compute/volumes'],
-    ['/system/providers', '/app/system/compute/providers'],
-    ['/system/networks', '/app/system/compute/networks'],
-    ['/system/templates', '/app/system/catalog/templates'],
-    ['/system/modules', '/app/system/catalog/modules'],
-    ['/system/puppet-modules', '/app/system/catalog/puppet-modules'],
-    ['/system/scripts', '/app/system/catalog/scripts'],
-    ['/system/architectures', '/app/system/catalog/architectures'],
-    ['/system/platforms', '/app/system/catalog/platforms'],
-    ['/system/marketplace', '/app/system/catalog/marketplace'],
-    ['/system/fleet', '/app/system/operations/fleet'],
-    ['/system/tasks', '/app/system/operations/tasks'],
-    ['/system/ci-workers', '/app/system/operations/ci-workers'],
-    ['/system/disk-image-webhooks', '/app/system/operations/ci-webhooks'],
+  // Phase B.5's legacy redirect routes (nodes, templates, modules, fleet,
+  // federation, ...) were deleted outright in fc-25, not kept as aliases —
+  // every caller was migrated to its canonical hub-tab path in the same
+  // change. No route in this registry should be a redirect component.
+  const deletedLegacyPaths = [
+    '/system/overview',
+    '/system/nodes',
+    '/system/unclaimed-devices',
+    '/system/volumes',
+    '/system/providers',
+    '/system/networks',
+    '/system/templates',
+    '/system/modules',
+    '/system/puppet-modules',
+    '/system/scripts',
+    '/system/architectures',
+    '/system/platforms',
+    '/system/marketplace',
+    '/system/fleet',
+    '/system/tasks',
+    '/system/ci-workers',
+    '/system/disk-image-webhooks',
+    '/system/federation/*',
   ];
 
-  it(`registers all ${legacyRedirects.length} legacy redirect paths (Phase B.5)`, () => {
-    for (const [path] of legacyRedirects) {
-      const r = routes.find((x) => x.path === path);
-      expect(r).toBeDefined();
-    }
-  });
-
-  it.each(legacyRedirects)(
-    'legacy redirect %s has a component (the LegacyRedirect function)',
-    (path) => {
-      const r = routes.find((x) => x.path === path);
-      expect(r).toBeDefined();
-      // Each redirect is a plain ComponentType function, not a lazy wrapper
-      expect(typeof r!.component).toBe('function');
-    },
-  );
-
-  it('legacy redirect components render a Navigate element (redirect behaviour)', () => {
-    // Spot-check one redirect: calling the component function should return
-    // a React element whose type is Navigate.
-    const { Navigate } = jest.requireActual('react-router-dom') as typeof import('react-router-dom');
-    const r = routes.find((x) => x.path === '/system/nodes');
-    const LegacyRedirect = r!.component as () => React.ReactElement;
-    const el = LegacyRedirect();
-    // The element type should be Navigate from react-router-dom
-    expect(el.type).toBe(Navigate);
-    // props.to must be the target path and replace must be true
-    expect((el.props as { to: string; replace: boolean }).to).toBe(
-      '/app/system/compute/nodes',
-    );
-    expect((el.props as { to: string; replace: boolean }).replace).toBe(true);
-  });
-
-  it('all 16 legacy redirect paths target canonical /app/system/* destinations', () => {
-    for (const [path, target] of legacyRedirects) {
-      const r = routes.find((x) => x.path === path);
-      // The component is a function — call it and inspect the element
-      const el = (r!.component as () => React.ReactElement)();
-      expect((el.props as { to: string }).to).toBe(target);
-    }
+  it.each(deletedLegacyPaths)('does not register deleted legacy path %s', (path) => {
+    expect(routes.find((x) => x.path === path)).toBeUndefined();
   });
 
   it('no two routes share the same path', () => {

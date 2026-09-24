@@ -1055,7 +1055,7 @@ describe('FleetDashboardPage — module links in event feed', () => {
 
     await waitFor(() => expect(screen.getByText('nginx-module')).toBeInTheDocument());
     const link = screen.getByRole('link', { name: /nginx-module/ });
-    expect(link).toHaveAttribute('href', '/app/system/modules?module_id=mod-abc');
+    expect(link).toHaveAttribute('href', '/app/system/catalog/modules?module_id=mod-abc');
   });
 
   it('falls back to "view module" text when payload has no module_name', async () => {
