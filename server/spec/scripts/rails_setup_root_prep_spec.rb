@@ -791,7 +791,11 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     end
 
     it "retroactively fixes existing content under the durable root, not just the live /etc/traefik pair" do
-      expect(script).to match(/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-mindepth 1\s+!\s+-type\s+l\s+-exec chown root:traefik/)
+      # IMP-7e08f1514046 sibling: -xdev/! -type l/{} + added (chown -h,
+      # never dereferencing a planted symlink), plus a hardlink guard
+      # (review round 3) — see that fix's own describe block below for the
+      # full symlink/hardlink-safety coverage.
+      expect(script).to match(/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-xdev\s+-mindepth 1\s+!\s*-type l\s+\\\(\s*-type f -links 1 -o -type d\s*\\\)\s+-exec chown -h root:traefik/)
     end
 
     # IMP-3731023204f2 (SECURITY): these dirs are 2775 root:traefik and
@@ -805,12 +809,12 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     # matches a symlink's own type) and needed no change.
     it "the retroactive chown's own find invocation never surfaces a symlink entry, when actually run" do
       # Extracted VERBATIM from the script -- the exact command that ships,
-      # not retyped. Only the ACTION is swapped (chown root:traefik -> echo
-      # SEEN:{}) so this can run unprivileged and observe which entries the
+      # not retyped. Only the ACTION is swapped (chown -h root:traefik -> printf
+      # SEEN:<path>) so this can run unprivileged and observe which entries the
       # find PREDICATE (including the `! -type l` this fix added) actually
       # surfaces; the two path tokens are substituted with temp dirs the
       # same way the STATE_DIR sweep's own executing spec does it.
-      find_cmd = script[/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-mindepth 1\s+!\s+-type\s+l\s+-exec\s+chown\s+root:traefik\s+\{\}\s+\\;\s+2>\/dev\/null\s+\|\|\s+true/]
+      find_cmd = script[/find\s+"\$TRAEFIK_DURABLE_ROOT"\s+\/etc\/traefik\/dynamic\s+-xdev\s+-mindepth 1\s+!\s+-type\s+l\s+\\\(.*?\\\)\s+-exec\s+chown\s+-h\s+root:traefik\s+\{\}\s+\+\s+2>\/dev\/null\s+\|\|\s+true/]
       expect(find_cmd).not_to be_nil
 
       Dir.mktmpdir do |dir|
@@ -826,7 +830,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         observed_cmd = find_cmd
           .sub('"$TRAEFIK_DURABLE_ROOT"', durable_root)
           .sub("/etc/traefik/dynamic", etc_dynamic)
-          .sub(/-exec\s+chown\s+root:traefik\s+\{\}\s+\\;/, "-exec echo SEEN:{} \\;")
+          .sub(/-exec\s+chown\s+-h\s+root:traefik\s+\{\}\s+\+/, "-exec printf 'SEEN:%s\\n' {} +")
 
         out, err, status = Open3.capture3("bash", "-c", "set -euo pipefail\n#{observed_cmd}")
         expect(status.success?).to be(true), "aborted: #{err}"
@@ -882,12 +886,15 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     end
 
     it "sets cert-dir files (including the TLS key) to 0640, matching Core::IngressConfigWriter's own assertion" do
-      expect(script).to match(/find\s+"\$TRAEFIK_CERT_DIR"\s+-mindepth 1\s+-type f\s+-exec chmod 0?640/)
+      # IMP-7e08f1514046 sibling: -xdev/-links 1 added (excludes a
+      # hardlinked file from the mode change) — see that fix's own describe
+      # block below for the full symlink/hardlink-safety coverage.
+      expect(script).to match(/find\s+"\$TRAEFIK_CERT_DIR"\s+-xdev\s+-mindepth 1\s+-type f\s+-links 1\s+-exec chmod 0?640/)
     end
 
     it "sets dynamic-config YAML (both live and durable) to 0664, not the key's mode" do
       expect(script).to match(
-        /find\s+\/etc\/traefik\/dynamic\s+"\$TRAEFIK_DURABLE_DYNAMIC_DIR"\s+-mindepth 1\s+-type f\s+-exec chmod 0?664/
+        /find\s+\/etc\/traefik\/dynamic\s+"\$TRAEFIK_DURABLE_DYNAMIC_DIR"\s+-xdev\s+-mindepth 1\s+-type f\s+-links 1\s+-exec chmod 0?664/
       )
     end
   end
@@ -2110,6 +2117,196 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
 
     it "tolerates the helper failing or being missing -- `|| true`, never `set -e`-aborts the rest of this script's prep" do
       expect(script).to match(%r{/usr/local/bin/rails-relock-gemfile\.sh \|\| true})
+    end
+  end
+
+  # IMP-7e08f1514046 sibling HIGH — found auditing the SAME durable
+  # directories as the reverse-proxy-traefik restore-script fix, and the
+  # same class: a plain `chown`/`chmod` over a rails-writable (2775) tree
+  # follows a symlink argument it selects, and a hardlink is a regular file
+  # in its own right so `-type f` alone doesn't exclude it either. This
+  # script is BOOT-CRITICAL (has caused outages before), so the fix is kept
+  # minimal — -xdev/! -type l/-links 1 added to the existing find calls,
+  # no restructuring.
+  describe "durable traefik ownership sweep: symlink- and hardlink-safe (IMP-7e08f1514046 sibling)" do
+    let(:sweep_section) do
+      script[/find "\$TRAEFIK_DURABLE_ROOT" \/etc\/traefik\/dynamic -xdev.*?chmod 0?664 \{\} \\;.*?\n/m]
+    end
+
+    it "extracted the sweep section" do
+      expect(sweep_section).not_to be_nil
+    end
+
+    it "excludes symlinks from the chown pass via ! -type l, using chown -h" do
+      expect(sweep_section).to match(/find "\$TRAEFIK_DURABLE_ROOT" \/etc\/traefik\/dynamic -xdev -mindepth 1 !\s*-type l \\\(\s*-type f -links 1 -o -type d\s*\\\) -exec chown -h root:traefik \{\} \+/)
+    end
+
+    it "restricts every pass in the sweep to a single filesystem (-xdev)" do
+      finds = sweep_section.lines.grep(/^\s*find\b/)
+      expect(finds.size).to eq(4)
+      expect(finds.join).not_to match(/^\s*find\b(?!.*-xdev)/), "every find in the sweep must carry -xdev"
+    end
+
+    it "excludes hardlinked entries (-links 1) from both file-mode chmod passes and the chown pass, but never from the dir-chmod pass" do
+      expect(sweep_section).to match(/find "\$TRAEFIK_CERT_DIR" -xdev -mindepth 1 -type f -links 1 -exec chmod 0?640/)
+      expect(sweep_section).to match(/find \/etc\/traefik\/dynamic "\$TRAEFIK_DURABLE_DYNAMIC_DIR" -xdev -mindepth 1 -type f -links 1 -exec chmod 0?664/)
+      # The chown pass ALSO carries -links 1 (review round 3), but ORed
+      # with -type d so every directory stays eligible regardless of its
+      # own nlink (always >= 2: its own "." plus one per subdirectory —
+      # never 1, so a bare -links 1 there would exclude every legitimate
+      # directory and break the setgid propagation this sweep exists to
+      # fix up). The directory chmod pass has no hardlink guard at all:
+      # directories can't be hardlinked on Linux, so it doesn't need one.
+      chown_line = sweep_section.lines.find { |l| l.include?("chown -h") }
+      dir_chmod_line = sweep_section.lines.find { |l| l.include?("-type d -exec chmod") }
+      expect(chown_line).to match(/!\s*-type l\s*\\\(\s*-type f -links 1 -o -type d\s*\\\)/)
+      expect(dir_chmod_line).not_to match(/-links 1/)
+    end
+
+    # GENUINE EXECUTION, red-first: this snippet is lifted verbatim from the
+    # script (not retyped) and run for real, with TRAEFIK_DURABLE_ROOT /
+    # TRAEFIK_CERT_DIR / TRAEFIK_DURABLE_DYNAMIC_DIR pointed at a scratch
+    # tree. chown/chmod are PATH-shimmed so the assertion is about WHICH
+    # paths the sweep targets, independent of this test process's own
+    # privilege — a real chown to root: would fail either way as non-root,
+    # which would make a "the secret is untouched" assertion pass for the
+    # wrong reason.
+    describe "genuine execution" do
+      let(:scratch) { Dir.mktmpdir }
+      let(:durable_root) { File.join(scratch, "durable") }
+      let(:cert_dir) { File.join(durable_root, "certs") }
+      let(:durable_dynamic_dir) { File.join(durable_root, "dynamic") }
+      let(:shim_dir) { Dir.mktmpdir }
+      let(:call_log) { File.join(shim_dir, "calls.log") }
+
+      before do
+        FileUtils.mkdir_p([durable_root, cert_dir, durable_dynamic_dir])
+        %w[chown chmod].each do |cmd|
+          shim = File.join(shim_dir, cmd)
+          File.write(shim, <<~SH)
+            #!/bin/sh
+            echo "#{cmd} $*" >> #{call_log}
+            exit 0
+          SH
+          FileUtils.chmod(0o755, shim)
+        end
+      end
+
+      after { [scratch, shim_dir].each { |d| FileUtils.remove_entry(d) if File.exist?(d) } }
+
+      def run_sweep
+        snippet = <<~BASH
+          set +e
+          TRAEFIK_DURABLE_ROOT=#{durable_root}
+          TRAEFIK_CERT_DIR=#{cert_dir}
+          TRAEFIK_DURABLE_DYNAMIC_DIR=#{durable_dynamic_dir}
+          #{sweep_section}
+          echo REACHED_END
+        BASH
+        Open3.capture3({ "PATH" => "#{shim_dir}:#{ENV.fetch('PATH')}" }, "bash", "-c", snippet)
+      end
+
+      it "runs to completion" do
+        out, err, status = run_sweep
+        expect(status.success?).to be(true), "sweep aborted: #{err}"
+        expect(out).to include("REACHED_END")
+      end
+
+      # Planted INSIDE $TRAEFIK_DURABLE_ROOT deliberately, not under the
+      # script's other (hardcoded, non-parameterized) /etc/traefik/dynamic
+      # path: only $TRAEFIK_DURABLE_ROOT is test-controllable, and both
+      # roots are scanned by the SAME find invocation, so this exercises the
+      # identical chown -h / ! -type l logic the fix applies to either path.
+      # NOTE on what a shimmed chown CAN and CANNOT prove: `find -exec chown
+      # {}` always passes the SELECTED ENTRY'S OWN path as chown's argument —
+      # real dereferencing happens inside chown's own lchown()-vs-chown()
+      # syscall choice, which a shim that only logs argv cannot observe (the
+      # symlink's path is the argument either way; a shim can't tell whether
+      # the real binary would have followed it). What genuinely-executing
+      # find CAN prove is whether the symlink entry is SELECTED at all —
+      # `! -type l` is the actual, load-bearing defense (chown -h is
+      # belt-and-braces on top, verified separately as a content match
+      # above). So this asserts the symlink's OWN path never reaches chown,
+      # not a resolved target path a shim could never see either way.
+      it "never selects a symlink entry for the chown pass at all (the ! -type l exclusion)" do
+        secret = File.join(scratch, "secret-outside-the-tree")
+        File.write(secret, "root-only content\n")
+        link_path = File.join(durable_root, "x")
+        File.symlink(secret, link_path)
+
+        run_sweep
+
+        chown_calls = File.readlines(call_log).select { |l| l.start_with?("chown ") }
+        expect(chown_calls.join).not_to include(link_path),
+          "the chown pass must never be invoked on a symlink entry at all"
+      end
+
+      it "never targets a hardlinked file under the cert dir (the 0640 chmod pass)" do
+        secret = File.join(scratch, "secret-key-like-file")
+        File.write(secret, "private key material\n")
+        hardlink_path = File.join(cert_dir, "innocuous.crt")
+        File.link(secret, hardlink_path)
+
+        run_sweep
+
+        chmod_640 = File.readlines(call_log).select { |l| l.start_with?("chmod ") && l.include?("640") }
+        expect(chmod_640.join).not_to include(hardlink_path),
+          "-links 1 must exclude a hardlinked entry from the chmod 0640 pass"
+      end
+
+      it "never targets a hardlinked file under the dynamic dirs (the 0664 chmod pass)" do
+        secret = File.join(scratch, "secret-file-two")
+        File.write(secret, "other root-only content\n")
+        hardlink_path = File.join(durable_dynamic_dir, "innocuous.yaml")
+        File.link(secret, hardlink_path)
+
+        run_sweep
+
+        chmod_664 = File.readlines(call_log).select { |l| l.start_with?("chmod ") && l.include?("664") }
+        expect(chmod_664.join).not_to include(hardlink_path),
+          "-links 1 must exclude a hardlinked entry from the chmod 0664 pass"
+      end
+
+      it "still chowns/chmods a normal, non-linked file (the fix doesn't break the legitimate case)" do
+        plain_file = File.join(durable_dynamic_dir, "00-host-login.yaml")
+        File.write(plain_file, "routers: {}\n")
+
+        run_sweep
+
+        calls = File.readlines(call_log)
+        expect(calls.select { |l| l.start_with?("chown ") }.join).to include(plain_file)
+        expect(calls.select { |l| l.start_with?("chmod ") && l.include?("664") }.join).to include(plain_file)
+      end
+
+      # Review round: the two chmod passes already exclude a hardlinked file
+      # via -links 1; the chown pass (which only excluded symlinks) should
+      # do the same for consistency — a hardlink to the agent's node.key
+      # planted directly under $TRAEFIK_DURABLE_ROOT would otherwise still
+      # get re-owned to root:traefik even though neither chmod pass would
+      # then touch its mode.
+      it "never targets a hardlinked file in the chown pass either" do
+        secret = File.join(scratch, "secret-hardlink-target")
+        File.write(secret, "private key material\n")
+        hardlink_path = File.join(durable_root, "hardlinked-file")
+        File.link(secret, hardlink_path)
+
+        run_sweep
+
+        chown_calls = File.readlines(call_log).select { |l| l.start_with?("chown ") }
+        expect(chown_calls.join).not_to include(hardlink_path),
+          "the chown pass must exclude a hardlinked file the same way the chmod passes do"
+      end
+
+      it "still chowns a normal directory (the hardlink guard must not exclude directories, which always have nlink >= 2)" do
+        subdir = File.join(durable_root, "a-subdirectory")
+        FileUtils.mkdir_p(subdir)
+
+        run_sweep
+
+        chown_calls = File.readlines(call_log).select { |l| l.start_with?("chown ") }
+        expect(chown_calls.join).to include(subdir),
+          "a directory's own nlink (>= 2 from its \".\" plus each subdirectory's \"..\") must not be mistaken for a hardlink"
+      end
     end
   end
 end

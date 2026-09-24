@@ -846,8 +846,25 @@ if getent group traefik >/dev/null 2>&1; then
     # ever chowning through one. The chmod pass right after is already
     # safe (`-type d` never matches a symlink's own type), so only this
     # line needed the exclusion.
-    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -mindepth 1 ! -type l -exec chown root:traefik {} \; 2>/dev/null || true
-    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -mindepth 1 -type d -exec chmod 2775 {} \; 2>/dev/null || true
+    #
+    # IMP-7e08f1514046 sibling: `-h` is the correct chown form regardless of
+    # how the entry was selected, but `! -type l` (above) is what actually
+    # excludes the symlink from being selected in the first place.
+    # -xdev refuses to cross a mount boundary an attacker might bind-mount
+    # inside this group-writable tree. `\( -type f -links 1 -o -type d \)`
+    # (review round 3) excludes a hardlinked file the same way the two
+    # chmod passes below already do — a hardlink to the agent's node.key
+    # would otherwise still get re-owned here even though neither chmod
+    # pass would then touch its mode; `-o -type d` keeps every directory
+    # eligible regardless of its own nlink (always >= 2: its own "." plus
+    # one per subdirectory — never 1, so -links 1 alone would exclude every
+    # legitimate directory).
+    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -xdev -mindepth 1 ! -type l \( -type f -links 1 -o -type d \) -exec chown -h root:traefik {} + 2>/dev/null || true
+    # -type d already excludes symlinks (a symlink reports as -type l, never
+    # -type d, without find's own -L) — no separate guard needed here.
+    # Directories can't be hardlinked on Linux, so the -links 1 guard the
+    # two -type f passes below use doesn't apply to this one.
+    find "$TRAEFIK_DURABLE_ROOT" /etc/traefik/dynamic -xdev -mindepth 1 -type d -exec chmod 2775 {} \; 2>/dev/null || true
     # blocker 5: mode split by CONTENT, not by directory — a single 660
     # pass over the whole tree hit core-self-signed.key (private key
     # material, wants 0640 to match Core::IngressConfigWriter's own
@@ -859,8 +876,13 @@ if getent group traefik >/dev/null 2>&1; then
     # the key's mode keeps this pass simple. Dynamic YAML gets 0664
     # (group-write so a non-owner rails can replace it; world-read matches
     # the writer's own 0644 intent, widened only by the group-write bit).
-    find "$TRAEFIK_CERT_DIR" -mindepth 1 -type f -exec chmod 0640 {} \; 2>/dev/null || true
-    find /etc/traefik/dynamic "$TRAEFIK_DURABLE_DYNAMIC_DIR" -mindepth 1 -type f -exec chmod 0664 {} \; 2>/dev/null || true
+    # -type f excludes symlinks, but NOT a hardlink to a file outside this
+    # tree (e.g. a rails-planted hardlink to an agent's node.key) — a
+    # hardlink IS a regular file in its own right. -links 1 skips any entry
+    # with more than one hard link, so a hardlinked file is never touched by
+    # either chmod pass below (IMP-7e08f1514046 sibling).
+    find "$TRAEFIK_CERT_DIR" -xdev -mindepth 1 -type f -links 1 -exec chmod 0640 {} \; 2>/dev/null || true
+    find /etc/traefik/dynamic "$TRAEFIK_DURABLE_DYNAMIC_DIR" -xdev -mindepth 1 -type f -links 1 -exec chmod 0664 {} \; 2>/dev/null || true
   else
     echo "[rails-setup] WARNING: traefik ingress dir setup failed (read-only/full /persist? a symlink where a directory was expected?) — rails may be unable to write ingress config; continuing boot rather than taking the backend down over a traefik-ingress-only problem" >&2
   fi

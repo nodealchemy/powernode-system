@@ -69,6 +69,13 @@ services:
       [Service]
       Type=oneshot
       RemainAfterExit=yes
+      # IMP-7e08f1514046 review round 2: the script now reads its source
+      # under `timeout 10` internally, but a belt-and-braces unit-level cap
+      # ensures a wedged setpriv/head invocation (or a slow mktemp/mv on a
+      # degraded /persist) can't hang this boot-critical oneshot forever —
+      # RemainAfterExit means rails's start_before dependency waits on this
+      # unit finishing at all, not just its internal timeout firing.
+      TimeoutStartSec=30
       ExecStart=/usr/local/bin/traefik-restore-dynamic.sh
       StandardOutput=journal
       StandardError=journal
