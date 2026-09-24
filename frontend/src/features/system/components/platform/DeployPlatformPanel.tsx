@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Rocket } from 'lucide-react';
-import apiClient from '@/shared/services/apiClient';
+import { apiClient } from '@/shared/services/apiClient';
 import { logger } from '@/shared/utils/logger';
 import type { ChatCard } from '@/shared/types/ai';
 import { PlatformDeploymentWizardCard } from '@/features/ai/provisioning/PlatformDeploymentWizardCard';

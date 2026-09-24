@@ -28,17 +28,15 @@ import {
 } from './useSystemAutonomyConfig';
 
 // ---------------------------------------------------------------------------
-// API client mock — the shared useAutonomyConfig hook imports apiClient as a
-// default export. We mock the entire module with __esModule: true so that
-// `import apiClient from '...'` receives the stubbed object.
+// API client mock — the shared useAutonomyConfig hook imports the named
+// `apiClient` export (fc-24 removed the module's default export).
 // ---------------------------------------------------------------------------
 
 const mockGet = jest.fn();
 const mockPatch = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
-  __esModule: true,
-  default: {
+  apiClient: {
     get: (...args: unknown[]) => mockGet(...args),
     patch: (...args: unknown[]) => mockPatch(...args),
   },

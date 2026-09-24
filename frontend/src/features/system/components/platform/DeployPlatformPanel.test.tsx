@@ -24,13 +24,12 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
 // Mocks
 // =============================================================================
 
-// apiClient is imported as a DEFAULT export in the source file.
-// We must use __esModule: true so `import apiClient from '...'` receives `default`.
+// apiClient is imported as a named export in the source file (fc-24 removed
+// the module's default export).
 const mockGet = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
-  __esModule: true,
-  default: {
+  apiClient: {
     get: (...args: unknown[]) => mockGet(...args),
   },
 }));
