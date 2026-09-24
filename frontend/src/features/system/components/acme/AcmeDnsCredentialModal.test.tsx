@@ -163,16 +163,19 @@ describe('AcmeDnsCredentialModal', () => {
       expect(nameInput).toBeInTheDocument();
     });
 
-    it('renders the DNS provider select with all supported providers as options', () => {
+    it('renders the DNS provider select with only production-ready providers as options', () => {
       renderModal();
       const select = screen.getByRole('combobox');
       expect(select).toBeInTheDocument();
-      // cloudflare is production-ready (no suffix)
+      // cloudflare is production-ready — listed
       expect(screen.getByText(/cloudflare — Cloudflare DNS$/)).toBeInTheDocument();
-      // other providers get "(coming soon)"
-      expect(screen.getByText(/digitalocean — DigitalOcean DNS.*coming soon/)).toBeInTheDocument();
-      expect(screen.getByText(/route53 — AWS Route 53.*coming soon/)).toBeInTheDocument();
-      expect(screen.getByText(/gcloud — Google Cloud DNS.*coming soon/)).toBeInTheDocument();
+      // fc-05 review: not-yet-ready providers are FILTERED OUT of the select
+      // entirely (not shown disabled with a "(coming soon)" suffix) — no
+      // placeholder UI for an option a caller cannot use.
+      expect(screen.queryByText(/digitalocean/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/route53/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/gcloud/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
     });
 
     it('defaults provider to cloudflare and shows its api_token field', () => {
@@ -298,16 +301,16 @@ describe('AcmeDnsCredentialModal', () => {
   // ---------------------------------------------------------------------------
 
   describe('provider gating', () => {
-    it('marks non-cloudflare providers as disabled in the select', () => {
+    it('does not render non-production-ready providers as options at all', () => {
       renderModal();
       const select = screen.getByRole('combobox');
       const doOption = Array.from(select.querySelectorAll('option')).find((o) =>
         o.textContent?.includes('digitalocean'),
       );
-      expect(doOption).toHaveAttribute('disabled');
+      expect(doOption).toBeUndefined();
     });
 
-    it('cloudflare option is NOT disabled', () => {
+    it('renders the production-ready cloudflare option, never disabled', () => {
       renderModal();
       const select = screen.getByRole('combobox');
       const cfOption = Array.from(select.querySelectorAll('option')).find((o) =>
@@ -362,7 +365,7 @@ describe('AcmeDnsCredentialModal', () => {
       expect(screen.getByRole('button', { name: /Save credential/ })).toBeDisabled();
     });
 
-    it('disables cloudflare when the backend reports it not production_ready', () => {
+    it('omits cloudflare from the options when the backend reports it not production_ready', () => {
       renderModal({
         supportedProviders: [
           { ...CLOUDFLARE_PROVIDER, production_ready: false },
@@ -373,8 +376,7 @@ describe('AcmeDnsCredentialModal', () => {
       const cf = Array.from(select.querySelectorAll('option')).find((o) =>
         o.textContent?.includes('cloudflare'),
       );
-      expect(cf).toHaveAttribute('disabled');
-      expect(cf?.textContent).toMatch(/coming soon/);
+      expect(cf).toBeUndefined();
     });
 
     it('opens preselected on the first backend-ready provider, not a hardcoded cloudflare', () => {

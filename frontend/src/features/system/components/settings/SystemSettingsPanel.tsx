@@ -455,7 +455,6 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
                   actions={group.actions}
                   getPolicy={autonomy.getPolicy}
                   updatePolicy={autonomy.updatePolicy}
-                  onDirty={() => { /* tracked via autonomy.isDirty */ }}
                   onSave={handleSave}
                   isDirty={autonomy.isDirty}
                 />

@@ -307,17 +307,16 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
             disabled={submitting}
             className="w-full px-2 py-1.5 border border-theme rounded bg-theme-background-secondary text-theme-primary disabled:opacity-50 text-sm"
           >
-            {supportedProviders.map((p) => (
-              <option key={p.slug} value={p.slug} disabled={!p.production_ready}>
+            {supportedProviders.filter((p) => p.production_ready).map((p) => (
+              <option key={p.slug} value={p.slug}>
                 {p.slug} — {p.description}
-                {p.production_ready ? '' : ' (coming soon)'}
               </option>
             ))}
           </select>
           <p className="text-xs text-theme-secondary mt-1">
-            Only providers wired through the on-node agent are currently
-            selectable; the rest are advertised by the backend but not yet
-            usable for issuance.
+            Only providers wired through the on-node agent are listed; the
+            rest are advertised by the backend but not yet usable for
+            issuance.
           </p>
         </div>
 
