@@ -402,8 +402,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         message: `Credentials saved for ${effectiveProvider.name}`,
       });
     } catch (error) {
-      logger.error('ProviderFormModal: failed to save credentials', error, {
+      // Never the raw error: an axios error carries the request body, i.e. the
+      // plaintext credentials, in config.data.
+      logger.error('ProviderFormModal: failed to save credentials', undefined, {
         providerId: effectiveProvider.id,
+        errorMessage: error instanceof Error ? error.message : 'unknown error',
+        status: (error as { response?: { status?: number } } | null)?.response?.status,
       });
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       addNotification({

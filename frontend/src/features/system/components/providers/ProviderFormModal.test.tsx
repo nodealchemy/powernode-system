@@ -973,6 +973,37 @@ describe('ProviderFormModal', () => {
       );
     });
 
+    it('logs a failed save without the credential values the request carried', async () => {
+      const { logger } = jest.requireActual('@/shared/utils/logger');
+      const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      mockPost.mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 422'), {
+          config: { data: JSON.stringify({ credentials: { secret_key: 'SECRET' } }) },
+          response: { status: 422, data: {} },
+        }),
+      );
+
+      renderModal({ editProvider: PROVIDER_AWS });
+      fireEvent.click(screen.getByTestId('provider-form-tab-credentials'));
+      await waitFor(() => screen.getByTestId('provider-credential-form'));
+      fireEvent.click(screen.getByTestId('mock-cred-valid-btn'));
+      fireEvent.click(screen.getByTestId('mock-cred-test-valid-btn'));
+      await waitFor(() =>
+        expect(screen.getByTestId('provider-form-save-credentials-btn')).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByTestId('provider-form-save-credentials-btn'));
+
+      await waitFor(() => expect(logSpy).toHaveBeenCalled());
+      const logged = JSON.stringify(logSpy.mock.calls, (_k, v) =>
+        v instanceof Error ? { ...v, message: v.message } : v,
+      );
+      expect(logged).not.toContain('SECRET');
+      expect(logSpy.mock.calls[0][2]).toEqual(
+        expect.objectContaining({ providerId: PROVIDER_AWS.id, status: 422 }),
+      );
+      logSpy.mockRestore();
+    });
+
     it('shows error notification when saving credentials fails', async () => {
       mockPost.mockRejectedValue(new Error('Unauthorized'));
 
