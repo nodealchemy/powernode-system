@@ -53,6 +53,7 @@ module System
         failed_at:             @batch.failed_at,
         cancelled_at:          @batch.cancelled_at,
         error_message:         @batch.error_message,
+        selection:             @batch.metadata["selection"],
         modules:                module_rows
       )
     end

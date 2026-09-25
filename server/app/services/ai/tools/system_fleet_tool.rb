@@ -2363,14 +2363,18 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks.",
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks. NARROW-DISPATCH: pass module_slugs (an explicit allowlist) with expand_dependents: false to build EXACTLY those modules, with no reverse-dependency expansion — e.g. an agent/-only range ships powernode-system-base alone instead of the ~20-module closure that requires it. Every allowlisted slug must be a buildable (manifest-backed) module that the base_sha..head_sha range itself changed; an unknown, package-origin or untouched slug is refused by name, and module_slugs cannot be combined with force_all. The batch records the allowlist, the closure it withheld (withheld_dependents) and the requester under metadata.selection. All publish gates still apply. Caller's responsibility: withheld dependents keep their current versions, so the allowlist is only sound when they need the changed module's CAPABILITY, not its bytes — system-base is the only module that embeds the agent binary — and when its service contract is unchanged (base-os's powernode-agent.service invokes `/usr/sbin/powernode-agent service`; an agent change to that CLI or unit contract needs base-os rebuilt too).",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
               force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
               trigger: { type: "string", required: false, enum: ::System::ModuleBuildBatch::TRIGGERS,
                         description: "push | manual | cve | package (default manual) — recorded on the batch for audit" },
-              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." }
+              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." },
+              module_slugs: { type: "array", required: false, items: { type: "string" },
+                              description: "NARROW-DISPATCH allowlist: build only these module slugs. Each must be manifest-backed and changed by the range. Cannot be combined with force_all." },
+              expand_dependents: { type: "boolean", required: false,
+                                   description: "Default true (reverse-dependency expansion, seeded from module_slugs when given). false builds exactly module_slugs and reports the withheld closure; requires module_slugs." }
             }
           },
 
@@ -8659,15 +8663,18 @@ module Ai
         return error_result("base_sha and head_sha are required") if base_sha.blank? || head_sha.blank?
 
         source_repo = params[:source_repo].presence
+        selection = dispatch_selection_params(params)
+        return error_result(selection) if selection.is_a?(String)
 
         planned = ::System::ModuleBuildPlannerService.plan_with_diagnostics(
           base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true,
-          source_repo: source_repo
+          source_repo: source_repo, **selection
         )
 
         batch = ::System::ModuleBuildBatch.create_for(
           account: @account, plan: planned.entries, trigger: params[:trigger].presence || "manual",
-          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded
+          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded,
+          selection: selection.any? ? selection_audit(selection, planned) : nil
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
@@ -8688,10 +8695,33 @@ module Ai
           payload[:excluded_modules] = planned.excluded.first(EXCLUDED_MODULE_SAMPLE_LIMIT)
           payload[:excluded_count]   = planned.excluded.size
         end
+        payload[:withheld_dependents] = Array(planned.withheld_dependents) if selection.any?
 
         success_result(payload)
       rescue ::System::ModuleBuildPlannerService::PlanningError => e
         error_result(e.message)
+      end
+
+      # NARROW-DISPATCH: the allowlist kwargs for the planner, {} in default
+      # mode (so the default call is byte-identical), or a String refusal.
+      # Only shape is checked here; the planner owns the semantic rules.
+      def dispatch_selection_params(params)
+        slugs = params[:module_slugs]
+        expand = params[:expand_dependents]
+        return {} if slugs.nil? && expand.nil?
+
+        slugs = slugs.to_a if slugs.respond_to?(:to_ary)
+        return "module_slugs must be an array of module slugs" unless slugs.nil? || slugs.is_a?(Array)
+
+        { module_slugs: slugs&.map(&:to_s),
+          expand_dependents: expand.nil? ? true : ::ActiveModel::Type::Boolean.new.cast(expand) }
+      end
+
+      def selection_audit(selection, planned)
+        selection.merge(
+          withheld_dependents: Array(planned.withheld_dependents),
+          requested_by: { type: promotion_actor_type, id: promotion_actor_id }
+        )
       end
 
       # The gated dispatch's context (HIER-P2B-ENG). The sha admission rule the
@@ -8709,8 +8739,17 @@ module Ai
         deferred_tool_call_context(params).merge(
           description: "Plan and dispatch a native module-build batch for #{base_sha[0, 12]}..#{head_sha[0, 12]}" \
                        "#{params[:force_all] == true ? ' (force_all: every manifest-backed module)' : ''}" \
+                       "#{dispatch_selection_description(params)}" \
                        " — trigger #{params[:trigger].presence || 'manual'}, leases module-forge builders"
         )
+      end
+
+      def dispatch_selection_description(params)
+        selection = dispatch_selection_params(params)
+        return "" unless selection.is_a?(Hash) && selection[:module_slugs]
+
+        " (allowlist [#{selection[:module_slugs].join(', ')}]" \
+          "#{selection[:expand_dependents] ? ', dependents expanded' : ', no reverse-dependency expansion'})"
       end
 
       # The undo for auto-promotion, and the forward-repoint when a good build
@@ -8932,6 +8971,7 @@ module Ai
           plan: meta["plan"],
           excluded: meta["excluded"],
           excluded_count: meta["excluded_count"],
+          selection: meta["selection"],
           modules: entries.map do |key, entry|
             task  = tasks[entry["task_id"]]
             lease = leases[entry["lease_id"]]

@@ -162,7 +162,15 @@ module System
     # time. Sampled at EXCLUDED_METADATA_SAMPLE_LIMIT; excluded_count is
     # always the true total. Omitted entirely when empty (default []), same
     # backward-compat posture as source_repo above.
-    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil, excluded: [])
+    #
+    # selection: (NARROW-DISPATCH) the caller's explicit module allowlist, for
+    # audit: { module_slugs:, expand_dependents:, withheld_dependents:,
+    # requested_by: { type:, id: } }. withheld_dependents is the closure the
+    # range would have built but the allowlist did not — sampled like excluded,
+    # with withheld_dependents_count as the true total. Omitted when nil, so a
+    # default-mode batch's metadata is unchanged.
+    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil, excluded: [],
+                        selection: nil)
       plan_array = Array(plan)
       excluded_array = Array(excluded)
       metadata = { "plan" => plan_array.map { |p| plan_entry_metadata(p) } }
@@ -171,6 +179,7 @@ module System
         metadata["excluded"] = excluded_array.first(EXCLUDED_METADATA_SAMPLE_LIMIT).map { |e| excluded_entry_metadata(e) }
         metadata["excluded_count"] = excluded_array.size
       end
+      metadata["selection"] = selection_metadata(selection) if selection
       create!(
         account: account,
         trigger: trigger,
@@ -187,6 +196,19 @@ module System
         metadata: metadata
       )
     end
+
+    def self.selection_metadata(selection)
+      sel = selection.to_h.transform_keys(&:to_s)
+      withheld = Array(sel["withheld_dependents"]).map(&:to_s)
+      {
+        "module_slugs"              => Array(sel["module_slugs"]).map(&:to_s),
+        "expand_dependents"         => sel["expand_dependents"] ? true : false,
+        "withheld_dependents"       => withheld.first(EXCLUDED_METADATA_SAMPLE_LIMIT),
+        "withheld_dependents_count" => withheld.size,
+        "requested_by"              => sel["requested_by"].to_h.transform_keys(&:to_s)
+      }
+    end
+    private_class_method :selection_metadata
 
     # Preserves an optional per-entry "architecture" (multi-arch package
     # plans — see System::PackageClosureBuildBridge#build_plan) without

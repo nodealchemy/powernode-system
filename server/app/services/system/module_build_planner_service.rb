@@ -41,7 +41,12 @@ module System
     # imp b9e3e05a5119. #plan keeps returning the bare entries array (every
     # pre-existing caller consumes that shape); callers that want the dropped
     # names call .plan_with_diagnostics instead.
-    PlanResult = Struct.new(:entries, :excluded, keyword_init: true)
+    #
+    # withheld_dependents (NARROW-DISPATCH): under an allowlist with
+    # expand_dependents: false, the reverse-dependency closure the range WOULD
+    # have built minus what the allowlist builds, sorted. [] in every other
+    # mode, so the caller and the batch audit always see what was not rebuilt.
+    PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, keyword_init: true)
 
     # Exclusion reasons (machine-readable; the accompanying :detail is prose).
     #
@@ -250,9 +255,19 @@ module System
 
       # As #plan, but returns a PlanResult carrying both the entries and the
       # module names that were dropped, with a reason each (imp b9e3e05a5119).
+      #
+      # @param module_slugs [Array<String>, nil] NARROW-DISPATCH allowlist. When
+      #   given, only these modules seed the plan, and every one must be in the
+      #   range's own dirty set (a slug the diff did not touch would build
+      #   unchanged source) and buildable here. Refused with force_all.
+      # @param expand_dependents [Boolean] false builds exactly the allowlist,
+      #   with no reverse-dependency expansion; requires module_slugs.
       # @return [PlanResult]
-      def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil)
-        new.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo)
+      def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil,
+                                module_slugs: nil, expand_dependents: true)
+        new.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all,
+                                  source_repo: source_repo, module_slugs: module_slugs,
+                                  expand_dependents: expand_dependents)
       end
     end
 
@@ -260,7 +275,10 @@ module System
       plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo).entries
     end
 
-    def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil)
+    def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil,
+                              module_slugs: nil, expand_dependents: true)
+      allowlist = validate_selection!(module_slugs, expand_dependents, force_all)
+
       account = resolve_account
       raise PlanningError, "no account resolvable" unless account
 
@@ -332,7 +350,15 @@ module System
       candidates = catch_all ? all_module_names(account) : dirty.dup
       dirty = catch_all ? known.dup : (dirty & known)
 
-      closure = expand_reverse_dependencies(account, dirty)
+      withheld = []
+      if allowlist
+        check_allowlist!(account, allowlist, dirty, known, base_sha, head_sha)
+        full_closure = expand_reverse_dependencies(account, dirty)
+        closure = expand_dependents ? expand_reverse_dependencies(account, allowlist) : allowlist.dup
+        withheld = (full_closure - closure).to_a.sort unless expand_dependents
+      else
+        closure = expand_reverse_dependencies(account, dirty)
+      end
       excluded = excluded_entries(account, candidates - known)
 
       guard_against_unmapped_core_change!(
@@ -349,7 +375,8 @@ module System
 
       PlanResult.new(
         entries: closure.sort.map { |slug| { module: slug, oci_ref: tag } },
-        excluded: excluded
+        excluded: excluded,
+        withheld_dependents: withheld
       )
     end
 
@@ -402,6 +429,45 @@ module System
     # AASM straight through to `complete`. Fail here, the last layer that
     # still knows what was asked for.
     #
+    # NARROW-DISPATCH argument rules, checked before any git call so a
+    # malformed request costs nothing. Returns the allowlist as a Set, or nil.
+    def validate_selection!(module_slugs, expand_dependents, force_all)
+      if module_slugs.nil?
+        return nil if expand_dependents
+
+        raise PlanningError, "expand_dependents: false needs an explicit module_slugs allowlist — " \
+                             "without one there is nothing to build instead of the closure"
+      end
+
+      slugs = Array(module_slugs).map { |s| s.to_s.strip }.reject(&:empty?).uniq
+      raise PlanningError, "module_slugs is empty — name at least one module to build" if slugs.empty?
+      if force_all
+        raise PlanningError, "module_slugs cannot be combined with force_all — force_all plans every module, " \
+                             "an allowlist plans named ones"
+      end
+
+      slugs.to_set
+    end
+
+    # Every allowlisted slug must be buildable here AND touched by the range
+    # itself. Closure membership is not enough: a dependent the range reaches
+    # only through expansion has unchanged source, and building it is exactly
+    # the fan-out the allowlist exists to avoid.
+    def check_allowlist!(account, allowlist, dirty, known, base_sha, head_sha)
+      unbuildable = allowlist - known
+      if unbuildable.any?
+        raise PlanningError, "module_slugs names module(s) this planner cannot build: " \
+                             "#{format_excluded(excluded_entries(account, unbuildable))}"
+      end
+
+      untouched = allowlist - dirty
+      return if untouched.empty?
+
+      raise PlanningError, "module_slugs names module(s) not changed by #{base_sha.to_s[0, 12]}..#{head_sha.to_s[0, 12]}: " \
+                           "#{untouched.to_a.sort.join(', ')} — the range changed " \
+                           "[#{dirty.to_a.sort.join(', ')}]; an allowlist may only narrow what the diff already names"
+    end
+
     # NOT a failure: a non-empty diff that touched no module trigger path at
     # all (docs/, README) — nothing named a module, so nothing was expected to
     # build. That stays a legitimate no-op, as does an empty commit range.
