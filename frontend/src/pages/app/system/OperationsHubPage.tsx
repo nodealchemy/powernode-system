@@ -20,7 +20,7 @@ import {
   ModuleBuildsTab,
   AgentPeersTab,
 } from '@system/features/system/components/operations';
-import { SystemSettingsPanel } from '@system/features/system/components/settings/SystemSettingsPanel';
+import { AutonomySettingsModal } from '@system/features/system/components/settings/AutonomySettingsModal';
 
 // Phase B.3 — Operations hub. Consolidates Fleet Dashboard, Tasks
 // (formerly /system/tasks "Operations"), CI Workers, and CI Webhooks
@@ -71,7 +71,8 @@ const OperationsHubPage: React.FC = () => {
   const canCreateGitops = hasPermission('system.gitops.write');
   const canCreateCiWorkers = hasPermission('system.ci_workers.create');
   const canCreateCiWebhooks = hasPermission('system.disk_image_webhooks.create');
-  const canViewSettings = hasPermission('system.infra_tasks.read');
+  // The modal is core's policy panel, whose endpoints require this.
+  const canViewSettings = hasPermission('ai.intervention_policies.manage');
 
   const pageActions: PageAction[] = [];
   if (canViewSettings) {
@@ -126,7 +127,7 @@ const OperationsHubPage: React.FC = () => {
         </Routes>
       </PathTabs>
 
-      <SystemSettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <AutonomySettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </PageContainer>
   );
 };

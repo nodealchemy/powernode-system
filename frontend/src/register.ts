@@ -4,6 +4,7 @@ import { registerSystemEntities } from './features/system/entityRegistry';
 import { SIGNAL_FILTER_COLUMN_BY_KIND } from './features/system/components/fleet/signalsFilterColumns';
 import { providerCredentialsApi } from './features/system/services/api/providerCredentialsApi';
 import { nodeInstancePeersApi } from './features/system/services/api/nodeInstancePeersApi';
+import { SYSTEM_POLICY_DOMAINS } from './features/system/policyDomains';
 
 // Helper: widen the lazy-loaded module's default-export type from the
 // concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
@@ -198,4 +199,8 @@ export function register(): void {
   // Peer operators join the chat @-mention picker through a mention source,
   // so core's conversation view names no route of this extension.
   featureRegistry.registerMentionSources('system', [() => nodeInstancePeersApi.mentionable()]);
+
+  // Core's intervention-policy panel presents this extension's policy domains
+  // (the server files rows into them; this is labels, icons and order).
+  featureRegistry.registerPolicyDomains('system', SYSTEM_POLICY_DOMAINS);
 }

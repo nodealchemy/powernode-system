@@ -26,10 +26,12 @@ jest.mock('@/shared/services/featureRegistry', () => ({
     registerProviderCategoryHandlers: (...args: unknown[]) =>
       mockRegisterProviderCategoryHandlers(...args),
     registerMentionSources: (...args: unknown[]) => mockRegisterMentionSources(...args),
+    registerPolicyDomains: (...args: unknown[]) => mockRegisterPolicyDomains(...args),
   },
 }));
 
 const mockRegisterMentionSources = jest.fn();
+const mockRegisterPolicyDomains = jest.fn();
 const mockMentionable = jest.fn();
 
 jest.mock('./features/system/services/api/nodeInstancePeersApi', () => ({
@@ -482,5 +484,39 @@ describe('register() — mention sources', () => {
     expect(namespace).toBe('system');
     expect(sources).toHaveLength(1);
     await expect(sources[0]()).resolves.toEqual(members);
+  });
+});
+
+// =============================================================================
+// Intervention-policy domains: presented in core's policy panel
+// =============================================================================
+
+describe('register() — policy domains', () => {
+  beforeEach(() => mockRegisterPolicyDomains.mockReset());
+
+  // The server owns which category is in which domain
+  // (System::Governance::PolicyDomainTable, registered with core at boot); this
+  // side presents those keys. Every server domain gets a presentation, so no
+  // section falls back to a humanised key.
+  it('presents every domain the server table declares, once, under the system namespace', () => {
+    register();
+
+    expect(mockRegisterPolicyDomains).toHaveBeenCalledTimes(1);
+    const [namespace, domains] = mockRegisterPolicyDomains.mock.calls[0];
+    expect(namespace).toBe('system');
+    const keys = (domains as Array<{ key: string }>).map((d) => d.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toEqual(expect.arrayContaining([
+      'instance_pool', 'cve', 'topology', 'sdwan', 'container_runtime', 'disk_image', 'gitops',
+      'packages', 'architecture', 'storage', 'ingress', 'platform', 'project', 'node_lifecycle',
+    ]));
+    expect(keys).toHaveLength(14);
+  });
+
+  it('opens on Node Lifecycle: presentation order is operator priority, not the server\'s match order', () => {
+    register();
+
+    const [, domains] = mockRegisterPolicyDomains.mock.calls[0];
+    expect((domains as Array<{ key: string }>)[0].key).toBe('node_lifecycle');
   });
 });

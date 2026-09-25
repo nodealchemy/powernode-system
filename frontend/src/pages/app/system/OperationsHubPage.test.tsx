@@ -129,11 +129,11 @@ jest.mock('@system/features/system/components/operations', () => {
   };
 });
 
-// SystemSettingsPanel is a heavy modal with its own hooks. Stub it.
-// We capture onClose so tests can invoke it to assert the panel closes.
+// AutonomySettingsModal embeds core's policy panel with its own hooks. Stub it.
+// We capture onClose so tests can invoke it to assert the modal closes.
 let capturedSettingsOnClose: (() => void) | null = null;
-jest.mock('@system/features/system/components/settings/SystemSettingsPanel', () => ({
-  SystemSettingsPanel: ({
+jest.mock('@system/features/system/components/settings/AutonomySettingsModal', () => ({
+  AutonomySettingsModal: ({
     isOpen,
     onClose,
   }: {
@@ -142,7 +142,7 @@ jest.mock('@system/features/system/components/settings/SystemSettingsPanel', () 
   }) => {
     capturedSettingsOnClose = onClose;
     return isOpen
-      ? require('react').createElement('div', { 'data-testid': 'settings-panel' }, 'SystemSettingsPanel')
+      ? require('react').createElement('div', { 'data-testid': 'settings-panel' }, 'AutonomySettingsModal')
       : null;
   },
 }));
@@ -176,7 +176,7 @@ const ALL_PERMISSIONS = [
   'system.gitops.write',
   'system.ci_workers.create',
   'system.disk_image_webhooks.create',
-  'system.infra_tasks.read',
+  'ai.intervention_policies.manage',
   'system.module_builds.read',
 ];
 
@@ -376,24 +376,25 @@ describe('OperationsHubPage', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Settings button (system.infra_tasks.read permission gates it)
+  // Settings button (ai.intervention_policies.manage gates it: the modal is
+  // core's policy panel, whose endpoints require it)
   // ---------------------------------------------------------------------------
 
-  it('renders the Settings action button when system.infra_tasks.read is granted', () => {
+  it('renders the Settings action button when ai.intervention_policies.manage is granted', () => {
     renderPage();
     expect(screen.getByRole('button', { name: /settings/i })).toBeInTheDocument();
   });
 
-  it('does not render the Settings action button when system.infra_tasks.read is absent', () => {
+  it('does not render the Settings action button when ai.intervention_policies.manage is absent', () => {
     mockHasPermission.mockImplementation(
       (perm: string) =>
-        perm !== 'system.infra_tasks.read' && ALL_PERMISSIONS.includes(perm),
+        perm !== 'ai.intervention_policies.manage' && ALL_PERMISSIONS.includes(perm),
     );
     renderPage();
     expect(screen.queryByRole('button', { name: /settings/i })).not.toBeInTheDocument();
   });
 
-  it('opens the SystemSettingsPanel when Settings is clicked', async () => {
+  it('opens the AutonomySettingsModal when Settings is clicked', async () => {
     renderPage();
     expect(screen.queryByTestId('settings-panel')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /settings/i }));
@@ -628,7 +629,7 @@ describe('OperationsHubPage', () => {
   // Settings panel closes on onClose
   // ---------------------------------------------------------------------------
 
-  it('closes the SystemSettingsPanel when onClose is called', async () => {
+  it('closes the AutonomySettingsModal when onClose is called', async () => {
     renderPage();
     fireEvent.click(screen.getByRole('button', { name: /settings/i }));
 

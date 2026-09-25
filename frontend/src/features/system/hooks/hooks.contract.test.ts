@@ -9,7 +9,7 @@ import path from 'node:path';
  * for the symbol names always returned a hit. But nothing imported the barrel
  * either — every real consumer imports the concrete module
  * (`@system/features/system/hooks/useResourceList`, `.../useSystemWebSocket`,
- * `.../useSystemAutonomyConfig`). The barrel laundered a dead module into
+ * `.../useConcierge`). The barrel laundered a dead module into
  * looking referenced, and the hook duplicated the two fetches SystemOverview
  * already makes inline, so wiring it up would have created a second polling
  * path against the same endpoints.
