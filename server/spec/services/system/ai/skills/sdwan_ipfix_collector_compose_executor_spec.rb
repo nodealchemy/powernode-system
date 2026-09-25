@@ -134,6 +134,23 @@ RSpec.describe System::Ai::Skills::SdwanIpfixCollectorComposeExecutor do
       end
     end
 
+    # IMP-8552945f2672 — the create rescue returns a success:true partial
+    # result whose failures[].error reaches the model provider, so the raw
+    # exception text must not ride in it.
+    context "when creating the collector raises" do
+      it "reports the generic text in failures, never the exception's own message" do
+        allow(::Sdwan::IpfixCollector).to receive(:create!)
+          .and_raise(StandardError, 'PG::UniqueViolation: duplicate key value violates "idx_secret_internal"')
+
+        r = exec.execute(name: "primary", host: "10.0.0.1", port: 4739)
+
+        expect(r[:success]).to be true
+        error = r.dig(:data, :failures, 0, :error)
+        expect(error).to eq("An internal error occurred processing this request.")
+        expect(error).not_to include("idx_secret_internal")
+      end
+    end
+
     context "live execute reusing an existing collector" do
       it "returns the existing row with created=false" do
         existing = ::Sdwan::IpfixCollector.create!(

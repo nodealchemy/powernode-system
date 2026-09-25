@@ -166,7 +166,11 @@ module System
               state: "active"
             )
           rescue StandardError => e
-            return failure_with_partial("create_collector", e.message)
+            # IMP-8552945f2672 — failure_with_partial puts this into
+            # data.failures[].error of a success:true result, which reaches
+            # the model provider like any other; routed through
+            # safe_error_text, which records the raw cause server-side.
+            return failure_with_partial("create_collector", safe_error_text(e))
           end
 
           success(
