@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Ingress Manager AI agent — the owner of service exposure and
 # certificate issuance. Split out of Fleet Autonomy by HIER-P2DECL (2026-09-03,
@@ -166,6 +167,13 @@ ingress_prompt = <<~PROMPT
      Manager is part of the answer, not an omission.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+ingress_description = "Service publishing: the /svc/<slug> local publish, public TCP/HTTPS exposure, ACME DNS-01 " \
+  "issuance and backend sets. Use when an operator asks to publish, expose or certify a service " \
+  "or change its backends. Do not use for overlay networks, peers or VIP lifecycle (SDWAN " \
+  "Manager), replica counts (Capacity Manager) or certificate renewal (Fleet Autonomy)."
+
 ingress_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Ingress Manager",
   agent_type: "monitor",
@@ -183,10 +191,7 @@ ingress_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent
 #     this file's readers, never the .claude/agents skeleton. The first
 #     sentence therefore has to stand alone as the trigger.
 ingress_agent.assign_attributes(
-  description: "Service publishing: the /svc/<slug> local publish, public TCP/HTTPS exposure, ACME DNS-01 " \
-               "issuance and backend sets. Use when an operator asks to publish, expose or certify a service " \
-               "or change its backends. Do not use for overlay networks, peers or VIP lifecycle (SDWAN " \
-               "Manager), replica counts (Capacity Manager) or certificate renewal (Fleet Autonomy).",
+  description: (ingress_agent.new_record? ? ingress_description : ingress_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 300, "extension" => "system", "scope" => "ingress" },
   metadata: (ingress_agent.metadata || {}).merge(
@@ -238,7 +243,7 @@ ingress_agent.assign_attributes(
 #     it. Identity/plumbing edits are an operator door.
 #   * system_delete_service — unpublishing is the unexpose verbs; deleting the
 #     record is an operator door.
-ingress_agent.system_prompt = ingress_prompt
+ingress_agent.system_prompt = ingress_prompt if ingress_agent.new_record?
 ingress_agent.mcp_metadata = (ingress_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access" => {
@@ -269,6 +274,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Ingress Manager agent: #{ingress_agent.previously_new_record? ? 'created' : 'updated'} (id=#{ingress_agent.id[0, 8]})"
+System::Seeds::CanonicalAgentContent.refresh!(ingress_agent, description: ingress_description, system_prompt: ingress_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

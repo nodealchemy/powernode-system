@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Storage Manager AI agent — the owner of the storage data plane's
 # autonomy surface: storage-assignment reconciliation, volume restore and
@@ -142,6 +143,13 @@ storage_prompt = <<~PROMPT
   desired state and the exact verb in every plan.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+storage_description = "Storage data plane — assignments and their reconciliation, volumes, snapshots, " \
+  "restores (copy-swap), migrations, chown, NFS exports. Use when the task is about " \
+  "protecting, moving or restoring data on a volume. Do not use for placement or " \
+  "capacity (use Capacity Manager) or node lifecycle (use Fleet Autonomy)."
+
 storage_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Storage Manager",
   agent_type: "monitor",
@@ -156,10 +164,7 @@ storage_agent.assign_attributes(
   # carry the domain on its own and fit that budget; the hand-off sentences
   # serve the platform's own routing (discover / route_task) and the operator.
   # Whole string inside RoutingDescription::MAX_CHARS.
-  description: "Storage data plane — assignments and their reconciliation, volumes, snapshots, " \
-               "restores (copy-swap), migrations, chown, NFS exports. Use when the task is about " \
-               "protecting, moving or restoring data on a volume. Do not use for placement or " \
-               "capacity (use Capacity Manager) or node lifecycle (use Fleet Autonomy).",
+  description: (storage_agent.new_record? ? storage_description : storage_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 60, "extension" => "system", "scope" => "storage" }
 )
@@ -183,7 +188,7 @@ storage_agent.assign_attributes(
 # registered later fails the spec rather than widening the grant quietly.
 # The bootstrap verbs (get_agent / get_skill_context / record_agent_execution)
 # are added by the exporter itself.
-storage_agent.system_prompt = storage_prompt
+storage_agent.system_prompt = storage_prompt if storage_agent.new_record?
 storage_agent.mcp_metadata = (storage_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access" => {
@@ -218,6 +223,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Storage Manager agent: #{storage_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(storage_agent, description: storage_description, system_prompt: storage_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

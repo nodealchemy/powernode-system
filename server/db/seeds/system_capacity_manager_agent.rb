@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Capacity Manager AI agent + dedicated approval chain (the declared
 # policy set is PolicyReconciler's to write). HIER-P2B (Phase 2 wave 2, 2026-09-03): HIER-P2DECL declared
@@ -120,6 +121,14 @@ capacity_prompt = <<~PROMPT
     route there rather than act across the boundary.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+capacity_description = "Fleet capacity — replicas vs target, instance pools and ceilings, provisioning, " \
+  "replacement, relocation, cordons, platform scale-out/in. Use when capacity must grow, " \
+  "shrink, move or be fenced. Do not use for node drift, cert or module remediation " \
+  "(use Fleet Autonomy), volumes and snapshots (Storage Manager), published services " \
+  "(Ingress Manager) or package/module ingestion (Supply Chain Manager)."
+
 capacity_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Capacity Manager",
   agent_type: "monitor",
@@ -128,11 +137,7 @@ capacity_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agen
 capacity_agent.assign_attributes(
   # A ROUTING description: HIER-P1B exports it as the Claude Code subagent
   # description (first sentence ≤ 140 chars is the trigger; ≤ 400 total).
-  description: "Fleet capacity — replicas vs target, instance pools and ceilings, provisioning, " \
-               "replacement, relocation, cordons, platform scale-out/in. Use when capacity must grow, " \
-               "shrink, move or be fenced. Do not use for node drift, cert or module remediation " \
-               "(use Fleet Autonomy), volumes and snapshots (Storage Manager), published services " \
-               "(Ingress Manager) or package/module ingestion (Supply Chain Manager).",
+  description: (capacity_agent.new_record? ? capacity_description : capacity_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 60, "extension" => "system", "scope" => "capacity" }
 )
@@ -151,7 +156,7 @@ capacity_agent.assign_attributes(
 # storage (read); nothing from the SDWAN / ingress / supply-chain / disk-image
 # / runtime domains. Every name below is a registered `system_*` action; a
 # name that is not registered simply matches nothing.
-capacity_agent.system_prompt = capacity_prompt
+capacity_agent.system_prompt = capacity_prompt if capacity_agent.new_record?
 capacity_agent.mcp_metadata = (capacity_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access" => {
@@ -188,6 +193,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Capacity Manager agent: #{capacity_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(capacity_agent, description: capacity_description, system_prompt: capacity_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

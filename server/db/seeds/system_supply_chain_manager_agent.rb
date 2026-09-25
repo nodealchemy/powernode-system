@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Supply Chain Manager AI agent — the custodian of the software
 # supply chain: package repository ingestion, package-derived NodeModule
@@ -100,6 +101,13 @@ supply_chain_prompt = <<~PROMPT
     stays there.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+supply_chain_description = "Software supply chain custodian — package repositories, package-derived modules and the " \
+  "architecture catalog. Use when a package repository needs syncing, a package must become a " \
+  "NodeModule, or an architecture is proposed or changed. Do not use for CVE exposure or patch " \
+  "rollout (CVE Responder), disk images (Disk Image Manager) or module promotion (Fleet Autonomy)."
+
 supply_chain_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Supply Chain Manager",
   agent_type: "monitor",
@@ -109,10 +117,7 @@ supply_chain_agent.assign_attributes(
   # A ROUTING description: Ai::ClaudeExport::RoutingDescription lifts its
   # first sentence into the Claude Code subagent's frontmatter, and the
   # platform router reads the whole thing. ≤ 400 chars, trigger then hand-offs.
-  description: "Software supply chain custodian — package repositories, package-derived modules and the " \
-               "architecture catalog. Use when a package repository needs syncing, a package must become a " \
-               "NodeModule, or an architecture is proposed or changed. Do not use for CVE exposure or patch " \
-               "rollout (CVE Responder), disk images (Disk Image Manager) or module promotion (Fleet Autonomy).",
+  description: (supply_chain_agent.new_record? ? supply_chain_description : supply_chain_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 300, "extension" => "system", "scope" => "supply_chain" }
 )
@@ -127,7 +132,7 @@ supply_chain_agent.assign_attributes(
 # list): package repositories, packages and package modules; the architecture
 # catalog; modules READ-only; CVE READ-only. Everything else (SDWAN, disk
 # images, module promotion, CVE writes, repository delete) is a sibling's.
-supply_chain_agent.system_prompt = supply_chain_prompt
+supply_chain_agent.system_prompt = supply_chain_prompt if supply_chain_agent.new_record?
 supply_chain_agent.mcp_metadata = (supply_chain_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access"  => {
@@ -161,6 +166,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Supply Chain Manager agent: #{supply_chain_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(supply_chain_agent, description: supply_chain_description, system_prompt: supply_chain_prompt)
 puts "  ℹ️  Supply Chain Manager policies: written by System::Governance::PolicyReconciler " \
      "(#{System::Governance::PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES.size} declared; " \
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"

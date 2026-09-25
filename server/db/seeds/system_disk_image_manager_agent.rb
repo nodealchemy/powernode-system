@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Disk Image Manager AI agent — owns disk image CI publication
 # promotion, rollback, and retention. Carved out of Fleet Autonomy
@@ -46,6 +47,13 @@ disk_image_prompt = <<~PROMPT
   5. **Name the publication, the platform, and the change** in every plan.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+disk_image_description = "Disk-image CI publication lifecycle: promote a verified publication to the boot default, " \
+  "roll a platform back, tune retention. Use when an operator asks to promote, revert or " \
+  "retain disk images. Do not use for node lifecycle or module drift work — use Fleet " \
+  "Autonomy — nor for the CI build pipeline itself (Gitea workflows, CI workers)."
+
 disk_image_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Disk Image Manager",
   agent_type: "monitor",
@@ -58,10 +66,7 @@ disk_image_agent.assign_attributes(
   # platform-side trigger/exclusion the Concierge router reads. Kept under
   # RoutingDescription::MAX_CHARS (400), and the first sentence under its
   # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
-  description: "Disk-image CI publication lifecycle: promote a verified publication to the boot default, " \
-               "roll a platform back, tune retention. Use when an operator asks to promote, revert or " \
-               "retain disk images. Do not use for node lifecycle or module drift work — use Fleet " \
-               "Autonomy — nor for the CI build pipeline itself (Gitea workflows, CI workers).",
+  description: (disk_image_agent.new_record? ? disk_image_description : disk_image_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 300, "extension" => "system", "scope" => "disk_image" }
 )
@@ -89,7 +94,7 @@ disk_image_agent.assign_attributes(
 # monitor could not read the signals its declared
 # `system.disk_image_publication_investigate` lane is about, nor discover a
 # skill, once the family scope is in force.
-disk_image_agent.system_prompt = disk_image_prompt
+disk_image_agent.system_prompt = disk_image_prompt if disk_image_agent.new_record?
 disk_image_agent.mcp_metadata = (disk_image_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "standard" } },
   "tool_access" => {
@@ -120,6 +125,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Disk Image Manager agent: #{disk_image_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(disk_image_agent, description: disk_image_description, system_prompt: disk_image_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

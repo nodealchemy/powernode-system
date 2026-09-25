@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the GitOps Reconciler AI agent — owns the declarative fleet-state
 # reconciliation domain: diffing a registered Git repository's desired state
@@ -73,6 +74,14 @@ gitops_prompt = <<~PROMPT
   operator can triage the queue without opening every proposal.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+gitops_description = "Declarative fleet-state reconciliation: sync a GitOps repository, diff it against the " \
+  "live fleet, apply an approved drift proposal. Use when an operator asks to " \
+  "register, sync or apply GitOps repositories or proposals. Do not use for node or module " \
+  "drift remediation — use Fleet Autonomy — nor for SDWAN topology work — use System " \
+  "Topology Designer."
+
 gitops_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: agent_name,
   agent_type: "monitor",
@@ -84,11 +93,7 @@ gitops_agent.assign_attributes(
   # description, the rest is the platform-side trigger/exclusion. Kept under
   # RoutingDescription::MAX_CHARS (400), and the first sentence under its
   # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
-  description: "Declarative fleet-state reconciliation: sync a GitOps repository, diff it against the " \
-               "live fleet, apply an approved drift proposal. Use when an operator asks to " \
-               "register, sync or apply GitOps repositories or proposals. Do not use for node or module " \
-               "drift remediation — use Fleet Autonomy — nor for SDWAN topology work — use System " \
-               "Topology Designer.",
+  description: (gitops_agent.new_record? ? gitops_description : gitops_agent.description),
   status: "active",
   autonomy_config: {
     "interval_seconds" => 300, # matches SystemGitopsSyncJob's 5-minute staleness window
@@ -117,7 +122,7 @@ gitops_agent.assign_attributes(
 # skill-discovery verbs are named explicitly because the RUNTIME door
 # (AgentToolBridgeService#scope_to_tool_families) is a plain select over the
 # registry — only the exporter's ToolAllowlist unions BOOTSTRAP_ACTIONS in.
-gitops_agent.system_prompt = gitops_prompt
+gitops_agent.system_prompt = gitops_prompt if gitops_agent.new_record?
 gitops_agent.mcp_metadata = (gitops_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access" => { "tool_families" => %w[system_gitops discover_skills get_skill_context] }
@@ -135,6 +140,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ GitOps Reconciler agent: #{gitops_agent.previously_new_record? ? 'created' : 'updated'} (id=#{gitops_agent.id[0, 8]})"
+System::Seeds::CanonicalAgentContent.refresh!(gitops_agent, description: gitops_description, system_prompt: gitops_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

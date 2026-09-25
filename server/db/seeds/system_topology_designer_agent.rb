@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the System Topology Designer AI agent — specialized cross-cutting
 # topology design agent. Owns SDWAN composition (host bridges + OVN logical
@@ -145,6 +146,13 @@ system_prompt = <<~PROMPT
   to it when reasoning about what's already deployed.
 PROMPT
 
+# Written on create only; later changes reach an existing row through the
+# operator-edit guard (content/canonical_agent_content.rb) at the end of this file.
+topology_description = "Cross-cutting topology composition: SDWAN bridges, OVN networks, IPFIX collectors, " \
+  "federation overlays, tenant isolation, service discovery. Use when an operator asks to " \
+  "design or compose a network topology. Do not use for day-to-day SDWAN peer, VIP or BGP " \
+  "remediation — use SDWAN Manager — nor for node lifecycle work — use Fleet Autonomy."
+
 topology_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "System Topology Designer",
   agent_type: "assistant",
@@ -156,12 +164,9 @@ topology_agent.assign_attributes(
   # description, the rest is the platform-side trigger/exclusion. Kept under
   # RoutingDescription::MAX_CHARS (400), and the first sentence under its
   # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
-  description: "Cross-cutting topology composition: SDWAN bridges, OVN networks, IPFIX collectors, " \
-               "federation overlays, tenant isolation, service discovery. Use when an operator asks to " \
-               "design or compose a network topology. Do not use for day-to-day SDWAN peer, VIP or BGP " \
-               "remediation — use SDWAN Manager — nor for node lifecycle work — use Fleet Autonomy.",
+  description: (topology_agent.new_record? ? topology_description : topology_agent.description),
   status: "active",
-  system_prompt: system_prompt,
+  system_prompt: (topology_agent.new_record? ? system_prompt : topology_agent.system_prompt),
   metadata: (topology_agent.metadata || {}).merge(
     # Tool filter scoped to topology-relevant surfaces. Permissive on
     # SDWAN (read + compose), read-only on K8s and Docker (so the agent
@@ -299,6 +304,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 
 puts "  ✅ System Topology Designer agent: #{topology_agent.previously_new_record? ? 'created' : 'updated'} (id=#{topology_agent.id})"
+System::Seeds::CanonicalAgentContent.refresh!(topology_agent, description: topology_description, system_prompt: system_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

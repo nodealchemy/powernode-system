@@ -68,16 +68,18 @@ module System
         AGENTS.fetch(slug).fetch(:description)
       end
 
+      # A slug with no entry has no catalog fields: its seed owns all its text.
       def fields(slug)
-        AGENTS.fetch(slug).except(:previous)
+        AGENTS.fetch(slug, {}).except(:previous)
       end
 
       def previous(slug)
-        AGENTS.fetch(slug).fetch(:previous, {})
+        AGENTS.fetch(slug, {}).fetch(:previous, {})
       end
 
-      # Seed path: the catalog fields for the agent's slug over `inline` (fields
-      # the seed still owns, e.g. its system prompt), through the edit guard.
+      # Seed path, for every system agent seed: the catalog fields for the
+      # agent's slug (if any) over `inline` (the text the seed still owns),
+      # through the edit guard.
       def refresh!(agent, inline = {})
         apply!(agent, inline.merge(fields(agent.slug)), previous(agent.slug))
       end
