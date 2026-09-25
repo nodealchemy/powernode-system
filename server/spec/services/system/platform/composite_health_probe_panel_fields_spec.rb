@@ -135,21 +135,17 @@ RSpec.describe System::Platform::CompositeHealthProbe do
       contributor.conditions_for(records.fetch(key)).find { |c| c["type"] == "Healthy" }["evidence"]
     end
 
-    it "carries each panel entry into the Healthy evidence unchanged, minus status" do
+    # fc-47 review M-1: sidekiq, redis and postgres are core's shared
+    # core_service rows, so this contributor carries only rails of the four.
+    it "carries the rails entry into the Healthy evidence unchanged, minus status, and no core service row" do
       measured = panel.index_with { |name| entry(name) }
       probe.send(:persist, { overall: "ok", subsystems: measured, down: [], degraded: [], not_measured: [] })
       expect(System::PlatformHealthSnapshot.for_account(account).count).to eq(1)
 
       records = [].tap { |acc| contributor.each_component(account) { |r| acc << r } }.index_by(&:key)
-      panel.each do |name|
-        expect(healthy_evidence(records, name.to_s)).to eq(measured[name].as_json.except("status")),
-                                                         "#{name} evidence differs from what the probe stored"
-      end
-
+      expect(healthy_evidence(records, "rails")).to eq(measured[:rails].as_json.except("status"))
       expect(healthy_evidence(records, "rails")).to include("role", "host", "pid", "uptime_seconds", "boot_time")
-      expect(healthy_evidence(records, "sidekiq")).to include("last_seen_at")
-      expect(healthy_evidence(records, "redis")).to include("cache_store")
-      expect(healthy_evidence(records, "postgres")).to include("database", "size_bytes", "active_connections")
+      expect(records.keys & %w[sidekiq redis postgres]).to be_empty
     end
   end
 end
