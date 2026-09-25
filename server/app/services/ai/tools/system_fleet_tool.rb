@@ -8983,6 +8983,7 @@ module Ai
               architecture: entry["architecture"],
               tag: entry["tag"],
               state: entry["state"],
+              outcome: entry["outcome"],
               attempts: entry["attempts"],
               error: entry["error"],
               stalled: entry["state"] == "dispatched" && task.present? && task.finished?,

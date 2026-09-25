@@ -108,6 +108,7 @@ module System
           architecture: entry["architecture"],
           tag:          entry["tag"],
           state:        entry["state"],
+          outcome:      entry["outcome"],
           attempts:     entry["attempts"],
           error:        entry["error"],
           task:         task && serialize_task(task),

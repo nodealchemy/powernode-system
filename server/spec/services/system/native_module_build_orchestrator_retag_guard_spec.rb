@@ -205,26 +205,42 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
   end
 
   describe "finalize of a promoting publish" do
-    it "REFUSES a skip that re-tagged a :latest which is not the current version, naming a remedy a verb can do" do
-      stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
-                    ref(mod, "abc1234") => manifest(latest_manifest, stale_layer))
-      batch = dispatch_batch
-      complete_with(latest_manifest)
-      seed_pool_member # a retry would have a builder available; it must not use it
-      expect_no_publish
-
-      result = described_class.advance!(batch: batch)
-
-      entry = batch.reload.metadata["modules"][mod.name]
-      expect(result.failed).to eq(1)
-      expect(result.retried).to eq(0)
-      expect(entry["state"]).to eq("failed")
-      expect(entry["error"]).to include("re-tagged :latest", stale_layer, current_layer)
-      expect(entry["error"]).to include("system_promote_module_version", "system_rollback_module_version")
-      expect(entry["error"]).not_to include("BUILD_SKIP_UNCHANGED")
+    def capture_events
+      events = []
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!) { |**kw| events << kw }
+      events
     end
 
-    it "REFUSES a held (recorded non-current) version, even without a snapshot" do
+    it "treats a skip that re-tagged a stale :latest as a NO-OP SUCCESS: nothing signed, published or promoted" do
+      stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
+                    ref(mod, "abc1234") => manifest(latest_manifest, stale_layer))
+      events = capture_events
+      batch = dispatch_batch
+      complete_with(latest_manifest)
+      expect_no_publish
+
+      expect { @result = described_class.advance!(batch: batch) }
+        .not_to change { System::NodeModuleVersion.where(node_module: mod).count }
+
+      entry = batch.reload.metadata["modules"][mod.name]
+      expect(@result.succeeded).to eq(1)
+      expect(@result.failed).to eq(0)
+      expect(entry).to include("state" => "succeeded", "outcome" => "skipped_stale_latest", "error" => nil)
+      expect(entry["note"]).to include("re-tagged :latest", stale_layer, current_layer, "real input change")
+      expect(entry["note"]).not_to include("BUILD_SKIP_UNCHANGED")
+      expect(batch.status).to eq("complete")
+      expect(mod.reload.current_version_id).to eq(current_version.id)
+
+      refused = events.find { |e| e[:kind] == "system.module_build.stale_retag_refused" }
+      expect(refused).to be_present
+      expect(refused[:severity]).to eq(:high)
+      expect(refused[:payload]).to include("outcome" => "skipped_stale_latest", "artifact_layer" => stale_layer,
+                                           "current_layer" => current_layer)
+      expect(events.map { |e| e[:kind] }).not_to include("system.module_promotions_held")
+      expect(System::ModuleBuildBatchSerializer.new(batch).as_full[:modules].first[:outcome]).to eq("skipped_stale_latest")
+    end
+
+    it "treats a held (recorded non-current) version as a no-op success too, even without a snapshot" do
       version_with(stale_layer, number: 19, tag: "0ld0ld0")
       stub_registry(ref(mod, "abc1234") => manifest(fresh_manifest, stale_layer))
       batch = dispatch_batch
@@ -233,8 +249,61 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
 
       result = described_class.advance!(batch: batch)
 
-      expect(result.failed).to eq(1)
-      expect(batch.reload.metadata["modules"][mod.name]["error"]).to include("recorded non-current version v19")
+      entry = batch.reload.metadata["modules"][mod.name]
+      expect(result.succeeded).to eq(1)
+      expect(entry).to include("state" => "succeeded", "outcome" => "skipped_held_version")
+      expect(entry["note"]).to include("recorded non-current version v19")
+    end
+
+    it "resolves a batch whose only success is a no-op and whose other member failed to partial, not stuck" do
+      SiteSetting.set("system.module_builds.max_attempts", "1", setting_type: "integer")
+      other = create(:system_node_module, account: account, name: "zz-other")
+      stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
+                    ref(mod, "abc1234") => manifest(latest_manifest, stale_layer))
+      seed_pool_member
+      batch = dispatch_batch(modules: [ mod, other ])
+      complete_with(latest_manifest, slug: mod.name)
+      System::Task.where(account: account, command: "ci.module_build").detect { |t| t.options["module"] == other.name }
+                  .update!(status: "failed", completed_at: Time.current, error_message: "boom")
+      expect_no_publish
+
+      described_class.advance!(batch: batch)
+
+      expect(batch.reload.status).to eq("partial")
+    end
+
+    it "in a mixed batch, a fresh sibling still promotes: the batch completes and nothing is held" do
+      other = create(:system_node_module, account: account, name: "zz-other")
+      stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
+                    ref(mod, "abc1234") => manifest(latest_manifest, stale_layer),
+                    ref(other, "abc1234") => manifest(fresh_manifest, fresh_layer))
+      events = capture_events
+      seed_pool_member
+      batch = dispatch_batch(modules: [ mod, other ])
+      complete_with(latest_manifest, slug: mod.name)
+      complete_with(fresh_manifest, slug: other.name)
+
+      # The fresh sibling publishes into the batch's deferred set, as
+      # ModulePublicationProcessor does for a multi-module batch.
+      fresh_version = nil
+      expect(System::ModuleSigningService).to receive(:sign!).once
+        .and_return(System::ModuleSigningService::Result.new(ok?: true, oci_ref: "x", digest: "d"))
+      expect(System::ModulePublicationProcessor).to receive(:process!).once
+        .with(hash_including(node_module: other, promote: true)) do
+          fresh_version = version_with(fresh_layer, number: 1, tag: "abc1234", node_module: other)
+          fresh_version.update_columns(deferred_promotion_batch_id: batch.id)
+          System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: fresh_version)
+        end
+
+      result = described_class.advance!(batch: batch)
+
+      expect(result.succeeded).to eq(2)
+      expect(batch.reload.status).to eq("complete")
+      expect(batch.metadata.dig("modules", mod.name, "outcome")).to eq("skipped_stale_latest")
+      expect(batch.metadata.dig("modules", other.name, "outcome")).to be_nil
+      expect(other.reload.current_version_id).to eq(fresh_version.id)
+      expect(mod.reload.current_version_id).to eq(current_version.id)
+      expect(events.map { |e| e[:kind] }).not_to include("system.module_promotions_held")
     end
 
     it "allows a skip whose :latest IS the current version (a byte-identical republish)" do
@@ -305,7 +374,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
     it "a package batch is exempt" do
       orchestrator = described_class.new(batch: build_batch(trigger: "package"))
 
-      expect(orchestrator.send(:stale_retag_refusal, mod, { "tag" => "abc1234",
+      expect(orchestrator.send(:stale_retag, mod, { "tag" => "abc1234",
                                                             "pre_dispatch_latest" => { "manifest_digest" => latest_manifest,
                                                                                        "layer_digest" => stale_layer } }))
         .to be_nil

@@ -985,14 +985,22 @@ module System
       # version + artifact) — only its file_spec seam.
       apply_package_file_spec!(node_module, result) if package_batch?
 
-      if (refusal = stale_retag_refusal(node_module, entry))
-        entry["error"] = refusal
-        # Terminal: a retry would skip again and re-tag the same :latest.
-        entry["no_retry"] = true
-        Rails.logger.error("[NativeModuleBuildOrchestrator] stale re-tag refused for #{slug}: #{refusal}")
-        emit_event("system.module_build.stale_retag_refused", severity: :high, module_name: slug,
-                                                                tag: entry["tag"], reason: refusal)
-        return false
+      if (stale = stale_retag(node_module, entry))
+        # A NO-OP SUCCESS, not a failure: the skip built nothing new, so there
+        # is nothing to sign, publish or promote, and current stays where it
+        # is. Failing the module instead completed the batch partially, which
+        # holds every sibling's deferred promotion — and the next batch re-tags
+        # the same :latest, so one stale module wedged every later batch. No
+        # version row is written either (a withheld publish would pile one up
+        # per batch). The entry is `succeeded` with an outcome that says why.
+        entry["outcome"] = stale[:outcome]
+        entry["error"]   = nil
+        entry["note"]    = stale[:reason]
+        Rails.logger.warn("[NativeModuleBuildOrchestrator] #{slug}: nothing published — #{stale[:reason]}")
+        emit_event("system.module_build.stale_retag_refused", severity: :high,
+                   module_name: slug, tag: entry["tag"], outcome: stale[:outcome],
+                   artifact_layer: stale[:layer], current_layer: stale[:current_layer], reason: stale[:reason])
+        return true
       end
 
       @batch.await_signature! if @batch.may_await_signature?
@@ -1061,7 +1069,6 @@ module System
       # #try_dispatch_queued! is refusing to drain, and any future caller
       # reaching dispatch by another path would resurrect the batch.
       return false if @batch.cancelled?
-      return false if entry["no_retry"]
       return false if entry["attempts"].to_i >= max_attempts
 
       entry["state"]    = "queued"
@@ -1081,15 +1088,27 @@ module System
       return if states.include?("queued") || states.include?("dispatched") # still in flight
 
       if states.all? { |s| s == "succeeded" }
+        walk_to_publishing!
         @batch.complete! if @batch.may_complete?
         release_deferred_promotions!
       elsif states.any? { |s| s == "succeeded" }
+        walk_to_publishing!
         @batch.complete_partially! if @batch.may_complete_partially?
         hold_deferred_promotions!("batch completed partially")
       else
         @batch.fail!("all #{states.size} module build(s) failed") if @batch.may_fail?
         hold_deferred_promotions!("all module builds failed")
       end
+    end
+
+    # complete/partial are reachable only from `publishing`, which a sign +
+    # publish normally walks the batch into (#finalize_success!). A batch
+    # whose successes are all no-op skips (a stale :latest re-tag publishes
+    # nothing) never took those steps, so take them here, or it would sit in
+    # `dispatched` with every module resolved.
+    def walk_to_publishing!
+      @batch.await_signature! if @batch.may_await_signature?
+      @batch.begin_publishing! if @batch.may_begin_publishing?
     end
 
     # BATCH-ATOMIC PROMOTION — the release side. Members published during the
@@ -1342,10 +1361,13 @@ module System
 
     # Only a PROMOTING publish is guarded: a shadow batch publishes with
     # promote: false and an auto_promote-false module's version is held, so
-    # neither can put the artifact in front of the fleet — and refusing one
-    # would fail the batch (complete_partially! then holds every sibling) for
-    # no safety gain.
-    def stale_retag_refusal(node_module, entry)
+    # neither can put the artifact in front of the fleet.
+    #
+    # Returns nil (publish as usual) or { outcome:, reason:, layer:,
+    # current_layer: } for an artifact the skip merely re-tagged: (a) the
+    # :latest snapshotted at dispatch, when it is not the current version, or
+    # (b) a recorded non-current (held) version.
+    def stale_retag(node_module, entry)
       return nil if package_batch? || @batch.shadow?
       return nil unless ::System::ModulePublicationProcessor.auto_promote?(node_module)
 
@@ -1358,25 +1380,35 @@ module System
       current_layer = current_layer_digest(current)
       return nil if layer == current_layer
 
+      found = { layer: layer, current_layer: current_layer }
       latest = entry["pre_dispatch_latest"]
       if latest && built.manifest_digest == latest["manifest_digest"]
-        return "content-address skip re-tagged :latest (layer #{latest['layer_digest'] || 'unknown'}), which is " \
-               "not the current version (#{current_label(current, current_layer)}) — refusing to auto-promote a " \
-               "stale artifact. #{STALE_RETAG_REMEDY}"
+        return found.merge(
+          outcome: STALE_LATEST_OUTCOME,
+          reason: "content-address skip re-tagged :latest (layer #{latest['layer_digest'] || layer}), which is " \
+                  "not the current version (#{current_label(current, current_layer)}); nothing was built, so " \
+                  "nothing is published or promoted. #{STALE_RETAG_REMEDY}"
+        )
       end
 
       stale = recorded_non_current_version(node_module, current, layer, entry["tag"])
       return nil unless stale
 
-      "artifact layer #{layer} is recorded non-current version v#{stale.version_number} of #{node_module.name} " \
-        "(current: #{current_label(current, current_layer)}) — refusing to re-publish and auto-promote it as " \
-        "#{entry['tag']}. #{STALE_RETAG_REMEDY}"
+      found.merge(
+        outcome: HELD_VERSION_OUTCOME,
+        reason: "artifact layer #{layer} is recorded non-current version v#{stale.version_number} of " \
+                "#{node_module.name} (current: #{current_label(current, current_layer)}); nothing new was built, " \
+                "so it is not re-published or promoted. #{STALE_RETAG_REMEDY}"
+      )
     end
 
+    STALE_LATEST_OUTCOME = "skipped_stale_latest"
+    HELD_VERSION_OUTCOME = "skipped_held_version"
     STALE_RETAG_REMEDY =
-      "To run that artifact deliberately, promote its version with system_promote_module_version; to stay on " \
-      "(or return to) another version, use system_rollback_module_version. A skip keeps re-tagging :latest " \
-      "until the module's declared build inputs change, so a new artifact needs a real input change."
+      "A skip keeps re-tagging :latest until the module's declared build inputs change, so a new artifact " \
+      "needs a real input change. To run the existing artifact deliberately, promote its version with " \
+      "system_promote_module_version; to stay on (or return to) another version, use " \
+      "system_rollback_module_version."
 
     def current_label(version, layer)
       version ? "v#{version.version_number}, layer #{layer || 'unknown'}" : "none"
