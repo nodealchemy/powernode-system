@@ -49,7 +49,10 @@ module Ai
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_acme_create_dns_credential", mutating: true
-      declare_action "system_acme_get_certificate", mutating: false
+      declare_action "system_acme_get_certificate", mutating: false,
+                     returns: "certificate: id, common_name, sans, status, issuer, expiry fields, days_until_expiry " \
+                              "and last_renewal_error",
+                     refuses: "no certificate with that id exists in this account"
       declare_action "system_acme_renew_certificate", mutating: true
       declare_action "system_acme_revoke_certificate", mutating: true, destructive: true
 
