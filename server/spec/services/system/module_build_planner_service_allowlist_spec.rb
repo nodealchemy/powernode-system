@@ -119,13 +119,25 @@ RSpec.describe System::ModuleBuildPlannerService, "module allowlist" do
   end
 
   describe "module_slugs with expand_dependents: true" do
-    it "seeds the closure from the allowlist only" do
+    it "seeds the closure from the allowlist only, and reports what the range would have built besides" do
       stub_changed_paths([ "modules/redis/manifest.yaml", "modules/base-os/manifest.yaml" ])
 
       result = plan(module_slugs: [ "redis" ], expand_dependents: true)
 
       expect(modules_in(result)).to contain_exactly("redis", "hub-backend")
-      expect(result.withheld_dependents).to eq([])
+      # closure(dirty) = base-os, redis, hub-backend; base-os changed but is not built.
+      expect(result.withheld_dependents).to eq([ "base-os" ])
+    end
+  end
+
+  describe "a range that trips a catch-all trigger" do
+    it "treats every buildable module as changed, so an allowlist still narrows it" do
+      stub_changed_paths([ ".gitea/workflows/build-platform-modules.yaml" ])
+
+      result = plan(module_slugs: [ "powernode-system-base" ], expand_dependents: false)
+
+      expect(modules_in(result)).to eq([ "powernode-system-base" ])
+      expect(result.withheld_dependents).to eq(%w[base-os hub-backend redis])
     end
   end
 

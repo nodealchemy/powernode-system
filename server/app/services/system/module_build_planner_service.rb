@@ -42,10 +42,11 @@ module System
     # pre-existing caller consumes that shape); callers that want the dropped
     # names call .plan_with_diagnostics instead.
     #
-    # withheld_dependents (NARROW-DISPATCH): under an allowlist with
-    # expand_dependents: false, the reverse-dependency closure the range WOULD
-    # have built minus what the allowlist builds, sorted. [] in every other
-    # mode, so the caller and the batch audit always see what was not rebuilt.
+    # withheld_dependents (NARROW-DISPATCH): under an allowlist, the reverse-
+    # dependency closure the range WOULD have built minus what this plan
+    # builds, sorted — with or without expand_dependents. [] without an
+    # allowlist, so the caller and the batch audit always see what was not
+    # rebuilt.
     PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, keyword_init: true)
 
     # Exclusion reasons (machine-readable; the accompanying :detail is prose).
@@ -353,9 +354,11 @@ module System
       withheld = []
       if allowlist
         check_allowlist!(account, allowlist, dirty, known, base_sha, head_sha)
-        full_closure = expand_reverse_dependencies(account, dirty)
         closure = expand_dependents ? expand_reverse_dependencies(account, allowlist) : allowlist.dup
-        withheld = (full_closure - closure).to_a.sort unless expand_dependents
+        # What the range would have built that this plan does not, in either
+        # mode: with expansion on, a changed module left out of the allowlist
+        # (and its own dependents) is still unbuilt.
+        withheld = (expand_reverse_dependencies(account, dirty) - closure).to_a.sort
       else
         closure = expand_reverse_dependencies(account, dirty)
       end

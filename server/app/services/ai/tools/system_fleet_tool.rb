@@ -8708,13 +8708,15 @@ module Ai
       def dispatch_selection_params(params)
         slugs = params[:module_slugs]
         expand = params[:expand_dependents]
-        return {} if slugs.nil? && expand.nil?
+        expand = ::ActiveModel::Type::Boolean.new.cast(expand) unless expand.nil?
+        # expand_dependents: true alone IS default mode — record nothing.
+        return {} if slugs.nil? && expand != false
 
         slugs = slugs.to_a if slugs.respond_to?(:to_ary)
         return "module_slugs must be an array of module slugs" unless slugs.nil? || slugs.is_a?(Array)
 
         { module_slugs: slugs&.map(&:to_s),
-          expand_dependents: expand.nil? ? true : ::ActiveModel::Type::Boolean.new.cast(expand) }
+          expand_dependents: expand.nil? ? true : expand }
       end
 
       def selection_audit(selection, planned)

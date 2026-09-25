@@ -87,6 +87,30 @@ RSpec.describe Ai::Tools::SystemFleetTool, "dispatch module allowlist" do
     expect(System::ModuleBuildBatch.last.metadata).not_to have_key("selection")
   end
 
+  it "treats expand_dependents: true without module_slugs as default mode (no selection recorded)" do
+    expect(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+      .with(base_sha: "b", head_sha: "h", force_all: false, source_repo: nil)
+      .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ]))
+    stub_orchestrator_dispatch
+
+    result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", expand_dependents: true)
+
+    expect(result[:success]).to be true
+    expect(result[:data]).not_to have_key(:withheld_dependents)
+    expect(System::ModuleBuildBatch.last.metadata).not_to have_key("selection")
+  end
+
+  it "still sends expand_dependents: false without module_slugs to the planner, which refuses it" do
+    expect(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+      .with(hash_including(module_slugs: nil, expand_dependents: false))
+      .and_call_original
+
+    result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", expand_dependents: false)
+
+    expect(result[:success]).to be false
+    expect(result[:error]).to include("expand_dependents: false needs an explicit module_slugs allowlist")
+  end
+
   it "surfaces a planner allowlist refusal as an error_result and creates no batch" do
     allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
       .and_raise(::System::ModuleBuildPlannerService::PlanningError, "module_slugs names module(s) not changed by x..y: redis")
