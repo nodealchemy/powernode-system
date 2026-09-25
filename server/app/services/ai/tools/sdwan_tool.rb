@@ -195,92 +195,98 @@ module Ai
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
-      declare_action "system_multi_tenant_isolation", mutating: true
-      declare_action "system_sdwan_accept_federation_peer", mutating: true
-      declare_action "system_sdwan_activate_host_bridge", mutating: true
-      declare_action "system_sdwan_activate_ovn_logical_switch", mutating: true
-      declare_action "system_sdwan_activate_ovn_logical_switch_port", mutating: true
-      declare_action "system_sdwan_attach_peer", mutating: true
+      #
+      # `gated_in_call: true` marks an action whose own method parks through
+      # #gated_result or a gating skill executor, so the listing tags it and
+      # its description states the pending: true contract; dispatch is unchanged.
+      # paginated:/limit:/returns:/refuses:/see_also: feed the generated
+      # contract sentences (Ai::Tools::ContractDescription).
+      declare_action "system_multi_tenant_isolation", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_accept_federation_peer", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_activate_host_bridge", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_activate_ovn_logical_switch", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_activate_ovn_logical_switch_port", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_attach_peer", mutating: true, gated_in_call: true, returns: "attached: true and the peer with its address and public key"
       declare_action "system_sdwan_compile_ovn_plan", mutating: false
-      declare_action "system_sdwan_compile_route_policy", mutating: false
-      declare_action "system_sdwan_create_access_grant", mutating: true
-      declare_action "system_sdwan_create_firewall_rule", mutating: true
-      declare_action "system_sdwan_create_host_bridge", mutating: true
-      declare_action "system_sdwan_create_ipfix_collector", mutating: true
-      declare_action "system_sdwan_create_network", mutating: true
-      declare_action "system_sdwan_create_ovn_acl", mutating: true
-      declare_action "system_sdwan_create_ovn_deployment", mutating: true
-      declare_action "system_sdwan_create_ovn_logical_switch", mutating: true
-      declare_action "system_sdwan_create_ovn_logical_switch_port", mutating: true
+      declare_action "system_sdwan_compile_route_policy", mutating: false, returns: "peer_id, network_id and compiled, the FRR fragment; nothing is written"
+      declare_action "system_sdwan_create_access_grant", mutating: true, gated_in_call: true, returns: "grant; reusing a revoked grant reinstates it under its own approval category"
+      declare_action "system_sdwan_create_firewall_rule", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_host_bridge", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_ipfix_collector", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_network", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_ovn_acl", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_ovn_deployment", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_ovn_logical_switch", mutating: true, gated_in_call: true, returns: "ovn_logical_switch"
+      declare_action "system_sdwan_create_ovn_logical_switch_port", mutating: true, gated_in_call: true
       declare_action "system_sdwan_create_port_mapping", mutating: true
-      declare_action "system_sdwan_create_route_policy", mutating: true
-      declare_action "system_sdwan_create_virtual_ip", mutating: true
-      declare_action "system_sdwan_delete_firewall_rule", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_ipfix_collector", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_network", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_ovn_acl", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_ovn_deployment", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_ovn_logical_switch", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_ovn_logical_switch_port", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_port_mapping", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_route_policy", mutating: true, destructive: true
-      declare_action "system_sdwan_delete_virtual_ip", mutating: true, destructive: true
-      declare_action "system_sdwan_detach_peer", mutating: true
-      declare_action "system_sdwan_failover_virtual_ip", mutating: true
-      declare_action "system_sdwan_federation_compose", mutating: true
-      declare_action "system_sdwan_federation_scan", mutating: false
-      declare_action "system_sdwan_get_account_bgp", mutating: false
+      declare_action "system_sdwan_create_route_policy", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_create_virtual_ip", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_delete_firewall_rule", mutating: true, destructive: true, gated_in_call: true, returns: "deleted: true and the rule id"
+      declare_action "system_sdwan_delete_ipfix_collector", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_network", mutating: true, destructive: true, gated_in_call: true, returns: "deleted: true and the network id"
+      declare_action "system_sdwan_delete_ovn_acl", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_ovn_deployment", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_ovn_logical_switch", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_ovn_logical_switch_port", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_port_mapping", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_route_policy", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_delete_virtual_ip", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_detach_peer", mutating: true, gated_in_call: true, returns: "detached: true and the peer id"
+      declare_action "system_sdwan_failover_virtual_ip", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_federation_compose", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_federation_scan", mutating: false, returns: "findings, finding_count and a count per severity"
+      declare_action "system_sdwan_get_account_bgp", mutating: false, returns: "account_bgp (AS number, router-id strategy, default local-pref), or null when no AS is allocated yet", see_also: { "system_sdwan_update_account_as_number" => "allocating the AS" }
       declare_action "system_sdwan_get_audit_log", mutating: false
-      declare_action "system_sdwan_get_bgp_config_for_peer", mutating: false
-      declare_action "system_sdwan_get_bgp_sessions", mutating: false
-      declare_action "system_sdwan_get_federation_peer", mutating: false
-      declare_action "system_sdwan_get_firewall_rule", mutating: false
-      declare_action "system_sdwan_get_host_bridge", mutating: false
-      declare_action "system_sdwan_get_ipfix_collector", mutating: false
-      declare_action "system_sdwan_get_network", mutating: false
-      declare_action "system_sdwan_get_ovn_deployment", mutating: false
-      declare_action "system_sdwan_get_peer", mutating: false
-      declare_action "system_sdwan_get_port_mapping", mutating: false
-      declare_action "system_sdwan_get_route_policy", mutating: false
-      declare_action "system_sdwan_get_routing_summary", mutating: false
-      declare_action "system_sdwan_get_topology", mutating: false
-      declare_action "system_sdwan_get_virtual_ip", mutating: false
-      declare_action "system_sdwan_issue_user_device", mutating: true
-      declare_action "system_sdwan_list_access_grants", mutating: false
-      declare_action "system_sdwan_list_federation_peers", mutating: false
-      declare_action "system_sdwan_list_firewall_rules", mutating: false
-      declare_action "system_sdwan_list_host_bridges", mutating: false
-      declare_action "system_sdwan_list_ipfix_collectors", mutating: false
-      declare_action "system_sdwan_list_networks", mutating: false
-      declare_action "system_sdwan_list_ovn_acls", mutating: false
-      declare_action "system_sdwan_list_ovn_deployments", mutating: false
-      declare_action "system_sdwan_list_ovn_logical_switches", mutating: false
-      declare_action "system_sdwan_list_peers", mutating: false
-      declare_action "system_sdwan_list_port_mappings", mutating: false
-      declare_action "system_sdwan_list_route_policies", mutating: false
-      declare_action "system_sdwan_list_subnet_advertisements", mutating: false
-      declare_action "system_sdwan_list_user_devices", mutating: false
-      declare_action "system_sdwan_list_vip_assignments", mutating: false
-      declare_action "system_sdwan_list_virtual_ips", mutating: false
-      declare_action "system_sdwan_propose_federation_peer", mutating: true
-      declare_action "system_sdwan_release_host_bridge", mutating: true
-      declare_action "system_sdwan_revoke_access_grant", mutating: true, destructive: true
-      declare_action "system_sdwan_revoke_federation_peer", mutating: true, destructive: true
-      declare_action "system_sdwan_revoke_user_device", mutating: true, destructive: true
-      declare_action "system_sdwan_set_data_residency", mutating: true
-      declare_action "system_sdwan_set_peer_tags", mutating: true
-      declare_action "system_sdwan_update_account_as_number", mutating: true
-      declare_action "system_sdwan_update_federation_peer", mutating: true
-      declare_action "system_sdwan_update_firewall_rule", mutating: true
-      declare_action "system_sdwan_update_ipfix_collector", mutating: true
-      declare_action "system_sdwan_update_network", mutating: true
-      declare_action "system_sdwan_update_network_routing_mode", mutating: true
-      declare_action "system_sdwan_update_peer", mutating: true
-      declare_action "system_sdwan_update_peer_lan_subnets", mutating: true
-      declare_action "system_sdwan_update_port_mapping", mutating: true
-      declare_action "system_sdwan_update_route_policy", mutating: true
-      declare_action "system_sdwan_update_virtual_ip", mutating: true
-      declare_action "system_service_discovery_compose", mutating: true
+      declare_action "system_sdwan_get_bgp_config_for_peer", mutating: false, returns: "peer_id, network_id and bgp, the compiled config including the frr.conf text", see_also: { "system_sdwan_get_bgp_sessions" => "the sessions agents actually report" }
+      declare_action "system_sdwan_get_bgp_sessions", mutating: false, limit: 500, returns: "sessions and count, newest update first", see_also: { "system_sdwan_get_bgp_config_for_peer" => "the desired config a peer should run" }
+      declare_action "system_sdwan_get_federation_peer", mutating: false, returns: "federation_peer with the status transitions v1 allows from its current state"
+      declare_action "system_sdwan_get_firewall_rule", mutating: false, returns: "firewall_rule with compiled_preview, the nft rule the compiler would emit for it"
+      declare_action "system_sdwan_get_host_bridge", mutating: false, returns: "host_bridge with its state and lifecycle timestamps"
+      declare_action "system_sdwan_get_ipfix_collector", mutating: false, returns: "ipfix_collector with is_winning_collector"
+      declare_action "system_sdwan_get_network", mutating: false, returns: "network, the full record including settings"
+      declare_action "system_sdwan_get_ovn_deployment", mutating: false, returns: "ovn_deployment with logical_switches, each carrying its ports"
+      declare_action "system_sdwan_get_peer", mutating: false, returns: "peer with its current public key and endpoint"
+      declare_action "system_sdwan_get_port_mapping", mutating: false, returns: "port_mapping, the full record including hardening settings"
+      declare_action "system_sdwan_get_route_policy", mutating: false, returns: "route_policy with its full statement list"
+      declare_action "system_sdwan_get_routing_summary", mutating: false, returns: "counts only: peers, hubs, active advertisements by source, and the routing protocol settings"
+      declare_action "system_sdwan_get_topology", mutating: false, returns: "network_id, cidr_64, peer_count and peers, the compiled per-peer views"
+      declare_action "system_sdwan_get_virtual_ip", mutating: false, returns: "virtual_ip with its last 20 holder transitions", see_also: { "system_sdwan_list_vip_assignments" => "the full transition history" }
+      declare_action "system_sdwan_issue_user_device", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_list_access_grants", mutating: false, paginated: true
+      declare_action "system_sdwan_list_federation_peers", mutating: false, paginated: true
+      declare_action "system_sdwan_list_firewall_rules", mutating: false, paginated: true
+      declare_action "system_sdwan_list_host_bridges", mutating: false, paginated: true
+      declare_action "system_sdwan_list_ipfix_collectors", mutating: false, paginated: true
+      declare_action "system_sdwan_list_networks", mutating: false, paginated: true
+      declare_action "system_sdwan_list_ovn_acls", mutating: false, paginated: true
+      declare_action "system_sdwan_list_ovn_deployments", mutating: false, paginated: true
+      declare_action "system_sdwan_list_ovn_logical_switches", mutating: false, paginated: true
+      declare_action "system_sdwan_list_peers", mutating: false, paginated: true
+      declare_action "system_sdwan_list_port_mappings", mutating: false, paginated: true
+      declare_action "system_sdwan_list_route_policies", mutating: false, paginated: true
+      declare_action "system_sdwan_list_subnet_advertisements", mutating: false, paginated: true
+      declare_action "system_sdwan_list_user_devices", mutating: false, paginated: true
+      declare_action "system_sdwan_list_vip_assignments", mutating: false, paginated: true
+      declare_action "system_sdwan_list_virtual_ips", mutating: false, paginated: true
+      declare_action "system_sdwan_propose_federation_peer", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_release_host_bridge", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_revoke_access_grant", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_revoke_federation_peer", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_revoke_user_device", mutating: true, destructive: true, gated_in_call: true
+      declare_action "system_sdwan_set_data_residency", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_set_peer_tags", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_account_as_number", mutating: true, returns: "account_bgp and allocated (false when an AS already existed)"
+      declare_action "system_sdwan_update_federation_peer", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_firewall_rule", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_ipfix_collector", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_network", mutating: true, gated_in_call: true, returns: "network, re-read after the change", refuses: "no permitted field (name, description, status, settings) is supplied"
+      declare_action "system_sdwan_update_network_routing_mode", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_peer", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_peer_lan_subnets", mutating: true, gated_in_call: true
+      declare_action "system_sdwan_update_port_mapping", mutating: true, gated_in_call: true, returns: "port_mapping, re-read after the change", refuses: "no permitted field is supplied"
+      declare_action "system_sdwan_update_route_policy", mutating: true, gated_in_call: true, returns: "route_policy, re-read after the change", refuses: "no permitted field is supplied"
+      declare_action "system_sdwan_update_virtual_ip", mutating: true, gated_in_call: true, returns: "virtual_ip, re-read after the change", refuses: "no permitted field is supplied"
+      declare_action "system_service_discovery_compose", mutating: true, gated_in_call: true
 
       def self.definition
         {
@@ -347,7 +353,7 @@ module Ai
             }
           },
           "system_sdwan_delete_network" => {
-            description: "Delete an SDWAN network and all its peers + keys (destructive) Approval-gated (sdwan.network_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
+            description: "Delete an SDWAN network together with all its peers and keys. Approval-gated (sdwan.network_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network to delete" } }
           },
           "system_sdwan_list_peers" => {
@@ -386,7 +392,7 @@ module Ai
             }
           },
           "system_sdwan_detach_peer" => {
-            description: "Detach a peer (revokes key, removes membership) Approval-gated (sdwan.peer_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
+            description: "Detach a peer from its network: revokes its key and removes its membership. Approval-gated (sdwan.peer_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to detach" } }
           },
           "system_sdwan_get_topology" => {
@@ -450,7 +456,7 @@ module Ai
             }
           },
           "system_sdwan_delete_firewall_rule" => {
-            description: "Delete a firewall rule (immediate; takes effect on next agent reconcile) Approval-gated (sdwan.firewall_rule_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
+            description: "Delete a firewall rule; it takes effect on the next agent reconcile. Approval-gated (sdwan.firewall_rule_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to delete" } }
           },
           # Slice 4: user VPN
@@ -587,7 +593,7 @@ module Ai
             }
           },
           "system_multi_tenant_isolation" => {
-            description: "Provision a fully-isolated SDWAN network slice for a single tenant: a dedicated overlay network with its own VRF + isolated iBGP RIB, a non-overlapping /64, default-deny nftables rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native — no k8s NetworkPolicy, no VLAN. Approval-gated.",
+            description: "Provision an isolated SDWAN network slice for one tenant. It creates a dedicated overlay network with its own VRF and isolated iBGP RIB, a non-overlapping /64, default-deny nftables rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native: no k8s NetworkPolicy, no VLAN. Pass dry_run to preview the plan without writing.",
             parameters: {
               tenant_key: { type: "string", required: true, description: "Stable slug-safe tenant identifier within the account (names the network/rules/switch/ACLs)" },
               network_name: { type: "string", required: false, description: "Display name for the tenant's Sdwan::Network (defaults to 'tenant-<tenant_key>')" },
@@ -599,7 +605,7 @@ module Ai
             }
           },
           "system_service_discovery_compose" => {
-            description: "Make a backend service discoverable across the fleet over the SDWAN overlay — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering, regenerates local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names. Approval-gated.",
+            description: "Make a backend service discoverable across the fleet over the SDWAN overlay. It provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering, and regenerates local Traefik routes. It can also publish a public DNS record (A/AAAA/CNAME) for an internet-facing name.",
             parameters: {
               service_name: { type: "string", required: true, description: "Human-readable catalog display name" },
               service_slug: { type: "string", required: true, description: "Lowercase-alphanumeric-hyphen slug — the catalog's natural key (also names the VIP)" },
@@ -697,7 +703,7 @@ module Ai
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to fetch" } }
           },
           "system_sdwan_update_virtual_ip" => {
-            description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows. Approval-gated (sdwan.virtual_ip_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
+            description: "Update a Virtual IP's holders, failover candidates, anycast mode, or advertised MED/local-pref. Holder changes are recorded as 'holder_changed' assignment rows. Approval-gated (sdwan.virtual_ip_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to update" },
               holder_peer_ids: { type: "array", required: false, items: { type: "string" },
@@ -942,7 +948,7 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_sdwan_get_ipfix_collector" => {
-            description: "Fetch one IPFIX collector, including `is_winning_collector` — the compiler stamps only ONE collector onto the account's OVS bridges (the oldest active row), so a fleet may hold several while exactly one exports.",
+            description: "Fetch one IPFIX collector, including `is_winning_collector`. The compiler stamps only ONE collector onto the account's OVS bridges (the oldest active row), so a fleet may hold several while exactly one exports.",
             parameters: {
               collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" }
             }
@@ -1001,7 +1007,7 @@ module Ai
             }
           },
           "system_sdwan_get_ovn_deployment" => {
-            description: "Fetch one OVN deployment with its logical switches (each switch includes its ports), so an agent can rediscover the full topology and the ids it needs for compile/delete.",
+            description: "Fetch one OVN deployment with its logical switches and their ports. Use it to rediscover the full topology and the ids needed for compile or delete.",
             parameters: { deployment_id: { type: "string", required: true, description: "Sdwan::OvnDeployment id" } }
           },
           "system_sdwan_list_ovn_logical_switches" => {
