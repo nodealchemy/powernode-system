@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { ModuleBuildsTab } from './ModuleBuildsTab';
 import type { SystemModuleBuildBatch, SystemModuleBuildBatchFull } from '@system/features/system/types/system.types';
 
@@ -85,6 +86,24 @@ const META = {
   total_pages: 1,
   next_page: null,
   prev_page: null,
+};
+
+// The server pages 20 at a time (review fix, fc-34): a real multi-page meta,
+// so the header badge and pagination controls have something to show.
+const META_PAGE_1_OF_3 = {
+  current_page: 1,
+  per_page: 20,
+  total_count: 45,
+  total_pages: 3,
+  next_page: 2,
+  prev_page: null,
+};
+
+const META_PAGE_2_OF_3 = {
+  ...META_PAGE_1_OF_3,
+  current_page: 2,
+  next_page: 3,
+  prev_page: 1,
 };
 
 const BATCH_ACTIVE: SystemModuleBuildBatch = {
@@ -192,12 +211,27 @@ const BATCH_CANCELLED_FULL: SystemModuleBuildBatchFull = {
   cancelled_at: '2026-06-01T00:05:00Z',
 };
 
+// Review fix, fc-34: module-slug CHIPS instead of only a count — a batch
+// with more than 2 modules to exercise the "+N more" overflow.
+const BATCH_MANY_MODULES: SystemModuleBuildBatch = {
+  ...BATCH_ACTIVE,
+  id: 'batch-many',
+  module_slugs: ['fleet-autonomy', 'sdwan-manager', 'core-runtime', 'billing-engine'],
+};
+
 // =============================================================================
 // Helpers
 // =============================================================================
 
-const renderTab = (props: Partial<React.ComponentProps<typeof ModuleBuildsTab>> = {}) =>
-  render(<ModuleBuildsTab {...props} />);
+const renderTab = (
+  props: Partial<React.ComponentProps<typeof ModuleBuildsTab>> = {},
+  initialPath = '/app/devops/ci-cd/module-builds',
+) =>
+  render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <ModuleBuildsTab {...props} />
+    </MemoryRouter>,
+  );
 
 // =============================================================================
 // Tests
@@ -253,30 +287,24 @@ describe('ModuleBuildsTab', () => {
     expect(screen.getByText('ccccccc→ddddddd')).toBeInTheDocument();
   });
 
-  it('displays a batch count badge when batches are present', async () => {
-    mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE, BATCH_DONE], meta: META });
+  it('displays the real total from pagination meta as the count badge, not just the fetched page length', async () => {
+    // Review fix: the badge shows meta.total_count (the server-side total),
+    // not batches.length (only the current page) — deliberately different
+    // here (2 fetched, 5 total) to prove which one the badge actually reads.
+    mockList.mockResolvedValue({
+      module_build_batches: [BATCH_ACTIVE, BATCH_DONE],
+      meta: { ...META, total_count: 5 },
+    });
 
     renderTab();
 
-    await waitFor(() => expect(screen.getByText('2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('5')).toBeInTheDocument());
   });
 
   // ---------------------------------------------------------------------------
-  // Error state
+  // Error state — see "inline error with retry" below (review fix: fetch
+  // failures now show an inline banner + Try Again, not only a toast).
   // ---------------------------------------------------------------------------
-
-  it('shows error notification when fetch fails', async () => {
-    mockList.mockRejectedValue(new Error('Network error'));
-
-    renderTab();
-
-    await waitFor(() =>
-      expect(mockAddNotification).toHaveBeenCalledWith({
-        type: 'error',
-        message: 'Network error',
-      }),
-    );
-  });
 
   // ---------------------------------------------------------------------------
   // onActionsReady (Refresh)
@@ -421,10 +449,13 @@ describe('ModuleBuildsTab', () => {
     fireEvent.click(link);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
-    // Per-module table row rendered from BATCH_DONE_FULL.modules — unique
-    // text, unlike the "Modules" section heading (also present in the
-    // summary grid's "Modules" label).
-    await waitFor(() => expect(screen.getByText('pkg-closure')).toBeInTheDocument());
+    // Per-module table row rendered from BATCH_DONE_FULL.modules, scoped to
+    // the dialog — the review-fix module-slug chip on the LIST row behind the
+    // modal renders the same slug text ('pkg-closure'), so an unscoped lookup
+    // is ambiguous once both are on screen at once.
+    await waitFor(() =>
+      expect(within(screen.getByRole('dialog')).getByText('pkg-closure')).toBeInTheDocument(),
+    );
   });
 
   it('closes the batch detail modal when Close is clicked', async () => {
@@ -436,13 +467,17 @@ describe('ModuleBuildsTab', () => {
     const link = await screen.findByTitle('View batch details');
     fireEvent.click(link);
 
-    await waitFor(() => expect(screen.getByText('pkg-closure')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
 
     // The core Modal shell adds its own "Close modal" control alongside the
     // footer's Close button, so the lookup has to be exact.
     fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
 
-    await waitFor(() => expect(screen.queryByText('pkg-closure')).not.toBeInTheDocument());
+    // Query for the dialog itself, not 'pkg-closure' — the list row behind it
+    // renders that same slug as its own chip (review fix) and stays mounted
+    // once the modal closes, which would make a text-based query ambiguous
+    // and pass vacuously even if the modal never actually closed.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   // ---------------------------------------------------------------------------
@@ -589,6 +624,230 @@ describe('ModuleBuildsTab', () => {
 
       await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('batch-active'));
       await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Parity restoration (fc-34 review fix) — status/trigger filters,
+  // pagination with the real total, module-slug chips, inline error + retry.
+  // Based on the deleted core ModuleBuildsPage (git show a1b5b13d9:
+  // frontend/src/features/devops/module-builds/pages/ModuleBuildsPage.tsx).
+  // ---------------------------------------------------------------------------
+
+  describe('status and trigger filters', () => {
+    it('renders status and trigger filter selects', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [], meta: META });
+      renderTab();
+
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+      expect(screen.getByLabelText(/status/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/trigger/i)).toBeInTheDocument();
+    });
+
+    it('refetches with the status filter when changed', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [], meta: META });
+      renderTab();
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+      fireEvent.change(screen.getByLabelText(/status/i), { target: { value: 'failed' } });
+
+      await waitFor(() =>
+        expect(mockList).toHaveBeenLastCalledWith(
+          expect.objectContaining({ status: 'failed' }),
+        ),
+      );
+    });
+
+    it('refetches with the trigger filter when changed', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [], meta: META });
+      renderTab();
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+      fireEvent.change(screen.getByLabelText(/trigger/i), { target: { value: 'package' } });
+
+      await waitFor(() =>
+        expect(mockList).toHaveBeenLastCalledWith(
+          expect.objectContaining({ trigger: 'package' }),
+        ),
+      );
+    });
+
+    it('omits status/trigger from the list params when both filters are "All"', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [], meta: META });
+      renderTab();
+
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+      const [params] = mockList.mock.calls[0];
+      expect(params?.status).toBeUndefined();
+      expect(params?.trigger).toBeUndefined();
+    });
+  });
+
+  describe('pagination', () => {
+    it('shows the real total from pagination meta, not just the fetched page length', async () => {
+      mockList.mockResolvedValue({
+        module_build_batches: [BATCH_ACTIVE],
+        meta: META_PAGE_1_OF_3,
+      });
+      renderTab();
+
+      // 45 total batches server-side; only 1 came back on this page.
+      await waitFor(() => expect(screen.getByText('45')).toBeInTheDocument());
+    });
+
+    it('shows Previous/Next controls and the current/total page', async () => {
+      mockList.mockResolvedValue({
+        module_build_batches: [BATCH_ACTIVE],
+        meta: META_PAGE_1_OF_3,
+      });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText(/page 1 of 3/i)).toBeInTheDocument());
+      expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^next$/i })).not.toBeDisabled();
+    });
+
+    it('does not render pagination controls for a single-page result', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTestId('batch-row-batch-active')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /^next$/i })).not.toBeInTheDocument();
+    });
+
+    it('requests the next page when Next is clicked, and reaches every batch (not just the first 20)', async () => {
+      mockList
+        .mockResolvedValueOnce({ module_build_batches: [BATCH_ACTIVE], meta: META_PAGE_1_OF_3 })
+        .mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META_PAGE_2_OF_3 });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText(/page 1 of 3/i)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+
+      await waitFor(() =>
+        expect(mockList).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })),
+      );
+      await waitFor(() => expect(screen.getByText(/page 2 of 3/i)).toBeInTheDocument());
+    });
+
+    it('resets to page 1 when a filter changes', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META_PAGE_2_OF_3 });
+      renderTab();
+      await waitFor(() => expect(screen.getByText(/page 2 of 3/i)).toBeInTheDocument());
+
+      fireEvent.change(screen.getByLabelText(/status/i), { target: { value: 'failed' } });
+
+      await waitFor(() =>
+        expect(mockList).toHaveBeenLastCalledWith(
+          expect.objectContaining({ status: 'failed', page: 1 }),
+        ),
+      );
+    });
+  });
+
+  describe('module-slug chips', () => {
+    it('renders a chip per module slug, up to 2, with a "+N more" overflow', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_MANY_MODULES], meta: META });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('fleet-autonomy')).toBeInTheDocument());
+      expect(screen.getByText('sdwan-manager')).toBeInTheDocument();
+      expect(screen.queryByText('core-runtime')).not.toBeInTheDocument();
+      expect(screen.getByText('+2 more')).toBeInTheDocument();
+    });
+
+    it('shows a placeholder, not chips, for a batch with no modules', async () => {
+      mockList.mockResolvedValue({
+        module_build_batches: [{ ...BATCH_ACTIVE, module_slugs: [] }],
+        meta: META,
+      });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTestId('batch-row-batch-active')).toBeInTheDocument());
+      expect(within(screen.getByTestId('batch-row-batch-active')).getByText('—')).toBeInTheDocument();
+    });
+  });
+
+  describe('inline error with retry', () => {
+    it('shows an inline error banner with a Try Again button on fetch failure, not only a toast', async () => {
+      mockList.mockRejectedValue(new Error('Network error'));
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+      expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+    });
+
+    it('retries the fetch when Try Again is clicked', async () => {
+      mockList.mockRejectedValueOnce(new Error('Network error'));
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+      await waitFor(() => expect(screen.getByTestId('batch-row-batch-active')).toBeInTheDocument());
+      expect(screen.queryByText('Network error')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('deep-linkable batch detail (?batch=<id>)', () => {
+    it('opens BatchDetailModal for the batch named in the ?batch= query param on load', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
+      mockGet.mockResolvedValue(BATCH_DONE_FULL);
+
+      renderTab({}, '/app/devops/ci-cd/module-builds?batch=batch-done');
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
+      // Scoped to the dialog — the list row behind it renders the same slug
+      // as its own module-slug chip (review fix), so an unscoped lookup is
+      // ambiguous once both are on screen.
+      await waitFor(() =>
+        expect(within(screen.getByRole('dialog')).getByText('pkg-closure')).toBeInTheDocument(),
+      );
+    });
+
+    // Observes the CURRENT URL's search string alongside ModuleBuildsTab, so
+    // a test can assert the param itself changed — not just that the modal's
+    // own state did (which could pass even if the URL never actually moved).
+    const SearchParamProbe: React.FC = () => {
+      const [params] = require('react-router-dom').useSearchParams();
+      return <div data-testid="search-probe">{params.toString()}</div>;
+    };
+
+    const renderTabWithProbe = (initialPath = '/app/devops/ci-cd/module-builds') =>
+      render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <ModuleBuildsTab />
+          <SearchParamProbe />
+        </MemoryRouter>,
+      );
+
+    it('sets the ?batch= query param when a row is opened', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
+      mockGet.mockResolvedValue(BATCH_DONE_FULL);
+      renderTabWithProbe();
+
+      fireEvent.click(await screen.findByTitle('View batch details'));
+
+      await waitFor(() => expect(screen.getByTestId('search-probe')).toHaveTextContent('batch=batch-done'));
+    });
+
+    it('clears the ?batch= query param when the modal is closed', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
+      mockGet.mockResolvedValue(BATCH_DONE_FULL);
+      renderTabWithProbe('/app/devops/ci-cd/module-builds?batch=batch-done');
+
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
+
+      // Query for the dialog itself, not 'pkg-closure' — the list row behind
+      // it renders that same slug as its own chip and stays mounted.
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByTestId('search-probe')).toHaveTextContent('');
     });
   });
 });

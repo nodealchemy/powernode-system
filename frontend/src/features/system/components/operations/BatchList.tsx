@@ -39,6 +39,26 @@ function shortRef(ref: string): string {
   return ref.slice(0, 7);
 }
 
+// Review fix, fc-34: module-slug CHIPS (ported from the deleted core
+// ModuleBuildsPage's ModuleSlugsCell) instead of only a "N modules" count —
+// an operator scanning the list for a specific module no longer has to open
+// every row.
+const ModuleSlugsChips: React.FC<{ slugs: string[] }> = ({ slugs }) => {
+  if (slugs.length === 0) return <span className="text-theme-tertiary">—</span>;
+  const shown = slugs.slice(0, 2);
+  const rest = slugs.length - shown.length;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {shown.map((slug) => (
+        <span key={slug} className="px-1.5 py-0.5 rounded bg-theme-primary/10 text-theme-primary font-mono">
+          {slug}
+        </span>
+      ))}
+      {rest > 0 && <span className="text-theme-tertiary">+{rest} more</span>}
+    </span>
+  );
+};
+
 export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect, onCancelled }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
@@ -73,7 +93,7 @@ export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect, onCance
   return (
     <ul className="divide-y divide-theme">
       {batches.map((batch) => (
-        <li key={batch.id} className="px-3 py-2.5">
+        <li key={batch.id} className="px-3 py-2.5" data-testid={`batch-row-${batch.id}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 text-sm flex-wrap">
@@ -96,10 +116,8 @@ export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect, onCance
                 <Badge variant="secondary" size="xs">{capitalize(batch.trigger)}</Badge>
               </div>
               <div className="mt-1 text-xs text-theme-tertiary flex items-center gap-3 flex-wrap">
-                <span>
-                  {batch.module_slugs.length} module{batch.module_slugs.length === 1 ? '' : 's'} ·{' '}
-                  {batch.succeeded_count}/{batch.planned_count} succeeded
-                </span>
+                <ModuleSlugsChips slugs={batch.module_slugs} />
+                <span>{batch.succeeded_count}/{batch.planned_count} succeeded</span>
                 {batch.failed_count > 0 && (
                   <span className="text-theme-error-fg">{batch.failed_count} failed</span>
                 )}

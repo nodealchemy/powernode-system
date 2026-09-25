@@ -24,6 +24,7 @@ export interface ModuleBuildBatchListFilters {
   status?: string;
   trigger?: string;
   shadow?: boolean;
+  page?: number;
 }
 
 export const moduleBuildsApi = {
