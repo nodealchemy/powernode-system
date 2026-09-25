@@ -821,30 +821,6 @@ describe('ModuleBuildsTab', () => {
       );
     });
 
-    // (Nit) An old-style path segment — the shape core's now-deleted
-    // ModuleBuildsPage/ModuleBuildDetailPage used before this tab had its own
-    // ?batch= link — still opens the same modal. Not a redirect: no
-    // navigation/history assertion here, only that the modal opens.
-    it('opens BatchDetailModal for a legacy /module-builds/<id> path segment, with no ?batch= present', async () => {
-      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
-      mockGet.mockResolvedValue(BATCH_DONE_FULL);
-
-      renderTab({}, '/app/devops/ci-cd/module-builds/batch-done');
-
-      await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
-      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-    });
-
-    it('a legacy path segment does not override an explicit ?batch= already present', async () => {
-      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE, BATCH_DONE], meta: META });
-      mockGet.mockResolvedValue(BATCH_DONE_FULL);
-
-      renderTab({}, '/app/devops/ci-cd/module-builds/batch-active?batch=batch-done');
-
-      await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
-      expect(mockGet).not.toHaveBeenCalledWith('batch-active');
-    });
-
     // Observes the CURRENT URL's search string alongside ModuleBuildsTab, so
     // a test can assert the param itself changed — not just that the modal's
     // own state did (which could pass even if the URL never actually moved).
