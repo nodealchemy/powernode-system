@@ -223,13 +223,15 @@ describe('PlatformInfraTab', () => {
     );
   });
 
-  it('hides PeerLivenessMonitor but keeps the link to the canonical peer-management surface without system.peers.read (C10 review FIX-1)', () => {
+  it('hides both PeerLivenessMonitor and the link-out without system.peers.read (review fix, fc-35)', () => {
     mockHasPermission = jest.fn((perm: string) => perm !== 'system.peers.read');
     renderAt(`${BASE}/peers`);
     expect(screen.queryByTestId('peer-liveness-monitor')).not.toBeInTheDocument();
-    // The link out is unaffected — it already rendered unconditionally on the
-    // old page's Compute/Platform/Peers sub-tab (review §3, FIX-1 mitigation).
-    expect(screen.getByRole('link', { name: /service delivery.*peers/i })).toBeInTheDocument();
+    // Review fix: the link-out used to render unconditionally regardless of
+    // this permission, which was a dead end for anyone without it — its own
+    // destination (ServiceDeliveryPage's Peers tab) requires system.peers.read
+    // too. Now gated on the same permission as the liveness monitor above it.
+    expect(screen.queryByRole('link', { name: /service delivery.*peers/i })).not.toBeInTheDocument();
   });
 
   it('renders NetworkVipPicker for /discovery route when system.sdwan.vips.manage is held', () => {

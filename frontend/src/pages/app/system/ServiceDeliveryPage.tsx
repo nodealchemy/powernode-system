@@ -150,12 +150,16 @@ export const ServiceDeliveryPage: React.FC = () => {
 const PeersTab: React.FC<{ hasPermission: (permission: string) => boolean }> = ({
   hasPermission,
 }) => {
-  const canManageFederation = hasPermission('system.sdwan.federation.manage');
   const canReadFederation = hasPermission('system.sdwan.federation.read');
 
   return (
     <div className="space-y-8" data-testid="service-delivery-peers-tab">
-      <PeerControlPanel canManage={canManageFederation} />
+      {/* PeerControlPanel gates its own actions (Invite/Revoke/Grants) on the
+          permissions its backend endpoints actually check
+          (system.peers.invite / system.peers.manage) — not on this page's
+          federation-governance permission, which the peer endpoints never
+          check (review fix, fc-35). */}
+      <PeerControlPanel />
 
       {canReadFederation && (
         <section>

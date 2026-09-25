@@ -37,6 +37,19 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
   }),
 }));
 
+// usePermissions — PeerControlPanel gates Invite on system.peers.invite and
+// Revoke/Grants on system.peers.manage (review fix, fc-35: it used to receive
+// a single `canManage` prop wired to system.sdwan.federation.manage, a
+// permission the peer endpoints never check). Defaults both to granted;
+// individual tests narrow via mockHasPermission to prove each gate.
+let mockGrantedPermissions = new Set(['system.peers.invite', 'system.peers.manage']);
+const mockHasPermission = jest.fn((permission: string) => mockGrantedPermissions.has(permission));
+jest.mock('@/shared/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    hasPermission: (permission: string) => mockHasPermission(permission),
+  }),
+}));
+
 jest.mock('@/shared/hooks/BreadcrumbContext', () => ({
   __esModule: true,
   BreadcrumbProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -180,12 +193,16 @@ function peersListResponse(peers: PlatformPeerSummary[]) {
 // =============================================================================
 
 function renderPanel(props: Partial<React.ComponentProps<typeof PeerControlPanel>> = {}) {
-  const defaults = { canManage: true };
   return render(
     <BrowserRouter>
-      <PeerControlPanel {...defaults} {...props} />
+      <PeerControlPanel {...props} />
     </BrowserRouter>,
   );
+}
+
+/** Grants only the given permission(s) — the rest of PeerControlPanel's checks return false. */
+function grantOnly(...permissions: string[]) {
+  mockGrantedPermissions = new Set(permissions);
 }
 
 // =============================================================================
@@ -197,6 +214,10 @@ describe('PeerControlPanel', () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockAddNotification.mockReset();
+    mockGrantedPermissions = new Set(['system.peers.invite', 'system.peers.manage']);
+    // jest.config's `resetMocks: true` wipes mockHasPermission's implementation
+    // (not just its call history) before every test — re-establish it here.
+    mockHasPermission.mockImplementation((permission: string) => mockGrantedPermissions.has(permission));
   });
 
   // ---------------------------------------------------------------------------
@@ -222,10 +243,10 @@ describe('PeerControlPanel', () => {
       expect(screen.getByText('loading…')).toBeInTheDocument();
     });
 
-    it('shows empty-state message with invite hint when canManage=true and no peers', async () => {
+    it('shows empty-state message with invite hint when system.peers.invite is granted and no peers', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(
@@ -237,10 +258,11 @@ describe('PeerControlPanel', () => {
       ).toBeInTheDocument();
     });
 
-    it('shows empty-state without invite hint when canManage=false', async () => {
+    it('shows empty-state without invite hint when system.peers.invite is NOT granted', async () => {
+      grantOnly('system.peers.manage');
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: false });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByText(/No federation peers yet/)).toBeInTheDocument();
@@ -314,10 +336,12 @@ describe('PeerControlPanel', () => {
   // ---------------------------------------------------------------------------
   // API calls
   //
-  // The component fires two GET calls on mount: the usePlatformPeers hook
-  // calls refetch() from its own useEffect, and PeerControlPanel's own
-  // useEffect([refetch, refreshKey]) also runs immediately. Both are
-  // intentional — the component always syncs with its parent's refreshKey.
+  // The component fires exactly ONE GET call on mount: usePlatformPeers'
+  // own effect. PeerControlPanel's own refreshKey-tracking effect skips its
+  // first run (review fix, fc-35) — it used to fire unconditionally on mount
+  // too (depending on `refetch`'s identity, which is fresh on every render),
+  // doubling every fetch including one on every status-filter change. See
+  // the "fetch count" describe block below for the filter-change case.
   // ---------------------------------------------------------------------------
 
   describe('API calls', () => {
@@ -334,20 +358,34 @@ describe('PeerControlPanel', () => {
       });
     });
 
+    it('fetches exactly once on mount', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+      // Give any (incorrect) second mount fetch a chance to fire before asserting it didn't.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
     it('refetches when the refresh button is clicked', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
       renderPanel();
 
-      // Wait for initial fetches to settle (2 calls on mount)
-      await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(2);
-      });
+      // Wait for the count text, not just the call count: the Refresh button
+      // is disabled while `loading` is true, and the mount fetch's promise
+      // chain (apiClient.get -> unwrap -> setLoading(false)) can still be
+      // settling a tick after mockGet's call count itself already reads 1 —
+      // a click on a disabled native <button> is a no-op in jsdom too.
+      await waitFor(() => expect(screen.getByText('0 peers')).toBeInTheDocument());
+      expect(mockGet).toHaveBeenCalledTimes(1);
 
       fireEvent.click(screen.getByTitle('Refresh'));
 
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(3);
+        expect(mockGet).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -356,20 +394,62 @@ describe('PeerControlPanel', () => {
 
       const { rerender } = renderPanel({ refreshKey: 0 });
 
-      // Wait for initial fetches to settle
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(2);
+        expect(mockGet).toHaveBeenCalledTimes(1);
       });
 
       rerender(
         <BrowserRouter>
-          <PeerControlPanel canManage={true} refreshKey={1} />
+          <PeerControlPanel refreshKey={1} />
         </BrowserRouter>,
       );
 
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(3);
+        expect(mockGet).toHaveBeenCalledTimes(2);
       });
+    });
+
+    it('does NOT refetch when refreshKey is passed but stays the same across a rerender', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      const { rerender } = renderPanel({ refreshKey: 0 });
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+
+      rerender(
+        <BrowserRouter>
+          <PeerControlPanel refreshKey={0} />
+        </BrowserRouter>,
+      );
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fetch count on filter change (review fix, fc-35)
+  //
+  // Before the fix, a status-filter click fetched TWICE: once from
+  // usePlatformPeers' own effect (its `refetch` identity changes because the
+  // filter changed its dependency), and once from PeerControlPanel's own
+  // effect, which depended on that same `refetch` identity and fired again
+  // for the same reason — not because refreshKey changed.
+  // ---------------------------------------------------------------------------
+
+  describe('fetch count on filter change', () => {
+    it('fetches exactly once when a status filter is clicked', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Active' }));
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      // Give a (incorrect) second fetch for the same click a chance to land.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(mockGet).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -378,30 +458,44 @@ describe('PeerControlPanel', () => {
   // ---------------------------------------------------------------------------
 
   describe('Invite Peer modal', () => {
-    it('shows Invite Peer button when canManage=true', async () => {
+    it('shows Invite Peer button when system.peers.invite is granted', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /invite peer/i })).toBeInTheDocument();
       });
     });
 
-    it('hides Invite Peer button when canManage=false', async () => {
+    it('hides Invite Peer button when system.peers.invite is NOT granted', async () => {
+      grantOnly('system.peers.manage');
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: false });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.queryByRole('button', { name: /invite peer/i })).not.toBeInTheDocument();
       });
     });
 
+    // Invite does not require system.peers.manage — the two permissions are
+    // independent, matching the backend (#create checks .invite only).
+    it('shows Invite Peer button even when system.peers.manage is NOT granted', async () => {
+      grantOnly('system.peers.invite');
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /invite peer/i })).toBeInTheDocument();
+      });
+    });
+
     it('opens InvitePeerModal when Invite Peer is clicked', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /invite peer/i })).toBeInTheDocument();
@@ -415,7 +509,7 @@ describe('PeerControlPanel', () => {
     it('closes InvitePeerModal when onClose is called', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /invite peer/i })).toBeInTheDocument();
@@ -432,18 +526,17 @@ describe('PeerControlPanel', () => {
     it('triggers refetch after a successful invite', async () => {
       mockGet.mockResolvedValue(peersListResponse([]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
-      // Wait for initial fetches to settle (2 calls on mount)
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(2);
+        expect(mockGet).toHaveBeenCalledTimes(1);
       });
 
       fireEvent.click(screen.getByRole('button', { name: /invite peer/i }));
       fireEvent.click(screen.getByTestId('invite-modal-invited'));
 
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(3);
+        expect(mockGet).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -569,7 +662,7 @@ describe('PeerControlPanel', () => {
 
       renderPanel();
 
-      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
 
       fireEvent.click(screen.getByRole('button', { name: 'Active' }));
 
@@ -586,24 +679,29 @@ describe('PeerControlPanel', () => {
 
       renderPanel();
 
-      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
 
       fireEvent.click(screen.getByRole('button', { name: 'Active' }));
-      await waitFor(() =>
-        expect(mockGet).toHaveBeenCalledWith(
-          '/system/platform/peers',
-          expect.objectContaining({ params: { status: 'active' } }),
-        ),
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      expect(mockGet).toHaveBeenLastCalledWith(
+        '/system/platform/peers',
+        expect.objectContaining({ params: { status: 'active' } }),
       );
 
+      const callsBeforeAll = mockGet.mock.calls.length;
       fireEvent.click(screen.getByRole('button', { name: 'All' }));
 
-      await waitFor(() =>
-        expect(mockGet).toHaveBeenCalledWith(
-          '/system/platform/peers',
-          expect.objectContaining({ params: {} }),
-        ),
-      );
+      // Review fix, fc-35: the original assertion here checked only that SOME
+      // past call had `params: {}` — which the two calls already made on
+      // mount and on the initial (unfiltered) render already satisfied, so it
+      // passed even on a mutant where clicking "All" does nothing at all.
+      // Assert on the call this click actually produces: the call count must
+      // have grown, and the LATEST call — not merely some call in history —
+      // must carry the cleared params.
+      await waitFor(() => expect(mockGet.mock.calls.length).toBeGreaterThan(callsBeforeAll));
+      const [url, options] = mockGet.mock.calls.at(-1)!;
+      expect(url).toBe('/system/platform/peers');
+      expect((options as { params: unknown }).params).toEqual({});
     });
   });
 
@@ -663,20 +761,21 @@ describe('PeerControlPanel', () => {
   // ---------------------------------------------------------------------------
 
   describe('row actions: Grants', () => {
-    it('shows Grants button when canManage=true', async () => {
+    it('shows Grants button when system.peers.manage is granted', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTitle('Manage grants')).toBeInTheDocument();
       });
     });
 
-    it('hides Grants button when canManage=false', async () => {
+    it('hides Grants button when system.peers.manage is NOT granted', async () => {
+      grantOnly('system.peers.invite');
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: false });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
@@ -688,7 +787,7 @@ describe('PeerControlPanel', () => {
     it('opens GrantsManagementModal with correct peer data when Grants is clicked', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTitle('Manage grants')).toBeInTheDocument();
@@ -705,7 +804,7 @@ describe('PeerControlPanel', () => {
     it('closes GrantsManagementModal when onClose is called', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTitle('Manage grants')).toBeInTheDocument();
@@ -725,10 +824,10 @@ describe('PeerControlPanel', () => {
   // ---------------------------------------------------------------------------
 
   describe('row actions: Revoke (arm-and-confirm)', () => {
-    it('shows Revoke button for non-terminal active peer when canManage=true', async () => {
+    it('shows Revoke button for non-terminal active peer when system.peers.manage is granted', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('revoke-peer-active-1')).toBeInTheDocument();
@@ -737,10 +836,11 @@ describe('PeerControlPanel', () => {
       expect(screen.getByTestId('revoke-peer-active-1')).toHaveTextContent('Revoke');
     });
 
-    it('hides Revoke button when canManage=false', async () => {
+    it('hides Revoke button when system.peers.manage is NOT granted', async () => {
+      grantOnly('system.peers.invite');
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: false });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
@@ -752,7 +852,7 @@ describe('PeerControlPanel', () => {
     it('hides Revoke button for revoked (terminal) peer', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_REVOKED]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('control-row-peer-revoked-2')).toBeInTheDocument();
@@ -764,7 +864,7 @@ describe('PeerControlPanel', () => {
     it('arms the revoke button on first click (shows "Confirm revoke")', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -778,7 +878,7 @@ describe('PeerControlPanel', () => {
     it('shows reason input when armed', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
       fireEvent.click(revokeBtn);
@@ -795,7 +895,7 @@ describe('PeerControlPanel', () => {
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -822,7 +922,7 @@ describe('PeerControlPanel', () => {
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -852,10 +952,9 @@ describe('PeerControlPanel', () => {
         envelope({ peer: { ...PEER_ACTIVE, status: 'revoked' } }),
       );
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
-      // Wait for mount fetches to settle (2 on mount)
-      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -874,9 +973,9 @@ describe('PeerControlPanel', () => {
         );
       });
 
-      // A third GET call should happen after the successful revoke
+      // A second GET call should happen after the successful revoke
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalledTimes(3);
+        expect(mockGet).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -884,7 +983,7 @@ describe('PeerControlPanel', () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       mockPost.mockRejectedValue(new Error('Revoke failed: peer not found'));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -912,7 +1011,7 @@ describe('PeerControlPanel', () => {
       // Never resolve so we catch the in-flight state
       mockPost.mockReturnValue(new Promise(() => {}));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -931,7 +1030,7 @@ describe('PeerControlPanel', () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
       mockPost.mockReturnValue(new Promise(() => {}));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       const revokeBtn = await waitFor(() => screen.getByTestId('revoke-peer-active-1'));
 
@@ -961,7 +1060,7 @@ describe('PeerControlPanel', () => {
     it('renders a row for each peer with correct testids', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE, PEER_REVOKED]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
@@ -972,7 +1071,7 @@ describe('PeerControlPanel', () => {
     it('active peer has Revoke button; revoked peer does not', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE, PEER_REVOKED]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
@@ -985,7 +1084,7 @@ describe('PeerControlPanel', () => {
     it('only the correct peer detail drawer opens per row', async () => {
       mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE, PEER_REVOKED]));
 
-      renderPanel({ canManage: true });
+      renderPanel();
 
       await waitFor(() => {
         expect(screen.getAllByTitle('View detail').length).toBe(2);

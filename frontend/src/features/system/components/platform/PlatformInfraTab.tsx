@@ -48,11 +48,15 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  * fc-35: this Peers sub-tab's own peer list/invite/revoke panel (PeersPanel)
  * was deleted as a duplicate of PeerControlPanel on ServiceDeliveryPage's
  * Peers tab, which is now the one canonical peer-management surface — this
- * sub-tab keeps only the liveness monitor and links out to it. PeersPanel's
- * Role/Mode/Endpoints columns and status filter (the divergence C13 had
- * deliberately kept both surfaces to preserve) were ported into
- * PeerControlPanel, so nothing was lost in the consolidation — see
- * PeerControlPanel.tsx's own header comment.
+ * sub-tab keeps only the liveness monitor and links out to it (gated on
+ * system.peers.read, like the liveness monitor above it — see PeersTab).
+ * PeersPanel's Role/Mode/Endpoints columns and status filter (the divergence
+ * C13 had deliberately kept both surfaces to preserve) were ported into
+ * PeerControlPanel — see PeerControlPanel.tsx's own header comment — but the
+ * consolidation is not purely additive: PeerControlPanel gates Invite on
+ * system.peers.invite and Revoke/Grants on system.peers.manage (review fix;
+ * PeersPanel had no such gating), and PeersPanel's plain row click into a
+ * detail drawer became an explicit "Detail" button per row.
  *
  * Plan reference: Decentralized Federation §I + P7.
  */
@@ -171,24 +175,32 @@ const ServicesTab: React.FC = () => (
 
 const PeersTab: React.FC = () => {
   const { hasPermission } = usePermissions();
+  const canReadPeers = hasPermission('system.peers.read');
   return (
     <div className="space-y-6">
       {/* Real-time liveness (SystemFleetChannel), relocated from
           FederationHubPage's Monitor tab. Real gate (C10 review FIX-1): the
           old page required system.peers.read to render this; the relocation
           had dropped that check. */}
-      {hasPermission('system.peers.read') && <PeerLivenessMonitor />}
+      {canReadPeers && <PeerLivenessMonitor />}
       {/* fc-35: the peer list/invite/revoke panel that used to render here
           (PeersPanel) was deleted as a duplicate of PeerControlPanel, which
           is now the one canonical peer-management surface (its Role/Mode/
-          Endpoints columns and status filter). */}
-      <div className="bg-theme-surface border border-theme rounded-lg p-4 text-sm text-theme-secondary">
-        Manage federation peers (invite, revoke, grants) on{' '}
-        <Link to="/app/system/service-delivery/peers" className="text-theme-info-fg hover:text-theme-info-fg/80">
-          Service Delivery → Peers
-        </Link>
-        .
-      </div>
+          Endpoints columns and status filter, plus Invite/Revoke/Grants
+          gated on system.peers.invite / system.peers.manage — see
+          PeerControlPanel.tsx). Gated on the SAME system.peers.read as the
+          liveness monitor above (review fix): showing it to someone without
+          that permission was a dead end — the link's own destination
+          (ServiceDeliveryPage's Peers tab) requires it too. */}
+      {canReadPeers && (
+        <div className="bg-theme-surface border border-theme rounded-lg p-4 text-sm text-theme-secondary">
+          Manage federation peers (invite, revoke, grants) on{' '}
+          <Link to="/app/system/service-delivery/peers" className="text-theme-info-fg hover:text-theme-info-fg/80">
+            Service Delivery → Peers
+          </Link>
+          .
+        </div>
+      )}
     </div>
   );
 };

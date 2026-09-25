@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Network,
   Plus,
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
 import { usePlatformPeers } from '../../hooks/usePlatformPeers';
@@ -28,10 +29,17 @@ import ErrorAlert from '@/shared/components/ui/ErrorAlert';
  * PeerControlPanel — the single canonical peer-management surface (fc-35),
  * on ServiceDeliveryPage's Peers tab. Composes the existing InvitePeerModal
  * (propose/accept), GrantsManagementModal (grant lifecycle), and
- * PeerDetailDrawer. Mutate-oriented, gated by `canManage` and adding Grants
- * management. REVOKE here is an arm-and-confirm action (useArmedConfirm)
- * instead of a `window.prompt`. Revoke is terminal, so a two-stage in-place
- * confirm matches the destructive-action convention
+ * PeerDetailDrawer. Each mutating action is gated on the SAME permission its
+ * backend endpoint checks (review fix, fc-35): Invite on
+ * `system.peers.invite` (Api::V1::System::Platform::PeersController#create),
+ * Revoke and Grants on `system.peers.manage`
+ * (…PeersController#revoke, …PeerGrantsController#create) — computed here via
+ * usePermissions(), not passed down from a caller's own, differently-scoped
+ * permission (ServiceDeliveryPage's prior `canManage` prop mapped to
+ * `system.sdwan.federation.manage`, a federation-governance permission the
+ * peer endpoints never check). REVOKE here is an arm-and-confirm action
+ * (useArmedConfirm) instead of a `window.prompt`. Revoke is terminal, so a
+ * two-stage in-place confirm matches the destructive-action convention
  * (feedback_destructive_confirm) without a blocking modal. The optional
  * revoke reason is taken from an inline field that appears only while the
  * row's revoke button is armed.
@@ -55,12 +63,13 @@ import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 interface PeerControlPanelProps {
   /** Bumped by the parent to force a manual refetch. */
   refreshKey?: number;
-  /** Whether the operator can mutate peers (propose / revoke / grant). */
-  canManage: boolean;
 }
 
-export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, canManage }) => {
+export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey }) => {
   const { addNotification } = useNotifications();
+  const { hasPermission } = usePermissions();
+  const canInvite = hasPermission('system.peers.invite');
+  const canManage = hasPermission('system.peers.manage');
   const [statusFilter, setStatusFilter] = useState<PeerStatus | null>(null);
   const { peers, loading, error, setError, refetch } = usePlatformPeers(
     statusFilter ? { status: statusFilter } : undefined,
@@ -70,10 +79,18 @@ export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, 
   const [grantsPeer, setGrantsPeer] = useState<PlatformPeerSummary | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
-  // Force a refetch when the parent bumps refreshKey.
+  // Force a refetch only when the parent actually BUMPS refreshKey — not on
+  // every render where `refetch`'s identity changes (e.g. a status-filter
+  // click, which already triggers its own fetch via usePlatformPeers' own
+  // mount/filter-change effect). Depending on `refetch` here duplicated that
+  // fetch on mount and on every filter change (review fix, fc-35).
+  const lastRefreshKey = useRef(refreshKey);
   useEffect(() => {
+    if (refreshKey === lastRefreshKey.current) return;
+    lastRefreshKey.current = refreshKey;
     void refetch();
-  }, [refetch, refreshKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch is read from the closure, not tracked: this effect must fire on refreshKey changes ONLY (see comment above), not on refetch identity changes.
+  }, [refreshKey]);
 
   const handleRevoke = useCallback(
     async (peer: PlatformPeerSummary, reason: string) => {
@@ -115,7 +132,7 @@ export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, 
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          {canManage && (
+          {canInvite && (
             <Button variant="primary" onClick={() => setInviteOpen(true)}>
               <Plus className="w-4 h-4" />
               Invite Peer
@@ -132,7 +149,7 @@ export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, 
 
       {!loading && peers.length === 0 && !error && (
         <div className="p-12 text-center text-theme-secondary text-sm">
-          No federation peers yet. {canManage ? 'Click "Invite Peer" to propose one.' : ''}
+          No federation peers yet. {canInvite ? 'Click "Invite Peer" to propose one.' : ''}
         </div>
       )}
 
