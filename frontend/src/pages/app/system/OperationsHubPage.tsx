@@ -17,7 +17,6 @@ import {
   CiWebhooksTab,
   GitopsTab,
   CveTab,
-  ModuleBuildsTab,
   AgentPeersTab,
 } from '@system/features/system/components/operations';
 import { AutonomySettingsModal } from '@system/features/system/components/settings/AutonomySettingsModal';
@@ -26,8 +25,16 @@ import { AutonomySettingsModal } from '@system/features/system/components/settin
 // (formerly /system/tasks "Operations"), CI Workers, and CI Webhooks
 // into one tabbed page. Path-based tabs match the canonical
 // AdminSettingsPage pattern.
+//
+// fc-34 review fix: this hub used to ALSO mount ModuleBuildsTab at its own
+// module-builds tab (/app/system/operations/module-builds) — a second,
+// duplicate mount of the same canonical Module Builds surface now living at
+// /app/devops/ci-cd/module-builds (CiCdPage's devops.ci-cd.tab.* slot). A
+// deduplication task can't leave a duplicate behind, so this tab is deleted
+// outright, not redirected — see ModuleBuildsTab's own header comment for
+// the one-canonical-surface ruling.
 
-type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'agent-peers' | 'ci-workers' | 'ci-webhooks' | 'module-builds';
+type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'agent-peers' | 'ci-workers' | 'ci-webhooks';
 
 const TABS: PathTabSpec<TabKey>[] = [
   { key: 'fleet', label: 'Fleet', permission: 'system.fleet.read' },
@@ -39,7 +46,6 @@ const TABS: PathTabSpec<TabKey>[] = [
   { key: 'agent-peers', label: 'Agent Peers', permission: 'system.peers.read' },
   { key: 'ci-workers', label: 'CI Workers', permission: 'system.ci_workers.read' },
   { key: 'ci-webhooks', label: 'CI Webhooks', permission: 'system.disk_image_webhooks.read' },
-  { key: 'module-builds', label: 'Module Builds', permission: 'system.module_builds.read' },
 ];
 
 const BASE_PATH = '/app/system/operations';
@@ -64,7 +70,6 @@ const OperationsHubPage: React.FC = () => {
   const [cveActions, setCveActions] = useState<{ refresh: () => void } | null>(null);
   const [ciWorkersActions, setCiWorkersActions] = useState<{ openCreate: () => void } | null>(null);
   const [ciWebhooksActions, setCiWebhooksActions] = useState<{ openCreate: () => void } | null>(null);
-  const [moduleBuildsActions, setModuleBuildsActions] = useState<{ refresh: () => void } | null>(null);
   const [agentPeersActions, setAgentPeersActions] = useState<{ refresh: () => void } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -86,8 +91,6 @@ const OperationsHubPage: React.FC = () => {
     pageActions.push({ label: 'New CI worker', onClick: ciWorkersActions.openCreate, variant: 'primary', icon: Plus });
   } else if (activeTabKey === 'ci-webhooks' && canCreateCiWebhooks && ciWebhooksActions) {
     pageActions.push({ label: 'New webhook', onClick: ciWebhooksActions.openCreate, variant: 'primary', icon: Plus });
-  } else if (activeTabKey === 'module-builds' && moduleBuildsActions) {
-    pageActions.push({ label: 'Refresh', onClick: moduleBuildsActions.refresh, variant: 'secondary', icon: RefreshCw });
   } else if (activeTabKey === 'agent-peers' && agentPeersActions) {
     pageActions.push({ label: 'Refresh', onClick: agentPeersActions.refresh, variant: 'secondary', icon: RefreshCw });
   }
@@ -122,7 +125,6 @@ const OperationsHubPage: React.FC = () => {
           <Route path="agent-peers" element={<AgentPeersTab onActionsReady={setAgentPeersActions} />} />
           <Route path="ci-workers" element={<CiWorkersTab onActionsReady={setCiWorkersActions} />} />
           <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
-          <Route path="module-builds" element={<ModuleBuildsTab onActionsReady={setModuleBuildsActions} />} />
           <Route path="*" element={<Navigate to={firstPath} replace />} />
         </Routes>
       </PathTabs>
