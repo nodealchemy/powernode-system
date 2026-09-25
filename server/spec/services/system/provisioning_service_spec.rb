@@ -581,6 +581,62 @@ RSpec.describe System::ProvisioningService do
       expect(bare.reload.status).to eq("running")
     end
 
+    # Every finalize_termination! caller has the provider's word that the guest
+    # is gone (success, NotFound, or an identity already lost), so the row lands
+    # the CONFIRMED termination that cancels its unrunnable tasks. The
+    # optimistic terminate! stamp alone cancelled nothing, and a recycled pool
+    # builder's queued tasks sat until the janitor's 48h threshold.
+    describe "the tasks of the instance it terminates" do
+      let!(:queued) { create(:system_task, account: instance.account, operable: instance, status: "pending") }
+
+      it "cancels a pending task once the provider confirms the terminate" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels it when the provider reports the guest already gone" do
+        allow(adapter).to receive(:terminate_instance)
+          .and_return({ success: false, error_code: "NotFound", error: "Instance not found" })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels it on a confirming retry against a row already stamped terminated" do
+        instance.update_columns(status: "terminated")
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels only this instance's tasks, and leaves a claimed one to the janitor" do
+        other = create(:system_node_instance, node: node, status: "running", config: { "cloud_instance_id" => "i-other" })
+        elsewhere = create(:system_task, account: other.account, operable: other, status: "pending")
+        claimed = create(:system_task, account: instance.account, operable: instance, status: "running")
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+        expect(elsewhere.reload.status).to eq("pending")
+        expect(claimed.reload.status).to eq("running")
+      end
+
+      it "leaves the task pending when the provider refuses the terminate" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: false, error: "rate limited" })
+
+        terminate
+
+        expect(queued.reload.status).to eq("pending")
+      end
+    end
+
     # F4-09 — codify the F4-02 fix across the full status matrix: terminate
     # must drive ANY non-terminal status to "terminated", not only the
     # steady-state ones. Pre-fix, a not-yet-up instance (pending/starting)
