@@ -165,7 +165,7 @@ RSpec.describe "FleetAutonomyService approved-action execution (F3-01)" do
     it "consumes approved requests during the tick" do
       allow(System::InstanceControlService).to receive(:execute)
         .and_return(System::Runtime::Result.ok(data: {}))
-      allow(service).to receive(:collect_signals).and_return([ [], [] ])
+      allow(service).to receive(:collect_signals).and_return([ [], [], {} ])
       allow(service).to receive(:collect_project_metrics!)
       approved_request!(payload: {
         "instance_id" => instance.id, "signal_kind" => "system.instance_silent"

@@ -31,7 +31,7 @@ RSpec.describe "control-plane fence wiring" do
     it "ticks normally while the gate is inert (unarmed single-plane deployment)" do
       # No coordinator SiteSetting exists in the test DB — armed? is false, so
       # the REAL gate must answer true and the tick must proceed to sensing.
-      expect(service).to receive(:collect_signals).and_return([ [], [] ])
+      expect(service).to receive(:collect_signals).and_return([ [], [], {} ])
 
       result = service.tick!
 
