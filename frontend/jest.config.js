@@ -28,6 +28,10 @@ module.exports = {
     '^@/features/(.*)$': path.join(PARENT_ROOT, 'src/features/$1'),
     '^@/pages/(.*)$': path.join(PARENT_ROOT, 'src/pages/$1'),
     '^@/assets/(.*)$': path.join(PARENT_ROOT, 'src/assets/$1'),
+    // The parent's `@/` catch-all is `<rootDir>`-relative, and `rootDir` is
+    // this extension's frontend here, so it would resolve core imports such
+    // as `@/services/...` into the extension. Re-anchor it to the parent.
+    '^@/(.*)$': path.join(PARENT_ROOT, 'src/$1'),
     // Extension's own src
     '^@system/(.*)$': '<rootDir>/src/$1',
     // Asset / module mocks live in parent
