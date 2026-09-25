@@ -13,38 +13,45 @@ package runtime
 // forever. ops-hub carried two such devpin modules this way (offer
 // 01a0c60b-c298): not composed, not mounted, no units, not assigned.
 //
-// Scope is deliberately narrow (review of the first design):
+// Scope is deliberately narrow (two design reviews):
 //
 //   - ID-level only. An entry is a candidate only when its module ID is ABSENT
 //     from the breadcrumb. An ID the boot composed at a DIFFERENT digest is
 //     left alone and reported (stageDigestDiverges): dropping it would turn the
 //     next diff into a first-attach with no outgoing inventory to prune from,
 //     and no restart on a self-hosted node.
-//   - Drop-only. The rebase never adds an entry.
-//   - Fail closed. A candidate is dropped only when EVERY liveness probe
-//     answers "not live": its digest is not mounted at its module mount point,
-//     that mount point is not a lower layer of the live `/`, and systemd has no
-//     loaded powernode-<id>-* unit. Any probe that cannot answer — and any
-//     precondition that does not hold — leaves state.json untouched and
-//     unstamped, so the next tick simply asks again.
+//   - Never an ASSIGNED module. A self-hosted node normally boots FromLKG, so a
+//     module hot-attached after the LKG froze is absent from the breadcrumb and
+//     can look dead after a reboot — yet dropping it would make the same tick
+//     prefetch, mount, hot-copy and start it. Such entries are kept, reported
+//     (stageAssignedNotComposed) and never even probed.
+//   - Drop-only, and fail closed. A candidate is dropped only when EVERY
+//     liveness probe answers "not live": its digest is not mounted at its module
+//     mount point, that mount point is not a lower layer of the live `/`, and
+//     systemd has no loaded powernode-<id>-* unit. Any probe that cannot answer,
+//     and any precondition that does not hold, leaves state.json untouched and
+//     unstamped, so a later tick asks again.
 //   - Once per composition, keyed on the breadcrumb (boot id + compose time),
 //     not on the kernel boot id: a soft-reboot recomposes the root under the
 //     SAME kernel boot id.
 //   - REPORT-ONLY by default. With no switch set, the rebase only emits what it
-//     WOULD drop (stageStateWouldRebase) and changes nothing. Dropping requires
-//     the enable sentinel; the disable sentinel or powernode.state_rebase=off on
-//     the kernel cmdline turns the whole thing off, overriding the enable.
+//     WOULD drop (stageStateWouldRebase). The enable sentinel lets it drop, but
+//     on its own only when the render impact is EMPTY; any other drop needs the
+//     sentinel's content to name this composition's key — an approval that
+//     cannot outlive the composition it was given for. The disable sentinel or
+//     powernode.state_rebase=off on the kernel cmdline turns it off entirely.
 //
-// Dropping an entry also drops that module's cached manifest from the
-// identity/sudoers/egress render candidates, so every report names what the
-// render would lose: users, groups, sudoers grants and egress entries whose
-// ONLY source is a dropped module, any user/group whose surviving declaration
-// carries a different id, and whether egress enforcement would switch off.
+// Dropping an entry takes its manifest out of the identity/sudoers/egress
+// render, so every verdict states the render impact, computed from the
+// render's own candidate set (resolveRenderCandidates) with and without the
+// dropped modules. An unknown impact, or one that touches a user/group id
+// conflict, is never enforced.
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -53,18 +60,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 )
 
 // Switches for the rebase. Vars (not consts) so tests can redirect them. Both
 // live on /persist beside the LKG kill switch, readable from a console.
 var (
 	// StateRebaseEnableSentinel, when present, lets the rebase DROP entries.
-	// Without it the rebase is report-only. Creating it is the reviewable,
-	// deliberate act that turns the rebase on for a node.
+	// Without it the rebase is report-only. A drop whose render impact is not
+	// empty additionally needs this file's content to name the reported key
+	// (one key per line) — the approval is per composition, never standing.
 	StateRebaseEnableSentinel = "/persist/var/lib/powernode/state-rebase.enabled"
 	// StateRebaseDisableSentinel, when present, turns the rebase off entirely
 	// — no report, no drop — and overrides the enable sentinel. So does
@@ -78,10 +89,11 @@ var (
 )
 
 const (
-	stageStateRebased       = "reconciler:state_rebased_dead_modules"
-	stageStateWouldRebase   = "reconciler:state_rebase_would_drop"
-	stageStateRebaseSkipped = "reconciler:state_rebase_skipped"
-	stageDigestDiverges     = "reconciler:state_digest_diverges_from_boot"
+	stageStateRebased        = "reconciler:state_rebased_dead_modules"
+	stageStateWouldRebase    = "reconciler:state_rebase_would_drop"
+	stageStateRebaseSkipped  = "reconciler:state_rebase_skipped"
+	stageDigestDiverges      = "reconciler:state_digest_diverges_from_boot"
+	stageAssignedNotComposed = "reconciler:state_assigned_not_composed"
 )
 
 type stateRebaseMode int
@@ -92,92 +104,178 @@ const (
 	stateRebaseEnforce
 )
 
-func resolveStateRebaseMode() stateRebaseMode {
+// resolveStateRebaseMode also returns the enable sentinel's content, which
+// carries the per-composition approvals.
+func resolveStateRebaseMode() (stateRebaseMode, string) {
 	if _, err := os.Stat(StateRebaseDisableSentinel); err == nil {
-		return stateRebaseOff
+		return stateRebaseOff, ""
 	}
 	if cmdlineHasFlag("powernode.state_rebase", "off") {
-		return stateRebaseOff
+		return stateRebaseOff, ""
 	}
-	if _, err := os.Stat(StateRebaseEnableSentinel); err == nil {
-		return stateRebaseEnforce
+	body, err := os.ReadFile(StateRebaseEnableSentinel)
+	if err == nil {
+		return stateRebaseEnforce, string(body)
 	}
-	return stateRebaseReportOnly
+	return stateRebaseReportOnly, ""
+}
+
+func approvalNames(approval, key string) bool {
+	for _, line := range strings.Split(approval, "\n") {
+		if strings.TrimSpace(line) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// stateRebaseInputs is what RunOnce already knows about this tick.
+type stateRebaseInputs struct {
+	fresh       map[string]*manifest.Manifest // this tick's fresh manifests
+	fetchFailed map[string]bool               // assigned modules whose fetch failed
+	assigned    map[string]bool               // every assigned module id
+}
+
+// breadcrumbHeader is the part of the breadcrumb the per-tick short-circuit
+// needs; decoding it skips the embedded manifests.
+type breadcrumbHeader struct {
+	BootID     string    `json:"boot_id"`
+	ComposedAt time.Time `json:"composed_at"`
+	Incomplete bool      `json:"incomplete"`
+}
+
+func loadBreadcrumbHeader(path string) (*breadcrumbHeader, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var h breadcrumbHeader
+	if err := json.Unmarshal(body, &h); err != nil {
+		return nil, fmt.Errorf("decode breadcrumb %s: %w", path, err)
+	}
+	return &h, nil
 }
 
 // stateRebaseKey identifies one boot composition. The kernel boot id alone is
 // not enough: a soft-reboot recomposes the root without changing it.
 func stateRebaseKey(bc *BootComposedBreadcrumb) string {
-	sum := sha256.Sum256([]byte(bc.BootID + "\x00" + bc.ComposedAt.UTC().Format(time.RFC3339Nano)))
+	return stateRebaseKeyOf(bc.BootID, bc.ComposedAt)
+}
+
+func stateRebaseKeyOf(bootID string, composedAt time.Time) string {
+	sum := sha256.Sum256([]byte(bootID + "\x00" + composedAt.UTC().Format(time.RFC3339Nano)))
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// noteStateRebaseOnce emits a rebase signal at most once per process for the
-// same stage and text. A skipped or report-only rebase is re-evaluated every
-// tick by design; its signal should not be.
-func (r *Reconciler) noteStateRebaseOnce(stage string, err error) {
-	k := stage + "\x00" + err.Error()
-	if r.stateRebaseNoted == nil {
-		r.stateRebaseNoted = map[string]bool{}
+// stateRebaseFingerprint is everything besides the composition key that could
+// change a verdict: the mode and approvals, the state entries and the assigned
+// set. A report-only (or awaiting-approval) verdict is memoised against it, so
+// an unchanged node is not re-probed every tick.
+func stateRebaseFingerprint(mode stateRebaseMode, approval string, current *mount.State, assigned map[string]bool) string {
+	parts := make([]string, 0, len(current.AttachedModules)+len(assigned)+2)
+	parts = append(parts, fmt.Sprintf("mode=%d", mode), "approval="+approval)
+	for _, m := range current.AttachedModules {
+		parts = append(parts, "s:"+m.ID+"@"+m.Digest)
 	}
-	if r.stateRebaseNoted[k] {
-		return
+	for id := range assigned {
+		parts = append(parts, "a:"+id)
 	}
-	r.stateRebaseNoted[k] = true
-	r.cfg.OnError(stage, err)
+	sort.Strings(parts[2:])
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
-func (r *Reconciler) skipStateRebase(format string, args ...any) {
-	r.noteStateRebaseOnce(stageStateRebaseSkipped, fmt.Errorf("state rebase not attempted: "+format, args...))
+// stateRebaseEval collects the conditions one evaluation raised. A condition
+// is signalled when it is raised and was not raised by the previous
+// evaluation, so a standing condition is reported once and one that clears
+// and returns is reported again. Conditions are keyed by a stable id, never
+// by their text.
+type stateRebaseEval struct {
+	r      *Reconciler
+	raised map[string]bool
+}
+
+func (ev *stateRebaseEval) note(stage, cond string, err error) {
+	ev.raised[cond] = true
+	if ev.r.stateRebaseActive[cond] {
+		return
+	}
+	ev.r.cfg.OnError(stage, err)
+}
+
+func (ev *stateRebaseEval) skip(cond, format string, args ...any) {
+	ev.note(stageStateRebaseSkipped, "skip:"+cond, fmt.Errorf("state rebase not attempted: "+format, args...))
 }
 
 // rebaseStateAgainstBoot runs the rebase against current, which RunOnce loaded
-// under the state lock. It mutates current only in enforce mode; RunOnce's
-// end-of-pass SaveState persists the result. fresh is this tick's freshly
-// fetched manifests, used to describe the render impact.
-func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.State, fresh map[string]*manifest.Manifest) {
-	mode := resolveStateRebaseMode()
+// under the state lock. It mutates current only when it enforces a drop;
+// RunOnce's end-of-pass SaveState persists the result.
+func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.State, in stateRebaseInputs) {
+	mode, approval := resolveStateRebaseMode()
 	if mode == stateRebaseOff {
+		r.stateRebaseActive, r.stateRebaseMemo = nil, ""
 		return
 	}
 	if r.cfg.DryRun {
 		mode = stateRebaseReportOnly
 	}
+	ev := &stateRebaseEval{r: r, raised: map[string]bool{}}
+	memoHit := false
+	defer func() {
+		if !memoHit {
+			r.stateRebaseActive = ev.raised
+		}
+	}()
 
 	// A chroot (cloud_init) node recomposes its union from state every tick;
 	// there is no boot-fixed root for state to drift from. A probe that cannot
 	// tell is not a chroot answer.
 	rootMode, err := pivotAwareRootModeChecked()
 	if err != nil {
-		r.skipStateRebase("cannot determine the root mode (%v)", err)
+		ev.skip("root-mode", "cannot determine the root mode (%v)", err)
 		return
 	}
 	if rootMode != lifecycle.RootModeNative {
 		return
 	}
 
-	bc, err := LoadBreadcrumb(BootBreadcrumbPath)
+	hdr, err := loadBreadcrumbHeader(BootBreadcrumbPath)
 	if err != nil {
-		r.skipStateRebase("no usable boot breadcrumb at %s (%v)", BootBreadcrumbPath, err)
+		ev.skip("breadcrumb", "no usable boot breadcrumb at %s (%v)", BootBreadcrumbPath, err)
 		return
 	}
 	nowBoot := currentBootID()
 	switch {
-	case bc.BootID == "":
-		r.skipStateRebase("the boot breadcrumb carries no boot id")
+	case hdr.BootID == "":
+		ev.skip("breadcrumb-boot-id", "the boot breadcrumb carries no boot id")
 		return
 	case nowBoot == "":
-		r.skipStateRebase("the kernel boot id is unavailable")
+		ev.skip("kernel-boot-id", "the kernel boot id is unavailable")
 		return
-	case bc.BootID != nowBoot:
-		r.skipStateRebase("the boot breadcrumb is from boot %s, not this boot %s", bc.BootID, nowBoot)
+	case hdr.BootID != nowBoot:
+		ev.skip("breadcrumb-other-boot", "the boot breadcrumb is from boot %s, not this boot %s", hdr.BootID, nowBoot)
 		return
-	case bc.Incomplete:
-		r.skipStateRebase("the boot breadcrumb is marked incomplete; it is not the full composition")
+	case hdr.Incomplete:
+		ev.skip("breadcrumb-incomplete", "the boot breadcrumb is marked incomplete; it is not the full composition")
 		return
 	}
-	key := stateRebaseKey(bc)
+	key := stateRebaseKeyOf(hdr.BootID, hdr.ComposedAt)
 	if current.RebasedAgainst == key {
+		return
+	}
+	memo := key + "/" + stateRebaseFingerprint(mode, approval, current, in.assigned)
+	if r.stateRebaseMemo == memo {
+		memoHit = true
+		return
+	}
+
+	bc, err := LoadBreadcrumb(BootBreadcrumbPath)
+	if err != nil {
+		ev.skip("breadcrumb", "no usable boot breadcrumb at %s (%v)", BootBreadcrumbPath, err)
+		return
+	}
+	if stateRebaseKey(bc) != key || bc.Incomplete {
+		ev.skip("breadcrumb-changed", "the boot breadcrumb changed while it was being read")
 		return
 	}
 
@@ -197,38 +295,48 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 	}
 	if len(diverged) > 0 {
 		sort.Strings(diverged)
-		r.noteStateRebaseOnce(stageDigestDiverges, fmt.Errorf(
+		ev.note(stageDigestDiverges, "diverges:"+key+":"+strings.Join(diverged, ","), fmt.Errorf(
 			"%d module(s) in state.json are recorded at a different digest than this boot composed; left unchanged: %s",
 			len(diverged), strings.Join(diverged, ", ")))
 	}
 
 	var candidates []mount.Module
+	var assignedNotComposed []string
 	for _, m := range current.AttachedModules {
-		if _, ok := composed[m.ID]; !ok {
-			candidates = append(candidates, m)
+		if _, ok := composed[m.ID]; ok {
+			continue
 		}
+		if in.assigned[m.ID] {
+			assignedNotComposed = append(assignedNotComposed, m.ID+"@"+m.Digest)
+			continue
+		}
+		candidates = append(candidates, m)
+	}
+	if len(assignedNotComposed) > 0 {
+		sort.Strings(assignedNotComposed)
+		ev.note(stageAssignedNotComposed, "assigned-not-composed:"+key+":"+strings.Join(assignedNotComposed, ","), fmt.Errorf(
+			"%d ASSIGNED module(s) in state.json are not part of this boot's composition; kept, never probed or dropped — dropping one would make this tick re-attach it (prefetch, mount, hot-copy, start its services): %s",
+			len(assignedNotComposed), strings.Join(assignedNotComposed, ", ")))
 	}
 	if len(candidates) == 0 {
-		if mode == stateRebaseEnforce {
-			current.RebasedAgainst = key
-		}
+		r.settleStateRebase(mode, current, key, memo)
 		return
 	}
 
 	// One strict read of the mount table answers every mount question below.
 	table, err := mount.ReadMountTableStrict()
 	if err != nil {
-		r.skipStateRebase("cannot read the mount table strictly (%v)", err)
+		ev.skip("mount-table", "cannot read the mount table strictly (%v)", err)
 		return
 	}
 	liveRoot := filepath.Join(r.cfg.Layout.Root, "/")
 	lowers, err := table.OverlayLowerDirs(liveRoot)
 	if err != nil {
-		r.skipStateRebase("cannot read the live union at %s (%v)", liveRoot, err)
+		ev.skip("live-union", "cannot read the live union at %s (%v)", liveRoot, err)
 		return
 	}
 	if len(lowers) == 0 {
-		r.skipStateRebase("the live union at %s lists no lower layers", liveRoot)
+		ev.skip("live-union-empty", "the live union at %s lists no lower layers", liveRoot)
 		return
 	}
 	inUnion := make(map[string]bool, len(lowers))
@@ -257,32 +365,28 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 	}
 	if len(mismatch) > 0 {
 		sort.Strings(mismatch)
-		r.skipStateRebase("the live mount table disagrees with the boot breadcrumb for %s", strings.Join(mismatch, ", "))
+		ev.skip("cross-check", "the live mount table disagrees with the boot breadcrumb for %s", strings.Join(mismatch, ", "))
 		return
 	}
 
-	var dead, kept []mount.Module
+	var dead []mount.Module
 	for _, m := range candidates {
 		p := filepath.Clean(r.cfg.Layout.ModuleMountPath(m.Digest))
 		if table.IsMounted(p) || inUnion[p] {
-			kept = append(kept, m)
 			continue
 		}
 		loaded, uerr := r.moduleHasLoadedUnits(ctx, m.ID)
 		if uerr != nil {
-			r.skipStateRebase("cannot list systemd units for %s (%v)", m.ID, uerr)
+			ev.skip("units:"+m.ID, "cannot list systemd units for %s (%v)", m.ID, uerr)
 			return
 		}
 		if loaded {
-			kept = append(kept, m)
 			continue
 		}
 		dead = append(dead, m)
 	}
 	if len(dead) == 0 {
-		if mode == stateRebaseEnforce {
-			current.RebasedAgainst = key
-		}
+		r.settleStateRebase(mode, current, key, memo)
 		return
 	}
 
@@ -293,29 +397,39 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 		names = append(names, m.ID+"@"+m.Digest)
 	}
 	sort.Strings(names)
-	impact := r.stateRebaseImpact(current, bc, deadIDs, fresh)
+	impact := r.stateRebaseImpact(current, bc, deadIDs, in)
 	summary := fmt.Sprintf(
 		"%d module(s) in state.json are not part of this boot's composition and nothing shows them live (not mounted, not a lower layer of /, no loaded units): %s; %s",
 		len(dead), strings.Join(names, ", "), impact.describe())
+	howToApply := fmt.Sprintf("create %s to apply", StateRebaseEnableSentinel)
+	if !impact.empty() {
+		howToApply = fmt.Sprintf("the render impact is not empty, so applying needs %s to contain this composition's key %s", StateRebaseEnableSentinel, key)
+	}
+	wouldCond := "would-drop:" + key + ":" + strings.Join(names, ",")
 
 	if mode != stateRebaseEnforce {
-		r.noteStateRebaseOnce(stageStateWouldRebase, fmt.Errorf(
-			"REPORT-ONLY, nothing changed (create %s to enable): %s", StateRebaseEnableSentinel, summary))
+		ev.note(stageStateWouldRebase, wouldCond, fmt.Errorf("REPORT-ONLY, nothing changed (%s): %s", howToApply, summary))
+		r.stateRebaseMemo = memo
 		return
 	}
 	if len(impact.unresolved) > 0 {
-		r.skipStateRebase("the render impact of dropping %s is unknown (no manifest at the attached digest): %s",
+		ev.skip("impact-unknown", "the render impact of dropping %s is unknown; unresolved render candidates: %s",
 			strings.Join(names, ", "), strings.Join(impact.unresolved, ", "))
 		return
 	}
 	// The render keeps the FIRST declaration of a duplicated user/group, and
-	// the order it sees them in comes from map iteration — so while a dead
-	// module and a survivor disagree on an id, which one is on disk right now
-	// is not knowable, and dropping the dead one could flip it (and the home
-	// ownership that follows). Leave that to an operator.
+	// the order it sees them in comes from map iteration (offer 01a0da22) — so
+	// while a dead module and a survivor disagree on an id, which one is on
+	// disk right now is not knowable, and dropping the dead one could flip it
+	// (and the home ownership that follows). Leave that to an operator.
 	if len(impact.idConflicts) > 0 {
-		r.skipStateRebase("dropping %s would settle a user/group id conflict whose current on-disk winner is not knowable: %s",
+		ev.skip("impact-conflict", "dropping %s would settle a user/group id conflict whose current on-disk winner is not knowable: %s",
 			strings.Join(names, ", "), strings.Join(impact.idConflicts, "; "))
+		return
+	}
+	if !impact.empty() && !approvalNames(approval, key) {
+		ev.note(stageStateWouldRebase, wouldCond, fmt.Errorf("AWAITING APPROVAL, nothing changed (%s): %s", howToApply, summary))
+		r.stateRebaseMemo = memo
 		return
 	}
 
@@ -324,15 +438,15 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 	if _, serr := os.Stat(backup); errors.Is(serr, os.ErrNotExist) {
 		body, rerr := os.ReadFile(r.cfg.StatePath)
 		if rerr != nil {
-			r.skipStateRebase("cannot read %s to back it up (%v)", r.cfg.StatePath, rerr)
+			ev.skip("backup", "cannot read %s to back it up (%v)", r.cfg.StatePath, rerr)
 			return
 		}
 		if werr := fsutil.AtomicWrite(backup, body, 0o644); werr != nil {
-			r.skipStateRebase("cannot write the pre-rebase backup %s (%v)", backup, werr)
+			ev.skip("backup", "cannot write the pre-rebase backup %s (%v)", backup, werr)
 			return
 		}
 	} else if serr != nil {
-		r.skipStateRebase("cannot stat the pre-rebase backup %s (%v)", backup, serr)
+		ev.skip("backup", "cannot stat the pre-rebase backup %s (%v)", backup, serr)
 		return
 	}
 
@@ -356,7 +470,19 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 		current.UnmaterializedModules = um
 	}
 	current.RebasedAgainst = key
+	r.stateRebaseMemo = ""
 	r.cfg.OnError(stageStateRebased, fmt.Errorf("%s (pre-rebase state kept at %s)", summary, backup))
+}
+
+// settleStateRebase records a verdict with nothing to drop: an enforcing
+// rebase stamps the composition done, a report-only one memoises it.
+func (r *Reconciler) settleStateRebase(mode stateRebaseMode, current *mount.State, key, memo string) {
+	if mode == stateRebaseEnforce {
+		current.RebasedAgainst = key
+		r.stateRebaseMemo = ""
+		return
+	}
+	r.stateRebaseMemo = memo
 }
 
 // moduleHasLoadedUnits asks systemd, not the unit directory: a unit file on
@@ -371,14 +497,19 @@ func (r *Reconciler) moduleHasLoadedUnits(ctx context.Context, moduleID string) 
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-// stateRebaseRenderImpact is what the identity/sudoers/egress render would
-// lose if the dead entries leave the render candidates.
+// stateRebaseRenderImpact is how the identity/sudoers/egress render would
+// change if the dead entries leave the render candidates.
 type stateRebaseRenderImpact struct {
-	soleUsers, soleGroups, idConflicts, sudoers, soleEgress []string
-	egressTurnsOff                                          bool
-	// unresolved names dead modules with no manifest at their attached digest:
-	// their contribution to today's render cannot be known, so enforce refuses.
+	soleUsers, soleGroups, changed, idConflicts, sudoers, soleEgress []string
+	egressTurnsOff                                                   bool
+	// unresolved names render candidates with no resolvable manifest, before
+	// or after the drop: the impact cannot be known.
 	unresolved []string
+}
+
+func (i stateRebaseRenderImpact) empty() bool {
+	return len(i.soleUsers)+len(i.soleGroups)+len(i.changed)+len(i.idConflicts)+len(i.sudoers)+len(i.soleEgress)+len(i.unresolved) == 0 &&
+		!i.egressTurnsOff
 }
 
 func (i stateRebaseRenderImpact) describe() string {
@@ -388,112 +519,162 @@ func (i stateRebaseRenderImpact) describe() string {
 		}
 		return strings.Join(s, ", ")
 	}
-	d := fmt.Sprintf("render impact: users only they declare [%s]; groups only they declare [%s]; user/group ids that differ from the surviving declaration [%s]; sudoers grants removed [%s]; egress entries only they allow [%s]; egress enforcement turns off: %t",
-		list(i.soleUsers), list(i.soleGroups), list(i.idConflicts), list(i.sudoers), list(i.soleEgress), i.egressTurnsOff)
+	d := fmt.Sprintf("render impact: users only they declare [%s]; groups only they declare [%s]; user/group entries that would change [%s]; user/group ids that differ from the surviving declaration [%s]; sudoers grants removed [%s]; egress entries only they allow [%s]; egress enforcement turns off: %t",
+		list(i.soleUsers), list(i.soleGroups), list(i.changed), list(i.idConflicts), list(i.sudoers), list(i.soleEgress), i.egressTurnsOff)
 	if len(i.unresolved) > 0 {
-		d += fmt.Sprintf("; impact UNKNOWN for [%s] (no manifest at the attached digest)", strings.Join(i.unresolved, ", "))
+		d += fmt.Sprintf("; impact UNKNOWN, unresolved render candidates [%s]", strings.Join(i.unresolved, ", "))
 	}
 	return d
 }
 
-// stateRebaseImpact compares the dead modules' manifests with every surviving
-// render candidate's (the remaining state entries plus the breadcrumb's
-// modules), each resolved the way the render resolves it: fresh, else cached at
-// the same digest, else the breadcrumb's embedded copy.
-func (r *Reconciler) stateRebaseImpact(current *mount.State, bc *BootComposedBreadcrumb, deadIDs map[string]bool, fresh map[string]*manifest.Manifest) stateRebaseRenderImpact {
-	resolve := func(id, digest string) *manifest.Manifest {
-		if m, ok := fresh[id]; ok && m != nil && (digest == "" || m.Digest == digest) {
-			return m
+// stateRebaseImpact builds the render's own candidate set twice — with the
+// state as it is, and with the dead entries gone — and diffs what the render
+// would produce from each.
+func (r *Reconciler) stateRebaseImpact(current *mount.State, bc *BootComposedBreadcrumb, deadIDs map[string]bool, in stateRebaseInputs) stateRebaseRenderImpact {
+	bcManifests, bcIDs, bcDataIDs := breadcrumbManifestSets(bc)
+	survivors := make([]mount.Module, 0, len(current.AttachedModules))
+	for _, m := range current.AttachedModules {
+		if !deadIDs[m.ID] {
+			survivors = append(survivors, m)
 		}
-		if m, err := manifest.LoadFromDisk(r.cfg.ManifestRoot, id); err == nil && m != nil && (digest == "" || m.Digest == digest) {
-			return m
-		}
-		return nil
 	}
+	before := r.resolveRenderCandidates(in.fresh, current.AttachedModules, in.fetchFailed, bcManifests, bcIDs, bcDataIDs)
+	after := r.resolveRenderCandidates(in.fresh, survivors, in.fetchFailed, bcManifests, bcIDs, bcDataIDs)
 
 	var imp stateRebaseRenderImpact
-	var dead, survivors []*manifest.Manifest
-	seen := map[string]bool{}
-	for _, m := range current.AttachedModules {
-		if deadIDs[m.ID] {
-			if mf := resolve(m.ID, m.Digest); mf != nil {
-				dead = append(dead, mf)
-			} else {
-				imp.unresolved = append(imp.unresolved, m.ID)
-			}
-			continue
-		}
-		seen[m.ID] = true
-		if mf := resolve(m.ID, m.Digest); mf != nil {
-			survivors = append(survivors, mf)
-		}
+	unresolved := map[string]bool{}
+	for _, id := range append(append([]string{}, before.unresolvedReal...), after.unresolvedReal...) {
+		unresolved[id] = true
 	}
-	bcManifests, _, _ := loadBreadcrumbManifests()
-	for _, bm := range bc.Modules {
-		if seen[bm.ID] {
-			continue
+	for id := range unresolved {
+		imp.unresolved = append(imp.unresolved, id)
+	}
+
+	sorted := func(m map[string]*manifest.Manifest) []*manifest.Manifest {
+		ids := make([]string, 0, len(m))
+		for id := range m {
+			ids = append(ids, id)
 		}
-		if mf := resolve(bm.ID, bm.Digest); mf != nil {
-			survivors = append(survivors, mf)
-		} else if mf := bcManifests[bm.ID]; mf != nil {
-			survivors = append(survivors, mf)
+		sort.Strings(ids)
+		out := make([]*manifest.Manifest, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, m[id])
+		}
+		return out
+	}
+	beforeSet, afterSet := sorted(before.merged), sorted(after.merged)
+	var dead []*manifest.Manifest
+	for _, m := range beforeSet {
+		if deadIDs[m.ID] {
+			dead = append(dead, m)
 		}
 	}
 
-	users := map[string]int{}
-	groups := map[string]int{}
-	egress := map[string]bool{}
-	survivorsEnforce := false
-	for _, s := range survivors {
-		for _, u := range s.Users {
-			if _, ok := users[u.Name]; !ok {
-				users[u.Name] = u.UID
-			}
-		}
-		for _, g := range s.Groups {
-			if _, ok := groups[g.Name]; !ok {
-				groups[g.Name] = g.GID
-			}
-		}
-		p := buildPolicy(s)
-		if p.EgressDeclared {
-			survivorsEnforce = true
-		}
-		for _, e := range p.EgressAllow {
-			egress[e] = true
-		}
+	bIdent, _ := etcidentity.Collect(beforeSet)
+	aIdent, _ := etcidentity.Collect(afterSet)
+	aUsers := map[string]etcidentity.User{}
+	for _, u := range aIdent.Users {
+		aUsers[u.Name] = u
 	}
-	deadEnforce := false
+	aGroups := map[string]etcidentity.Group{}
+	for _, g := range aIdent.Groups {
+		aGroups[g.Name] = g
+	}
+	conflicted := map[string]bool{}
 	for _, d := range dead {
 		for _, u := range d.Users {
-			if uid, ok := users[u.Name]; !ok {
-				imp.soleUsers = append(imp.soleUsers, fmt.Sprintf("%s(uid %d, %s)", u.Name, u.UID, d.ID))
-			} else if uid != u.UID {
-				imp.idConflicts = append(imp.idConflicts, fmt.Sprintf("user %s: %s says %d, surviving %d", u.Name, d.ID, u.UID, uid))
+			if au, ok := aUsers[u.Name]; ok && au.UID != u.UID {
+				imp.idConflicts = append(imp.idConflicts, fmt.Sprintf("user %s: %s says %d, surviving %d", u.Name, d.ID, u.UID, au.UID))
+				conflicted["user:"+u.Name] = true
 			}
 		}
 		for _, g := range d.Groups {
-			if gid, ok := groups[g.Name]; !ok {
-				imp.soleGroups = append(imp.soleGroups, fmt.Sprintf("%s(gid %d, %s)", g.Name, g.GID, d.ID))
-			} else if gid != g.GID {
-				imp.idConflicts = append(imp.idConflicts, fmt.Sprintf("group %s: %s says %d, surviving %d", g.Name, d.ID, g.GID, gid))
-			}
-		}
-		for _, s := range d.Sudoers {
-			imp.sudoers = append(imp.sudoers, "powernode-"+d.Name+"-"+s.ID)
-		}
-		p := buildPolicy(d)
-		if p.EgressDeclared {
-			deadEnforce = true
-		}
-		for _, e := range p.EgressAllow {
-			if !egress[e] {
-				imp.soleEgress = append(imp.soleEgress, fmt.Sprintf("%s(%s)", e, d.ID))
+			if ag, ok := aGroups[g.Name]; ok && ag.GID != g.GID {
+				imp.idConflicts = append(imp.idConflicts, fmt.Sprintf("group %s: %s says %d, surviving %d", g.Name, d.ID, g.GID, ag.GID))
+				conflicted["group:"+g.Name] = true
 			}
 		}
 	}
-	imp.egressTurnsOff = deadEnforce && !survivorsEnforce
-	for _, s := range [][]string{imp.soleUsers, imp.soleGroups, imp.idConflicts, imp.sudoers, imp.soleEgress, imp.unresolved} {
+	declaredBy := func(kind, name string) string {
+		var ids []string
+		for _, d := range dead {
+			if kind == "user" {
+				for _, u := range d.Users {
+					if u.Name == name {
+						ids = append(ids, d.ID)
+					}
+				}
+			} else {
+				for _, g := range d.Groups {
+					if g.Name == name {
+						ids = append(ids, d.ID)
+					}
+				}
+			}
+		}
+		return strings.Join(ids, "+")
+	}
+	for _, u := range bIdent.Users {
+		au, ok := aUsers[u.Name]
+		switch {
+		case !ok:
+			imp.soleUsers = append(imp.soleUsers, fmt.Sprintf("%s(uid %d, %s)", u.Name, u.UID, declaredBy("user", u.Name)))
+		case !conflicted["user:"+u.Name] && string(etcidentity.RenderPasswd(&etcidentity.Set{Users: []etcidentity.User{u}})) !=
+			string(etcidentity.RenderPasswd(&etcidentity.Set{Users: []etcidentity.User{au}})):
+			imp.changed = append(imp.changed, "user "+u.Name)
+		}
+	}
+	for _, g := range bIdent.Groups {
+		ag, ok := aGroups[g.Name]
+		switch {
+		case !ok:
+			imp.soleGroups = append(imp.soleGroups, fmt.Sprintf("%s(gid %d, %s)", g.Name, g.GID, declaredBy("group", g.Name)))
+		case !conflicted["group:"+g.Name] && string(etcidentity.RenderGroup(&etcidentity.Set{Groups: []etcidentity.Group{g}})) !=
+			string(etcidentity.RenderGroup(&etcidentity.Set{Groups: []etcidentity.Group{ag}})):
+			imp.changed = append(imp.changed, "group "+g.Name)
+		}
+	}
+
+	aSudo := map[string]bool{}
+	for _, g := range etcsudoers.CollectFromManifests(afterSet) {
+		aSudo[g.Filename()] = true
+	}
+	for _, g := range etcsudoers.CollectFromManifests(beforeSet) {
+		if !aSudo[g.Filename()] {
+			imp.sudoers = append(imp.sudoers, g.Filename())
+		}
+	}
+
+	policies := func(ms []*manifest.Manifest) []*security.Policy {
+		out := make([]*security.Policy, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, buildPolicy(m))
+		}
+		return out
+	}
+	bAllow, bEnforced := security.UnionEgressPolicy(policies(beforeSet))
+	aAllow, aEnforced := security.UnionEgressPolicy(policies(afterSet))
+	kept := map[string]bool{}
+	for _, e := range aAllow {
+		kept[e] = true
+	}
+	for _, e := range bAllow {
+		if kept[e] {
+			continue
+		}
+		var from []string
+		for _, d := range dead {
+			for _, de := range buildPolicy(d).EgressAllow {
+				if de == e {
+					from = append(from, d.ID)
+				}
+			}
+		}
+		imp.soleEgress = append(imp.soleEgress, fmt.Sprintf("%s(%s)", e, strings.Join(from, "+")))
+	}
+	imp.egressTurnsOff = bEnforced && !aEnforced
+
+	for _, s := range [][]string{imp.soleUsers, imp.soleGroups, imp.changed, imp.idConflicts, imp.sudoers, imp.soleEgress, imp.unresolved} {
 		sort.Strings(s)
 	}
 	return imp

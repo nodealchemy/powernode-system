@@ -171,9 +171,13 @@ type Reconciler struct {
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
 
-	// stateRebaseNoted de-duplicates the boot state rebase's signals (see
-	// state_rebase.go). Guarded by mu: only RunOnce touches it.
-	stateRebaseNoted map[string]bool
+	// Boot state rebase bookkeeping (see state_rebase.go), guarded by mu —
+	// only RunOnce touches it. stateRebaseActive holds the condition ids the
+	// last evaluation raised (a condition is signalled when it newly appears);
+	// stateRebaseMemo is the composition key + fingerprint of the last verdict
+	// that changed nothing, so an unchanged node is not re-probed every tick.
+	stateRebaseActive map[string]bool
+	stateRebaseMemo   string
 
 	// IMP-f1c1e6d61104 — per-module convergence failures observed by the LAST
 	// pass, reset at the top of RunOnce. Read by the apply_config/sync task
@@ -579,22 +583,30 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		return r.lastError
 	}
 
-	// Drop entries for modules this boot did not compose and that nothing
-	// shows live — before anything below reads current (see state_rebase.go).
-	// Report-only unless explicitly enabled.
-	r.rebaseStateAgainstBoot(ctx, current, manifests)
-
-	// Captured AFTER the rebase above and before anything below mutates
-	// current.AttachedModules. ComposeForPivot doesn't persist a state.json
-	// at boot, so on the FIRST reconcile tick after a pivot boot, current is
-	// empty and every boot module shows up in toAttach even though its files
-	// are ALREADY part of the boot union — hotReconcileIfNeeded must not copy
-	// on that baseline tick (see its doc comment). Later ticks have real
-	// prior state (RunOnce SaveState's at the end of every cycle), so
-	// stateWasEmpty reflects "is this a genuine post-boot change". A rebase
-	// that emptied the state leaves exactly that baseline situation, so it
-	// is measured after the rebase, not before.
+	// Captured BEFORE the state rebase below and before anything else mutates
+	// current.AttachedModules. ComposeForPivot doesn't persist a state.json at
+	// boot, so on the very first reconcile tick of a node, current is empty
+	// and every boot module shows up in toAttach even though its files are
+	// ALREADY part of the boot union — hotReconcileIfNeeded must not copy on
+	// that baseline tick (see its doc comment). Later ticks have real prior
+	// state (RunOnce SaveState's at the end of every cycle), so stateWasEmpty
+	// reflects "is this a genuine post-boot change".
+	//
+	// Not re-measured after the rebase: a rebase that empties a non-empty state
+	// is not that baseline. The skip is silent (no unmaterialized record, units
+	// still start), so treating it as baseline would leave a newly assigned
+	// module the boot did not compose running against files never copied onto
+	// /. Measured here, the rebase leaves the hot-copy decision exactly as it
+	// was before the rebase existed.
 	stateWasEmpty := len(current.AttachedModules) == 0
+
+	// Drop entries for modules this boot did not compose and that nothing
+	// shows live (see state_rebase.go). Report-only unless explicitly enabled.
+	assignedIDs := make(map[string]bool, len(desiredModules))
+	for _, mod := range desiredModules {
+		assignedIDs[mod.ID] = true
+	}
+	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
 
 	toAttach, toDetach := mount.Reconcile(current, desired)
 

@@ -64,6 +64,11 @@ type rebaseModule struct {
 	egress   []string // declares security.egress_allow when non-nil
 	// noCache leaves no cached manifest on disk for the module.
 	noCache bool
+	// fetchFails makes the platform 404 this assigned module's manifest.
+	fetchFails bool
+	// files are created under the module's mount point (as if its erofs
+	// were mounted there), relative path -> content.
+	files map[string]string
 }
 
 func (m rebaseModule) boot() string {
@@ -91,9 +96,11 @@ func (m rebaseModule) manifest() *manifest.Manifest {
 type rebaseOpts struct {
 	selfHosted bool
 	enforce    bool // the enable sentinel exists
-	killFile   bool // the disable sentinel exists
-	killCmd    bool // powernode.state_rebase=off on the kernel cmdline
-	dryRun     bool
+	// approval is the enable sentinel's content (enforce only).
+	approval string
+	killFile bool // the disable sentinel exists
+	killCmd  bool // powernode.state_rebase=off on the kernel cmdline
+	dryRun   bool
 	// breadcrumb: "this" (default when composed modules exist), "other",
 	// "corrupt", "incomplete", "no-boot-id", "none".
 	breadcrumb string
@@ -178,7 +185,7 @@ func newRebaseHarness(t *testing.T, mods []rebaseModule, o rebaseOpts) *rebaseHa
 	}
 	writeRebaseFixture(t, procCmdlinePath, cmdline)
 	if o.enforce {
-		writeRebaseFixture(t, StateRebaseEnableSentinel, "")
+		writeRebaseFixture(t, StateRebaseEnableSentinel, o.approval)
 	}
 	if o.killFile {
 		writeRebaseFixture(t, StateRebaseDisableSentinel, "")
@@ -219,6 +226,13 @@ func newRebaseHarness(t *testing.T, mods []rebaseModule, o rebaseOpts) *rebaseHa
 	for _, m := range mods {
 		if !m.noCache {
 			writeManifestFixture(t, manifestRoot, m.manifest())
+		}
+		for rel, body := range m.files {
+			p := filepath.Join(layout.ModuleMountPath(m.digest), rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeRebaseFixture(t, p, body)
 		}
 		if m.unitFile && !o.unitDirUnreadable {
 			writeRebaseFixture(t, filepath.Join(unitDir, lifecycle.UnitName(m.id, "svc")), "[Service]\nExecStart=/bin/true\n")
@@ -331,6 +345,9 @@ func newRebaseHarness(t *testing.T, mods []rebaseModule, o rebaseOpts) *rebaseHa
 			continue
 		}
 		listed = append(listed, fmt.Sprintf(`{"id":%q, "name":%q, "priority":100, "effective_priority":100, "has_data_file":true}`, m.id, m.id))
+		if m.fetchFails {
+			continue
+		}
 		body, _ := json.Marshal(m.manifest())
 		responses["/api/v1/system/node_api/modules/"+m.id] = `{"success": true, "data": ` + string(body) + `}`
 	}
@@ -948,7 +965,10 @@ func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 	t.Run("control: enforce drops the same module without the conflict", func(t *testing.T) {
 		noConflict := dead
 		noConflict.users = dead.users[:1]
-		h := newRebaseHarness(t, []rebaseModule{survivor([]string{"1.1.1.1:443"}), noConflict}, rebaseOpts{selfHosted: true, enforce: true})
+		// A sole-source user is a non-empty impact, so it needs this
+		// composition's approval (review 2, finding 3).
+		h := newRebaseHarness(t, []rebaseModule{survivor([]string{"1.1.1.1:443"}), noConflict},
+			rebaseOpts{selfHosted: true, enforce: true, approval: defaultRebaseKey()})
 		st := h.run(t)
 		rebased := h.signalsFor(stageStateRebased)
 		if hasEntry(st, "devpin-pg") || len(rebased) != 1 || !strings.Contains(rebased[0], "pgdev(uid 5001, devpin-pg)") {
@@ -1033,4 +1053,243 @@ func TestSelfHostFence_UnchangedByRebase(t *testing.T) {
 			t.Errorf("a version bump was refused: %v", *h.signals)
 		}
 	})
+}
+
+// defaultRebaseKey is the key of the breadcrumb every fixture writes unless it
+// overrides the compose time.
+func defaultRebaseKey() string {
+	return stateRebaseKey(&BootComposedBreadcrumb{BootID: rebaseThisBoot, ComposedAt: rebaseComposedAt})
+}
+
+func (h *rebaseHarness) unitQueries(id string) int {
+	n := 0
+	for _, inv := range h.runner.Invocations {
+		if inv.Op == "Output" && inv.Name == "systemctl" && len(inv.Args) > 0 && inv.Args[0] == "list-units" &&
+			(id == "" || inv.Args[len(inv.Args)-1] == "powernode-"+id+"-*") {
+			n++
+		}
+	}
+	return n
+}
+
+// Review 2, finding 1: the impact is the render's OWN merged set with and
+// without the dead IDs — including assigned modules in neither state nor the
+// breadcrumb, and survivors resolvable only through the breadcrumb.
+func TestStateRebase_ImpactUsesTheRendersOwnSet(t *testing.T) {
+	deadPg := rebaseModule{id: "devpin-pg", digest: "sha256:dead1", inState: true, services: true,
+		users: []manifest.ManifestUser{{Name: "postgres", UID: 998, PrimaryGID: 998, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
+	base := rebaseModule{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true}
+
+	t.Run("(a) a newly assigned module in neither state nor breadcrumb conflicts", func(t *testing.T) {
+		newN := rebaseModule{id: "m-new", digest: "sha256:4e4", assigned: true,
+			users: []manifest.ManifestUser{{Name: "postgres", UID: 999, PrimaryGID: 999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
+		h := newRebaseHarness(t, []rebaseModule{base, newN, deadPg}, rebaseOpts{selfHosted: true, enforce: true, approval: defaultRebaseKey()})
+		st := h.run(t)
+		if !hasEntry(st, "devpin-pg") || st.RebasedAgainst != "" {
+			t.Errorf("enforce dropped a module whose postgres uid conflicts with a newly assigned module: %v", attachedIDs(st))
+		}
+		skipped := h.signalsFor(stageStateRebaseSkipped)
+		if len(skipped) != 1 || !strings.Contains(skipped[0], "postgres") || !strings.Contains(skipped[0], "conflict") {
+			t.Errorf("want a skip naming the postgres conflict, got %v", skipped)
+		}
+	})
+
+	t.Run("(b) a survivor resolvable only through the breadcrumb still counts", func(t *testing.T) {
+		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
+		dead := rebaseModule{id: "devpin-x", digest: "sha256:dead2", inState: true, services: true, users: []manifest.ManifestUser{pgdev}}
+		bcOnly := rebaseModule{id: "m-bc-only", digest: "sha256:bc01", composed: true, noCache: true, users: []manifest.ManifestUser{pgdev}}
+		h := newRebaseHarness(t, []rebaseModule{base, bcOnly, dead}, rebaseOpts{selfHosted: true})
+		h.run(t)
+		would := h.signalsFor(stageStateWouldRebase)
+		if len(would) != 1 {
+			t.Fatalf("want one report, got %v", *h.signals)
+		}
+		if strings.Contains(would[0], "pgdev") {
+			t.Errorf("pgdev is also declared by the breadcrumb-only survivor; the report must not list it as lost: %s", would[0])
+		}
+	})
+
+	t.Run("(b) control: without the breadcrumb survivor pgdev IS lost", func(t *testing.T) {
+		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
+		dead := rebaseModule{id: "devpin-x", digest: "sha256:dead2", inState: true, services: true, users: []manifest.ManifestUser{pgdev}}
+		h := newRebaseHarness(t, []rebaseModule{base, dead}, rebaseOpts{selfHosted: true})
+		h.run(t)
+		would := h.signalsFor(stageStateWouldRebase)
+		if len(would) != 1 || !strings.Contains(would[0], "pgdev") {
+			t.Errorf("control: want pgdev reported as lost, got %v", would)
+		}
+	})
+
+	t.Run("(c) an unresolved survivor makes the impact unknown", func(t *testing.T) {
+		unresolved := rebaseModule{id: "m-dark", digest: "sha256:da4c", assigned: true, inState: true, composed: true, fetchFails: true, noCache: true}
+		dead := rebaseModule{id: "devpin-y", digest: "sha256:dead4", inState: true, services: true}
+		h := newRebaseHarness(t, []rebaseModule{base, unresolved, dead}, rebaseOpts{selfHosted: true, enforce: true, approval: defaultRebaseKey()})
+		// Its breadcrumb entry carries a manifest; strip it so nothing resolves.
+		bc, err := LoadBreadcrumb(h.breadcrumb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range bc.Modules {
+			if bc.Modules[i].ID == "m-dark" {
+				bc.Modules[i].Manifest = nil
+			}
+		}
+		if err := WriteBreadcrumb(h.breadcrumb, bc); err != nil {
+			t.Fatal(err)
+		}
+		st := h.run(t)
+		if !hasEntry(st, "devpin-y") || st.RebasedAgainst != "" {
+			t.Errorf("enforce proceeded with an unresolved survivor: %v", attachedIDs(st))
+		}
+		skipped := h.signalsFor(stageStateRebaseSkipped)
+		if len(skipped) != 1 || !strings.Contains(skipped[0], "m-dark") {
+			t.Errorf("want a skip naming the unresolved survivor m-dark, got %v", skipped)
+		}
+	})
+}
+
+// Review 2, finding 2: an ASSIGNED candidate is never dropped — dropping it
+// makes the same tick prefetch, mount, hot-copy and start it. It is reported
+// separately, and the rebase does not even probe it.
+func TestStateRebase_AssignedCandidateNeverDropped(t *testing.T) {
+	mods := []rebaseModule{
+		{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true},
+		{id: "m-hot-after-lkg", digest: "sha256:407", assigned: true, inState: true, services: true},
+		{id: "dead-one", digest: "sha256:dead3", inState: true, services: true},
+	}
+	h := newRebaseHarness(t, mods, rebaseOpts{selfHosted: true, enforce: true})
+	st := h.run(t)
+	if !hasEntry(st, "m-hot-after-lkg") || hasEntry(st, "dead-one") {
+		t.Errorf("want the assigned candidate kept and dead-one dropped: %v", attachedIDs(st))
+	}
+	rebased := h.signalsFor(stageStateRebased)
+	if len(rebased) != 1 || strings.Contains(rebased[0], "m-hot-after-lkg") {
+		t.Errorf("the rebase must not name the assigned candidate as dropped: %v", rebased)
+	}
+	anc := h.signalsFor("reconciler:state_assigned_not_composed")
+	if len(anc) != 1 || !strings.Contains(anc[0], "m-hot-after-lkg") || strings.Contains(anc[0], "dead-one") {
+		t.Errorf("want the assigned candidate reported as assigned-not-composed, got %v", anc)
+	}
+	if n := h.unitQueries("m-hot-after-lkg"); n != 0 {
+		t.Errorf("the rebase probed an assigned candidate (%d unit queries)", n)
+	}
+	for _, inv := range h.runner.Invocations {
+		if inv.Name == "umount" || (inv.Name == "systemctl" && len(inv.Args) > 0 && inv.Args[0] == "stop") {
+			if strings.Contains(strings.Join(inv.Args, " "), "407") || strings.Contains(strings.Join(inv.Args, " "), "m-hot-after-lkg") {
+				t.Errorf("a command acted on the assigned candidate: %+v", inv)
+			}
+		}
+	}
+}
+
+// Review 2, finding 3: enforce proceeds on its own only when the render impact
+// is EMPTY. Otherwise the enable sentinel must NAME this composition's key — a
+// per-composition approval, never a standing one.
+func TestStateRebase_NonEmptyImpactNeedsPerCompositionApproval(t *testing.T) {
+	withUser := func() []rebaseModule {
+		return []rebaseModule{
+			{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true},
+			{id: "devpin-u", digest: "sha256:dead5", inState: true, services: true,
+				users: []manifest.ManifestUser{{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		approval string
+		drop     bool
+	}{
+		{"no approval", "", false},
+		{"approval for another composition", "0123456789abcdef\n", false},
+		{"approval for this composition", defaultRebaseKey() + "\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRebaseHarness(t, withUser(), rebaseOpts{selfHosted: true, enforce: true, approval: tc.approval})
+			st := h.run(t)
+			if hasEntry(st, "devpin-u") == tc.drop {
+				t.Errorf("devpin-u dropped=%t, want %t (signals %v)", !hasEntry(st, "devpin-u"), tc.drop, *h.signals)
+			}
+			if !tc.drop {
+				if st.RebasedAgainst != "" {
+					t.Errorf("stamped without approval")
+				}
+				would := h.signalsFor(stageStateWouldRebase)
+				if len(would) != 1 || !strings.Contains(would[0], defaultRebaseKey()) || !strings.Contains(would[0], "pgdev") {
+					t.Errorf("want a report naming the key to approve and the impact, got %v", would)
+				}
+			}
+		})
+	}
+
+	t.Run("approval written between ticks takes effect", func(t *testing.T) {
+		h := newRebaseHarness(t, withUser(), rebaseOpts{selfHosted: true, enforce: true})
+		if st := h.run(t); !hasEntry(st, "devpin-u") {
+			t.Fatalf("dropped without approval")
+		}
+		writeRebaseFixture(t, StateRebaseEnableSentinel, defaultRebaseKey()+"\n")
+		if st := h.run(t); hasEntry(st, "devpin-u") {
+			t.Errorf("approval written after the first tick was ignored: %v", *h.signals)
+		}
+	})
+}
+
+// Review 2, finding 4: report-only does not re-probe an unchanged composition.
+func TestStateRebase_ReportOnlyDoesNotReprobe(t *testing.T) {
+	h := newRebaseHarness(t, opsHubFixture(), rebaseOpts{selfHosted: true})
+	h.run(t)
+	first := h.unitQueries("")
+	if first == 0 {
+		t.Fatalf("control: the first report-only tick must probe")
+	}
+	h.run(t)
+	if again := h.unitQueries("") - first; again != 0 {
+		t.Errorf("an unchanged composition was re-probed (%d more unit queries)", again)
+	}
+}
+
+// Review 2, finding 6: de-dup keys on a stable condition id — a condition whose
+// wording changes is not re-signalled — and a condition that clears and returns
+// IS re-signalled.
+func TestStateRebase_SignalDedupIsPerCondition(t *testing.T) {
+	h := newRebaseHarness(t, opsHubFixture(), rebaseOpts{selfHosted: true, enforce: true, unitQueryFails: "devpin-ruby"})
+	h.run(t)
+	h.runner.StubErr[unitsQueryKey("devpin-ruby")] = errors.New("a differently worded bus error")
+	h.run(t)
+	if n := len(h.signalsFor(stageStateRebaseSkipped)); n != 1 {
+		t.Errorf("same condition, new wording: want 1 skip signal, got %d: %v", n, h.signalsFor(stageStateRebaseSkipped))
+	}
+
+	c := newRebaseHarness(t, opsHubFixture(), rebaseOpts{selfHosted: true})
+	good, err := os.ReadFile(c.breadcrumb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRebaseFixture(t, c.breadcrumb, "{not json")
+	c.run(t)
+	writeRebaseFixture(t, c.breadcrumb, string(good))
+	c.run(t)
+	writeRebaseFixture(t, c.breadcrumb, "{not json")
+	c.run(t)
+	if n := len(c.signalsFor(stageStateRebaseSkipped)); n != 2 {
+		t.Errorf("a condition that cleared and returned: want 2 skip signals, got %d: %v", n, c.signalsFor(stageStateRebaseSkipped))
+	}
+}
+
+// Review 2, item 5: a rebase that empties state.json must not turn this tick
+// into the first-boot baseline. Baseline means "skip the hot-copy", and that
+// skip is silent — a newly assigned module the boot did not compose would
+// start its units against files that were never copied onto /.
+func TestStateRebase_EmptiedStateIsNotTheFirstBootBaseline(t *testing.T) {
+	mods := []rebaseModule{
+		{id: "m-base", digest: "sha256:ba5e", assigned: true, composed: true},
+		{id: "m-new", digest: "sha256:4e4", assigned: true, files: map[string]string{"opt/m-new/marker": "new"}},
+		{id: "dead-one", digest: "sha256:dead3", inState: true, services: true},
+	}
+	h := newRebaseHarness(t, mods, rebaseOpts{selfHosted: true, enforce: true})
+	st := h.run(t)
+	if hasEntry(st, "dead-one") || len(h.signalsFor(stageStateRebased)) != 1 {
+		t.Fatalf("control: the rebase must have emptied state first: %v %v", attachedIDs(st), *h.signals)
+	}
+	if _, err := os.Stat(filepath.Join(h.layout.Root, "opt/m-new/marker")); err != nil {
+		t.Errorf("m-new was not hot-copied onto / (baseline skip): %v; signals %v", err, *h.signals)
+	}
 }
