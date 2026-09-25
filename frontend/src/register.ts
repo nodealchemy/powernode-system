@@ -49,13 +49,6 @@ const MyVpnDevicesPage = lazyPage(() => import('./pages/app/system/MyVpnDevicesP
 // Ingress — derived Traefik routes + approval-gated Expose Service wizard.
 // Plan reference: Phase 2c (Ingress).
 const IngressPage = lazyPage(() => import('./pages/app/system/IngressPage'));
-// Module Builds — fc-34: absorbed the core DevOps → CI/CD tab this same
-// System::ModuleBuildBatch API used to front (a URL-only cross-boundary
-// seam, ModuleBuildsPage/ModuleBuildDetailPage, now deleted as the
-// duplicate). Registered at core's OWN URL prefix
-// (/devops/ci-cd/module-builds, not /system/*) so existing bookmarks keep
-// resolving — a real route, not a redirect.
-const ModuleBuildsPage = lazyPage(() => import('./pages/app/devops/ModuleBuildsPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -110,10 +103,6 @@ export function register(): void {
     // string. Adding one would degrade to admin-only on this platform and
     // lock out exactly the ordinary users the page exists to serve.
     { path: '/system/my-vpn', component: MyVpnDevicesPage },
-
-    // Module Builds — the one route registered under core's /devops/*
-    // prefix rather than /system/*. See ModuleBuildsPage's own comment.
-    { path: '/devops/ci-cd/module-builds', component: ModuleBuildsPage, permission: 'system.module_builds.read' },
   ]);
 
   // Top-level "System" nav section. Phase B.5 collapses the previous
@@ -158,22 +147,6 @@ export function register(): void {
     },
   ]);
 
-  // Module Builds' nav entry lives in core's existing "devops" sidebar
-  // section (registerNavItems' section-injection seam — NavigationContext
-  // merges an item with a matching `section` id into that section's own
-  // items), not in the "System" section above: fc-34 moved this surface out
-  // of CiCdPage's tab strip, so it needs a way back in from where an
-  // operator used to find it (DevOps → CI/CD → Module Builds tab).
-  featureRegistry.registerNavItems('system', [
-    {
-      label: 'Module Builds',
-      path: '/app/devops/ci-cd/module-builds',
-      icon: 'Hammer',
-      permission: 'system.module_builds.read',
-      section: 'devops',
-    },
-  ]);
-
   // Cross-reference entity types: wires the system extension's detail modals +
   // read APIs into the core entity registry so <EntityLink> / the global
   // <EntityReferenceHost> can resolve a `?entity=<type>&eid=<id>` to the right
@@ -210,6 +183,18 @@ export function register(): void {
         `platform.status.drawer.${kind}.signals`,
         signalsView,
       ])
+    ),
+    // Module Builds — fc-34, revised per review: CiCdPage.tsx discovers any
+    // `devops.ci-cd.tab.<id>` slot and renders it as a real, URL-addressable
+    // tab (/app/devops/ci-cd/<id>) inside its own existing tab strip and
+    // PageContainer — core never imports or names this extension. Replaces
+    // an earlier version of this slice that registered a standalone route
+    // (featureRegistry.registerRoutes) plus a DevOps sidebar nav item; review
+    // found that pulled the tab out of CiCdPage's own strip and needed to
+    // duplicate page chrome (breadcrumbs, actions) to compensate. See
+    // ModuleBuildsCiCdTab.tsx's own header comment.
+    'devops.ci-cd.tab.module-builds': lazyPage(
+      () => import('./pages/app/devops/ModuleBuildsCiCdTab')
     ),
   });
 

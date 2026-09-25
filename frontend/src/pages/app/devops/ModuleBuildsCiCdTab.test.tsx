@@ -1,9 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
-import { BrowserRouter } from 'react-router-dom';
-import { ModuleBuildsPage } from './ModuleBuildsPage';
-
-const renderPage = () => render(<BrowserRouter><ModuleBuildsPage /></BrowserRouter>);
+import { ModuleBuildsCiCdTab } from './ModuleBuildsCiCdTab';
 
 // =============================================================================
 // Permission mock — mutated per-test so we can exercise the read gate.
@@ -18,25 +15,10 @@ jest.mock('@/shared/hooks/usePermissions', () => ({
 }));
 
 // =============================================================================
-// Breadcrumb context — required by PageContainer.
-// =============================================================================
-
-jest.mock('@/shared/hooks/BreadcrumbContext', () => ({
-  __esModule: true,
-  BreadcrumbProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useBreadcrumb: () => ({
-    breadcrumbs: [],
-    setBreadcrumbs: jest.fn(),
-    getCurrentBreadcrumbs: () => [],
-    setCurrentPage: jest.fn(),
-  }),
-}));
-
-// =============================================================================
 // Stub ModuleBuildsTab — its own internals are covered by
-// ModuleBuildsTab.test.tsx; here we only need to confirm the page wires
-// permission gating, breadcrumbs and the onActionsReady → page-actions
-// bridge correctly.
+// ModuleBuildsTab.test.tsx; here we only need to confirm this adapter wires
+// permission gating and bridges ModuleBuildsTab's handle-shaped
+// onActionsReady into the PageAction-array shape CiCdPage's other tabs use.
 // =============================================================================
 
 jest.mock('@system/features/system/components/operations/ModuleBuildsTab', () => {
@@ -58,13 +40,13 @@ jest.mock('@system/features/system/components/operations/ModuleBuildsTab', () =>
 // Tests
 // =============================================================================
 
-describe('ModuleBuildsPage', () => {
+describe('ModuleBuildsCiCdTab', () => {
   beforeEach(() => {
     mockHasPermission = () => true;
   });
 
   it('renders the ModuleBuildsTab when the operator can read module builds', async () => {
-    renderPage();
+    render(<ModuleBuildsCiCdTab />);
 
     await waitFor(() => expect(screen.getByTestId('module-builds-tab')).toBeInTheDocument());
   });
@@ -72,28 +54,34 @@ describe('ModuleBuildsPage', () => {
   it('shows a permission-denied message instead of the tab when read is not granted', () => {
     mockHasPermission = (permission) => permission !== 'system.module_builds.read';
 
-    renderPage();
+    render(<ModuleBuildsCiCdTab />);
 
     expect(screen.getByText(/don.t have permission to view module build batches/i)).toBeInTheDocument();
     expect(screen.queryByTestId('module-builds-tab')).not.toBeInTheDocument();
   });
 
-  it('renders breadcrumbs through DevOps and CI/CD to Module Builds', () => {
-    // The first breadcrumb ("Dashboard") is rendered as a Home icon without
-    // its label (PageContainer's SharedBreadcrumbs convention) — assert on
-    // the labels that stay text instead.
-    renderPage();
+  it('bridges the handle-shaped onActionsReady into a Refresh PageAction', async () => {
+    const onActionsReady = jest.fn();
 
-    expect(screen.getByText('DevOps')).toBeInTheDocument();
-    expect(screen.getByText('CI/CD')).toBeInTheDocument();
-    expect(screen.getAllByText('Module Builds').length).toBeGreaterThan(0);
-  });
-
-  it('exposes a Refresh page action once the tab reports its handle', async () => {
-    renderPage();
+    render(<ModuleBuildsCiCdTab onActionsReady={onActionsReady} />);
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument(),
+      expect(onActionsReady).toHaveBeenCalledWith([
+        expect.objectContaining({ label: 'Refresh', onClick: expect.any(Function) }),
+      ]),
     );
+  });
+
+  it('clears the page actions when the tab unmounts', async () => {
+    const onActionsReady = jest.fn();
+
+    const { unmount } = render(<ModuleBuildsCiCdTab onActionsReady={onActionsReady} />);
+
+    await waitFor(() => expect(onActionsReady).toHaveBeenCalledWith(expect.any(Array)));
+    onActionsReady.mockClear();
+
+    unmount();
+
+    expect(onActionsReady).toHaveBeenCalledWith([]);
   });
 });
