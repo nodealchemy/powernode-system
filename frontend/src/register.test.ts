@@ -6,6 +6,8 @@
 //   3. registerSystemEntities()                          — cross-reference wiring
 //   4. featureRegistry.registerComponentSlots({...})     — drawer views + the
 //      devops.ci-cd.tab.module-builds CI/CD tab slot (fc-34, revised per review)
+//   5. featureRegistry.registerSlotMeta({...})           — the Module Builds
+//      slot's label + gating permission (fc-34 round 3)
 //
 // Strategy: mock the two dependencies so we can assert on exact payloads
 // without touching the DOM, React lazy loading, or the entity sub-system.
@@ -17,6 +19,7 @@
 const mockRegisterRoutes = jest.fn();
 const mockRegisterNavSections = jest.fn();
 const mockRegisterComponentSlots = jest.fn();
+const mockRegisterSlotMeta = jest.fn();
 const mockRegisterProviderCategoryHandlers = jest.fn();
 
 jest.mock('@/shared/services/featureRegistry', () => ({
@@ -24,6 +27,7 @@ jest.mock('@/shared/services/featureRegistry', () => ({
     registerRoutes: (...args: unknown[]) => mockRegisterRoutes(...args),
     registerNavSections: (...args: unknown[]) => mockRegisterNavSections(...args),
     registerComponentSlots: (...args: unknown[]) => mockRegisterComponentSlots(...args),
+    registerSlotMeta: (...args: unknown[]) => mockRegisterSlotMeta(...args),
     registerProviderCategoryHandlers: (...args: unknown[]) =>
       mockRegisterProviderCategoryHandlers(...args),
     registerMentionSources: (...args: unknown[]) => mockRegisterMentionSources(...args),
@@ -76,12 +80,13 @@ beforeEach(() => {
 // =============================================================================
 
 describe('register()', () => {
-  it('calls registerRoutes, registerNavSections, registerComponentSlots, and registerSystemEntities exactly once each', () => {
+  it('calls registerRoutes, registerNavSections, registerComponentSlots, registerSlotMeta, and registerSystemEntities exactly once each', () => {
     register();
 
     expect(mockRegisterRoutes).toHaveBeenCalledTimes(1);
     expect(mockRegisterNavSections).toHaveBeenCalledTimes(1);
     expect(mockRegisterComponentSlots).toHaveBeenCalledTimes(1);
+    expect(mockRegisterSlotMeta).toHaveBeenCalledTimes(1);
     expect(mockRegisterSystemEntities).toHaveBeenCalledTimes(1);
   });
 
@@ -154,6 +159,36 @@ describe('registered component slots', () => {
     signals.forEach((slot) => expect(slot).toBeDefined());
     expect(new Set(signals).size).toBe(1);
     expect(signals[0]).not.toBe(slots['platform.status.drawer.node_instance.boot_replay']);
+  });
+});
+
+// =============================================================================
+// registerSlotMeta — the Module Builds tab slot's label + gating permission
+// =============================================================================
+
+describe('registered slot metadata', () => {
+  let meta: Record<string, { permissions?: string[]; label?: string }>;
+
+  beforeEach(() => {
+    mockRegisterSlotMeta.mockClear();
+    register();
+    meta = mockRegisterSlotMeta.mock.calls[0][0] as Record<string, { permissions?: string[]; label?: string }>;
+  });
+
+  it('is called exactly once', () => {
+    expect(mockRegisterSlotMeta).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers metadata for the Module Builds CI/CD tab slot, and nothing else', () => {
+    expect(Object.keys(meta)).toEqual(['devops.ci-cd.tab.module-builds']);
+  });
+
+  it('labels it "Module Builds" in Title Case, matching the other CI/CD tabs', () => {
+    expect(meta['devops.ci-cd.tab.module-builds'].label).toBe('Module Builds');
+  });
+
+  it('gates it on system.module_builds.read, matching the tab component\'s own check', () => {
+    expect(meta['devops.ci-cd.tab.module-builds'].permissions).toEqual(['system.module_builds.read']);
   });
 });
 

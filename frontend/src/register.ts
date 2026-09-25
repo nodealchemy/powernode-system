@@ -198,6 +198,17 @@ export function register(): void {
     ),
   });
 
+  // Slot metadata: CiCdPage reads this to gate the tab (TabContainer already
+  // filters on `permissions`) and to label it in Title Case, instead of
+  // deriving "Module builds" from the slot id. Also closes the nav trade-off
+  // the earlier comment in navigation.tsx's ci-cd item accepted — its
+  // `slotPrefix: 'devops.ci-cd.tab.'` unions this permission into the nav
+  // item's own gate, so a user holding only system.module_builds.read sees
+  // CI/CD again, with core never naming the permission itself.
+  featureRegistry.registerSlotMeta({
+    'devops.ci-cd.tab.module-builds': { permissions: ['system.module_builds.read'], label: 'Module Builds' },
+  });
+
   // Cloud provider credentials. Core's setup wizard shows the cloud category
   // only while these are registered, and saves/tests through them rather than
   // naming this extension's route. A first-run save has no provider row yet,
