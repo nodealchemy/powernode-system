@@ -19,7 +19,7 @@ require "rails_helper"
 # ai.intervention_policies.manage to owner, admin, manager and ai_specialist.
 # This spec is the record, and it reds the day a role gains the extension
 # permission without the core one.
-RSpec.describe "Autonomy settings audience after the move to core's policy endpoints", type: :lib do
+RSpec.describe "Autonomy settings audience after the move to core's policy endpoints", type: :request do
   let(:core_permission) { "ai.intervention_policies.manage" }
 
   let(:settings_roles) do
@@ -50,5 +50,23 @@ RSpec.describe "Autonomy settings audience after the move to core's policy endpo
 
     expect(admin.has_permission?("system.infra_tasks.read")).to be(true)
     expect(admin.has_permission?(core_permission)).to be(true)
+  end
+
+  # The end-to-end form: a user in a role that reached the old settings opens
+  # the grouped view and saves through the bulk endpoint. `admin` is the only
+  # such role (see the first example); its permissions come from the role rows
+  # Role.sync_from_config! materialises, not from a hand-picked list.
+  it "lets a system operator open the grouped view and save through the bulk endpoint" do
+    operator = create(:user, :admin)
+    headers = auth_headers_for(operator).merge("Content-Type" => "application/json")
+
+    get "/api/v1/ai/intervention_policies/grouped", headers: headers
+    expect(response).to have_http_status(:ok)
+    expect(json_response_data.dig("policies", "by_domain")).to include("node_lifecycle")
+
+    patch "/api/v1/ai/intervention_policies/bulk",
+          params: { updates: [ { action_category: "system.task.start", policy: "require_approval" } ] }.to_json,
+          headers: headers
+    expect(response).to have_http_status(:ok)
   end
 end
