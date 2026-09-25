@@ -43,7 +43,14 @@ module System
         APPLY_COMMAND = "apply_config"
         APPLIED_STATUS = "complete"
 
+        # skipped_self_managed is present even at 0, so "ran and skipped
+        # none" reads differently from a sensor that never ran.
+        def diagnostics
+          { skipped_self_managed: @skipped_self_managed.to_i }
+        end
+
         def sense
+          @skipped_self_managed = 0
           cutoff = Time.current - STALE_THRESHOLD
           stale = ::System::NodeModuleAssignment
             .joins(:node)
@@ -53,7 +60,10 @@ module System
           last_apply_by_node = last_apply_at_by_node(stale)
 
           stale.find_each.filter_map do |asgn|
-            next if self_managed_target?(asgn.node_id)
+            if self_managed_target?(asgn.node_id)
+              @skipped_self_managed += 1
+              next
+            end
 
             last_apply = last_apply_by_node[asgn.node_id]
 

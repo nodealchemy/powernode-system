@@ -172,13 +172,26 @@ RSpec.describe System::Fleet::Sensors::ConfigDriftSensor do
 
       expect(signals.map { |s| s.payload["node_id"] }).to eq([ other_node.id ])
       expect(signals.map { |s| s.payload["assignment_id"] }).to eq([ other.id ])
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 1)
     end
 
-    it "signals both nodes when no self-hosting node is configured" do
+    it "signals both nodes when no self-hosting node is configured, and reports zero skipped" do
       stale_assignment_on!(node)
       stale_assignment_on!(other_node)
 
       expect(sensor.sense.map { |s| s.payload["node_id"] }).to contain_exactly(node.id, other_node.id)
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 0)
+    end
+
+    it "counts every skipped assignment on the self-hosting node, from a fresh count each sense" do
+      stale_assignment_on!(node)
+      stale_assignment_on!(node)
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      sensor.sense
+      sensor.sense
+
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 2)
     end
   end
 
