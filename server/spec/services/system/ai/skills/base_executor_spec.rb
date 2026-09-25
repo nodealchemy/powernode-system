@@ -325,10 +325,13 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
 
   # IMP-8552945f2672 review round 3 — a subclass's LOCAL rescue arm returns
   # an ordinary failure result, so #audit_log_error never fires for it.
-  # safe_error_text itself must keep the cause for the operator: a server-side
-  # log line and the finish event's `withheld_error`, while the caller still
-  # sees only the generic text.
+  # safe_error_text itself must keep the cause for the operator as a
+  # server-side log line, while the caller still sees only the generic text.
+  # Round 4: ONLY the log line — skill.execute_finished payloads reach the
+  # model provider through system_recent_signals / system_inspect_correlation,
+  # so the withheld text must not ride on the event.
   describe "#execute (local rescue arm keeps the cause server-side)" do
+    let(:raw_text) { "docker daemon: connection refused at /var/run/internal.sock" }
     let(:local_arm_klass) do
       Class.new(described_class) do
         skill_descriptor(name: "local_arm", description: "x", category: "fleet",
@@ -340,26 +343,30 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
         end
       end
     end
+    let(:withheld_lines) { [] }
+    let(:finished) { [] }
 
-    it "returns the generic text but logs and audits the raw cause" do
-      logged = []
+    before do
       allow(Rails.logger).to receive(:error).and_wrap_original do |m, msg = nil, &blk|
-        logged << (msg || blk&.call).to_s
+        text = (msg || blk&.call).to_s
+        withheld_lines << text if text.start_with?("withheld_error")
         m.call(msg, &blk)
       end
-      finished = []
       allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_wrap_original do |m, **kw|
         finished << kw[:payload] if kw[:kind] == described_class::EVENT_KIND_FINISHED
         m.call(**kw)
       end
+    end
 
+    it "returns the generic text, logs the raw cause, and keeps it off the finish event" do
       result = local_arm_klass.new(account: account).execute
 
       expect(result[:error]).to eq("An internal error occurred processing this request.")
-      expect(logged).to include(a_string_including("StandardError", "connection refused at /var/run/internal.sock"))
+      expect(withheld_lines).to contain_exactly(a_string_including("StandardError", raw_text))
       expect(finished.size).to eq(1)
+      expect(finished.first).not_to have_key("withheld_error")
       expect(finished.first["error"]).to eq("An internal error occurred processing this request.")
-      expect(finished.first["withheld_error"]).to include("connection refused at /var/run/internal.sock")
+      expect(finished.first.to_s).not_to include("internal.sock")
     end
 
     it "records nothing for a CallerFacingError, which is forwarded verbatim" do
@@ -372,16 +379,52 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
           failure(safe_error_text(e))
         end
       end
-      finished = []
-      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_wrap_original do |m, **kw|
-        finished << kw[:payload] if kw[:kind] == described_class::EVENT_KIND_FINISHED
-        m.call(**kw)
-      end
 
       result = forwarded_klass.new(account: account).execute
 
       expect(result[:error]).to eq("widget_id not found in this account")
-      expect(finished.first).not_to have_key("withheld_error")
+      expect(withheld_lines).to be_empty
+    end
+
+    it "logs one exception once even when a clause routes it through safe_error_text twice" do
+      twice_klass = Class.new(described_class) do
+        skill_descriptor(name: "local_arm_twice", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          raise StandardError, "boom once"
+        rescue StandardError => e
+          failures = [ { step: "x", error: safe_error_text(e) } ]
+          failure(safe_error_text(e), failures: failures)
+        end
+      end
+
+      twice_klass.new(account: account).execute
+
+      expect(withheld_lines.size).to eq(1)
+    end
+
+    # The dedupe is by object identity, so an executor driven twice that
+    # meets the SAME exception object both times would log only the first
+    # run's cause if #execute did not reset the set.
+    it "resets the dedupe per #execute call" do
+      same_error = StandardError.new("the same object every run")
+      reused_klass = Class.new(described_class) do
+        skill_descriptor(name: "local_arm_reused", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        attr_accessor :to_raise
+
+        def perform
+          raise to_raise
+        rescue StandardError => e
+          failure(safe_error_text(e))
+        end
+      end
+      executor = reused_klass.new(account: account)
+      executor.to_raise = same_error
+
+      2.times { executor.execute }
+
+      expect(withheld_lines.size).to eq(2)
     end
   end
 

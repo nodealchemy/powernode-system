@@ -277,11 +277,10 @@ module System
         # client error carries the URL, userinfo and query string included).
         # Truncation is a bound, not a redaction, so #audit_text also runs the
         # extension's shell-output sanitizer over the text BEFORE bounding it
-        # (IMP-675ed7763230). The Rails.logger lines beside it still write the
-        # raw text; that is a KNOWN REMAINING GAP, not a sanctioned exemption
-        # — ShellOutputSanitizer exists to keep this material out of the log
-        # too — and is out of scope here only because this task's finding is
-        # the persisted/broadcast payload.
+        # (IMP-675ed7763230). The exception log lines (#audit_log_error's
+        # execute_error, #record_withheld_error's withheld_error) go through
+        # #audit_text too (IMP-8552945f2672) — ShellOutputSanitizer exists to
+        # keep this material out of the log as well.
         # 500 matches the platform's existing bound for exception text on an
         # event payload (System::NodeModuleAssignment#emit_registration_failure).
         AUDIT_TEXT_LIMIT = 500
@@ -690,8 +689,11 @@ module System
         # Withholding the text from the caller must not withhold it from the
         # OPERATOR. Whenever this does not forward the message verbatim it
         # records the class and raw message server-side (#record_withheld_
-        # error): a Rails.logger.error line, and the `withheld_error` field of
-        # this run's skill.execute_finished audit event. A LOCAL rescue arm in
+        # error) as a redacted, bounded Rails.logger.error line — and ONLY
+        # there. Not on the skill.execute_finished event: system_recent_signals
+        # / system_inspect_correlation return event payloads to the model
+        # provider, and audit_text redacts credentials but not internal paths
+        # or schema text (review round 4). A LOCAL rescue arm in
         # a subclass returns a normal failure result, so #audit_log_error
         # never fires for it — without this, the generic text would be the
         # only trace of why the run failed. The shared #execute arms pass
@@ -820,22 +822,20 @@ module System
             # A returned failure is not routine telemetry — an operator filtering
             # the low band would never see the run that did not work.
             ok ? :low : :medium,
-            "success" => ok, "error" => audit_text(result[:error]),
-            "withheld_error" => audit_text(@withheld_errors&.values&.join("; "))
+            "success" => ok, "error" => audit_text(result[:error])
           )
         end
 
         # See #safe_error_text. Keyed by object identity so a clause that
         # routes the same exception through safe_error_text twice (a
-        # `failures` entry AND the returned message) records it once.
-        # The logger line gets the same redaction as the audit field: the raw
+        # `failures` entry AND the returned message) records it once; reset
+        # per #execute call. The line goes through audit_text: the raw
         # message can carry operator material (bound SQL values, a URL's
         # userinfo) that must not land in the log either.
         def record_withheld_error(exc)
-          @withheld_errors ||= {}
-          return if @withheld_errors.key?(exc.object_id)
+          @withheld_errors ||= Set.new
+          return unless @withheld_errors.add?(exc.object_id)
 
-          @withheld_errors[exc.object_id] = "#{exc.class}: #{exc.message}"
           Rails.logger.tagged(self.class.name) do
             Rails.logger.error("withheld_error #{exc.class}: #{audit_text(exc.message)}")
           end
@@ -843,7 +843,7 @@ module System
 
         def audit_log_error(exc)
           Rails.logger.tagged(self.class.name) do
-            Rails.logger.error("execute_error #{exc.class}: #{exc.message}")
+            Rails.logger.error("execute_error #{exc.class}: #{audit_text(exc.message)}")
           end
           emit_audit_event!(EVENT_KIND_FAILED, :high,
                             "error_class" => exc.class.name, "error" => audit_text(exc.message))
