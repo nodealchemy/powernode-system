@@ -134,10 +134,12 @@ module System
     end
 
     def dispatch!
+      @prefetched_latest = prefetch_latest_digests
       with_batch_lock { dispatch_locked! }
     end
 
     def advance!
+      @prefetched_latest = prefetch_latest_digests
       with_batch_lock { advance_locked! }
     end
 
@@ -159,7 +161,6 @@ module System
       end
 
       record_expected_core_ref!(modules)
-      snapshot_latest_digests!(modules)
 
       refusal = core_mirror_preflight(modules)
       return refuse_dispatch!(modules, refusal) if refusal&.refuse?
@@ -380,11 +381,11 @@ module System
     def try_dispatch_queued!(modules)
       return if @batch.cancelled?
 
-      modules.each_value do |entry|
+      modules.each do |key, entry|
         next unless entry["state"] == "queued"
         next unless capacity_available?
 
-        dispatch_one!(entry)
+        record_latest_snapshot!(key, entry) if dispatch_one!(entry)
       end
     end
 
@@ -1279,60 +1280,106 @@ module System
     # refused by the provenance gate or the size floor, pushes never recorded),
     # so :latest need not be what the fleet runs, and publishing auto-promotes.
     #
-    # Dispatch snapshots :latest's digests per module; finalize refuses, BEFORE
-    # signing, (a) a re-tag of that :latest when it is not the current version,
-    # and (b) any artifact that is a recorded non-current version. A fresh build
-    # can match neither: SOURCE_DATE_EPOCH and the erofs UUID are functions of
-    # the build sha, so its digests are new. Package batches are exempt: their
-    # build script has no skip or re-tag arm.
+    # Each module's :latest is snapshotted when its build is handed to a
+    # builder; finalize refuses, BEFORE signing, a PROMOTING publish of (a) a
+    # re-tag of that :latest when it is not the current version, or (b) a
+    # recorded non-current (held) version. A fresh build can match neither:
+    # SOURCE_DATE_EPOCH and the erofs UUID are functions of the build sha, so its
+    # digests are new.
     #
     # Registry reads are best-effort and never block: an unread snapshot or an
     # unread built artifact leaves that half of the guard unmeasured, recorded
     # as such, and publishing proceeds exactly as before.
-    def snapshot_latest_digests!(modules)
-      return if package_batch?
 
-      modules.each_value do |entry|
-        next if entry.key?("pre_dispatch_latest") || entry["pre_dispatch_latest_unresolved"]
+    # Reads :latest for the modules this pass can hand to a builder, BEFORE
+    # the batch's advisory lock is taken: a slow or unreachable registry must
+    # not hold the lock (or an MCP dispatch call) for N modules x the timeout.
+    # Only as many as the concurrency cap can dispatch are read, so a module
+    # queued behind the cap is read when its own turn comes, closer to its
+    # build. The first unreadable ref stops the pass: the rest would wait out
+    # the same timeout, and every one of them is then recorded unmeasured.
+    # Package batches are exempt: their build script has no skip or re-tag arm.
+    def prefetch_latest_digests
+      return {} if package_batch? || @batch.cancelled?
 
+      pending = load_modules_state.select do |_, e|
+        e["state"] == "queued" && !e.key?("pre_dispatch_latest") && !e["pre_dispatch_latest_unresolved"]
+      end
+      pending.first(max_concurrent_builders).each_with_object({}) do |(key, entry), memo|
         node_module = find_node_module(entry["module"])
-        digests = node_module && ::System::OciArtifactDigests.resolve(
+        memo[key] = node_module && ::System::OciManifestClient.fetch(
           node_module: node_module, oci_ref: full_oci_ref(node_module, "latest")
         )
-        if digests
-          entry["pre_dispatch_latest"] = digests.transform_keys(&:to_s)
-        else
-          entry["pre_dispatch_latest_unresolved"] = true
-          emit_event("system.module_build.latest_snapshot_unresolved", severity: :medium,
-                                                                       module_name: entry["module"])
-        end
+        break memo if memo[key].nil?
+      end
+    rescue StandardError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] :latest prefetch failed: #{e.class}: #{e.message}")
+      {}
+    end
+
+    # Once per entry: a later pass (a retry, another advance!) neither re-reads
+    # nor overwrites it.
+    def record_latest_snapshot!(key, entry)
+      return if package_batch?
+      return if entry.key?("pre_dispatch_latest") || entry["pre_dispatch_latest_unresolved"]
+
+      latest = (@prefetched_latest || {})[key]
+      if latest&.manifest_digest.present?
+        entry["pre_dispatch_latest"] = { "manifest_digest" => latest.manifest_digest,
+                                         "layer_digest" => latest.layer_digest }
+      else
+        entry["pre_dispatch_latest_unresolved"] = true
+        report_latest_unresolved_once!(entry["module"])
       end
     end
 
+    def report_latest_unresolved_once!(slug)
+      return if @batch.metadata["latest_snapshot_unresolved_reported"]
+
+      @batch.metadata["latest_snapshot_unresolved_reported"] = true
+      emit_event("system.module_build.latest_snapshot_unresolved", severity: :medium, module_name: slug)
+    end
+
+    # Only a PROMOTING publish is guarded: a shadow batch publishes with
+    # promote: false and an auto_promote-false module's version is held, so
+    # neither can put the artifact in front of the fleet — and refusing one
+    # would fail the batch (complete_partially! then holds every sibling) for
+    # no safety gain.
     def stale_retag_refusal(node_module, entry)
-      return nil if package_batch?
+      return nil if package_batch? || @batch.shadow?
+      return nil unless ::System::ModulePublicationProcessor.auto_promote?(node_module)
 
-      built = ::System::OciArtifactDigests.resolve(node_module: node_module,
-                                                   oci_ref: full_oci_ref(node_module, entry["tag"]))
-      return nil unless built
+      built = ::System::OciManifestClient.fetch(node_module: node_module,
+                                                oci_ref: full_oci_ref(node_module, entry["tag"]))
+      layer = built&.layer_digest
+      return nil if layer.blank?
 
-      layer = built[:layer_digest]
       current = node_module.current_version
       current_layer = current_layer_digest(current)
-      return nil if layer.present? && layer == current_layer
+      return nil if layer == current_layer
 
       latest = entry["pre_dispatch_latest"]
-      if latest && built[:manifest_digest] == latest["manifest_digest"]
+      if latest && built.manifest_digest == latest["manifest_digest"]
         return "content-address skip re-tagged :latest (layer #{latest['layer_digest'] || 'unknown'}), which is " \
-               "not the current version (layer #{current_layer || 'none'}) — refusing to publish a stale artifact; " \
-               "re-dispatch with BUILD_SKIP_UNCHANGED=0 on the builder, or promote the intended version deliberately"
+               "not the current version (#{current_label(current, current_layer)}) — refusing to auto-promote a " \
+               "stale artifact. #{STALE_RETAG_REMEDY}"
       end
 
       stale = recorded_non_current_version(node_module, current, layer, entry["tag"])
       return nil unless stale
 
       "artifact layer #{layer} is recorded non-current version v#{stale.version_number} of #{node_module.name} " \
-        "(current is #{current ? "v#{current.version_number}" : 'none'}) — refusing to republish it as #{entry['tag']}"
+        "(current: #{current_label(current, current_layer)}) — refusing to re-publish and auto-promote it as " \
+        "#{entry['tag']}. #{STALE_RETAG_REMEDY}"
+    end
+
+    STALE_RETAG_REMEDY =
+      "To run that artifact deliberately, promote its version with system_promote_module_version; to stay on " \
+      "(or return to) another version, use system_rollback_module_version. A skip keeps re-tagging :latest " \
+      "until the module's declared build inputs change, so a new artifact needs a real input change."
+
+    def current_label(version, layer)
+      version ? "v#{version.version_number}, layer #{layer || 'unknown'}" : "none"
     end
 
     def current_layer_digest(version)
