@@ -50,7 +50,6 @@ const ROUTES = {
   topology: '/app/system/topology',
   nodes: '/app/system/compute/nodes',
   providers: '/app/system/compute/providers',
-  volumes: '/app/system/compute/volumes',
   templates: '/app/system/catalog/templates',
   modules: '/app/system/catalog/modules',
   platforms: '/app/system/catalog/platforms',
@@ -492,13 +491,6 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 ariaLabel="Completed operations as a share of all operations"
               />
             </StatTile>
-            <StatTile
-              label="Volumes"
-              value={stats.volumes.total}
-              sub={`${stats.volumes.total_size_gb.toLocaleString()} GB provisioned`}
-              icon={<Gauge className="w-5 h-5 text-theme-secondary" />}
-              onClick={() => navigate(ROUTES.volumes)}
-            />
           </div>
         </div>
 

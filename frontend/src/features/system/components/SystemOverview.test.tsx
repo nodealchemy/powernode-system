@@ -80,7 +80,7 @@ jest.mock('react-router-dom', () => ({
 
 const baseStats = {
   nodes: { total: 4, enabled: 3, disabled: 1 },
-  instances: { total: 10, running: 7, stopped: 2, pending: 1 },
+  instances: { total: 10, running: 7 },
   templates: { total: 2, public: 1, private: 1 },
   platforms: { total: 3, enabled: 2 },
   providers: { total: 2, enabled: 2, types: ['proxmox', 'aws'] },
@@ -92,8 +92,6 @@ const baseStats = {
   },
   operations: { total: 10, pending: 2, running: 1, completed: 6, failed: 1 },
   puppet: { modules: 4, resources: 12, assignments: 3 },
-  volumes: { total: 2, total_size_gb: 120 },
-  networks: { total: 0 },
 };
 
 const statsWithSdwan = {
@@ -235,7 +233,6 @@ const INVENTORY = {
   platforms: 4,
   puppet: 5,
   operations: 6,
-  volumes: 7,
 } as const;
 
 const tile = (index: number) => screen.getAllByTestId('stat-tile')[index];
@@ -528,9 +525,11 @@ describe('SystemOverview', () => {
   describe('inventory tiles', () => {
     beforeEach(happyPath);
 
-    it('renders eight StatTiles from the shared chart kit', async () => {
+    // fc-47 (D5): the Volumes tile read a hardcoded zero and is gone.
+    it('renders seven StatTiles from the shared chart kit, and no Volumes tile', async () => {
       renderComponent();
-      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(8));
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(7));
+      expect(screen.queryByText('Volumes')).not.toBeInTheDocument();
     });
 
     it('renders the Nodes tile with an enabled/total meter', async () => {
@@ -594,10 +593,9 @@ describe('SystemOverview', () => {
       ['platforms', '/app/system/catalog/platforms'],
       ['puppet', '/app/system/catalog/puppet-modules'],
       ['operations', '/app/system/operations/tasks'],
-      ['volumes', '/app/system/compute/volumes'],
     ])('navigates the %s tile to its canonical hub path', async (key, path) => {
       renderComponent();
-      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(8));
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(7));
 
       fireEvent.click(tile(INVENTORY[key]));
       expect(mockNavigate).toHaveBeenCalledWith(path);
@@ -657,8 +655,8 @@ describe('SystemOverview', () => {
       renderComponent();
 
       await waitFor(() => expect(screen.getByText('SDWAN networks')).toBeInTheDocument());
-      // SDWAN tiles follow the eight inventory tiles.
-      fireEvent.click(screen.getAllByTestId('stat-tile')[8]);
+      // SDWAN tiles follow the seven inventory tiles.
+      fireEvent.click(screen.getAllByTestId('stat-tile')[7]);
       expect(mockNavigate).toHaveBeenCalledWith('/app/system/sdwan/networks');
     });
   });

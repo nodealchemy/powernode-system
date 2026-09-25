@@ -729,8 +729,6 @@ export interface SystemOverviewStats {
   instances: {
     total: number;
     running: number;
-    stopped: number;
-    pending: number;
   };
   templates: {
     total: number;
@@ -781,13 +779,6 @@ export interface SystemOverviewStats {
     ovn_active: number;
     ipfix_collectors: number;
     ipfix_active: number;
-  };
-  volumes: {
-    total: number;
-    total_size_gb: number;
-  };
-  networks: {
-    total: number;
   };
 }
 

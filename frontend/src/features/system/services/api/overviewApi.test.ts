@@ -461,13 +461,14 @@ describe('overviewApi', () => {
       expect(stats.instances.running).toBe(0);
     });
 
-    it('always returns stopped=0 and pending=0 in instances (hardcoded)', async () => {
+    // fc-47 (D5): stopped and pending were hardcoded zeros — nothing measured
+    // them. The overview reports only the counts it reads.
+    it('reports total and running instances only, no unmeasured stopped/pending', async () => {
       setupAllMocks({ nodes: [NODE_ENABLED] });
 
       const stats = await overviewApi.getOverviewStats();
 
-      expect(stats.instances.stopped).toBe(0);
-      expect(stats.instances.pending).toBe(0);
+      expect(Object.keys(stats.instances).sort()).toEqual(['running', 'total']);
     });
   });
 
@@ -672,25 +673,19 @@ describe('overviewApi', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // getOverviewStats — hardcoded volumes/networks
+  // getOverviewStats — no unmeasured volumes/networks (fc-47, D5)
   // ---------------------------------------------------------------------------
 
   describe('getOverviewStats — volumes and networks', () => {
-    it('always returns volumes total=0 and total_size_gb=0 (not yet fetched)', async () => {
+    // Both were hardcoded zeros that no request ever measured, so the overview
+    // showed "0 volumes" on a fleet with volumes. They are not reported at all.
+    it('reports no volumes or networks figures', async () => {
       setupAllMocks();
 
       const stats = await overviewApi.getOverviewStats();
 
-      expect(stats.volumes.total).toBe(0);
-      expect(stats.volumes.total_size_gb).toBe(0);
-    });
-
-    it('always returns networks total=0 (not yet fetched)', async () => {
-      setupAllMocks();
-
-      const stats = await overviewApi.getOverviewStats();
-
-      expect(stats.networks.total).toBe(0);
+      expect(stats).not.toHaveProperty('volumes');
+      expect(stats).not.toHaveProperty('networks');
     });
   });
 

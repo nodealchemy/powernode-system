@@ -99,8 +99,6 @@ export const overviewApi = {
       instances: {
         total: nodes.reduce((sum, n) => sum + (n.instance_count ?? 0), 0),
         running: nodes.reduce((sum, n) => sum + (n.running_instances_count ?? 0), 0),
-        stopped: 0,
-        pending: 0,
       },
       templates: {
         total: templates.length,
@@ -139,13 +137,6 @@ export const overviewApi = {
         modules: puppetModules.length,
         resources: puppetModules.reduce((sum, p) => sum + (p.resource_count ?? 0), 0),
         assignments: puppetModules.reduce((sum, p) => sum + (p.assigned_modules_count ?? 0), 0),
-      },
-      volumes: {
-        total: 0,
-        total_size_gb: 0,
-      },
-      networks: {
-        total: 0,
       },
       sdwan: {
         networks: sdwanNetworks.length,
