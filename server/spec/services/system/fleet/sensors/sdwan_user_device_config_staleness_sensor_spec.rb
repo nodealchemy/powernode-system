@@ -586,7 +586,7 @@ RSpec.describe System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor do
     end
 
     # Without this the category seeds and gates fine but is UN-SAVEABLE in the
-    # operator Autonomy modal (System::AutonomyActions#update validates against
+    # operator Autonomy modal (Ai::InterventionPolicies::BulkUpdate validates against
     # this registry) — five sensor-gated categories have already shipped in
     # exactly that state.
     it "is registered as a tunable action category" do

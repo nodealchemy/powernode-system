@@ -102,7 +102,7 @@ RSpec.describe "system node instance public-IP endpoints (gate outcome)", type: 
   # longer REGISTERED either (the engine derives registration from the same
   # constant). Production still carries both rows from the 07-16 seed run —
   # nothing deletes them, db:seed is first-boot only — so they keep rendering in
-  # the Autonomy modal while PATCH /api/v1/system/autonomy now refuses to save
+  # the Autonomy modal while PATCH /api/v1/ai/intervention_policies/bulk now refuses to save
   # an edit to them. `db/seeds/system_autonomy_orphan_cleanup.rb` is the sweep
   # that would collect them, and it is seed-gated too.
   #

@@ -73,7 +73,7 @@ RSpec.describe "SystemIngressTool set_service_backends gating (APO-3d)" do
     # gated but DECLARED nowhere: without a PolicyDeclarations row the engine's
     # register_categories! never registered it, so the verdict fell to the
     # unmatched default (require_approval — the right answer) while
-    # System::AutonomyActions#update rejected every operator edit to it. The
+    # Ai::InterventionPolicies::BulkUpdate rejected every operator edit to it. The
     # control was correct and invisible. Declared beside its ingress siblings —
     # on the Ingress Manager since HIER-P2DECL (INGRESS_MANAGER_POLICIES; it
     # travels with the ingress writer), no longer on Fleet Autonomy.

@@ -67,7 +67,7 @@ module System
           # SHORTER name: lib/powernode_system/engine.rb registers
           # system.service_discovery_compose (matching the MCP verb
           # system_service_discovery_compose and SdwanTool#service_discovery_compose),
-          # and System::AutonomyActions maps that name into the "topology"
+          # and System::Governance::PolicyDomainTable maps that name into the "topology"
           # family. Declaring it here keeps the APO-1c gate resolving the row an
           # operator can actually author; the "<domain>.<name>" derivation would
           # resolve system.service_discovery_composer, which is registered

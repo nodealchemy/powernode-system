@@ -3,14 +3,14 @@
 require "rails_helper"
 
 # HIER-P2F (HIER-P1B open question) — the extension REGISTERS its
-# System::AutonomyActions::DOMAIN_PREFIXES with core's
+# System::Governance::PolicyDomainTable::PREFIXES with core's
 # Ai::ClaudeExport::PolicyDomains at boot, so the Claude Code exporter and the
 # router derive an agent's policy domains from the real table instead of the
 # leading-token heuristic ("system.instance_pool_replenish" -> "instance").
 RSpec.describe "PowernodeSystem Claude-export policy domain registration", type: :lib do
-  let(:prefixes) { System::AutonomyActions::DOMAIN_PREFIXES }
+  let(:prefixes) { System::Governance::PolicyDomainTable::PREFIXES }
 
-  it "registers every DOMAIN_PREFIXES entry, once, in the table's (first-match-wins) order" do
+  it "registers every PolicyDomainTable::PREFIXES entry, once, in the table's (first-match-wins) order" do
     registered = Ai::ClaudeExport::PolicyDomains.registered
     expect(registered.map(&:first)).to eq(prefixes.keys)
     expect(registered.to_h).to eq(prefixes.transform_values { |v| v.map(&:to_s) })

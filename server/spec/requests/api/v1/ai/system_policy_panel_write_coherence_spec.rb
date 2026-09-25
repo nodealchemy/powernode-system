@@ -4,7 +4,7 @@ require "rails_helper"
 
 # IMP-bef43160636f — the Autonomy modal's WRITE half.
 #
-# The finding was that SystemSettingsPanel.tsx listed the 7 autonomous
+# The finding was that the System settings panel listed the 7 autonomous
 # `system.sdwan_*` categories under a hand-maintained `agentName: 'SDWAN
 # Manager'` while the seeds bound them to Fleet Autonomy, so an operator toggle
 # upserted a row the sensor path never resolves. IMP-0874acd5b50c already
@@ -35,7 +35,7 @@ require "rails_helper"
 #
 # What that catches, precisely: a serializer that stopped shipping `agent_id`
 # reds on every agent-scoped row, because the upsert then keys on a nil agent
-# and inserts. Dropping `scope` is caught far more narrowly — `#update`
+# and inserts. Dropping `scope` is caught far more narrowly — the bulk save
 # reconstructs it as `agent_id.present? ? "agent" : "global"`, which happens to
 # be right for every agent-scoped row, so only a scope-"action_type" row flips
 # and reds. One fixture row carries that scope for exactly this reason; do not
@@ -48,9 +48,9 @@ require "rails_helper"
 # rename applied to BOTH literals in one change is invisible to both suites —
 # by design, since agreeing is the property. What neither can miss is a rename
 # on one side only, which is the way it actually broke.
-RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request do
+RSpec.describe "System policy panel write coherence", type: :request do
   let(:account) { create(:account) }
-  let(:operator) { user_with_permissions("system.infra_tasks.read", "system.infra_tasks.control", account: account) }
+  let(:operator) { user_with_permissions("ai.intervention_policies.manage", account: account) }
 
   let!(:fleet_agent) { create(:ai_agent, account: account, name: "Fleet Autonomy") }
   let!(:sdwan_agent) { create(:ai_agent, account: account, name: "SDWAN Manager") }
@@ -106,9 +106,9 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   let(:seeded_row_count) { autonomous_sdwan_categories.size + 2 }
 
   # The rows the panel renders: every by_domain bucket except the "other"
-  # catch-all, which SystemSettingsPanel drops on its own side.
+  # catch-all, which the System-embedded panel does not show.
   def panel_rows
-    get "/api/v1/system/autonomy", headers: auth_headers_for(operator)
+    get "/api/v1/ai/intervention_policies/grouped", headers: auth_headers_for(operator)
     expect(response).to have_http_status(:ok)
 
     json_response_data.dig("policies", "by_domain")
@@ -132,7 +132,7 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   end
 
   def patch_autonomy(body)
-    patch "/api/v1/system/autonomy",
+    patch "/api/v1/ai/intervention_policies/bulk",
           params: body.to_json,
           headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
   end

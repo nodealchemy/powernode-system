@@ -390,13 +390,4 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
     expect(aliases.values.uniq - d::AGENT_IDENTITIES.keys)
       .to eq([ "system-concierge" ])
   end
-
-  it "lists the new managers and the Topology Designer in the Autonomy panel's agent roster" do
-    names = System::AutonomyActions::SYSTEM_AGENT_NAMES
-    expect(names).to include("Capacity Manager", "Storage Manager", "Ingress Manager",
-                             "Supply Chain Manager", "System Topology Designer")
-    # The roster IS the set of declared agent-set owners — nothing more, nothing less.
-    declared = agent_sets.map { |s| d::AGENT_IDENTITIES.fetch(s[:agent_key])[:name] }.uniq
-    expect(names).to match_array(declared)
-  end
 end

@@ -765,8 +765,10 @@ module PowernodeSystem
     # intervention-policy category" for two core consumers: the Claude Code
     # skeleton exporter (Ai::ClaudeExport::AgentSkeletonSync, whose routing
     # descriptions list an agent's policy domains as triggers) and the router's
-    # domain dimension. Core cannot name System::AutonomyActions::DOMAIN_PREFIXES
-    # (Extension Isolation), so until now it fell back to a leading-token
+    # domain dimension, and core's intervention-policy panel groups its sections
+    # by it (Ai::InterventionPolicies::GroupedView). Core cannot name
+    # System::Governance::PolicyDomainTable::PREFIXES (Extension Isolation), so
+    # until now it fell back to a leading-token
     # heuristic — "system.instance_pool_replenish" read as "instance",
     # "system.sdwan_federation_compose" as "sdwan" rather than "topology". This
     # hands it the real table, in the table's own first-match-wins order.
@@ -780,10 +782,8 @@ module PowernodeSystem
     initializer "powernode_system.claude_export_policy_domains", after: :load_config_initializers do
       config.to_prepare do
         next unless defined?(::Ai::ClaudeExport::PolicyDomains)
-        next unless defined?(::System::AutonomyActions)
-
         registered = ::Ai::ClaudeExport::PolicyDomains.registered.map(&:first)
-        ::System::AutonomyActions::DOMAIN_PREFIXES.each do |domain, prefixes|
+        ::System::Governance::PolicyDomainTable::PREFIXES.each do |domain, prefixes|
           next if registered.include?(domain)
 
           ::Ai::ClaudeExport::PolicyDomains.register(domain, prefixes)
@@ -869,8 +869,8 @@ module PowernodeSystem
     # seed validation — `Ai::InterventionPolicy` validates action_category for
     # presence only, never against the registry, so an unregistered category
     # seeds, resolves and gates perfectly well. The one consumer that fails is
-    # operator-facing: System::AutonomyActions#update (the bulk PATCH
-    # /api/v1/system/autonomy behind the Autonomy modal) rejects any update
+    # operator-facing: Ai::InterventionPolicies::BulkUpdate (the bulk PATCH
+    # /api/v1/ai/intervention_policies/bulk behind the Autonomy modal) rejects any update
     # whose category is not `category_registered?`. A seeded row for an
     # unregistered category is therefore VISIBLE in the modal — the by_action
     # pivot reads policy rows, not this registry — and un-saveable. Five
@@ -958,7 +958,7 @@ module PowernodeSystem
         # Ai::InterventionPolicyService#default_policy = require_approval, so
         # each of these gates on its first call. Without the registration an
         # operator cannot turn that off through any supported door —
-        # System::AutonomyActions#update refuses an unregistered category
+        # Ai::InterventionPolicies::BulkUpdate refuses an unregistered category
         # (autonomy_actions.rb, `category_registered?`) and
         # db/seeds/system_autonomy_orphan_cleanup.rb DELETES rows under an
         # owned prefix whose category is unregistered. A gate nobody can tune is
@@ -1074,14 +1074,14 @@ module PowernodeSystem
         # SEEDED spelling above; do not re-add a second one.
         #
         # Registration is not cosmetic: it is
-        # the gate System::AutonomyActions#update passes, so a
+        # the gate Ai::InterventionPolicies::BulkUpdate passes, so a
         # registered-but-unseeded category is one the bulk
-        # PATCH /api/v1/system/autonomy will `find_or_initialize_by` a policy
+        # PATCH /api/v1/ai/intervention_policies/bulk will `find_or_initialize_by` a policy
         # row for, giving an operator a durable control over an action nothing
         # can execute. Pinned by
         # spec/lib/powernode_system/autonomy_categories_registration_spec.rb and,
         # through the endpoint itself, by
-        # spec/controllers/api/v1/system/autonomy_controller_spec.rb.
+        # spec/requests/api/v1/ai/system_intervention_policy_registry_spec.rb.
 
         # Instance pools (slice 7)
 

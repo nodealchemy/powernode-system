@@ -36,7 +36,7 @@
 #     The delete below is deliberately account-wide.
 #
 # Left alone the row keeps rendering in the Autonomy modal, where every save
-# now 422s on the unregistered category (System::AutonomyActions#update checks
+# now 422s on the unregistered category (the bulk policy save checks
 # `category_registered?`), and it gates nothing: the executor resolves the
 # dotted category.
 #

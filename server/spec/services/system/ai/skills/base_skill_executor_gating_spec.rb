@@ -112,7 +112,7 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor policy gate" do
 
     # THE RATCHET LIVES ELSEWHERE, deliberately: a gated executor whose category
     # is registered nowhere cannot be tuned by an operator
-    # (System::AutonomyActions#update refuses it), so the gate would be stuck at
+    # (Ai::InterventionPolicies::BulkUpdate refuses it), so the gate would be stuck at
     # the require_approval default forever. That invariant is asserted over the
     # REAL executors in
     # spec/lib/powernode_system/autonomy_categories_registration_spec.rb, which

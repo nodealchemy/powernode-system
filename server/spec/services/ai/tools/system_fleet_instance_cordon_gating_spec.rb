@@ -122,7 +122,7 @@ RSpec.describe "SystemFleetTool instance cordon gating (IMP-0467eee9fc57)" do
     end
 
     it "pivots into the node_lifecycle domain of the Autonomy modal" do
-      prefixes = ::System::AutonomyActions::DOMAIN_PREFIXES.fetch("node_lifecycle")
+      prefixes = ::System::Governance::PolicyDomainTable::PREFIXES.fetch("node_lifecycle")
       expect(prefixes.any? { |p| category.start_with?(p) }).to be(true),
                                                                 "#{category} matches no node_lifecycle prefix: #{prefixes.inspect}"
     end

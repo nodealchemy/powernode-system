@@ -19,36 +19,36 @@ require File.expand_path("../../../../db/seeds/concerns/agent_setup_helpers.rb",
 # nothing. The registration-keyed rule below is the only collector left, which
 # is the point: it is the one that cannot open a fourth orphan class.)
 #
-# `System::AutonomyActions#update` mints a FOURTH shape — scope "global" with a
+# Core's bulk policy save (Ai::InterventionPolicies::BulkUpdate) mints a FOURTH shape — scope "global" with a
 # nil ai_agent_id outside `system.task.` — whenever the panel saves a control
 # whose row identity it could not recover (useAutonomyConfig.ts `save()` falls
-# back to category + verb, which the controller resolves as scope "global").
+# back to category + verb, which the bulk save resolves as scope "global").
 # the since-deleted `system_instance_pool_policies.rb` seeded that same shape
 # for `system.instance_pool_*` with no sweep at all. Neither was reachable by any of
 # the three, so a row for a category that is later DEREGISTERED becomes a
-# ghost: rendered by the by_domain pivot, refused by every save, collected by
+# ghost: rendered by the grouped policy view, refused by every save, collected by
 # nothing.
 #
 # The rule this spec pins replaces the shape axis with the CATEGORY's
 # registration state, which is the same predicate the write path already
-# enforces: a row is collectable exactly when `#update` would refuse to create
+# enforces: a row is collectable exactly when the bulk save would refuse to create
 # it. That is why a fifth shape cannot open a fifth orphan class — the rule
 # never names a shape.
 RSpec.describe "Autonomy policy row ownership", type: :request do
   let(:account)     { create(:account) }
-  let(:read_user)   { user_with_permissions("system.infra_tasks.read",    account: account) }
-  let(:manage_user) { user_with_permissions("system.infra_tasks.control", account: account) }
+  let(:read_user)   { user_with_permissions("ai.intervention_policies.manage", account: account) }
+  let(:manage_user) { read_user }
 
   # A REAL deregistered category, not an invented one: `system.runtime_docker_tls_rotate`
   # was seeded as `auto_approve` until the 2026-05-19 doc-accuracy audit removed
   # the seed, IMP-6e52d6aa53da removed its registration, and IMP-75f851ce0bf0
   # (e8ac5e8c) deleted the last executor stub. It still resolves to the
-  # `container_runtime` domain through DOMAIN_PREFIXES' `system.runtime_`, so it
-  # renders in a section the modal actually draws rather than the "other"
-  # bucket the panel skips.
+  # `container_runtime` domain through PolicyDomainTable::PREFIXES' `system.runtime_`,
+  # so it renders in a section the System panel actually draws rather than the
+  # "other" bucket it does not show.
   let(:ghost_category) { "system.runtime_docker_tls_rotate" }
 
-  # The exact shape `#update` mints, and the shape PolicyReconciler writes the
+  # The exact shape the bulk save mints, and the shape PolicyReconciler writes the
   # instance-pool operator set at: scope "global", no agent, no user.
   def operator_authored_row!(category)
     Ai::InterventionPolicy.create!(
@@ -66,7 +66,7 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
     end
 
     it "RENDERS to the operator in a drawn by_domain section" do
-      get "/api/v1/system/autonomy", headers: auth_headers_for(read_user)
+      get "/api/v1/ai/intervention_policies/grouped", headers: auth_headers_for(read_user)
 
       expect(response).to have_http_status(:ok)
       runtime = json_response_data.dig("policies", "by_domain", "container_runtime")
@@ -74,7 +74,7 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
     end
 
     it "CANNOT be saved — every edit 422s on the unknown category" do
-      patch "/api/v1/system/autonomy",
+      patch "/api/v1/ai/intervention_policies/bulk",
             params: { updates: [ { action_category: ghost_category, policy: "require_approval" } ] },
             headers: auth_headers_for(manage_user), as: :json
 

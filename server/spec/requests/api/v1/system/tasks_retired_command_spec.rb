@@ -134,7 +134,7 @@ RSpec.describe "POST /api/v1/system/tasks retired command", type: :request do
 
     # THE HALF THAT MUST NOT CHANGE. Removing the command must not remove the
     # operator's control over the operation: both categories stay registered
-    # (PATCH /api/v1/system/autonomy refuses to save a row for an unregistered
+    # (PATCH /api/v1/ai/intervention_policies/bulk refuses to save a row for an unregistered
     # name) and stay declared with their existing auto_approve verb, so no
     # install silently tightens or loosens.
     it "keeps both categories registered and tunable" do

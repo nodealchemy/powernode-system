@@ -261,7 +261,7 @@ module System
       # (lib/powernode_system/engine.rb), so a System::Task that failed to
       # autoload there would not raise — it would leave EVERY extension
       # action_category unregistered, with one warn line as the only evidence,
-      # and PATCH /api/v1/system/autonomy refusing every operator edit.
+      # and PATCH /api/v1/ai/intervention_policies/bulk refusing every operator edit.
       # The vacuity guard in
       # spec/lib/powernode_system/system_task_category_vocabulary_spec.rb
       # ("has real inputs on both sides") is what catches that state: an empty
@@ -503,7 +503,7 @@ module System
       # the SAME verdict the resolver would default to for an unseeded
       # category (require_approval), so landing these rows changes no
       # behaviour: it makes the verdict VISIBLE in the Autonomy modal and
-      # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
+      # TUNABLE through PATCH /api/v1/ai/intervention_policies/bulk, and satisfies
       # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
       # ActionCategoryRouter, so its categories are routed categories.
       #
@@ -1397,7 +1397,7 @@ module System
       # expose_* verbs publish and the ACME verb certifies. The agent that
       # owns the ingress WRITER owns the row that gates it; leaving it on
       # Fleet Autonomy would have put one ingress write behind a different
-      # agent's chain than its siblings. The UI domain (DOMAIN_PREFIXES
+      # agent's chain than its siblings. The UI domain (PolicyDomainTable::PREFIXES
       # "ingress") and the ownership now agree.
       INGRESS_MANAGER_POLICIES = {
         "system.service_backends_update" => "require_approval"

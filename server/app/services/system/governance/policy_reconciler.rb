@@ -97,7 +97,7 @@ module System
     # STRUCTURAL rule — any DECLARED agent (one in AGENT_IDENTITIES) whose
     # sets no longer declare the category — is the FALLBACK for a key the
     # map does not record, and it WARNS when it fires, because that rule also
-    # matches an operator's own row: System::AutonomyActions#update takes an
+    # matches an operator's own row: Ai::InterventionPolicies::BulkUpdate takes an
     # arbitrary agent_id and does not check that the agent declares the
     # category, so an operator CAN park an agent-shape row on a declared
     # agent, and the structural rule would move it if the declared owner

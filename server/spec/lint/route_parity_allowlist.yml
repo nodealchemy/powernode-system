@@ -50,12 +50,6 @@ routes:
      rot before it had a caller."
 
   # ---- wired, through an indirection this lint cannot resolve ----------------
-  "GET /api/v1/system/autonomy":
-    "Wired indirectly: systemAutonomyConfigSource carries the URL as `fetchEndpoint`
-     and the shared useAutonomyConfig hook issues the GET. Not a gap."
-  "PATCH /api/v1/system/autonomy":
-    "Wired indirectly: the same source object's `updateEndpoint`, saved through the
-     shared useAutonomyConfig hook. Not a gap."
   "POST /api/v1/system/provider_credentials/test":
     "Wired indirectly: ProviderCredentialForm passes the URL to
      onboardingApi.testCredentials({ endpoint }), which POSTs it. Not a gap."

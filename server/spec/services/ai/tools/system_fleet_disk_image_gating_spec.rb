@@ -96,7 +96,7 @@ RSpec.describe "SystemFleetTool disk-image verb gating (HIER-P2H)" do
       end
 
       it "pivots into the disk_image domain of the Autonomy modal" do
-        prefixes = ::System::AutonomyActions::DOMAIN_PREFIXES.fetch("disk_image")
+        prefixes = ::System::Governance::PolicyDomainTable::PREFIXES.fetch("disk_image")
         expect(prefixes.any? { |p| category.start_with?(p) }).to be(true),
                                                                   "#{category} matches no disk_image prefix: #{prefixes.inspect}"
       end

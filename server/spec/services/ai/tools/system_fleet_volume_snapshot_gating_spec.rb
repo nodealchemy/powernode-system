@@ -98,7 +98,7 @@ RSpec.describe "SystemFleetTool volume-snapshot delete gating (IMP-e025722ef14e)
     # skips, which would make the row invisible exactly where an operator
     # would look for it.
     it "pivots into the storage domain of the Autonomy modal" do
-      prefixes = ::System::AutonomyActions::DOMAIN_PREFIXES.fetch("storage")
+      prefixes = ::System::Governance::PolicyDomainTable::PREFIXES.fetch("storage")
       expect(prefixes.any? { |p| category.start_with?(p) }).to be(true),
                                                                 "#{category} matches no storage prefix: #{prefixes.inspect}"
     end

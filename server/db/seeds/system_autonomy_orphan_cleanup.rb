@@ -8,7 +8,7 @@
 # `system.task.` global set (the first two sweeps were retired with the seeds'
 # policy upserts under IMP-10e4f6c3bcd2; PolicyReconciler now writes every
 # declared set and deletes nothing). Two producers wrote outside all three:
-# `System::AutonomyActions#update` mints scope "global" with a nil ai_agent_id
+# `Ai::InterventionPolicies::BulkUpdate` mints scope "global" with a nil ai_agent_id
 # whenever the Autonomy modal saves a control whose row identity it could not
 # recover, and the since-deleted system_instance_pool_policies.rb seeded that
 # same shape with no cleanup at all (the four REGISTERED-but-ungated rows it

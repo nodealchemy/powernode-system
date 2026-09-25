@@ -7,7 +7,7 @@ require "rails_helper"
 # THE DEFECT THIS EXISTS FOR
 #
 # An operator tunes an action through exactly one row: PATCH
-# /api/v1/system/autonomy writes `Ai::InterventionPolicy` keyed on
+# /api/v1/ai/intervention_policies/bulk writes `Ai::InterventionPolicy` keyed on
 # action_category, and every gate resolves that same string. So two spellings of
 # one action are two INDEPENDENT controls over the same behaviour, and the
 # operator has no way to see that. Tuning `system.architecture.delete` down to
@@ -18,7 +18,7 @@ require "rails_helper"
 # Both spellings shipped registered: the dotted family came from the seeded
 # FLEET_AUTONOMY_POLICIES rows, the underscored one from APO-1c, which derived a
 # gated executor's category as "<domain>.<skill name>" and then had to register
-# what it derived. System::AutonomyActions::DOMAIN_PREFIXES pivoted both into a
+# what it derived. System::Governance::PolicyDomainTable::PREFIXES pivoted both into a
 # single "architecture" domain, which made the modal render them side by side —
 # visible, but as two controls, not as one control spelled twice.
 #
@@ -142,7 +142,7 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
     # so a re-added underscored prefix would survive that suite untouched.
     it "keeps no domain prefix that would match a retired spelling" do
       retired = executors.values.map { |dotted| dotted.sub(/\.(\w+)\z/, '_\\1') }
-      prefixes = System::AutonomyActions::DOMAIN_PREFIXES.values.flatten
+      prefixes = System::Governance::PolicyDomainTable::PREFIXES.values.flatten
 
       matching = prefixes.select { |prefix| retired.any? { |c| c.start_with?(prefix) } }
 

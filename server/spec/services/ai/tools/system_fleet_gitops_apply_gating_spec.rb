@@ -108,7 +108,7 @@ RSpec.describe "SystemFleetTool GitOps apply gating (IMP-0b4f18ae4384)" do
     end
 
     it "pivots into the gitops domain of the Autonomy modal" do
-      prefixes = ::System::AutonomyActions::DOMAIN_PREFIXES.fetch("gitops")
+      prefixes = ::System::Governance::PolicyDomainTable::PREFIXES.fetch("gitops")
       expect(prefixes.any? { |p| category.start_with?(p) }).to be(true),
                                                                 "#{category} matches no gitops prefix: #{prefixes.inspect}"
     end

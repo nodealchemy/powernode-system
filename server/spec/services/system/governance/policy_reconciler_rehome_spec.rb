@@ -182,7 +182,7 @@ end
 #
 # P2A recognised a former owner STRUCTURALLY: any declared agent whose sets no
 # longer declare the category. That also matches an operator's own agent-shape
-# row parked on a declared agent (System::AutonomyActions#update takes any
+# row parked on a declared agent (Ai::InterventionPolicies::BulkUpdate takes any
 # agent_id). The map records each move as it happens; the reconciler prefers
 # it, and falls back to the structural rule with a WARN so an unrecorded move
 # is visible in the deploy log rather than silently honoured.

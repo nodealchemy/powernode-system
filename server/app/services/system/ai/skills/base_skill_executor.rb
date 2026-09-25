@@ -161,7 +161,7 @@ module System
           # gated executor for which it did — so every other derived category
           # had to be REGISTERED in lib/powernode_system/engine.rb for this gate
           # to be tunable at all (see the note there: registration is what
-          # System::AutonomyActions#update passes, and what
+          # Ai::InterventionPolicies::BulkUpdate passes, and what
           # db/seeds/system_autonomy_orphan_cleanup.rb spares).
           #
           # A category NO active policy row matches resolves to

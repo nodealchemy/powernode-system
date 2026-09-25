@@ -2,12 +2,13 @@
 
 require "rails_helper"
 
-# IMP-e037c96e807e / IMP-fa63f411633b — `System::AutonomyActions::DOMAIN_PREFIXES`
-# and the `by_domain` pivot it drives (GET /api/v1/system/autonomy).
+# IMP-e037c96e807e / IMP-fa63f411633b — `System::Governance::PolicyDomainTable::PREFIXES`
+# as registered with core, and the `by_domain` view it drives
+# (GET /api/v1/ai/intervention_policies/grouped, Ai::InterventionPolicies::GroupedView).
 #
 # INPUT SET: the registry, not the seeds. The pivot buckets whatever policy
-# rows the account carries, and the PATCH half of the same concern
-# (System::AutonomyActions#update) admits any category passing
+# rows the account carries, and core's bulk save
+# (PATCH /api/v1/ai/intervention_policies/bulk) admits any category passing
 # `Ai::InterventionPolicy.category_registered?` — so the population an
 # operator can put in front of the pivot is exactly
 # `Ai::InterventionPolicy.registered_categories`, not the subset the agent
@@ -22,15 +23,15 @@ require "rails_helper"
 # ORACLE SUBSET: only the EXTENSION-OWNED namespaces (`system.`, `sdwan.`)
 # must resolve to a named domain. Core's own registrations
 # (`Ai::InterventionPolicy::STATIC_CATEGORIES`: approval, dev.*, "*", ...)
-# land in "other" DELIBERATELY — the concern's header says so and the System
-# modal skips that bucket — and `project.*` is core-owned but claimed by the
-# "project" domain on purpose (ruling recorded at DOMAIN_PREFIXES). Same
+# land in "other" DELIBERATELY — GroupedView's header says so and the System
+# panel shows only its own registered domains — and `project.*` is core-owned but claimed by the
+# "project" domain on purpose (ruling recorded at PolicyDomainTable::PREFIXES). Same
 # namespace-selection assumption as
 # spec/lib/powernode_system/autonomy_categories_registration_spec.rb: the
 # registry is process-global, so the selection sees every engine's
 # system./sdwan. names, which today is exactly this extension.
 #
-# Resolution is `DOMAIN_PREFIXES.find { ... }&.first`, i.e. FIRST match wins, so
+# Resolution is first-match-wins over the registered table, so
 # the map is order-sensitive in a way nothing else in the file signals. Three
 # declared prefixes are extensions of another entry's prefix:
 #
@@ -46,9 +47,9 @@ require "rails_helper"
 # the resolution expression against the constant: a spec that re-implements the
 # `find` is green against any map, including one whose ordering the production
 # pivot reads differently.
-RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
+RSpec.describe "System policy domains in core's grouped policy view", type: :request do
   let(:account) { create(:account) }
-  let(:read_user) { user_with_permissions("system.infra_tasks.read", account: account) }
+  let(:read_user) { user_with_permissions("ai.intervention_policies.manage", account: account) }
 
   # The full set the PATCH endpoint admits — every row an operator can create.
   let(:registered_categories) { Ai::InterventionPolicy.registered_categories }
@@ -61,7 +62,7 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
   end
 
   # One row per registered category, so the pivot sees the worst-case
-  # population #update can produce, not just the one the agent seeds ship.
+  # population the bulk save can produce, not just the one the agent seeds ship.
   def seed_policy_rows!
     registered_categories.each do |cat|
       Ai::InterventionPolicy.create!(
@@ -72,7 +73,7 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
   end
 
   def by_domain
-    get "/api/v1/system/autonomy", headers: auth_headers_for(read_user)
+    get "/api/v1/ai/intervention_policies/grouped", headers: auth_headers_for(read_user)
     expect(response).to have_http_status(:ok)
     json_response_data.dig("policies", "by_domain")
   end
@@ -89,8 +90,8 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
                .sort
 
     expect(stranded).to be_empty,
-                        "#{stranded.size} registered category(ies) have no DOMAIN_PREFIXES entry, so the " \
-                        "Autonomy payload's by_domain view dumps them into the catch-all bucket the moment " \
+                        "#{stranded.size} registered category(ies) have no PolicyDomainTable::PREFIXES entry, so the " \
+                        "grouped policy view dumps them into the catch-all bucket the moment " \
                         "an operator saves a policy row for them via PATCH: #{stranded.join(', ')}"
   end
 
@@ -98,11 +99,11 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
   # specific prefix declared AFTER the broader one it extends still passes the
   # example above (nothing reaches "other") while the shadowed domain stays
   # permanently empty. `instance_pool` was in exactly that state.
-  it "leaves no declared domain unreachable — every DOMAIN_PREFIXES key receives a registered category" do
+  it "leaves no declared domain unreachable — every PolicyDomainTable key receives a registered category" do
     seed_policy_rows!
     pivot = by_domain
 
-    unreachable = System::AutonomyActions::DOMAIN_PREFIXES.keys
+    unreachable = System::Governance::PolicyDomainTable::PREFIXES.keys
                                                           .reject { |d| categories_in(pivot, d).any? }
 
     expect(unreachable).to be_empty,
@@ -155,7 +156,7 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
 
   # The System Topology Designer's composer trio. All three are registered but
   # deliberately unseeded (engine.rb: operator/Concierge-driven composer
-  # skills), so their rows only ever arrive through #update — and by name they
+  # skills), so their rows only ever arrive through the bulk save — and by name they
   # split: one happens to start with `system.sdwan_`, two match nothing. Kept
   # together in one domain so no member is ever covered by string accident
   # again; the by-name pin is the reorder guard for the third shadowed pair
@@ -176,7 +177,7 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
     expect(categories_in(pivot, "other")).not_to include(*trio)
   end
 
-  # The account-wide-view ruling (recorded at DOMAIN_PREFIXES): core-owned rows
+  # The account-wide-view ruling (recorded at PolicyDomainTable::PREFIXES): core-owned rows
   # stay VISIBLE — statics in the "other" catch-all, `project.*` under the
   # deliberately-claimed "project" domain. Guards against "fixing" the oracle
   # above by filtering core categories out of the pivot, which would hide real

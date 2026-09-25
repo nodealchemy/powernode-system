@@ -11,7 +11,7 @@ require "ripper"
 # Why this matters (IMP-097a267b50b7): `Ai::InterventionPolicy` does NOT
 # validate action_category against the registry, so an unregistered category
 # seeds and gates fine — the failure is operator-facing and one layer up.
-# System::AutonomyActions#update (the bulk PATCH /api/v1/system/autonomy the
+# Ai::InterventionPolicies::BulkUpdate (the bulk PATCH /api/v1/ai/intervention_policies/bulk the
 # Autonomy modal saves through) rejects any update whose category is not
 # `category_registered?`. A seeded policy row for an unregistered category is
 # therefore VISIBLE in the modal (the by_action pivot reads rows, not the
@@ -89,7 +89,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
 
     expect(missing).to be_empty,
                        "#{missing.size} seeded category(ies) are not in the registry, so their policy rows " \
-                       "render in the Autonomy modal but PATCH /api/v1/system/autonomy rejects every edit " \
+                       "render in the Autonomy modal but PATCH /api/v1/ai/intervention_policies/bulk rejects every edit " \
                        "to them: #{missing.join(', ')}"
   end
 
@@ -105,7 +105,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
 
     expect(missing).to be_empty,
                        "#{missing.size} DECLARED category(ies) are absent from the registry, so the " \
-                       "reconciler creates their policy rows but PATCH /api/v1/system/autonomy rejects " \
+                       "reconciler creates their policy rows but PATCH /api/v1/ai/intervention_policies/bulk rejects " \
                        "every operator edit to them: #{missing.join(', ')}"
   end
 
@@ -114,7 +114,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
 
     expect(missing).to be_empty,
                        "SIGNAL_BINDINGS gates #{missing.size} category(ies) the registry does not know, " \
-                       "so PATCH /api/v1/system/autonomy rejects operator tuning for them: " \
+                       "so PATCH /api/v1/ai/intervention_policies/bulk rejects operator tuning for them: " \
                        "#{missing.join(', ')}"
   end
 
@@ -146,9 +146,9 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # registered still real?" — which `system.runtime_docker_tls_rotate` failed
   # for three months (IMP-6e52d6aa53da).
   #
-  # Registration is not cosmetic. It is the gate System::AutonomyActions#update
+  # Registration is not cosmetic. It is the gate Ai::InterventionPolicies::BulkUpdate
   # passes (`category_registered?`), so a category registered here but seeded
-  # nowhere is one the bulk PATCH /api/v1/system/autonomy will happily
+  # nowhere is one the bulk PATCH /api/v1/ai/intervention_policies/bulk will happily
   # `find_or_initialize_by` a policy row for — a persisted operator control for
   # an action nothing can execute. The 2026-05-19 audit deleted that category's
   # seed because no executor backed it, and left the registration standing.
@@ -168,7 +168,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # seeded categories (docker_provision, docker_decommission,
   # k8s_cluster_bootstrap) rather than reserved capabilities, so their
   # registrations were deleted; the engine records why, and
-  # spec/controllers/api/v1/system/autonomy_controller_spec.rb pins the
+  # spec/requests/api/v1/ai/system_intervention_policy_registry_spec.rb pins the
   # consequence at the endpoint. If you add a name to this list, say which
   # executor backs it or why it is reserved.
   #
@@ -194,7 +194,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     # What the list means: an extension category that is REGISTERED — through
     # the engine's concat blocks, or through the derivation over
     # System::Governance::PolicyDeclarations — but seeded by no agent. Such a
-    # category is still tunable through PATCH /api/v1/system/autonomy, and
+    # category is still tunable through PATCH /api/v1/ai/intervention_policies/bulk, and
     # BaseSkillExecutor#execute resolves it before #perform, so it is a real
     # operator control with no row behind it until someone creates one. These
     # reach an operator through the MCP / REST / Concierge doors rather than
@@ -206,7 +206,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
 
     expect((extension_registered - seeded_categories).sort).to eq(deliberately_unseeded),
                                                               "the set of extension categories that are REGISTERED but seeded nowhere changed. " \
-                                                              "Each one is a control PATCH /api/v1/system/autonomy will create a policy row for; " \
+                                                              "Each one is a control PATCH /api/v1/ai/intervention_policies/bulk will create a policy row for; " \
                                                               "a new entry needs a backing executor (and a note above), a removed entry needs " \
                                                               "this list updated."
   end
@@ -215,7 +215,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # `requires_approval: true` in its descriptor now has its action_category
   # resolved by System::Ai::Skills::BaseSkillExecutor#execute before #perform,
   # and an unregistered category cannot be tuned through
-  # System::AutonomyActions#update — so the operator's only supported response
+  # Ai::InterventionPolicies::BulkUpdate — so the operator's only supported response
   # to the gate is unavailable and the action is stuck at the
   # require_approval default.
   #
@@ -256,7 +256,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     unregistered = gated.reject { |(_name, cat)| Ai::InterventionPolicy.category_registered?(cat) }
 
     expect(unregistered).to be_empty,
-                            "these approval-gated executors resolve an UNREGISTERED action_category, so "                             "PATCH /api/v1/system/autonomy refuses to save a policy for them and the gate "                             "is stuck at the require_approval default: #{unregistered.inspect}. Register "                             "the category in lib/powernode_system/engine.rb (and add it to the "                             "deliberately_unseeded list above), or declare an existing registered category "                             "on the descriptor with `action_category:`."
+                            "these approval-gated executors resolve an UNREGISTERED action_category, so "                             "PATCH /api/v1/ai/intervention_policies/bulk refuses to save a policy for them and the gate "                             "is stuck at the require_approval default: #{unregistered.inspect}. Register "                             "the category in lib/powernode_system/engine.rb (and add it to the "                             "deliberately_unseeded list above), or declare an existing registered category "                             "on the descriptor with `action_category:`."
   end
 
   # Coupling guard for the two halves of a category removal. Deleting a

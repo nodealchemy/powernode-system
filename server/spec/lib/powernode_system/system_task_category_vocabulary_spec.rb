@@ -12,7 +12,7 @@ require "rails_helper"
 #   * PolicyDeclarations::MANUAL_OPERATION_POLICIES — what the seed writes and
 #     what PolicyReconciler creates on an established install;
 #   * the engine's `powernode_system.autonomy_categories` registration — what
-#     PATCH /api/v1/system/autonomy will let an operator SAVE.
+#     PATCH /api/v1/ai/intervention_policies/bulk will let an operator SAVE.
 #
 # The declaration named 19 categories for commands the model refuses
 # (provision, deprovision, the two public-IP verbs, the volume/snapshot/network
@@ -81,7 +81,7 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
   # so this selects every `system.task.` name ANY loaded engine registered.
   # Today that is only this one; a sibling extension registering into the
   # namespace would red the phantom example, and that is the correct failure —
-  # PATCH /api/v1/system/autonomy would accept its names too.
+  # PATCH /api/v1/ai/intervention_policies/bulk would accept its names too.
   let(:registered_categories) do
     ::Ai::InterventionPolicy.registered_categories.select { |c| c.start_with?("system.task.") }.sort
   end
@@ -102,7 +102,7 @@ RSpec.describe "system.task.* category vocabulary", type: :lib do
                        "#{missing.join(', ')}. The operator's POST /api/v1/system/tasks composes " \
                        "\"system.task.\#{command}\" in TasksController#create, so an unregistered " \
                        "command resolves through InterventionPolicyService#default_policy to " \
-                       "require_approval — the request parks, and PATCH /api/v1/system/autonomy " \
+                       "require_approval — the request parks, and PATCH /api/v1/ai/intervention_policies/bulk " \
                        "refuses to save a row that would change that. Add the command's default " \
                        "verb to PolicyDeclarations::MANUAL_OPERATION_DEFAULT_VERBS."
   end

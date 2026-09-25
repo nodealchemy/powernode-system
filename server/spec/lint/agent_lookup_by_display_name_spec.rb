@@ -46,9 +46,8 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
   # ratchet against a NEW one. Each entry says which of the two it is —
   # a deliberate fallback, or debt.
   #
-  # None of them resolves the agent this increment renamed: the Autonomy
-  # roster (SYSTEM_AGENT_NAMES) covers only declared policy-set owners, and
-  # the Infrastructure Generalist carries no policy set.
+  # None of them resolves the agent this increment renamed: the Infrastructure
+  # Generalist carries no policy set.
   ALLOWED = {
     # ── SAFE: source_key FIRST, name only as a documented second rung for an
     # install whose canonical predates source_key being set.
@@ -74,12 +73,6 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
     # name, with AGENT_IDENTITIES supplying the name.
     "services/system/fleet/sensors/governance_gap_sensor.rb" =>
       "pre-existing, lane-owned tree: resolves declared identities by name",
-
-    # DEBT — the Autonomy panel roster is a list of display names and resolves
-    # each one by name. Moving it to source keys means re-keying
-    # SYSTEM_AGENT_NAMES itself.
-    "controllers/concerns/system/autonomy_actions.rb" =>
-      "pre-existing: roster is keyed by display name end to end",
 
     # DEBT — resolves a monitor agent by a name passed in from the caller.
     "services/ai/tools/system_architecture_catalog_tool.rb" =>

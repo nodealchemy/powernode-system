@@ -241,7 +241,7 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
 
     expect(missing).to be_empty,
                        "#{missing.size} executor-declared category(ies) are absent from the engine's registry " \
-                       "(lib/powernode_system/engine.rb), so PATCH /api/v1/system/autonomy rejects every " \
+                       "(lib/powernode_system/engine.rb), so PATCH /api/v1/ai/intervention_policies/bulk rejects every " \
                        "operator edit to them: #{missing.join(', ')}"
   end
 

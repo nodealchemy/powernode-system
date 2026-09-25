@@ -195,7 +195,7 @@ RSpec.describe System::Fleet::Sensors::CapabilityGapSensor do
   end
 
   # A category the operator cannot edit is a category whose disposition is
-  # frozen at whatever the seed chose: AutonomyActions#update rejects any
+  # frozen at whatever the seed chose: Ai::InterventionPolicies::BulkUpdate rejects any
   # action_category missing from the boot-time registry ("unknown category").
   it "registers the review category with the core autonomy registry" do
     expect(Ai::InterventionPolicy.category_registered?("system.capability_gap_review")).to be true

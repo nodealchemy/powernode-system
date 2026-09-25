@@ -10,7 +10,7 @@ require "rails_helper"
 # the behaviour looks right while the operator-visible, tunable control the
 # declaration exists to provide does not exist on any install. The Autonomy
 # modal's storage section is ROW-driven (see
-# System::AutonomyActions#autonomy_actions_by_domain), so with no writer the
+# Ai::InterventionPolicies::GroupedView), so with no writer the
 # category never appears there at all.
 #
 # ONE WRITER (proposal §5 ruling 7, IMP-10e4f6c3bcd2): the first-boot seed
