@@ -114,17 +114,45 @@ module Ai
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
-      declare_action "system_acme_provision_certificate", mutating: true
-      declare_action "system_create_service", mutating: true
+      declare_action "system_acme_provision_certificate", mutating: true, gated_in_call: true,
+                     returns: "certificate_id, common_name, issuer, challenge_type, status, issued_at, expires_at and " \
+                              "the Vault path names; a live valid certificate for the name is returned as-is",
+                     refuses: [ "issuer or challenge_type is not an allowed value",
+                                "dns-01 is chosen without a dns_credential_id found in this account",
+                                "an existing certificate for the name is expired or renewing",
+                                "issuance fails" ],
+                     see_also: { "system_acme_renew_certificate" => "renewing an existing certificate" }
+      declare_action "system_create_service", mutating: true,
+                     returns: "service, the full record",
+                     refuses: "the attributes fail validation"
       declare_action "system_delete_service", mutating: true, destructive: true
-      declare_action "system_expose_service_local", mutating: true
-      declare_action "system_expose_service_public_tcp", mutating: true
-      declare_action "system_expose_service_publicly", mutating: true
-      declare_action "system_get_service", mutating: false
-      declare_action "system_list_services", mutating: false
-      declare_action "system_reverse_proxy_compose", mutating: true
-      declare_action "system_unexpose_service_local", mutating: true
-      declare_action "system_unexpose_service_public_tcp", mutating: true
+      declare_action "system_expose_service_local", mutating: true, gated_in_call: true
+      declare_action "system_expose_service_public_tcp", mutating: true, gated_in_call: true,
+                     returns: "service_id, slug, public_enabled, edge_mode, client_auth, host and routes_configured",
+                     refuses: [ "no service with that id exists in this account", "the protocol is not tls", "no host resolves for the service",
+                                "edge_mode is terminate and no valid certificate matches the host" ]
+      declare_action "system_expose_service_publicly", mutating: true, gated_in_call: true,
+                     returns: "vip_id, vip_cidr, port_mapping_id, certificate_id, certificate_status, public_endpoints, " \
+                              "steps_completed and warnings",
+                     refuses: [ "not exactly one of target_peer_id or target_instance_id is given",
+                                "target_instance_id has no SDWAN peer in the network",
+                                "https with dns-01 lacks a dns_credential_id",
+                                "the VIP, port mapping, certificate or reverse-proxy step fails" ]
+      declare_action "system_get_service", mutating: false,
+                     returns: "service, its backends, the load_balancer overrides and out_of_rotation",
+                     refuses: "no service with that id exists in this account"
+      declare_action "system_list_services", mutating: false, paginated: true,
+                     returns: "services: slug, name, protocol, status, backend fields and local/public exposure fields"
+      declare_action "system_reverse_proxy_compose", mutating: true,
+                     returns: "certificate_id, common_name, routers_configured and local_services_configured with the " \
+                              "written config paths",
+                     refuses: [ "the certificate is not found in this account", "the certificate status is not valid" ]
+      declare_action "system_unexpose_service_local", mutating: true,
+                     returns: "service and local_exposure: disabled",
+                     refuses: "no service with that id exists in this account"
+      declare_action "system_unexpose_service_public_tcp", mutating: true, gated_in_call: true,
+                     returns: "service_id, slug, public_enabled (now false), host and routes_configured",
+                     refuses: "no service with that id exists in this account"
       declare_action "system_update_service", mutating: true
 
       # APO-3d — GATED, through the generic DeferredToolCall replay seam:
@@ -205,7 +233,7 @@ module Ai
             }
           },
           "system_expose_service_publicly" => {
-            description: "Expose a service to the public internet end-to-end: create/reuse an SDWAN VIP, port-map it on the hub, provision a TLS certificate for the hostname, and regenerate the reverse proxy.",
+            description: "Expose a service to the public internet end-to-end, from SDWAN VIP to reverse proxy. It creates or reuses an SDWAN VIP and port-maps it on the hub; for https it also provisions a TLS certificate for the hostname and regenerates the reverse proxy.",
             parameters: {
               service_hostname:   { type: "string",  required: true,  description: "Public FQDN to serve the service on (certificate CN)" },
               service_protocol:   { type: "string",  required: true,  enum: ::Sdwan::Service::HTTP_PROTOCOLS,
@@ -257,7 +285,7 @@ module Ai
             }
           },
           "system_expose_service_public_tcp" => {
-            description: "Enable a service's public (Path B) TLS-carrying TCP exposure via Traefik HostSNI routing — validates protocol tls, a resolvable host, and (under edge_mode terminate) a matching valid ACME certificate, then flips public_enabled on and regenerates the reverse proxy. Approval-gated; the sole owner of turning Path B ON (in either direction — see system_unexpose_service_public_tcp).",
+            description: "Enable a service's public (Path B) TLS-carrying TCP exposure via Traefik HostSNI routing. It validates protocol tls, a resolvable host, and (under edge_mode terminate) a matching valid ACME certificate, then flips public_enabled on and regenerates the reverse proxy. Approval-gated; the sole owner of turning Path B ON (in either direction — see system_unexpose_service_public_tcp).",
             parameters: {
               service_id: { type: "string", required: true, description: "Sdwan::Service id (protocol must be tls)" }
             }
@@ -334,7 +362,7 @@ module Ai
             }
           },
           "system_set_service_backends" => {
-            description: "Set a service's load-balanced backend set DECLARATIVELY: the `backends` list becomes the set (members are matched by address + port and updated in place, members absent from the list are removed, an empty list returns the service to its single legacy backend). Optionally sets the per-service load-balancer overrides (metadata.load_balancer: health_check_enabled/path/interval/timeout; a null value clears that override). Regenerates the reverse proxy when the service is exposed. Approval-gated under #{SERVICE_BACKENDS_CATEGORY}: unless policy auto-approves, the call returns a pending envelope (deferred_operation_id) and the set is written when the approval is released. Draining EVERY member takes the service out of rotation (the writer skips it); to keep serving from the original backend while you rebuild the set, keep it listed as an active member.",
+            description: "Set a service's load-balanced backend set DECLARATIVELY: the `backends` list becomes the set. Members are matched by address + port and updated in place, members absent from the list are removed, and an empty list returns the service to its single legacy backend. Optionally sets the per-service load-balancer overrides (metadata.load_balancer: health_check_enabled/path/interval/timeout; a null value clears that override). Regenerates the reverse proxy when the service is exposed. Approval-gated under #{SERVICE_BACKENDS_CATEGORY}: unless policy auto-approves, the call returns a pending envelope (deferred_operation_id) and the set is written when the approval is released. Draining EVERY member takes the service out of rotation (the writer skips it); to keep serving from the original backend while you rebuild the set, keep it listed as an active member.",
             parameters: {
               service_id:    { type: "string", required: true, description: "Sdwan::Service id" },
               backends:      { type: "array",  required: true,
