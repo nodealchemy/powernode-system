@@ -200,7 +200,7 @@ platform.kubernetes_get_kubeconfig({ cluster_id: "<id>" })
 // → { kubeconfig: "apiVersion: v1...", api_endpoint: "https://[fd00::]:6443" }
 ```
 
-Or via UI: `/app/devops/kubernetes` → cluster card → "kubeconfig" button.
+Or via UI: `/app/devops/containers/kubernetes` → cluster card → "kubeconfig" button.
 
 ```bash
 # Save + use

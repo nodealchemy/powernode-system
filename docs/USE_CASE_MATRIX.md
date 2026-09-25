@@ -121,7 +121,7 @@ platform.system_provision_instance({
 //    - Attach SDWAN
 //    - Assign k3s-server module
 // 2. Wait ~90s for cluster bootstrap
-//    Cluster appears in /app/devops/kubernetes
+//    Cluster appears in /app/devops/containers/kubernetes
 // 3. Provision N worker NodeInstances on same SDWAN
 //    - Assign k3s-agent module
 // 4. Download kubeconfig from UI
