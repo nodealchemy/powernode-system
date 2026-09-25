@@ -1,0 +1,38 @@
+# Local copies of shared UI primitives awaiting their sweep (plan §3, fc-48).
+# extensions/system's ledger: only paths inside its own tree.
+# Format: <path>|<rule>[|<name>], one line per occurrence, sorted.
+# Regenerate: bash scripts/generate-local-primitive-baseline.sh — only to record a removal.
+extensions/system/frontend/src/features/system/components/SystemOverview.tsx|empty-state
+extensions/system/frontend/src/features/system/components/SystemOverview.tsx|empty-state
+extensions/system/frontend/src/features/system/components/acme/RequestCertificateModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/acme/RequestCertificateModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/modules/ModuleDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/modules/ModuleDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/networks/NetworkDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/nodes/EditInstanceModal.tsx|status-fn|getStatusBadge
+extensions/system/frontend/src/features/system/components/nodes/NodeDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/nodes/NodeInstancesTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/nodes/NodeModulesTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/nodes/NodeOperationsTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/nodes/nodeDetailHelpers.tsx|status-fn|getOperationStatusBadge
+extensions/system/frontend/src/features/system/components/nodes/nodeDetailHelpers.tsx|status-fn|getStatusBadge
+extensions/system/frontend/src/features/system/components/operations/BatchDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/operations/CveTab.tsx|local-variant|severityVariant
+extensions/system/frontend/src/features/system/components/operations/OperationDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/operations/OperationDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/operations/OperationDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/providers/ProviderConnectionsTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/providers/ProviderDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/providers/ProviderInstanceTypesTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/providers/ProviderRegionsTab.tsx|empty-state
+extensions/system/frontend/src/features/system/components/puppet/PuppetModuleDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/puppet/PuppetModuleDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/puppet/PuppetModuleDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/sdwan/routing/RoutingOverviewPanel.tsx|stat-card|StatTile
+extensions/system/frontend/src/features/system/components/sdwan_hub/TopologyTab.tsx|stat-card|StatCard
+extensions/system/frontend/src/features/system/components/shared/StatusBadge.tsx|local-variant|statusVariant
+extensions/system/frontend/src/features/system/components/templates/TemplateDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/templates/TemplateDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/templates/TemplateDetailModal.tsx|empty-state
+extensions/system/frontend/src/features/system/components/volumes/VolumeDetailModal.tsx|empty-state
+extensions/system/frontend/src/pages/app/system/FleetTopologyPage.tsx|stat-card|StatCard
