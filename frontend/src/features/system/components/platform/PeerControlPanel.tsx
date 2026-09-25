@@ -13,7 +13,12 @@ import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
 import { usePlatformPeers } from '../../hooks/usePlatformPeers';
 import { PeerTable, PeerUrlCell, PeerStatusCell, PeerHeartbeatCell } from './PeerTable';
-import type { PlatformPeerSummary } from '../../types/peer.types';
+import type {
+  PlatformPeerSummary,
+  PeerStatus,
+  SpawnMode,
+  SpawnRole,
+} from '../../types/peer.types';
 import { InvitePeerModal } from './InvitePeerModal';
 import { PeerDetailDrawer } from './PeerDetailDrawer';
 import { GrantsManagementModal } from './GrantsManagementModal';
@@ -32,13 +37,17 @@ import ErrorAlert from '@/shared/components/ui/ErrorAlert';
  * row's revoke button is armed.
  *
  * fc-35: PeersPanel (formerly PlatformInfraTab's Peers sub-tab, ComputePage)
- * was deleted as a duplicate surface. It carried real capability this panel
- * does NOT: extra Role / Mode / Endpoints columns and a status filter bar
- * (C13 diff-then-decide, component-status-plane campaign, had deliberately
- * kept both for exactly that divergence). That gap was not backfilled here —
- * flagged in PlatformInfraTab.tsx's header comment for a follow-up decision.
- * See PeerTable.tsx's header comment for the shared-cell factoring
- * (URL/status/heartbeat rendering) that PeersPanel and this panel both used.
+ * was deleted as a duplicate surface (05498995). It carried real capability
+ * this panel did not yet have — Role / Mode / Endpoints columns and a status
+ * filter bar (C13 diff-then-decide, component-status-plane campaign, had
+ * deliberately kept both for exactly that divergence) — so per the
+ * consolidation rule (feedback_ux_simplicity_discoverable_nav_first: the
+ * canonical surface absorbs the capabilities of the surface it replaces),
+ * that capability was ported here rather than left flagged. The filter is
+ * local component state, not a URL param — neither this panel nor
+ * ServiceDeliveryPage reads search params elsewhere. See PeerTable.tsx's
+ * header comment for the shared-cell factoring (URL/status/heartbeat
+ * rendering) that PeersPanel and this panel both used.
  *
  * Plan reference: Phase 3 (Federation & Multi-Site) — Control.
  */
@@ -52,7 +61,10 @@ interface PeerControlPanelProps {
 
 export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, canManage }) => {
   const { addNotification } = useNotifications();
-  const { peers, loading, error, setError, refetch } = usePlatformPeers();
+  const [statusFilter, setStatusFilter] = useState<PeerStatus | null>(null);
+  const { peers, loading, error, setError, refetch } = usePlatformPeers(
+    statusFilter ? { status: statusFilter } : undefined,
+  );
   const [inviteOpen, setInviteOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [grantsPeer, setGrantsPeer] = useState<PlatformPeerSummary | null>(null);
@@ -93,6 +105,7 @@ export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, 
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
           <button
             type="button"
             onClick={() => void refetch()}
@@ -127,7 +140,10 @@ export const PeerControlPanel: React.FC<PeerControlPanelProps> = ({ refreshKey, 
         <PeerTable
           columns={[
             { label: 'Remote URL' },
+            { label: 'Role' },
+            { label: 'Mode' },
             { label: 'Status' },
+            { label: 'Endpoints' },
             { label: 'Last Heartbeat' },
             { label: 'Actions', align: 'right' },
           ]}
@@ -192,7 +208,16 @@ const ControlRow: React.FC<ControlRowProps> = ({
   return (
     <tr className="border-t border-theme hover:bg-theme-surface-hover transition-colors" data-testid={`control-row-${peer.id}`}>
       <PeerUrlCell peer={peer} />
+      <td className="px-4 py-3 text-theme-secondary text-xs">
+        {peer.spawn_role ? <RoleBadge role={peer.spawn_role} /> : <span className="text-theme-tertiary">—</span>}
+      </td>
+      <td className="px-4 py-3 text-theme-secondary text-xs">
+        {peer.spawn_mode ? <ModeBadge mode={peer.spawn_mode} /> : <span className="text-theme-tertiary">—</span>}
+      </td>
       <PeerStatusCell peer={peer} />
+      <td className="px-4 py-3 text-xs text-theme-secondary">
+        {peer.endpoints_count}
+      </td>
       <PeerHeartbeatCell peer={peer} />
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-2">
@@ -252,5 +277,63 @@ const ControlRow: React.FC<ControlRowProps> = ({
     </tr>
   );
 };
+
+const ROLE_LABELS: Record<SpawnRole, string> = {
+  parent: 'parent',
+  child: 'child',
+  symmetric: 'symmetric',
+};
+
+const RoleBadge: React.FC<{ role: SpawnRole }> = ({ role }) => (
+  <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
+    {ROLE_LABELS[role]}
+  </span>
+);
+
+const MODE_LABELS: Record<SpawnMode, string> = {
+  managed_child: 'managed',
+  autonomous_peer: 'autonomous',
+  cluster_member: 'cluster',
+  out_of_band: 'out-of-band',
+};
+
+const ModeBadge: React.FC<{ mode: SpawnMode }> = ({ mode }) => (
+  <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
+    {MODE_LABELS[mode]}
+  </span>
+);
+
+const STATUS_FILTERS: Array<{ value: PeerStatus | null; label: string }> = [
+  { value: null, label: 'All' },
+  { value: 'proposed', label: 'Proposed' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'enrolled', label: 'Enrolled' },
+  { value: 'active', label: 'Active' },
+  { value: 'degraded', label: 'Degraded' },
+  { value: 'suspended', label: 'Suspended' },
+  { value: 'revoked', label: 'Revoked' },
+];
+
+const StatusFilterBar: React.FC<{
+  value: PeerStatus | null;
+  onChange: (v: PeerStatus | null) => void;
+}> = ({ value, onChange }) => (
+  <div className="inline-flex items-center gap-1 text-xs">
+    {STATUS_FILTERS.map((f) => (
+      <button
+        type="button"
+        key={f.label}
+        onClick={() => onChange(f.value)}
+        className={`px-2 py-1 rounded transition-colors ${
+          value === f.value
+            ? 'bg-theme-info-solid text-white'
+            : 'text-theme-secondary hover:bg-theme-surface-hover'
+        }`}
+      >
+        {f.label}
+      </button>
+    ))}
+  </div>
+);
 
 export default PeerControlPanel;

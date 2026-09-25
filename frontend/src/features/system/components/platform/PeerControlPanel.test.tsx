@@ -155,6 +155,22 @@ const PEER_REVOKED: PlatformPeerSummary = {
   acceptance_expires_at: null,
 };
 
+const PEER_MANAGED: PlatformPeerSummary = {
+  id: 'peer-managed-3',
+  remote_instance_url: 'https://managed.example.com',
+  remote_instance_id: null,
+  peer_kind: 'platform',
+  spawn_role: 'child',
+  spawn_mode: 'managed_child',
+  status: 'enrolled',
+  created_at: '2026-04-01T00:00:00Z',
+  last_heartbeat_at: null,
+  last_handshake_at: null,
+  endpoints_count: 1,
+  acceptance_pending: false,
+  acceptance_expires_at: null,
+};
+
 function peersListResponse(peers: PlatformPeerSummary[]) {
   return envelope({ peers, count: peers.length });
 }
@@ -447,9 +463,147 @@ describe('PeerControlPanel', () => {
       });
 
       expect(screen.getByText('Remote URL')).toBeInTheDocument();
+      expect(screen.getByText('Role')).toBeInTheDocument();
+      expect(screen.getByText('Mode')).toBeInTheDocument();
       expect(screen.getByText('Status')).toBeInTheDocument();
+      expect(screen.getByText('Endpoints')).toBeInTheDocument();
       expect(screen.getByText('Last Heartbeat')).toBeInTheDocument();
       expect(screen.getByText('Actions')).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Role and Mode badges + Endpoints column
+  //
+  // fc-35: ported from the deleted PeersPanel (PeersPanel.test.tsx), which
+  // was the only surface that rendered these columns before consolidation.
+  // ---------------------------------------------------------------------------
+
+  describe('role and mode badges', () => {
+    it('renders the role badge for a peer with a spawn_role', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
+      });
+      expect(screen.getByText('symmetric')).toBeInTheDocument();
+    });
+
+    it('renders the mode badge for a peer with a spawn_mode', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
+      });
+      expect(screen.getByText('out-of-band')).toBeInTheDocument();
+    });
+
+    it('renders "—" placeholder when spawn_role and spawn_mode are null', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_REVOKED]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('control-row-peer-revoked-2')).toBeInTheDocument();
+      });
+      // Two "—" spans for role and mode
+      const dashes = screen.getAllByText('—');
+      expect(dashes.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('renders "managed" for managed_child mode', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_MANAGED]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('control-row-peer-managed-3')).toBeInTheDocument();
+      });
+      expect(screen.getByText('managed')).toBeInTheDocument();
+    });
+
+    it('renders the endpoints count in the row', async () => {
+      mockGet.mockResolvedValue(peersListResponse([PEER_ACTIVE]));
+
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('control-row-peer-active-1')).toBeInTheDocument();
+      });
+      // PEER_ACTIVE.endpoints_count = 2
+      expect(screen.getByText('2')).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Status filter bar
+  //
+  // fc-35: ported from the deleted PeersPanel. No URL search params are used
+  // elsewhere on this panel or ServiceDeliveryPage, so the filter is local
+  // component state rather than a URL param (feedback_ux_simplicity_discoverable_nav_first
+  // only requires URL-addressability where a surface already reads search params).
+  // ---------------------------------------------------------------------------
+
+  describe('status filter bar', () => {
+    it('renders all status filter buttons', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+
+      await waitFor(() => expect(screen.getByText('0 peers')).toBeInTheDocument());
+
+      for (const label of [
+        'All', 'Proposed', 'Accepted', 'Enrolled',
+        'Active', 'Degraded', 'Suspended', 'Revoked',
+      ]) {
+        expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
+      }
+    });
+
+    it('applies the status filter when a filter button is clicked', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Active' }));
+
+      await waitFor(() =>
+        expect(mockGet).toHaveBeenCalledWith(
+          '/system/platform/peers',
+          expect.objectContaining({ params: { status: 'active' } }),
+        ),
+      );
+    });
+
+    it('clears the filter when "All" is clicked after a filter was set', async () => {
+      mockGet.mockResolvedValue(peersListResponse([]));
+
+      renderPanel();
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Active' }));
+      await waitFor(() =>
+        expect(mockGet).toHaveBeenCalledWith(
+          '/system/platform/peers',
+          expect.objectContaining({ params: { status: 'active' } }),
+        ),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'All' }));
+
+      await waitFor(() =>
+        expect(mockGet).toHaveBeenCalledWith(
+          '/system/platform/peers',
+          expect.objectContaining({ params: {} }),
+        ),
+      );
     });
   });
 

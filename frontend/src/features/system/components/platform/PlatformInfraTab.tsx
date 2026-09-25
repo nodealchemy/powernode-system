@@ -48,12 +48,11 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  * fc-35: this Peers sub-tab's own peer list/invite/revoke panel (PeersPanel)
  * was deleted as a duplicate of PeerControlPanel on ServiceDeliveryPage's
  * Peers tab, which is now the one canonical peer-management surface — this
- * sub-tab keeps only the liveness monitor and links out to it. NOTE:
- * PeerControlPanel's table has fewer columns (no Role/Mode/Endpoints) and no
- * status filter — capability PeersPanel had and PeerControlPanel does not
- * (see PeerControlPanel.tsx's own header comment, which previously recorded a
- * deliberate keep-both decision on exactly this divergence). Consolidating
- * anyway per this task; flagging the gap rather than silently absorbing it.
+ * sub-tab keeps only the liveness monitor and links out to it. PeersPanel's
+ * Role/Mode/Endpoints columns and status filter (the divergence C13 had
+ * deliberately kept both surfaces to preserve) were ported into
+ * PeerControlPanel, so nothing was lost in the consolidation — see
+ * PeerControlPanel.tsx's own header comment.
  *
  * Plan reference: Decentralized Federation §I + P7.
  */
@@ -181,7 +180,8 @@ const PeersTab: React.FC = () => {
       {hasPermission('system.peers.read') && <PeerLivenessMonitor />}
       {/* fc-35: the peer list/invite/revoke panel that used to render here
           (PeersPanel) was deleted as a duplicate of PeerControlPanel, which
-          is now the one canonical peer-management surface. */}
+          is now the one canonical peer-management surface (its Role/Mode/
+          Endpoints columns and status filter). */}
       <div className="bg-theme-surface border border-theme rounded-lg p-4 text-sm text-theme-secondary">
         Manage federation peers (invite, revoke, grants) on{' '}
         <Link to="/app/system/service-delivery/peers" className="text-theme-info-fg hover:text-theme-info-fg/80">
