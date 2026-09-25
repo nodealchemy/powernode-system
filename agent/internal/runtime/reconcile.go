@@ -349,10 +349,19 @@ func loadBreadcrumbManifests() (manifests map[string]*manifest.Manifest, ids map
 	if err != nil || bc == nil {
 		return manifests, ids, dataIDs
 	}
-	nowBoot := CurrentBootID()
+	nowBoot := currentBootID()
 	if nowBoot != "" && bc.BootID != "" && bc.BootID != nowBoot {
 		return manifests, ids, dataIDs
 	}
+	return breadcrumbManifestSets(bc)
+}
+
+// breadcrumbManifestSets decodes a breadcrumb the caller has already vetted
+// into loadBreadcrumbManifests' three sets.
+func breadcrumbManifestSets(bc *BootComposedBreadcrumb) (manifests map[string]*manifest.Manifest, ids map[string]bool, dataIDs map[string]bool) {
+	manifests = map[string]*manifest.Manifest{}
+	ids = map[string]bool{}
+	dataIDs = map[string]bool{}
 	for _, lm := range bc.Modules {
 		ids[lm.ID] = true
 		if lm.HasDataFile {
@@ -687,141 +696,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// sudoers/egress render and the hot-prune layer resolution below must
 	// agree with (IMP-2dfbd7f62441 review finding B1).
 	retained := retainedAfterDetach(current.AttachedModules, toDetach)
-	retainedByID := make(map[string]mount.Module, len(retained))
-	for _, m := range retained {
-		retainedByID[m.ID] = m
-	}
 
-	// breadcrumbManifests/breadcrumbIDs/breadcrumbDataIDs: the fallback of
-	// last resort — see loadBreadcrumbManifests. Needed for review finding
-	// R2-B1 route (2): on the first reconcile tick after state.json is empty
-	// (e.g. a reprovisioned /persist, or simply the first post-boot tick),
-	// `retained` above is empty even though the live union already has real
-	// users rendered into it from the boot compose — a module whose
-	// manifest fetch fails on THAT tick must still resolve through the
-	// breadcrumb, or its already-live users would read as "never rendered"
-	// and get silently omitted.
+	// The render's manifest set — see resolveRenderCandidates for how every
+	// candidate is chosen and resolved (review findings R2-B1, round-4 #1, N2,
+	// N3).
 	breadcrumbManifests, breadcrumbIDs, breadcrumbDataIDs := loadBreadcrumbManifests()
-
-	// candidateIDs is the UNION of retained, manifestFetchFailed, AND every
-	// data-bearing module the CURRENT boot's breadcrumb lists (review
-	// finding round-4 #1): the first two alone still miss a module that is
-	// genuinely running — composed at boot into the live union — but is
-	// absent from BOTH state.json (never persisted, or lost) AND this
-	// tick's assigned-modules list (omitted, or a degraded response) at the
-	// SAME time, so it never becomes "retained" (state never named it) and
-	// never becomes "fetch-failed" (it was never even attempted — absent
-	// from desiredModules entirely). Without this, such a module's users
-	// would be dropped from the render with no signal at all, having gone
-	// through neither the "resolved" nor the "explicitly unresolved" path.
-	// `retained` alone misses route (2) above (a fetch failure on an
-	// empty-state tick is never "retained"), and manifestFetchFailed alone
-	// misses a module that stays attached but was never even asked about
-	// this tick (omitted from the assigned list; self-hosted refusal).
-	candidateIDs := make(map[string]bool, len(retainedByID)+len(manifestFetchFailed)+len(breadcrumbDataIDs))
-	for id := range retainedByID {
-		candidateIDs[id] = true
-	}
-	for id := range manifestFetchFailed {
-		candidateIDs[id] = true
-	}
-	for id := range breadcrumbDataIDs {
-		candidateIDs[id] = true
-	}
-
-	// mergedManifests unions this tick's FRESH manifests with, for every
-	// candidate module that has none, the best available fallback (the
-	// resolution loop below). desiredForLayers extends `desired` with every
-	// RETAINED-but-not-fresh module's CURRENTLY ATTACHED Digest/Priority
-	// (never the manifest — mount.ModuleMountPath only needs those): the
-	// hot-prune layer functions (higherPriorityLayerDirs, survivingLayerDirs,
-	// processPendingPrunes below) must see a module that is genuinely still
-	// mounted regardless of whether its manifest resolved this tick (review
-	// finding N3) — otherwise a REAL leaver's prune could delete a path this
-	// retained module still provides, reading its silence as "nobody else
-	// has this". A retained-but-not-fresh module that turns out to be
-	// UNMOUNTED is not a new risk introduced by this: the existing
-	// layerProvidesAnything check inside processPendingPrunes and
-	// hotReconcileIfNeeded's prune call already defers the WHOLE prune pass
-	// rather than resolve surviving-layer claims against a layer that isn't
-	// actually serving content (review finding N4) — this only widens the
-	// set that check inspects, never bypasses it.
-	mergedManifests := make(map[string]*manifest.Manifest, len(manifests)+len(candidateIDs))
-	for id, m := range manifests {
-		mergedManifests[id] = m
-	}
-	desiredForLayers := make(mount.ModuleStack, len(desired), len(desired)+len(retained))
+	rc := r.resolveRenderCandidates(manifests, retained, manifestFetchFailed, breadcrumbManifests, breadcrumbIDs, breadcrumbDataIDs)
+	mergedManifests := rc.merged
+	desiredForLayers := make(mount.ModuleStack, len(desired), len(desired)+len(rc.retainedNotFresh))
 	copy(desiredForLayers, desired)
-
-	// Resolution loop — review finding R2-B1. For each candidate without a
-	// fresh manifest: try the on-disk cache, then the boot breadcrumb, in
-	// that order. A RETAINED module's currently-mounted Digest is the ground
-	// truth of what is actually running; a fallback manifest whose OWN
-	// Digest disagrees with it describes a DIFFERENT version and must not be
-	// used (review finding N2) — it is exactly as unresolved as no fallback
-	// at all, and the other source is tried before giving up. A candidate in
-	// manifestFetchFailed but NOT retained (route (2) above) has no expected
-	// digest to check a fallback against, so any resolved source is
-	// accepted.
-	//
-	// A candidate that resolves via NEITHER cache NOR breadcrumb is safe to
-	// silently OMIT from the render (as if it declared nothing) only when it
-	// was NEVER real: not retained, and not in the breadcrumb's module list
-	// either — a genuinely new module whose first-ever fetch failed, which
-	// by construction was never part of any render this agent has produced.
-	// Any OTHER unresolved candidate — retained, or present in the
-	// breadcrumb (compose already rendered it into the live union even
-	// though this tick's "what's attached" bookkeeping was separately lost)
-	// — is one this agent's OWN render history says is real, and rendering
-	// without it would repeat the exact partial-view mistake the 2026-09-22
-	// outage made. In that case the ENTIRE identity/sudoers/egress render
-	// for this tick is SKIPPED (round-1 behaviour, restored for this one
-	// case), leaving whatever the last resolvable tick wrote in place, which
-	// is always at least as correct as a render known to be missing a real
-	// module. This cannot re-freeze the render forever the way the old
-	// blanket skip did: it fires only when a module that IS real resolves
-	// via none of three independent sources simultaneously, not merely
-	// because ONE tick's fetch failed.
-	var staleFallback, breadcrumbFallback, unresolvedHarmless, unresolvedReal []string
-	for id := range candidateIDs {
-		if _, fresh := mergedManifests[id]; fresh {
-			continue
-		}
-		retainedMod, isRetained := retainedByID[id]
-		if isRetained {
-			desiredForLayers = append(desiredForLayers, retainedMod)
-		}
-		var expectedDigest string
-		hasExpected := false
-		if isRetained {
-			expectedDigest, hasExpected = retainedMod.Digest, true
-		}
-
-		resolved := false
-		if cached, cerr := manifest.LoadFromDisk(r.cfg.ManifestRoot, id); cerr == nil && cached != nil {
-			if !hasExpected || cached.Digest == expectedDigest {
-				mergedManifests[id] = cached
-				staleFallback = append(staleFallback, id)
-				resolved = true
-			}
-		}
-		if !resolved {
-			if bm, ok := breadcrumbManifests[id]; ok && (!hasExpected || bm.Digest == expectedDigest) {
-				mergedManifests[id] = bm
-				breadcrumbFallback = append(breadcrumbFallback, id)
-				resolved = true
-			}
-		}
-		if resolved {
-			continue
-		}
-
-		if isRetained || breadcrumbIDs[id] {
-			unresolvedReal = append(unresolvedReal, id)
-		} else {
-			unresolvedHarmless = append(unresolvedHarmless, id)
-		}
-	}
+	desiredForLayers = append(desiredForLayers, rc.retainedNotFresh...)
+	staleFallback, breadcrumbFallback, unresolvedHarmless, unresolvedReal := rc.staleFallback, rc.breadcrumbFallback, rc.unresolvedHarmless, rc.unresolvedReal
 	mustSkipRender := len(unresolvedReal) > 0
 
 	if len(staleFallback) > 0 {
