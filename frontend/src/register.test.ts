@@ -403,7 +403,7 @@ describe('registered nav sections', () => {
     permission?: string;
   }> = [
     { label: 'Overview',          path: '/app/system',                icon: 'LayoutDashboard', order: 1 },
-    { label: 'Topology',          path: '/app/system/topology',       icon: 'Network',         order: 2 },
+    { label: 'Fleet Topology',    path: '/app/system/topology',       icon: 'Network',         order: 2 },
     { label: 'Compute',           path: '/app/system/compute',        icon: 'Server',          order: 3 },
     { label: 'Catalog',           path: '/app/system/catalog',        icon: 'Boxes',           order: 4 },
     { label: 'Template Composer', path: '/app/system/templates/compose', icon: 'WandSparkles', order: 5 },

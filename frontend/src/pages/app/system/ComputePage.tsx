@@ -30,11 +30,12 @@ type TabKey = 'nodes' | 'unclaimed-devices' | 'volumes' | 'providers' | 'network
 const TABS: PathTabSpec<TabKey>[] = [
   { key: 'nodes', label: 'Nodes', permission: 'system.nodes.read' },
   { key: 'unclaimed-devices', label: 'Unclaimed Devices', permission: 'system.unclaimed_devices.read' },
-  { key: 'volumes', label: 'Volumes', permission: 'system.volumes.read' },
-  { key: 'providers', label: 'Providers', permission: 'system.providers.read' },
+  { key: 'volumes', label: 'Storage Volumes', permission: 'system.volumes.read' },
+  { key: 'providers', label: 'Cloud Providers', permission: 'system.providers.read' },
   { key: 'networks', label: 'Cloud Networks', permission: 'system.networks.read' },
-  // P7 — unified platform-ops dashboard: peers + children + services
-  // + migrations + scaling + health under one path-based hub.
+  // P7 — platform-ops hub: peer liveness, migrations, scaling, deploy and
+  // service discovery under one path-based hub (fc-47: health, services and
+  // children moved to their one home each).
   { key: 'platform', label: 'Platform', permission: 'system.platform.read' },
 ];
 
@@ -47,8 +48,8 @@ const ComputePage: React.FC = () => {
 
   // Drives the page actions below. Uses PathTabs' own derivation so the
   // strip and the actions can never disagree — which matters here because
-  // the Platform tab owns nested sub-routes (`/compute/platform/services`
-  // must resolve to `platform`, not to the trailing `services` segment).
+  // the Platform tab owns nested sub-routes (`/compute/platform/peers`
+  // must resolve to `platform`, not to the trailing `peers` segment).
   // Falls back to the first visible tab on the bare /compute path, which
   // the index route below is about to redirect anyway.
   const activeTabKey = useMemo<TabKey>(

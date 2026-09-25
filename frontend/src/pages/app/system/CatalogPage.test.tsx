@@ -159,7 +159,7 @@ describe('CatalogPage', () => {
   it('renders all 8 tab links when the user has all read permissions', () => {
     renderPage();
 
-    expect(screen.getByRole('link', { name: /^templates$/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^node templates$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^modules$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^package repositories$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^puppet modules$/i })).toBeInTheDocument();
@@ -179,7 +179,7 @@ describe('CatalogPage', () => {
 
     renderPage('/app/system/catalog/templates');
 
-    expect(screen.getByRole('link', { name: /^templates$/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^node templates$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^modules$/i })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^puppet modules$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^scripts$/i })).not.toBeInTheDocument();
@@ -193,7 +193,7 @@ describe('CatalogPage', () => {
   it('marks the templates tab link as active when the URL ends in /templates', () => {
     renderPage('/app/system/catalog/templates');
 
-    const link = screen.getByRole('link', { name: /^templates$/i });
+    const link = screen.getByRole('link', { name: /^node templates$/i });
     // Active tabs get PathTabs' accent border; inactive get a transparent one
     expect(link.className).toContain('border-theme-info-border');
   });
@@ -227,7 +227,7 @@ describe('CatalogPage', () => {
     renderPage('/app/system/catalog/templates');
 
     const cases: [string, string][] = [
-      ['templates', '/app/system/catalog/templates'],
+      ['node templates', '/app/system/catalog/templates'],
       ['modules', '/app/system/catalog/modules'],
       ['package repositories', '/app/system/catalog/package-repositories'],
       ['puppet modules', '/app/system/catalog/puppet-modules'],
@@ -591,7 +591,7 @@ describe('CatalogPage', () => {
   it('renders the tab strip through the shared PathTabs scaffold', () => {
     renderPage('/app/system/catalog/templates');
 
-    const active = screen.getByRole('link', { name: /^templates$/i });
+    const active = screen.getByRole('link', { name: /^node templates$/i });
     // PathTabs' active-link classes.
     expect(active.className).toContain('border-theme-info-border');
     expect(active.className).toContain('font-medium');

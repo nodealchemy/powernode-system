@@ -31,20 +31,21 @@ import SdwanRoutingPage from './SdwanRoutingPage';
 // access, VIPs, routing, port mappings) so operators stay in the hub
 // throughout. No standalone per-network page exists.
 
-type TabKey = 'topology' | 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix' | 'flows';
+type TabKey = 'topology' | 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix';
 
 const TABS: PathTabSpec<TabKey>[] = [
   // P4.5.8 — system-wide federation + SDWAN graph. Lands first because
   // it's the operator's at-a-glance view; deeper drill-down lives in
   // the kind-specific tabs that follow.
-  { key: 'topology', label: 'Topology', permission: 'system.sdwan.networks.read' },
-  { key: 'networks', label: 'Networks', permission: 'system.sdwan.networks.read' },
+  { key: 'topology', label: 'Network Topology', permission: 'system.sdwan.networks.read' },
+  { key: 'networks', label: 'SD-WAN Networks', permission: 'system.sdwan.networks.read' },
   { key: 'routing', label: 'Routing', permission: 'system.sdwan.routing.read' },
-  { key: 'federation', label: 'Federation', permission: 'system.sdwan.federation.read' },
+  { key: 'federation', label: 'Network Federation', permission: 'system.sdwan.federation.read' },
   { key: 'host_bridges', label: 'Host Bridges', permission: 'system.sdwan.host_bridges.read' },
   { key: 'ovn', label: 'OVN', permission: 'system.sdwan.ovn.read' },
+  // The collectors and the flow samples they ingested: one permission, one
+  // tab (fc-47 folded the separate Flows tab in, bringing the hub to seven).
   { key: 'ipfix', label: 'IPFIX', permission: 'system.sdwan.ipfix.read' },
-  { key: 'flows', label: 'Flows', permission: 'system.sdwan.ipfix.read' },
 ];
 
 const BASE_PATH = '/app/system/sdwan';
@@ -111,8 +112,15 @@ const SdwanHubPage: React.FC = () => {
           <Route path="federation" element={<FederationTab onActionsReady={setFederationActions} />} />
           <Route path="host_bridges" element={<HostBridgesTab />} />
           <Route path="ovn" element={<OvnDeploymentsTab />} />
-          <Route path="ipfix" element={<IpfixCollectorsTab />} />
-          <Route path="flows" element={<FlowSamplesTab />} />
+          <Route
+            path="ipfix"
+            element={
+              <div className="space-y-6">
+                <IpfixCollectorsTab />
+                <FlowSamplesTab />
+              </div>
+            }
+          />
           <Route path="*" element={<Navigate to={firstPath} replace />} />
         </Routes>
       </PathTabs>

@@ -115,16 +115,15 @@ describe('SdwanHubPage', () => {
     expect(screen.getByRole('heading', { name: 'SDWAN' })).toBeInTheDocument();
   });
 
-  it('renders all eight tab links when the user has all permissions', () => {
+  it('renders all seven tab links when the user has all permissions', () => {
     renderPage();
-    expect(screen.getByRole('link', { name: 'Topology' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Networks' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Network Topology' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'SD-WAN Networks' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Routing' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Federation' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Network Federation' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Host Bridges' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'OVN' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'IPFIX' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Flows' })).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -142,8 +141,8 @@ describe('SdwanHubPage', () => {
   it('does not render any tab links in the no-permission state', () => {
     mockHasPermission = () => false;
     renderPage();
-    expect(screen.queryByRole('link', { name: 'Topology' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Networks' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Network Topology' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'SD-WAN Networks' })).not.toBeInTheDocument();
   });
 
   it('still renders the page title in the no-permission state', () => {
@@ -161,14 +160,14 @@ describe('SdwanHubPage', () => {
     // Grant everything EXCEPT federation
     mockHasPermission = (perm: string) => perm !== 'system.sdwan.federation.read';
     renderPage();
-    expect(screen.queryByRole('link', { name: 'Federation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Network Federation' })).not.toBeInTheDocument();
   });
 
   it('still shows tabs whose permissions ARE granted when some are denied', () => {
     mockHasPermission = (perm: string) => perm !== 'system.sdwan.federation.read';
     renderPage();
-    expect(screen.getByRole('link', { name: 'Networks' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Topology' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'SD-WAN Networks' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Network Topology' })).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -207,14 +206,17 @@ describe('SdwanHubPage', () => {
     expect(screen.getByTestId('tab-ovn')).toBeInTheDocument();
   });
 
-  it('renders IpfixCollectorsTab at /sdwan/ipfix', () => {
+  // fc-47: the IPFIX tab carries the collectors and the flow samples they
+  // ingested, one permission, one tab. The hub is seven tabs.
+  it('renders the collectors and their flow samples together at /sdwan/ipfix', () => {
     renderPage('/ipfix');
     expect(screen.getByTestId('tab-ipfix')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-flows')).toBeInTheDocument();
   });
 
-  it('renders FlowSamplesTab at /sdwan/flows', () => {
-    renderPage('/flows');
-    expect(screen.getByTestId('tab-flows')).toBeInTheDocument();
+  it('has no separate Flows tab', () => {
+    renderPage('/networks');
+    expect(screen.queryByRole('link', { name: 'Flows' })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -223,21 +225,21 @@ describe('SdwanHubPage', () => {
 
   it('applies active styling to the Networks link when at /sdwan/networks', () => {
     renderPage('/networks');
-    const networksLink = screen.getByRole('link', { name: 'Networks' });
+    const networksLink = screen.getByRole('link', { name: 'SD-WAN Networks' });
     expect(networksLink.className).toContain('border-theme-info-border');
     expect(networksLink.className).toContain('text-theme-primary');
   });
 
   it('applies inactive styling to non-active tabs', () => {
     renderPage('/networks');
-    const topologyLink = screen.getByRole('link', { name: 'Topology' });
+    const topologyLink = screen.getByRole('link', { name: 'Network Topology' });
     expect(topologyLink.className).toContain('border-transparent');
     expect(topologyLink.className).toContain('text-theme-secondary');
   });
 
   it('applies active styling to the Topology link at /sdwan/topology', () => {
     renderPage('/topology');
-    const topologyLink = screen.getByRole('link', { name: 'Topology' });
+    const topologyLink = screen.getByRole('link', { name: 'Network Topology' });
     expect(topologyLink.className).toContain('border-theme-info-border');
   });
 
@@ -253,14 +255,13 @@ describe('SdwanHubPage', () => {
 
   it('each tab link has the correct href', () => {
     renderPage('/networks');
-    expect(screen.getByRole('link', { name: 'Topology' })).toHaveAttribute('href', '/app/system/sdwan/topology');
-    expect(screen.getByRole('link', { name: 'Networks' })).toHaveAttribute('href', '/app/system/sdwan/networks');
+    expect(screen.getByRole('link', { name: 'Network Topology' })).toHaveAttribute('href', '/app/system/sdwan/topology');
+    expect(screen.getByRole('link', { name: 'SD-WAN Networks' })).toHaveAttribute('href', '/app/system/sdwan/networks');
     expect(screen.getByRole('link', { name: 'Routing' })).toHaveAttribute('href', '/app/system/sdwan/routing');
-    expect(screen.getByRole('link', { name: 'Federation' })).toHaveAttribute('href', '/app/system/sdwan/federation');
+    expect(screen.getByRole('link', { name: 'Network Federation' })).toHaveAttribute('href', '/app/system/sdwan/federation');
     expect(screen.getByRole('link', { name: 'Host Bridges' })).toHaveAttribute('href', '/app/system/sdwan/host_bridges');
     expect(screen.getByRole('link', { name: 'OVN' })).toHaveAttribute('href', '/app/system/sdwan/ovn');
     expect(screen.getByRole('link', { name: 'IPFIX' })).toHaveAttribute('href', '/app/system/sdwan/ipfix');
-    expect(screen.getByRole('link', { name: 'Flows' })).toHaveAttribute('href', '/app/system/sdwan/flows');
   });
 
   // ---------------------------------------------------------------------------
@@ -462,7 +463,7 @@ describe('SdwanHubPage', () => {
       </MemoryRouter>,
     );
     // All tabs are visible (full permissions), first tab is Topology
-    const topologyLink = screen.getByRole('link', { name: 'Topology' });
+    const topologyLink = screen.getByRole('link', { name: 'Network Topology' });
     // The index route redirects to defaultTabKey; at path /app/system/sdwan without
     // a trailing segment the activeTabKey resolves to visibleTabs[0].key='topology'
     expect(topologyLink).toBeInTheDocument();
@@ -472,17 +473,15 @@ describe('SdwanHubPage', () => {
   // Flows tab shares the ipfix permission
   // ---------------------------------------------------------------------------
 
-  it('hides both IPFIX and Flows tabs when sdwan.ipfix.read is denied', () => {
+  it('hides the IPFIX tab when sdwan.ipfix.read is denied', () => {
     mockHasPermission = (perm: string) => perm !== 'system.sdwan.ipfix.read';
     renderPage('/networks');
     expect(screen.queryByRole('link', { name: 'IPFIX' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Flows' })).not.toBeInTheDocument();
   });
 
-  it('shows both IPFIX and Flows tabs when sdwan.ipfix.read is granted', () => {
+  it('shows the IPFIX tab when sdwan.ipfix.read is granted', () => {
     renderPage('/networks');
     expect(screen.getByRole('link', { name: 'IPFIX' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Flows' })).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -498,7 +497,7 @@ describe('SdwanHubPage', () => {
   it('renders the tab strip through the shared PathTabs scaffold', () => {
     renderPage('/networks');
 
-    const active = screen.getByRole('link', { name: 'Networks' });
+    const active = screen.getByRole('link', { name: 'SD-WAN Networks' });
     // PathTabs' active-link classes.
     expect(active.className).toContain('border-theme-info-border');
     expect(active.className).toContain('font-medium');

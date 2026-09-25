@@ -560,10 +560,10 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
               {[
                 { label: 'Nodes', icon: <Server className="w-5 h-5" />, to: ROUTES.nodes },
                 { label: 'Catalog', icon: <Boxes className="w-5 h-5" />, to: ROUTES.modules },
-                { label: 'Templates', icon: <FileText className="w-5 h-5" />, to: ROUTES.templates },
+                { label: 'Node Templates', icon: <FileText className="w-5 h-5" />, to: ROUTES.templates },
                 { label: 'Operations', icon: <Activity className="w-5 h-5" />, to: ROUTES.tasks },
                 { label: 'Fleet signals', icon: <Gauge className="w-5 h-5" />, to: ROUTES.fleet },
-                { label: 'Topology', icon: <NetworkIcon className="w-5 h-5" />, to: ROUTES.topology },
+                { label: 'Fleet Topology', icon: <NetworkIcon className="w-5 h-5" />, to: ROUTES.topology },
               ].map((action) => (
                 <Button
                   key={action.label}

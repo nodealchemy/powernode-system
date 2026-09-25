@@ -671,10 +671,10 @@ describe('SystemOverview', () => {
     it.each([
       ['Nodes', '/app/system/compute/nodes'],
       ['Catalog', '/app/system/catalog/modules'],
-      ['Templates', '/app/system/catalog/templates'],
+      ['Node Templates', '/app/system/catalog/templates'],
       ['Operations', '/app/system/operations/tasks'],
       ['Fleet signals', '/app/system/operations/fleet'],
-      ['Topology', '/app/system/topology'],
+      ['Fleet Topology', '/app/system/topology'],
     ])('routes the "%s" action to %s', async (label, path) => {
       renderComponent();
       await waitFor(() =>

@@ -37,7 +37,7 @@ type TabKey =
   | 'marketplace';
 
 const TABS: PathTabSpec<TabKey>[] = [
-  { key: 'templates', label: 'Templates', permission: 'system.templates.read' },
+  { key: 'templates', label: 'Node Templates', permission: 'system.templates.read' },
   { key: 'modules', label: 'Modules', permission: 'system.modules.read' },
   { key: 'package-repositories', label: 'Package Repositories', permission: 'system.package_repositories.view' },
   { key: 'puppet-modules', label: 'Puppet Modules', permission: 'system.puppet.read' },

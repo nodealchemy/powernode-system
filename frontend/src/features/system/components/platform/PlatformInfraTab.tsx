@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import {
-  Server,
   Network,
   Globe2,
   Move,
@@ -9,9 +8,6 @@ import {
   Rocket,
 } from 'lucide-react';
 import { usePermissions } from '@/shared/hooks/usePermissions';
-import { ChildrenPanel } from '@system/features/system/components/federation/ChildrenPanel';
-import { ServiceOfferingsPanel } from '@system/features/system/components/federation/ServiceOfferingsPanel';
-import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
 import { PlatformOverviewCards } from './PlatformOverviewCards';
 import { PeerLivenessMonitor } from './PeerLivenessMonitor';
 import { NetworkVipPicker } from './NetworkVipPicker';
@@ -24,15 +20,17 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
 /**
  * Unified Platform Infrastructure tab. Lives at
  * /app/system/compute/platform with nested path-based sub-tabs for
- * each sub-domain. Per the plan §I, the 6 sub-panels are:
- *   - Services    — P4.6.8 offerings + subscriptions
- *   - Peers       — P7.1 real-time federation peer liveness monitor
- *   - Children    — P6.2 spawned child platforms + spawn modal
- *   - Migrations  — P7.4 read-only Migration history + detail drawer
- *                    (creation wizard queued for next slice)
- *   - Scaling     — P7.3 PlatformDeployment list + inline replica edit
- *                    (provisioning sync queued for next slice)
- *   - Health      — P7.2 per-subsystem health snapshot + 30s refresh
+ * each sub-domain:
+ *   - Peer Liveness — P7.1 real-time federation peer liveness monitor
+ *   - Migrations    — P7.4 migration history, chains and storage migrations
+ *   - Scaling       — P7.3 PlatformDeployment list + inline replica edit
+ *   - Deploy        — D4.2 standalone deploy entry point
+ *   - Service Discovery — virtual IPs across the federation
+ *
+ * fc-47: Health moved to /app/status (the platform_subsystem contributor).
+ * Services (offerings + subscriptions) and Children were the same panels as
+ * Service Delivery's Offerings, Subscriptions and Children tabs, which are
+ * now their one home.
  *
  * The Peers sub-tab carries a real-time liveness monitor (SystemFleetChannel),
  * and a new Service Discovery sub-tab carries virtual-IP management — both
@@ -59,7 +57,7 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  * Plan reference: Decentralized Federation §I + P7.
  */
 
-type TabKey = 'services' | 'peers' | 'children' | 'migrations' | 'scaling' | 'deploy' | 'discovery';
+type TabKey = 'peers' | 'migrations' | 'scaling' | 'deploy' | 'discovery';
 
 interface TabSpec {
   key: TabKey;
@@ -69,9 +67,7 @@ interface TabSpec {
 }
 
 const TABS: TabSpec[] = [
-  { key: 'services',   label: 'Services',   permission: 'system.service_offerings.read',   icon: <Globe2 className="w-4 h-4" /> },
-  { key: 'peers',      label: 'Peer Health', permission: 'system.peers.read',              icon: <Network className="w-4 h-4" /> },
-  { key: 'children',   label: 'Children',   permission: 'system.children.read',            icon: <Server className="w-4 h-4" /> },
+  { key: 'peers',      label: 'Peer Liveness', permission: 'system.peers.read',              icon: <Network className="w-4 h-4" /> },
   { key: 'migrations', label: 'Migrations', permission: 'system.migrations.read',          icon: <Move className="w-4 h-4" /> },
   { key: 'scaling',    label: 'Scaling',    permission: 'system.platform.scale',           icon: <TrendingUp className="w-4 h-4" /> },
   // D4.2 — Standalone deploy entry point, parallel to the chat card.
@@ -108,7 +104,7 @@ export const PlatformInfraTab: React.FC = () => {
   const activeKey = useMemo<TabKey>(() => {
     const seg = location.pathname.split('/').filter(Boolean).pop();
     const match = accessibleTabs.find((t) => t.key === seg);
-    return match?.key ?? accessibleTabs[0]?.key ?? 'services';
+    return match?.key ?? accessibleTabs[0]?.key ?? 'peers';
   }, [location.pathname, accessibleTabs]);
 
   return (
@@ -140,9 +136,7 @@ export const PlatformInfraTab: React.FC = () => {
           path="/"
           element={<Navigate to={`${BASE_PATH}/${accessibleTabs[0].key}`} replace />}
         />
-        <Route path="services"   element={<ServicesTab />} />
         <Route path="peers"      element={<PeersTab />} />
-        <Route path="children"   element={<ChildrenPanel />} />
         <Route path="migrations" element={<MigrationsTab />} />
         <Route path="scaling"    element={<ScalingTab />} />
         <Route path="deploy"     element={<DeployTab />} />
@@ -157,17 +151,8 @@ export const PlatformInfraTab: React.FC = () => {
 };
 
 // ──────────────────────────────────────────────────────────────────────
-// Sub-tabs. ServicesTab composes two existing panels because the
-// services flow has both an operator and a subscriber surface; the
-// remaining sub-tabs are direct renders of their dedicated panel
-// components which encapsulate fetch + state + actions.
-
-const ServicesTab: React.FC = () => (
-  <div className="space-y-6">
-    <ServiceOfferingsPanel />
-    <ServiceSubscriptionsPanel />
-  </div>
-);
+// Sub-tabs: each renders its dedicated panel components, which encapsulate
+// fetch + state + actions.
 
 const PeersTab: React.FC = () => {
   const { hasPermission } = usePermissions();

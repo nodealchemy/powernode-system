@@ -121,7 +121,7 @@ export function register(): void {
         { label: 'Overview',       path: '/app/system',                icon: 'LayoutDashboard', order: 1 },
         // Topology sits directly under Overview: it is the fleet-wide
         // "where does everything live" view the hubs' tables can't show.
-        { label: 'Topology',       path: '/app/system/topology',       icon: 'Network',         order: 2 },
+        { label: 'Fleet Topology', path: '/app/system/topology',       icon: 'Network',         order: 2 },
         { label: 'Compute',        path: '/app/system/compute',        icon: 'Server',          order: 3 },
         { label: 'Catalog',        path: '/app/system/catalog',        icon: 'Boxes',           order: 4 },
         // Template Composer was route-only (no nav entry, no in-app link)

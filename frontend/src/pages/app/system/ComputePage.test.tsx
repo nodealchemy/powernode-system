@@ -181,8 +181,8 @@ describe('ComputePage', () => {
     renderAt();
     expect(screen.getByRole('link', { name: 'Nodes' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Unclaimed Devices' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Volumes' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Providers' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Storage Volumes' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Cloud Providers' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cloud Networks' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Platform' })).toBeInTheDocument();
   });
@@ -222,7 +222,7 @@ describe('ComputePage', () => {
   });
 
   it('renders PlatformInfraTab on nested /platform/* sub-routes', () => {
-    renderAt('/app/system/compute/platform/services');
+    renderAt('/app/system/compute/platform/peers');
     expect(screen.getByTestId('platform-infra-tab')).toBeInTheDocument();
   });
 
@@ -238,13 +238,13 @@ describe('ComputePage', () => {
 
   it('marks the Volumes tab as active on /volumes', () => {
     renderAt('/app/system/compute/volumes');
-    const link = screen.getByRole('link', { name: 'Volumes' });
+    const link = screen.getByRole('link', { name: 'Storage Volumes' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Providers tab as active on /providers', () => {
     renderAt('/app/system/compute/providers');
-    const link = screen.getByRole('link', { name: 'Providers' });
+    const link = screen.getByRole('link', { name: 'Cloud Providers' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
@@ -260,15 +260,15 @@ describe('ComputePage', () => {
     expect(link.className).toContain('border-theme-info-border');
   });
 
-  it('marks the Platform tab as active on a nested /platform/services path', () => {
-    renderAt('/app/system/compute/platform/services');
+  it('marks the Platform tab as active on a nested /platform/peers path', () => {
+    renderAt('/app/system/compute/platform/peers');
     const link = screen.getByRole('link', { name: 'Platform' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
   it('inactive tab links carry border-transparent class', () => {
     renderAt('/app/system/compute/nodes');
-    const volumesLink = screen.getByRole('link', { name: 'Volumes' });
+    const volumesLink = screen.getByRole('link', { name: 'Storage Volumes' });
     expect(volumesLink.className).toContain('border-transparent');
   });
 
@@ -287,11 +287,11 @@ describe('ComputePage', () => {
       'href',
       '/app/system/compute/unclaimed-devices',
     );
-    expect(screen.getByRole('link', { name: 'Volumes' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Storage Volumes' })).toHaveAttribute(
       'href',
       '/app/system/compute/volumes',
     );
-    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Cloud Providers' })).toHaveAttribute(
       'href',
       '/app/system/compute/providers',
     );
@@ -352,7 +352,7 @@ describe('ComputePage', () => {
         ALL_PERMISSIONS.includes(perm),
     );
     renderAt('/app/system/compute/nodes');
-    expect(screen.queryByRole('link', { name: 'Volumes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Storage Volumes' })).not.toBeInTheDocument();
   });
 
   it('hides the Providers tab when system.providers.read is absent', () => {
@@ -362,7 +362,7 @@ describe('ComputePage', () => {
         ALL_PERMISSIONS.includes(perm),
     );
     renderAt('/app/system/compute/nodes');
-    expect(screen.queryByRole('link', { name: 'Providers' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Cloud Providers' })).not.toBeInTheDocument();
   });
 
   it('hides the Cloud Networks tab when system.networks.read is absent', () => {
@@ -400,7 +400,7 @@ describe('ComputePage', () => {
     mockHasPermission.mockReturnValue(false);
     renderAt('/app/system/compute/nodes');
     expect(screen.queryByRole('link', { name: 'Nodes' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Volumes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Storage Volumes' })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

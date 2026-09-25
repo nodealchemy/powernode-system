@@ -49,7 +49,7 @@ export default function FleetTopologyPage(): React.JSX.Element {
     <PageContainer
       title="Fleet Topology"
       description="Provider and platform groups, the nodes under them, each node's instances, and the SDWAN networks those instances peer into. Updates live from the fleet event channel."
-      breadcrumbs={[{ label: 'System', href: '/app/system' }, { label: 'Topology' }]}
+      breadcrumbs={[{ label: 'System', href: '/app/system' }, { label: 'Fleet Topology' }]}
       actions={pageActions}
     >
       <div className="space-y-3">
