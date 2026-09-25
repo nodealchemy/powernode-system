@@ -541,7 +541,6 @@ Rails.application.routes.draw do
             resources :capabilities, only: %i[index create destroy],
                                      controller: "peer_capabilities"
           end
-          get "health", to: "health#show"
 
           # P7.3 — Platform deployments / Scaling panel.
           # D1.2 — Adds `create` so operators can deploy new platforms

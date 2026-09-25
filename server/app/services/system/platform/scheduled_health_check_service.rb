@@ -12,8 +12,8 @@ module System
     # its one action — but the increment-3 investigation found neither is
     # ever invoked on a schedule: the executor's health_check branch has no
     # sensor binding in DecisionEngine::SIGNAL_BINDINGS and no cron, and the
-    # dashboard's own path (Api::V1::System::Platform::HealthController#show)
-    # deliberately calls `.call`, not `.call_and_persist!`, because it is a
+    # dashboard's own path (the platform health endpoint, deleted in fc-47)
+    # deliberately called `.call`, not `.call_and_persist!`, because it was a
     # per-viewer 30s poll. So the capability existed, worked, and had never
     # once run unattended.
     #

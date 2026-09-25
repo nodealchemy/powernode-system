@@ -6,7 +6,6 @@ import {
   Globe2,
   Move,
   TrendingUp,
-  Activity,
   Rocket,
 } from 'lucide-react';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -16,7 +15,6 @@ import { ServiceSubscriptionsPanel } from '@system/features/system/components/fe
 import { PlatformOverviewCards } from './PlatformOverviewCards';
 import { PeerLivenessMonitor } from './PeerLivenessMonitor';
 import { NetworkVipPicker } from './NetworkVipPicker';
-import { HealthPanel } from './HealthPanel';
 import { ScalingPanel } from './ScalingPanel';
 import { MigrationsPanel } from './MigrationsPanel';
 import { StorageMigrationsPanel } from './StorageMigrationsPanel';
@@ -61,7 +59,7 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  * Plan reference: Decentralized Federation §I + P7.
  */
 
-type TabKey = 'services' | 'peers' | 'children' | 'migrations' | 'scaling' | 'health' | 'deploy' | 'discovery';
+type TabKey = 'services' | 'peers' | 'children' | 'migrations' | 'scaling' | 'deploy' | 'discovery';
 
 interface TabSpec {
   key: TabKey;
@@ -76,7 +74,6 @@ const TABS: TabSpec[] = [
   { key: 'children',   label: 'Children',   permission: 'system.children.read',            icon: <Server className="w-4 h-4" /> },
   { key: 'migrations', label: 'Migrations', permission: 'system.migrations.read',          icon: <Move className="w-4 h-4" /> },
   { key: 'scaling',    label: 'Scaling',    permission: 'system.platform.scale',           icon: <TrendingUp className="w-4 h-4" /> },
-  { key: 'health',     label: 'Health',     permission: 'system.platform.health.read',     icon: <Activity className="w-4 h-4" /> },
   // D4.2 — Standalone deploy entry point, parallel to the chat card.
   // The wizard component itself is shared; this surface lets operators
   // start a deploy from the dashboard without first opening chat.
@@ -91,7 +88,7 @@ const BASE_PATH = '/app/system/compute/platform';
 export const PlatformInfraTab: React.FC = () => {
   // The tab STRIP stays best-effort (see `accessibleTabs` below) — every
   // operator sees every tab regardless of permission. That is deliberate
-  // for the six original sub-tabs. It is NOT the gate for the two panels
+  // for the original sub-tabs. It is NOT the gate for the two panels
   // relocated from FederationHubPage inside the Peers/Discovery tabs
   // (`PeerLivenessMonitor`, `NetworkVipPicker`): those carried a REAL JSX
   // `{cond && …}` gate on the old page, and C10 review FIX-1 found the
@@ -148,7 +145,6 @@ export const PlatformInfraTab: React.FC = () => {
         <Route path="children"   element={<ChildrenPanel />} />
         <Route path="migrations" element={<MigrationsTab />} />
         <Route path="scaling"    element={<ScalingTab />} />
-        <Route path="health"     element={<HealthTab />} />
         <Route path="deploy"     element={<DeployTab />} />
         <Route path="discovery"  element={<DiscoveryTab />} />
         <Route
@@ -220,7 +216,6 @@ const MigrationsTab: React.FC = () => (
   </div>
 );
 const ScalingTab: React.FC = () => <ScalingPanel />;
-const HealthTab: React.FC = () => <HealthPanel />;
 const DeployTab: React.FC = () => <DeployPlatformPanel />;
 
 export default PlatformInfraTab;

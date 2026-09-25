@@ -97,7 +97,9 @@ module System
           "reverse_proxy"   => "Reverse proxy"
         }.freeze
 
-        HEALTH_PAGE_PATH = "/app/system/compute/platform/health"
+        # The Platform page. Its Health sub-tab was deleted (fc-47): these rows
+        # are on /app/status itself, so linking back to a health view was circular.
+        PLATFORM_PAGE_PATH = "/app/system/compute/platform"
 
         # One subsystem, resolved against whatever snapshot the account has.
         # `entry` is nil when the snapshot does not carry this key and the whole
@@ -162,7 +164,7 @@ module System
         end
 
         def links_for(_record)
-          [ { "label" => "Platform health", "path" => HEALTH_PAGE_PATH } ]
+          [ { "label" => "Platform", "path" => PLATFORM_PAGE_PATH } ]
         end
 
         # The probe declares no dependency graph between its subsystems — its

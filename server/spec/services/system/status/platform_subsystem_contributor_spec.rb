@@ -256,9 +256,11 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
       expect(contributor.presentation["group_order"]).to eq(10)
     end
 
-    it "links to the platform health page" do
+    # fc-47: the Platform › Health sub-tab was deleted (its rows are on
+    # /app/status itself), so the link goes to the Platform page.
+    it "links to the Platform page" do
       expect(contributor.links_for(nil))
-        .to eq([ { "label" => "Platform health", "path" => "/app/system/compute/platform/health" } ])
+        .to eq([ { "label" => "Platform", "path" => "/app/system/compute/platform" } ])
     end
 
     it "offers no actions, because platform_subsystem is not_actuatable by default" do

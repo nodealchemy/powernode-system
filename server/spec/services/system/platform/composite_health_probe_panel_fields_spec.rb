@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # The four fields the fleet HealthPanel showed (campaign 01a08c9b, C4 row 24's
-# neighbours), now emitted by the composite probe in its own subsystem entries.
+# neighbours; the panel was deleted in fc-47), now emitted by the composite probe in its own subsystem entries.
 # The platform_subsystem contributor carries an entry as evidence minus its
 # status, so the drawer shows these exactly as the probe measured them.
 #

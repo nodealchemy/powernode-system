@@ -140,7 +140,7 @@ RSpec.describe System::Status::Contributors do
       expect(rails_row.verdict).to eq(Platform::ComponentStatus::OK)
       expect(postgres.display_name).to eq("Postgres")
       expect(postgres.presentation["icon"]).to eq("Activity")
-      expect(postgres.links.first["path"]).to eq("/app/system/compute/platform/health")
+      expect(postgres.links.first["path"]).to eq("/app/system/compute/platform")
       expect(postgres.actions).to eq([])
       expect(postgres.conditions.map { |c| c["type"] }).to match_array(%w[Healthy Fresh])
     end

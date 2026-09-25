@@ -612,7 +612,8 @@ module System
       # ── acme / sdwan / federation ───────────────────────────────────────
       #
       # These three carry over from the two producers this class replaces (the
-      # old four-entry health_check and Api::V1::System::Platform::HealthController).
+      # old four-entry health_check and the platform health dashboard endpoint,
+      # since deleted with its panel in fc-47).
       # A composite that covered less than what it supersedes could not be the
       # single truth, so they are here rather than dropped.
       #

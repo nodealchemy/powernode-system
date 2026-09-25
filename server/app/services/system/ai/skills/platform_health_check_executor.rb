@@ -29,12 +29,11 @@ module System
       # here re-implements or approximates a subsystem check.
       #
       # CARRIED FROM THE OLD FILE, still true here: this class does not
-      # "mirror" Api::V1::System::Platform::HealthController. No class of that name exists
-      # in either repository — HealthController is a REAL and SEPARATE
-      # fourth health surface (feeds the compute/platform health dashboard,
-      # carries its own copy of these probes) that this class does not fix.
-      # See the increment report: the controller is the remaining divergent
-      # producer and should be re-pointed at CompositeHealthProbe.
+      # "mirror" a PlatformHealthController. No class of that name exists
+      # in either repository. The comment pointed, inexactly, at the Compute
+      # platform health dashboard's endpoint — a separate surface that became
+      # an adapter over CompositeHealthProbe and was deleted with its panel
+      # (fc-47); platform subsystem health is on /app/status.
       class PlatformHealthCheckExecutor < BaseSkillExecutor
         skill_descriptor(
           name: "platform_health_check",

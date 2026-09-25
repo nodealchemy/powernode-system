@@ -34,9 +34,6 @@ jest.mock('./NetworkVipPicker', () => ({
   NetworkVipPicker: () => <div data-testid="network-vip-picker" />,
 }));
 
-jest.mock('./HealthPanel', () => ({
-  HealthPanel: () => <div data-testid="health-panel" />,
-}));
 
 jest.mock('./ScalingPanel', () => ({
   ScalingPanel: () => <div data-testid="scaling-panel" />,
@@ -114,9 +111,9 @@ describe('PlatformInfraTab', () => {
 
   // ── Tab nav bar ─────────────────────────────────────────────────────────────
 
-  it('renders all 8 tab labels in the nav bar', () => {
+  it('renders all 7 tab labels in the nav bar', () => {
     renderAt(`${BASE}/services`);
-    const expectedLabels = ['Services', 'Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy', 'Service Discovery'];
+    const expectedLabels = ['Services', 'Peers', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
     for (const label of expectedLabels) {
       expect(screen.getByRole('link', { name: new RegExp(label, 'i') })).toBeInTheDocument();
     }
@@ -131,7 +128,6 @@ describe('PlatformInfraTab', () => {
       ['Children', `${BASE}/children`],
       ['Migrations', `${BASE}/migrations`],
       ['Scaling', `${BASE}/scaling`],
-      ['Health', `${BASE}/health`],
       ['Deploy', `${BASE}/deploy`],
       ['Service Discovery', `${BASE}/discovery`],
     ];
@@ -176,10 +172,12 @@ describe('PlatformInfraTab', () => {
     expect(link.className).toContain('border-theme-info-border');
   });
 
-  it('marks the Health tab as active when the URL ends with /health', () => {
+  // fc-47: platform subsystem health is on /app/status (the
+  // platform_subsystem contributor). The Health sub-tab and its panel are gone.
+  it('has no Health tab, and /health falls back to /services', () => {
     renderAt(`${BASE}/health`);
-    const link = screen.getByRole('link', { name: /health/i });
-    expect(link.className).toContain('border-theme-info-border');
+    expect(screen.queryByRole('link', { name: /^health$/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('service-offerings-panel')).toBeInTheDocument();
   });
 
   it('marks the Deploy tab as active when the URL ends with /deploy', () => {
@@ -196,7 +194,7 @@ describe('PlatformInfraTab', () => {
 
   it('does not mark inactive tabs with the active border class', () => {
     renderAt(`${BASE}/services`);
-    const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy', 'Service Discovery'];
+    const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
     for (const label of inactiveTabs) {
       const link = screen.getByRole('link', { name: new RegExp(label, 'i') });
       expect(link.className).not.toContain('border-theme-info-border');
@@ -264,11 +262,6 @@ describe('PlatformInfraTab', () => {
     expect(screen.getByTestId('scaling-panel')).toBeInTheDocument();
   });
 
-  it('renders HealthPanel for /health route', () => {
-    renderAt(`${BASE}/health`);
-    expect(screen.getByTestId('health-panel')).toBeInTheDocument();
-  });
-
   it('renders DeployPlatformPanel for /deploy route', () => {
     renderAt(`${BASE}/deploy`);
     expect(screen.getByTestId('deploy-platform-panel')).toBeInTheDocument();
@@ -291,11 +284,6 @@ describe('PlatformInfraTab', () => {
     expect(screen.queryByRole('link', { name: /service delivery.*peers/i })).not.toBeInTheDocument();
   });
 
-  it('does not render HealthPanel when on the /peers route', () => {
-    renderAt(`${BASE}/peers`);
-    expect(screen.queryByTestId('health-panel')).not.toBeInTheDocument();
-  });
-
   it('does not render ScalingPanel when on the /migrations route', () => {
     renderAt(`${BASE}/migrations`);
     expect(screen.queryByTestId('scaling-panel')).not.toBeInTheDocument();
@@ -303,16 +291,16 @@ describe('PlatformInfraTab', () => {
 
   // ── All tabs visible regardless of permissions ───────────────────────────────
 
-  it('shows all 8 tabs without permission gating (best-effort model)', () => {
+  it('shows all 7 tabs without permission gating (best-effort model)', () => {
     renderAt(`${BASE}/services`);
     // The component comment states permissions are best-effort — all tabs are
     // rendered unconditionally and panels surface forbidden API responses.
     const links = screen.getAllByRole('link');
     const tabLinks = links.filter((l) =>
-      /services|peers|children|migrations|scaling|health|deploy|service discovery/i.test(l.textContent ?? ''),
+      /services|peers|children|migrations|scaling|deploy|service discovery/i.test(l.textContent ?? ''),
     );
-    // 8 distinct tab links should always be present
+    // 7 distinct tab links should always be present
     const tabKeys = new Set(tabLinks.map((l) => l.getAttribute('href')));
-    expect(tabKeys.size).toBe(8);
+    expect(tabKeys.size).toBe(7);
   });
 });
