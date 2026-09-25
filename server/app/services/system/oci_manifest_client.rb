@@ -16,9 +16,11 @@ module System
   # registries hosted on the same Gitea instance accept it. No new secret
   # surface.
   #
-  # Best-effort: nil on ANY failure (no PAT, an unsplittable ref, a non-2xx,
-  # an unparseable manifest, a manifest with no layers, a network error).
-  # Callers must read nil as "not measured", never as "clean".
+  # Best-effort: #fetch returns nil on ANY failure (no PAT, an unsplittable
+  # ref, a non-2xx, an unparseable manifest, a manifest with no layers, a
+  # network error), and callers must read nil as "not measured", never as
+  # "clean". #lookup additionally tells a 404 (the tag definitively does not
+  # exist) apart from an outage.
   module OciManifestClient
     ACCEPT = [
       "application/vnd.oci.image.manifest.v1+json",
@@ -37,33 +39,52 @@ module System
       end
     end
 
+    # status:
+    #   :found       — manifest read; `manifest` is set
+    #   :not_found   — the registry answered 404: the tag definitively does not
+    #                  exist (e.g. a module never pushed). Not an outage.
+    #   :unavailable — nothing could be measured: no PAT, an unsplittable ref,
+    #                  any other non-2xx, an unusable manifest, a network error
+    Lookup = Struct.new(:status, :manifest, keyword_init: true)
+
     module_function
 
-    # @return [Manifest, nil]
+    # @return [Manifest, nil] the manifest when found; nil otherwise
     def fetch(node_module:, oci_ref:)
+      lookup(node_module: node_module, oci_ref: oci_ref).manifest
+    end
+
+    # @return [Lookup]
+    def lookup(node_module:, oci_ref:)
       m = oci_ref.to_s.match(%r{\A([^/]+)/(.+):([^:]+)\z})
-      return nil unless m
+      return unavailable unless m
 
       registry, repo, tag = m[1], m[2], m[3]
       pat = node_module.account.git_provider_credentials.where(auth_type: "personal_access_token").first&.access_token
-      return nil if pat.blank?
+      return unavailable if pat.blank?
 
       res = get_manifest(registry, repo, tag, pat)
-      return nil unless res.is_a?(Net::HTTPSuccess)
+      return Lookup.new(status: :not_found, manifest: nil) if res.is_a?(Net::HTTPNotFound)
+      return unavailable unless res.is_a?(Net::HTTPSuccess)
 
       body = res.body.to_s
       layers = Array(JSON.parse(body)["layers"])
       erofs = layers.find { |l| l["mediaType"].to_s =~ /erofs/ } || layers.first
-      return nil unless erofs
+      return unavailable unless erofs
 
-      Manifest.new(
+      Lookup.new(status: :found, manifest: Manifest.new(
         manifest_digest: res["Docker-Content-Digest"].presence || "sha256:#{Digest::SHA256.hexdigest(body)}",
         erofs_layer: erofs
-      )
+      ))
     rescue StandardError => e
       Rails.logger.warn "[OciManifestClient] #{oci_ref}: #{e.class}: #{e.message}"
-      nil
+      unavailable
     end
+
+    def unavailable
+      Lookup.new(status: :unavailable, manifest: nil)
+    end
+    private_class_method :unavailable
 
     def get_manifest(registry, repo, tag, pat)
       uri = URI("https://#{registry}/v2/#{repo}/manifests/#{tag}")

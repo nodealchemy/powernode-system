@@ -110,6 +110,45 @@ RSpec.describe System::OciManifestClient do
     end
   end
 
+  describe ".lookup" do
+    it "is :unavailable without a PAT (nothing could be measured)" do
+      expect(described_class.lookup(node_module: node_module, oci_ref: oci_ref).status).to eq(:unavailable)
+    end
+
+    context "with a PAT" do
+      before { with_pat }
+
+      it "is :found with the manifest on a 200" do
+        stub_request(:get, url).to_return(status: 200, body: manifest.to_json)
+
+        result = described_class.lookup(node_module: node_module, oci_ref: oci_ref)
+
+        expect(result.status).to eq(:found)
+        expect(result.manifest.layer_digest).to eq(erofs_digest)
+      end
+
+      it "is :not_found on a 404 — a definitive absence, not an outage" do
+        stub_request(:get, url).to_return(status: 404, body: { errors: [ { code: "MANIFEST_UNKNOWN" } ] }.to_json)
+
+        result = described_class.lookup(node_module: node_module, oci_ref: oci_ref)
+
+        expect(result.status).to eq(:not_found)
+        expect(result.manifest).to be_nil
+      end
+
+      it "is :unavailable on a 5xx, a 401 or a timeout" do
+        stub_request(:get, url).to_return(status: 503)
+        expect(described_class.lookup(node_module: node_module, oci_ref: oci_ref).status).to eq(:unavailable)
+
+        stub_request(:get, url).to_return(status: 401)
+        expect(described_class.lookup(node_module: node_module, oci_ref: oci_ref).status).to eq(:unavailable)
+
+        stub_request(:get, url).to_timeout
+        expect(described_class.lookup(node_module: node_module, oci_ref: oci_ref).status).to eq(:unavailable)
+      end
+    end
+  end
+
   describe "OciLayerDigestFetcher on top of it" do
     before { with_pat }
 

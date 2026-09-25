@@ -70,9 +70,21 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
     "registry.example.com/powernode/#{node_module.name}:#{tag}"
   end
 
-  # { oci_ref => Manifest|nil }; any ref not listed reads as unmeasured.
-  def stub_registry(map)
+  # { oci_ref => Manifest }; a ref in not_found reads as a definitive 404,
+  # any other unlisted ref as unmeasured (registry unavailable).
+  # Callers pass the map brace-less (string keys), which Ruby collects into **refs.
+  def stub_registry(map = {}, not_found: [], **refs)
+    map = map.merge(refs)
     allow(::System::OciManifestClient).to receive(:fetch) { |oci_ref:, **| map[oci_ref] }
+    allow(::System::OciManifestClient).to receive(:lookup) do |oci_ref:, **|
+      if map[oci_ref]
+        System::OciManifestClient::Lookup.new(status: :found, manifest: map[oci_ref])
+      elsif not_found.include?(oci_ref)
+        System::OciManifestClient::Lookup.new(status: :not_found, manifest: nil)
+      else
+        System::OciManifestClient::Lookup.new(status: :unavailable, manifest: nil)
+      end
+    end
   end
 
   def build_batch(modules: [ mod ], shadow: false, trigger: "manual", selection: nil)
@@ -128,11 +140,11 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
 
     it "is read outside the batch's advisory lock" do
       lock_counts = []
-      allow(::System::OciManifestClient).to receive(:fetch) do
+      allow(::System::OciManifestClient).to receive(:lookup) do
         lock_counts << ActiveRecord::Base.connection.select_value(
           "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()"
         ).to_i
-        nil
+        System::OciManifestClient::Lookup.new(status: :unavailable, manifest: nil)
       end
 
       dispatch_batch
@@ -151,7 +163,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
 
       expect(batch.metadata.dig("modules", other.name, "state")).to eq("queued")
       expect(batch.metadata.dig("modules", other.name)).not_to have_key("pre_dispatch_latest")
-      expect(::System::OciManifestClient).not_to have_received(:fetch).with(hash_including(oci_ref: ref(other, "latest")))
+      expect(::System::OciManifestClient).not_to have_received(:lookup).with(hash_including(oci_ref: ref(other, "latest")))
 
       # The first build finishes (as a failure, to keep this about dispatch), freeing the one slot.
       task = System::Task.find_by(account: account, command: "ci.module_build")
@@ -170,8 +182,8 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
       stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer))
       batch = dispatch_batch
 
-      allow(::System::OciManifestClient).to receive(:fetch).and_return(manifest(fresh_manifest, fresh_layer))
-      expect(::System::OciManifestClient).not_to receive(:fetch).with(hash_including(oci_ref: ref(mod, "latest")))
+      stub_registry(ref(mod, "latest") => manifest(fresh_manifest, fresh_layer))
+      expect(::System::OciManifestClient).not_to receive(:lookup).with(hash_including(oci_ref: ref(mod, "latest")))
       described_class.dispatch!(batch: batch)
       described_class.advance!(batch: batch.reload)
 
@@ -200,7 +212,34 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
       orchestrator = described_class.new(batch: build_batch(trigger: "package"))
 
       expect(orchestrator.send(:prefetch_latest_digests)).to eq({})
-      expect(::System::OciManifestClient).not_to have_received(:fetch)
+      expect(::System::OciManifestClient).not_to have_received(:lookup)
+    end
+
+    it "records a 404 :latest as a definitive absence and keeps reading the next module" do
+      other = create(:system_node_module, account: account, name: "zz-other")
+      stub_registry({ ref(other, "latest") => manifest(fresh_manifest, fresh_layer) },
+                    not_found: [ ref(mod, "latest") ])
+      seed_pool_member
+
+      batch = dispatch_batch(modules: [ mod, other ])
+
+      first = batch.metadata.dig("modules", mod.name)
+      expect(first).to include("pre_dispatch_latest" => nil, "pre_dispatch_latest_reason" => "not_found")
+      expect(first).not_to have_key("pre_dispatch_latest_unresolved")
+      expect(batch.metadata.dig("modules", other.name, "pre_dispatch_latest"))
+        .to eq("manifest_digest" => fresh_manifest, "layer_digest" => fresh_layer)
+    end
+
+    it "stops the pass at an unavailable registry: later modules are not read, and are recorded unmeasured" do
+      other = create(:system_node_module, account: account, name: "zz-other")
+      stub_registry({ ref(other, "latest") => manifest(fresh_manifest, fresh_layer) })
+      seed_pool_member
+
+      batch = dispatch_batch(modules: [ mod, other ])
+
+      expect(::System::OciManifestClient).not_to have_received(:lookup).with(hash_including(oci_ref: ref(other, "latest")))
+      expect(batch.metadata.dig("modules", mod.name, "pre_dispatch_latest_unresolved")).to be true
+      expect(batch.metadata.dig("modules", other.name, "pre_dispatch_latest_unresolved")).to be true
     end
   end
 
@@ -272,7 +311,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
       expect(batch.reload.status).to eq("partial")
     end
 
-    it "in a mixed batch, a fresh sibling still promotes: the batch completes and nothing is held" do
+    it "in a mixed batch, a no-op HOLDS the fresh siblings' deferred promotions (batch-atomic), yet completes" do
       other = create(:system_node_module, account: account, name: "zz-other")
       stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
                     ref(mod, "abc1234") => manifest(latest_manifest, stale_layer),
@@ -286,6 +325,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
       # The fresh sibling publishes into the batch's deferred set, as
       # ModulePublicationProcessor does for a multi-module batch.
       fresh_version = nil
+      other_previous = other.current_version_id
       expect(System::ModuleSigningService).to receive(:sign!).once
         .and_return(System::ModuleSigningService::Result.new(ok?: true, oci_ref: "x", digest: "d"))
       expect(System::ModulePublicationProcessor).to receive(:process!).once
@@ -300,10 +340,43 @@ RSpec.describe System::NativeModuleBuildOrchestrator, "stale re-tag guard" do
       expect(result.succeeded).to eq(2)
       expect(batch.reload.status).to eq("complete")
       expect(batch.metadata.dig("modules", mod.name, "outcome")).to eq("skipped_stale_latest")
-      expect(batch.metadata.dig("modules", other.name, "outcome")).to be_nil
-      expect(other.reload.current_version_id).to eq(fresh_version.id)
+      # Promoting `other` alone would put it live against `mod`'s old version:
+      # exactly the skew batch-atomic promotion exists to prevent.
+      expect(other.reload.current_version_id).to eq(other_previous)
+      expect(fresh_version.reload.deferred_promotion_batch_id).to eq(batch.id)
       expect(mod.reload.current_version_id).to eq(current_version.id)
+      held = events.find { |e| e[:kind] == "system.module_promotions_held" }
+      expect(held).to be_present
+      expect(held[:payload][:reason]).to include(mod.name, "no-op")
+      expect(held[:payload][:modules]).to eq([ other.name ])
+    end
+
+    it "a batch whose only entries are no-ops completes with nothing deferred and nothing held, and says so" do
+      other = create(:system_node_module, account: account, name: "zz-other")
+      version_with(stale_layer, number: 5, tag: "0ld0ld0", node_module: other)
+      stub_registry(ref(mod, "latest") => manifest(latest_manifest, stale_layer),
+                    ref(mod, "abc1234") => manifest(latest_manifest, stale_layer),
+                    ref(other, "abc1234") => manifest(fresh_manifest, stale_layer))
+      events = capture_events
+      seed_pool_member
+      batch = dispatch_batch(modules: [ mod, other ])
+      complete_with(latest_manifest, slug: mod.name)
+      complete_with(fresh_manifest, slug: other.name)
+      expect_no_publish
+
+      described_class.advance!(batch: batch)
+
+      batch.reload
+      expect(batch.status).to eq("complete")
+      expect(System::NodeModuleVersion.where(deferred_promotion_batch_id: batch.id)).to be_empty
       expect(events.map { |e| e[:kind] }).not_to include("system.module_promotions_held")
+      expect(batch.metadata).to include("noop_count" => 2, "noop_modules" => [ other.name, mod.name ].sort)
+
+      summary = System::ModuleBuildBatchSerializer.new(batch).as_summary
+      expect(summary).to include(noop_count: 2, noop_modules: [ other.name, mod.name ].sort)
+      tool_payload = Ai::Tools::SystemFleetTool.new(account: account, internal: true)
+                                               .send(:serialize_module_build_batch, batch)
+      expect(tool_payload).to include(noop_count: 2, noop_modules: [ other.name, mod.name ].sort)
     end
 
     it "allows a skip whose :latest IS the current version (a byte-identical republish)" do

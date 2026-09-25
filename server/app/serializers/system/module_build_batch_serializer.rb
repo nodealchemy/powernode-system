@@ -39,6 +39,10 @@ module System
         active:           @batch.active?,
         finished:         @batch.finished?,
         package_context:  package_context_summary,
+        # No-op skips (a stale re-tag published nothing): a `complete` batch
+        # with noop_count == planned_count shipped nothing at all.
+        noop_count:       @batch.metadata["noop_count"].to_i,
+        noop_modules:     Array(@batch.metadata["noop_modules"]),
         created_at:       @batch.created_at,
         updated_at:       @batch.updated_at
       }

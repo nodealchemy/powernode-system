@@ -365,7 +365,17 @@ module System
     end
 
     def save_modules_state!(modules)
-      @batch.update!(metadata: @batch.metadata.merge("modules" => modules))
+      metadata = @batch.metadata.merge("modules" => modules)
+      noop = noop_module_names(modules)
+      # Batch-level: a batch can reach `complete` having shipped nothing, and
+      # this is what says so. Absent until a module is a no-op.
+      metadata.merge!("noop_count" => noop.size, "noop_modules" => noop) if noop.any?
+      @batch.update!(metadata: metadata)
+    end
+
+    def noop_module_names(modules)
+      modules.values.select { |e| e.is_a?(::Hash) && NOOP_OUTCOMES.include?(e["outcome"]) }
+             .map { |e| e["module"].to_s }.uniq.sort
     end
 
     def count_state(modules, state)
@@ -1090,7 +1100,17 @@ module System
       if states.all? { |s| s == "succeeded" }
         walk_to_publishing!
         @batch.complete! if @batch.may_complete?
-        release_deferred_promotions!
+        noop = noop_module_names(modules)
+        if noop.any? && deferred_versions.exists?
+          # A no-op skip leaves its module on its CURRENT version, so releasing
+          # the siblings would put them live against it — the core+extension
+          # skew this holdback exists to prevent. The batch still completes
+          # (nothing failed), so no later batch is wedged.
+          hold_deferred_promotions!("#{noop.join(', ')} was a no-op skip left on its current version " \
+                                    "(#{NOOP_OUTCOMES.join('/')}); promoting the rest alone would skew the batch")
+        else
+          release_deferred_promotions!
+        end
       elsif states.any? { |s| s == "succeeded" }
         walk_to_publishing!
         @batch.complete_partially! if @batch.may_complete_partially?
@@ -1315,8 +1335,10 @@ module System
     # not hold the lock (or an MCP dispatch call) for N modules x the timeout.
     # Only as many as the concurrency cap can dispatch are read, so a module
     # queued behind the cap is read when its own turn comes, closer to its
-    # build. The first unreadable ref stops the pass: the rest would wait out
-    # the same timeout, and every one of them is then recorded unmeasured.
+    # build. A 404 is a definitive answer (a module never pushed has no
+    # :latest) and the pass goes on; the first UNAVAILABLE read stops it — the
+    # rest would wait out the same timeout — and those modules are recorded
+    # unmeasured.
     # Package batches are exempt: their build script has no skip or re-tag arm.
     def prefetch_latest_digests
       return {} if package_batch? || @batch.cancelled?
@@ -1326,10 +1348,10 @@ module System
       end
       pending.first(max_concurrent_builders).each_with_object({}) do |(key, entry), memo|
         node_module = find_node_module(entry["module"])
-        memo[key] = node_module && ::System::OciManifestClient.fetch(
+        memo[key] = node_module && ::System::OciManifestClient.lookup(
           node_module: node_module, oci_ref: full_oci_ref(node_module, "latest")
         )
-        break memo if memo[key].nil?
+        break memo unless memo[key] && memo[key].status != :unavailable
       end
     rescue StandardError => e
       Rails.logger.warn("[NativeModuleBuildOrchestrator] :latest prefetch failed: #{e.class}: #{e.message}")
@@ -1342,10 +1364,16 @@ module System
       return if package_batch?
       return if entry.key?("pre_dispatch_latest") || entry["pre_dispatch_latest_unresolved"]
 
-      latest = (@prefetched_latest || {})[key]
-      if latest&.manifest_digest.present?
+      lookup = (@prefetched_latest || {})[key]
+      case lookup&.status
+      when :found
+        latest = lookup.manifest
         entry["pre_dispatch_latest"] = { "manifest_digest" => latest.manifest_digest,
                                          "layer_digest" => latest.layer_digest }
+      when :not_found
+        # Measured, and absent: there is no :latest a skip could re-tag.
+        entry["pre_dispatch_latest"] = nil
+        entry["pre_dispatch_latest_reason"] = "not_found"
       else
         entry["pre_dispatch_latest_unresolved"] = true
         report_latest_unresolved_once!(entry["module"])
@@ -1404,6 +1432,7 @@ module System
 
     STALE_LATEST_OUTCOME = "skipped_stale_latest"
     HELD_VERSION_OUTCOME = "skipped_held_version"
+    NOOP_OUTCOMES = [ STALE_LATEST_OUTCOME, HELD_VERSION_OUTCOME ].freeze
     STALE_RETAG_REMEDY =
       "A skip keeps re-tagging :latest until the module's declared build inputs change, so a new artifact " \
       "needs a real input change. To run the existing artifact deliberately, promote its version with " \

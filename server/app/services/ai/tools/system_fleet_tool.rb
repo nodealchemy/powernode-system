@@ -9008,6 +9008,8 @@ module Ai
           planned_count: batch.planned_count,
           succeeded_count: batch.succeeded_count,
           failed_count: batch.failed_count,
+          noop_count: (batch.metadata || {})["noop_count"].to_i,
+          noop_modules: Array((batch.metadata || {})["noop_modules"]),
           error_message: batch.error_message,
           cancelled_at: batch.cancelled_at&.iso8601
         }
