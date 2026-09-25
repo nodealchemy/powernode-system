@@ -15,7 +15,8 @@ One-time re-image of the ops-hub onto the smooth-upgrade-capable disk image, so 
 **every future ops-hub boot-image upgrade is in-place** (agent-driven `upgrade_boot_image`
 + A/B systemd-boot rollback, Inc 1–4) rather than a re-provision. The ops-hub's *current*
 agent predates Inc 2, so it cannot self-upgrade — this manual first hop is the bridge;
-after it, the ops-hub upgrades like any other fleet node.
+after it, the ops-hub upgrades in place, driven by an operator on the node (see
+[After the first hop](#after-the-first-hop)), never by the fleet reconciler.
 
 ## Target parameters (verified 2026-07-11)
 
@@ -132,10 +133,51 @@ If the node fails to boot, enroll, or the new slot doesn't bless:
 
 ## After the first hop
 
-The ops-hub now runs an Inc-1–4 image. All subsequent boot-image upgrades are **in-place**:
-the drift sensor sees it lag a future promote, the Inc 4 rollout (require-approval) or a
-direct `upgrade_boot_image` dispatches the agent-side UKI upgrade with cosign verification
-and A/B rollback — no re-provision, `/persist` preserved automatically. Inc 5 is a one-time
-bridge, not a recurring procedure.
+The ops-hub now runs an Inc-1–4 image. All subsequent boot-image upgrades are **in-place**
+(agent-side UKI upgrade, cosign verification, A/B rollback, `/persist` preserved), but the
+platform will NOT dispatch them to this node. Once `self_hosting_node_id` names the ops-hub
+node (INV-1: no self-management):
+
+- a direct `upgrade_boot_image` is refused by `System::BootImage::UpgradeDispatcher` before
+  anything is queued ("it is this control plane's own hosting node");
+- the boot-image drift rollout lists the node under `self_managed_excluded` and skips it.
+
+The upgrade is an **operator action on the node itself**, with the same agent code the
+dispatched task runs (`bootupgrade.Apply`):
+
+1. **Collect the pins** from the promoted `DiskImagePublication` of the ops-hub's node
+   platform (the one whose `git_sha` equals the platform's `disk_image_git_sha`), read on
+   the control plane: `git_sha`, `uki_sha256`, and `uki_cosign_bundle` (stored
+   base64-encoded). The cosign public key is the platform's `POWERNODE_COSIGN_PUBLIC_KEY`
+   (or the file `POWERNODE_COSIGN_PUBLIC_KEY_FILE` names). Treat these as you would any
+   signing material: public key and signature bundle only, never a private key.
+2. **On the ops-hub, as root**, write the key and the DECODED bundle to files (the CLI
+   base64-encodes the bundle file itself, so pass it raw):
+
+   ```bash
+   echo '<uki_cosign_bundle>' | base64 -d > /root/uki.bundle
+   cat > /root/cosign.pub   # paste the public key, then Ctrl-D
+   powernode-agent upgrade-boot-image \
+     --target-git-sha <git_sha> \
+     --uki-sha256 <uki_sha256> \
+     --cosign-public-key-file /root/cosign.pub \
+     --cosign-bundle-file /root/uki.bundle \
+     --reboot
+   ```
+
+   `--target-git-sha` is not informational: the post-reboot confirm compares the booted
+   sha against it, and a wrong value abandons the upgrade (silent revert at the next
+   reboot). The UKI is pulled from `/api/v1/system/node_api/boot_image/download`, scoped
+   to the node's own platform, and sha256- plus cosign-verified before anything is written.
+   Without `--reboot` it writes and arms the slot but stays on the current image.
+3. **Rollback is automatic.** The new UKI goes to the INACTIVE A/B slot and is armed as a
+   one-shot next boot. It is blessed only when that boot reaches a healthy agent
+   heartbeat; if it does not, the one-shot is consumed and the next boot falls through to
+   the still-default old slot. Allow for the Rails 502 window (~30s) after the reboot.
+4. **Verify** the node's `booted_image_git_sha` reads `<git_sha>` and the services are
+   active, discovering the unit names rather than guessing them
+   (`systemctl list-units 'powernode-*' --no-pager`).
+
+Inc 5 is a one-time bridge, not a recurring procedure.
 
 _Draft prepared 2026-07-11. Verify VM/partition specifics on `<pve-host>` before executing._
