@@ -1,0 +1,42 @@
+# Shared-model registry for this extension (read by core's
+# server/spec/lint/shared_model_controllers_spec.rb, P2).
+#
+# internal_controller_namespaces: controllers under these namespaces serve
+# service-token worker traffic, not users, so their model references do not
+# count toward "shared" (core's own equivalent is Api::V1::Internal::*).
+internal_controller_namespaces:
+  - Api::V1::System::WorkerApi
+
+shared_models:
+  Sdwan::AccessGrant: lookup
+  Sdwan::IpfixCollector: lookup
+  Sdwan::Network: served_twice
+  Sdwan::Peer: served_twice
+  Sdwan::UserDevice: lookup
+  System::AcmeCertificate: served_twice
+  System::AcmeDnsCredential: served_twice
+  System::CiRunnerLease: lookup
+  System::ClaudeCodeCredential: served_twice
+  System::DiskImageWebhook: lookup
+  System::Federation::ServiceOffering: lookup
+  System::Federation::ServiceSubscription: lookup
+  System::FederationCapability: served_twice
+  System::FederationGrant: served_twice
+  System::FederationNetworkBridge: served_twice
+  System::FederationPeer: served_twice
+  System::FleetEvent: served_twice
+  System::Migration: served_twice
+  System::ModuleBuildBatch: served_twice
+  System::NodeInstance: served_twice
+  System::NodeModule: served_twice
+  System::NodeModuleAssignment: lookup
+  System::NodeModuleVersion: lookup
+  System::NodeScript: served_twice
+  System::Package: lookup
+  System::PackageRepository: lookup
+  System::PlatformDeployment: lookup
+  System::Provider: served_twice
+  System::StorageCredential: lookup
+  System::StorageMigration: served_twice
+  System::Task: served_twice
+  System::TemplateModule: lookup

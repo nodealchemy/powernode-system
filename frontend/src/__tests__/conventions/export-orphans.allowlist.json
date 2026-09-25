@@ -1,0 +1,42 @@
+[
+  {
+    "path": "extensions/system/frontend/src/features/system/components/fleet/signalsFilterColumns.ts",
+    "name": "SignalFilterColumn",
+    "reason": "unused exported type; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/components/shared/StatusBadge.coverage.ts",
+    "name": "STATUS_UNION_COVERAGE",
+    "reason": "compile-time exhaustiveness assertion; tsc is its consumer"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/hooks/useResourceList.ts",
+    "name": "usePaginatedResourceList",
+    "reason": "unused export; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/services/api/types.ts",
+    "name": "PaginatedResult",
+    "reason": "unused exported type; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/types/sdwan.types.ts",
+    "name": "SdwanBgpConfig",
+    "reason": "unused exported type; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/types/sdwan.types.ts",
+    "name": "SdwanRoutingSummary",
+    "reason": "unused exported type; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/features/system/types/sdwan.types.ts",
+    "name": "SdwanSubnetAdvertisement",
+    "reason": "unused exported type; swept by the export-orphan offers"
+  },
+  {
+    "path": "extensions/system/frontend/src/pages/app/system/InstancePoolsPage.tsx",
+    "name": "__test__",
+    "reason": "pending deletion (operator-confirm)"
+  }
+]
