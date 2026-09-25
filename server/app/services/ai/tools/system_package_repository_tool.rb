@@ -42,22 +42,53 @@ module Ai
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
-      declare_action "system_create_module_from_package", mutating: true
+      declare_action "system_create_module_from_package", mutating: true,
+                     returns: "top_level_module, dependency_modules and recommends_modules (id, name, auto_generated, " \
+                              "public), dependencies_created, build_dispatches and warnings",
+                     refuses: [ "no accessible repository (this account's or a shared one) has that id", "category_id names no category in this account",
+                                "materialization fails or a module name conflicts" ],
+                     see_also: { "system_resolve_package_dependencies" => "previewing the closure without writes" }
       declare_action "system_create_package_repository", mutating: true
-      declare_action "system_delete_package_repository", mutating: true, destructive: true
+      declare_action "system_delete_package_repository", mutating: true, destructive: true,
+                     refuses: [ "no accessible repository (this account's or a shared one) has that id", "the repository is shared and the caller lacks manage_shared",
+                                "package module links still reference the repository" ]
       declare_action "system_discover_packages", mutating: false
-      declare_action "system_get_package", mutating: false
-      declare_action "system_get_package_repository", mutating: false
-      declare_action "system_link_repository_platform", mutating: true
-      declare_action "system_list_package_module_links", mutating: false
+      declare_action "system_get_package", mutating: false,
+                     returns: "package with description, depends, recommends, provides, conflicts, maintainer and homepage",
+                     refuses: "the package does not exist or its repository is not accessible"
+      declare_action "system_get_package_repository", mutating: false,
+                     returns: "package_repository with sync_status, last_synced_at, package_count, apt_config, " \
+                              "rpm_config and linked node_platforms",
+                     refuses: "no accessible repository (this account's or a shared one) has that id"
+      declare_action "system_link_repository_platform", mutating: true,
+                     returns: "repository_id, node_platform_id, linked: true, and idempotent: true when the link already existed",
+                     refuses: [ "the repository or platform is not found", "the repository is shared and the caller lacks manage_shared",
+                                "an account-scoped repository is linked to another account's platform" ],
+                     see_also: { "system_unlink_repository_platform" => "removing a link" }
+      declare_action "system_list_package_module_links", mutating: false, paginated: true,
+                     returns: "links for this account's modules: node_module_id, package_name, package_version, " \
+                              "architecture, repository_id, auto_generated, recommends_chosen and last_synced_at"
       declare_action "system_list_package_repositories", mutating: false
-      declare_action "system_refresh_package_module", mutating: true
-      declare_action "system_resolve_package_dependencies", mutating: false
+      declare_action "system_refresh_package_module", mutating: true,
+                     returns: "enqueued: true and package_module_link_id; the refresh runs in the background",
+                     refuses: [ "the link is not found in this account", "the refresh job could not be enqueued" ]
+      declare_action "system_resolve_package_dependencies", mutating: false,
+                     returns: "required_packages, required_edges, recommends_candidates, suggests_candidates, " \
+                              "alternatives_chosen, warnings and errors",
+                     refuses: "no accessible repository (this account's or a shared one) has that id",
+                     see_also: { "system_create_module_from_package" => "materializing the package as modules" }
       declare_action "system_search_packages", mutating: false
       declare_action "system_suggest_architectures_for_fleet", mutating: false
-      declare_action "system_sync_package_repository", mutating: true
-      declare_action "system_unlink_repository_platform", mutating: true
-      declare_action "system_update_package_repository", mutating: true
+      declare_action "system_sync_package_repository", mutating: true,
+                     returns: "queued: true, repository_id and the current sync status",
+                     refuses: [ "no accessible repository (this account's or a shared one) has that id", "force is set on a shared repository and the caller lacks manage_shared" ],
+                     see_also: { "system_get_package_repository" => "polling sync_status" }
+      declare_action "system_unlink_repository_platform", mutating: true,
+                     returns: "repository_id, node_platform_id, linked: false and removed, the number of links deleted",
+                     refuses: [ "no accessible repository (this account's or a shared one) has that id", "the repository is shared and the caller lacks manage_shared" ]
+      declare_action "system_update_package_repository", mutating: true,
+                     returns: "the updated package_repository",
+                     refuses: [ "no accessible repository (this account's or a shared one) has that id", "the repository is shared and the caller lacks manage_shared", "the attributes fail validation" ]
 
       # Generic top-level definition consumed by BaseTool#validate_params!.
       # Per-action schemas live in #action_definitions; this advertises the
@@ -121,7 +152,7 @@ module Ai
             }
           },
           "system_delete_package_repository" => {
-            description: "Delete a package repository (soft-delete linked Package metadata)",
+            description: "Delete a package repository together with its Package rows and platform links",
             parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to delete" } }
           },
           "system_sync_package_repository" => {
