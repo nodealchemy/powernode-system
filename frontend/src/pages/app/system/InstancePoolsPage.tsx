@@ -495,4 +495,3 @@ const InstancePoolsPage: React.FC = () => {
 
 export default InstancePoolsPage;
 
-export const __test__ = { instancePoolsApi };

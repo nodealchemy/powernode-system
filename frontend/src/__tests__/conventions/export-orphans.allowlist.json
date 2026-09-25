@@ -33,10 +33,5 @@
     "path": "extensions/system/frontend/src/features/system/types/sdwan.types.ts",
     "name": "SdwanSubnetAdvertisement",
     "reason": "unused exported type; swept by the export-orphan offers"
-  },
-  {
-    "path": "extensions/system/frontend/src/pages/app/system/InstancePoolsPage.tsx",
-    "name": "__test__",
-    "reason": "pending deletion (operator-confirm)"
   }
 ]
