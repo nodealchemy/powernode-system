@@ -24,14 +24,17 @@ module Ai
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
-      declare_action "system_blast_radius", mutating: false
+      declare_action "system_blast_radius", mutating: false,
+                     returns: "target (how the node resolved and its instance_ids), dependents per category with a count, " \
+                              "total_dependents and an environments breakdown",
+                     refuses: "node is blank or matches no node, instance or cluster-node token (fuzzy_candidates are then returned)"
 
       def self.definition
         {
           name: "system_blast_radius",
-          description: "Infrastructure blast-radius: given a fleet node (System::Node name, " \
-                       "System::NodeInstance name, or a bare provider cluster-node token like " \
-                       "\"pve1\"/\"pve2\"), derive what currently depends on it — SDWAN peers/VIPs/" \
+          description: "List what currently depends on a fleet node, as its infrastructure blast radius. " \
+                       "The node may be a System::Node name, a System::NodeInstance name, or a bare provider " \
+                       "cluster-node token like \"pve1\"/\"pve2\". Dependents include SDWAN peers/VIPs/" \
                        "services/port-mappings, instance-pool membership, direct + cross-node " \
                        "storage assignments, and other node_instance_id FK dependents.",
           parameters: {
