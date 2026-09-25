@@ -653,21 +653,21 @@ module Ai
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
-      declare_action "system_abort_task", mutating: true
+      declare_action "system_abort_task", mutating: true, returns: "aborted: true and the task", refuses: "the task has already left running", see_also: { "system_cancel_task" => "a task that has not started" }
       declare_action "system_acquire_pooled_instance", mutating: true
-      declare_action "system_agent_fleet_status", mutating: false
-      declare_action "system_approve_storage_migration", mutating: true
+      declare_action "system_agent_fleet_status", mutating: false, refuses: "no agent_fleet mission has that id"
+      declare_action "system_approve_storage_migration", mutating: true, returns: "storage_migration, full record", refuses: "the migration cannot move to approved from its current status"
       declare_action "system_assign_module_to_node", mutating: true
       declare_action "system_assign_module_to_template", mutating: true
       declare_action "system_attach_volume", mutating: true
-      declare_action "system_attribute_failure", mutating: false
+      declare_action "system_attribute_failure", mutating: false, returns: "the skill executor's ranked candidates"
       declare_action "system_authorize_peer_call", mutating: false
       declare_action "system_cancel_module_build_batch", mutating: true
-      declare_action "system_cancel_storage_migration", mutating: true
-      declare_action "system_cancel_task", mutating: true
+      declare_action "system_cancel_storage_migration", mutating: true, returns: "storage_migration, full record", refuses: "the migration is terminal or its sync has started"
+      declare_action "system_cancel_task", mutating: true, returns: "cancelled: true and the task", refuses: "the task is running or finished", see_also: { "system_abort_task" => "stopping a running task" }
       declare_action "system_cleanup_storage_migration", mutating: true
       declare_action "system_clone_template", mutating: true
-      declare_action "system_compliance_snapshot", mutating: false
+      declare_action "system_compliance_snapshot", mutating: false, returns: "snapshot and generated_at"
       declare_action "system_compose_preview_template", mutating: false
       # IMP-0467eee9fc57 — cordon-only (unschedulable) mode, approval-gated
       # under system.instance_cordon (operator direction: require_approval
@@ -715,14 +715,14 @@ module Ai
                      gate_context: :create_instance_pool_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_create_module", mutating: true
-      declare_action "system_create_node", mutating: true
+      declare_action "system_create_node", mutating: true, returns: "node, the full record"
       declare_action "system_create_provider", mutating: true
       declare_action "system_create_provider_connection", mutating: true
-      declare_action "system_create_provider_instance_type", mutating: true
-      declare_action "system_create_provider_region", mutating: true
+      declare_action "system_create_provider_instance_type", mutating: true, returns: "instance_type", refuses: "the record fails validation, with the messages"
+      declare_action "system_create_provider_region", mutating: true, returns: "region", refuses: "the record fails validation, with the messages"
       declare_action "system_create_template", mutating: true
       declare_action "system_create_volume", mutating: true
-      declare_action "system_cve_runbook_generate", mutating: true
+      declare_action "system_cve_runbook_generate", mutating: true, returns: "the markdown runbook the skill executor produced"
       declare_action "system_cve_triage", mutating: true
       declare_action "system_delete_cve", mutating: true, destructive: true
       declare_action "system_delete_instance_pool", mutating: true, destructive: true
@@ -775,7 +775,7 @@ module Ai
       # context resolves the row under the account BEFORE parking, so an
       # unknown or foreign id keeps its inline error instead of becoming an
       # approval that could only ever fail.
-      declare_action "system_snapshot_volume", mutating: true
+      declare_action "system_snapshot_volume", mutating: true, returns: "snapshot", refuses: "the volume's status does not allow a snapshot, or its provider has no snapshot primitive"
       declare_action "system_list_volume_snapshots", mutating: false
       declare_action "system_delete_volume_snapshot",
                      mutating: true,
@@ -804,24 +804,24 @@ module Ai
                      on_proceed: :deferred_tool_call_result
       declare_action "system_drain_instance", mutating: true, destructive: true
       declare_action "system_drain_instance_pool", mutating: true, destructive: true
-      declare_action "system_drift_report", mutating: false
-      declare_action "system_find_node_with_gpu", mutating: false
-      declare_action "system_get_cve", mutating: false
+      declare_action "system_drift_report", mutating: false, returns: "drift, the four lists with their counts, and last_heartbeat_at"
+      declare_action "system_find_node_with_gpu", mutating: false, returns: "instances and count; not paginated"
+      declare_action "system_get_cve", mutating: false, returns: "cve", refuses: "no CVE has that id"
       declare_action "system_get_cve_exposure", mutating: false
-      declare_action "system_get_instance", mutating: false
-      declare_action "system_get_instance_pool", mutating: false
-      declare_action "system_get_module", mutating: false
-      declare_action "system_get_module_build_batch", mutating: false
-      declare_action "system_get_node", mutating: false
-      declare_action "system_get_provider", mutating: false
-      declare_action "system_get_provider_connection", mutating: false
-      declare_action "system_get_silent_instances", mutating: false
+      declare_action "system_get_instance", mutating: false, returns: "instance, the full record with status and metrics"
+      declare_action "system_get_instance_pool", mutating: false, returns: "pool, its summary counts and at most 50 members ordered by pool_state"
+      declare_action "system_get_module", mutating: false, returns: "node_module with its current_version and assignments"
+      declare_action "system_get_module_build_batch", mutating: false, returns: "module_build_batch, the detail view", refuses: "no batch has that id"
+      declare_action "system_get_node", mutating: false, returns: "node, the full record"
+      declare_action "system_get_provider", mutating: false, returns: "provider with its full config hash"
+      declare_action "system_get_provider_connection", mutating: false, returns: "provider_connection, non-secret config only"
+      declare_action "system_get_silent_instances", mutating: false, limit: 200, returns: "silent_count (uncapped), threshold_seconds, cutoff and instances, oldest heartbeat first"
       declare_action "system_get_sensor_config", mutating: false
-      declare_action "system_get_storage_migration", mutating: false
-      declare_action "system_get_storage_recommendations", mutating: false
+      declare_action "system_get_storage_migration", mutating: false, returns: "storage_migration, full record", refuses: "no migration has that id"
+      declare_action "system_get_storage_recommendations", mutating: false, returns: "the recommended mount points and size_gb per stateful role"
       declare_action "system_get_task", mutating: false
-      declare_action "system_get_template", mutating: false
-      declare_action "system_get_volume", mutating: false
+      declare_action "system_get_template", mutating: false, returns: "template with its assigned modules"
+      declare_action "system_get_volume", mutating: false, returns: "volume, the full record"
       # IMP-0b4f18ae4384 — THE ONE GITOPS WRITE THAT REACHES LIVE FLEET STATE.
       # System::Gitops::ApplyService turns an approved Ai::AgentProposal into
       # template/module/assignment/pool/platform rows. The seeded
@@ -853,7 +853,7 @@ module Ai
                      gate_context: :gitops_apply_proposal_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_gitops_get_drift_report", mutating: false
-      declare_action "system_gitops_get_sync_run", mutating: false
+      declare_action "system_gitops_get_sync_run", mutating: false, returns: "sync_run with status, timings, diff_count, proposal_ids, synced_revision and diff_summary"
       declare_action "system_gitops_register_repository",
                      mutating: true,
                      action_category: GITOPS_REGISTER_REPOSITORY_CATEGORY,
@@ -863,38 +863,38 @@ module Ai
       declare_action "system_gitops_sync_repository", mutating: true
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
-      declare_action "system_inspect_correlation", mutating: false
+      declare_action "system_inspect_correlation", mutating: false, returns: "correlation_id, events in emission order, count and duration_seconds", refuses: "correlation_id is blank"
       declare_action "system_instance_hold", mutating: true, destructive: true
-      declare_action "system_instance_hold_status", mutating: false
-      declare_action "system_instance_release_hold", mutating: true, destructive: true
-      declare_action "system_launch_agent_fleet", mutating: true
-      declare_action "system_lease_ci_runner", mutating: true
-      declare_action "system_list_ci_runner_leases", mutating: false
-      declare_action "system_list_ci_workers", mutating: false
-      declare_action "system_list_disk_image_publications", mutating: false
-      declare_action "system_list_disk_image_webhooks", mutating: false
-      declare_action "system_list_instance_pools", mutating: false
-      declare_action "system_list_instance_types_by_gpu", mutating: false
-      declare_action "system_list_instances", mutating: false
-      declare_action "system_list_isolation_tiers", mutating: false
-      declare_action "system_list_module_versions", mutating: false
-      declare_action "system_list_modules", mutating: false
+      declare_action "system_instance_hold_status", mutating: false, returns: "the recorded hold (held, expired, reason, held_by, held_at, expires_at), provider_enforced, provider_state, a summary and drift"
+      declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message"
+      declare_action "system_launch_agent_fleet", mutating: true, refuses: "there is no calling user; fleet_spec is missing; the system_agent_fleet mission template is not seeded"
+      declare_action "system_lease_ci_runner", mutating: true, returns: "ci_runner_lease", refuses: "the purpose cannot be leased by hand"
+      declare_action "system_list_ci_runner_leases", mutating: false, paginated: true
+      declare_action "system_list_ci_workers", mutating: false, paginated: true
+      declare_action "system_list_disk_image_publications", mutating: false, paginated: true
+      declare_action "system_list_disk_image_webhooks", mutating: false, paginated: true
+      declare_action "system_list_instance_pools", mutating: false, paginated: true
+      declare_action "system_list_instance_types_by_gpu", mutating: false, paginated: true
+      declare_action "system_list_instances", mutating: false, paginated: true
+      declare_action "system_list_isolation_tiers", mutating: false, returns: "tiers and the default tier"
+      declare_action "system_list_module_versions", mutating: false, paginated: true
+      declare_action "system_list_modules", mutating: false, paginated: true
       declare_action "system_list_node_module_assignments", mutating: false
-      declare_action "system_list_nodes", mutating: false
+      declare_action "system_list_nodes", mutating: false, paginated: true
       declare_action "system_list_provider_connections", mutating: false
-      declare_action "system_list_providers", mutating: false
-      declare_action "system_list_storage_migrations", mutating: false
-      declare_action "system_list_tasks", mutating: false
-      declare_action "system_list_templates", mutating: false
-      declare_action "system_list_volumes", mutating: false
-      declare_action "system_migrate_storage_component", mutating: true
+      declare_action "system_list_providers", mutating: false, paginated: true
+      declare_action "system_list_storage_migrations", mutating: false, paginated: true
+      declare_action "system_list_tasks", mutating: false, paginated: true
+      declare_action "system_list_templates", mutating: false, paginated: true
+      declare_action "system_list_volumes", mutating: false, paginated: true
+      declare_action "system_migrate_storage_component", mutating: true, returns: "storage_migration, the plan", refuses: "source and target are the same volume, or role is missing"
       declare_action "system_mint_peer_capability_token", mutating: true
-      declare_action "system_module_diff", mutating: false
+      declare_action "system_module_diff", mutating: false, returns: "unchanged, both fingerprints, and file, package and mount changes"
       declare_action "system_module_mark_canary", mutating: true
       declare_action "system_module_publication_integrity", mutating: false
       declare_action "system_module_publish_target", mutating: false
       declare_action "system_platform_maintenance", mutating: true
-      declare_action "system_platform_resilience", mutating: true
+      declare_action "system_platform_resilience", mutating: true, returns: "the skill executor's result for the op", refuses: "op is missing"
       # `mutating: true`, not false: CompositeHealthProbe#call_and_persist!
       # (System::Platform::CompositeHealthProbe) writes a PlatformHealthSnapshot
       # row on every invocation, exactly the readOnlyHint precedent
@@ -905,7 +905,7 @@ module Ai
       # This action carried `mutating: true` before the split too (as part of
       # platform_maintenance's combined declaration); the split preserves that
       # governance rather than loosening it.
-      declare_action "system_platform_health_check", mutating: true
+      declare_action "system_platform_health_check", mutating: true, returns: "the skill executor's health answer"
       # HIER-P2B-ENG — approval-gated on core's release.promote (the Release
       # Manager's require_approval row, no trust unlock). The context resolves
       # the version under the account and probes the transition BEFORE
@@ -970,12 +970,12 @@ module Ai
                      executor_class: "System::Ai::Skills::ReapInstanceExecutor",
                      gate_context: :reap_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
-      declare_action "system_reboot_instance", mutating: true, destructive: true
+      declare_action "system_reboot_instance", mutating: true, destructive: true, returns: "action and the instance, re-read"
       declare_action "system_readvance_module_build_batch", mutating: true
-      declare_action "system_recent_signals", mutating: false
+      declare_action "system_recent_signals", mutating: false, returns: "events, count and the live channel name"
       declare_action "system_recycle_pool", mutating: true, destructive: true
       declare_action "system_refresh_instance_modules", mutating: true
-      declare_action "system_release_ci_runner", mutating: true
+      declare_action "system_release_ci_runner", mutating: true, returns: "ci_runner_lease, re-read"
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
       # Acquires a warm pool member, moves the failed instance's volumes, VIPs
       # and SDWAN membership onto it, and TERMINATES NOTHING — the reap is
@@ -990,8 +990,8 @@ module Ai
                      executor_class: "System::Ai::Skills::ReplaceInstanceExecutor",
                      gate_context: :replace_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
-      declare_action "system_replenish_instance_pool", mutating: true
-      declare_action "system_report_storage_migration_progress", mutating: true
+      declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
+      declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
       # HIER-P2H — the three disk-image verbs, approval-gated on the categories
       # the Disk Image Manager seed already carries (see DISK_IMAGE_*_CATEGORY
@@ -1026,7 +1026,7 @@ module Ai
                      gate_context: :rollback_module_version_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_rotate_vault_transit_pepper", mutating: true, destructive: true
-      declare_action "system_runbook_generate", mutating: true
+      declare_action "system_runbook_generate", mutating: true, returns: "the markdown runbook the skill executor produced"
       declare_action "system_set_default_disk_image_publication",
                      mutating: true,
                      action_category: DISK_IMAGE_PROMOTE_CATEGORY,
@@ -1039,7 +1039,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :set_disk_image_retention_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_start_instance", mutating: true
+      declare_action "system_start_instance", mutating: true, returns: "action and the instance, re-read"
       declare_action "system_stop_instance", mutating: true, destructive: true
       declare_action "system_terminate_ci_worker", mutating: true, destructive: true
       declare_action "system_test_nfs_export", mutating: false
@@ -1051,8 +1051,8 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :uncordon_instance_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_unmark_module_canary", mutating: true
-      declare_action "system_update_instance", mutating: true
+      declare_action "system_unmark_module_canary", mutating: true, returns: "unmarked: true and the module id"
+      declare_action "system_update_instance", mutating: true, returns: "instance", refuses: "a config key outside the permitted set"
       # IMP-067f39468350 — the other half. `pool.update!(attrs)` over a slice
       # carrying target_size/max_size/status was the exact write
       # InstancePoolsController#update stopped doing bare: anyone holding
@@ -1084,7 +1084,7 @@ module Ai
       declare_action "system_update_sensor_config", mutating: true
       declare_action "system_update_template", mutating: true
       declare_action "system_update_template_module", mutating: true
-      declare_action "system_update_volume", mutating: true
+      declare_action "system_update_volume", mutating: true, returns: "volume, full record", refuses: "no mutable field is supplied"
       declare_action "system_upgrade_boot_image", mutating: true, destructive: true
       declare_action "system_validate_module_manifest", mutating: false
 
@@ -1284,11 +1284,7 @@ module Ai
 
           # === Instances ===
           "system_list_instances" => {
-            description: "List instances, optionally narrowed by node_id, template_id, the plane of the fleet they run on (environment), " \
-                         "or their recorded lifecycle status (status / live_only). Unfiltered by default. Each row's " \
-                         "lifecycle_status is the state the platform RECORDED, not an observation; `observed` carries what " \
-                         "was actually seen (agent heartbeat, provider power state) with observed_at and a basis of " \
-                         "measured or not_measured.",
+            description: "List instances, optionally narrowed by node_id, template_id, fleet plane (environment), or recorded lifecycle status (status / live_only). Unfiltered by default. Each row's lifecycle_status is the state the platform RECORDED, not an observation; `observed` carries what was actually seen (agent heartbeat, provider power state) with observed_at and a basis of measured or not_measured.",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only that node's instances" },
               template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" },
@@ -1342,7 +1338,7 @@ module Ai
             }
           },
           "system_deploy_inference_server" => {
-            description: "Deploy an inference runtime (ollama) onto a GPU node and make it consumable: assigns the gpu-<accelerator>-runtime + inference-ollama modules, registers an ollama Ai::Provider at the endpoint (active only once the endpoint answers a health probe — modules apply asynchronously, so re-deploy after the runtime is up to activate), and optionally publishes an SDWAN service offering. Targets a node by instance_id (must be live + GPU-capable unless force), or auto-selects via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
+            description: "Deploy an ollama inference runtime onto a GPU node and make it consumable. It assigns the gpu-<accelerator>-runtime and inference-ollama modules, registers an ollama Ai::Provider at the endpoint (active only once the endpoint answers a health probe — modules apply asynchronously, so re-deploy after the runtime is up to activate), and optionally publishes an SDWAN service offering. Targets a node by instance_id (must be live + GPU-capable unless force), or auto-selects via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
             parameters: {
               instance_id: { type: "string", required: false, description: "UUID of the target GPU NodeInstance; omit to auto-select via gpu_type/min_gpu_memory_mb" },
               gpu_type: { type: "string", required: false, description: "GPU/accelerator type to match when auto-selecting a target instance" },
@@ -1380,7 +1376,7 @@ module Ai
             }
           },
           "system_authorize_peer_call" => {
-            description: "A2A: decide whether a caller instance may invoke a skill on a target instance via agent-to-agent MCP (three-gate, default-deny: caller granted + target online/enabled + target offers skill + same account). Returns { authorized, reason }. Consulted by the on-node A2A transport before relaying a call.",
+            description: "Decide whether a caller instance may invoke a skill on a target instance over agent-to-agent MCP (A2A). The check is three-gate and default-deny: caller granted, target online and enabled and offering the skill, and both in one account. Returns { authorized, reason }. Consulted by the on-node A2A transport before relaying a call.",
             parameters: {
               caller_instance_id: { type: "string", required: true, description: "UUID of the instance attempting the A2A call" },
               target_instance_id: { type: "string", required: true, description: "UUID of the instance the skill would be invoked on" },
@@ -1388,7 +1384,7 @@ module Ai
             }
           },
           "system_launch_agent_fleet" => {
-            description: "L3: launch an agent-fleet orchestration mission — dynamically provision a fleet of agent-instances, grant them L2 (platform-MCP) + L2.5 (A2A) capabilities, delegate subtasks (hybrid coordinator + peer sub-delegation), aggregate, and reap. Creates an approval-gated Ai::Mission (mission_type: agent_fleet) bound to the system_agent_fleet template and starts it; the operator approves the review_fleet gate before any instances are provisioned. fleet_spec: { size, source('provision'|'pool'), node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[{id,skill}], delegation('central'|'a2a'|'hybrid'), reap }.",
+            description: "Launch an agent-fleet orchestration mission (L3). It provisions a fleet of agent-instances, grants them L2 (platform-MCP) and L2.5 (A2A) capabilities, delegates subtasks (hybrid coordinator plus peer sub-delegation), aggregates, and reaps. Creates an approval-gated Ai::Mission (mission_type: agent_fleet) bound to the system_agent_fleet template and starts it; the operator approves the review_fleet gate before any instances are provisioned. fleet_spec: { size, source('provision'|'pool'), node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[{id,skill}], delegation('central'|'a2a'|'hybrid'), reap }.",
             parameters: {
               fleet_spec: { type: "object", required: true, description: "Fleet orchestration spec: { size, source, node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[], delegation, reap }" },
               name: { type: "string", required: false, description: "Display name for the agent-fleet mission" },
@@ -1396,7 +1392,7 @@ module Ai
             }
           },
           "system_agent_fleet_status" => {
-            description: "L3: inspect an agent-fleet mission — returns status, current_phase, error_message, and a summary of the fleet (plan, member/assignment counts, aggregated report, per-member reap actions, reap_incomplete flag).",
+            description: "Inspect an agent-fleet mission (L3). Returns status, current_phase, error_message, and a fleet summary: plan, member and assignment counts, aggregated report, per-member reap actions, and the reap_incomplete flag.",
             parameters: {
               mission_id: { type: "string", required: true, description: "UUID of the agent-fleet Ai::Mission to inspect" }
             }
@@ -1416,7 +1412,7 @@ module Ai
             parameters: {}
           },
           "system_list_isolation_tiers" => {
-            description: "L0: list the isolation tiers an agent deployment can request (native | gvisor | kata | firecracker | vm) with their Docker runtime / K8s RuntimeClass mapping, isolation strength, overhead, and host requirements. Pass isolation_tier inside a fleet_spec (system_launch_agent_fleet) to select one (default native).",
+            description: "List the isolation tiers an agent deployment can request: native, gvisor, kata, firecracker, vm (L0). Each carries its Docker runtime / K8s RuntimeClass mapping, isolation strength, overhead, and host requirements. Pass isolation_tier inside a fleet_spec (system_launch_agent_fleet) to select one (default native).",
             parameters: {}
           },
           "system_provision_instance" => {
@@ -1461,18 +1457,7 @@ module Ai
           # description reads as a plain write is one an agent reports as
           # completed on a {pending: true} envelope.
           "system_replace_instance" => {
-            description: "Replace an unrecoverable NodeInstance with a warm pool member: claim the replacement, " \
-                         "reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting " \
-                         "the failed peer's routing role, with the endpoint re-derived from the replacement's own " \
-                         "address) and move its VIP holdings. Does NOT terminate the failed instance — pass " \
-                         "reap: true to ask for that, which raises a SECOND, separately-gated approval. " \
-                         "REFUSED for a target that is still running and still reporting a heartbeat — this " \
-                         "lane is for an instance nothing can reach, not a way to stop a live one; pass " \
-                         "accept_running: true only to assert unrecoverability on evidence the platform " \
-                         "cannot see. " \
-                         "APPROVAL-GATED (system.instance_replace): when policy requires approval this returns " \
-                         "{pending: true} with an approval_request_id and NOTHING moves until an operator " \
-                         "approves — do not report a completed replacement on that response.",
+            description: "Replace an unrecoverable NodeInstance with a warm pool member. It claims the replacement, reattaches its volumes, re-enrols it on every SDWAN network the failed one held (inheriting the failed peer's routing role, with the endpoint re-derived from the replacement's own address) and moves its VIP holdings. Does NOT terminate the failed instance — pass reap: true to ask for that, which raises a SECOND, separately-gated approval. REFUSED for a target that is still running and still reporting a heartbeat — this lane is for an instance nothing can reach, not a way to stop a live one; pass accept_running: true only to assert unrecoverability on evidence the platform cannot see. APPROVAL-GATED (system.instance_replace): when policy requires approval this returns {pending: true} with an approval_request_id and NOTHING moves until an operator approves — do not report a completed replacement on that response.",
             parameters: {
               instance_id: { type: "string", required: true,
                              description: "UUID of the failed NodeInstance to replace (account-scoped)" },
@@ -1493,14 +1478,7 @@ module Ai
             }
           },
           "system_reap_instance" => {
-            description: "Terminate an unrecoverable NodeInstance whose workload system_replace_instance has " \
-                         "already moved onto a pooled replacement — the DESTRUCTIVE half of a DR replace, gated " \
-                         "separately from it. Idempotent on operation_id. REFUSED for a target that is still " \
-                         "running and still reporting a heartbeat (pass accept_running: true to assert " \
-                         "otherwise); use system_terminate_instance to terminate a live instance. " \
-                         "APPROVAL-GATED (system.instance_reap): when policy requires approval this returns " \
-                         "{pending: true} with an approval_request_id and the instance is NOT terminated until " \
-                         "an operator approves — do not report a completed termination on that response.",
+            description: "Terminate an unrecoverable NodeInstance whose workload system_replace_instance already moved onto a pooled replacement. This is the DESTRUCTIVE half of a DR replace, gated separately from it. Idempotent on operation_id. REFUSED for a target that is still running and still reporting a heartbeat (pass accept_running: true to assert otherwise); use system_terminate_instance to terminate a live instance. APPROVAL-GATED (system.instance_reap): when policy requires approval this returns {pending: true} with an approval_request_id and the instance is NOT terminated until an operator approves — do not report a completed termination on that response.",
             parameters: {
               instance_id: { type: "string", required: true,
                              description: "UUID of the FAILED NodeInstance to terminate — the one whose volumes and VIPs have already moved (account-scoped)" },
@@ -1549,11 +1527,7 @@ module Ai
             }
           },
           "system_destroy_instance" => {
-            description: "Hard-destroy a NodeInstance registry row, walking known FK dependents " \
-                         "(sdwan_peers + sub-tables, system_bootstrap_tokens, system_node_certificates, " \
-                         "system_node_modules, system_storage_assignments, billing_provisioning_usage_records, etc.). " \
-                         "Use ONLY for ghost rows: cloud_instance_id is null OR the provider resource is already gone. " \
-                         "Irreversible. Does NOT call the provider to destroy a live VM — pair with system_terminate_instance for that.",
+            description: "Hard-destroy a NodeInstance registry row and its known FK dependents. The walk covers sdwan_peers and their sub-tables, system_bootstrap_tokens, system_node_certificates, system_node_modules, system_storage_assignments and billing_provisioning_usage_records. Use ONLY for ghost rows: cloud_instance_id is null OR the provider resource is already gone. Irreversible. Does NOT call the provider to destroy a live VM — pair with system_terminate_instance for that.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance registry row to hard-destroy (ghost rows only)" } }
           },
           # IMP-b2f80e6d1c65 — operator ops hold (2026-07-27 incident response:
@@ -1563,7 +1537,7 @@ module Ai
           # provider where it can enforce. A LEASE, not a boolean — expiry
           # alerts but never auto-releases.
           "system_instance_hold" => {
-            description: "Place an operator ops hold on a NodeInstance: blocks start/reboot/terminate while offline work happens on its disks, and enforces the block at the provider where supported. Records who placed it and why — an unattributed hold is indistinguishable from a bug later. Expiry alerts but never auto-releases; system_stop_instance and force do not override it.",
+            description: "Place an operator ops hold on a NodeInstance, blocking start, reboot and terminate while offline work happens on its disks. The block is also enforced at the provider where supported. Records who placed it and why — an unattributed hold is indistinguishable from a bug later. Expiry alerts but never auto-releases; system_stop_instance and force do not override it.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to hold" },
               reason: { type: "string", required: true, description: "Why the hold is being placed, recorded on the instance for the next operator" },
@@ -1575,7 +1549,7 @@ module Ai
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the held NodeInstance to release" } }
           },
           "system_instance_hold_status" => {
-            description: "Verify a NodeInstance's ops hold by reading provider state directly — never by attempting a start, which on a broken hold would start the very instance the operator needed stopped. Reports drift between what the platform recorded and what the provider actually enforces.",
+            description: "Verify a NodeInstance's ops hold by reading provider state directly. It never attempts a start, which on a broken hold would start the very instance the operator needed stopped. Reports drift between what the platform recorded and what the provider actually enforces.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to check" } }
           },
 
@@ -1644,7 +1618,7 @@ module Ai
 
           # === Catalog discovery (IMP-67aea0728774) ===
           "system_discover_modules" => {
-            description: "Reuse-first module discovery — describe a PURPOSE ('reverse proxy with TLS', 'metrics scraper') and get existing modules ranked by semantic similarity, with a confidence bucket. Run this BEFORE authoring a new module (the module-authoring runbook's reuse gate). Use system_list_modules instead when you already know the name or just want to browse by variety. Ranking is pure vector similarity over persisted embeddings — there is no keyword fallback, so an unavailable embedding provider fails loudly rather than returning misleading matches. The `coverage` field reports how much of the searched catalog is actually embedded: an empty result with unembedded > 0 means NOT INDEXED, not 'nothing exists' (run rake system:catalog:backfill_embeddings). The `seed_count` field reports how many ranked candidates existed beyond the page you received (capped at top_k x3) — seed_count > results.size means the catalog had more to say, so re-ask with a larger top_k.",
+            description: "Find existing modules that serve a described PURPOSE ('reverse proxy with TLS', 'metrics scraper'), ranked by semantic similarity with a confidence bucket. Run this BEFORE authoring a new module (the module-authoring runbook's reuse gate). Use system_list_modules instead when you already know the name or just want to browse by variety. Ranking is pure vector similarity over persisted embeddings — there is no keyword fallback, so an unavailable embedding provider fails loudly rather than returning misleading matches. The `coverage` field reports how much of the searched catalog is actually embedded: an empty result with unembedded > 0 means NOT INDEXED, not 'nothing exists' (run rake system:catalog:backfill_embeddings). The `seed_count` field reports how many ranked candidates existed beyond the page you received (capped at top_k x3) — seed_count > results.size means the catalog had more to say, so re-ask with a larger top_k.",
             parameters: {
               intent: { type: "string", required: true, description: "Free-text description of the capability/purpose the module should serve" },
               top_k: { type: "integer", required: false, description: "Max results to return (1-#{::System::CatalogDiscoveryService::MAX_TOP_K}, default #{::System::CatalogDiscoveryService::DEFAULT_TOP_K})" },
@@ -1655,7 +1629,7 @@ module Ai
             }
           },
           "system_discover_templates" => {
-            description: "Reuse-first template discovery — describe a WORKLOAD ('public web serving stack', 'nightly batch runner') and get existing NodeTemplates ranked by semantic similarity, with a confidence bucket. A template's embedding folds in its assigned modules' names and descriptions, so the match reflects what the template actually composes, not just its name. Same no-keyword-fallback and `coverage` semantics as system_discover_modules. The `seed_count` field reports how many ranked candidates existed beyond the page you received (capped at top_k x3) — seed_count > results.size means the catalog had more to say, so re-ask with a larger top_k.",
+            description: "Find existing NodeTemplates that fit a described WORKLOAD ('public web serving stack', 'nightly batch runner'), ranked by semantic similarity. A template's embedding folds in its assigned modules' names and descriptions, so the match reflects what the template actually composes, not just its name. Same no-keyword-fallback and `coverage` semantics as system_discover_modules. The `seed_count` field reports how many ranked candidates existed beyond the page you received (capped at top_k x3) — seed_count > results.size means the catalog had more to say, so re-ask with a larger top_k.",
             parameters: {
               intent: { type: "string", required: true, description: "Free-text description of the workload the template should serve" },
               top_k: { type: "integer", required: false, description: "Max results to return (1-#{::System::CatalogDiscoveryService::MAX_TOP_K}, default #{::System::CatalogDiscoveryService::DEFAULT_TOP_K})" },
@@ -1714,7 +1688,7 @@ module Ai
             parameters: { task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" } }
           },
           "system_cancel_task" => {
-            description: "Cancel a pending task",
+            description: "Cancel a task that has not started yet, one that is pending or scheduled.",
             parameters: { task_id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" } }
           },
           # IMP-8153d1952ff8 — the abort AASM event (legal from :running) was
@@ -1751,7 +1725,7 @@ module Ai
             }
           },
           "system_module_publication_integrity" => {
-            description: "Detect artifacts that reached the OCI registry but were never recorded on the platform — a build that pushed + cosign-signed successfully, then failed to notify (bad token, wrong API base, unreachable platform, 422). Compares registry tags against recorded NodeModuleVersions. NOT a staleness sweep: source age is never consulted, so a module whose newest build predates its newest commit is normal and not reported. Omit module_name to check every module the platform believes CI publishes for (has a gitea_repo_full_name binding).",
+            description: "Detect module artifacts that reached the OCI registry but were never recorded on the platform. That is a build that pushed and cosign-signed, then failed to notify (bad token, wrong API base, unreachable platform, 422). Compares registry tags against recorded NodeModuleVersions. NOT a staleness sweep: source age is never consulted, so a module whose newest build predates its newest commit is normal and not reported. Omit module_name to check every module the platform believes CI publishes for (has a gitea_repo_full_name binding).",
             parameters: {
               module_name: { type: "string", required: false, description: "Restrict the check to a single module by name; omit to check all modules with a repo binding" }
             }
@@ -1982,7 +1956,7 @@ module Ai
             }
           },
           "system_platform_health_check" => {
-            description: "Wraps the platform_health_check skill executor (IMP-80a353489ba4) — the composite platform health answer, split out of platform_maintenance so it has its own owner. No sub-action; takes no parameters.",
+            description: "Return the composite platform health answer (the platform_health_check skill executor), split out of platform_maintenance so it has its own owner. Takes no parameters and has no sub-action. No sub-action; takes no parameters.",
             parameters: {}
           },
           "system_platform_resilience" => {
@@ -2155,7 +2129,7 @@ module Ai
 
           # === Gap remediation slice 1 (Phase 4) ===
           "system_drain_instance" => {
-            description: "Drain a NodeInstance: cordon it out of its instance pool (pool_state=draining, which the allocator reads) and then stop it through the instance lifecycle service. Refuses an instance on this control plane's own hosting node, and reports a refused or failed stop as an error rather than a drain. Disk and registry row are retained — system_start_instance brings it back; system_terminate_instance reclaims the cloud resource. Nothing relocates in-flight work first.",
+            description: "Drain a NodeInstance: cordon it out of its instance pool, then stop it through the instance lifecycle service. The cordon sets pool_state=draining, which the allocator reads. Refuses an instance on this control plane's own hosting node, and reports a refused or failed stop as an error rather than a drain. Disk and registry row are retained — system_start_instance brings it back; system_terminate_instance reclaims the cloud resource. Nothing relocates in-flight work first.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to cordon and stop" }
             }
@@ -2168,13 +2142,13 @@ module Ai
             }
           },
           "system_uncordon_instance" => {
-            description: "Lift a cordon placed by system_cordon_instance: clears the `cordon` marker and, for a pool member this cordon fenced (pool_state_before=ready — at cordon time, or when a return to a reuse_without_reset pool was fenced under the cordon) that is still pool_state=draining AND running, hands it back to the allocator as ready with a fresh ready-TTL anchor. A deployment replica re-enters the replica reconciler's live count. Refuses to re-admit a fenced member that is not running (start it first) and refuses an instance that is not cordoned. Never writes ready over a member that left draining while cordoned (recycled/errored) — it clears the marker and reports cordon_state=cleared. Emits system.instance.uncordoned. APPROVAL-GATED under the SAME action_category as the cordon, system.instance_cordon (require_approval by default): a pending envelope (`pending: true`, deferred_operation_id) means the instance is NOT yet re-admitted.",
+            description: "Lift a cordon placed by system_cordon_instance and clear its `cordon` marker. For a pool member this cordon fenced (pool_state_before=ready — at cordon time, or when a return to a reuse_without_reset pool was fenced under the cordon) that is still pool_state=draining AND running, it hands the member back to the allocator as ready with a fresh ready-TTL anchor. A deployment replica re-enters the replica reconciler's live count. Refuses to re-admit a fenced member that is not running (start it first) and refuses an instance that is not cordoned. Never writes ready over a member that left draining while cordoned (recycled/errored) — it clears the marker and reports cordon_state=cleared. Emits system.instance.uncordoned. APPROVAL-GATED under the SAME action_category as the cordon, system.instance_cordon (require_approval by default): a pending envelope (`pending: true`, deferred_operation_id) means the instance is NOT yet re-admitted.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the cordoned NodeInstance (account-scoped)" }
             }
           },
           "system_get_silent_instances" => {
-            description: "List NodeInstances whose last_heartbeat_at is older than this account's configured silent threshold (system_get_sensor_config -> instance_status.silent_threshold_seconds; 180s by default), or null. Reports the threshold it used. Useful for fleet-health dashboards and pre-upgrade gates.",
+            description: "List NodeInstances whose last heartbeat is older than this account's silent threshold, or that never sent one. The threshold is system_get_sensor_config -> instance_status.silent_threshold_seconds (180s by default). Reports the threshold it used. Useful for fleet-health dashboards and pre-upgrade gates.",
             parameters: {
               threshold_seconds: { type: "integer", required: false, description: "Ask a different question than the sensor does; omit to use the account's configured silent threshold" }
             }
@@ -2185,7 +2159,7 @@ module Ai
           # per-key unit; the read reports defaults/overrides/effective
           # separately so an operator can see which values they own.
           "system_get_sensor_config" => {
-            description: "Read fleet sensor thresholds for this account across BOTH tunable stores: the SensorConfig store (defaults/overrides/effective, writable via system_update_sensor_config — `writable: true`) and the account ladder (account_ladder/account_ladder_effective, set on Account#settings or the named SiteSetting). Omit `sensor` to list every configurable sensor. All values are seconds or plain counts.",
+            description: "Read this account's fleet sensor thresholds from both tunable stores. They are the SensorConfig store (defaults/overrides/effective, writable via system_update_sensor_config — `writable: true`) and the account ladder (account_ladder/account_ladder_effective, set on Account#settings or the named SiteSetting). Omit `sensor` to list every configurable sensor. All values are seconds or plain counts.",
             parameters: {
               sensor: { type: "string", required: false, description: "Sensor key (e.g. instance_status, instance_unrecoverable). Omit to list every configurable sensor." }
             }
@@ -2250,7 +2224,7 @@ module Ai
             }
           },
           "system_assign_module_to_node" => {
-            description: "Create a NODE-level NodeModuleAssignment — the way a node gains a module its template does not name (a node whose template carries no modules can gain one no other way). Refuses a module disabled in the catalog (the row would never ship). Refuses when the module is already assigned to the node, enabled or not: toggle that row with system_update_module_assignment instead; a duplicate is never created. Refuses when the module has a HARD dependency (a required edge, transitively) that the node neither has assigned and enabled nor gets from its template's closure, or that is disabled in the catalog, and names the missing modules — nothing is auto-assigned for it; assign them first (template-apply expands a closure, a single node-level row does not). Refuses when the assignment would introduce an error-severity composition conflict against the node's ENABLED assignments (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved — the same check system_assign_module_to_template runs, applied here whatever `enabled` is (as is the dependency check), because system_update_module_assignment runs neither check when it later enables the row. Soft protected_spec overlaps come back under `warnings` without blocking. The row is hand-authored (source_template_module_id null, auto_resolved false), so template reconciliation neither adds nor reaps it. Nothing is pushed to the node: its agent picks the row up on its next module sync, exactly as after system_update_module_assignment. Note the conflict check only sees DECLARED relations — two modules that provide the same thing without declaring a conflict are not detected.",
+            description: "Create a node-level NodeModuleAssignment, the way a node gains a module its template does not name. A node whose template carries no modules can gain one no other way. Refuses a module disabled in the catalog (the row would never ship). Refuses when the module is already assigned to the node, enabled or not: toggle that row with system_update_module_assignment instead; a duplicate is never created. Refuses when the module has a HARD dependency (a required edge, transitively) that the node neither has assigned and enabled nor gets from its template's closure, or that is disabled in the catalog, and names the missing modules — nothing is auto-assigned for it; assign them first (template-apply expands a closure, a single node-level row does not). Refuses when the assignment would introduce an error-severity composition conflict against the node's ENABLED assignments (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved — the same check system_assign_module_to_template runs, applied here whatever `enabled` is (as is the dependency check), because system_update_module_assignment runs neither check when it later enables the row. Soft protected_spec overlaps come back under `warnings` without blocking. The row is hand-authored (source_template_module_id null, auto_resolved false), so template reconciliation neither adds nor reaps it. Nothing is pushed to the node: its agent picks the row up on its next module sync, exactly as after system_update_module_assignment. Note the conflict check only sees DECLARED relations — two modules that provide the same thing without declaring a conflict are not detected.",
             parameters: {
               node_id:   { type: "string", required: true, description: "UUID of the node to assign the module to (account-scoped)" },
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign (account-scoped)" },
@@ -2295,13 +2269,13 @@ module Ai
             }
           },
           "system_set_default_disk_image_publication" => {
-            description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state. APPROVAL-GATED (system.disk_image_publication_promote): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is promoted until an operator approves — do not retry and do not report the promotion as done on that response. The seeded Disk Image Manager row is require_approval; a caller with no matching row meets the unmatched default and parks.",
+            description: "Promote a published DiskImagePublication to the platform's active disk image. It copies the publication's OCI ref and git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state. APPROVAL-GATED (system.disk_image_publication_promote): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is promoted until an operator approves — do not retry and do not report the promotion as done on that response. The seeded Disk Image Manager row is require_approval; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               publication_id: { type: "string", required: true, description: "UUID of the published DiskImagePublication to set as the platform default" }
             }
           },
           "system_revert_disk_image" => {
-            description: "Roll a NodePlatform's disk image back to a prior publication — restores the target publication's file_object onto the platform (and un-soft-deletes it if the target was retired), then retires the previously-active publication. With publication_id, rolls back to that specific publication; without it, auto-selects the most recent prior publication (the newest retired one, else the newest published one that isn't currently active) and pins that choice to the approval. Refuses purged publications (FileObject hard-deleted) and publications with no file_object. Wraps System::Executors::DiskImage::RollbackPublication — the same transaction the DiskImagePublicationsController#rollback :proceed path uses. APPROVAL-GATED (system.disk_image_publication_rollback, the same category the REST rollback door gates on): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is rolled back until an operator approves — do not retry and do not report the rollback as done on that response.",
+            description: "Roll a NodePlatform's disk image back to a prior publication. It restores the target publication's file_object onto the platform (un-soft-deleting it if the target was retired), then retires the previously-active publication. With publication_id, rolls back to that specific publication; without it, auto-selects the most recent prior publication (the newest retired one, else the newest published one that isn't currently active) and pins that choice to the approval. Refuses purged publications (FileObject hard-deleted) and publications with no file_object. Wraps System::Executors::DiskImage::RollbackPublication — the same transaction the DiskImagePublicationsController#rollback :proceed path uses. APPROVAL-GATED (system.disk_image_publication_rollback, the same category the REST rollback door gates on): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is rolled back until an operator approves — do not retry and do not report the rollback as done on that response.",
             parameters: {
               platform_id:    { type: "string", required: true, description: "System::NodePlatform id to roll back" },
               publication_id: { type: "string", required: false, description: "Target DiskImagePublication to restore. Omit to auto-select the previous publication." }
@@ -2331,7 +2305,7 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_lease_ci_runner" => {
-            description: "Lease an ephemeral Gitea Act runner from a builder pool: acquire a warm builder instance, correlate it to the Gitea runner it self-registered, and return the lease. The instance is recycled (terminate + backfill) on release so no state bleeds between jobs.",
+            description: "Lease an ephemeral Gitea Act runner from a builder pool. It acquires a warm builder instance, correlates it to the Gitea runner it self-registered, and returns the lease. The instance is recycled (terminate + backfill) on release so no state bleeds between jobs.",
             parameters: {
               pool_name: { type: "string", required: false, description: "Builder InstancePool name to acquire from (e.g. 'ci-builders-amd64'). One of pool_name/pool_id is required." },
               pool_id: { type: "string", required: false, description: "Builder InstancePool id (alternative to pool_name)" },
@@ -2363,7 +2337,7 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks. NARROW-DISPATCH: pass module_slugs (an explicit allowlist) with expand_dependents: false to build EXACTLY those modules, with no reverse-dependency expansion — e.g. an agent/-only range ships powernode-system-base alone instead of the ~20-module closure that requires it. Every allowlisted slug must be a buildable (manifest-backed) module that the base_sha..head_sha range itself changed; an unknown, package-origin or untouched slug is refused by name, and module_slugs cannot be combined with force_all. The batch records the allowlist, the closure it withheld (withheld_dependents) and the requester under metadata.selection. All publish gates still apply. Caller's responsibility: withheld dependents keep their current versions, so the allowlist is only sound when they need the changed module's CAPABILITY, not its bytes — system-base is the only module that embeds the agent binary — and when its service contract is unchanged (base-os's powernode-agent.service invokes `/usr/sbin/powernode-agent service`; an agent change to that CLI or unit contract needs base-os rebuilt too).",
+            description: "Plan and dispatch a native module-build batch for a base_sha..head_sha range. It computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants only to the system_worker role (bounding a leaked non-admin token's blast radius); a system.admin holder also passes. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks. NARROW-DISPATCH: pass module_slugs (an explicit allowlist) with expand_dependents: false to build EXACTLY those modules, with no reverse-dependency expansion — e.g. an agent/-only range ships powernode-system-base alone instead of the ~20-module closure that requires it. Every allowlisted slug must be a buildable (manifest-backed) module that the base_sha..head_sha range itself changed; an unknown, package-origin or untouched slug is refused by name, and module_slugs cannot be combined with force_all. The batch records the allowlist, the closure it withheld (withheld_dependents) and the requester under metadata.selection. All publish gates still apply. Caller's responsibility: withheld dependents keep their current versions, so the allowlist is only sound when they need the changed module's CAPABILITY, not its bytes — system-base is the only module that embeds the agent binary — and when its service contract is unchanged (base-os's powernode-agent.service invokes `/usr/sbin/powernode-agent service`; an agent change to that CLI or unit contract needs base-os rebuilt too).",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
@@ -2379,7 +2353,7 @@ module Ai
           },
 
           "system_rollback_module_version" => {
-            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion, and the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile. APPROVAL-GATED (release.rollback): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is repointed until an operator approves — do not retry and do not report the rollback as done on that response; without version_id the auto-selected target is pinned to the approval so the operator approves the version the card names. The seeded Release Manager row is require_approval whatever its trust tier; a caller with no matching row meets the unmatched default and parks.",
+            description: "Repoint a module's current_version to an earlier version after a bad publish. It is the undo for auto-promotion, and also the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile. APPROVAL-GATED (release.rollback): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is repointed until an operator approves — do not retry and do not report the rollback as done on that response; without version_id the auto-selected target is pinned to the approval so the operator approves the version the card names. The seeded Release Manager row is require_approval whatever its trust tier; a caller with no matching row meets the unmatched default and parks.",
             parameters: {
               module_id:  { type: "string", required: true,  description: "System::NodeModule id to roll back" },
               environment: { type: "string", required: false, description: "Roll back ONE pinned environment (slug or id) instead of the fleet-global pointer; requires version_id. Gated in that plane." },
@@ -2397,14 +2371,14 @@ module Ai
           },
 
           "system_readvance_module_build_batch" => {
-            description: "Re-advance ONE stalled native module-build batch now — the operator door onto the lease sweep's readvance backstop, for when the hub-worker cron that normally runs it is down. A member is stalled when its entry is still `dispatched` but its ci.module_build task has finished (system_get_module_build_batch shows it as `stalled: true`); re-advancing runs the orchestrator's advance exactly as the sweep would: a completed build is signed + published (which PROMOTES the new version unless the batch is a shadow batch or promotion is withheld), a failed one is retried or marked failed, and any member still queued in the batch is dispatched onto a free builder. It builds nothing outside the batch's own plan. Like the unattended sweep, it publishes and promotes WITHOUT the release-promote autonomy gate (system_promote_module_version's approval) — a deliberate design, since this is the sweep's own step run on demand; the kill-switch and control-plane gates still apply. Honours the sweep's gates: refused while the account's emergency kill switch is engaged or when this control plane is not the active one in dual-plane mode. A batch with no stalled member, or not in dispatched/awaiting_signature/publishing, is a no-op (readvanced: false with the reason), not an error; so is a batch another advance is already holding.",
+            description: "Re-advance ONE stalled native module-build batch now. It is the operator door onto the lease sweep's readvance backstop, for when the hub-worker cron that normally runs it is down. A member is stalled when its entry is still `dispatched` but its ci.module_build task has finished (system_get_module_build_batch shows it as `stalled: true`); re-advancing runs the orchestrator's advance exactly as the sweep would: a completed build is signed + published (which PROMOTES the new version unless the batch is a shadow batch or promotion is withheld), a failed one is retried or marked failed, and any member still queued in the batch is dispatched onto a free builder. It builds nothing outside the batch's own plan. Like the unattended sweep, it publishes and promotes WITHOUT the release-promote autonomy gate (system_promote_module_version's approval) — a deliberate design, since this is the sweep's own step run on demand; the kill-switch and control-plane gates still apply. Honours the sweep's gates: refused while the account's emergency kill switch is engaged or when this control plane is not the active one in dual-plane mode. A batch with no stalled member, or not in dispatched/awaiting_signature/publishing, is a no-op (readvanced: false with the reason), not an error; so is a batch another advance is already holding.",
             parameters: {
               batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id to re-advance (account-scoped)" }
             }
           },
 
           "system_get_module_build_batch" => {
-            description: "Inspect one native module-build batch in full: the batch row plus its per-module orchestration state (metadata.modules — state queued/dispatched/succeeded/failed/cancelled, attempts, tag, error) joined with each member ci.module_build Task's status and its builder lease's status, plus the plan, excluded modules, source_repo and expected_core_sha. `stalled: true` on a module is the exact shape the lease sweep's readvance backstop heals on its next tick (task finished, entry still `dispatched`): a batch parked in `publishing` with a stalled module is a sweep gap, not a publish failure — check this before reaching for a manual publish.",
+            description: "Inspect one native module-build batch in full: the batch row plus each module's orchestration state. Per module that is state (queued/dispatched/succeeded/failed/cancelled), attempts, tag and error, joined with its ci.module_build Task's status and its builder lease's status, plus the plan, excluded modules, source_repo and expected_core_sha. `stalled: true` on a module is the exact shape the lease sweep's readvance backstop heals on its next tick (task finished, entry still `dispatched`): a batch parked in `publishing` with a stalled module is a sweep gap, not a publish failure — check this before reaching for a manual publish.",
             parameters: {
               batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id" }
             }
@@ -2448,7 +2422,7 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_gitops_get_repository" => {
-            description: "Read one registered GitOps repository's configuration and last-sync state: repo_url, branch, path_prefix, auto_apply, enabled, last_status/last_error/last_synced_at, and the credential contract — `vault_credential_path` (the Vault KV path the sync reads) and `required_credential_keys` (the key NAMES that path must carry for this remote's scheme). Key names and the path only, never credential values. To check whether that path actually resolves and holds those keys, use the REST probe POST /api/v1/admin_settings/vault/test { path:, required_keys: } — there is deliberately no MCP verb for it.",
+            description: "Read one registered GitOps repository's configuration and last-sync state. It returns repo_url, branch, path_prefix, auto_apply, enabled, last_status/last_error/last_synced_at, and the credential contract — `vault_credential_path` (the Vault KV path the sync reads) and `required_credential_keys` (the key NAMES that path must carry for this remote's scheme). Key names and the path only, never credential values. To check whether that path actually resolves and holds those keys, use the REST probe POST /api/v1/admin_settings/vault/test { path:, required_keys: } — there is deliberately no MCP verb for it.",
             parameters: {
               repository_id: { type: "string", required: true, description: "GitopsRepository id (account-scoped)" }
             }
@@ -2527,7 +2501,7 @@ module Ai
             }
           },
           "system_get_provider_connection" => {
-            description: "Fetch one ProviderConnection with its full non-secret config — the place to read per-connection, deployment-local wiring such as default_node, default_storage, snippets_storage, snippets_local_path, cidata_transport. Credentials are never included.",
+            description: "Fetch one ProviderConnection with its full non-secret config. Read per-connection, deployment-local wiring here: default_node, default_storage, snippets_storage, snippets_local_path, cidata_transport. Credentials are never included.",
             parameters: {
               connection_id: { type: "string", required: true, description: "System::ProviderConnection id (account-scoped)" }
             }
