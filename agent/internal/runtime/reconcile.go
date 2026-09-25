@@ -1370,6 +1370,18 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	if errs := policy.Validate(); len(errs) > 0 {
 		return fmt.Errorf("policy invalid: %v", errs)
 	}
+	// Per-service capabilities (IMP-caef5c00d63f), resolved BEFORE anything is
+	// applied: a service asking for more than the module ceiling refuses the
+	// whole attach, the same way an invalid policy does, rather than guessing
+	// which of the two lists the author meant. Privileged modules take no
+	// capability drop-ins at all, so they are not resolved.
+	var unitCaps []security.UnitCapabilities
+	if !policy.Privileged {
+		var err error
+		if unitCaps, err = attachCapabilityWrites(mf, policy); err != nil {
+			return fmt.Errorf("policy invalid: %w", err)
+		}
+	}
 	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
 		return fmt.Errorf("apply policy: %w", err)
 	}
@@ -1386,15 +1398,16 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// drop-in for non-privileged modules even when the allowlist is
 	// empty, because an empty CapabilityBoundingSet= is the strictest
 	// (and safest default) posture and an absent drop-in would inherit
-	// systemd's full caps. Drop-in failures are non-fatal — surface via
+	// systemd's full caps. Each unit gets its OWN resolved set
+	// (resolveUnitCapabilities): the module ceiling when the service
+	// declares no capabilities key, exactly its declared subset — [] meaning
+	// none — when it does. Drop-in failures are non-fatal — surface via
 	// OnError so the operator sees them; the service still starts with
 	// whatever caps systemd's defaults give it.
-	if !policy.Privileged {
-		for _, unit := range mf.UnitNames() {
-			if err := security.WriteCapabilityDropIn(unit, policy.Capabilities); err != nil {
-				r.cfg.OnError("reconciler:capability_dropin",
-					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-			}
+	for _, uc := range unitCaps {
+		if err := security.WriteCapabilityDropIn(uc.Unit, uc.Allow); err != nil {
+			r.cfg.OnError("reconciler:capability_dropin",
+				fmt.Errorf("module %s unit %s: %w", mod.ID, uc.Unit, err))
 		}
 	}
 	// User-namespace isolation (PrivateUsers=) enforces via a per-unit
@@ -1521,9 +1534,14 @@ func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string 
 		return ""
 	}
 	policy := buildPolicy(mf)
-	hasUnits := len(mf.UnitNames()) > 0
+	// Per-unit RESOLVED capability sets (IMP-caef5c00d63f), so a change to one
+	// service's own capabilities key moves the stamp. A resolution error is
+	// ignored here on purpose: attachModule refuses that module loudly, and
+	// the entries still carry the raw lists, so fixing the manifest moves the
+	// stamp and retries the attach.
+	unitCaps, _ := attachCapabilityWrites(mf, policy)
 	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
-		"|" + security.RenderedPolicyHash(policy, hasUnits) +
+		"|" + security.RenderedPolicyHashForUnits(policy, unitCaps) +
 		"|" + r.cfg.AgentVersion
 }
 

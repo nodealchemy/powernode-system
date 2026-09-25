@@ -51,6 +51,30 @@ func RenderedPolicyHash(p *Policy, hasUnits bool) string {
 	if p == nil {
 		return ""
 	}
+	var units []UnitCapabilities
+	if hasUnits {
+		units = []UnitCapabilities{{Allow: p.Capabilities}}
+	}
+	return RenderedPolicyHashForUnits(p, units)
+}
+
+// RenderedPolicyHashForUnits is RenderedPolicyHash for per-service
+// capabilities (IMP-caef5c00d63f): `units` carries each unit's RESOLVED
+// capability set — the exact list attachModule hands WriteCapabilityDropIn for
+// that unit — so a change confined to one service's own capabilities key moves
+// the stamp. RenderedPolicyHash above is the module-wide special case (every
+// unit gets p.Capabilities).
+//
+// When every unit renders the same capability drop-in, the component is
+// written ONCE under the plain "cap" tag, byte-for-byte what the module-wide
+// hash always wrote, so a module that declares no per-service keys keeps the
+// stamp it already had. Only when units differ is each unit's body written
+// under its own "cap:<unit>" tag, in declaration order.
+func RenderedPolicyHashForUnits(p *Policy, units []UnitCapabilities) string {
+	if p == nil {
+		return ""
+	}
+	hasUnits := len(units) > 0
 
 	h := sha256.New()
 	wrote := false
@@ -81,15 +105,30 @@ func RenderedPolicyHash(p *Policy, hasUnits bool) string {
 	//     coupling this reasoning depends on.
 	if !p.Privileged {
 		if hasUnits {
-			if body, err := renderCapabilityDropInBody(p.Capabilities); err == nil {
-				write("cap", body)
+			tags := make([]string, len(units))
+			bodies := make([]string, len(units))
+			uniform := true
+			for i, u := range units {
+				if body, err := renderCapabilityDropInBody(u.Allow); err == nil {
+					tags[i], bodies[i] = "cap", body
+				} else {
+					// Unresolvable (unknown capability name): fall back to the raw
+					// declared list so the comparison still moves on any edit to it,
+					// rather than erroring the stamp computation itself. The real
+					// failure surfaces separately when attachModule's own Validate
+					// (or the per-service resolver) runs the same check.
+					tags[i], bodies[i] = "cap-unresolved", strings.Join(u.Allow, ",")
+				}
+				if tags[i] != tags[0] || bodies[i] != bodies[0] {
+					uniform = false
+				}
+			}
+			if uniform {
+				write(tags[0], bodies[0])
 			} else {
-				// Unresolvable (unknown capability name): fall back to the raw
-				// declared list so the comparison still moves on any edit to it,
-				// rather than erroring the stamp computation itself. The real
-				// failure surfaces separately when attachModule's own Validate
-				// runs the same check.
-				write("cap-unresolved", strings.Join(p.Capabilities, ","))
+				for i, u := range units {
+					write(tags[i]+":"+u.Unit, bodies[i])
+				}
 			}
 		}
 

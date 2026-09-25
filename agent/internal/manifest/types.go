@@ -53,6 +53,16 @@ type Manifest struct {
 	//   - "security": {capabilities, seccomp_profile, egress_allowlist}
 	//   - "skills": []string — bound skill ids (Phase 2 reseeders)
 	Config map[string]any `json:"config,omitempty"`
+	// ServiceCapabilitiesPresence is the server's statement that each
+	// service's `capabilities` key in this payload carries PRESENCE: null
+	// means the manifest omitted it (inherit the ceiling) and [] means the
+	// manifest declared zero (IMP-caef5c00d63f). A server that predates
+	// stage 1 (IMP-074fcd68284f), or a module not yet republished under it,
+	// sends [] for every service regardless of the manifest, so without this
+	// marker a declared [] cannot be trusted as "zero" — see
+	// security.ResolveServiceCapabilities' caller in runtime for the legacy
+	// rule. omitempty: absent and false mean the same thing.
+	ServiceCapabilitiesPresence bool `json:"service_capabilities_presence,omitempty"`
 	// Per-service definitions. Populated from
 	// system_module_services rows in the platform DB; surfaced by
 	// the modules#show endpoint at /api/v1/system/node_api/modules/:id.
@@ -129,20 +139,20 @@ type Service struct {
 	// the structured fields below. omitempty is LOAD-BEARING: it keeps
 	// ServicesHash byte-identical for every existing (non-unit_body)
 	// service, so this addition doesn't trigger a fleet-wide re-attach.
-	UnitBody                  string            `json:"unit_body,omitempty"`
-	StopCommand               string            `json:"stop_command,omitempty"`
-	RestartPolicy             string            `json:"restart_policy,omitempty"` // always | on-failure | never
-	User                      string            `json:"user,omitempty"`
-	WorkingDirectory          string            `json:"working_directory,omitempty"`
-	Env                       map[string]string `json:"env,omitempty"`
-	ExposedPorts              []any             `json:"exposed_ports,omitempty"` // metadata only
-	Capabilities              []string          `json:"capabilities,omitempty"`
-	HealthEndpoint            string            `json:"health_endpoint,omitempty"`
-	HealthMethod              string            `json:"health_method,omitempty"`
-	HealthIntervalSeconds     int               `json:"health_interval_seconds,omitempty"`
-	HealthTimeoutSeconds      int               `json:"health_timeout_seconds,omitempty"`
-	HealthInitialDelaySeconds int               `json:"health_initial_delay_seconds,omitempty"`
-	Dependencies              []string          `json:"dependencies,omitempty"` // names of services that must start before this one
+	UnitBody                  string              `json:"unit_body,omitempty"`
+	StopCommand               string              `json:"stop_command,omitempty"`
+	RestartPolicy             string              `json:"restart_policy,omitempty"` // always | on-failure | never
+	User                      string              `json:"user,omitempty"`
+	WorkingDirectory          string              `json:"working_directory,omitempty"`
+	Env                       map[string]string   `json:"env,omitempty"`
+	ExposedPorts              []any               `json:"exposed_ports,omitempty"` // metadata only
+	Capabilities              ServiceCapabilities `json:"capabilities,omitzero"`
+	HealthEndpoint            string              `json:"health_endpoint,omitempty"`
+	HealthMethod              string              `json:"health_method,omitempty"`
+	HealthIntervalSeconds     int                 `json:"health_interval_seconds,omitempty"`
+	HealthTimeoutSeconds      int                 `json:"health_timeout_seconds,omitempty"`
+	HealthInitialDelaySeconds int                 `json:"health_initial_delay_seconds,omitempty"`
+	Dependencies              []string            `json:"dependencies,omitempty"` // names of services that must start before this one
 	// DependencyEdges carries the same edges as Dependencies plus each
 	// edge's KIND, which decides whether the rendered unit gets a hard
 	// Requires= or a best-effort Wants= (see lifecycle.writeDependencyDirectives).

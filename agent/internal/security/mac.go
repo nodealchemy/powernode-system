@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
@@ -86,6 +87,21 @@ func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profile strin
 // systemdDropInRoot is the canonical location systemd reads unit
 // overrides from. Variable so tests can redirect.
 var systemdDropInRoot = "/etc/systemd/system"
+
+// SetSystemdDropInRootForTest redirects every per-unit drop-in writer in this
+// package to dir and returns a restore func. For tests in OTHER packages that
+// drive a real attach path (runtime's attachModule) and must read back what
+// it wrote, without touching the host's /etc/systemd/system.
+func SetSystemdDropInRootForTest(dir string) (restore func()) {
+	// Exported for cross-package tests only; redirecting the drop-in root in a
+	// running agent would silently write every unit's confinement elsewhere.
+	if !testing.Testing() {
+		panic("security.SetSystemdDropInRootForTest called outside a test binary")
+	}
+	prev := systemdDropInRoot
+	systemdDropInRoot = dir
+	return func() { systemdDropInRoot = prev }
+}
 
 // WriteSeccompDropIn renders a systemd drop-in that adds
 // `SystemCallFilter=@<name>` to the named unit, where <name> is derived

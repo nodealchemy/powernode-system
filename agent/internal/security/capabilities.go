@@ -177,11 +177,19 @@ func WriteCapabilityDropIn(unit string, allow []string) error {
 // changing — the same defect class one layer over.
 func renderCapabilityDropInBody(allow []string) (string, error) {
 	canonical := make([]string, 0, len(allow))
+	seen := make(map[string]struct{}, len(allow))
 	for _, cap := range allow {
 		name, ok := normalizeCapName(cap)
 		if !ok {
 			return "", fmt.Errorf("unknown capability %q", cap)
 		}
+		// De-duplicated after normalization (review P4): cap_chown and
+		// CAP_CHOWN, or a name listed twice, render one entry, so a no-op
+		// manifest edit cannot move RenderedPolicyHash and force a re-attach.
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
 		canonical = append(canonical, name)
 	}
 	sort.Strings(canonical) // stable output -> idempotent file content

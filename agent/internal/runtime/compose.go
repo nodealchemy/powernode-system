@@ -211,6 +211,21 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 					"privileged allowlist (privileged_module_ids); services NOT enabled post-pivot", mod.ID))
 			continue
 		}
+		// Per-service capabilities, through the SAME resolver attachModule
+		// uses (IMP-caef5c00d63f) — a service asking for more than the module
+		// ceiling is refused here exactly as it is there.
+		unitAllow := map[string][]string{}
+		if !policy.Privileged {
+			unitCaps, err := composeCapabilityWrites(mod.ID, mf, policy)
+			if err != nil {
+				r.cfg.OnError("compose:capabilities_invalid",
+					fmt.Errorf("module %s: %w — services NOT enabled post-pivot", mod.ID, err))
+				continue
+			}
+			for _, uc := range unitCaps {
+				unitAllow[uc.Unit] = uc.Allow
+			}
+		}
 
 		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
 			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
@@ -244,10 +259,12 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 				}
 			}
-			// Ambient capability grant (additive; does NOT reset the bounding
-			// set — see the loop-header note). No-op for an empty allow list.
-			if len(policy.Capabilities) > 0 {
-				if err := security.WriteAmbientCapabilityDropInAt(sysroot, unit, policy.Capabilities); err != nil {
+			// Ambient capability grant of this unit's RESOLVED set (additive;
+			// does NOT reset the bounding set — see the loop-header note). No-op
+			// for an empty set, which is how a service declaring [] ends up with
+			// no ambient grant here.
+			if allow := unitAllow[unit]; len(allow) > 0 {
+				if err := security.WriteAmbientCapabilityDropInAt(sysroot, unit, allow); err != nil {
 					r.cfg.OnError("compose:ambient_cap_dropin",
 						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 				}
