@@ -136,7 +136,7 @@ abstract_klass = Class.new(System::Ai::Skills::BaseSkillExecutor) do
 end
 result = abstract_klass.new(account: ::Account.first).execute
 assert.call(result[:success] == false, "abstract subclass returns failure on execute")
-assert.call(result[:error].to_s.include?("#perform must be defined"),
+assert.call(result[:error].to_s.include?("#perform is not implemented"),
             "abstract failure references #perform")
 
 # ────────────────────────────────────────────────────────────────────

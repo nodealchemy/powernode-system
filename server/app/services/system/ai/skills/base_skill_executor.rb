@@ -353,6 +353,7 @@ module System
           # #execution_correlation_id. Cleared before #validate_inputs! because
           # a validation raise reaches #audit_log_error, which mints the id.
           @execution_correlation_id = nil
+          @withheld_errors = nil
 
           # Validation FIRST: a call that could only ever fail must not park an
           # approval an operator then has to dispose of.
@@ -376,14 +377,12 @@ module System
           # executor, which forward it verbatim. Authored the same way a
           # tool's #not_found_result would — see safe_error_text.
           audit_log_error(e)
-          failure(safe_error_text(e))
+          failure(safe_error_text(e, record: false))
         rescue StandardError, NotImplementedError => e
           # Catch NotImplementedError too — abstract subclasses that forgot
           # to override #perform should flow through the same failure
-          # pipeline as any other error, not crash the caller (see
-          # safe_error_text for why its message still reaches the caller
-          # despite the generic default below covering every OTHER
-          # StandardError).
+          # pipeline as any other error, not crash the caller (safe_error_text
+          # answers it with an authored static string, never its message).
           #
           # IMP-8552945f2672 — this rescue used to be `failure(e.message)`.
           # #perform is subclass-authored, unaudited, unbounded code (67
@@ -393,7 +392,7 @@ module System
           # RecordNotFound arm above. `e.message` is still logged in full via
           # audit_log_error; only what reaches the CALLER is narrowed.
           audit_log_error(e)
-          failure(safe_error_text(e))
+          failure(safe_error_text(e, record: false))
         end
 
         protected
@@ -635,6 +634,7 @@ module System
         # depend on its internals beyond the two seams it explicitly reuses
         # (CallerFacingError, not_found_message).
         GENERIC_FAILURE_MESSAGE = ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE
+        NOT_IMPLEMENTED_MESSAGE = "This skill's #perform is not implemented"
 
         # THE seam every rescue arm in this class hierarchy — the shared one
         # in #execute above, and any subclass's own local rescue — should
@@ -656,11 +656,10 @@ module System
         #     safe merely because of its class, per Ai::Tools::BaseTool's own
         #     documented reasoning: Ruby and the stdlib raise it too, with
         #     messages nobody here authored);
-        #   - NotImplementedError — AUTHORED, not forwarded: Ruby's own class,
-        #     but the text returned is this method's own static string, never
-        #     e.message (Ruby's stock message for it does interpolate the
-        #     unbuilt method's full signature, which is not caller content but
-        #     also not worth trusting verbatim);
+        #   - NotImplementedError — AUTHORED, not forwarded: the text returned
+        #     is NOT_IMPLEMENTED_MESSAGE, never e.message (Ruby raises this
+        #     class too, and #perform's own raise interpolates the internal
+        #     executor class name);
         #   - ActiveRecord::RecordNotFound — AUTHORED via
         #     Ai::Tools::BaseTool.not_found_message(e.model/e.id), never
         #     e.message, same treatment as a tool's #not_found_result;
@@ -686,14 +685,25 @@ module System
         #     second whitelist entry.
         # Anything else — PG errors, a Docker daemon's own text, a resolver
         # internal, a bare ArgumentError nobody here authored — gets the
-        # generic default. `audit_log_error` always gets the FULL raw
-        # exception server-side regardless of what this returns.
-        def safe_error_text(e)
+        # generic default.
+        #
+        # Withholding the text from the caller must not withhold it from the
+        # OPERATOR. Whenever this does not forward the message verbatim it
+        # records the class and raw message server-side (#record_withheld_
+        # error): a Rails.logger.error line, and the `withheld_error` field of
+        # this run's skill.execute_finished audit event. A LOCAL rescue arm in
+        # a subclass returns a normal failure result, so #audit_log_error
+        # never fires for it — without this, the generic text would be the
+        # only trace of why the run failed. The shared #execute arms pass
+        # `record: false` because #audit_log_error already recorded the same
+        # exception in full.
+        def safe_error_text(e, record: true)
+          record_withheld_error(e) if record && !e.is_a?(::Ai::Tools::BaseTool::CallerFacingError)
           return ::Ai::Tools::BaseTool.not_found_message(e) if e.is_a?(::ActiveRecord::RecordNotFound)
           return e.message if e.is_a?(::Ai::Tools::BaseTool::CallerFacingError)
           return "Validation failed: #{e.record.errors.attribute_names.join(', ')}" if e.is_a?(::ActiveRecord::RecordInvalid)
           return "Permission denied for this action" if e.is_a?(::Mcp::ProtocolService::PermissionDeniedError)
-          return e.message if e.is_a?(NotImplementedError)
+          return NOT_IMPLEMENTED_MESSAGE if e.is_a?(NotImplementedError)
 
           GENERIC_FAILURE_MESSAGE
         end
@@ -810,8 +820,25 @@ module System
             # A returned failure is not routine telemetry — an operator filtering
             # the low band would never see the run that did not work.
             ok ? :low : :medium,
-            "success" => ok, "error" => audit_text(result[:error])
+            "success" => ok, "error" => audit_text(result[:error]),
+            "withheld_error" => audit_text(@withheld_errors&.values&.join("; "))
           )
+        end
+
+        # See #safe_error_text. Keyed by object identity so a clause that
+        # routes the same exception through safe_error_text twice (a
+        # `failures` entry AND the returned message) records it once.
+        # The logger line gets the same redaction as the audit field: the raw
+        # message can carry operator material (bound SQL values, a URL's
+        # userinfo) that must not land in the log either.
+        def record_withheld_error(exc)
+          @withheld_errors ||= {}
+          return if @withheld_errors.key?(exc.object_id)
+
+          @withheld_errors[exc.object_id] = "#{exc.class}: #{exc.message}"
+          Rails.logger.tagged(self.class.name) do
+            Rails.logger.error("withheld_error #{exc.class}: #{audit_text(exc.message)}")
+          end
         end
 
         def audit_log_error(exc)

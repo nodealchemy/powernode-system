@@ -141,7 +141,7 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
     it "returns a failure result when #perform is not overridden" do
       result = abstract_klass.new(account: account).execute
       expect(result[:success]).to be false
-      expect(result[:error]).to match(/#perform must be defined/)
+      expect(result[:error]).to eq("This skill's #perform is not implemented")
     end
   end
 
@@ -254,14 +254,18 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
       expect(result[:error]).not_to include("accounts")
     end
 
-    it "still answers NotImplementedError's own message (an unbuilt #perform)" do
+    # IMP-8552945f2672 review round 3 — an authored static string, not
+    # NotImplementedError's own message (which names the internal executor
+    # class, and which Ruby itself raises too).
+    it "answers an unbuilt #perform with an authored static string, never NotImplementedError's message" do
       abstract_klass = Class.new(described_class) do
         skill_descriptor(name: "boom_ni", description: "x", category: "fleet",
                          inputs: {}, outputs: {})
       end
       result = abstract_klass.new(account: account).execute
       expect(result[:success]).to be false
-      expect(result[:error]).to match(/#perform must be defined/)
+      expect(result[:error]).to eq("This skill's #perform is not implemented")
+      expect(result[:error]).not_to include("must be defined")
     end
 
     # ActiveRecord::RecordInvalid is NOT forwarded — the operator direction is
@@ -316,6 +320,68 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
       expect(result[:error]).to eq("Permission denied for this action")
       expect(result[:error]).not_to include("destroy-shaped")
       expect(result[:error]).not_to include("system_delete_architecture")
+    end
+  end
+
+  # IMP-8552945f2672 review round 3 — a subclass's LOCAL rescue arm returns
+  # an ordinary failure result, so #audit_log_error never fires for it.
+  # safe_error_text itself must keep the cause for the operator: a server-side
+  # log line and the finish event's `withheld_error`, while the caller still
+  # sees only the generic text.
+  describe "#execute (local rescue arm keeps the cause server-side)" do
+    let(:local_arm_klass) do
+      Class.new(described_class) do
+        skill_descriptor(name: "local_arm", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          raise StandardError, "docker daemon: connection refused at /var/run/internal.sock"
+        rescue StandardError => e
+          failure(safe_error_text(e))
+        end
+      end
+    end
+
+    it "returns the generic text but logs and audits the raw cause" do
+      logged = []
+      allow(Rails.logger).to receive(:error).and_wrap_original do |m, msg = nil, &blk|
+        logged << (msg || blk&.call).to_s
+        m.call(msg, &blk)
+      end
+      finished = []
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_wrap_original do |m, **kw|
+        finished << kw[:payload] if kw[:kind] == described_class::EVENT_KIND_FINISHED
+        m.call(**kw)
+      end
+
+      result = local_arm_klass.new(account: account).execute
+
+      expect(result[:error]).to eq("An internal error occurred processing this request.")
+      expect(logged).to include(a_string_including("StandardError", "connection refused at /var/run/internal.sock"))
+      expect(finished.size).to eq(1)
+      expect(finished.first["error"]).to eq("An internal error occurred processing this request.")
+      expect(finished.first["withheld_error"]).to include("connection refused at /var/run/internal.sock")
+    end
+
+    it "records nothing for a CallerFacingError, which is forwarded verbatim" do
+      forwarded_klass = Class.new(described_class) do
+        skill_descriptor(name: "local_arm_cf", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "widget_id not found in this account"
+        rescue StandardError => e
+          failure(safe_error_text(e))
+        end
+      end
+      finished = []
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_wrap_original do |m, **kw|
+        finished << kw[:payload] if kw[:kind] == described_class::EVENT_KIND_FINISHED
+        m.call(**kw)
+      end
+
+      result = forwarded_klass.new(account: account).execute
+
+      expect(result[:error]).to eq("widget_id not found in this account")
+      expect(finished.first).not_to have_key("withheld_error")
     end
   end
 
