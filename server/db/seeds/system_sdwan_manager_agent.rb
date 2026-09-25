@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the SDWAN Manager AI agent + dedicated approval chain. Carved out of Fleet Autonomy (2026-05-10) so SDWAN operations have
 # their own intervention queue + can be paused independently during network
@@ -59,14 +60,16 @@ sdwan_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   source_key: "sdwan-manager"
 )
 sdwan_agent.assign_attributes(
-  description: "SDWAN reconciler — peer health, topology compilation, VIP failover, federation, BGP",
+  # Text is assigned on create only; the refresh! below carries later seed text
+  # to an existing row unless an operator edited it (content/canonical_agent_content.rb).
+  description: (sdwan_agent.new_record? ? System::Seeds::CanonicalAgentContent.description("sdwan-manager") : sdwan_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 60, "extension" => "system", "scope" => "sdwan" }
 )
 # Persona prompt + reasoning-tier model (topology/BGP reasoning). system_prompt
 # first (in-place into mcp_metadata), then a clean mcp_metadata reassignment so
 # both persist. No hardcoded model id — AgentModelSelector resolves it.
-sdwan_agent.system_prompt = sdwan_prompt
+sdwan_agent.system_prompt = sdwan_prompt if sdwan_agent.new_record?
 sdwan_agent.mcp_metadata = (sdwan_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   # Duty surface (IMP-777f59d4cc1e): the system_sdwan family — peers, topology,
@@ -86,6 +89,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(sdwan_agent, system_prompt: sdwan_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

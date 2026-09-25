@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Infrastructure Generalist AI agent (renamed from "System
 # Concierge"; source_key unchanged) — operator-facing chat agent that
@@ -208,9 +209,11 @@ concierge_agent.assign_attributes(
   # it IS the Claude Code subagent_type), so it is written here rather than
   # left to a callback whose trigger is `name_changed?`.
   slug: "infrastructure-generalist",
-  description: "Operator chat agent for the full system extension surface (fleet, SDWAN, container runtimes, modules, disk image CI) — read-only by default, dispatches state-changing skills with operator confirmation",
+  # Text is assigned on create only; the refresh! below carries later seed text
+  # to an existing row unless an operator edited it (content/canonical_agent_content.rb).
+  description: (concierge_agent.new_record? ? System::Seeds::CanonicalAgentContent.description("infrastructure-generalist") : concierge_agent.description),
   status: "active",
-  system_prompt: system_prompt,
+  system_prompt: (concierge_agent.new_record? ? system_prompt : concierge_agent.system_prompt),
   # Strip the legacy `concierge_tool_filter` key — moved to
   # Ai::ConciergeToolBridge::SYSTEM_CONCIERGE_TOOL_FILTER constant
   # (single source of truth, runtime-owned by the bridge).
@@ -258,3 +261,4 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 
 puts "  ✅ Infrastructure Generalist agent: #{concierge_agent.previously_new_record? ? 'created' : 'updated'} (id=#{concierge_agent.id})"
+System::Seeds::CanonicalAgentContent.refresh!(concierge_agent, system_prompt: system_prompt)

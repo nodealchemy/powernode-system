@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Runtime Manager AI agent — specialized monitor agent for
 # container runtime lifecycle (Phase 1 Docker + Phase 2 K3s; Phase 3
@@ -65,9 +66,11 @@ runtime_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent
   source_key: "runtime-manager"
 )
 runtime_agent.assign_attributes(
-  description: "Container runtime lifecycle reconciler — Phase 1 Docker + Phase 2 K3s clusters; gates provision/decommission/upgrade actions",
+  # Text is assigned on create only; the refresh! below carries later seed text
+  # to an existing row unless an operator edited it (content/canonical_agent_content.rb).
+  description: (runtime_agent.new_record? ? System::Seeds::CanonicalAgentContent.description("runtime-manager") : runtime_agent.description),
   status: "active",
-  system_prompt: runtime_prompt,
+  system_prompt: (runtime_agent.new_record? ? runtime_prompt : runtime_agent.system_prompt),
   autonomy_config: {
     "interval_seconds" => 60,
     "extension" => "system",
@@ -101,6 +104,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Runtime Manager agent: #{runtime_agent.previously_new_record? ? 'created' : 'updated'} (id=#{runtime_agent.id[0, 8]})"
+System::Seeds::CanonicalAgentContent.refresh!(runtime_agent, system_prompt: runtime_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

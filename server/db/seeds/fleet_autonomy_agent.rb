@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the Fleet Autonomy AI agent and the fleet approval chain.
 #
@@ -63,9 +64,11 @@ fleet_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   source_key: "fleet-autonomy"
 )
 fleet_agent.assign_attributes(
-  description: "Self-improving fleet reconciler — runs sensors, gates actions, extracts learnings",
+  # Text is assigned on create only; the refresh! below carries later seed text
+  # to an existing row unless an operator edited it (content/canonical_agent_content.rb).
+  description: (fleet_agent.new_record? ? System::Seeds::CanonicalAgentContent.description("fleet-autonomy") : fleet_agent.description),
   status: "active",
-  system_prompt: fleet_prompt,
+  system_prompt: (fleet_agent.new_record? ? fleet_prompt : fleet_agent.system_prompt),
   autonomy_config: { "interval_seconds" => 60, "extension" => "system" }
 )
 # tool_access.tool_families is its duty surface (IMP-777f59d4cc1e): sensors and
@@ -95,6 +98,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ Fleet Autonomy agent: #{fleet_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(fleet_agent, system_prompt: fleet_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared

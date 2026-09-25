@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "concerns/agent_setup_helpers"
+require_relative "content/canonical_agent_content"
 
 # Seeds the CVE Responder AI agent — dedicated to CVE intake (SBOM ingestion,
 # exposure scanning) and remediation orchestration. Carved out of Fleet
@@ -54,7 +55,9 @@ cve_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   source_key: "cve-responder"
 )
 cve_agent.assign_attributes(
-  description: "CVE intake + remediation — SBOM ingest, exposure scan, patch orchestration",
+  # Text is assigned on create only; the refresh! below carries later seed text
+  # to an existing row unless an operator edited it (content/canonical_agent_content.rb).
+  description: (cve_agent.new_record? ? System::Seeds::CanonicalAgentContent.description("cve-responder") : cve_agent.description),
   status: "active",
   autonomy_config: { "interval_seconds" => 60, "extension" => "system", "scope" => "cve" }
 )
@@ -67,7 +70,7 @@ cve_agent.assign_attributes(
 # triage and runbooks (the `system_cve` prefix), exposure and blast radius, the
 # packages and modules a patch moves through, and the instances it lands on.
 # Without it the export fell back to the read verbs every unscoped agent shares.
-cve_agent.system_prompt = cve_prompt
+cve_agent.system_prompt = cve_prompt if cve_agent.new_record?
 cve_agent.mcp_metadata = (cve_agent.mcp_metadata || {}).merge(
   "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
   "tool_access" => { "tool_families" => %w[
@@ -89,6 +92,7 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
   }
 )
 puts "  ✅ CVE Responder agent: #{cve_agent.previously_new_record? ? 'created' : 'updated'}"
+System::Seeds::CanonicalAgentContent.refresh!(cve_agent, system_prompt: cve_prompt)
 
 # ── Intervention policies: NOT written here ──────────────────────────────
 # System::Governance::PolicyReconciler is the SINGLE WRITER of the declared
