@@ -159,6 +159,7 @@ module System
       end
 
       record_expected_core_ref!(modules)
+      snapshot_latest_digests!(modules)
 
       refusal = core_mirror_preflight(modules)
       return refuse_dispatch!(modules, refusal) if refusal&.refuse?
@@ -983,6 +984,16 @@ module System
       # version + artifact) — only its file_spec seam.
       apply_package_file_spec!(node_module, result) if package_batch?
 
+      if (refusal = stale_retag_refusal(node_module, entry))
+        entry["error"] = refusal
+        # Terminal: a retry would skip again and re-tag the same :latest.
+        entry["no_retry"] = true
+        Rails.logger.error("[NativeModuleBuildOrchestrator] stale re-tag refused for #{slug}: #{refusal}")
+        emit_event("system.module_build.stale_retag_refused", severity: :high, module_name: slug,
+                                                                tag: entry["tag"], reason: refusal)
+        return false
+      end
+
       @batch.await_signature! if @batch.may_await_signature?
       sign_result = ::System::ModuleSigningService.sign!(
         oci_ref: full_oci_ref(node_module, entry["tag"]),
@@ -1049,6 +1060,7 @@ module System
       # #try_dispatch_queued! is refusing to drain, and any future caller
       # reaching dispatch by another path would resurrect the batch.
       return false if @batch.cancelled?
+      return false if entry["no_retry"]
       return false if entry["attempts"].to_i >= max_attempts
 
       entry["state"]    = "queued"
@@ -1256,6 +1268,89 @@ module System
 
     def package_batch?
       @batch.trigger == "package"
+    end
+
+    # === Stale re-tag guard (NARROW-DISPATCH) ===
+    #
+    # A content-address SKIP (should-skip-build.sh) makes module-forge-build.sh
+    # `oras tag <module>:latest <this tag>` and report that artifact's digest
+    # exactly as a fresh build would — the RESULT JSON carries no skip flag.
+    # push.sh moves :latest on EVERY push (shadow batches, publishes later
+    # refused by the provenance gate or the size floor, pushes never recorded),
+    # so :latest need not be what the fleet runs, and publishing auto-promotes.
+    #
+    # Dispatch snapshots :latest's digests per module; finalize refuses, BEFORE
+    # signing, (a) a re-tag of that :latest when it is not the current version,
+    # and (b) any artifact that is a recorded non-current version. A fresh build
+    # can match neither: SOURCE_DATE_EPOCH and the erofs UUID are functions of
+    # the build sha, so its digests are new. Package batches are exempt: their
+    # build script has no skip or re-tag arm.
+    #
+    # Registry reads are best-effort and never block: an unread snapshot or an
+    # unread built artifact leaves that half of the guard unmeasured, recorded
+    # as such, and publishing proceeds exactly as before.
+    def snapshot_latest_digests!(modules)
+      return if package_batch?
+
+      modules.each_value do |entry|
+        next if entry.key?("pre_dispatch_latest") || entry["pre_dispatch_latest_unresolved"]
+
+        node_module = find_node_module(entry["module"])
+        digests = node_module && ::System::OciArtifactDigests.resolve(
+          node_module: node_module, oci_ref: full_oci_ref(node_module, "latest")
+        )
+        if digests
+          entry["pre_dispatch_latest"] = digests.transform_keys(&:to_s)
+        else
+          entry["pre_dispatch_latest_unresolved"] = true
+          emit_event("system.module_build.latest_snapshot_unresolved", severity: :medium,
+                                                                       module_name: entry["module"])
+        end
+      end
+    end
+
+    def stale_retag_refusal(node_module, entry)
+      return nil if package_batch?
+
+      built = ::System::OciArtifactDigests.resolve(node_module: node_module,
+                                                   oci_ref: full_oci_ref(node_module, entry["tag"]))
+      return nil unless built
+
+      layer = built[:layer_digest]
+      current = node_module.current_version
+      current_layer = current_layer_digest(current)
+      return nil if layer.present? && layer == current_layer
+
+      latest = entry["pre_dispatch_latest"]
+      if latest && built[:manifest_digest] == latest["manifest_digest"]
+        return "content-address skip re-tagged :latest (layer #{latest['layer_digest'] || 'unknown'}), which is " \
+               "not the current version (layer #{current_layer || 'none'}) — refusing to publish a stale artifact; " \
+               "re-dispatch with BUILD_SKIP_UNCHANGED=0 on the builder, or promote the intended version deliberately"
+      end
+
+      stale = recorded_non_current_version(node_module, current, layer, entry["tag"])
+      return nil unless stale
+
+      "artifact layer #{layer} is recorded non-current version v#{stale.version_number} of #{node_module.name} " \
+        "(current is #{current ? "v#{current.version_number}" : 'none'}) — refusing to republish it as #{entry['tag']}"
+    end
+
+    def current_layer_digest(version)
+      return nil unless version
+
+      version.artifact&.dig("oci_digest").presence || version.try(:oci_digest).presence
+    end
+
+    # This build's OWN version row (same tag) is excluded: a finalize re-run
+    # after a partial publish would otherwise refuse its own artifact.
+    def recorded_non_current_version(node_module, current, layer, tag)
+      return nil if layer.blank?
+
+      scope = ::System::NodeModuleVersion.where(node_module: node_module)
+      scope = scope.where.not(id: current.id) if current
+      scope.order(version_number: :desc).detect do |v|
+        v.config.to_h["git_tag"] != tag && current_layer_digest(v) == layer
+      end
     end
 
     def package_context
