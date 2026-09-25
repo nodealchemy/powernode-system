@@ -1,10 +1,12 @@
 // Unit tests for register.ts
 //
 // register() is a pure side-effect entry point. It calls:
-//   1. featureRegistry.registerRoutes('system', [...])   — 12 routes
+//   1. featureRegistry.registerRoutes('system', [...])   — 13 routes
 //   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 13 items
-//   3. registerSystemEntities()                          — cross-reference wiring
-//   4. featureRegistry.registerComponentSlots({...})     — drawer views
+//   3. featureRegistry.registerNavItems('system', [...])  — 1 item, injected into
+//      core's existing "devops" section (fc-34, Module Builds)
+//   4. registerSystemEntities()                          — cross-reference wiring
+//   5. featureRegistry.registerComponentSlots({...})     — drawer views
 //
 // Strategy: mock the two dependencies so we can assert on exact payloads
 // without touching the DOM, React lazy loading, or the entity sub-system.
@@ -15,6 +17,7 @@
 
 const mockRegisterRoutes = jest.fn();
 const mockRegisterNavSections = jest.fn();
+const mockRegisterNavItems = jest.fn();
 const mockRegisterComponentSlots = jest.fn();
 const mockRegisterProviderCategoryHandlers = jest.fn();
 
@@ -22,6 +25,7 @@ jest.mock('@/shared/services/featureRegistry', () => ({
   featureRegistry: {
     registerRoutes: (...args: unknown[]) => mockRegisterRoutes(...args),
     registerNavSections: (...args: unknown[]) => mockRegisterNavSections(...args),
+    registerNavItems: (...args: unknown[]) => mockRegisterNavItems(...args),
     registerComponentSlots: (...args: unknown[]) => mockRegisterComponentSlots(...args),
     registerProviderCategoryHandlers: (...args: unknown[]) =>
       mockRegisterProviderCategoryHandlers(...args),
@@ -67,6 +71,7 @@ import { register } from './register';
 beforeEach(() => {
   mockRegisterRoutes.mockReset();
   mockRegisterNavSections.mockReset();
+  mockRegisterNavItems.mockReset();
   mockRegisterSystemEntities.mockReset();
 });
 
@@ -75,11 +80,12 @@ beforeEach(() => {
 // =============================================================================
 
 describe('register()', () => {
-  it('calls registerRoutes, registerNavSections, registerComponentSlots, and registerSystemEntities exactly once each', () => {
+  it('calls registerRoutes, registerNavSections, registerNavItems, registerComponentSlots, and registerSystemEntities exactly once each', () => {
     register();
 
     expect(mockRegisterRoutes).toHaveBeenCalledTimes(1);
     expect(mockRegisterNavSections).toHaveBeenCalledTimes(1);
+    expect(mockRegisterNavItems).toHaveBeenCalledTimes(1);
     expect(mockRegisterComponentSlots).toHaveBeenCalledTimes(1);
     expect(mockRegisterSystemEntities).toHaveBeenCalledTimes(1);
   });
@@ -89,6 +95,7 @@ describe('register()', () => {
 
     expect(mockRegisterRoutes).toHaveBeenCalledWith('system', expect.any(Array));
     expect(mockRegisterNavSections).toHaveBeenCalledWith('system', expect.any(Array));
+    expect(mockRegisterNavItems).toHaveBeenCalledWith('system', expect.any(Array));
   });
 
   it('is safe to call multiple times (each call registers routes again)', () => {
@@ -97,6 +104,7 @@ describe('register()', () => {
 
     expect(mockRegisterRoutes).toHaveBeenCalledTimes(2);
     expect(mockRegisterNavSections).toHaveBeenCalledTimes(2);
+    expect(mockRegisterNavItems).toHaveBeenCalledTimes(2);
     expect(mockRegisterComponentSlots).toHaveBeenCalledTimes(2);
     expect(mockRegisterSystemEntities).toHaveBeenCalledTimes(2);
   });
@@ -159,8 +167,8 @@ describe('registered routes', () => {
     routes = mockRegisterRoutes.mock.calls[0][1] as typeof routes;
   });
 
-  it('registers 12 routes in total', () => {
-    expect(routes).toHaveLength(12);
+  it('registers 13 routes in total', () => {
+    expect(routes).toHaveLength(13);
   });
 
   // Primary pages
@@ -240,6 +248,16 @@ describe('registered routes', () => {
     const r = routes.find((x) => x.path === '/system/ingress/*');
     expect(r).toBeDefined();
     expect(r!.permission).toBe('system.ingress.read');
+  });
+
+  // fc-34: the one route registered under core's /devops/* prefix instead of
+  // /system/* — absorbed from the deleted core CI/CD Module Builds tab, at
+  // the SAME URL so bookmarks keep resolving.
+  it('registers /devops/ci-cd/module-builds gated on system.module_builds.read', () => {
+    const r = routes.find((x) => x.path === '/devops/ci-cd/module-builds');
+    expect(r).toBeDefined();
+    expect(r!.component).toBeDefined();
+    expect(r!.permission).toBe('system.module_builds.read');
   });
 
   // Phase B.5's legacy redirect routes (nodes, templates, modules, fleet,
@@ -391,6 +409,39 @@ describe('registered nav sections', () => {
     const gated = items.filter((i) => i.permission !== undefined);
     expect(gated).toHaveLength(1);
     expect(gated.map((i) => i.label).sort()).toEqual(['Ingress']);
+  });
+});
+
+// =============================================================================
+// registerNavItems — fc-34, Module Builds injected into core's "devops" section
+// =============================================================================
+
+describe('registered nav items', () => {
+  type NavItem = {
+    label: string;
+    path: string;
+    icon?: string;
+    permission?: string;
+    section?: string;
+  };
+
+  let items: NavItem[];
+
+  beforeEach(() => {
+    register();
+    items = mockRegisterNavItems.mock.calls[0][1] as NavItem[];
+  });
+
+  it('registers exactly 1 nav item', () => {
+    expect(items).toHaveLength(1);
+  });
+
+  it('registers "Module Builds" into the "devops" section, gated on system.module_builds.read', () => {
+    const item = items.find((i) => i.label === 'Module Builds');
+    expect(item).toBeDefined();
+    expect(item!.path).toBe('/app/devops/ci-cd/module-builds');
+    expect(item!.section).toBe('devops');
+    expect(item!.permission).toBe('system.module_builds.read');
   });
 });
 
