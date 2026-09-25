@@ -136,8 +136,8 @@ describe('PlatformInfraTab', () => {
     }
   });
 
-  it.each(['services', 'children', 'health'])('falls back to Peer Liveness at the old /%s path', (segment) => {
-    renderAt(`${BASE}/${segment}`);
+  it('falls back to Peer Liveness at a path segment that is not a tab', () => {
+    renderAt(`${BASE}/not-a-tab`);
     expect(screen.getByRole('link', { name: 'Peer Liveness' }).className).toContain('border-theme-info-border');
     expect(screen.getByTestId('peer-liveness-monitor')).toBeInTheDocument();
   });
