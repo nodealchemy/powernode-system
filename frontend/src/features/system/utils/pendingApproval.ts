@@ -10,13 +10,12 @@
 import type { PendingApproval } from '../services/api/helpers';
 
 /**
- * Route of the operator approvals surface: the Autonomy tab's Approvals
- * section, which lists pending `Ai::ApprovalRequest` rows. The section is now
- * URL-addressable — see core `DashboardPage` (`/ai/agents/autonomy/*` under
- * `/app/*`) and `AutonomyDashboardPage`'s section routing — so this links
- * straight to it rather than to the tab's Overview.
+ * Route of the operator approvals surface: core's AI → Control → Approvals →
+ * Queue tab, which lists pending `Ai::ApprovalRequest` rows. It is the tab's
+ * own URL, not the Approvals leaf, because the leaf's index redirect would
+ * drop a `?request=` deep link.
  */
-export const APPROVALS_SURFACE_PATH = '/app/ai/agents/autonomy/approvals';
+export const APPROVALS_SURFACE_PATH = '/app/ai/control/approvals/queue';
 
 export interface PendingApprovalNotice {
   type: 'info';

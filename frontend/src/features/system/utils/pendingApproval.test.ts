@@ -52,3 +52,11 @@ describe('pendingApprovalNotice', () => {
     expect(notice.details).toMatchObject({ deferred_operation_id: 'dop-1' });
   });
 });
+
+// The link must name the approval queue's own URL: core's AI → Control →
+// Approvals → Queue tab. A leaf-index URL would redirect and drop ?request=.
+describe('APPROVALS_SURFACE_PATH', () => {
+  it('is the Control approval queue', () => {
+    expect(APPROVALS_SURFACE_PATH).toBe('/app/ai/control/approvals/queue');
+  });
+});
