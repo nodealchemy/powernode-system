@@ -251,26 +251,21 @@ describe('DeployPlatformPanel', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 9. Flat response shape (no double-envelope) — response.data.card
+  // 9. Only the server envelope carries the card
   // ---------------------------------------------------------------------------
-  it('handles a flat response where card is at response.data.card (no data.data wrapping)', async () => {
-    // Some endpoints return data without a nested `data` wrapper.
-    // The component does: const inner = response.data?.data ?? response.data
-    // so if response.data has no `data` key, it falls back to response.data itself.
+  it('reads the card only from the server envelope (a body without data.data has no card)', async () => {
+    // The wizard action always answers through render_success, so the card
+    // sits at response.data.data.card. platformDeploymentApi.getWizard
+    // unwraps exactly that envelope (fc-39); a bare body is not a shape the
+    // server sends, and it reads as a missing card rather than being guessed at.
     mockGet.mockResolvedValue({ data: WIZARD_INNER });
 
     renderPanel();
 
-    await waitFor(() => expect(screen.getByTestId('wizard-card')).toBeInTheDocument());
-
-    expect(mockWizardCard).toHaveBeenCalledWith(
-      expect.objectContaining({
-        card: expect.objectContaining({
-          kind: 'platform_deployment_wizard',
-          tool: 'system_deploy_platform',
-        }),
-      }),
+    await waitFor(() =>
+      expect(screen.getByText('Wizard payload missing `card` shape')).toBeInTheDocument(),
     );
+    expect(mockWizardCard).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------

@@ -12,11 +12,9 @@ import {
 import { Card } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { StatTile, MeterBar } from '@/shared/components/charts';
-import { apiClient } from '@/shared/services/apiClient';
 import { systemApi } from '../services/systemApi';
 import { cveApi } from '../services/api/cveApi';
-import { extractData } from '../services/api/helpers';
-import type { ApiEnvelope } from '../services/api/types';
+import { instancePoolsApi } from './instance-pools/instancePoolsApi';
 import { FleetTopology } from './topology/FleetTopology';
 import type { FleetTopologySnapshot } from './topology/fleetTopologyData';
 import type { SystemOverviewStats, SystemRecentActivity } from '../types/system.types';
@@ -83,12 +81,6 @@ interface PoolReadiness {
   pools: number;
 }
 
-/** Subset of `InstancePool#to_summary` this page reads. */
-interface PoolSummaryRow {
-  ready_count?: number;
-  target_size?: number;
-}
-
 /**
  * Swallow a per-lane failure and return the fallback — same contract as
  * `overviewApi.softFetch`. `null` means "this lane is unavailable" and the
@@ -110,18 +102,12 @@ async function loadOpenCveCount(): Promise<number | null> {
   );
 }
 
-/**
- * Pool readiness. `systemApi` exposes no instance-pool helper, so this reads
- * the endpoint directly with the same envelope helpers every other lane uses.
- */
+/** Pool readiness, read through the instance-pool client. */
 async function loadPoolReadiness(): Promise<PoolReadiness | null> {
   return softFetch(
-    apiClient
-      .get<ApiEnvelope<{ pools: PoolSummaryRow[] }>>('/system/instance_pools', {
-        params: { status: 'active' },
-      })
-      .then((response) => {
-        const pools = extractData(response).pools ?? [];
+    instancePoolsApi
+      .list({ status: 'active' })
+      .then(({ pools }) => {
         return {
           ready: pools.reduce((sum, p) => sum + (p.ready_count ?? 0), 0),
           target: pools.reduce((sum, p) => sum + (p.target_size ?? 0), 0),

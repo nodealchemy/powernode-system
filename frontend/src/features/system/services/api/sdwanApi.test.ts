@@ -659,6 +659,17 @@ describe('sdwanApi.getFederationPeers', () => {
     expect(result.peers).toEqual([FEDERATION_PEER]);
   });
 
+  it('passes peer_kind/status filters as query params (the Catalog Browser\'s read)', async () => {
+    mockGet.mockResolvedValue(envelope({ federation_peers: [FEDERATION_PEER], count: 1 }));
+
+    const result = await sdwanApi.getFederationPeers({ peer_kind: 'platform', status: 'active,enrolled' });
+
+    expect(mockGet).toHaveBeenCalledWith('/system/sdwan/federation_peers', {
+      params: { peer_kind: 'platform', status: 'active,enrolled' },
+    });
+    expect(result.peers).toEqual([FEDERATION_PEER]);
+  });
+
   it('returns empty peers when federation_peers key is missing', async () => {
     mockGet.mockResolvedValue(envelope({ count: 0 }));
 

@@ -106,6 +106,17 @@ export const platformDeploymentApi = {
   },
 
   /**
+   * The wizard card payload (`{ card, ... }`) the standalone deploy panel
+   * renders, unwrapped from the envelope.
+   */
+  getWizard: async (): Promise<Record<string, unknown> | undefined> => {
+    const response = await apiClient.get<{ data?: Record<string, unknown> }>(
+      '/system/platform/deployments/wizard'
+    );
+    return response.data?.data;
+  },
+
+  /**
    * Queue a platform deployment. Returns the raw `response.data` so the caller
    * keeps its existing `data?.data || data` unwrapping untouched.
    */

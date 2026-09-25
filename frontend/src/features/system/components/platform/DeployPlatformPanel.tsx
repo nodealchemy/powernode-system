@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Rocket } from 'lucide-react';
-import { apiClient } from '@/shared/services/apiClient';
+import { platformDeploymentApi } from '../../services/api/platformDeploymentApi';
 import { logger } from '@/shared/utils/logger';
 import type { ChatCard } from '@/shared/types/ai';
 import { PlatformDeploymentWizardCard } from './PlatformDeploymentWizardCard';
@@ -21,10 +21,9 @@ export const DeployPlatformPanel: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    apiClient
-      .get<{ data?: { card?: unknown } }>('/system/platform/deployments/wizard')
-      .then((response) => {
-        const inner = response.data?.data ?? response.data;
+    platformDeploymentApi
+      .getWizard()
+      .then((inner) => {
         const wizardCard = (inner as { card?: Record<string, unknown> })?.card;
         if (!wizardCard) {
           if (!cancelled) setError('Wizard payload missing `card` shape');

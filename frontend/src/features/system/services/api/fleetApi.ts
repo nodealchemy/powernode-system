@@ -106,6 +106,18 @@ export const fleetApi = {
     return extractData(response);
   },
 
+  // Operator verdict on one attribution candidate; the attributor boosts or
+  // downweights similar candidates on later calls.
+  attributionFeedback: async (feedback: {
+    instance_id: string;
+    candidate_module_id?: string | null;
+    candidate_kind: string;
+    confirmed: boolean;
+    note?: string;
+  }): Promise<void> => {
+    await apiClient.post('/system/fleet/attribution_feedback', feedback);
+  },
+
   // Remediation effectiveness per signal kind + currently stuck fingerprints.
   remediationOutcomes: async (windowDays = 7): Promise<RemediationOutcomesSummary> => {
     const response = await apiClient.get<ApiEnvelope<RemediationOutcomesSummary>>(

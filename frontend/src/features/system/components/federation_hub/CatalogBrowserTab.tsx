@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Server } from 'lucide-react';
-import { apiClient } from '@/shared/services/apiClient';
-import type { ApiEnvelope } from '../../services/api/types';
-import { extractData } from '../../services/api/helpers';
+import { sdwanApi } from '../../services/api/sdwanApi';
 import { PeerCatalogBrowser } from '../federation/PeerCatalogBrowser';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
@@ -22,10 +20,6 @@ interface PeerSummary {
   status?: string;
 }
 
-interface FederationPeersResponse {
-  federation_peers: PeerSummary[];
-}
-
 export const CatalogBrowserTab: React.FC = () => {
   const [peers, setPeers] = useState<PeerSummary[]>([]);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
@@ -36,13 +30,10 @@ export const CatalogBrowserTab: React.FC = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    apiClient
-      .get<ApiEnvelope<FederationPeersResponse>>('/system/sdwan/federation_peers', {
-        params: { peer_kind: 'platform', status: 'active,enrolled,degraded' },
-      })
-      .then((resp) => {
+    sdwanApi
+      .getFederationPeers({ peer_kind: 'platform', status: 'active,enrolled,degraded' })
+      .then(({ peers: list }) => {
         if (cancelled) return;
-        const list = extractData(resp).federation_peers ?? [];
         setPeers(list);
         if (list.length > 0) setSelectedPeerId(list[0].id);
       })

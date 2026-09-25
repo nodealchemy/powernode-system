@@ -323,10 +323,18 @@ export const sdwanApi = {
 
   // ──── Slice 6: Federation peers ────────────────────────────────────
 
-  getFederationPeers: async (): Promise<{ peers: SdwanFederationPeer[] }> => {
-    const response = await apiClient.get<ApiEnvelope<{ federation_peers: SdwanFederationPeer[]; count: number }>>(
-      '/system/sdwan/federation_peers'
-    );
+  getFederationPeers: async (filters?: {
+    peer_kind?: string;
+    status?: string;
+  }): Promise<{ peers: SdwanFederationPeer[] }> => {
+    const response = filters
+      ? await apiClient.get<ApiEnvelope<{ federation_peers: SdwanFederationPeer[]; count: number }>>(
+        '/system/sdwan/federation_peers',
+        { params: filters }
+      )
+      : await apiClient.get<ApiEnvelope<{ federation_peers: SdwanFederationPeer[]; count: number }>>(
+        '/system/sdwan/federation_peers'
+      );
     return { peers: extractData(response).federation_peers ?? [] };
   },
 

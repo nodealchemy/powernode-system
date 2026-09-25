@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { apiClient } from '@/shared/services/apiClient';
+import { fleetApi } from '../../services/api/fleetApi';
 
 interface Props {
   instanceId: string;
@@ -31,7 +31,7 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
   const submit = async (confirmed: boolean): Promise<void> => {
     setSubmitting(true);
     try {
-      await apiClient.post('/system/fleet/attribution_feedback', {
+      await fleetApi.attributionFeedback({
         instance_id: instanceId,
         candidate_module_id: candidateModuleId,
         candidate_kind: candidateKind,
