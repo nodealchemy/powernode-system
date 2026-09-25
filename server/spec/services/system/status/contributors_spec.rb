@@ -114,7 +114,8 @@ RSpec.describe System::Status::Contributors do
       rows = Platform::ComponentStatus.where(account_id: account.id,
                                              component_kind: "platform_subsystem")
 
-      expect(rows.count).to eq(System::Platform::CompositeHealthProbe::SUBSYSTEMS.size)
+      # postgres, redis and sidekiq are core's core_service rows (fc-47).
+      expect(rows.count).to eq(System::Platform::CompositeHealthProbe::SUBSYSTEMS.size - 3)
       expect(rows.pluck(:verdict).uniq).to eq([ Platform::ComponentStatus::NOT_MEASURED ])
       expect(result[:kinds]["platform_subsystem"][:errors]).to eq(0)
     end
@@ -123,26 +124,44 @@ RSpec.describe System::Status::Contributors do
       System::PlatformHealthSnapshot.create!(
         account: account, overall: "down", captured_at: Time.current, source: "spec",
         subsystems: System::Platform::CompositeHealthProbe::SUBSYSTEMS.index_with { |name|
-          name == :postgres ? { "status" => "down", "error" => "refused" } : { "status" => "ok" }
+          name == :reverse_proxy ? { "status" => "down", "error" => "refused" } : { "status" => "ok" }
         }
       )
 
       Platform::Status::SweepService.run_once!(account)
 
-      postgres = Platform::ComponentStatus.find_by(account_id: account.id,
-                                                   component_kind: "platform_subsystem",
-                                                   component_ref: "postgres")
+      proxy = Platform::ComponentStatus.find_by(account_id: account.id,
+                                                component_kind: "platform_subsystem",
+                                                component_ref: "reverse_proxy")
       rails_row = Platform::ComponentStatus.find_by(account_id: account.id,
                                                     component_kind: "platform_subsystem",
                                                     component_ref: "rails")
 
-      expect(postgres.verdict).to eq(Platform::ComponentStatus::DOWN)
+      expect(proxy.verdict).to eq(Platform::ComponentStatus::DOWN)
       expect(rails_row.verdict).to eq(Platform::ComponentStatus::OK)
-      expect(postgres.display_name).to eq("Postgres")
-      expect(postgres.presentation["icon"]).to eq("Activity")
-      expect(postgres.links.first["path"]).to eq("/app/system/compute/platform")
-      expect(postgres.actions).to eq([])
-      expect(postgres.conditions.map { |c| c["type"] }).to match_array(%w[Healthy Fresh])
+      expect(proxy.display_name).to eq("Reverse proxy")
+      expect(proxy.presentation["icon"]).to eq("Activity")
+      expect(proxy.links.first["path"]).to eq("/app/system/compute/platform")
+      expect(proxy.actions).to eq([])
+      expect(proxy.conditions.map { |c| c["type"] }).to match_array(%w[Healthy Fresh])
+    end
+
+    # fc-47 review M-1: with this extension installed, an account with no
+    # bound agent clone (so no probe snapshot) still gets LIVE database, redis
+    # and sidekiq rows — core's shared core_service rows — and no second,
+    # not_measured copy of them from this kind.
+    it "gives an account with no snapshot live core service rows, and no duplicates" do
+      allow(Platform::Health::CoreChecks).to receive(:all)
+        .and_return(Platform::Health::CoreChecks::SERVICES.index_with { { status: "healthy" } })
+      Rails.cache.delete(Platform::Status::Contributors::CoreService::CACHE_KEY)
+      Platform::Status::Registry.register("core_service", Platform::Status::Contributors::CoreService.new)
+
+      Platform::Status::SweepService.run_once!(account)
+
+      core = Platform::ComponentStatus.where(account_id: nil, component_kind: "core_service")
+      expect(core.where(component_ref: %w[database redis sidekiq]).pluck(:verdict).uniq).to eq([ Platform::ComponentStatus::OK ])
+      expect(Platform::ComponentStatus.where(account_id: account.id, component_kind: "platform_subsystem",
+                                             component_ref: %w[postgres redis sidekiq])).to be_empty
     end
 
     it "moves observed_generation when a new snapshot is captured, and holds it when none is" do

@@ -115,16 +115,20 @@ module System
           def fresh?(now) = snapshot? && captured_at >= (now - stale_after_seconds)
         end
 
+        # The probe also measures these, but core's core_service contributor
+        # reports them as shared rows from live checks, for every tenant. This
+        # kind replays a per-account snapshot, which an account with no bound
+        # agent clone never gets, so its copies would sit at not_measured for
+        # most tenants and duplicate the core rows for the rest (fc-47).
+        CORE_SERVICE_SUBSYSTEMS = %i[postgres redis sidekiq].freeze
+
         def kind = KIND
 
-        # Core's core_service contributor would report these again from its
-        # own checks; this probe already carries them as postgres, redis and
-        # sidekiq, so it claims them and core leaves them out (fc-47).
-        def reports_core_services = %w[database redis sidekiq]
 
         def account_scoped? = true
 
-        # Always the full declared set, in the probe's own reading order.
+        # Always the full declared set minus CORE_SERVICE_SUBSYSTEMS, in the
+        # probe's own reading order.
         def each_component(account)
           snapshot = latest_snapshot(account)
           stale_after = stale_after_seconds
@@ -133,7 +137,7 @@ module System
           # per minute would be a real cost for one message.
           absence = snapshot ? nil : snapshot_absence(account)
 
-          PROBE::SUBSYSTEMS.each do |name|
+          (PROBE::SUBSYSTEMS - CORE_SERVICE_SUBSYSTEMS).each do |name|
             key = name.to_s
             yield Subsystem.new(
               key: key,

@@ -8,7 +8,8 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
   let(:account)     { create(:account) }
   let(:contributor) { described_class.new }
   let(:probe)       { System::Platform::CompositeHealthProbe }
-  let(:keys)        { probe::SUBSYSTEMS.map(&:to_s) }
+  # postgres, redis and sidekiq are core's core_service rows, not this kind's.
+  let(:keys)        { (probe::SUBSYSTEMS.map(&:to_s) - %w[postgres redis sidekiq]) }
 
   def snapshot!(subsystems:, captured_at: Time.current, overall: "ok")
     System::PlatformHealthSnapshot.create!(
@@ -34,16 +35,25 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
   end
 
   describe "the component set" do
-    it "is exactly the probe's declared subsystems, derived not restated" do
+    it "is the probe's declared subsystems, derived not restated, minus the core services" do
       expect(components.map(&:key)).to eq(keys)
-      expect(components.size).to eq(probe::SUBSYSTEMS.size)
+      expect(components.size).to eq(probe::SUBSYSTEMS.size - 3)
+    end
+
+    # fc-47 review M-1: core's core_service contributor reports database,
+    # redis and sidekiq as shared rows from live checks, for every tenant.
+    # This kind replays a per-account snapshot that an account with no bound
+    # agent clone never gets, so its copies of them were permanently
+    # not_measured for most tenants. It leaves them to core.
+    it "emits no postgres, redis or sidekiq row" do
+      expect(components.map(&:key)).not_to include("postgres", "redis", "sidekiq")
     end
 
     it "emits a subsystem the probe adds, with no edit to the contributor" do
       # The whole point of deriving from SUBSYSTEMS. Both arms: the invented
       # key appears, and it disappears again when the constant no longer
       # carries it.
-      baseline = probe::SUBSYSTEMS.size
+      baseline = components.size
       stub_const("#{probe}::SUBSYSTEMS", (probe::SUBSYSTEMS + [ :quantum_link ]).freeze)
 
       expect(components.map(&:key)).to include("quantum_link")
@@ -65,8 +75,8 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
 
     let(:mixed_entries) do
       {
-        "postgres" => { "status" => "down", "error" => "Errno::ECONNREFUSED: refused",
-                        "observed_via" => "SELECT 1" },
+        "reverse_proxy" => { "status" => "down", "error" => "Errno::ECONNREFUSED: refused",
+                             "observed_via" => "TCP connect" },
         "sdwan" => { "status" => "degraded", "observed_via" => "BGP session state",
                      "bgp" => { "total" => 3, "established" => 1 } },
         "mcp_endpoint" => { "status" => "not_measured", "reason" => "no health endpoint configured",
@@ -78,7 +88,7 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
       by_key = components.index_by(&:key)
 
       expect(verdict(by_key["rails"])).to eq(Platform::ComponentStatus::OK)
-      expect(verdict(by_key["postgres"])).to eq(Platform::ComponentStatus::DOWN)
+      expect(verdict(by_key["reverse_proxy"])).to eq(Platform::ComponentStatus::DOWN)
       expect(verdict(by_key["sdwan"])).to eq(Platform::ComponentStatus::DEGRADED)
       expect(verdict(by_key["mcp_endpoint"])).to eq(Platform::ComponentStatus::NOT_MEASURED)
     end
@@ -92,15 +102,15 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
     end
 
     it "carries the probe's own prose and evidence through rather than summarising it" do
-      postgres = condition(components.find { |r| r.key == "postgres" }, "Healthy")
+      proxy = condition(components.find { |r| r.key == "reverse_proxy" }, "Healthy")
 
-      expect(postgres["reason"]).to eq("Down")
-      expect(postgres["severity"]).to eq("down")
-      expect(postgres["message"]).to include("Errno::ECONNREFUSED")
-      expect(postgres["evidence"]).to include("observed_via" => "SELECT 1")
+      expect(proxy["reason"]).to eq("Down")
+      expect(proxy["severity"]).to eq("down")
+      expect(proxy["message"]).to include("Errno::ECONNREFUSED")
+      expect(proxy["evidence"]).to include("observed_via" => "TCP connect")
       # `status` is the condition's own field; duplicating it into evidence
       # would give a reader two places to disagree.
-      expect(postgres["evidence"]).not_to have_key("status")
+      expect(proxy["evidence"]).not_to have_key("status")
     end
 
     it "reserves the down severity for down, so degraded cannot silently escalate" do
@@ -169,7 +179,7 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
     end
 
     it "emits one not_measured row per known subsystem, never zero rows" do
-      expect(components.size).to eq(probe::SUBSYSTEMS.size)
+      expect(components.size).to eq(keys.size)
 
       components.each do |record|
         expect(verdict(record)).to eq(Platform::ComponentStatus::NOT_MEASURED)
@@ -261,18 +271,6 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
     it "links to the Platform page" do
       expect(contributor.links_for(nil))
         .to eq([ { "label" => "Platform", "path" => "/app/system/compute/platform" } ])
-    end
-
-    # fc-47 review M4: its probe already reports postgres, redis and sidekiq,
-    # so core's core_service contributor must not add a second row for each.
-    it "claims the core services its probe already reports" do
-      expect(contributor.reports_core_services).to eq(%w[database redis sidekiq])
-    end
-
-    it "makes core_service leave those services out while registered" do
-      Platform::Status::Registry.register(described_class::KIND, contributor)
-
-      expect(Platform::Status::Contributors::CoreService.new.services_to_measure).to eq(%i[disk memory cpu])
     end
 
     it "offers no actions, because platform_subsystem is not_actuatable by default" do
