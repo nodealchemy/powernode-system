@@ -32,10 +32,16 @@ module Ai
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_create_architecture", mutating: true
       declare_action "system_delete_architecture", mutating: true, destructive: true
-      declare_action "system_get_architecture", mutating: false
+      declare_action "system_get_architecture", mutating: false,
+                     returns: "architecture: names, family, aliases, flags and usage counts for node_platforms, " \
+                              "package_repositories and packages",
+                     refuses: "no architecture with that id exists"
       declare_action "system_list_architectures", mutating: false
       declare_action "system_propose_architecture", mutating: true
-      declare_action "system_update_architecture", mutating: true
+      declare_action "system_update_architecture", mutating: true,
+                     returns: "the updated architecture",
+                     refuses: [ "no architecture with that id exists", "the architecture is a protected canonical row",
+                                "the attributes fail validation" ]
 
       # Generic top-level definition used by BaseTool#validate_params!.
       # Per-action schemas are in #action_definitions below.
