@@ -968,7 +968,7 @@ func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 		// A sole-source user is a non-empty impact, so it needs this
 		// composition's approval (review 2, finding 3).
 		h := newRebaseHarness(t, []rebaseModule{survivor([]string{"1.1.1.1:443"}), noConflict},
-			rebaseOpts{selfHosted: true, enforce: true, approval: defaultRebaseKey()})
+			rebaseOpts{selfHosted: true, enforce: true, approval: approvalFor("devpin-pg@sha256:dead1")})
 		st := h.run(t)
 		rebased := h.signalsFor(stageStateRebased)
 		if hasEntry(st, "devpin-pg") || len(rebased) != 1 || !strings.Contains(rebased[0], "pgdev(uid 5001, devpin-pg)") {
@@ -1200,7 +1200,7 @@ func TestStateRebase_NonEmptyImpactNeedsPerCompositionApproval(t *testing.T) {
 	}{
 		{"no approval", "", false},
 		{"approval for another composition", "0123456789abcdef\n", false},
-		{"approval for this composition", defaultRebaseKey() + "\n", true},
+		{"approval for this composition", approvalFor("devpin-u@sha256:dead5") + "\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRebaseHarness(t, withUser(), rebaseOpts{selfHosted: true, enforce: true, approval: tc.approval})
@@ -1213,7 +1213,7 @@ func TestStateRebase_NonEmptyImpactNeedsPerCompositionApproval(t *testing.T) {
 					t.Errorf("stamped without approval")
 				}
 				would := h.signalsFor(stageStateWouldRebase)
-				if len(would) != 1 || !strings.Contains(would[0], defaultRebaseKey()) || !strings.Contains(would[0], "pgdev") {
+				if len(would) != 1 || !strings.Contains(would[0], approvalFor("devpin-u@sha256:dead5")) || !strings.Contains(would[0], "pgdev") {
 					t.Errorf("want a report naming the key to approve and the impact, got %v", would)
 				}
 			}
@@ -1225,7 +1225,7 @@ func TestStateRebase_NonEmptyImpactNeedsPerCompositionApproval(t *testing.T) {
 		if st := h.run(t); !hasEntry(st, "devpin-u") {
 			t.Fatalf("dropped without approval")
 		}
-		writeRebaseFixture(t, StateRebaseEnableSentinel, defaultRebaseKey()+"\n")
+		writeRebaseFixture(t, StateRebaseEnableSentinel, approvalFor("devpin-u@sha256:dead5")+"\n")
 		if st := h.run(t); hasEntry(st, "devpin-u") {
 			t.Errorf("approval written after the first tick was ignored: %v", *h.signals)
 		}
@@ -1292,4 +1292,122 @@ func TestStateRebase_EmptiedStateIsNotTheFirstBootBaseline(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.layout.Root, "opt/m-new/marker")); err != nil {
 		t.Errorf("m-new was not hot-copied onto / (baseline skip): %v; signals %v", err, *h.signals)
 	}
+}
+
+// approvalFor is the token an operator writes to approve dropping exactly the
+// named dead entries (id@digest) in the default composition.
+func approvalFor(dead ...string) string {
+	return stateRebaseApprovalToken(defaultRebaseKey(), dead)
+}
+
+// Delta re-check: the render's real order is random, so an ID-sorted before/
+// after diff hides a dead module's variant of a shared user whenever the dead
+// ID sorts after the survivor's. The dead module's OWN line is compared with
+// the surviving one instead — under both orderings.
+func TestStateRebase_SharedUserVariantIsNeverAnEmptyImpact(t *testing.T) {
+	for _, deadID := range []string{"a-dead", "z-dead"} {
+		t.Run(deadID, func(t *testing.T) {
+			pg := func(home string) []manifest.ManifestUser {
+				return []manifest.ManifestUser{{Name: "postgres", UID: 999, PrimaryGID: 999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: home}}
+			}
+			mods := []rebaseModule{
+				{id: "m-postgres", digest: "sha256:aaa3", assigned: true, inState: true, composed: true, users: pg("/var/lib/postgresql")},
+				{id: deadID, digest: "sha256:dead6", inState: true, services: true, users: pg("/srv/pg-dev")},
+			}
+			h := newRebaseHarness(t, mods, rebaseOpts{selfHosted: true, enforce: true})
+			st := h.run(t)
+			if !hasEntry(st, deadID) || st.RebasedAgainst != "" {
+				t.Errorf("%s: dropped without approval although its postgres line differs from the survivor's", deadID)
+			}
+			would := h.signalsFor(stageStateWouldRebase)
+			if len(would) != 1 || !strings.Contains(would[0], "user postgres") || !strings.Contains(would[0], "AWAITING APPROVAL") {
+				t.Errorf("%s: want an awaiting-approval report naming the postgres variant, got %v", deadID, would)
+			}
+
+			// Control: the same pair with IDENTICAL lines is an empty impact
+			// and drops on its own.
+			same := []rebaseModule{mods[0], mods[1]}
+			same[1].users = pg("/var/lib/postgresql")
+			c := newRebaseHarness(t, same, rebaseOpts{selfHosted: true, enforce: true})
+			if cst := c.run(t); hasEntry(cst, deadID) {
+				t.Errorf("%s control: identical declaration must be an empty impact and drop: %v", deadID, *c.signals)
+			}
+		})
+	}
+}
+
+// The approval names exactly what was reported: this composition's key AND
+// the dead set. The bare key, or a token for a different dead set, approves
+// nothing.
+func TestStateRebase_ApprovalIsBoundToTheDeadSet(t *testing.T) {
+	mods := []rebaseModule{
+		{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true},
+		{id: "devpin-u", digest: "sha256:dead5", inState: true, services: true,
+			users: []manifest.ManifestUser{{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
+	}
+	for _, tc := range []struct {
+		name     string
+		approval string
+		drop     bool
+	}{
+		{"bare key", defaultRebaseKey(), false},
+		{"token for another dead set", approvalFor("devpin-u@sha256:0ther"), false},
+		{"token for this dead set", approvalFor("devpin-u@sha256:dead5"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRebaseHarness(t, mods, rebaseOpts{selfHosted: true, enforce: true, approval: tc.approval + "\n"})
+			st := h.run(t)
+			if hasEntry(st, "devpin-u") == tc.drop {
+				t.Errorf("dropped=%t, want %t (%v)", !hasEntry(st, "devpin-u"), tc.drop, *h.signals)
+			}
+			if !tc.drop {
+				would := h.signalsFor(stageStateWouldRebase)
+				if len(would) != 1 || !strings.Contains(would[0], approvalFor("devpin-u@sha256:dead5")) {
+					t.Errorf("the report must print the full approval token, got %v", would)
+				}
+			}
+		})
+	}
+}
+
+// The group half: a dead module's member of a shared group that no survivor
+// keeps is a change, under both orderings; a member a survivor also lists is
+// not.
+func TestStateRebase_SharedGroupMemberLossIsNeverAnEmptyImpact(t *testing.T) {
+	for _, deadID := range []string{"a-dead", "z-dead"} {
+		for _, survivorKeeps := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/survivor-keeps-member=%t", deadID, survivorKeeps), func(t *testing.T) {
+				survivor := rebaseModule{id: "m-postgres", digest: "sha256:aaa3", assigned: true, inState: true, composed: true}
+				dead := rebaseModule{id: deadID, digest: "sha256:dead7", inState: true, services: true}
+				h := newRebaseHarnessWithGroups(t, survivor, dead, survivorKeeps)
+				st := h.run(t)
+				if hasEntry(st, deadID) == survivorKeeps {
+					t.Errorf("dropped=%t, want %t (%v)", !hasEntry(st, deadID), survivorKeeps, *h.signals)
+				}
+			})
+		}
+	}
+}
+
+// newRebaseHarnessWithGroups declares group ssl-cert (gid 110) in both modules;
+// the dead module lists member pgdev, the survivor lists it only when keeps.
+func newRebaseHarnessWithGroups(t *testing.T, survivor, dead rebaseModule, keeps bool) *rebaseHarness {
+	t.Helper()
+	h := newRebaseHarness(t, []rebaseModule{survivor, dead}, rebaseOpts{selfHosted: true, enforce: true})
+	patch := func(m rebaseModule, members []string) {
+		mf := m.manifest()
+		mf.Groups = []manifest.ManifestGroup{{Name: "ssl-cert", GID: 110, Members: members}}
+		writeManifestFixture(t, h.r.cfg.ManifestRoot, mf)
+		if m.assigned {
+			body, _ := json.Marshal(mf)
+			h.r.cfg.ModulesClient.(*stubModulesClient).responses["/api/v1/system/node_api/modules/"+m.id] = `{"success": true, "data": ` + string(body) + `}`
+		}
+	}
+	var sm []string
+	if keeps {
+		sm = []string{"pgdev"}
+	}
+	patch(survivor, sm)
+	patch(dead, []string{"pgdev"})
+	return h
 }

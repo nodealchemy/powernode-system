@@ -120,9 +120,20 @@ func resolveStateRebaseMode() (stateRebaseMode, string) {
 	return stateRebaseReportOnly, ""
 }
 
-func approvalNames(approval, key string) bool {
+// stateRebaseApprovalToken is what the enable sentinel must contain to approve
+// dropping deadNames (id@digest) under composition key: the key AND a hash of
+// the exact dead set reported, so an approval covers precisely what the
+// operator read — not a later, different set in the same composition.
+func stateRebaseApprovalToken(key string, deadNames []string) string {
+	names := append([]string(nil), deadNames...)
+	sort.Strings(names)
+	sum := sha256.Sum256([]byte(strings.Join(names, "\n")))
+	return key + ":" + hex.EncodeToString(sum[:])[:16]
+}
+
+func approvalNames(approval, token string) bool {
 	for _, line := range strings.Split(approval, "\n") {
-		if strings.TrimSpace(line) == key {
+		if strings.TrimSpace(line) == token {
 			return true
 		}
 	}
@@ -401,9 +412,10 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 	summary := fmt.Sprintf(
 		"%d module(s) in state.json are not part of this boot's composition and nothing shows them live (not mounted, not a lower layer of /, no loaded units): %s; %s",
 		len(dead), strings.Join(names, ", "), impact.describe())
+	token := stateRebaseApprovalToken(key, names)
 	howToApply := fmt.Sprintf("create %s to apply", StateRebaseEnableSentinel)
 	if !impact.empty() {
-		howToApply = fmt.Sprintf("the render impact is not empty, so applying needs %s to contain this composition's key %s", StateRebaseEnableSentinel, key)
+		howToApply = fmt.Sprintf("the render impact is not empty, so applying needs %s to contain the approval token %s", StateRebaseEnableSentinel, token)
 	}
 	wouldCond := "would-drop:" + key + ":" + strings.Join(names, ",")
 
@@ -427,7 +439,7 @@ func (r *Reconciler) rebaseStateAgainstBoot(ctx context.Context, current *mount.
 			strings.Join(names, ", "), strings.Join(impact.idConflicts, "; "))
 		return
 	}
-	if !impact.empty() && !approvalNames(approval, key) {
+	if !impact.empty() && !approvalNames(approval, token) {
 		ev.note(stageStateWouldRebase, wouldCond, fmt.Errorf("AWAITING APPROVAL, nothing changed (%s): %s", howToApply, summary))
 		r.stateRebaseMemo = memo
 		return
@@ -595,6 +607,44 @@ func (r *Reconciler) stateRebaseImpact(current *mount.State, bc *BootComposedBre
 			}
 		}
 	}
+	// The render's real order is map order (offer 01a0da22), so which of two
+	// declarations of the same name is on disk is not knowable, and the
+	// before/after diff below — taken over ID-sorted sets — would call a dead
+	// module's variant "no change" whenever its ID happens to sort after the
+	// survivor's. Compare the dead module's OWN line with the surviving one:
+	// any difference is a change the drop could make.
+	for _, d := range dead {
+		for _, u := range d.Users {
+			au, ok := aUsers[u.Name]
+			if !ok || conflicted["user:"+u.Name] {
+				continue
+			}
+			own := etcidentity.User{Name: u.Name, UID: u.UID, PrimaryGID: u.PrimaryGID, PrimaryGroup: u.PrimaryGroup,
+				Shell: u.Shell, Home: u.Home, Gecos: u.Gecos, SupplementaryGroups: u.SupplementaryGroups}
+			if string(etcidentity.RenderPasswd(&etcidentity.Set{Users: []etcidentity.User{own}})) !=
+				string(etcidentity.RenderPasswd(&etcidentity.Set{Users: []etcidentity.User{au}})) ||
+				strings.Join(own.SupplementaryGroups, ",") != strings.Join(au.SupplementaryGroups, ",") {
+				imp.changed = append(imp.changed, fmt.Sprintf("user %s (%s declares a different entry)", u.Name, d.ID))
+			}
+		}
+		for _, g := range d.Groups {
+			ag, ok := aGroups[g.Name]
+			if !ok || conflicted["group:"+g.Name] {
+				continue
+			}
+			// Members merge across declarations, so only members the survivors
+			// would NOT keep are a change.
+			kept := map[string]bool{}
+			for _, m := range ag.Members {
+				kept[m] = true
+			}
+			for _, m := range g.Members {
+				if !kept[m] {
+					imp.changed = append(imp.changed, fmt.Sprintf("group %s loses member %s (%s)", g.Name, m, d.ID))
+				}
+			}
+		}
+	}
 	declaredBy := func(kind, name string) string {
 		var ids []string
 		for _, d := range dead {
@@ -674,8 +724,17 @@ func (r *Reconciler) stateRebaseImpact(current *mount.State, bc *BootComposedBre
 	}
 	imp.egressTurnsOff = bEnforced && !aEnforced
 
-	for _, s := range [][]string{imp.soleUsers, imp.soleGroups, imp.changed, imp.idConflicts, imp.sudoers, imp.soleEgress, imp.unresolved} {
+	uniq := func(s []string) []string {
 		sort.Strings(s)
+		out := s[:0]
+		for i, v := range s {
+			if i == 0 || v != s[i-1] {
+				out = append(out, v)
+			}
+		}
+		return out
 	}
+	imp.soleUsers, imp.soleGroups, imp.changed = uniq(imp.soleUsers), uniq(imp.soleGroups), uniq(imp.changed)
+	imp.idConflicts, imp.sudoers, imp.soleEgress, imp.unresolved = uniq(imp.idConflicts), uniq(imp.sudoers), uniq(imp.soleEgress), uniq(imp.unresolved)
 	return imp
 }
