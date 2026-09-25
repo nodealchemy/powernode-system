@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Server, AlertCircle, CheckCircle2, Copy, Check, KeyRound, Rocket, HardDrive } from 'lucide-react';
+import { Server, CheckCircle2, Copy, Check, KeyRound, Rocket, HardDrive } from 'lucide-react';
 import { Card } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
@@ -573,12 +573,7 @@ const FormCard: React.FC<{ payload: WizardFormPayload; className: string }> = ({
             {volumeChoice === '__create__' && (
               <div className="p-3 bg-theme-surface border border-theme rounded space-y-2">
                 <div className="text-xs font-medium text-theme-primary">Create new volume</div>
-                {createVolumeError && (
-                  <div className="p-2 bg-theme-danger-bg text-theme-danger-fg text-xs rounded flex items-start gap-2">
-                    <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                    <span>{createVolumeError}</span>
-                  </div>
-                )}
+                {createVolumeError && <ErrorAlert message={createVolumeError} />}
                 <div className="grid grid-cols-2 gap-2">
                   <input
                     type="text"
