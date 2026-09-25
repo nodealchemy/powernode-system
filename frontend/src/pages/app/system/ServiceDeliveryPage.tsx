@@ -82,7 +82,7 @@ const TABS: PathTabSpec<TabKey>[] = [
   },
   {
     key: 'peers',
-    label: 'Peers',
+    label: 'Federation Peers',
     permission: 'system.peers.read',
     icon: <ShieldCheck className="w-4 h-4" />,
   },

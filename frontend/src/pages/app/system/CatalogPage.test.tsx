@@ -166,7 +166,7 @@ describe('CatalogPage', () => {
     expect(screen.getByRole('link', { name: /^scripts$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^architectures$/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^platforms$/i })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /^marketplace$/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^module marketplace$/i })).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ describe('CatalogPage', () => {
     expect(screen.getByRole('link', { name: /^modules$/i })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^puppet modules$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^scripts$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /^marketplace$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^module marketplace$/i })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ describe('CatalogPage', () => {
       ['scripts', '/app/system/catalog/scripts'],
       ['architectures', '/app/system/catalog/architectures'],
       ['platforms', '/app/system/catalog/platforms'],
-      ['marketplace', '/app/system/catalog/marketplace'],
+      ['module marketplace', '/app/system/catalog/marketplace'],
     ];
 
     for (const [name, href] of cases) {

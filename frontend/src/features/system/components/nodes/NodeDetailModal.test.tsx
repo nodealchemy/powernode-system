@@ -1018,12 +1018,12 @@ describe('NodeDetailModal', () => {
   // Operations tab
   // ---------------------------------------------------------------------------
 
-  describe('Operations tab', () => {
+  describe('Tasks tab', () => {
     const openOperationsTab = async () => {
       setupDefaultMocks();
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
     };
 
     it('filters tasks to only those belonging to this node', async () => {
@@ -1040,7 +1040,7 @@ describe('NodeDetailModal', () => {
 
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
 
       await waitFor(() => expect(screen.getByText('deploy')).toBeInTheDocument());
       expect(screen.queryByText('other-cmd')).not.toBeInTheDocument();
@@ -1066,7 +1066,7 @@ describe('NodeDetailModal', () => {
 
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
 
       await waitFor(() => expect(screen.getByText('No operations found')).toBeInTheDocument());
     });
@@ -1167,7 +1167,7 @@ describe('NodeDetailModal', () => {
       setupDefaultMocks();
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
       await waitFor(() => expect(screen.getByText('45%')).toBeInTheDocument());
 
       act(() => {
@@ -1186,7 +1186,7 @@ describe('NodeDetailModal', () => {
       setupDefaultMocks();
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
       await waitFor(() => expect(screen.getByText('deploy')).toBeInTheDocument());
 
       act(() => {
@@ -1209,7 +1209,7 @@ describe('NodeDetailModal', () => {
       setupDefaultMocks();
       renderModal();
       await waitForModal();
-      clickTab('Operations');
+      clickTab('Tasks');
       await waitFor(() => expect(screen.getByText('deploy')).toBeInTheDocument());
 
       act(() => {

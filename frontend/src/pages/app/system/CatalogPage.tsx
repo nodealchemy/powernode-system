@@ -44,7 +44,7 @@ const TABS: PathTabSpec<TabKey>[] = [
   { key: 'scripts', label: 'Scripts', permission: 'system.scripts.read' },
   { key: 'architectures', label: 'Architectures', permission: 'system.architectures.read' },
   { key: 'platforms', label: 'Platforms', permission: 'system.platforms.read' },
-  { key: 'marketplace', label: 'Marketplace', permission: 'system.marketplace.read' },
+  { key: 'marketplace', label: 'Module Marketplace', permission: 'system.marketplace.read' },
 ];
 
 const BASE_PATH = '/app/system/catalog';

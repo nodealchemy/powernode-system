@@ -453,7 +453,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   if (canViewOperations) {
     tabs.push({
       id: 'operations',
-      label: 'Operations',
+      label: 'Tasks',
       icon: <Activity className="w-4 h-4" />,
       badge: { count: operations.filter(op => ['pending', 'running'].includes(op.status)).length },
       content: <NodeOperationsTab operations={operations} />

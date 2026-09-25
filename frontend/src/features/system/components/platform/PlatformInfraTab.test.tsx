@@ -113,7 +113,7 @@ describe('PlatformInfraTab', () => {
 
   it('renders all 7 tab labels in the nav bar', () => {
     renderAt(`${BASE}/services`);
-    const expectedLabels = ['Services', 'Peers', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
+    const expectedLabels = ['Services', 'Peer Health', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
     for (const label of expectedLabels) {
       expect(screen.getByRole('link', { name: new RegExp(label, 'i') })).toBeInTheDocument();
     }
@@ -124,7 +124,7 @@ describe('PlatformInfraTab', () => {
 
     const expectations: Array<[string, string]> = [
       ['Services', `${BASE}/services`],
-      ['Peers', `${BASE}/peers`],
+      ['Peer Health', `${BASE}/peers`],
       ['Children', `${BASE}/children`],
       ['Migrations', `${BASE}/migrations`],
       ['Scaling', `${BASE}/scaling`],
@@ -146,11 +146,11 @@ describe('PlatformInfraTab', () => {
     expect(link.className).toContain('border-theme-info-border');
   });
 
-  it('marks the Peers tab as active when the URL ends with /peers', () => {
+  it('marks the Peer Health tab as active when the URL ends with /peers', () => {
     renderAt(`${BASE}/peers`);
     // Exact match: the /peers panel itself now also links to "...→ Peers"
     // (the canonical management surface), which a loose /peers/i would match too.
-    const link = screen.getByRole('link', { name: 'Peers' });
+    const link = screen.getByRole('link', { name: 'Peer Health' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
@@ -194,7 +194,7 @@ describe('PlatformInfraTab', () => {
 
   it('does not mark inactive tabs with the active border class', () => {
     renderAt(`${BASE}/services`);
-    const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
+    const inactiveTabs = ['Peer Health', 'Children', 'Migrations', 'Scaling', 'Deploy', 'Service Discovery'];
     for (const label of inactiveTabs) {
       const link = screen.getByRole('link', { name: new RegExp(label, 'i') });
       expect(link.className).not.toContain('border-theme-info-border');
@@ -297,7 +297,7 @@ describe('PlatformInfraTab', () => {
     // rendered unconditionally and panels surface forbidden API responses.
     const links = screen.getAllByRole('link');
     const tabLinks = links.filter((l) =>
-      /services|peers|children|migrations|scaling|deploy|service discovery/i.test(l.textContent ?? ''),
+      /services|peer health|children|migrations|scaling|deploy|service discovery/i.test(l.textContent ?? ''),
     );
     // 7 distinct tab links should always be present
     const tabKeys = new Set(tabLinks.map((l) => l.getAttribute('href')));

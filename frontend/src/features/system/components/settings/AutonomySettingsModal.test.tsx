@@ -39,7 +39,7 @@ describe('AutonomySettingsModal', () => {
     expect(screen.queryByTestId('core-policy-panel')).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Approval Chains' })).toHaveAttribute('aria-selected', 'true');
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Policies' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Intervention Policies' }));
     expect(screen.getByTestId('core-policy-panel')).toBeInTheDocument();
   });
 

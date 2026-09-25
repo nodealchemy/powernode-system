@@ -11,7 +11,7 @@ interface AutonomySettingsModalProps {
 }
 
 const TABS = [
-  { id: 'policies', label: 'Policies' },
+  { id: 'policies', label: 'Intervention Policies' },
   { id: 'chains', label: 'Approval Chains' },
 ];
 

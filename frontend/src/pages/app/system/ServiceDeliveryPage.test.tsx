@@ -91,7 +91,7 @@ describe('ServiceDeliveryPage', () => {
     const catalog = screen.getByRole('link', { name: /Catalog Browser/i });
     const children = screen.getByRole('link', { name: /Children/i });
     const fulfillment = screen.getByRole('link', { name: /Fulfillment/i });
-    const peers = screen.getByRole('link', { name: /Peers/i });
+    const peers = screen.getByRole('link', { name: 'Federation Peers' });
 
     expect(offerings).toHaveAttribute('href', '/app/system/service-delivery/offerings');
     expect(subscriptions).toHaveAttribute('href', '/app/system/service-delivery/subscriptions');

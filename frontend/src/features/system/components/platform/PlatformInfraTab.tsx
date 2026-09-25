@@ -70,7 +70,7 @@ interface TabSpec {
 
 const TABS: TabSpec[] = [
   { key: 'services',   label: 'Services',   permission: 'system.service_offerings.read',   icon: <Globe2 className="w-4 h-4" /> },
-  { key: 'peers',      label: 'Peers',      permission: 'system.peers.read',               icon: <Network className="w-4 h-4" /> },
+  { key: 'peers',      label: 'Peer Health', permission: 'system.peers.read',              icon: <Network className="w-4 h-4" /> },
   { key: 'children',   label: 'Children',   permission: 'system.children.read',            icon: <Server className="w-4 h-4" /> },
   { key: 'migrations', label: 'Migrations', permission: 'system.migrations.read',          icon: <Move className="w-4 h-4" /> },
   { key: 'scaling',    label: 'Scaling',    permission: 'system.platform.scale',           icon: <TrendingUp className="w-4 h-4" /> },
@@ -192,7 +192,7 @@ const PeersTab: React.FC = () => {
         <div className="bg-theme-surface border border-theme rounded-lg p-4 text-sm text-theme-secondary">
           Manage federation peers (invite, revoke, grants) on{' '}
           <Link to="/app/system/service-delivery/peers" className="text-theme-info-fg hover:text-theme-info-fg/80">
-            Service Delivery → Peers
+            Service Delivery → Federation Peers
           </Link>
           .
         </div>

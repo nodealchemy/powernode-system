@@ -32,7 +32,7 @@ const TABS: PathTabSpec<TabKey>[] = [
   { key: 'unclaimed-devices', label: 'Unclaimed Devices', permission: 'system.unclaimed_devices.read' },
   { key: 'volumes', label: 'Volumes', permission: 'system.volumes.read' },
   { key: 'providers', label: 'Providers', permission: 'system.providers.read' },
-  { key: 'networks', label: 'Networks', permission: 'system.networks.read' },
+  { key: 'networks', label: 'Cloud Networks', permission: 'system.networks.read' },
   // P7 — unified platform-ops dashboard: peers + children + services
   // + migrations + scaling + health under one path-based hub.
   { key: 'platform', label: 'Platform', permission: 'system.platform.read' },

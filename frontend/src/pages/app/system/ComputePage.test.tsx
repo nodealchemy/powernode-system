@@ -183,7 +183,7 @@ describe('ComputePage', () => {
     expect(screen.getByRole('link', { name: 'Unclaimed Devices' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Volumes' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Providers' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Networks' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Cloud Networks' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Platform' })).toBeInTheDocument();
   });
 
@@ -248,9 +248,9 @@ describe('ComputePage', () => {
     expect(link.className).toContain('border-theme-info-border');
   });
 
-  it('marks the Networks tab as active on /networks', () => {
+  it('marks the Cloud Networks tab as active on /networks', () => {
     renderAt('/app/system/compute/networks');
-    const link = screen.getByRole('link', { name: 'Networks' });
+    const link = screen.getByRole('link', { name: 'Cloud Networks' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
@@ -295,7 +295,7 @@ describe('ComputePage', () => {
       'href',
       '/app/system/compute/providers',
     );
-    expect(screen.getByRole('link', { name: 'Networks' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Cloud Networks' })).toHaveAttribute(
       'href',
       '/app/system/compute/networks',
     );
@@ -365,14 +365,14 @@ describe('ComputePage', () => {
     expect(screen.queryByRole('link', { name: 'Providers' })).not.toBeInTheDocument();
   });
 
-  it('hides the Networks tab when system.networks.read is absent', () => {
+  it('hides the Cloud Networks tab when system.networks.read is absent', () => {
     mockHasPermission.mockImplementation(
       (perm: string) =>
         perm !== 'system.networks.read' && perm !== 'system.networks.create' &&
         ALL_PERMISSIONS.includes(perm),
     );
     renderAt('/app/system/compute/nodes');
-    expect(screen.queryByRole('link', { name: 'Networks' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Cloud Networks' })).not.toBeInTheDocument();
   });
 
   it('hides the Platform tab when system.platform.read is absent', () => {
