@@ -182,6 +182,26 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(decoded_dependency).to include("/etc/nginx/inherited/**")
     end
 
+    # IMP-caef5c00d63f contract with the agent lane: the marker is a boolean
+    # TOP-LEVEL field of the module manifest object, sibling of `id`,
+    # `config` and `services` (never inside `config`), so on the wire it is
+    # data.service_capabilities_presence. Absent means "legacy inherit mode".
+    it "show emits service_capabilities_presence at data level only when every service row is flagged" do
+      create(:system_module_service, node_module: base_module, account: account, name: "svc",
+             capabilities: [], capabilities_presence_recorded: true)
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      data = JSON.parse(response.body)["data"]
+      expect(data["service_capabilities_presence"]).to be(true)
+      expect(data).to include("id", "config", "services")
+      expect(data["config"]).not_to have_key("service_capabilities_presence") if data["config"].is_a?(Hash)
+
+      create(:system_module_service, node_module: base_module, account: account, name: "legacy",
+             capabilities: [], capabilities_presence_recorded: false)
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      expect(JSON.parse(response.body)["data"]).not_to have_key("service_capabilities_presence")
+    end
+
     it "show emits copy_path block when copy_path is set" do
       copy_path = create(:system_node_module_copy_path, account: account,
                          name: "data-disk", source_path: "/src", destination_path: "/mnt/data",
