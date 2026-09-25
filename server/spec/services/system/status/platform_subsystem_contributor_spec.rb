@@ -263,6 +263,18 @@ RSpec.describe System::Status::Contributors::PlatformSubsystemContributor do
         .to eq([ { "label" => "Platform", "path" => "/app/system/compute/platform" } ])
     end
 
+    # fc-47 review M4: its probe already reports postgres, redis and sidekiq,
+    # so core's core_service contributor must not add a second row for each.
+    it "claims the core services its probe already reports" do
+      expect(contributor.reports_core_services).to eq(%w[database redis sidekiq])
+    end
+
+    it "makes core_service leave those services out while registered" do
+      Platform::Status::Registry.register(described_class::KIND, contributor)
+
+      expect(Platform::Status::Contributors::CoreService.new.services_to_measure).to eq(%i[disk memory cpu])
+    end
+
     it "offers no actions, because platform_subsystem is not_actuatable by default" do
       expect(contributor.actions_for(nil)).to eq([])
     end

@@ -372,8 +372,6 @@ module PowernodeSystem
                      grant: { admin: true }
           permission "system.platform.scale.apply", "Apply a drafted scaling plan (provisions/decommissions instances)",
                      grant: { admin: true }
-          permission "system.platform.health.read", "Read platform health metrics (uptime, queue depth, etc.)",
-                     grant: { admin: true }
           permission "system.platform.deploy", "Deploy a new Powernode platform (standalone or federated)",
                      grant: { admin: true }
           permission "system.migrations.read", "View platform infrastructure migrations (PlatformInfraTab)",

@@ -117,6 +117,11 @@ module System
 
         def kind = KIND
 
+        # Core's core_service contributor would report these again from its
+        # own checks; this probe already carries them as postgres, redis and
+        # sidekiq, so it claims them and core leaves them out (fc-47).
+        def reports_core_services = %w[database redis sidekiq]
+
         def account_scoped? = true
 
         # Always the full declared set, in the probe's own reading order.
