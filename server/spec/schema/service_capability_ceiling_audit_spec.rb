@@ -125,4 +125,40 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
         "per-service resolver and strips the module's CAP_DAC_READ_SEARCH"
     end
   end
+
+  # The inheritance above is only safe while the ceiling still carries the
+  # read those two services need.
+  it "powernode-hub-worker's module ceiling still includes CAP_DAC_READ_SEARCH (what sidekiq and worker-web inherit)" do
+    ceiling = Array(load_manifest.call("powernode-hub-worker").dig("security", "capabilities"))
+    expect(ceiling).to include("CAP_DAC_READ_SEARCH")
+  end
+
+  # powernode-hub-backend splits root prep from the daemon: rails-setup runs
+  # as root and needs the ceiling for its chown/chmod work (27a8b764), while
+  # rails runs as its own non-root user and needs nothing. Under the
+  # per-service resolver that is: rails-setup inherits (no key), rails keeps
+  # an explicit [].
+  describe "powernode-hub-backend" do
+    manifest_for = -> { load_manifest.call("powernode-hub-backend") }
+
+    it "rails-setup has no capabilities key (inherits the ceiling its root prep needs)" do
+      rails_setup = service_in.call(manifest_for.call, "rails-setup")
+      expect(rails_setup).not_to be_nil
+      expect(rails_setup.key?("capabilities")).to be(false)
+    end
+
+    it "rails keeps an explicit [] and runs as a non-root user" do
+      rails = service_in.call(manifest_for.call, "rails")
+      expect(rails).not_to be_nil
+      expect(rails.key?("capabilities")).to be(true)
+      expect(rails["capabilities"]).to eq([])
+      expect(rails["user"]).to be_present
+      expect(rails["user"]).not_to eq("root")
+    end
+
+    it "grants exactly CAP_CHOWN, CAP_FOWNER and CAP_DAC_OVERRIDE as the module ceiling" do
+      ceiling = Array(manifest_for.call.dig("security", "capabilities"))
+      expect(ceiling).to contain_exactly("CAP_CHOWN", "CAP_FOWNER", "CAP_DAC_OVERRIDE")
+    end
+  end
 end
