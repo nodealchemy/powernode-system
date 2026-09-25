@@ -171,6 +171,10 @@ type Reconciler struct {
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
 
+	// stateRebaseNoted de-duplicates the boot state rebase's signals (see
+	// state_rebase.go). Guarded by mu: only RunOnce touches it.
+	stateRebaseNoted map[string]bool
+
 	// IMP-f1c1e6d61104 — per-module convergence failures observed by the LAST
 	// pass, reset at the top of RunOnce. Read by the apply_config/sync task
 	// handler so a pass that did not converge the desired set FAILS the task
@@ -566,14 +570,21 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		return r.lastError
 	}
 
-	// Captured before anything below mutates current.AttachedModules.
-	// ComposeForPivot doesn't persist a state.json at boot, so on the
-	// FIRST reconcile tick after a pivot boot, current is empty and every
-	// boot module shows up in toAttach even though its files are ALREADY
-	// part of the boot union — hotReconcileIfNeeded must not copy on that
-	// baseline tick (see its doc comment). Tick 2+ has real prior state
-	// (RunOnce SaveState's at the end of every cycle), so stateWasEmpty
-	// correctly reflects "is this a genuine post-boot change".
+	// Drop entries for modules this boot did not compose and that nothing
+	// shows live — before anything below reads current (see state_rebase.go).
+	// Report-only unless explicitly enabled.
+	r.rebaseStateAgainstBoot(ctx, current, manifests)
+
+	// Captured AFTER the rebase above and before anything below mutates
+	// current.AttachedModules. ComposeForPivot doesn't persist a state.json
+	// at boot, so on the FIRST reconcile tick after a pivot boot, current is
+	// empty and every boot module shows up in toAttach even though its files
+	// are ALREADY part of the boot union — hotReconcileIfNeeded must not copy
+	// on that baseline tick (see its doc comment). Later ticks have real
+	// prior state (RunOnce SaveState's at the end of every cycle), so
+	// stateWasEmpty reflects "is this a genuine post-boot change". A rebase
+	// that emptied the state leaves exactly that baseline situation, so it
+	// is measured after the rebase, not before.
 	stateWasEmpty := len(current.AttachedModules) == 0
 
 	toAttach, toDetach := mount.Reconcile(current, desired)

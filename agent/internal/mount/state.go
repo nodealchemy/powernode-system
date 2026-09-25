@@ -61,6 +61,20 @@ type State struct {
 	// here whose module is no longer attached, until the next pass rewrites
 	// the field.
 	UnmaterializedModules []string `json:"unmaterialized_modules,omitempty"`
+
+	// RebasedAgainst names the boot composition this state was last rebased
+	// against (runtime.stateRebaseKey: the breadcrumb's boot id + compose
+	// time). state.json lives on /persist and outlives every boot, but a boot
+	// composes its root from the breadcrumb, not from this file — so entries
+	// for modules that boot did not compose can sit here forever, reported as
+	// running and proposed for detach every tick. The rebase drops those once
+	// per composition; this key is how it knows it already ran.
+	//
+	// Written ONLY by an enforcing rebase. Every other writer (reconcile
+	// passes, AttachOne/DetachOne) carries it through unchanged; a pass that
+	// skipped or only reported the rebase never sets it, so the rebase is
+	// retried rather than silently marked done.
+	RebasedAgainst string `json:"rebased_against,omitempty"`
 }
 
 // LoadState reads State from `path`. Returns a zero-value State and
