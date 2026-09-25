@@ -108,4 +108,21 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
     expect(service.key?("capabilities")).to be(true)
     expect(service["capabilities"]).to eq([])
   end
+
+  # IMP-caef5c00d63f sweep: powernode-hub-worker's sidekiq and worker-web
+  # both run as root and read hub-backend's STATE_DIR under the module's
+  # CAP_DAC_READ_SEARCH ceiling (added on develop in the 09-21 outage fix).
+  # They declared a boilerplate `capabilities: []`, which the per-service
+  # resolver reads as ZERO — they would lose that read the moment it ships.
+  # They must INHERIT the ceiling: no service-level key at all.
+  %w[sidekiq worker-web].each do |service_name|
+    it "powernode-hub-worker/#{service_name} inherits the module ceiling (no capabilities key)" do
+      service = service_in.call(load_manifest.call("powernode-hub-worker"), service_name)
+
+      expect(service).not_to be_nil, "#{service_name} missing from powernode-hub-worker's services"
+      expect(service.key?("capabilities")).to be(false),
+        "#{service_name} declares a service-level capabilities key; [] resolves to ZERO under the " \
+        "per-service resolver and strips the module's CAP_DAC_READ_SEARCH"
+    end
+  end
 end

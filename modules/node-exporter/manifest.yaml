@@ -49,7 +49,6 @@ services:
     working_directory: /var/lib/prometheus
     exposed_ports:
       - { port: 9100, protocol: tcp, name: metrics }
-    capabilities: []
     health:
       endpoint: "/metrics"
       method: GET

@@ -76,7 +76,6 @@ services:
     start_command: "/usr/sbin/qemu-ga -t /run"
     restart_policy: always
     user: root
-    capabilities: []
     # No exposed_ports — qga speaks over a virtio-serial char device,
     # not a TCP socket. Hypervisor reaches it via the hypervisor-side
     # /var/run/qemu-server/<vmid>.qga.sock proxied through PVE.
