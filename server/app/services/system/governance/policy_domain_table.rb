@@ -94,7 +94,12 @@ module System
         # (IMP-9c8c05f8617e). The pool-guest reap acts on a provider guest no
         # instance row knows, through a name-verified terminate, not on the pool
         # record, so it does not belong under instance_pool.
-        "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_ system.replica_promote system.abandoned_instance_ system.pool_guest_]
+        # system.cloud_sync_ — TerminatedGuestPresentSensor's two notify-only
+        # lanes (a destroyed instance whose guest the provider still lists, and
+        # a cloud sync that stopped succeeding; IMP-ff6d46f2c3e1). Instance
+        # lifecycle, declared beside system.node_lkg_investigate; they stranded
+        # in "other" until filed here.
+        "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_ system.replica_promote system.abandoned_instance_ system.pool_guest_ system.cloud_sync_]
       }.freeze
     end
   end
