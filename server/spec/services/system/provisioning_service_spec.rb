@@ -570,6 +570,22 @@ RSpec.describe System::ProvisioningService do
         expect(instance.reload.status).to eq("terminated")
         expect(adapter).to have_received(:terminate_instance).once
       end
+
+      # Pinned deliberately. The provider proved only that the id names another
+      # guest, not that ours is gone, yet this branch takes the confirmed
+      # termination. The only thing keyed on a confirmed termination is
+      # NodeInstance#cancel_unrunnable_tasks!, and a row that has given up its
+      # provider identity can never run a task again, so cancelling them is the
+      # intended outcome, not an overclaim with side effects.
+      it "cancels the pending tasks of the row it gives up on, and leaves it terminated" do
+        queued = create(:system_task, account: instance.account, operable: instance, status: "pending")
+        terminate
+
+        described_class.terminate_instance(instance: instance.reload)
+
+        expect(instance.reload.status).to eq("terminated")
+        expect(queued.reload.status).to eq("cancelled")
+      end
     end
 
     it "still refuses a row with no provider id that was never marked lost" do
