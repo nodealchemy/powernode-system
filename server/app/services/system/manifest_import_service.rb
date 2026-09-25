@@ -673,20 +673,23 @@ module System
     # and a non-array value fails decoding the node's WHOLE manifest, and
     # #validate_capability_ceiling! subtracts arrays, so a string raised
     # NoMethodError out of the import instead of reporting a bad manifest.
+    #
+    # Errors are keyed by service NAME, services[<name>].capabilities, the
+    # same form #validate_capability_ceiling! reports, so one service's
+    # capability errors read alike whichever check found them.
     def validate_service_capabilities(svc, prefix, errors)
       caps = svc["capabilities"]
       return if caps.nil?
 
+      label = svc["name"].is_a?(String) && !svc["name"].empty? ? "services[#{svc['name']}]" : prefix
       unless caps.is_a?(Array)
-        errors << "#{prefix}.capabilities must be an array of CAP_* strings " \
+        errors << "#{label}.capabilities must be an array of CAP_* strings " \
                   "(omit the key to inherit the module's security.capabilities; [] grants none)"
         return
       end
       caps.each_with_index do |cap, j|
-        next if cap.is_a?(String) && cap.match?(::System::ModuleConfigValidator::CAPABILITY_RX)
-
-        errors << "#{prefix}.capabilities[#{j}] #{cap.inspect} must be a string matching " \
-                  "#{::System::ModuleConfigValidator::CAPABILITY_RX.source}"
+        error = ::System::ModuleConfigValidator.capability_entry_error("#{label}.capabilities[#{j}]", cap)
+        errors << error if error
       end
     end
 

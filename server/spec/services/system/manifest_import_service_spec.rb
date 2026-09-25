@@ -225,6 +225,19 @@ RSpec.describe System::ManifestImportService, type: :service do
           expect(result.validation_errors.join).to include("security.capabilities[0]")
         end
 
+        # IMP-caef5c00d63f: the grammar alone admits CAP_BOGUS, and the agent
+        # then refuses the WHOLE module (an outage), so the server holds the
+        # ceiling to the agent's KnownCapabilities list.
+        it "rejects a well-formed but unknown capability in the module ceiling" do
+          result = import_with_security(<<~YAML)
+            security:
+              capabilities:
+                - CAP_BOGUS
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security.capabilities[0] \"CAP_BOGUS\" is not a known Linux capability")
+        end
+
         it "rejects a seccomp_profile that is a path" do
           result = import_with_security(<<~YAML)
             security:
@@ -795,7 +808,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         YAML
         result = described_class.import!(node_module: mod, yaml: yaml)
         expect(result.ok?).to be false
-        expect(result.validation_errors).to include(a_string_including("services[0].capabilities must be an array"))
+        expect(result.validation_errors).to include(a_string_including("services[rails].capabilities must be an array"))
       end
 
       it "rejects a service capability outside the CAP_ grammar, as the module-level block does" do
@@ -808,7 +821,22 @@ RSpec.describe System::ManifestImportService, type: :service do
         YAML
         result = described_class.import!(node_module: mod, yaml: yaml)
         expect(result.ok?).to be false
-        expect(result.validation_errors).to include(a_string_including("services[0].capabilities[0]"))
+        expect(result.validation_errors).to include(a_string_including("services[rails].capabilities[0]"))
+      end
+
+      it "rejects a well-formed but unknown service capability, keyed by service name" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [CAP_BOGUS]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(
+          a_string_including("services[rails].capabilities[0] \"CAP_BOGUS\" is not a known Linux capability")
+        )
       end
 
       it "accepts a service capability that is a subset of the module's ceiling" do
