@@ -758,6 +758,36 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(mod.module_services.find_by(name: "postgres").capabilities).to be_nil
       end
 
+      # IMP-caef5c00d63f — the agent decodes a service's capabilities as
+      # presence + list; a non-array value would fail decoding the WHOLE
+      # manifest on the node, and a string would raise NoMethodError in the
+      # ceiling check below before any validation error reached the caller.
+      it "rejects a service capabilities value that is not an array, as a validation error" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: CAP_NET_BIND_SERVICE
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(a_string_including("services[0].capabilities must be an array"))
+      end
+
+      it "rejects a service capability outside the CAP_ grammar, as the module-level block does" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [net_bind_service]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(a_string_including("services[0].capabilities[0]"))
+      end
+
       it "accepts a service capability that is a subset of the module's ceiling" do
         # manifest_yaml's own security.capabilities ceiling is [CAP_NET_BIND_SERVICE].
         yaml = manifest_yaml + <<~YAML

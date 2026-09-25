@@ -618,6 +618,8 @@ module System
           end
         end
 
+        validate_service_capabilities(svc, prefix, errors)
+
         if (rp = svc["restart_policy"]) && !::System::ModuleService::RESTART_POLICIES.include?(rp)
           errors << "#{prefix}.restart_policy must be one of #{::System::ModuleService::RESTART_POLICIES.inspect}"
         end
@@ -660,6 +662,31 @@ module System
             end
           end
         end
+      end
+    end
+
+    # A service's own `capabilities:` is absent/null (inherit the module
+    # ceiling), or an array of CAP_* strings (exactly that set; [] is zero) —
+    # the same grammar ModuleConfigValidator holds the module-level ceiling to
+    # (IMP-caef5c00d63f). Anything else is refused here, as a validation
+    # error, for two reasons: the agent decodes this key as presence + list
+    # and a non-array value fails decoding the node's WHOLE manifest, and
+    # #validate_capability_ceiling! subtracts arrays, so a string raised
+    # NoMethodError out of the import instead of reporting a bad manifest.
+    def validate_service_capabilities(svc, prefix, errors)
+      caps = svc["capabilities"]
+      return if caps.nil?
+
+      unless caps.is_a?(Array)
+        errors << "#{prefix}.capabilities must be an array of CAP_* strings " \
+                  "(omit the key to inherit the module's security.capabilities; [] grants none)"
+        return
+      end
+      caps.each_with_index do |cap, j|
+        next if cap.is_a?(String) && cap.match?(::System::ModuleConfigValidator::CAPABILITY_RX)
+
+        errors << "#{prefix}.capabilities[#{j}] #{cap.inspect} must be a string matching " \
+                  "#{::System::ModuleConfigValidator::CAPABILITY_RX.source}"
       end
     end
 
