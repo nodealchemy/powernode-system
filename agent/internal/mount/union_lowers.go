@@ -161,29 +161,44 @@ func LiveUnionLowerDirs(mountPoint string) ([]string, error) {
 		if e.mountPoint != want || e.fstype != "overlay" {
 			continue
 		}
-		for _, opt := range strings.Split(e.superOpts, ",") {
-			val, found := strings.CutPrefix(opt, "lowerdir=")
-			if !found {
-				continue
-			}
+		// Mounted, but possibly with nothing beneath it — a real empty set, and
+		// NOT an error: the union was read successfully and it genuinely has no
+		// lower layers. Only the absent-overlay case below is unanswerable.
+		return overlayLowerDirs(e.superOpts), nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrNoOverlayAt, want)
+}
+
+// overlayLowerDirs extracts the lower layers from an overlay's super options,
+// in the order the kernel lists them (highest-priority first). It accepts both
+// spellings: the classic colon-joined `lowerdir=a:b:c`, and one `lowerdir+=a`
+// per layer, which a union assembled through the fsconfig API (overlayfs
+// 6.7+) can carry instead. Reading only the first spelling returned an EMPTY
+// set for such a union — "no layers", which every caller here reads as "not in
+// use", the dangerous direction.
+func overlayLowerDirs(superOpts string) []string {
+	out := []string{}
+	add := func(d string) {
+		if d = strings.TrimSpace(unescapeMountInfo(d)); d != "" {
+			out = append(out, filepath.Clean(d))
+		}
+	}
+	for _, opt := range strings.Split(superOpts, ",") {
+		if val, found := strings.CutPrefix(opt, "lowerdir+="); found {
+			add(val)
+			continue
+		}
+		if val, found := strings.CutPrefix(opt, "lowerdir="); found {
 			// Colon separates layers. A module mount path can never
 			// contain one — sanitizeDigest rewrites ':' to '_' precisely
 			// so digests survive path handling — so a plain split is
 			// safe here.
-			out := make([]string, 0, strings.Count(val, ":")+1)
 			for _, d := range strings.Split(val, ":") {
-				if d = strings.TrimSpace(unescapeMountInfo(d)); d != "" {
-					out = append(out, filepath.Clean(d))
-				}
+				add(d)
 			}
-			return out, nil
 		}
-		// Mounted, but with nothing beneath it — a real empty set, and NOT an
-		// error: the union was read successfully and it genuinely has no lower
-		// layers. Only the absent-overlay case below is unanswerable.
-		return []string{}, nil
 	}
-	return nil, fmt.Errorf("%w: %s", ErrNoOverlayAt, want)
+	return out
 }
 
 // PathInLiveUnion reports whether dir is one of the lower layers of the
