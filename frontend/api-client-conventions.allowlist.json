@@ -1,0 +1,68 @@
+{
+  "families": {
+    "/ai/conversations": [
+      "core:frontend/src/shared/services/ai/ConversationsApiService.ts",
+      "frontend/src/features/system/services/api/conciergeApi.ts"
+    ],
+    "/system/acme_dns_credentials": [
+      "frontend/src/features/system/services/api/acmeDnsCredentialsApi.ts",
+      "frontend/src/features/system/services/api/dnsRecordsApi.ts"
+    ],
+    "/system/federation": [
+      "frontend/src/features/system/services/api/childrenApi.ts",
+      "frontend/src/features/system/services/api/serviceCatalogApi.ts"
+    ],
+    "/system/fleet": [
+      "frontend/src/features/system/services/api/bootReplayApi.ts",
+      "frontend/src/features/system/services/api/fleetApi.ts"
+    ],
+    "/system/node_modules": [
+      "frontend/src/features/system/services/api/modulesApi.ts",
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/puppetApi.ts"
+    ],
+    "/system/node_platforms": [
+      "frontend/src/features/system/services/api/diskImagePublicationsApi.ts",
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/platformsApi.ts",
+      "frontend/src/features/system/services/api/unclaimedDevicesApi.ts"
+    ],
+    "/system/node_templates": [
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/templatesApi.ts"
+    ],
+    "/system/nodes": [
+      "frontend/src/features/system/services/api/nodesApi.ts",
+      "frontend/src/features/system/services/api/overviewApi.ts"
+    ],
+    "/system/platform": [
+      "frontend/src/features/system/services/api/peerCapabilitiesApi.ts",
+      "frontend/src/features/system/services/api/peerGrantsApi.ts",
+      "frontend/src/features/system/services/api/platformApi.ts",
+      "frontend/src/features/system/services/api/platformDeploymentApi.ts",
+      "frontend/src/features/system/services/api/platformDeploymentsApi.ts",
+      "frontend/src/features/system/services/api/platformHealthApi.ts",
+      "frontend/src/features/system/services/api/platformMigrationChainsApi.ts",
+      "frontend/src/features/system/services/api/platformMigrationsApi.ts",
+      "frontend/src/features/system/services/api/platformPeersApi.ts",
+      "frontend/src/features/system/services/api/storageMigrationsApi.ts"
+    ],
+    "/system/providers": [
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/providersApi.ts"
+    ],
+    "/system/puppet_modules": [
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/puppetApi.ts"
+    ],
+    "/system/sdwan": [
+      "frontend/src/features/system/services/api/myDevicesApi.ts",
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/sdwanApi.ts"
+    ],
+    "/system/tasks": [
+      "frontend/src/features/system/services/api/overviewApi.ts",
+      "frontend/src/features/system/services/api/tasksApi.ts"
+    ]
+  }
+}
