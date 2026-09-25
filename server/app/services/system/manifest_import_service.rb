@@ -972,6 +972,10 @@ module System
         # is exactly what made them indistinguishable by the time this
         # reached the agent.
         record.capabilities  = svc["capabilities"]
+        # This import preserves presence (nil = inherit, [] = zero), so the
+        # row's value now carries intent; the node-api serializer marks the
+        # module only when every row says so (IMP-caef5c00d63f).
+        record.capabilities_presence_recorded = true
         record.metadata      = svc["metadata"] || {}
         validate_capability_ceiling!(mod, svc, record, capability_ceiling)
 

@@ -762,6 +762,29 @@ RSpec.describe System::ManifestImportService, type: :service do
       # presence + list; a non-array value would fail decoding the WHOLE
       # manifest on the node, and a string would raise NoMethodError in the
       # ceiling check below before any validation error reached the caller.
+      it "marks every service row it writes as presence-recorded, so the node payload carries the module marker" do
+        legacy = create(:system_module_service, node_module: mod, account: mod.account,
+                        name: "rails", start_command: "old", capabilities: [], capabilities_presence_recorded: false)
+        expect(System::NodeModuleNodeApiSerializer.new(mod.reload).full).not_to have_key(:service_capabilities_presence)
+
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: []
+            - name: worker
+              start_command: "y"
+              user: powernode
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+
+        expect(result.ok?).to be true
+        expect(legacy.reload.capabilities_presence_recorded).to be(true)
+        expect(mod.reload.module_services.pluck(:capabilities_presence_recorded)).to all(be(true))
+        expect(System::NodeModuleNodeApiSerializer.new(mod).full[:service_capabilities_presence]).to be(true)
+      end
+
       it "rejects a service capabilities value that is not an array, as a validation error" do
         yaml = manifest_yaml + <<~YAML
           services:

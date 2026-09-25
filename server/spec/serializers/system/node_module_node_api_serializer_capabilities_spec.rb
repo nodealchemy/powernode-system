@@ -81,4 +81,44 @@ RSpec.describe System::NodeModuleNodeApiSerializer, type: :serializer do
       expect(by_name["granted-caps"]["capabilities"]).to eq(%w[CAP_CHOWN])
     end
   end
+
+  # The agent honours a service's explicit [] as ZERO only when the module
+  # carries this marker: a row written before the presence-preserving import
+  # holds [] for "never declared" too, and treating that as zero would strip
+  # the module ceiling from every un-republished module. The marker is
+  # module-level and all-or-nothing.
+  describe "#full — service_capabilities_presence (module-level marker)" do
+    def payload
+      JSON.parse(described_class.new(node_module.reload).full.to_json)
+    end
+
+    it "is absent for a module none of whose rows were written by the presence-preserving import" do
+      create(:system_module_service, node_module: node_module, account: account,
+             name: "legacy", capabilities: [], capabilities_presence_recorded: false)
+
+      expect(payload).not_to have_key("service_capabilities_presence")
+    end
+
+    it "is true when every service row was written by the presence-preserving import" do
+      create(:system_module_service, node_module: node_module, account: account,
+             name: "a", capabilities: [], capabilities_presence_recorded: true)
+      create(:system_module_service, node_module: node_module, account: account,
+             name: "b", capabilities: nil, capabilities_presence_recorded: true)
+
+      expect(payload["service_capabilities_presence"]).to be(true)
+    end
+
+    it "is absent for a mixed module (one legacy row taints the whole module)" do
+      create(:system_module_service, node_module: node_module, account: account,
+             name: "new", capabilities: [], capabilities_presence_recorded: true)
+      create(:system_module_service, node_module: node_module, account: account,
+             name: "legacy", capabilities: [], capabilities_presence_recorded: false)
+
+      expect(payload).not_to have_key("service_capabilities_presence")
+    end
+
+    it "is absent for a module with no services (nothing to vouch for)" do
+      expect(payload).not_to have_key("service_capabilities_presence")
+    end
+  end
 end

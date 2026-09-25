@@ -123,6 +123,8 @@ module System
         # entry maps to one `system_module_services` row + its
         # outgoing dependencies for topological start order.
         services: serialize_module_services(mod),
+        # Module-level marker (IMP-caef5c00d63f), merged in below only when
+        # true: see #service_capabilities_presence?.
         # Fleet-managed Unix identities + sudoers declared by this
         # module — the agent unions these across all installed
         # modules to render /etc/passwd, /etc/group, /etc/shadow,
@@ -148,7 +150,19 @@ module System
         # for diagnostics; the agent reads `digest` directly.
         artifacts: served_version(mod)&.artifacts || {},
         puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
-      )
+      ).merge(service_capabilities_presence?(mod) ? { service_capabilities_presence: true } : {})
+    end
+
+    # True only when the module has service rows and EVERY one was written by
+    # the presence-preserving import (capabilities_presence_recorded). Under
+    # this marker the agent honours a service's explicit [] as zero; without
+    # it a stored [] may be a pre-fix "never declared", so the agent keeps the
+    # module-level ceiling. All-or-nothing: one legacy row withholds it.
+    def service_capabilities_presence?(mod)
+      return false unless mod.respond_to?(:module_services)
+
+      flags = mod.module_services.pluck(:capabilities_presence_recorded)
+      flags.any? && flags.all?
     end
 
     # Render each ModuleService row in the shape the agent's
