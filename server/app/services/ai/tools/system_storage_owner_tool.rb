@@ -30,9 +30,14 @@ module Ai
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_assign_storage_owner", mutating: true
-      declare_action "system_list_storage_assignments_by_owner", mutating: false
+      declare_action "system_list_storage_assignments_by_owner", mutating: false, paginated: true,
+                     returns: "assignments: id, mount_path, node_instance_id, owner fields, anonuid/anongid and chown_state"
       declare_action "system_storage_chown_retry", mutating: true
-      declare_action "system_storage_chown_status", mutating: false
+      declare_action "system_storage_chown_status", mutating: false,
+                     returns: "chown_state, chown_task_id, previous uid/gid, timestamps, chown_last_error, " \
+                              "current anonuid/anongid and the effective export uid/gid",
+                     refuses: "no StorageAssignment with that id exists in this account",
+                     see_also: { "system_storage_chown_retry" => "re-dispatching a failed or manual_required chown" }
 
       def self.definition
         {
