@@ -1300,6 +1300,38 @@ RSpec.describe System::NodeInstance, type: :model do
 
       expect(theirs.reload.status).to eq("pending")
     end
+
+    # The caller-driven entry for a row finalized after giving up its provider
+    # identity. It must never empty a live queue, so both fences are pinned.
+    describe "#cancel_unrunnable_tasks_of_lost_row!" do
+      it "cancels the pending tasks of a terminated row whose identity is lost" do
+        task = task_with
+        instance.mark_provider_guest_lost!(reason: "guest at the id is named other-vm")
+        instance.terminate!
+
+        instance.cancel_unrunnable_tasks_of_lost_row!
+
+        expect(task.reload.status).to eq("cancelled")
+      end
+
+      it "does nothing to a lost row that is not terminated" do
+        task = task_with
+        instance.mark_provider_guest_lost!(reason: "guest at the id is named other-vm")
+
+        instance.cancel_unrunnable_tasks_of_lost_row!
+
+        expect(task.reload.status).to eq("pending")
+      end
+
+      it "does nothing to a terminated row that did not lose its identity" do
+        task = task_with
+        instance.terminate!
+
+        instance.cancel_unrunnable_tasks_of_lost_row!
+
+        expect(task.reload.status).to eq("pending")
+      end
+    end
   end
 
   # IMP-cdf18862a7c1 — the three arms enumerated over EVERY status, because

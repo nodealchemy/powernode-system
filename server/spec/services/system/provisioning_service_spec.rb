@@ -571,12 +571,11 @@ RSpec.describe System::ProvisioningService do
         expect(adapter).to have_received(:terminate_instance).once
       end
 
-      # Pinned deliberately. The provider proved only that the id names another
-      # guest, not that ours is gone, yet this branch takes the confirmed
-      # termination. The only thing keyed on a confirmed termination is
-      # NodeInstance#cancel_unrunnable_tasks!, and a row that has given up its
-      # provider identity can never run a task again, so cancelling them is the
-      # intended outcome, not an overclaim with side effects.
+      # The provider proved only that the id names ANOTHER guest, not that ours
+      # is gone, so this branch must not land the confirmed termination: its
+      # mark_terminated audit row is exported as a record that the provider
+      # confirmed. The row's tasks still can never run, so they are cancelled
+      # explicitly.
       it "cancels the pending tasks of the row it gives up on, and leaves it terminated" do
         queued = create(:system_task, account: instance.account, operable: instance, status: "pending")
         terminate
@@ -585,6 +584,16 @@ RSpec.describe System::ProvisioningService do
 
         expect(instance.reload.status).to eq("terminated")
         expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "records no confirmed termination for the row it gives up on" do
+        terminate
+
+        described_class.terminate_instance(instance: instance.reload)
+
+        actions = AuditLog.where(resource_type: "System::NodeInstance", resource_id: instance.id).pluck(:action)
+        expect(actions).to include("system.node_instance.terminate")
+        expect(actions).not_to include("system.node_instance.mark_terminated")
       end
     end
 
@@ -642,6 +651,15 @@ RSpec.describe System::ProvisioningService do
         expect(queued.reload.status).to eq("cancelled")
         expect(elsewhere.reload.status).to eq("pending")
         expect(claimed.reload.status).to eq("running")
+      end
+
+      it "records the confirmed termination in the audit trail" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        actions = AuditLog.where(resource_type: "System::NodeInstance", resource_id: instance.id).pluck(:action)
+        expect(actions).to include("system.node_instance.mark_terminated")
       end
 
       it "leaves the task pending when the provider refuses the terminate" do
