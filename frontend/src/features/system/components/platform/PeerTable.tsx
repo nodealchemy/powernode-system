@@ -7,11 +7,11 @@ import type { PlatformPeerSummary } from '../../types/peer.types';
  * PeerTable / PeerRow — shared presentational peer table.
  *
  * Single source of truth for the Remote URL / Status / Last Heartbeat columns
- * (and the status badge + heartbeat formatting) that were copy-pasted across
- * PeersPanel, PeerControlPanel, and PeerLivenessMonitor. Each consumer keeps
- * its own variant-specific behavior by composing the shared cells:
+ * (and the status badge + heartbeat formatting), shared by PeerControlPanel
+ * and PeerLivenessMonitor (fc-35 deleted the third consumer, PeersPanel, as a
+ * duplicate of PeerControlPanel). Each consumer keeps its own variant-specific
+ * behavior by composing the shared cells:
  *
- *   - PeersPanel        — extra Role / Mode / Endpoints columns + a revoke action
  *   - PeerControlPanel  — an Actions column with arm-and-confirm revoke
  *   - PeerLivenessMonitor — a live-event row "live" pulse + stale-heartbeat highlight
  *

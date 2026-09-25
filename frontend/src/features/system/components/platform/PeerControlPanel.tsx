@@ -20,29 +20,25 @@ import { GrantsManagementModal } from './GrantsManagementModal';
 import ErrorAlert from '@/shared/components/ui/ErrorAlert';
 
 /**
- * PeerControlPanel — the mutate-side peer surface for the Federation Hub's
- * Control tab. Composes the existing InvitePeerModal (propose/accept),
- * GrantsManagementModal (grant lifecycle), and PeerDetailDrawer.
- *
- * Sibling of PeersPanel (rendered on ComputePage's platform infra tab), not
- * a replacement for it — both are live, on different routes, for different
- * operators. PeersPanel is the read-oriented observability list (Role / Mode
- * / Endpoints columns, a status filter bar); this panel is the mutate-
- * oriented surface for the Federation Hub's Control tab, gated by
- * `canManage` and adding Grants management. The one behavior difference the
- * Phase 3 contract specifically called for: REVOKE here is an arm-and-confirm
- * action (useArmedConfirm) instead of a `window.prompt`. Revoke is terminal,
- * so a two-stage in-place confirm matches the destructive-action convention
+ * PeerControlPanel — the single canonical peer-management surface (fc-35),
+ * on ServiceDeliveryPage's Peers tab. Composes the existing InvitePeerModal
+ * (propose/accept), GrantsManagementModal (grant lifecycle), and
+ * PeerDetailDrawer. Mutate-oriented, gated by `canManage` and adding Grants
+ * management. REVOKE here is an arm-and-confirm action (useArmedConfirm)
+ * instead of a `window.prompt`. Revoke is terminal, so a two-stage in-place
+ * confirm matches the destructive-action convention
  * (feedback_destructive_confirm) without a blocking modal. The optional
  * revoke reason is taken from an inline field that appears only while the
  * row's revoke button is armed.
  *
- * C13 diff-then-decide (component-status-plane campaign): compared against
- * PeersPanel and kept as two components — real capability divergence
- * (columns, filtering, grants, canManage gating), each the sole component on
- * its own routed tab. See PeerTable.tsx's header comment for the shared-cell
- * factoring that already eliminates the actual duplication (URL/status/
- * heartbeat rendering) between the two.
+ * fc-35: PeersPanel (formerly PlatformInfraTab's Peers sub-tab, ComputePage)
+ * was deleted as a duplicate surface. It carried real capability this panel
+ * does NOT: extra Role / Mode / Endpoints columns and a status filter bar
+ * (C13 diff-then-decide, component-status-plane campaign, had deliberately
+ * kept both for exactly that divergence). That gap was not backfilled here —
+ * flagged in PlatformInfraTab.tsx's header comment for a follow-up decision.
+ * See PeerTable.tsx's header comment for the shared-cell factoring
+ * (URL/status/heartbeat rendering) that PeersPanel and this panel both used.
  *
  * Plan reference: Phase 3 (Federation & Multi-Site) — Control.
  */

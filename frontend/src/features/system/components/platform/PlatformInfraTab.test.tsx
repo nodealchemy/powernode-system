@@ -26,10 +26,6 @@ jest.mock('./PlatformOverviewCards', () => ({
   PlatformOverviewCards: () => <div data-testid="platform-overview-cards" />,
 }));
 
-jest.mock('./PeersPanel', () => ({
-  PeersPanel: () => <div data-testid="peers-panel" />,
-}));
-
 jest.mock('./PeerLivenessMonitor', () => ({
   PeerLivenessMonitor: () => <div data-testid="peer-liveness-monitor" />,
 }));
@@ -156,7 +152,9 @@ describe('PlatformInfraTab', () => {
 
   it('marks the Peers tab as active when the URL ends with /peers', () => {
     renderAt(`${BASE}/peers`);
-    const link = screen.getByRole('link', { name: /peers/i });
+    // Exact match: the /peers panel itself now also links to "...→ Peers"
+    // (the canonical management surface), which a loose /peers/i would match too.
+    const link = screen.getByRole('link', { name: 'Peers' });
     expect(link.className).toContain('border-theme-info-border');
   });
 
@@ -214,19 +212,24 @@ describe('PlatformInfraTab', () => {
     expect(screen.getByTestId('service-subscriptions-panel')).toBeInTheDocument();
   });
 
-  it('renders PeerLivenessMonitor and PeersPanel for /peers route when system.peers.read is held', () => {
+  it('renders PeerLivenessMonitor and a link to the canonical peer-management surface for /peers route when system.peers.read is held', () => {
     renderAt(`${BASE}/peers`);
     expect(screen.getByTestId('peer-liveness-monitor')).toBeInTheDocument();
-    expect(screen.getByTestId('peers-panel')).toBeInTheDocument();
+    // fc-35: PeersPanel (invite/revoke) was deleted as a duplicate of
+    // PeerControlPanel on ServiceDeliveryPage, which is now canonical.
+    expect(screen.getByRole('link', { name: /service delivery.*peers/i })).toHaveAttribute(
+      'href',
+      '/app/system/service-delivery/peers'
+    );
   });
 
-  it('hides PeerLivenessMonitor but keeps PeersPanel without system.peers.read (C10 review FIX-1)', () => {
+  it('hides PeerLivenessMonitor but keeps the link to the canonical peer-management surface without system.peers.read (C10 review FIX-1)', () => {
     mockHasPermission = jest.fn((perm: string) => perm !== 'system.peers.read');
     renderAt(`${BASE}/peers`);
     expect(screen.queryByTestId('peer-liveness-monitor')).not.toBeInTheDocument();
-    // PeersPanel is unaffected — it already rendered unconditionally on the
+    // The link out is unaffected — it already rendered unconditionally on the
     // old page's Compute/Platform/Peers sub-tab (review §3, FIX-1 mitigation).
-    expect(screen.getByTestId('peers-panel')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /service delivery.*peers/i })).toBeInTheDocument();
   });
 
   it('renders NetworkVipPicker for /discovery route when system.sdwan.vips.manage is held', () => {
@@ -281,9 +284,9 @@ describe('PlatformInfraTab', () => {
 
   // ── Panel isolation ──────────────────────────────────────────────────────────
 
-  it('does not render PeersPanel when on the /services route', () => {
+  it('does not render the Peers tab content when on the /services route', () => {
     renderAt(`${BASE}/services`);
-    expect(screen.queryByTestId('peers-panel')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /service delivery.*peers/i })).not.toBeInTheDocument();
   });
 
   it('does not render HealthPanel when on the /peers route', () => {

@@ -23,9 +23,9 @@ import ErrorAlert from '@/shared/components/ui/ErrorAlert';
  * MissionChannel-subscribe shape in StepProgressStream.
  *
  * Net-new wiring (per the Phase 3 contract): no live federation surface
- * existed before — PeersPanel is poll-only. This monitor is purely
- * presentational + read-only; all mutation lives in the Control tab's
- * PeerControlPanel.
+ * existed before. This monitor is purely presentational + read-only; all
+ * mutation lives in ServiceDeliveryPage's Peers tab, PeerControlPanel
+ * (fc-35: the canonical peer-management surface).
  *
  * Plan reference: Phase 3 (Federation & Multi-Site) — Monitor.
  */

@@ -4,14 +4,13 @@ import type { PlatformPeerSummary, PeerListFilters } from '../types/peer.types';
 
 /**
  * usePlatformPeers — shared fetch + state machine for the platform federation
- * peer list. Extracted to remove the byte-identical fetchPeers /
- * loading / error / platformPeersApi.listPeers state machine that was
- * copy-pasted across PeersPanel, PeerControlPanel, and PeerLivenessMonitor.
+ * peer list, used by PeerControlPanel and PeerLivenessMonitor (fc-35 deleted
+ * the third original consumer, PeersPanel, as a duplicate of PeerControlPanel).
  *
  * `setPeers` is exposed for consumers that mutate rows in place without a
  * refetch (PeerLivenessMonitor bumps last_heartbeat_at / status from live
  * SystemFleetChannel events). `setError` is exposed for consumers that render
- * a dismissible error banner (PeersPanel / PeerControlPanel).
+ * a dismissible error banner (PeerControlPanel).
  *
  * Plan reference: Decentralized Federation §I + P7.1 / Phase 3.
  */

@@ -14,7 +14,6 @@ import { ChildrenPanel } from '@system/features/system/components/federation/Chi
 import { ServiceOfferingsPanel } from '@system/features/system/components/federation/ServiceOfferingsPanel';
 import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
 import { PlatformOverviewCards } from './PlatformOverviewCards';
-import { PeersPanel } from './PeersPanel';
 import { PeerLivenessMonitor } from './PeerLivenessMonitor';
 import { NetworkVipPicker } from './NetworkVipPicker';
 import { HealthPanel } from './HealthPanel';
@@ -29,7 +28,7 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  * /app/system/compute/platform with nested path-based sub-tabs for
  * each sub-domain. Per the plan §I, the 6 sub-panels are:
  *   - Services    — P4.6.8 offerings + subscriptions
- *   - Peers       — P7.1 federation peer list + invite + detail drawer
+ *   - Peers       — P7.1 real-time federation peer liveness monitor
  *   - Children    — P6.2 spawned child platforms + spawn modal
  *   - Migrations  — P7.4 read-only Migration history + detail drawer
  *                    (creation wizard queued for next slice)
@@ -37,16 +36,24 @@ import { DeployPlatformPanel } from './DeployPlatformPanel';
  *                    (provisioning sync queued for next slice)
  *   - Health      — P7.2 per-subsystem health snapshot + 30s refresh
  *
- * The Peers sub-tab additionally carries a real-time liveness monitor
- * (SystemFleetChannel), and a new Service Discovery sub-tab carries virtual-IP
- * management — both relocated from the former FederationHubPage
- * (fe-dupes.md §10 item 16): that page's non-federation content (peer
- * liveness, topology, OVN isolation, service discovery) belongs here rather
- * than on a standalone /federation route. FederationHubPage's federation
- * *control* surfaces (peer control, governance) moved to ServiceDeliveryPage
- * instead — see its Peers tab. Topology and OVN isolation already had a home
- * in the SDWAN hub (`/app/system/sdwan/topology`, `/app/system/sdwan/ovn`),
- * so they didn't need relocating.
+ * The Peers sub-tab carries a real-time liveness monitor (SystemFleetChannel),
+ * and a new Service Discovery sub-tab carries virtual-IP management — both
+ * relocated from the former FederationHubPage (fe-dupes.md §10 item 16):
+ * that page's non-federation content (peer liveness, topology, OVN isolation,
+ * service discovery) belongs here rather than on a standalone /federation
+ * route. Topology and OVN isolation already had a home in the SDWAN hub
+ * (`/app/system/sdwan/topology`, `/app/system/sdwan/ovn`), so they didn't
+ * need relocating.
+ *
+ * fc-35: this Peers sub-tab's own peer list/invite/revoke panel (PeersPanel)
+ * was deleted as a duplicate of PeerControlPanel on ServiceDeliveryPage's
+ * Peers tab, which is now the one canonical peer-management surface — this
+ * sub-tab keeps only the liveness monitor and links out to it. NOTE:
+ * PeerControlPanel's table has fewer columns (no Role/Mode/Endpoints) and no
+ * status filter — capability PeersPanel had and PeerControlPanel does not
+ * (see PeerControlPanel.tsx's own header comment, which previously recorded a
+ * deliberate keep-both decision on exactly this divergence). Consolidating
+ * anyway per this task; flagging the gap rather than silently absorbing it.
  *
  * Plan reference: Decentralized Federation §I + P7.
  */
@@ -168,12 +175,20 @@ const PeersTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Real-time liveness (SystemFleetChannel), relocated from
-          FederationHubPage's Monitor tab — complements, not replaces, the
-          operator peer list + revoke controls below. Real gate (C10 review
-          FIX-1): the old page required system.peers.read to render this;
-          the relocation had dropped that check. */}
+          FederationHubPage's Monitor tab. Real gate (C10 review FIX-1): the
+          old page required system.peers.read to render this; the relocation
+          had dropped that check. */}
       {hasPermission('system.peers.read') && <PeerLivenessMonitor />}
-      <PeersPanel />
+      {/* fc-35: the peer list/invite/revoke panel that used to render here
+          (PeersPanel) was deleted as a duplicate of PeerControlPanel, which
+          is now the one canonical peer-management surface. */}
+      <div className="bg-theme-surface border border-theme rounded-lg p-4 text-sm text-theme-secondary">
+        Manage federation peers (invite, revoke, grants) on{' '}
+        <Link to="/app/system/service-delivery/peers" className="text-theme-info-fg hover:text-theme-info-fg/80">
+          Service Delivery → Peers
+        </Link>
+        .
+      </div>
     </div>
   );
 };
