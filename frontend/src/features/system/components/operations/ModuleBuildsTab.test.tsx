@@ -732,11 +732,23 @@ describe('ModuleBuildsTab', () => {
       await waitFor(() => expect(screen.getByText(/page 2 of 3/i)).toBeInTheDocument());
     });
 
-    it('resets to page 1 when a filter changes', async () => {
-      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META_PAGE_2_OF_3 });
+    // Genuinely reaches page 2 first (sequential resolves keyed to the
+    // requested page), THEN changes a filter — proving the reset actually
+    // moved something, not just that page started and stayed at 1. The old
+    // version mocked every call to return page-2 metadata regardless of what
+    // was requested, so `page` state itself was never anything but 1 and the
+    // assertion passed whether or not the reset effect existed.
+    it('resets to page 1 when a filter changes, after genuinely being on page 2', async () => {
+      mockList
+        .mockResolvedValueOnce({ module_build_batches: [BATCH_ACTIVE], meta: META_PAGE_1_OF_3 })
+        .mockResolvedValueOnce({ module_build_batches: [BATCH_DONE], meta: META_PAGE_2_OF_3 });
       renderTab();
+      await waitFor(() => expect(screen.getByText(/page 1 of 3/i)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
       await waitFor(() => expect(screen.getByText(/page 2 of 3/i)).toBeInTheDocument());
 
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META_PAGE_1_OF_3 });
       fireEvent.change(screen.getByLabelText(/status/i), { target: { value: 'failed' } });
 
       await waitFor(() =>
@@ -807,6 +819,30 @@ describe('ModuleBuildsTab', () => {
       await waitFor(() =>
         expect(within(screen.getByRole('dialog')).getByText('pkg-closure')).toBeInTheDocument(),
       );
+    });
+
+    // (Nit) An old-style path segment — the shape core's now-deleted
+    // ModuleBuildsPage/ModuleBuildDetailPage used before this tab had its own
+    // ?batch= link — still opens the same modal. Not a redirect: no
+    // navigation/history assertion here, only that the modal opens.
+    it('opens BatchDetailModal for a legacy /module-builds/<id> path segment, with no ?batch= present', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
+      mockGet.mockResolvedValue(BATCH_DONE_FULL);
+
+      renderTab({}, '/app/devops/ci-cd/module-builds/batch-done');
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    });
+
+    it('a legacy path segment does not override an explicit ?batch= already present', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE, BATCH_DONE], meta: META });
+      mockGet.mockResolvedValue(BATCH_DONE_FULL);
+
+      renderTab({}, '/app/devops/ci-cd/module-builds/batch-active?batch=batch-done');
+
+      await waitFor(() => expect(mockGet).toHaveBeenCalledWith('batch-done'));
+      expect(mockGet).not.toHaveBeenCalledWith('batch-active');
     });
 
     // Observes the CURRENT URL's search string alongside ModuleBuildsTab, so

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Hammer } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -57,6 +57,7 @@ const TRIGGER_OPTIONS: SystemModuleBuildBatchTrigger[] = ['push', 'manual', 'cve
 export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady }) => {
   const { currentUser } = useAuth();
   const accountId = (currentUser as { account?: { id?: string } } | null)?.account?.id;
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [batches, setBatches] = useState<SystemModuleBuildBatch[]>([]);
@@ -81,6 +82,25 @@ export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady
     },
     [setSearchParams],
   );
+
+  // (Nit, fc-34 round 3) Before this tab carried its own `?batch=` deep link,
+  // core's now-deleted ModuleBuildsPage/ModuleBuildDetailPage used a path
+  // segment: `/app/devops/ci-cd/module-builds/<id>`. That's not a route
+  // anymore — CiCdPage has no nested `<Route>` for it, so the segment is
+  // otherwise just inert extra text the tab-activation `.includes()` check
+  // ignores — but an old link or bookmark still carrying it should open the
+  // same modal, not silently land on the bare list. NOT a redirect: the
+  // pathname is left as-is, `?batch=` is only added, and this runs once per
+  // mount (never re-fires after the modal is closed and the stray segment is
+  // still sitting in the URL).
+  const legacyPathHandled = useRef(false);
+  useEffect(() => {
+    if (legacyPathHandled.current) return;
+    legacyPathHandled.current = true;
+    if (searchParams.get('batch')) return;
+    const legacyId = location.pathname.match(/\/module-builds\/([^/?]+)/)?.[1];
+    if (legacyId) setSelectedBatchId(legacyId);
+  }, [location.pathname, searchParams, setSelectedBatchId]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
