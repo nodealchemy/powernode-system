@@ -49,7 +49,7 @@ export interface MarketplaceFilters extends PaginationParams {
   search?: string;
 }
 
-export const marketplaceApi = {
+export const moduleMarketplaceApi = {
   async list(filters: MarketplaceFilters = {}) {
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => {

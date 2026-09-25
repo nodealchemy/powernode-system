@@ -94,7 +94,7 @@ export interface ProviderConnectionCreate {
 // Provider catalog: providers, their regions, AAA-encrypted connections, and
 // the read-only catalog rows (instance types, availability zones) the
 // platform syncs from cloud SDKs.
-export const providersApi = {
+export const fleetProvidersApi = {
   // ===== Providers =====
   getProviders: async (): Promise<SystemProvider[]> => {
     const response = await apiClient.get<ApiEnvelope<{ providers: SystemProvider[] }>>('/system/providers');

@@ -1,5 +1,5 @@
 import { FC, useEffect, useState } from 'react';
-import { marketplaceApi, type MarketplaceModuleCard } from '@system/features/system/services/api/marketplaceApi';
+import { moduleMarketplaceApi, type MarketplaceModuleCard } from '@system/features/system/services/api/marketplaceApi';
 import { ModuleCard } from '@system/features/system/components/marketplace/ModuleCard';
 import { ModuleDetailModal } from '@system/features/system/components/marketplace/ModuleDetailModal';
 import { logger } from '@/shared/utils/logger';
@@ -17,7 +17,7 @@ export const MarketplaceTab: FC = () => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    marketplaceApi
+    moduleMarketplaceApi
       .list({ trust_tier: trustFilter || undefined, search: search || undefined })
       .then((paginated) => {
         if (!cancelled) {

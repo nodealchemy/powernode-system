@@ -18,7 +18,7 @@ import { templatesApi } from './api/templatesApi';
 import { platformsApi } from './api/platformsApi';
 import { architecturesApi } from './api/architecturesApi';
 import { scriptsApi } from './api/scriptsApi';
-import { providersApi } from './api/providersApi';
+import { fleetProvidersApi } from './api/providersApi';
 import { modulesApi } from './api/modulesApi';
 import { tasksApi } from './api/tasksApi';
 import { puppetApi } from './api/puppetApi';
@@ -35,7 +35,7 @@ export {
   platformsApi,
   architecturesApi,
   scriptsApi,
-  providersApi,
+  fleetProvidersApi,
   modulesApi,
   tasksApi,
   puppetApi,
@@ -53,7 +53,7 @@ export const systemApi = {
   ...platformsApi,
   ...architecturesApi,
   ...scriptsApi,
-  ...providersApi,
+  ...fleetProvidersApi,
   ...modulesApi,
   ...tasksApi,
   ...puppetApi,

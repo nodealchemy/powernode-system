@@ -18,7 +18,7 @@
 
 import { nodesApi } from '../../services/api/nodesApi';
 import { templatesApi } from '../../services/api/templatesApi';
-import { providersApi } from '../../services/api/providersApi';
+import { fleetProvidersApi } from '../../services/api/providersApi';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import { networkTopologyApi } from '../../services/api/networkTopologyApi';
 import type {
@@ -124,7 +124,7 @@ export async function loadFleetTopology(): Promise<FleetTopologySnapshot> {
       templatesApi.getTemplates({ per_page: MAX_TEMPLATES }).then((r) => r.templates ?? []),
       [] as SystemNodeTemplate[],
     ),
-    softFetch(providersApi.getProviderConnections(), [] as SystemProviderConnection[]),
+    softFetch(fleetProvidersApi.getProviderConnections(), [] as SystemProviderConnection[]),
     softFetch<NetworkTopologyResponse | null>(networkTopologyApi.getTopology(), null),
   ]);
 

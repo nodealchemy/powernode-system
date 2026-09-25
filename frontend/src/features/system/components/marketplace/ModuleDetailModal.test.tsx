@@ -1,15 +1,15 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ModuleDetailModal } from './ModuleDetailModal';
-import { marketplaceApi } from '../../services/api/marketplaceApi';
+import { moduleMarketplaceApi } from '../../services/api/marketplaceApi';
 
 jest.mock('../../services/api/marketplaceApi', () => ({
-  marketplaceApi: {
+  moduleMarketplaceApi: {
     get: jest.fn(),
   },
 }));
 
-const mockGet = marketplaceApi.get as jest.MockedFunction<typeof marketplaceApi.get>;
+const mockGet = moduleMarketplaceApi.get as jest.MockedFunction<typeof moduleMarketplaceApi.get>;
 
 describe('ModuleDetailModal', () => {
   beforeEach(() => {

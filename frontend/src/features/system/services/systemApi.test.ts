@@ -23,7 +23,7 @@ import {
   platformsApi,
   architecturesApi,
   scriptsApi,
-  providersApi,
+  fleetProvidersApi,
   modulesApi,
   tasksApi,
   puppetApi,
@@ -222,7 +222,7 @@ describe('named re-exports', () => {
     expect(typeof platformsApi).toBe('object');
     expect(typeof architecturesApi).toBe('object');
     expect(typeof scriptsApi).toBe('object');
-    expect(typeof providersApi).toBe('object');
+    expect(typeof fleetProvidersApi).toBe('object');
     expect(typeof modulesApi).toBe('object');
     expect(typeof tasksApi).toBe('object');
     expect(typeof puppetApi).toBe('object');
@@ -286,7 +286,7 @@ describe('systemApi structure', () => {
     expect(typeof systemApi.deleteScript).toBe('function');
   });
 
-  it('exposes providersApi methods directly (spread)', () => {
+  it('exposes fleetProvidersApi methods directly (spread)', () => {
     expect(typeof systemApi.getProviders).toBe('function');
     expect(typeof systemApi.createProvider).toBe('function');
     expect(typeof systemApi.getProviderRegions).toBe('function');
@@ -572,7 +572,7 @@ describe('scriptsApi delegation', () => {
   });
 });
 
-describe('providersApi delegation', () => {
+describe('fleetProvidersApi delegation', () => {
   it('getProviders: GET /system/providers', async () => {
     mockGet.mockResolvedValue(envelope({ providers: [PROVIDER] }));
     const result = await systemApi.getProviders();

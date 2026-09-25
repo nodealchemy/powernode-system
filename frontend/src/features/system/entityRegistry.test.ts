@@ -68,7 +68,7 @@ jest.mock('@system/features/system/services/api/modulesApi', () => ({
   modulesApi: { getModuleCategory: (...a: unknown[]) => mockModulesApiGetModuleCategory(...a) },
 }));
 jest.mock('@system/features/system/services/api/providersApi', () => ({
-  providersApi: { getProvider: (...a: unknown[]) => mockProvidersApiGetProvider(...a) },
+  fleetProvidersApi: { getProvider: (...a: unknown[]) => mockProvidersApiGetProvider(...a) },
 }));
 jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   sdwanApi: {
@@ -309,7 +309,7 @@ describe('registerSystemEntities()', () => {
       expect(result).toEqual(cat);
     });
 
-    it('provider delegates fetchById to providersApi.getProvider', async () => {
+    it('provider delegates fetchById to fleetProvidersApi.getProvider', async () => {
       const provider = { id: 'prov-1', name: 'QEMU Local' };
       mockProvidersApiGetProvider.mockResolvedValue(provider);
 

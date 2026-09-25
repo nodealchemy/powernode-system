@@ -1,4 +1,4 @@
-import { providersApi } from './providersApi';
+import { fleetProvidersApi } from './providersApi';
 import type { ProviderCreate, ProviderRegionCreate, ProviderConnectionCreate } from './providersApi';
 import type {
   SystemProvider,
@@ -135,7 +135,7 @@ const AZ_A: SystemProviderAvailabilityZone = {
 // Tests
 // =============================================================================
 
-describe('providersApi', () => {
+describe('fleetProvidersApi', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
@@ -151,7 +151,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers and returns the providers array', async () => {
       mockGet.mockResolvedValue(envelope({ providers: [PROVIDER_A, PROVIDER_B] }));
 
-      const result = await providersApi.getProviders();
+      const result = await fleetProvidersApi.getProviders();
 
       expect(mockGet).toHaveBeenCalledTimes(1);
       expect(mockGet).toHaveBeenCalledWith('/system/providers');
@@ -163,7 +163,7 @@ describe('providersApi', () => {
     it('returns an empty array when providers key is missing from data', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getProviders();
+      const result = await fleetProvidersApi.getProviders();
 
       expect(result).toEqual([]);
     });
@@ -171,7 +171,7 @@ describe('providersApi', () => {
     it('returns an empty array when providers is null', async () => {
       mockGet.mockResolvedValue(envelope({ providers: null }));
 
-      const result = await providersApi.getProviders();
+      const result = await fleetProvidersApi.getProviders();
 
       expect(result).toEqual([]);
     });
@@ -181,7 +181,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:id and returns the provider', async () => {
       mockGet.mockResolvedValue(envelope({ provider: PROVIDER_A }));
 
-      const result = await providersApi.getProvider('prov-1');
+      const result = await fleetProvidersApi.getProvider('prov-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1');
       expect(result.id).toBe('prov-1');
@@ -192,7 +192,7 @@ describe('providersApi', () => {
     it('uses the id verbatim in the URL', async () => {
       mockGet.mockResolvedValue(envelope({ provider: PROVIDER_B }));
 
-      await providersApi.getProvider('prov-2');
+      await fleetProvidersApi.getProvider('prov-2');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-2');
     });
@@ -212,7 +212,7 @@ describe('providersApi', () => {
         capabilities: { gpu: false },
       };
 
-      const result = await providersApi.createProvider(data);
+      const result = await fleetProvidersApi.createProvider(data);
 
       expect(mockPost).toHaveBeenCalledTimes(1);
       expect(mockPost).toHaveBeenCalledWith('/system/providers', { provider: data });
@@ -223,7 +223,7 @@ describe('providersApi', () => {
       mockPost.mockResolvedValue(envelope({ provider: PROVIDER_B }));
 
       const data: ProviderCreate = { name: 'GCP Staging', provider_type: 'gcp' };
-      await providersApi.createProvider(data);
+      await fleetProvidersApi.createProvider(data);
 
       const [, body] = mockPost.mock.calls[0] as [string, Record<string, unknown>];
       expect(body).toEqual({ provider: data });
@@ -234,7 +234,7 @@ describe('providersApi', () => {
       mockPost.mockResolvedValue(envelope({ provider: PROVIDER_B }));
 
       const data: ProviderCreate = { name: 'Minimal', provider_type: 'libvirt' };
-      const result = await providersApi.createProvider(data);
+      const result = await fleetProvidersApi.createProvider(data);
 
       expect(mockPost).toHaveBeenCalledWith('/system/providers', { provider: data });
       expect(result).toBeDefined();
@@ -247,7 +247,7 @@ describe('providersApi', () => {
       mockPut.mockResolvedValue(envelope({ provider: updated }));
 
       const patch = { enabled: false };
-      const result = await providersApi.updateProvider('prov-1', patch);
+      const result = await fleetProvidersApi.updateProvider('prov-1', patch);
 
       expect(mockPut).toHaveBeenCalledTimes(1);
       expect(mockPut).toHaveBeenCalledWith('/system/providers/prov-1', { provider: patch });
@@ -257,7 +257,7 @@ describe('providersApi', () => {
     it('wraps the partial under the "provider" key', async () => {
       mockPut.mockResolvedValue(envelope({ provider: PROVIDER_A }));
 
-      await providersApi.updateProvider('prov-1', { description: 'Updated' });
+      await fleetProvidersApi.updateProvider('prov-1', { description: 'Updated' });
 
       const [, body] = mockPut.mock.calls[0] as [string, Record<string, unknown>];
       expect(body).toEqual({ provider: { description: 'Updated' } });
@@ -268,14 +268,14 @@ describe('providersApi', () => {
     it('calls DELETE /system/providers/:id and resolves void', async () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
-      await expect(providersApi.deleteProvider('prov-1')).resolves.toBeUndefined();
+      await expect(fleetProvidersApi.deleteProvider('prov-1')).resolves.toBeUndefined();
       expect(mockDelete).toHaveBeenCalledWith('/system/providers/prov-1');
     });
 
     it('uses the id verbatim in the URL', async () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
-      await providersApi.deleteProvider('prov-2');
+      await fleetProvidersApi.deleteProvider('prov-2');
 
       expect(mockDelete).toHaveBeenCalledWith('/system/providers/prov-2');
     });
@@ -289,7 +289,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/regions and returns the regions array', async () => {
       mockGet.mockResolvedValue(envelope({ regions: [REGION_A] }));
 
-      const result = await providersApi.getProviderRegions('prov-1');
+      const result = await fleetProvidersApi.getProviderRegions('prov-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/regions');
       expect(result).toHaveLength(1);
@@ -299,7 +299,7 @@ describe('providersApi', () => {
     it('returns an empty array when regions key is missing', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getProviderRegions('prov-1');
+      const result = await fleetProvidersApi.getProviderRegions('prov-1');
 
       expect(result).toEqual([]);
     });
@@ -309,7 +309,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/regions/:regionId', async () => {
       mockGet.mockResolvedValue(envelope({ region: REGION_A }));
 
-      const result = await providersApi.getProviderRegion('prov-1', 'region-1');
+      const result = await fleetProvidersApi.getProviderRegion('prov-1', 'region-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/regions/region-1');
       expect(result.id).toBe('region-1');
@@ -328,7 +328,7 @@ describe('providersApi', () => {
         endpoint_url: 'https://ec2.us-east-1.amazonaws.com',
       };
 
-      const result = await providersApi.createProviderRegion('prov-1', data);
+      const result = await fleetProvidersApi.createProviderRegion('prov-1', data);
 
       expect(mockPost).toHaveBeenCalledWith('/system/providers/prov-1/regions', { region: data });
       expect(result.id).toBe('region-1');
@@ -338,7 +338,7 @@ describe('providersApi', () => {
       mockPost.mockResolvedValue(envelope({ region: REGION_A }));
 
       const data: ProviderRegionCreate = { name: 'EU West' };
-      await providersApi.createProviderRegion('prov-1', data);
+      await fleetProvidersApi.createProviderRegion('prov-1', data);
 
       const [, body] = mockPost.mock.calls[0] as [string, Record<string, unknown>];
       expect(body).toEqual({ region: data });
@@ -351,7 +351,7 @@ describe('providersApi', () => {
       mockPut.mockResolvedValue(envelope({ region: updated }));
 
       const patch = { description: 'N. Virginia Updated' };
-      const result = await providersApi.updateProviderRegion('prov-1', 'region-1', patch);
+      const result = await fleetProvidersApi.updateProviderRegion('prov-1', 'region-1', patch);
 
       expect(mockPut).toHaveBeenCalledWith(
         '/system/providers/prov-1/regions/region-1',
@@ -366,7 +366,7 @@ describe('providersApi', () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
       await expect(
-        providersApi.deleteProviderRegion('prov-1', 'region-1')
+        fleetProvidersApi.deleteProviderRegion('prov-1', 'region-1')
       ).resolves.toBeUndefined();
 
       expect(mockDelete).toHaveBeenCalledWith('/system/providers/prov-1/regions/region-1');
@@ -381,7 +381,7 @@ describe('providersApi', () => {
     it('calls GET /system/provider_connections and returns the connections array', async () => {
       mockGet.mockResolvedValue(envelope({ provider_connections: [CONNECTION_A] }));
 
-      const result = await providersApi.getProviderConnections();
+      const result = await fleetProvidersApi.getProviderConnections();
 
       expect(mockGet).toHaveBeenCalledWith('/system/provider_connections');
       expect(result).toHaveLength(1);
@@ -391,7 +391,7 @@ describe('providersApi', () => {
     it('returns an empty array when provider_connections key is missing', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getProviderConnections();
+      const result = await fleetProvidersApi.getProviderConnections();
 
       expect(result).toEqual([]);
     });
@@ -401,7 +401,7 @@ describe('providersApi', () => {
     it('calls GET /system/provider_connections/:id and returns the connection', async () => {
       mockGet.mockResolvedValue(envelope({ provider_connection: CONNECTION_A }));
 
-      const result = await providersApi.getProviderConnection('conn-1');
+      const result = await fleetProvidersApi.getProviderConnection('conn-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/provider_connections/conn-1');
       expect(result.id).toBe('conn-1');
@@ -421,7 +421,7 @@ describe('providersApi', () => {
         secret_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
       };
 
-      const result = await providersApi.createProviderConnection(data);
+      const result = await fleetProvidersApi.createProviderConnection(data);
 
       expect(mockPost).toHaveBeenCalledWith('/system/provider_connections', {
         provider_connection: data,
@@ -436,7 +436,7 @@ describe('providersApi', () => {
         name: 'Minimal',
         provider_id: 'prov-1',
       };
-      await providersApi.createProviderConnection(data);
+      await fleetProvidersApi.createProviderConnection(data);
 
       const [, body] = mockPost.mock.calls[0] as [string, Record<string, unknown>];
       expect(body).toEqual({ provider_connection: data });
@@ -449,7 +449,7 @@ describe('providersApi', () => {
       mockPut.mockResolvedValue(envelope({ provider_connection: updated }));
 
       const patch = { name: 'AWS Prod Creds v2' };
-      const result = await providersApi.updateProviderConnection('conn-1', patch);
+      const result = await fleetProvidersApi.updateProviderConnection('conn-1', patch);
 
       expect(mockPut).toHaveBeenCalledWith('/system/provider_connections/conn-1', {
         provider_connection: patch,
@@ -462,7 +462,7 @@ describe('providersApi', () => {
     it('calls DELETE /system/provider_connections/:id', async () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
-      await expect(providersApi.deleteProviderConnection('conn-1')).resolves.toBeUndefined();
+      await expect(fleetProvidersApi.deleteProviderConnection('conn-1')).resolves.toBeUndefined();
 
       expect(mockDelete).toHaveBeenCalledWith('/system/provider_connections/conn-1');
     });
@@ -473,7 +473,7 @@ describe('providersApi', () => {
       const testResult = { success: true, message: 'Connection successful' };
       mockPost.mockResolvedValue(envelope(testResult));
 
-      const result = await providersApi.testProviderConnection('conn-1');
+      const result = await fleetProvidersApi.testProviderConnection('conn-1');
 
       expect(mockPost).toHaveBeenCalledWith('/system/provider_connections/conn-1/test');
       expect(result.success).toBe(true);
@@ -484,7 +484,7 @@ describe('providersApi', () => {
       const testResult = { success: false, message: 'Authentication failed: invalid credentials' };
       mockPost.mockResolvedValue(envelope(testResult));
 
-      const result = await providersApi.testProviderConnection('conn-1');
+      const result = await fleetProvidersApi.testProviderConnection('conn-1');
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('Authentication failed');
@@ -505,7 +505,7 @@ describe('providersApi', () => {
         }),
       );
 
-      const result = await providersApi.syncProviderConnectionCatalog('conn-1');
+      const result = await fleetProvidersApi.syncProviderConnectionCatalog('conn-1');
 
       expect(mockPost).toHaveBeenCalledWith(
         '/system/provider_connections/conn-1/sync_catalog',
@@ -521,7 +521,7 @@ describe('providersApi', () => {
         envelope({ instance_types: [INSTANCE_TYPE_A], meta: { total_count: 137 } }),
       );
 
-      const result = await providersApi.getProviderInstanceTypesPage('prov-1');
+      const result = await fleetProvidersApi.getProviderInstanceTypesPage('prov-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/instance_types', {
         params: { per_page: 100 },
@@ -533,7 +533,7 @@ describe('providersApi', () => {
     it('falls back to the row count when the server sends no meta', async () => {
       mockGet.mockResolvedValue(envelope({ instance_types: [INSTANCE_TYPE_A] }));
 
-      const result = await providersApi.getProviderInstanceTypesPage('prov-1');
+      const result = await fleetProvidersApi.getProviderInstanceTypesPage('prov-1');
 
       expect(result.total).toBe(1);
     });
@@ -543,7 +543,7 @@ describe('providersApi', () => {
         envelope({ availability_zones: [AZ_A], meta: { total_count: 42 } }),
       );
 
-      const result = await providersApi.getProviderAvailabilityZonesPage('prov-1', 'reg-1');
+      const result = await fleetProvidersApi.getProviderAvailabilityZonesPage('prov-1', 'reg-1');
 
       expect(mockGet).toHaveBeenCalledWith(
         '/system/providers/prov-1/regions/reg-1/availability_zones',
@@ -557,7 +557,7 @@ describe('providersApi', () => {
     it('createProviderInstanceType POSTs to the provider-scoped collection', async () => {
       mockPost.mockResolvedValue(envelope({ instance_type: INSTANCE_TYPE_A }));
 
-      await providersApi.createProviderInstanceType('prov-1', {
+      await fleetProvidersApi.createProviderInstanceType('prov-1', {
         name: 'Large',
         instance_type_code: 'm5.large',
         vcpus: 2,
@@ -571,7 +571,7 @@ describe('providersApi', () => {
     it('updateProviderInstanceType PUTs to the member route', async () => {
       mockPut.mockResolvedValue(envelope({ instance_type: INSTANCE_TYPE_A }));
 
-      await providersApi.updateProviderInstanceType('prov-1', 'it-1', { enabled: false });
+      await fleetProvidersApi.updateProviderInstanceType('prov-1', 'it-1', { enabled: false });
 
       expect(mockPut).toHaveBeenCalledWith(
         '/system/providers/prov-1/instance_types/it-1',
@@ -583,7 +583,7 @@ describe('providersApi', () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
       await expect(
-        providersApi.deleteProviderInstanceType('prov-1', 'it-1'),
+        fleetProvidersApi.deleteProviderInstanceType('prov-1', 'it-1'),
       ).resolves.toBeUndefined();
 
       expect(mockDelete).toHaveBeenCalledWith('/system/providers/prov-1/instance_types/it-1');
@@ -594,7 +594,7 @@ describe('providersApi', () => {
     it('createProviderAvailabilityZone POSTs under the region', async () => {
       mockPost.mockResolvedValue(envelope({ availability_zone: AZ_A }));
 
-      await providersApi.createProviderAvailabilityZone('prov-1', 'reg-1', {
+      await fleetProvidersApi.createProviderAvailabilityZone('prov-1', 'reg-1', {
         name: 'Zone A',
         zone_code: 'us-east-1a',
       });
@@ -608,7 +608,7 @@ describe('providersApi', () => {
     it('updateProviderAvailabilityZone PUTs under the region', async () => {
       mockPut.mockResolvedValue(envelope({ availability_zone: AZ_A }));
 
-      await providersApi.updateProviderAvailabilityZone('prov-1', 'reg-1', 'az-1', {
+      await fleetProvidersApi.updateProviderAvailabilityZone('prov-1', 'reg-1', 'az-1', {
         status: 'impaired',
       });
 
@@ -622,7 +622,7 @@ describe('providersApi', () => {
       mockDelete.mockResolvedValue({ data: { success: true } });
 
       await expect(
-        providersApi.deleteProviderAvailabilityZone('prov-1', 'reg-1', 'az-1'),
+        fleetProvidersApi.deleteProviderAvailabilityZone('prov-1', 'reg-1', 'az-1'),
       ).resolves.toBeUndefined();
 
       expect(mockDelete).toHaveBeenCalledWith(
@@ -639,7 +639,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/instance_types when providerId is given', async () => {
       mockGet.mockResolvedValue(envelope({ instance_types: [INSTANCE_TYPE_A] }));
 
-      const result = await providersApi.getProviderInstanceTypes('prov-1');
+      const result = await fleetProvidersApi.getProviderInstanceTypes('prov-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/instance_types');
       expect(result).toHaveLength(1);
@@ -649,7 +649,7 @@ describe('providersApi', () => {
     it('calls GET /system/provider_instance_types when no providerId is given', async () => {
       mockGet.mockResolvedValue(envelope({ instance_types: [INSTANCE_TYPE_A] }));
 
-      const result = await providersApi.getProviderInstanceTypes();
+      const result = await fleetProvidersApi.getProviderInstanceTypes();
 
       expect(mockGet).toHaveBeenCalledWith('/system/provider_instance_types');
       expect(result).toHaveLength(1);
@@ -658,7 +658,7 @@ describe('providersApi', () => {
     it('returns an empty array when instance_types key is missing', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getProviderInstanceTypes('prov-1');
+      const result = await fleetProvidersApi.getProviderInstanceTypes('prov-1');
 
       expect(result).toEqual([]);
     });
@@ -666,7 +666,7 @@ describe('providersApi', () => {
     it('returns an empty array when called without arguments and data is empty', async () => {
       mockGet.mockResolvedValue(envelope({ instance_types: null }));
 
-      const result = await providersApi.getProviderInstanceTypes();
+      const result = await fleetProvidersApi.getProviderInstanceTypes();
 
       expect(result).toEqual([]);
     });
@@ -676,7 +676,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/instance_types/:instanceTypeId', async () => {
       mockGet.mockResolvedValue(envelope({ instance_type: INSTANCE_TYPE_A }));
 
-      const result = await providersApi.getProviderInstanceType('prov-1', 'itype-1');
+      const result = await fleetProvidersApi.getProviderInstanceType('prov-1', 'itype-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/providers/prov-1/instance_types/itype-1');
       expect(result.id).toBe('itype-1');
@@ -688,7 +688,7 @@ describe('providersApi', () => {
     it('calls GET /system/provider_instance_types/for_region with region_id param', async () => {
       mockGet.mockResolvedValue(envelope({ instance_types: [INSTANCE_TYPE_A] }));
 
-      const result = await providersApi.getInstanceTypesForRegion('region-1');
+      const result = await fleetProvidersApi.getInstanceTypesForRegion('region-1');
 
       expect(mockGet).toHaveBeenCalledWith('/system/provider_instance_types/for_region', {
         params: { region_id: 'region-1' },
@@ -700,7 +700,7 @@ describe('providersApi', () => {
     it('returns an empty array when instance_types is missing for a region', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getInstanceTypesForRegion('region-99');
+      const result = await fleetProvidersApi.getInstanceTypesForRegion('region-99');
 
       expect(result).toEqual([]);
     });
@@ -714,7 +714,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/regions/:regionId/availability_zones', async () => {
       mockGet.mockResolvedValue(envelope({ availability_zones: [AZ_A] }));
 
-      const result = await providersApi.getProviderAvailabilityZones('prov-1', 'region-1');
+      const result = await fleetProvidersApi.getProviderAvailabilityZones('prov-1', 'region-1');
 
       expect(mockGet).toHaveBeenCalledWith(
         '/system/providers/prov-1/regions/region-1/availability_zones'
@@ -726,7 +726,7 @@ describe('providersApi', () => {
     it('returns an empty array when availability_zones key is missing', async () => {
       mockGet.mockResolvedValue(envelope({}));
 
-      const result = await providersApi.getProviderAvailabilityZones('prov-1', 'region-1');
+      const result = await fleetProvidersApi.getProviderAvailabilityZones('prov-1', 'region-1');
 
       expect(result).toEqual([]);
     });
@@ -734,7 +734,7 @@ describe('providersApi', () => {
     it('returns an empty array when availability_zones is null', async () => {
       mockGet.mockResolvedValue(envelope({ availability_zones: null }));
 
-      const result = await providersApi.getProviderAvailabilityZones('prov-1', 'region-99');
+      const result = await fleetProvidersApi.getProviderAvailabilityZones('prov-1', 'region-99');
 
       expect(result).toEqual([]);
     });
@@ -744,7 +744,7 @@ describe('providersApi', () => {
     it('calls GET /system/providers/:providerId/regions/:regionId/availability_zones/:zoneId', async () => {
       mockGet.mockResolvedValue(envelope({ availability_zone: AZ_A }));
 
-      const result = await providersApi.getProviderAvailabilityZone('prov-1', 'region-1', 'az-1');
+      const result = await fleetProvidersApi.getProviderAvailabilityZone('prov-1', 'region-1', 'az-1');
 
       expect(mockGet).toHaveBeenCalledWith(
         '/system/providers/prov-1/regions/region-1/availability_zones/az-1'
@@ -765,7 +765,7 @@ describe('providersApi', () => {
       const err = new Error('Network Error');
       mockGet.mockRejectedValue(err);
 
-      await expect(providersApi.getProviders()).rejects.toThrow('Network Error');
+      await expect(fleetProvidersApi.getProviders()).rejects.toThrow('Network Error');
     });
 
     it('rejects with the network error when createProvider fails', async () => {
@@ -773,7 +773,7 @@ describe('providersApi', () => {
       mockPost.mockRejectedValue(err);
 
       await expect(
-        providersApi.createProvider({ name: 'X', provider_type: 'aws' })
+        fleetProvidersApi.createProvider({ name: 'X', provider_type: 'aws' })
       ).rejects.toThrow('503 Service Unavailable');
     });
 
@@ -781,7 +781,7 @@ describe('providersApi', () => {
       const err = new Error('Connection timed out');
       mockPost.mockRejectedValue(err);
 
-      await expect(providersApi.testProviderConnection('conn-1')).rejects.toThrow(
+      await expect(fleetProvidersApi.testProviderConnection('conn-1')).rejects.toThrow(
         'Connection timed out'
       );
     });
@@ -790,7 +790,7 @@ describe('providersApi', () => {
       const err = new Error('404 Not Found');
       mockDelete.mockRejectedValue(err);
 
-      await expect(providersApi.deleteProvider('prov-bad')).rejects.toThrow('404 Not Found');
+      await expect(fleetProvidersApi.deleteProvider('prov-bad')).rejects.toThrow('404 Not Found');
     });
   });
 });

@@ -3,7 +3,7 @@ import { Package } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import {
-  marketplaceApi,
+  moduleMarketplaceApi,
   type MarketplaceModuleDetail,
   type MarketplaceVersion,
   type MarketplaceDependency,
@@ -25,7 +25,7 @@ export const ModuleDetailModal: FC<Props> = ({ moduleId, onClose }) => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    marketplaceApi
+    moduleMarketplaceApi
       .get(moduleId)
       .then((data) => {
         if (cancelled) return;

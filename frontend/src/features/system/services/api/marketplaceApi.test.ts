@@ -1,10 +1,10 @@
-// Behavioral tests for marketplaceApi.
+// Behavioral tests for moduleMarketplaceApi.
 //
 // Covers every exported method: exact URL, params (including filtering,
 // pagination, and empty-value omission), payload, envelope unwrapping via
 // extractData / extractPaginated, and error propagation.
 
-import { marketplaceApi } from './marketplaceApi';
+import { moduleMarketplaceApi } from './marketplaceApi';
 
 // =============================================================================
 // Mocks
@@ -112,7 +112,7 @@ const BASE_URL = '/system/marketplace';
 // Tests
 // =============================================================================
 
-describe('marketplaceApi', () => {
+describe('moduleMarketplaceApi', () => {
   beforeEach(() => {
     mockGet.mockReset();
   });
@@ -127,7 +127,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A] }),
       );
 
-      await marketplaceApi.list();
+      await moduleMarketplaceApi.list();
 
       expect(mockGet).toHaveBeenCalledTimes(1);
       // No filters → URLSearchParams is empty → URL is "/system/marketplace?"
@@ -139,7 +139,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A] }),
       );
 
-      await marketplaceApi.list({});
+      await moduleMarketplaceApi.list({});
 
       expect(mockGet).toHaveBeenCalledWith(`${BASE_URL}?`);
     });
@@ -149,7 +149,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A] }),
       );
 
-      await marketplaceApi.list({ trust_tier: 'verified-publisher' });
+      await moduleMarketplaceApi.list({ trust_tier: 'verified-publisher' });
 
       expect(mockGet).toHaveBeenCalledWith(
         `${BASE_URL}?trust_tier=verified-publisher`,
@@ -159,7 +159,7 @@ describe('marketplaceApi', () => {
     it('appends category_id filter to the URL', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({ category_id: 'cat-net' });
+      await moduleMarketplaceApi.list({ category_id: 'cat-net' });
 
       expect(mockGet).toHaveBeenCalledWith(`${BASE_URL}?category_id=cat-net`);
     });
@@ -167,7 +167,7 @@ describe('marketplaceApi', () => {
     it('appends search filter to the URL', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({ search: 'nginx' });
+      await moduleMarketplaceApi.list({ search: 'nginx' });
 
       expect(mockGet).toHaveBeenCalledWith(`${BASE_URL}?search=nginx`);
     });
@@ -175,7 +175,7 @@ describe('marketplaceApi', () => {
     it('appends pagination params page and per_page to the URL', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({ page: 2, per_page: 10 });
+      await moduleMarketplaceApi.list({ page: 2, per_page: 10 });
 
       const call = mockGet.mock.calls[0][0] as string;
       const params = new URLSearchParams(call.split('?')[1]);
@@ -186,7 +186,7 @@ describe('marketplaceApi', () => {
     it('appends all filters together in the URL', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({
+      await moduleMarketplaceApi.list({
         trust_tier: 'community',
         category_id: 'cat-sec',
         search: 'firewall',
@@ -206,7 +206,7 @@ describe('marketplaceApi', () => {
     it('omits filter keys whose value is undefined', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({ trust_tier: undefined, search: 'redis' });
+      await moduleMarketplaceApi.list({ trust_tier: undefined, search: 'redis' });
 
       const call = mockGet.mock.calls[0][0] as string;
       const params = new URLSearchParams(call.split('?')[1]);
@@ -219,7 +219,7 @@ describe('marketplaceApi', () => {
 
       // TypeScript does not allow null for category_id but the runtime guard
       // is explicit — verify it by casting.
-      await marketplaceApi.list({
+      await moduleMarketplaceApi.list({
         category_id: null as unknown as string,
         search: 'db',
       });
@@ -233,7 +233,7 @@ describe('marketplaceApi', () => {
     it('omits filter keys whose value is an empty string', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list({ trust_tier: '', search: 'cache' });
+      await moduleMarketplaceApi.list({ trust_tier: '', search: 'cache' });
 
       const call = mockGet.mock.calls[0][0] as string;
       const params = new URLSearchParams(call.split('?')[1]);
@@ -246,7 +246,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A, MODULE_CARD_B] }),
       );
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
 
       expect(result.modules).toHaveLength(2);
       expect(result.modules[0]).toEqual(MODULE_CARD_A);
@@ -256,7 +256,7 @@ describe('marketplaceApi', () => {
     it('returns an empty modules array when the backend returns none', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
 
       expect(result.modules).toEqual([]);
     });
@@ -274,7 +274,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A] }, meta),
       );
 
-      const result = await marketplaceApi.list({ page: 2, per_page: 10 });
+      const result = await moduleMarketplaceApi.list({ page: 2, per_page: 10 });
 
       expect(result.meta.total_count).toBe(35);
       expect(result.meta.total_pages).toBe(4);
@@ -294,7 +294,7 @@ describe('marketplaceApi', () => {
         },
       });
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
 
       expect(result.meta.total_count).toBe(2);
       expect(result.meta.total_pages).toBe(1);
@@ -306,13 +306,13 @@ describe('marketplaceApi', () => {
     it('propagates API errors', async () => {
       mockGet.mockRejectedValueOnce(new Error('Network error'));
 
-      await expect(marketplaceApi.list()).rejects.toThrow('Network error');
+      await expect(moduleMarketplaceApi.list()).rejects.toThrow('Network error');
     });
 
     it('does NOT call apiClient.post/put/delete', async () => {
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [] }));
 
-      await marketplaceApi.list();
+      await moduleMarketplaceApi.list();
 
       // Only GET is mocked; confirming no unexpected method was called
       expect(mockGet).toHaveBeenCalledTimes(1);
@@ -333,7 +333,7 @@ describe('marketplaceApi', () => {
     it('calls GET /system/marketplace/:id', async () => {
       mockGet.mockResolvedValueOnce(envelope(DETAIL_PAYLOAD));
 
-      await marketplaceApi.get('mod-a');
+      await moduleMarketplaceApi.get('mod-a');
 
       expect(mockGet).toHaveBeenCalledTimes(1);
       expect(mockGet).toHaveBeenCalledWith(`${BASE_URL}/mod-a`);
@@ -342,7 +342,7 @@ describe('marketplaceApi', () => {
     it('uses the supplied id in the URL', async () => {
       mockGet.mockResolvedValueOnce(envelope(DETAIL_PAYLOAD));
 
-      await marketplaceApi.get('mod-xyz-999');
+      await moduleMarketplaceApi.get('mod-xyz-999');
 
       expect(mockGet).toHaveBeenCalledWith(`${BASE_URL}/mod-xyz-999`);
     });
@@ -350,7 +350,7 @@ describe('marketplaceApi', () => {
     it('returns the unwrapped detail payload containing module, recent_versions, and dependencies', async () => {
       mockGet.mockResolvedValueOnce(envelope(DETAIL_PAYLOAD));
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.module).toEqual(MODULE_DETAIL);
       expect(result.recent_versions).toHaveLength(1);
@@ -362,7 +362,7 @@ describe('marketplaceApi', () => {
     it('returns the full module detail fields including optional extended props', async () => {
       mockGet.mockResolvedValueOnce(envelope(DETAIL_PAYLOAD));
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.module.id).toBe('mod-a');
       expect(result.module.name).toBe('nginx-proxy');
@@ -392,7 +392,7 @@ describe('marketplaceApi', () => {
         envelope({ module: minimalDetail, recent_versions: [], dependencies: [] }),
       );
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.module.manifest_yaml).toBeNull();
       expect(result.module.gitea_repo_full_name).toBeNull();
@@ -416,7 +416,7 @@ describe('marketplaceApi', () => {
         }),
       );
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.recent_versions).toHaveLength(2);
       expect(result.recent_versions[0].version_number).toBe(3);
@@ -438,7 +438,7 @@ describe('marketplaceApi', () => {
         }),
       );
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.dependencies).toHaveLength(2);
       expect(result.dependencies[1].required_module_id).toBe('mod-utils');
@@ -448,7 +448,7 @@ describe('marketplaceApi', () => {
     it('propagates API errors', async () => {
       mockGet.mockRejectedValueOnce(new Error('Not found'));
 
-      await expect(marketplaceApi.get('missing')).rejects.toThrow('Not found');
+      await expect(moduleMarketplaceApi.get('missing')).rejects.toThrow('Not found');
     });
 
     it('propagates 404 errors', async () => {
@@ -457,7 +457,7 @@ describe('marketplaceApi', () => {
       });
       mockGet.mockRejectedValueOnce(notFoundError);
 
-      await expect(marketplaceApi.get('no-such-module')).rejects.toThrow(
+      await expect(moduleMarketplaceApi.get('no-such-module')).rejects.toThrow(
         'Request failed with status code 404',
       );
     });
@@ -474,7 +474,7 @@ describe('marketplaceApi', () => {
         data: { success: true, data: payload, meta: null },
       });
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
 
       expect(result.modules).toEqual([MODULE_CARD_A]);
       // Must NOT expose envelope keys
@@ -492,7 +492,7 @@ describe('marketplaceApi', () => {
         data: { success: true, data: payload },
       });
 
-      const result = await marketplaceApi.get('mod-a');
+      const result = await moduleMarketplaceApi.get('mod-a');
 
       expect(result.module.id).toBe('mod-a');
       // Must NOT contain envelope keys
@@ -518,7 +518,7 @@ describe('marketplaceApi', () => {
         },
       });
 
-      const result = await marketplaceApi.list({ page: 3, per_page: 5 });
+      const result = await moduleMarketplaceApi.list({ page: 3, per_page: 5 });
 
       // meta.total_pages must be 20 (from root), not 1 (synthesized default)
       expect(result.meta.total_pages).toBe(20);
@@ -537,7 +537,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [MODULE_CARD_A] }),
       );
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
       const card = result.modules[0];
 
       expect(card.id).toBe('mod-a');
@@ -559,7 +559,7 @@ describe('marketplaceApi', () => {
         paginatedEnvelope({ modules: [unknownTierCard] }),
       );
 
-      const result = await marketplaceApi.list({ trust_tier: 'partner' });
+      const result = await moduleMarketplaceApi.list({ trust_tier: 'partner' });
 
       expect(result.modules[0].trust_tier).toBe('partner');
     });
@@ -577,7 +577,7 @@ describe('marketplaceApi', () => {
       };
       mockGet.mockResolvedValueOnce(paginatedEnvelope({ modules: [bareCard] }));
 
-      const result = await marketplaceApi.list();
+      const result = await moduleMarketplaceApi.list();
 
       expect(result.modules[0].description).toBeUndefined();
       expect(result.modules[0].category).toBeUndefined();

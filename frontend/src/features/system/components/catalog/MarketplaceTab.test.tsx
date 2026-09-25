@@ -1,19 +1,19 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MarketplaceTab } from './MarketplaceTab';
-import { marketplaceApi } from '@system/features/system/services/api/marketplaceApi';
+import { moduleMarketplaceApi } from '@system/features/system/services/api/marketplaceApi';
 
 // =============================================================================
 // Mocks
 //
-// MarketplaceTab calls marketplaceApi.list() directly. Child components
+// MarketplaceTab calls moduleMarketplaceApi.list() directly. Child components
 // (ModuleCard, ModuleDetailModal) are mocked so tests focus purely on the
 // tab's orchestration: fetch lifecycle, filter interactions, empty/error states,
 // and modal open/close.
 // =============================================================================
 
 jest.mock('@system/features/system/services/api/marketplaceApi', () => ({
-  marketplaceApi: {
+  moduleMarketplaceApi: {
     list: jest.fn(),
     get: jest.fn(),
   },
@@ -49,10 +49,10 @@ jest.mock('@/shared/utils/logger', () => ({
 // Helpers
 // =============================================================================
 
-const mockList = marketplaceApi.list as jest.MockedFunction<typeof marketplaceApi.list>;
+const mockList = moduleMarketplaceApi.list as jest.MockedFunction<typeof moduleMarketplaceApi.list>;
 
-/** Build a mock resolved value for marketplaceApi.list */
-function makeListResult(modules: Parameters<typeof marketplaceApi.list>[0] extends infer _F
+/** Build a mock resolved value for moduleMarketplaceApi.list */
+function makeListResult(modules: Parameters<typeof moduleMarketplaceApi.list>[0] extends infer _F
   ? { id: string; name: string; description?: string; variety: string; priority: number;
       trust_tier: string; current_version_number: number; assignment_count: number;
       updated_at: string }[]
@@ -182,7 +182,7 @@ describe('MarketplaceTab', () => {
   // Initial API call — no filters applied
   // ---------------------------------------------------------------------------
 
-  it('calls marketplaceApi.list with no filters on mount', async () => {
+  it('calls moduleMarketplaceApi.list with no filters on mount', async () => {
     mockList.mockResolvedValue(makeListResult([]));
 
     renderTab();

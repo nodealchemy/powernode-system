@@ -33,7 +33,7 @@ import { nodesApi } from '@system/features/system/services/api/nodesApi';
 import { platformsApi } from '@system/features/system/services/api/platformsApi';
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
 import { modulesApi } from '@system/features/system/services/api/modulesApi';
-import { providersApi } from '@system/features/system/services/api/providersApi';
+import { fleetProvidersApi } from '@system/features/system/services/api/providersApi';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import { acmeCertificatesApi } from '@system/features/system/services/api/acmeCertificatesApi';
 import { acmeDnsCredentialsApi } from '@system/features/system/services/api/acmeDnsCredentialsApi';
@@ -164,7 +164,7 @@ export function registerSystemEntities(): void {
       permission: 'system.providers.read',
       icon: 'Cloud',
       labelField: 'name',
-      fetchById: (id: string) => providersApi.getProvider(id),
+      fetchById: (id: string) => fleetProvidersApi.getProvider(id),
     },
     {
       // Composite id "nodeId:instanceId" — the instance route is nested under
