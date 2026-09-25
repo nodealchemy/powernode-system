@@ -106,7 +106,10 @@ module System
             failure("Materialization failed: #{result.errors.join('; ')}")
           end
         rescue ::System::PackageModuleMaterializer::NamingConflictError => e
-          failure(e.message)
+          # IMP-8552945f2672 — routed through safe_error_text (generic
+          # default), same treatment as every other domain exception class
+          # this class hierarchy does not explicitly whitelist.
+          failure(safe_error_text(e))
         end
       end
     end

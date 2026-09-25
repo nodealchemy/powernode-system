@@ -124,7 +124,12 @@ module System
             routes_configured: regen[:route_count]
           )
         rescue ActiveRecord::RecordInvalid => e
-          failure(e.record.errors.full_messages.join("; "))
+          # IMP-8552945f2672 — was e.record.errors.full_messages.join("; "),
+          # forwarded verbatim; routed through safe_error_text, which authors
+          # "Validation failed: <attribute names>" instead (full_messages is
+          # a cross-tenant existence oracle wherever a uniqueness validator
+          # is unscoped elsewhere in this codebase).
+          failure(safe_error_text(e))
         rescue ::Sdwan::ServiceExposureWriter::WriteError => e
           # IMP-1a5c145c24eb — reviewer finding B, same shape as
           # ExposeServiceLocalExecutor's sibling fix: reached before

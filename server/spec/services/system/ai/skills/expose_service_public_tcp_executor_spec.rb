@@ -133,6 +133,30 @@ RSpec.describe System::Ai::Skills::ExposeServicePublicTcpExecutor do
       expect(r[:error]).to match(/not found/)
       expect(foreign_svc.reload.public_enabled).to be false
     end
+
+    # IMP-8552945f2672 — this rescue used to forward
+    # `e.record.errors.full_messages.join("; ")` verbatim; a genuine leak the
+    # first pass of this task's own guard missed (its regex only matched
+    # `e.message`-shaped member access, not the `e.record.errors.
+    # full_messages` chain). Stubbed rather than driven through a real
+    # model-validation combination: client_auth/edge_mode aren't executor
+    # inputs, so provoking this rescue for real needs a service already left
+    # in an invalid state, which is a needless amount of setup for a rescue
+    # this method treats identically to any other RecordInvalid.
+    it "surfaces a generic failure for a model validation, never the raw text" do
+      svc = create_service!
+      allow_any_instance_of(::Sdwan::Service).to receive(:save!).and_raise(
+        ActiveRecord::RecordInvalid.new(svc.tap { |s| s.errors.add(:client_auth, "required client-cert " \
+          "enforcement needs edge_mode terminate (Traefik cannot inspect a client certificate on an " \
+          "undecrypted passthrough stream)") })
+      )
+
+      r = exec.execute(service_id: svc.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("Validation failed: client_auth")
+      expect(r[:error]).not_to include("passthrough stream")
+    end
   end
 
   describe "#execute — UNEXPOSE (enabled: false)" do

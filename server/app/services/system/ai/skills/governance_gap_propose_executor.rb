@@ -65,14 +65,20 @@ module System
         def validate_inputs!(inputs)
           super
 
+          # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672):
+          # both raises below describe the caller's own supplied `gap`
+          # payload against this executor's own TYPES constant — safe by
+          # the same reasoning as BaseSkillExecutor#validate_inputs!'s own
+          # "missing required input" raise.
           gap = inputs[:gap]
-          raise ArgumentError, "gap must be a Hash" unless gap.is_a?(Hash)
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "gap must be a Hash" unless gap.is_a?(Hash)
 
           type = gap.deep_stringify_keys["recommendation_type"].to_s
           return if TYPES.include?(type)
 
-          raise ArgumentError, "gap.recommendation_type #{type.inspect} is not an Ai::ImprovementRecommendation type " \
-                               "(#{TYPES.join(', ')})"
+          raise ::Ai::Tools::BaseTool::CallerFacingError,
+                "gap.recommendation_type #{type.inspect} is not an Ai::ImprovementRecommendation type " \
+                "(#{TYPES.join(', ')})"
         end
 
         def perform(gap:, fingerprint:, severity: nil, dry_run: false)
@@ -238,7 +244,10 @@ module System
           result
         rescue StandardError => e
           ::Rails.logger.error("[GovernanceGapProposeExecutor] materialisation failed for #{fingerprint}: #{e.class}: #{e.message}")
-          { status: "failed", error: e.message }
+          # IMP-8552945f2672 — the logger line above keeps the full raw text
+          # server-side; only the returned `error:` (caller-facing) is routed
+          # through safe_error_text (generic default).
+          { status: "failed", error: safe_error_text(e) }
         end
       end
     end

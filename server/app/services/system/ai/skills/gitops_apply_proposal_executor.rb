@@ -53,7 +53,7 @@ module System
           @proposal = ::Ai::AgentProposal.where(account_id: @account.id).find_by(id: inputs[:proposal_id])
           return if @proposal
 
-          raise ArgumentError, "AgentProposal #{inputs[:proposal_id]} not found in this account"
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "AgentProposal #{inputs[:proposal_id]} not found in this account"
         end
 
         def perform(proposal_id:)

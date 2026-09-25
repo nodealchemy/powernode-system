@@ -49,18 +49,30 @@ module System
         def validate_inputs!(inputs)
           super
 
+          # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672):
+          # BaseSkillExecutor#execute's shared rescue now flattens a bare
+          # ArgumentError to the generic message same as any other unaudited
+          # exception. Every raise below interpolates only this account's
+          # own platform id, the caller's own supplied count, or the model's
+          # own validation text (NodePlatform's numericality bound) — safe
+          # by the same reasoning as BaseSkillExecutor#validate_inputs!'s own
+          # "missing required input" raise.
           @platform = ::System::NodePlatform.where(account_id: @account.id).find_by(id: inputs[:platform_id])
-          raise ArgumentError, "NodePlatform #{inputs[:platform_id]} not found in this account" unless @platform
+          unless @platform
+            raise ::Ai::Tools::BaseTool::CallerFacingError, "NodePlatform #{inputs[:platform_id]} not found in this account"
+          end
 
           @retention_count = inputs[:retention_count].to_i
-          raise ArgumentError, "retention_count must be >= 1 (got #{@retention_count})" if @retention_count < 1
+          if @retention_count < 1
+            raise ::Ai::Tools::BaseTool::CallerFacingError, "retention_count must be >= 1 (got #{@retention_count})"
+          end
 
           probe = ::System::NodePlatform.new(disk_image_retention_count: @retention_count)
           probe.valid?
           messages = probe.errors.full_messages_for(:disk_image_retention_count)
           return if messages.empty?
 
-          raise ArgumentError, "retention update refused: #{messages.to_sentence}"
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "retention update refused: #{messages.to_sentence}"
         end
 
         def perform(platform_id:, retention_count:)
@@ -79,7 +91,16 @@ module System
             previous_retention_count: previous
           )
         rescue ::ActiveRecord::RecordInvalid => e
-          failure("retention update refused: #{e.record.errors.full_messages.to_sentence}")
+          # IMP-8552945f2672 — was e.record.errors.full_messages.to_sentence,
+          # forwarded verbatim; routed through safe_error_text, which authors
+          # "Validation failed: <attribute names>" for RecordInvalid instead
+          # (full_messages is a cross-tenant existence oracle wherever a
+          # uniqueness validator is unscoped — see base_skill_executor.rb).
+          # This rescue is defensive: #validate_inputs! above already checks
+          # the same bound with a hand-built probe before #perform runs, so
+          # in practice this only fires on a race against a concurrent bound
+          # change between admission and the actual write.
+          failure("retention update refused: #{safe_error_text(e)}")
         end
       end
     end

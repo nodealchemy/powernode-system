@@ -400,7 +400,12 @@ module System
             ].compact
           )
         rescue ArgumentError => e
-          failure(e.message)
+          # IMP-8552945f2672 — a bare ArgumentError is NOT assumed safe
+          # merely because of its class (Ai::Tools::BaseTool's own
+          # documented reasoning: Ruby/stdlib raise it too, with messages
+          # nobody here authored); routed through safe_error_text (generic
+          # default unless the raiser explicitly opted into CallerFacingError).
+          failure(safe_error_text(e))
         end
 
         # ── failover_check ───────────────────────────────────────────────

@@ -63,12 +63,13 @@ module System
           @publication = ::System::DiskImagePublication
             .where(account_id: @account.id).find_by(id: inputs[:publication_id])
           unless @publication
-            raise ArgumentError, "DiskImagePublication #{inputs[:publication_id]} not found in this account"
+            raise ::Ai::Tools::BaseTool::CallerFacingError,
+                  "DiskImagePublication #{inputs[:publication_id]} not found in this account"
           end
 
           return if @publication.status == "published"
 
-          raise ArgumentError,
+          raise ::Ai::Tools::BaseTool::CallerFacingError,
                 "publication #{@publication.id} is in status=#{@publication.status.inspect}; only a " \
                 "published publication can be promoted to the platform default (use disk_image_rollback " \
                 "to reactivate a retired one)"

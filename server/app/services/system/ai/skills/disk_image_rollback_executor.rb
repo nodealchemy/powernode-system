@@ -53,7 +53,10 @@ module System
           super
 
           @platform = ::System::NodePlatform.where(account_id: @account.id).find_by(id: inputs[:platform_id])
-          raise ArgumentError, "NodePlatform #{inputs[:platform_id]} not found in this account" unless @platform
+          unless @platform
+            raise ::Ai::Tools::BaseTool::CallerFacingError,
+                  "NodePlatform #{inputs[:platform_id]} not found in this account"
+          end
 
           publication_id = inputs[:publication_id]
           @target = if publication_id.present?
@@ -63,21 +66,22 @@ module System
           end
 
           unless @target
-            raise ArgumentError,
+            raise ::Ai::Tools::BaseTool::CallerFacingError,
                   publication_id.present? ?
                     "DiskImagePublication #{publication_id} not found for platform #{@platform.id}" :
                     "No prior publication available to revert to for platform #{@platform.id}"
           end
 
           if @target.purged?
-            raise ArgumentError,
+            raise ::Ai::Tools::BaseTool::CallerFacingError,
                   "Cannot revert to a purged publication #{@target.id} — its artifact was hard-deleted past the " \
                   "grace window. Re-trigger CI to rebuild."
           end
 
           return if @target.file_object_id.present?
 
-          raise ArgumentError, "Target publication #{@target.id} has no stored artifact — was it ever published?"
+          raise ::Ai::Tools::BaseTool::CallerFacingError,
+                "Target publication #{@target.id} has no stored artifact — was it ever published?"
         end
 
         def perform(platform_id:, publication_id: nil)

@@ -122,9 +122,16 @@ module System
 
           drive_issuance(cert)
         rescue ActiveRecord::RecordInvalid => e
-          failure("Could not create certificate: #{e.message}")
+          # IMP-8552945f2672 — routed through safe_error_text, which authors
+          # "Validation failed: <attribute names>" for RecordInvalid rather
+          # than forwarding e.message/record.errors.full_messages: an
+          # unscoped uniqueness validator elsewhere in this codebase turns
+          # full_messages into a cross-tenant existence oracle, and this file
+          # has no local audit of what every validation on this model says,
+          # so the attribute-names-only text is what reaches the caller.
+          failure("Could not create certificate: #{safe_error_text(e)}")
         rescue StandardError => e
-          failure("Certificate issuance error: #{e.message}")
+          failure("Certificate issuance error: #{safe_error_text(e)}")
         end
 
         private

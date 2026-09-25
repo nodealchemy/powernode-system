@@ -216,13 +216,19 @@ RSpec.describe System::Ai::Skills::DeployAppCodeExecutor do
         allow(code_deploy_service).to receive(:call).and_raise(StandardError, "boom")
       end
 
-      it "swallows the exception and returns failure" do
+      # IMP-8552945f2672 — this used to assert r[:error] matched /boom/: the
+      # RAISED exception's own raw message, forwarded verbatim through
+      # BaseSkillExecutor#execute's shared rescue (this executor has no
+      # local rescue around CodeDeployService.call). #perform is subclass-
+      # authored, unaudited code that can raise ANYTHING.
+      it "swallows the exception and returns a generic caller-facing error, never the raw message" do
         r = exec.execute(node_instance_id: node_instance.id,
                          repo_url: "https://github.com/me/app.git",
                          mission_id: mission.id)
 
         expect(r[:success]).to be false
-        expect(r[:error]).to match(/boom/)
+        expect(r[:error]).to eq("An internal error occurred processing this request.")
+        expect(r[:error]).not_to include("boom")
       end
     end
   end
@@ -267,13 +273,17 @@ RSpec.describe System::Ai::Skills::DeployAppCodeExecutor do
       expect(deployment.reload.status).to eq("running")
     end
 
-    it "collects errors when tear_down raises but does not propagate the exception" do
+    it "collects errors when tear_down raises but does not propagate the exception, " \
+       "and never the raw message (IMP-8552945f2672 — #tear_down_on_node's own " \
+       "rescue routes through safe_error_text before this method's outer rescue " \
+       "ever sees it)" do
       allow(code_deploy_service).to receive(:tear_down).and_raise(StandardError, "boom")
 
       result = exec.rollback_deploy_app_code(deployment_id: deployment.id)
 
       expect(result[:success]).to be false
-      expect(result[:errors].first[:error]).to match(/boom/)
+      expect(result[:errors].first[:error]).to eq("An internal error occurred processing this request.")
+      expect(result[:errors].first[:error]).not_to include("boom")
     end
 
     it "reports an error when the deployment_id is unknown" do

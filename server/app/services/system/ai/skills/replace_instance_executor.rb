@@ -350,7 +350,11 @@ module System
           # InvalidPoolState) and #resolve_pool! raises the bare base class for
           # an unknown pool_id or name — rescuing only the leaves would let
           # "pool not found" escape as an uncaught exception.
-          failure("Cannot replace #{failed.name}: #{e.message}")
+          # IMP-8552945f2672 — PoolError has at least one raise site
+          # (instance_pool_service.rb ~2014) that wraps an arbitrary inner
+          # provider error, so this base class cannot be assumed safe; routed
+          # through safe_error_text (generic default).
+          failure("Cannot replace #{failed.name}: #{safe_error_text(e)}")
         end
 
         # Volumes follow the workload. DETACH THEN ATTACH, in that order and

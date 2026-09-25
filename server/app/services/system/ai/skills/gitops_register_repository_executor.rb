@@ -73,7 +73,11 @@ module System
           )
           return if @candidate.valid?
 
-          raise ArgumentError,
+          # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672) —
+          # same reasoning as disk_image_retention_executor.rb's own probe
+          # validation: the model's own validation text, describing the
+          # caller's own supplied attributes.
+          raise ::Ai::Tools::BaseTool::CallerFacingError,
                 "gitops repository validation failed: #{@candidate.errors.full_messages.to_sentence}"
         end
 
@@ -93,7 +97,10 @@ module System
             last_status:   repo.last_status
           )
         rescue ::ActiveRecord::RecordInvalid => e
-          failure("gitops repository validation failed: #{e.record.errors.full_messages.to_sentence}")
+          # IMP-8552945f2672 — was e.record.errors.full_messages.to_sentence,
+          # forwarded verbatim; routed through safe_error_text (generic
+          # default) like every other exception this class hierarchy catches.
+          failure("gitops repository validation failed: #{safe_error_text(e)}")
         end
       end
     end

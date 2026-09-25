@@ -1759,16 +1759,26 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
 
       # The raise is NOT a leg failure the inner executor guards — it escapes
       # #run_execute entirely, which is the whole point of the shape.
-      let(:wholesale_error) { "Validation failed: Name has already been taken" }
+      #
+      # IMP-8552945f2672 — this used to pin the raw RecordInvalid message
+      # ("Name has already been taken") reaching the caller. BaseSkillExecutor
+      # now authors "Validation failed: <attribute names>" for RecordInvalid
+      # instead of forwarding record.errors.full_messages/e.message, so the
+      # fixture record needs its OWN populated error (not a pristine
+      # System::Node.new, which has none) for that authored text to be
+      # anything but "Validation failed: ".
+      let(:invalid_node) do
+        node = ::System::Node.new
+        node.errors.add(:name, "has already been taken")
+        node
+      end
+      let(:wholesale_error) { "Validation failed: name" }
 
       before do
         targets = [ target_a, target_b ]
         allow(::System::ProvisioningService).to receive(:provision_instance) do
           instance = targets.shift
-          # `raise <instance>, msg` calls Exception#exception(msg), which CLONES
-          # the RecordInvalid and swaps its message — it does not re-run
-          # RecordInvalid#initialize, so the record arg is not re-derived.
-          raise ActiveRecord::RecordInvalid.new(::System::Node.new), wholesale_error if instance.nil?
+          raise ActiveRecord::RecordInvalid.new(invalid_node) if instance.nil?
 
           ::System::Runtime::Result.ok(data: { instance: instance, cloud_instance_id: "ci-#{instance.id}" })
         end

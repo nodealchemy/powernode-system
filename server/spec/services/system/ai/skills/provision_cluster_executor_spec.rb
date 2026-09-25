@@ -327,7 +327,15 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
       outcome = runner.execute_step!(step)
 
       expect(outcome[:success]).to be false
-      expect(outcome[:error]).to match(/duplicate node name mid-run/)
+      # IMP-8552945f2672 — this used to assert outcome[:error] matched the
+      # raw exception text. RecordNotUnique wraps the DB driver's OWN
+      # message in production (e.g. a raw PG constraint name), unlike this
+      # stub's literal string, so it is not safe-listed in safe_error_text;
+      # this pins the CURRENT, correct behavior — the test's actual point
+      # (below) is that teardown still runs on a mid-loop raise regardless
+      # of what the caller is shown.
+      expect(outcome[:error]).to eq("An internal error occurred processing this request.")
+      expect(outcome[:error]).not_to include("duplicate node name mid-run")
 
       # The teardown, reached with no fixture assistance at all.
       expect(terminated.map(&:id)).to eq([ instance_a.id ])

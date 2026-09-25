@@ -56,7 +56,7 @@ module System
           @repo = ::System::GitopsRepository.where(account_id: @account.id).find_by(id: inputs[:repository_id])
           return if @repo
 
-          raise ArgumentError, "GitopsRepository #{inputs[:repository_id]} not found in this account"
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "GitopsRepository #{inputs[:repository_id]} not found in this account"
         end
 
         def perform(repository_id:)

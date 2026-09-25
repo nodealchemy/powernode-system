@@ -367,12 +367,33 @@ module System
           result = perform(**acceptable_inputs(inputs))
           audit_log_finish(result)
           result
+        rescue ::ActiveRecord::RecordNotFound => e
+          # Same leak IMP-f6f80b585b19 closed for MCP tools, reachable here
+          # too: a scoped `.find` inside #perform raises with a
+          # ` [WHERE "table"."column" = $1]` suffix (Rails 8.1) naming
+          # internal schema, and this result reaches the model provider via
+          # system_ingress_tool.rb#run_executor / sdwan_tool.rb#run_skill_
+          # executor, which forward it verbatim. Authored the same way a
+          # tool's #not_found_result would — see safe_error_text.
+          audit_log_error(e)
+          failure(safe_error_text(e))
         rescue StandardError, NotImplementedError => e
           # Catch NotImplementedError too — abstract subclasses that forgot
           # to override #perform should flow through the same failure
-          # pipeline as any other error, not crash the caller.
+          # pipeline as any other error, not crash the caller (see
+          # safe_error_text for why its message still reaches the caller
+          # despite the generic default below covering every OTHER
+          # StandardError).
+          #
+          # IMP-8552945f2672 — this rescue used to be `failure(e.message)`.
+          # #perform is subclass-authored, unaudited, unbounded code (67
+          # subclasses at last count) that can raise ANYTHING — a Docker
+          # daemon's own text, a PG error, a resolver internal — and this
+          # result reaches the model provider the same two ways as the
+          # RecordNotFound arm above. `e.message` is still logged in full via
+          # audit_log_error; only what reaches the CALLER is narrowed.
           audit_log_error(e)
-          failure(e.message)
+          failure(safe_error_text(e))
         end
 
         protected
@@ -573,7 +594,14 @@ module System
           declared = self.class.descriptor[:inputs] || {}
           declared.each do |key, spec|
             next unless spec.is_a?(Hash) && spec[:required]
-            raise ArgumentError, "missing required input: #{key}" if inputs[key].nil?
+            # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672):
+            # `key` names one of THIS EXECUTOR'S OWN declared inputs — never
+            # caller-supplied content — so the text is safe by construction,
+            # but #execute's rescue now flattens a bare ArgumentError to the
+            # generic message same as any other unaudited exception. Without
+            # this, a caller who omits a required input would stop seeing
+            # which one.
+            raise ::Ai::Tools::BaseTool::CallerFacingError, "missing required input: #{key}" if inputs[key].nil?
           end
         end
 
@@ -597,6 +625,85 @@ module System
         # and fakes compensation in one move.
         def failure(msg, **extra)
           { success: false, error: msg }.merge(extra)
+        end
+
+        # Deliberately the same text Ai::Tools::BaseTool::
+        # DISPATCH_FALLBACK_GENERIC_MESSAGE uses, not duplicated as a literal
+        # so the two cannot silently diverge — kept as this module's OWN
+        # constant rather than referencing the tools one directly, because
+        # this class is not in the Ai::Tools hierarchy and has no reason to
+        # depend on its internals beyond the two seams it explicitly reuses
+        # (CallerFacingError, not_found_message).
+        GENERIC_FAILURE_MESSAGE = ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE
+
+        # THE seam every rescue arm in this class hierarchy — the shared one
+        # in #execute above, and any subclass's own local rescue — should
+        # route a caught exception's text through, instead of building
+        # `failure(e.message)` (or interpolating it into a static prefix)
+        # directly (IMP-8552945f2672).
+        #
+        # The operator direction for this task is literal: forward ONLY
+        # CallerFacingError messages. Everything else below is either that
+        # exact class, or text this method authors itself rather than
+        # forwards — never a caught exception's own #message for a class
+        # nobody here declared caller-facing:
+        #   - Ai::Tools::BaseTool::CallerFacingError — the raiser explicitly
+        #     opted in, the SAME distinction IMP-5ed95e651b80 / IMP-f6f80b585b19
+        #     established for MCP tools, reused rather than duplicated so the
+        #     two systems' notion of "safe to forward" cannot silently diverge
+        #     (#validate_inputs! above raises this, not a bare ArgumentError,
+        #     for exactly that reason — a bare ArgumentError is NOT assumed
+        #     safe merely because of its class, per Ai::Tools::BaseTool's own
+        #     documented reasoning: Ruby and the stdlib raise it too, with
+        #     messages nobody here authored);
+        #   - NotImplementedError — AUTHORED, not forwarded: Ruby's own class,
+        #     but the text returned is this method's own static string, never
+        #     e.message (Ruby's stock message for it does interpolate the
+        #     unbuilt method's full signature, which is not caller content but
+        #     also not worth trusting verbatim);
+        #   - ActiveRecord::RecordNotFound — AUTHORED via
+        #     Ai::Tools::BaseTool.not_found_message(e.model/e.id), never
+        #     e.message, same treatment as a tool's #not_found_result;
+        #   - ActiveRecord::RecordInvalid — AUTHORED as "Validation failed: "
+        #     plus ONLY the failing attribute names (record.errors.
+        #     attribute_names), never record.errors.full_messages and never
+        #     e.message. full_messages was rejected even though it is
+        #     structurally bounded to the model's own `validates` vocabulary,
+        #     because an UNSCOPED uniqueness validator (e.g. sdwan/network.rb's
+        #     cidr_64, account_bgp.rb's as_number) turns "already taken" into
+        #     a cross-tenant existence oracle: the failure itself discloses
+        #     that some OTHER account holds the value the caller supplied.
+        #     Attribute names carry no value and no cross-tenant signal;
+        #   - Mcp::ProtocolService::PermissionDeniedError — AUTHORED as a
+        #     static "Permission denied for this action", never e.message.
+        #     Every raise site of this class (protocol_service.rb /
+        #     permission_validator.rb / mcp_tool.rb /
+        #     mcp_platform_tool_registrar.rb) interpolates only a
+        #     tool/action/permission NAME, but "only ever safe text so far"
+        #     is not the same bar as CallerFacingError's explicit opt-in, and
+        #     the operator's direction was literal about that class list —
+        #     so this one class gets its own authored stand-in rather than a
+        #     second whitelist entry.
+        # Anything else — PG errors, a Docker daemon's own text, a resolver
+        # internal, a bare ArgumentError nobody here authored — gets the
+        # generic default. `audit_log_error` always gets the FULL raw
+        # exception server-side regardless of what this returns.
+        def safe_error_text(e)
+          return ::Ai::Tools::BaseTool.not_found_message(e) if e.is_a?(::ActiveRecord::RecordNotFound)
+          return e.message if e.is_a?(::Ai::Tools::BaseTool::CallerFacingError)
+          return "Validation failed: #{e.record.errors.attribute_names.join(', ')}" if e.is_a?(::ActiveRecord::RecordInvalid)
+          return "Permission denied for this action" if e.is_a?(::Mcp::ProtocolService::PermissionDeniedError)
+          return e.message if e.is_a?(NotImplementedError)
+
+          GENERIC_FAILURE_MESSAGE
+        end
+
+        # Convenience wrapper for a LOCAL rescue arm in a subclass: `rescue
+        # SomeSpecificError => e; safe_failure(e)` instead of hand-building
+        # `failure(safe_error_text(e))`. Extra keys (e.g. a rollback-relevant
+        # resource id — see #failure's own comment) still merge in.
+        def safe_failure(e, **extra)
+          failure(safe_error_text(e), **extra)
         end
 
         # True when this executor is running on behalf of a grant-gated MCP

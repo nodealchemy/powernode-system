@@ -209,9 +209,14 @@ module System
           client.fetch_catalog
           { reachable: true, error: nil }
         rescue ::Federation::PeerClient::ClientError => e
-          { reachable: false, error: "#{e.class.name.demodulize}: #{e.message}" }
+          # IMP-8552945f2672 — routed through safe_error_text (generic
+          # default); a PeerClient error can wrap raw HTTP/connection detail.
+          # The class name is dropped too (review round 2) — an internal
+          # Ruby class name is server-internal detail, not caller-facing
+          # text, same reasoning as the generic message itself.
+          { reachable: false, error: safe_error_text(e) }
         rescue StandardError => e
-          { reachable: false, error: "#{e.class}: #{e.message}" }
+          { reachable: false, error: safe_error_text(e) }
         end
 
         def planned_action(reason, peer)

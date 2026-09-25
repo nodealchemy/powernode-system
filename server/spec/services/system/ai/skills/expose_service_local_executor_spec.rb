@@ -72,17 +72,26 @@ RSpec.describe System::Ai::Skills::ExposeServiceLocalExecutor do
       expect(r[:error]).to match(/backend_vip_id or backend_host/)
     end
 
-    it "surfaces the model's reserved-slug validation as a failure" do
+    # IMP-8552945f2672 — this rescue used to forward
+    # `e.record.errors.full_messages.join("; ")` verbatim; a genuine leak the
+    # first pass of this task's own guard missed (its regex only matched
+    # `e.message`-shaped member access, not the `e.record.errors.
+    # full_messages` chain). Pinned as a generic-message assertion now,
+    # matching every other RecordInvalid rescue this task fixed.
+    it "surfaces a generic failure for the model's reserved-slug validation, never the raw text" do
       r = exec.execute(slug: "sidekiq", name: "X", backend_host: "h", backend_port: 80)
       expect(r[:success]).to be false
-      expect(r[:error]).to match(/reserved/i)
+      expect(r[:error]).to eq("Validation failed: slug")
+      expect(r[:error]).not_to include("reserved")
     end
 
-    it "surfaces the model's scoped-requires-permission-or-group validation" do
+    it "surfaces a generic failure for the scoped-requires-permission-or-group validation, " \
+       "never the raw text" do
       r = exec.execute(slug: "scoped-svc", name: "Scoped", backend_host: "h", backend_port: 80,
                        auth_mode: "scoped")
       expect(r[:success]).to be false
-      expect(r[:error]).to match(/permission or group/i)
+      expect(r[:error]).to eq("Validation failed: base")
+      expect(r[:error]).not_to include("permission or group")
     end
   end
 

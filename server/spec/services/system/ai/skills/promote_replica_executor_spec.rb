@@ -343,6 +343,32 @@ RSpec.describe System::Ai::Skills::PromoteReplicaExecutor, type: :service do
       # audit rather than the absence of a promote.
       expect(ledger_events).to be_empty
     end
+
+    # IMP-8552945f2672 — the rescue below stamp_promotion! used to interpolate
+    # `#{e.class}: #{e.message}` straight into the caller-facing failure. A
+    # DB-level failure (not the RecordInvalid case above, which is caller-
+    # owned validation text) can be raw driver output — SQL, table/constraint
+    # names — so this pins that the parenthetical is routed through
+    # safe_error_text instead, while the surrounding hand-authored refusal
+    # text (which happens to also say "virtual ip", see the test above) is
+    # unaffected.
+    it "never forwards a DB driver's own text when the cutover transaction rolls back" do
+      allow_any_instance_of(Sdwan::VirtualIp).to receive(:save!).and_raise(
+        ActiveRecord::StatementInvalid.new(
+          "PG::UniqueViolation: ERROR:  duplicate key value violates unique constraint " \
+          "\"index_sdwan_virtual_ips_on_cidr\" DETAIL:  Key (cidr)=(10.0.0.9/32) already exists."
+        )
+      )
+
+      result = run
+
+      expect(result[:success]).to be(false)
+      expect(result[:error]).to match(/cutover was rolled back/i)
+      expect(result[:error]).not_to include("PG::")
+      expect(result[:error]).not_to include("constraint")
+      expect(result[:error]).not_to include("10.0.0.9")
+      expect(vip.reload.holder_peer_ids).to eq([ primary_peer.id ])
+    end
   end
 
   describe "the peer must name the cluster being promoted" do

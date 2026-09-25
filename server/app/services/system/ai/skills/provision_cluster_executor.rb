@@ -220,12 +220,18 @@ module System
               end
             end
           rescue StandardError => e
-            failures << { step: "unhandled", error: "#{e.class}: #{e.message}" }
+            # IMP-8552945f2672 — both the `failures` entry (itself part of
+            # this method's RETURNED result, not just a log line) and the
+            # top-level message routed through safe_error_text; "#{e.class}:
+            # ..." previously carried the exception's raw text — and, after
+            # review round 2, its own internal class name too — into a field
+            # this executor's own caller reads back.
+            failures << { step: "unhandled", error: safe_error_text(e) }
             # Only the ids region goes in `outputs` — SkillCompositionRunner
             # #actionable_resources? descends it and treats any present value as
             # a resource, so bookkeeping (count, created_nodes) in there would
             # make an EMPTY rollback report as compensated.
-            return failure(e.message,
+            return failure(safe_error_text(e),
                            outputs: { node_ids: node_ids, node_instance_ids: node_instance_ids },
                            failures: failures)
           end

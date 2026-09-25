@@ -94,7 +94,14 @@ module System
           begin
             vip.failover!(reason: "sensor_failover", triggered_by_user: @user)
           rescue ::Sdwan::VirtualIp::StateError => e
-            return failure(e.message)
+            # IMP-8552945f2672 — StateError has exactly two raise sites
+            # (virtual_ip.rb#failover!, sdwan/executors/failover_virtual_ip.rb),
+            # both `raise StateError, blocker` where blocker is
+            # #failover_blocker's own hand-authored refusal text (e.g. a
+            # concurrent-failover-in-progress reason) — never raw driver
+            # content — and this is the class's only rescuer, so forwarding
+            # it does not depend on auditing any other caller.
+            return failure(e.message) # skill-error-ok: StateError's only two raise sites are the model's own hand-authored blocker text
           end
           vip.reload
 

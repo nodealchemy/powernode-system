@@ -87,7 +87,8 @@ module System
             collector.destroy!
             { success: true, errors: [] }
           rescue StandardError => e
-            { success: false, errors: [ { resource: "ipfix_collector", id: ipfix_collector_id, error: e.message } ] }
+            # IMP-8552945f2672 — routed through safe_error_text (generic default).
+            { success: false, errors: [ { resource: "ipfix_collector", id: ipfix_collector_id, error: safe_error_text(e) } ] }
           end
         end
 

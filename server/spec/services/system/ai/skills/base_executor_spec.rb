@@ -198,10 +198,124 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
       end
     end
 
-    it "wraps uncaught StandardError in a failure result" do
+    # IMP-8552945f2672 — this used to assert result[:error] == "kaboom": the
+    # #perform exception's OWN raw message, forwarded verbatim. #perform is
+    # subclass-authored, unaudited code that can raise ANYTHING; that result
+    # reaches the model provider via system_ingress_tool.rb#run_executor /
+    # sdwan_tool.rb#run_skill_executor, which forward it verbatim.
+    it "answers a generic caller-facing error, never the raw exception message" do
       result = raising_klass.new(account: account).execute
       expect(result[:success]).to be false
-      expect(result[:error]).to eq("kaboom")
+      expect(result[:error]).to eq("An internal error occurred processing this request.")
+      expect(result[:error]).not_to include("kaboom")
+    end
+
+    it "still logs the full raw exception server-side via audit_log_error" do
+      executor = raising_klass.new(account: account)
+      expect(executor).to receive(:audit_log_error) do |e|
+        expect(e).to be_a(StandardError)
+        expect(e.message).to eq("kaboom")
+      end
+      executor.execute
+    end
+
+    # CallerFacingError is the ONE opt-in that survives to the caller — the
+    # positive control proving the assertions above are not vacuously true
+    # because EVERYTHING gets flattened regardless of what was raised.
+    it "still forwards a CallerFacingError's own message" do
+      caller_facing_klass = Class.new(described_class) do
+        skill_descriptor(name: "boom_cf", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "widget_id not found in this account"
+        end
+      end
+      result = caller_facing_klass.new(account: account).execute
+      expect(result[:success]).to be false
+      expect(result[:error]).to eq("widget_id not found in this account")
+    end
+
+    # ActiveRecord::RecordNotFound gets its own authored not-found text
+    # (IMP-f6f80b585b19's not_found_message), not the generic default and not
+    # the raw scoped-relation message (which would carry a
+    # ` [WHERE ...]` suffix naming internal schema).
+    it "answers ActiveRecord::RecordNotFound with the authored not-found text, never the WHERE-clause message" do
+      not_found_klass = Class.new(described_class) do
+        skill_descriptor(name: "boom_nf", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          ::Account.where(id: account.id).find("does-not-exist")
+        end
+      end
+      result = not_found_klass.new(account: account).execute
+      expect(result[:success]).to be false
+      expect(result[:error]).to eq(%(Couldn't find Account with 'id'="does-not-exist"))
+      expect(result[:error]).not_to include("WHERE")
+      expect(result[:error]).not_to include("accounts")
+    end
+
+    it "still answers NotImplementedError's own message (an unbuilt #perform)" do
+      abstract_klass = Class.new(described_class) do
+        skill_descriptor(name: "boom_ni", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+      end
+      result = abstract_klass.new(account: account).execute
+      expect(result[:success]).to be false
+      expect(result[:error]).to match(/#perform must be defined/)
+    end
+
+    # ActiveRecord::RecordInvalid is NOT forwarded — the operator direction is
+    # literal: "forward ONLY CallerFacingError messages". Even though
+    # RecordInvalid#message is structurally bounded to Rails's own validation
+    # vocabulary plus the model's OWN `validates` declarations (unlike
+    # PoolError/CompositionConflictError, which had raise sites wrapping
+    # arbitrary inner content), full_messages is still a cross-tenant
+    # existence oracle wherever a uniqueness validator is unscoped (e.g.
+    # sdwan/network.rb's cidr_64, account_bgp.rb's as_number): "already
+    # taken" discloses that some OTHER account holds the value the caller
+    # supplied. So this authors its own text naming only the ATTRIBUTE that
+    # failed, never the validation message and never a value.
+    it "answers an authored message naming only the attribute, never RecordInvalid's own message" do
+      invalid_klass = Class.new(described_class) do
+        skill_descriptor(name: "boom_invalid", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          account.update!(name: nil)
+        end
+      end
+      result = invalid_klass.new(account: account).execute
+      expect(result[:success]).to be false
+      expect(result[:error]).to eq("Validation failed: name")
+      expect(result[:error]).not_to include("blank")
+      expect(result[:error]).not_to eq("An internal error occurred processing this request.")
+    end
+
+    # Mcp::ProtocolService::PermissionDeniedError is likewise NOT forwarded.
+    # Every raise site of this class happens to interpolate only a safe
+    # tool/action/permission name, but "only ever safe text so far" is a
+    # weaker guarantee than CallerFacingError's explicit opt-in, and the
+    # operator direction was literal about the whitelist — so this authors a
+    # static stand-in instead of trusting e.message.
+    it "answers a static denial message, never PermissionDeniedError's own message" do
+      # The instance-deny overlay (IMP-0e6b216de843) raises this class when a
+      # skill executor nests a tool call that turns out destroy-shaped for an
+      # instance principal — see nested_executor_instance_principal_spec.rb,
+      # which asserts /destroy-shaped|denied/i and still passes on this
+      # static text because it says "denied".
+      denied_klass = Class.new(described_class) do
+        skill_descriptor(name: "boom_denied", description: "x", category: "fleet",
+                         inputs: {}, outputs: {})
+        def perform
+          raise ::Mcp::ProtocolService::PermissionDeniedError,
+                "Action 'system_delete_architecture' is destroy-shaped and is denied to every " \
+                "instance principal, whatever it was granted"
+        end
+      end
+      result = denied_klass.new(account: account).execute
+      expect(result[:success]).to be false
+      expect(result[:error]).to eq("Permission denied for this action")
+      expect(result[:error]).not_to include("destroy-shaped")
+      expect(result[:error]).not_to include("system_delete_architecture")
     end
   end
 

@@ -87,9 +87,14 @@ module System
             begin
               instance = ::System::InstancePoolService.acquire!(account: @account)
             rescue ::System::InstancePoolService::NoReadyMembersError => e
-              return failure("no ready pool members: #{e.message}")
+              # IMP-8552945f2672 — PoolError has at least one raise site
+              # (instance_pool_service.rb ~2014) that wraps an arbitrary
+              # inner provider error, so neither this nor the general
+              # PoolError arm below can assume every message on the class is
+              # safe; routed through safe_error_text (generic default).
+              return failure("no ready pool members: #{safe_error_text(e)}")
             rescue ::System::InstancePoolService::PoolError => e
-              return failure(e.message)
+              return failure(safe_error_text(e))
             end
 
             begin
@@ -144,9 +149,16 @@ module System
             created_pairings.each(&:destroy) unless explicit_template
           end
         rescue ActiveRecord::RecordInvalid => e
-          failure("compose failed: #{e.message}")
+          failure("compose failed: #{safe_error_text(e)}")
         rescue CompositionConflictError => e
-          failure(e.message)
+          # IMP-8552945f2672 — CURRENTLY UNREACHABLE: this class's one raise
+          # site (line ~203) now raises CallerFacingError instead (verdict.
+          # message is TemplateCompositionAnalysis's own structured refusal
+          # reason, safe to forward), which BaseSkillExecutor#execute's own
+          # rescue already forwards correctly. Kept as a defensive catch-all,
+          # sanitized rather than left forwarding e.message, in case a
+          # future raise re-introduces this class.
+          failure(safe_error_text(e))
         end
 
         # template_id, when given, is trusted as already-composed (caller's
@@ -192,7 +204,12 @@ module System
             verdict = ::System::TemplateCompositionAnalysis
                       .new(@account)
                       .additions_verdict(template: template, node_modules: pending)
-            raise CompositionConflictError, verdict.message if verdict.blocked?
+            # CallerFacingError (IMP-8552945f2672): verdict.message is
+            # TemplateCompositionAnalysis's own structured refusal reason
+            # (e.g. an instance-variety collision code), never raw driver
+            # content — the only raise site for this locally-defined error
+            # class, so its safety doesn't depend on auditing other callers.
+            raise ::Ai::Tools::BaseTool::CallerFacingError, verdict.message if verdict.blocked?
           end
 
           # Transactional: a create! failing partway through (e.g. a

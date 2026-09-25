@@ -331,7 +331,7 @@ module System
             Rails.logger.error("[PromoteReplicaExecutor] cutover rolled back: #{e.class}: #{e.message}")
             return failure(
               "Refusing to report a promote that did not apply: the cutover was rolled back " \
-              "(#{e.class}: #{e.message}). No virtual ip moved, no promotion was stamped and no " \
+              "(#{safe_error_text(e)}). No virtual ip moved, no promotion was stamped and no " \
               "task was dispatched — re-drive with the same operation_id once the cause is cleared."
             )
           end

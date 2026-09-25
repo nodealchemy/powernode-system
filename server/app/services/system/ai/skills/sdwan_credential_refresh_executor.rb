@@ -88,7 +88,10 @@ module System
           # e.g. the peer has no active WireGuard key, or the constellation
           # signing key is unavailable — surface as a failed remediation so
           # the fingerprint persists and the F3-11 streak escalates it.
-          failure("credential refresh failed: #{e.message}")
+          # IMP-8552945f2672 — routed through safe_error_text (generic
+          # default), same treatment as every other domain exception class
+          # this class hierarchy does not explicitly whitelist.
+          failure("credential refresh failed: #{safe_error_text(e)}")
         end
       end
     end

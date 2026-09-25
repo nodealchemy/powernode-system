@@ -79,7 +79,17 @@ module System
             already_provisioned: false
           )
         rescue ::System::DockerDaemonProvisionerService::MissingSdwanPeerError => e
-          failure(e.message)
+          # IMP-8552945f2672 — MissingSdwanPeerError is a StandardError
+          # subclass, not CallerFacingError (changing its ancestry would also
+          # affect platform_deployment_service.rb's `rescue ProvisionError`,
+          # its OTHER superclass — out of scope here), so safe_error_text
+          # does not special-case it by class. Forwarded directly here
+          # instead, same as `rescued_error_result(e, message: "...")`'s
+          # reviewed-override shape at the tool layer: this rescue's ONE
+          # raise site (docker_daemon_provisioner_service.rb:160) is
+          # hand-authored, static text interpolating only this account's own
+          # node_instance id — reviewed here, not assumed safe by class.
+          failure(e.message) # skill-error-ok: sole raise site is static text naming only this account's own node_instance id
         end
 
         private

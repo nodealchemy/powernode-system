@@ -332,7 +332,8 @@ module System
           vip = ::Sdwan::VirtualIp.find(result.dig(:data, :vip_id))
           { success: true, vip: vip, created: true, step: "create_virtual_ip" }
         rescue ActiveRecord::RecordInvalid => e
-          failure("VIP creation failed: #{e.message}")
+          # IMP-8552945f2672 — routed through safe_error_text (generic default).
+          failure("VIP creation failed: #{safe_error_text(e)}")
         end
 
         # ── Step 2 helper: create or reuse a VIP-backed catalog offering ──
@@ -372,7 +373,8 @@ module System
             end
           end
         rescue ActiveRecord::RecordInvalid => e
-          failure(e.message)
+          # IMP-8552945f2672 — routed through safe_error_text (generic default).
+          failure(safe_error_text(e))
         end
 
         # The VIP-backed Sdwan::Service the offering exposes federally. Reuses an
@@ -414,7 +416,8 @@ module System
           result = ::Federation::ServiceRouteWriter.write!(**args)
           { success: true, output_path: result[:output_path], route_count: result[:route_count] }
         rescue StandardError => e
-          { success: false, error: e.message }
+          # IMP-8552945f2672 — routed through safe_error_text (generic default).
+          { success: false, error: safe_error_text(e) }
         end
 
         # ── Step 4 helper: publish a PUBLIC-INTERNET DNS record ───────────
@@ -459,7 +462,8 @@ module System
             rollback: { dns_credential_id: credential_id, zone_id: zone_id }
           }
         rescue StandardError => e
-          { success: false, error: e.message }
+          # IMP-8552945f2672 — routed through safe_error_text (generic default).
+          { success: false, error: safe_error_text(e) }
         end
 
         # Look up an AcmeDnsCredential scoped to this account. Loaded ONCE per

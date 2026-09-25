@@ -228,7 +228,8 @@ module System
           result = ::System::CodeDeployService.tear_down(node_instance: node_instance)
           normalize_tear_down(result)
         rescue StandardError => e
-          { success: false, error: e.message }
+          # IMP-8552945f2672 — routed through safe_error_text (generic default).
+          { success: false, error: safe_error_text(e) }
         end
 
         def normalize_tear_down(result)
