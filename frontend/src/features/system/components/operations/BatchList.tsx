@@ -1,6 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Ban } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
+import { Button } from '@/shared/components/ui/Button';
 import { StatusBadge } from '../shared/StatusBadge';
+import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
+import { useNotifications } from '@/shared/hooks/useNotifications';
+import { moduleBuildsApi } from '@system/features/system/services/api/moduleBuildsApi';
 import { capitalize, formatRelativeTime } from '@/shared/utils/formatters';
 import type {
   SystemModuleBuildBatch,
@@ -10,6 +16,8 @@ import type {
 interface BatchListProps {
   batches: SystemModuleBuildBatch[];
   onSelect: (id: string) => void;
+  /** Called after a successful cancel, so the parent can refetch the list. */
+  onCancelled?: () => void;
 }
 
 const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
@@ -20,6 +28,7 @@ const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
   complete: 'Complete',
   partial: 'Partial',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 };
 
 // base_sha/head_sha are full 40-char shas for git-driven triggers, or an
@@ -30,7 +39,37 @@ function shortRef(ref: string): string {
   return ref.slice(0, 7);
 }
 
-export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect }) => {
+export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect, onCancelled }) => {
+  const { hasPermission } = usePermissions();
+  const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const canCancel = hasPermission('system.module_builds.cancel');
+
+  // fc-34: ported from the deleted core CancelBatchButton — same confirm
+  // copy, same permission (system.module_builds.cancel), same "active batch
+  // only" visibility rule.
+  const handleCancel = (batch: SystemModuleBuildBatch) => {
+    confirm({
+      title: 'Cancel Module Build',
+      message: `This stops in-flight builds for batch ${batch.id.slice(0, 8)}. Modules already published are unaffected. Continue?`,
+      confirmLabel: 'Cancel Batch',
+      variant: 'danger',
+      onConfirm: async () => {
+        setCancellingId(batch.id);
+        try {
+          await moduleBuildsApi.cancel(batch.id);
+          addNotification({ type: 'success', message: 'Module build batch cancelled' });
+          onCancelled?.();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Failed to cancel batch' });
+        } finally {
+          setCancellingId(null);
+        }
+      },
+    });
+  };
+
   return (
     <ul className="divide-y divide-theme">
       {batches.map((batch) => (
@@ -67,9 +106,23 @@ export const BatchList: React.FC<BatchListProps> = ({ batches, onSelect }) => {
                 <span>{formatRelativeTime(batch.created_at)}</span>
               </div>
             </div>
+            {canCancel && batch.active && (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconOnly
+                aria-label="Cancel build batch"
+                title="Cancel build batch"
+                disabled={cancellingId === batch.id}
+                onClick={() => handleCancel(batch)}
+              >
+                <Ban className="w-3.5 h-3.5 text-theme-danger-fg" />
+              </Button>
+            )}
           </div>
         </li>
       ))}
+      {ConfirmationDialog}
     </ul>
   );
 };

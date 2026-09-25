@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { ModuleBuildsTab } from './ModuleBuildsTab';
 import type { SystemModuleBuildBatch, SystemModuleBuildBatchFull } from '@system/features/system/types/system.types';
 
@@ -21,6 +21,15 @@ jest.mock('@/shared/hooks/useAuth', () => ({
   useAuth: () => ({ currentUser: mockCurrentUser }),
 }));
 
+// usePermissions — fc-34 cancel action gating (system.module_builds.cancel).
+// Defaults to granted; individual tests override to prove the gate.
+const mockHasPermission = jest.fn(() => true);
+jest.mock('@/shared/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    hasPermission: (...args: unknown[]) => mockHasPermission(...args),
+  }),
+}));
+
 // WebSocketManager — capture subscribe callback so tests can fire live events.
 const mockWsSubscribe = jest.fn(() => () => undefined);
 jest.mock('@/shared/services/WebSocketManager', () => ({
@@ -37,15 +46,33 @@ jest.mock('@/shared/components/entity', () => ({
   ),
 }));
 
-// moduleBuildsApi — mock the whole module so we control list + get.
+// moduleBuildsApi — mock the whole module so we control list + get + cancel.
 const mockList = jest.fn();
 const mockGet = jest.fn();
+const mockCancel = jest.fn();
 jest.mock('@system/features/system/services/api/moduleBuildsApi', () => ({
   moduleBuildsApi: {
     list: (...args: unknown[]) => mockList(...args),
     get: (...args: unknown[]) => mockGet(...args),
+    cancel: (...args: unknown[]) => mockCancel(...args),
   },
 }));
+
+// Revoke/cancel go through the shared themed ConfirmationModal, not
+// window.confirm (same convention as CiWorkersTab.test.tsx).
+const confirmDialog = async (heading: RegExp, button: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: button }));
+};
+
+const cancelDialog = async (heading: RegExp) => {
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument(),
+  );
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^cancel$/i }));
+};
 
 // =============================================================================
 // Fixtures
@@ -133,6 +160,38 @@ const BATCH_DONE_FULL: SystemModuleBuildBatchFull = {
   ],
 };
 
+const BATCH_ACTIVE_FULL: SystemModuleBuildBatchFull = {
+  ...BATCH_ACTIVE,
+  dispatched_at: '2026-06-01T00:00:30Z',
+  awaiting_signature_at: null,
+  publishing_at: null,
+  completed_at: null,
+  failed_at: null,
+  cancelled_at: null,
+  error_message: null,
+  modules: [
+    {
+      module: 'core-runtime',
+      tag: 'bbbbbbb',
+      state: 'dispatched',
+      attempts: 1,
+      error: null,
+      task: { id: 'task-1', status: 'running', progress: 40, started_at: null, completed_at: null, error_message: null },
+      lease: { id: 'lease-1', status: 'busy', node_instance_id: 'ni-1', runner_name: 'builder-1' },
+      artifact: null,
+      parity: null,
+    },
+  ],
+};
+
+const BATCH_CANCELLED_FULL: SystemModuleBuildBatchFull = {
+  ...BATCH_ACTIVE_FULL,
+  status: 'cancelled',
+  active: false,
+  finished: true,
+  cancelled_at: '2026-06-01T00:05:00Z',
+};
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -148,6 +207,7 @@ describe('ModuleBuildsTab', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCurrentUser = { account: { id: 'acct-1' } };
+    mockHasPermission.mockReturnValue(true);
     mockList.mockResolvedValue({ module_build_batches: [], meta: META });
     mockWsSubscribe.mockReturnValue(() => undefined);
   });
@@ -383,5 +443,152 @@ describe('ModuleBuildsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
 
     await waitFor(() => expect(screen.queryByText('pkg-closure')).not.toBeInTheDocument());
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cancel action (fc-34) — list row
+  //
+  // Ported from the deleted core CancelBatchButton/ModuleBuildsPage: visible
+  // only for an ACTIVE batch, gated on system.module_builds.cancel, and using
+  // the shared themed ConfirmationModal (not window.confirm) — same
+  // convention as CiWorkersTab's revoke action.
+  // ---------------------------------------------------------------------------
+
+  describe('cancel action — list row', () => {
+    it('shows a Cancel button for an active batch in the list', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTitle('Cancel build batch')).toBeInTheDocument());
+    });
+
+    it('hides the Cancel button for a finished batch in the list', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_DONE], meta: META });
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('ccccccc→ddddddd')).toBeInTheDocument());
+      expect(screen.queryByTitle('Cancel build batch')).not.toBeInTheDocument();
+    });
+
+    it('hides the Cancel button when the operator lacks system.module_builds.cancel', async () => {
+      mockHasPermission.mockImplementation((perm: unknown) => perm !== 'system.module_builds.cancel');
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByText('aaaaaaa→bbbbbbb')).toBeInTheDocument());
+      expect(screen.queryByTitle('Cancel build batch')).not.toBeInTheDocument();
+    });
+
+    it('calls moduleBuildsApi.cancel() and refreshes the list after confirmed cancel', async () => {
+      mockList
+        .mockResolvedValueOnce({ module_build_batches: [BATCH_ACTIVE], meta: META })
+        .mockResolvedValue({ module_build_batches: [BATCH_CANCELLED_FULL], meta: META });
+      mockCancel.mockResolvedValue(BATCH_CANCELLED_FULL);
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTitle('Cancel build batch')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Cancel build batch'));
+      await confirmDialog(/cancel module build/i, /^cancel batch$/i);
+
+      await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('batch-active'));
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+    });
+
+    it('does NOT call moduleBuildsApi.cancel() when the confirmation is dismissed', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTitle('Cancel build batch')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Cancel build batch'));
+      await cancelDialog(/cancel module build/i);
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(mockCancel).not.toHaveBeenCalled();
+    });
+
+    it('shows an error notification when cancel fails', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      mockCancel.mockRejectedValue(new Error('Batch is already complete and cannot be cancelled'));
+
+      renderTab();
+
+      await waitFor(() => expect(screen.getByTitle('Cancel build batch')).toBeInTheDocument());
+      fireEvent.click(screen.getByTitle('Cancel build batch'));
+      await confirmDialog(/cancel module build/i, /^cancel batch$/i);
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Batch is already complete and cannot be cancelled',
+        }),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cancel action (fc-34) — detail modal
+  // ---------------------------------------------------------------------------
+
+  describe('cancel action — detail modal', () => {
+    it('shows a Cancel Batch button for an active batch in the detail modal', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      mockGet.mockResolvedValue(BATCH_ACTIVE_FULL);
+
+      renderTab();
+
+      fireEvent.click(await screen.findByTitle('View batch details'));
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^cancel batch$/i })).toBeInTheDocument(),
+      );
+    });
+
+    it('hides the Cancel Batch button in the detail modal when the operator lacks permission', async () => {
+      mockHasPermission.mockImplementation((perm: unknown) => perm !== 'system.module_builds.cancel');
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      mockGet.mockResolvedValue(BATCH_ACTIVE_FULL);
+
+      renderTab();
+
+      fireEvent.click(await screen.findByTitle('View batch details'));
+
+      await waitFor(() => expect(screen.getByText('core-runtime')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /^cancel batch$/i })).not.toBeInTheDocument();
+    });
+
+    it('cancels from the detail modal and refetches its own detail', async () => {
+      mockList.mockResolvedValue({ module_build_batches: [BATCH_ACTIVE], meta: META });
+      mockGet
+        .mockResolvedValueOnce(BATCH_ACTIVE_FULL)
+        .mockResolvedValue(BATCH_CANCELLED_FULL);
+      mockCancel.mockResolvedValue(BATCH_CANCELLED_FULL);
+
+      renderTab();
+
+      fireEvent.click(await screen.findByTitle('View batch details'));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^cancel batch$/i })).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /^cancel batch$/i }));
+
+      // Two `role="dialog"` elements are open at once here (BatchDetailModal
+      // itself, and the confirmation on top of it) — both wrap the shared
+      // core Modal, so the generic confirmDialog()/cancelDialog() helpers
+      // (which assume a single dialog) can't be reused; scope explicitly to
+      // the LAST one (the confirmation, mounted after and portalled last).
+      await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(2));
+      const confirmation = within(screen.getAllByRole('dialog').at(-1)!);
+      expect(confirmation.getByRole('heading', { name: /cancel module build/i })).toBeInTheDocument();
+      fireEvent.click(confirmation.getByRole('button', { name: /^cancel batch$/i }));
+
+      await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('batch-active'));
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    });
   });
 });

@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { Hammer, ShieldCheck, AlertCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Hammer, ShieldCheck, AlertCircle, Ban } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { StatusBadge } from '../shared/StatusBadge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { EntityLink } from '@/shared/components/entity';
+import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { capitalize, formatDateTime, formatFileSize } from '@/shared/utils/formatters';
 import { moduleBuildsApi } from '@system/features/system/services/api/moduleBuildsApi';
 import type {
@@ -19,6 +22,8 @@ import type {
 interface BatchDetailModalProps {
   batchId: string;
   onClose: () => void;
+  /** Called after a successful cancel, so the parent list can refetch too. */
+  onCancelled?: () => void;
 }
 
 const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
@@ -29,6 +34,7 @@ const STATUS_LABELS: Record<SystemModuleBuildBatchStatus, string> = {
   complete: 'Complete',
   partial: 'Partial',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 };
 
 // NativeModuleBuildOrchestrator::TERMINAL_MODULE_STATES + "queued"/
@@ -76,10 +82,13 @@ function parityTooltip(parity: SystemModuleBuildParity): string | undefined {
   return undefined;
 }
 
-// The 5 AASM timestamp columns — narrowed to just these keys (rather than
+// The 6 AASM timestamp columns — narrowed to just these keys (rather than
 // `keyof SystemModuleBuildBatchFull`) so `batch[step.key]` types as
-// `string | null | undefined` and needs no unsafe cast below.
-type TimelineKey = 'dispatched_at' | 'awaiting_signature_at' | 'publishing_at' | 'completed_at' | 'failed_at';
+// `string | null | undefined` and needs no unsafe cast below. `cancelled_at`
+// (fc-34, ported from core's ModuleBuildDetailPage) is its own terminal
+// column alongside Completed/Failed rather than folded into either — a
+// cancelled batch's member builds did not fail, the operator stopped them.
+type TimelineKey = 'dispatched_at' | 'awaiting_signature_at' | 'publishing_at' | 'completed_at' | 'failed_at' | 'cancelled_at';
 
 const TIMELINE_STEPS: { key: TimelineKey; label: string }[] = [
   { key: 'dispatched_at', label: 'Dispatched' },
@@ -87,6 +96,7 @@ const TIMELINE_STEPS: { key: TimelineKey; label: string }[] = [
   { key: 'publishing_at', label: 'Publishing' },
   { key: 'completed_at', label: 'Completed' },
   { key: 'failed_at', label: 'Failed' },
+  { key: 'cancelled_at', label: 'Cancelled' },
 ];
 
 /**
@@ -97,12 +107,17 @@ const TIMELINE_STEPS: { key: TimelineKey; label: string }[] = [
  * signals can also EntityLink straight to a batch; this component is the
  * one BatchList itself opens directly by id.
  */
-export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onClose }) => {
+export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onClose, onCancelled }) => {
+  const { hasPermission } = usePermissions();
+  const { addNotification } = useNotifications();
+  const { confirm, ConfirmationDialog } = useConfirmation();
   const [batch, setBatch] = useState<SystemModuleBuildBatchFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const canCancel = hasPermission('system.module_builds.cancel');
 
-  useEffect(() => {
+  const refetch = useCallback(() => {
     let cancelled = false;
     setLoading(true);
     setLoadFailed(false);
@@ -119,7 +134,37 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
     return () => { cancelled = true; };
   }, [batchId]);
 
+  useEffect(() => refetch(), [refetch]);
+
+  // fc-34: ported from the deleted core CancelBatchButton — same confirm
+  // copy and permission (system.module_builds.cancel). Refetches THIS
+  // modal's own detail (so the ladder/status update in place) as well as
+  // calling onCancelled, so the list behind it picks up the change too.
+  const handleCancel = () => {
+    if (!batch) return;
+    confirm({
+      title: 'Cancel Module Build',
+      message: `This stops in-flight builds for batch ${batch.id.slice(0, 8)}. Modules already published are unaffected. Continue?`,
+      confirmLabel: 'Cancel Batch',
+      variant: 'danger',
+      onConfirm: async () => {
+        setCancelling(true);
+        try {
+          await moduleBuildsApi.cancel(batch.id);
+          addNotification({ type: 'success', message: 'Module build batch cancelled' });
+          refetch();
+          onCancelled?.();
+        } catch (e) {
+          addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Failed to cancel batch' });
+        } finally {
+          setCancelling(false);
+        }
+      },
+    });
+  };
+
   return (
+    <>
     <Modal
       isOpen
       onClose={onClose}
@@ -147,7 +192,17 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
       }
       icon={<Hammer className="w-6 h-6" />}
       maxWidth="4xl"
-      footer={<Button variant="outline" onClick={onClose}>Close</Button>}
+      footer={
+        <>
+          {canCancel && batch?.active && (
+            <Button variant="danger" onClick={handleCancel} disabled={cancelling}>
+              <Ban className="w-4 h-4 mr-1.5" />
+              {cancelling ? 'Cancelling…' : 'Cancel Batch'}
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </>
+      }
     >
           {/* Body */}
           <div className="space-y-6">
@@ -241,9 +296,12 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
                       <thead>
                         <tr className="bg-theme-background border-b border-theme">
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Module</th>
+                          <th className="text-left py-2 px-3 font-medium text-theme-primary">Tag</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">State</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Attempts</th>
+                          <th className="text-left py-2 px-3 font-medium text-theme-primary">Error</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Parity</th>
+                          <th className="text-left py-2 px-3 font-medium text-theme-primary">Version</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Signed</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Size</th>
                           <th className="text-left py-2 px-3 font-medium text-theme-primary">Task</th>
@@ -264,10 +322,20 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
                                 <span className="ml-1 text-theme-tertiary">({row.architecture})</span>
                               )}
                             </td>
+                            <td className="py-2 px-3 font-mono text-xs text-theme-secondary">
+                              {row.tag || <span className="text-theme-tertiary">—</span>}
+                            </td>
                             <td className="py-2 px-3">
                               <Badge variant={moduleStateVariant(row.state)} size="xs">{row.state}</Badge>
                             </td>
                             <td className="py-2 px-3 text-theme-primary">{row.attempts}</td>
+                            <td className="py-2 px-3">
+                              {row.error || row.task?.error_message ? (
+                                <span className="text-theme-error-fg text-xs">{row.error || row.task?.error_message}</span>
+                              ) : (
+                                <span className="text-theme-tertiary">—</span>
+                              )}
+                            </td>
                             <td className="py-2 px-3">
                               {row.parity ? (
                                 <span title={parityTooltip(row.parity)}>
@@ -278,6 +346,9 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
                               ) : (
                                 <span className="text-theme-tertiary">—</span>
                               )}
+                            </td>
+                            <td className="py-2 px-3 text-theme-primary text-xs">
+                              {row.artifact?.version_number ?? <span className="text-theme-tertiary">—</span>}
                             </td>
                             <td className="py-2 px-3">
                               {row.artifact?.signed ? (
@@ -321,6 +392,8 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
             )}
           </div>
     </Modal>
+    {ConfirmationDialog}
+    </>
   );
 };
 

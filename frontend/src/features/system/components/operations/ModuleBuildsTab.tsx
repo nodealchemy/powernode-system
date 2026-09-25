@@ -24,9 +24,15 @@ const POLL_INTERVAL_MS = 12_000;
  * System::ModuleBuildBatch, the agent-pollable build-completion barrier for
  * both platform module builds (push/manual/cve) and on-demand
  * package-closure builds (trigger "package"; routed through the same batch
- * by System::PackageClosureBuildBridge as of inc2-B). Read-only: dispatch
- * stays worker/webhook-gated (system.module_builds.dispatch) — a Phase-2
- * "Trigger build" action is out of scope here.
+ * by System::PackageClosureBuildBridge as of inc2-B). Dispatch itself stays
+ * worker/webhook-gated (system.module_builds.dispatch) — no "Trigger build"
+ * action here.
+ *
+ * fc-34: this is now the ONE canonical Module Builds surface — the core
+ * DevOps → CI/CD tab (ModuleBuildsPage/ModuleBuildDetailPage, a URL-only
+ * cross-boundary seam onto this same API) was deleted as a duplicate.
+ * BatchList and BatchDetailModal both carry the ported Cancel action
+ * (system.module_builds.cancel), so this is no longer read-only.
  */
 export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady }) => {
   const { addNotification } = useNotifications();
@@ -115,13 +121,17 @@ export const ModuleBuildsTab: React.FC<ModuleBuildsTabProps> = ({ onActionsReady
               package build, to see it appear here.
             </p>
           ) : (
-            <BatchList batches={batches} onSelect={setSelectedBatchId} />
+            <BatchList batches={batches} onSelect={setSelectedBatchId} onCancelled={refresh} />
           )}
         </div>
       </section>
 
       {selectedBatchId && (
-        <BatchDetailModal batchId={selectedBatchId} onClose={() => setSelectedBatchId(null)} />
+        <BatchDetailModal
+          batchId={selectedBatchId}
+          onClose={() => setSelectedBatchId(null)}
+          onCancelled={refresh}
+        />
       )}
     </div>
   );

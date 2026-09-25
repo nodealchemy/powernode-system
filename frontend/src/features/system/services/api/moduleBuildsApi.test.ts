@@ -1,10 +1,12 @@
 // Behavioral tests for moduleBuildsApi.
 //
-// Covers both exported methods: exact URL, params, envelope unwrapping
+// Covers all three exported methods: exact URL, params, envelope unwrapping
 // (paginated list vs. single-record show), filter combinations.
 //
-// Backend: Api::V1::System::ModuleBuildBatchesController (index/show,
-// read-only). Auth scope: system.module_builds.read
+// Backend: Api::V1::System::ModuleBuildBatchesController (index/show/cancel).
+// Auth scope: system.module_builds.read (index/show), system.module_builds.cancel
+// (cancel). fc-34 ported cancel() from the deleted core moduleBuildBatchesApi.ts
+// — this is now the one client for System::ModuleBuildBatch.
 
 import { moduleBuildsApi } from './moduleBuildsApi';
 import type { PaginationMeta } from './types';
@@ -18,10 +20,12 @@ import type {
 // =============================================================================
 
 const mockGet = jest.fn();
+const mockPost = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
   apiClient: {
     get: (...args: unknown[]) => mockGet(...args),
+    post: (...args: unknown[]) => mockPost(...args),
   },
 }));
 
@@ -142,6 +146,7 @@ const BASE = '/system/module_build_batches';
 describe('moduleBuildsApi', () => {
   beforeEach(() => {
     mockGet.mockReset();
+    mockPost.mockReset();
   });
 
   // ---------------------------------------------------------------------------
@@ -223,6 +228,44 @@ describe('moduleBuildsApi', () => {
       expect(result).toEqual(BATCH_FULL);
       expect(result.modules).toHaveLength(1);
       expect(result.modules[0].module).toBe('core-runtime');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // cancel() — fc-34, ported from the deleted core moduleBuildBatchesApi.ts
+  // ---------------------------------------------------------------------------
+
+  describe('cancel()', () => {
+    const CANCELLED_BATCH: SystemModuleBuildBatchFull = {
+      ...BATCH_FULL,
+      status: 'cancelled',
+      cancelled_at: '2026-06-01T00:05:00Z',
+    };
+
+    it('calls POST /system/module_build_batches/:id/cancel with an empty body when no reason is given', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ module_build_batch: CANCELLED_BATCH }));
+
+      await moduleBuildsApi.cancel('batch-1');
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/batch-1/cancel`, {});
+    });
+
+    it('calls POST .../cancel with a reason body when a reason is given', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ module_build_batch: CANCELLED_BATCH }));
+
+      await moduleBuildsApi.cancel('batch-1', 'operator stop');
+
+      expect(mockPost).toHaveBeenCalledWith(`${BASE}/batch-1/cancel`, { reason: 'operator stop' });
+    });
+
+    it('returns the unwrapped, now-cancelled batch', async () => {
+      mockPost.mockResolvedValueOnce(envelope({ module_build_batch: CANCELLED_BATCH }));
+
+      const result = await moduleBuildsApi.cancel('batch-1');
+
+      expect(result).toEqual(CANCELLED_BATCH);
+      expect(result.status).toBe('cancelled');
+      expect(result.cancelled_at).toBe('2026-06-01T00:05:00Z');
     });
   });
 });

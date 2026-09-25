@@ -915,7 +915,12 @@ export type SystemModuleBuildBatchStatus =
   | 'publishing'
   | 'complete'
   | 'partial'
-  | 'failed';
+  | 'failed'
+  // Operator-cancelled mid-flight (fc-34, ported from the deleted core
+  // Module Builds pages: System::ModuleBuildBatch::STATUSES). Distinct from
+  // "failed" — a cancelled batch's member builds did not fail, the operator
+  // stopped them.
+  | 'cancelled';
 
 export type SystemModuleBuildBatchTrigger = 'push' | 'manual' | 'cve' | 'package';
 
@@ -1024,6 +1029,9 @@ export interface SystemModuleBuildBatchFull extends SystemModuleBuildBatch {
   publishing_at?: string | null;
   completed_at?: string | null;
   failed_at?: string | null;
+  // fc-34: ported from core's ModuleBuildDetailPage — set when an operator
+  // cancels an in-flight batch (System::NativeModuleBuildOrchestrator#cancel!).
+  cancelled_at?: string | null;
   error_message?: string | null;
   modules: SystemModuleBuildBatchModule[];
 }
