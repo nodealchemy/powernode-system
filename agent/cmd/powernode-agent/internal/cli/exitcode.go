@@ -40,11 +40,16 @@ const (
 	ExitDryRunGateUnavailable = 12
 	// ExitSecurityFailClosed is returned by `attach` when the module's
 	// security policy refused to (re)attach it — a non-exempt drop-in write
-	// failure, an unapproved privileged request, or an invalid policy block
-	// (runtime.SecurityFailClosedError specifically; the other two share
-	// this code too since they are the SAME refusal family attachModule
-	// returns from, just without a typed error naming units). Distinct from
-	// ExitMountFailed (a pull/verify/mount problem — the module's own
+	// failure, an unapproved privileged request, an invalid policy block, or
+	// a Policy.Apply (MAC profile load) failure. ALL FOUR map to this code
+	// (K5a, review round 6 — a prior round only mapped the drop-in-write
+	// case, an overclaim this comment used to make about the other three
+	// "sharing" the code when attachErrorResult's errors.As check could not
+	// actually see them: they were still bare fmt.Errorf and fell through to
+	// ExitMountFailed). runtime.SecurityFailClosedError now wraps every one
+	// of them — see its own doc comment — so this comment's claim is
+	// literally what attachErrorResult does, not an aspiration. Distinct
+	// from ExitMountFailed (a pull/verify/mount problem — the module's own
 	// content) and from ExitRefused (an operator-facing "did you mean it"
 	// refusal like reboot_required): this is neither — it is the agent's
 	// OWN confinement policy declining to run the module unconfined (J2,

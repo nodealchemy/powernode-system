@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -240,21 +239,27 @@ func (r *Reconciler) filterUnverifiedDetaches(toDetach mount.ModuleStack, failed
 // merely unrecoverable (rather than self-correcting next tick) on one that
 // hosts its own control plane.
 //
-// THE PRE-CHECK. Runs applyModuleSecurityPolicy — the EXACT SAME decision
-// attachModule uses for a real attach — against the NEW manifest, for every
-// version-bump module, before either detach loop or attach loop runs. A
-// real write attempt (not a simulated/dry-run decision) is the only
-// authoritative answer, and applyModuleSecurityPolicy's own doc comment
-// establishes why running it twice — once here, once for real in RunOnce's
-// attach loop — is safe. If the pre-check refuses, the old digest is left
-// OUT of the returned (safe-to-detach) set: the currently-running units keep
+// THE PRE-CHECK. Runs wouldModuleSecurityPolicyRefuse — a SIDE-EFFECT-FREE
+// decision (K1, review round 6, CRITICAL) sharing decideModuleSecurityPolicy
+// with the real attach path but probing writability instead of writing real
+// content — against the NEW manifest, for every version-bump module, before
+// either detach loop or attach loop runs. This function used to call
+// applyModuleSecurityPolicy directly (J1, review round 5), which runs the
+// REAL writers; because a version bump's old and new digest share the exact
+// same unit name, that was silently rewriting the STILL-RUNNING old digest's
+// live drop-ins with the NEW digest's content on every tick a bump was
+// deferred (K1's own finding — see wouldModuleSecurityPolicyRefuse's doc for
+// the full story). If the pre-check refuses, the old digest is left OUT of
+// the returned (safe-to-detach) set: the currently-running units keep
 // running under their previous, already-applied confinement, exactly the
 // posture attachModule's own drop-in-failure branch already accepts for a
-// live re-attach. toAttach is NOT modified — the real attach loop still runs
-// attachModule for the new digest and gets the SAME refusal, which is what
-// actually calls recordSecurityFailClosed and marks the pass unconverged;
-// this function's job is only to keep the old digest attached while that
-// happens, never to suppress or duplicate that reporting.
+// live re-attach — and, since K1, ACTUALLY still their previous confinement,
+// not a partially-applied new one. toAttach is NOT modified — the real
+// attach loop still runs attachModule for the new digest and gets the SAME
+// refusal, which is what actually calls recordSecurityFailClosed and marks
+// the pass unconverged; this function's job is only to keep the old digest
+// attached while that happens, never to suppress or duplicate that
+// reporting.
 //
 // A module with NO fresh manifest for its new digest at all is treated the
 // same as a refusal (deferred, not detached) — RunOnce's own attach loop
@@ -262,9 +267,34 @@ func (r *Reconciler) filterUnverifiedDetaches(toDetach mount.ModuleStack, failed
 // (reconciler:missing_manifest) without ever reaching a security decision,
 // and detaching the old digest ahead of a new one that cannot even be
 // inspected would be strictly worse than that existing refusal.
-func (r *Reconciler) filterUnsafeVersionBumpDetaches(ctx context.Context, toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest) mount.ModuleStack {
+//
+// K2a (review round 6, CRITICAL): the security-policy pre-check is not the
+// only way a version bump's new digest can fail to attach — an artifact
+// pull/verify/mount failure (a bad blob, a cosign/fs-verity mismatch, a
+// mid-tick ENOSPC) is invisible to it, since wouldModuleSecurityPolicyRefuse
+// never touches the module's mounted content at all. artifactReady (from
+// prefetchNewArtifacts, called earlier this same tick) is consulted FIRST,
+// before the security pre-check even runs — an artifact that never even
+// mounted has no drop-in units worth probing.
+//
+// versionBumpDeferral (the return type) reports enough for the CALLER
+// (RunOnce) to do two more things this function deliberately does NOT do
+// itself: skip the deferred module's new digest in the attach loop entirely
+// this tick (K3 — this function only decides the DETACH side; RunOnce owns
+// toAttach) and record any drop-in units the security pre-check actually
+// found failing, the same way a real attach would have (this function only
+// EMITS the human-readable OnError summary below; it must not itself call
+// recordSecurityFailClosed, which RunOnce's securityPolicyAttemptedUnits
+// bookkeeping — J3 — needs to stay coupled to the SAME call site as every
+// other recordSecurityFailClosed call).
+type versionBumpDeferral struct {
+	moduleID    string
+	failedUnits []string // non-nil only for an actual drop-in-probe refusal — nil for privileged-unapproved/invalid-policy/artifact-not-ready, exactly mirroring attachModule's own recordSecurityFailClosed gating
+}
+
+func (r *Reconciler) filterUnsafeVersionBumpDetaches(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest, artifactReady map[string]bool) (safe mount.ModuleStack, deferrals []versionBumpDeferral) {
 	if len(toDetach) == 0 {
-		return toDetach
+		return toDetach, nil
 	}
 
 	newByID := make(map[string]mount.Module, len(toAttach))
@@ -272,30 +302,43 @@ func (r *Reconciler) filterUnsafeVersionBumpDetaches(ctx context.Context, toDeta
 		newByID[m.ID] = m
 	}
 
-	safe := make(mount.ModuleStack, 0, len(toDetach))
-	deferred := make([]string, 0)
+	safe = make(mount.ModuleStack, 0, len(toDetach))
+	deferredIDs := make([]string, 0)
 	for _, mod := range toDetach {
 		newMod, isBump := newByID[mod.ID]
 		if !isBump {
 			safe = append(safe, mod) // not a version bump — nothing for this guard to say
 			continue
 		}
-		mf, ok := manifests[mod.ID]
-		if !ok || mf == nil {
-			deferred = append(deferred, mod.ID)
+		if !artifactReady[mod.ID] {
+			deferredIDs = append(deferredIDs, mod.ID)
+			deferrals = append(deferrals, versionBumpDeferral{moduleID: mod.ID})
 			continue
 		}
-		if failedUnits, err := r.applyModuleSecurityPolicy(ctx, newMod, mf); err != nil || len(failedUnits) > 0 {
-			deferred = append(deferred, mod.ID)
+		mf, ok := manifests[mod.ID]
+		if !ok || mf == nil {
+			deferredIDs = append(deferredIDs, mod.ID)
+			deferrals = append(deferrals, versionBumpDeferral{moduleID: mod.ID})
+			continue
+		}
+		failedUnits, err := r.wouldModuleSecurityPolicyRefuse(newMod, mf)
+		if err != nil {
+			deferredIDs = append(deferredIDs, mod.ID)
+			deferrals = append(deferrals, versionBumpDeferral{moduleID: mod.ID})
+			continue
+		}
+		if len(failedUnits) > 0 {
+			deferredIDs = append(deferredIDs, mod.ID)
+			deferrals = append(deferrals, versionBumpDeferral{moduleID: mod.ID, failedUnits: failedUnits})
 			continue
 		}
 		safe = append(safe, mod)
 	}
 
-	if len(deferred) > 0 {
+	if len(deferredIDs) > 0 {
 		r.cfg.OnError("reconciler:version_bump_detach_deferred_would_fail_closed",
-			fmt.Errorf("this tick's version bump for %d module(s) [%s] would refuse to (re)attach its new digest; keeping the currently-running (old digest) units in place instead of detaching them first — they will be re-evaluated next tick",
-				len(deferred), strings.Join(deferred, ", ")))
+			fmt.Errorf("this tick's version bump for %d module(s) [%s] would refuse to (re)attach its new digest (artifact not ready, invalid policy, or a security drop-in write); keeping the currently-running (old digest) units in place instead of detaching them first — they will be re-evaluated next tick",
+				len(deferredIDs), strings.Join(deferredIDs, ", ")))
 	}
-	return safe
+	return safe, deferrals
 }
