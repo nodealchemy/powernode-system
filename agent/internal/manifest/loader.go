@@ -70,7 +70,15 @@ func FetchAndCache(c Client, root, moduleID string) (*Manifest, error) {
 	// "known good", is cheaper and more certain than auditing every
 	// consumer for the assumption. See decideModuleSecurityPolicy's own
 	// mirror of this check for the second entry point.
-	if env.Data.ID != "" && env.Data.ID != moduleID {
+	// N9 (review round 11): a FRESH fetch must declare a non-empty id — the
+	// leniency that let an empty id pass as "no claim, not a mismatch" was
+	// deliberately narrowed to LoadFromDisk (the cache-read path, which
+	// still tolerates an old cache entry or fixture written before this
+	// field was populated); a live platform response has no such excuse.
+	if env.Data.ID == "" {
+		return nil, fmt.Errorf("manifest requested for module %s: response declares no id at all — refusing an unidentified payload", moduleID)
+	}
+	if env.Data.ID != moduleID {
 		return nil, fmt.Errorf("manifest requested for module %s: response declares id %q — refusing a mismatched payload", moduleID, env.Data.ID)
 	}
 

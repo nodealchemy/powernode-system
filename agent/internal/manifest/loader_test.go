@@ -306,14 +306,12 @@ func TestFetchAndCacheAllowsAMatchingDeclaredID(t *testing.T) {
 	}
 }
 
-// TestFetchAndCacheAllowsAnEmptyDeclaredID is a NARROWER control: a response
-// that simply omits "id" (many test fixtures across this codebase, and
-// potentially an older platform payload shape) is not itself evidence of an
-// ID MISMATCH — only a non-empty id that disagrees is refused for that
-// reason. writeCache's own pre-existing (unrelated to this check) refusal
-// of a nil/empty ID still applies, so this asserts the absence of the
-// MISMATCH error specifically, not a nil overall error.
-func TestFetchAndCacheAllowsAnEmptyDeclaredID(t *testing.T) {
+// TestFetchAndCacheRequiresANonEmptyIDOnAFreshFetch is N9 (review round
+// 11): the leniency an earlier round gave an empty declared id ("no claim,
+// not a mismatch") is narrowed here — it applies only to a CACHE READ
+// (LoadFromDisk, see TestLoadFromDiskToleratesAnEmptyID below), never to a
+// FRESH fetch from the live platform, which has no excuse for omitting it.
+func TestFetchAndCacheRequiresANonEmptyIDOnAFreshFetch(t *testing.T) {
 	root := t.TempDir()
 	body := `{
 		"success": true,
@@ -327,8 +325,37 @@ func TestFetchAndCacheAllowsAnEmptyDeclaredID(t *testing.T) {
 	}`
 	c := &stubClient{resp: makeResp(200, body)}
 
-	_, err := FetchAndCache(c, root, "mod-1")
-	if err != nil && strings.Contains(err.Error(), "refusing a mismatched payload") {
-		t.Fatalf("an empty declared id must not be treated as a mismatch: %v", err)
+	if _, err := FetchAndCache(c, root, "mod-1"); err == nil {
+		t.Fatal("expected an error for a fresh fetch with no declared id")
+	}
+	if _, err := os.Stat(filepath.Join(root, "mod-1", "manifest.json")); !os.IsNotExist(err) {
+		t.Errorf("an unidentified fresh response must not be cached, stat err=%v", err)
+	}
+}
+
+// TestLoadFromDiskToleratesAnEmptyID is the narrower surviving case N9
+// preserves: a CACHED manifest (written by an older agent build, or a test
+// fixture that predates this field) with no id at all is still readable —
+// LoadFromDisk performs no id validation of its own. Downstream consumers
+// that need the id/mod.ID relationship to hold (decideModuleSecurityPolicy)
+// carry their own check as a second line of defense.
+func TestLoadFromDiskToleratesAnEmptyID(t *testing.T) {
+	root := t.TempDir()
+	m := Manifest{Name: "nginx", Digest: "sha256:aaaa"}
+	body, _ := json.Marshal(m)
+	dir := filepath.Join(root, "mod-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadFromDisk(root, "mod-1")
+	if err != nil {
+		t.Fatalf("LoadFromDisk: %v", err)
+	}
+	if got.ID != "" {
+		t.Errorf("expected the empty id to round-trip unchanged, got %q", got.ID)
 	}
 }
