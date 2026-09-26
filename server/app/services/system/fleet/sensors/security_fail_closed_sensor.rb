@@ -92,17 +92,22 @@ module System
               "count_is_floor"      => capped,
               "instances"           => named(affected),
               "truncated"           => affected.size > MAX_NAMED_INSTANCES,
-              # NOT "running without confinement" (review G6): the agent
+              # NOT "running without confinement" (review G6/H4): the agent
               # never weakens a unit's confinement and starts it anyway — a
               # non-exempt drop-in write failure makes it REFUSE to
-              # (re)attach/start the unit at all. A first attach's unit is
-              # genuinely NOT RUNNING; a re-attach's unit, if already
-              # running, keeps running under whatever confinement it already
-              # had (never a weaker one the agent just failed to apply).
-              # "Refused" is the one word true in both cases.
+              # (re)attach/start the unit. The wire (pivot_/
+              # runtime_security_fail_closed_units) does not distinguish a
+              # FIRST attach (genuinely never started) from a RE-attach
+              # (already running, kept running under whatever confinement it
+              # already had — never a weaker one this refusal would have
+              # applied), so the summary states both rather than picking one
+              # and reading as "service down" for the case that is actually
+              # still running under its old, still-valid confinement.
               "summary"             => "#{capped ? 'at least ' : ''}#{affected.size} live node(s) report a unit the agent " \
                                         "REFUSED to (re)attach/start because a security drop-in write failed and was " \
-                                        "not exempt — those units are NOT RUNNING with the agent's involvement",
+                                        "not exempt — if this is a NEW unit it is not running; if it was already " \
+                                        "running, it continues under whatever confinement it already had (never a " \
+                                        "weaker one), not the confinement its manifest currently declares",
               "remediation_action"  => nil
             },
             fingerprint: "node_security_fail_closed:#{account.id}"
