@@ -768,7 +768,31 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		// (if any) on every heartbeat for the life of the boot — an operator
 		// reading only the latest heartbeat must still see it, not just
 		// whoever was watching at boot time.
-		payload.PivotSecurityFailClosedUnits = bc.SecurityFailClosedUnits
+		//
+		// G5 (review round 5): the breadcrumb is a ONE-TIME boot fact,
+		// re-read unchanged on every heartbeat — nothing else ever revisits
+		// it. Left alone, a unit refused once at boot would alarm
+		// SecurityFailClosedSensor for the entire uptime even after the live
+		// path later proves it CAN write that unit's confinement correctly.
+		// Subtract SecurityFailClosedRecovered (units the live path has
+		// successfully attached since boot) so a stale boot-time refusal
+		// drops off once superseded — an ONGOING problem stays fully visible
+		// regardless, via RuntimeSecurityFailClosedUnits.
+		pivotFailed := bc.SecurityFailClosedUnits
+		if s.reconciler != nil {
+			if recovered := s.reconciler.SecurityFailClosedRecovered(); len(recovered) > 0 {
+				filtered := make([]string, 0, len(pivotFailed))
+				for _, u := range pivotFailed {
+					if !recovered[u] {
+						filtered = append(filtered, u)
+					}
+				}
+				pivotFailed = filtered
+			}
+		}
+		if len(pivotFailed) > 0 {
+			payload.PivotSecurityFailClosedUnits = pivotFailed
+		}
 	}
 	// Live runtime-path fail-closed state (IMP-caef5c00d63f phase 4). nil
 	// Reconciler only in a test/constructor path that never called Run.

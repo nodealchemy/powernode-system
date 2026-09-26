@@ -25,7 +25,6 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
-	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -173,11 +172,47 @@ type Reconciler struct {
 	// closed identically on the boot AND the runtime path). Read by
 	// buildHeartbeat (HeartbeatPayload.RuntimeSecurityFailClosedUnits).
 	//
-	// ATOMIC, not guarded by mu, for the exact reason composeFailed is: only
-	// the single RunOnce goroutine ever WRITES it (via recordSecurityFailClosed,
-	// called from attachModule), but buildHeartbeat reads it from a different
-	// goroutine, and mu is held across the entire RunOnce body.
-	securityFailClosedUnits atomic.Pointer[[]string]
+	// ATOMIC, not guarded by mu, for the exact reason composeFailed is:
+	// buildHeartbeat reads it from a different goroutine, and mu is held
+	// across the entire RunOnce body.
+	//
+	// PUBLISHED EXACTLY ONCE PER PASS (review round 5, G4), not reset at the
+	// top and accumulated in place: attachModule is called throughout the
+	// attach/reattach loops, which take real wall-clock time (network
+	// fetches, blob pulls, mount, systemctl), and a heartbeat racing a
+	// mid-flight pass must never observe the RESET (empty) value a
+	// zero-then-fill approach would expose between the reset and the first
+	// failure being recorded — that would read as "recovered" to
+	// SecurityFailClosedSensor and clear a real, still-open alarm, then
+	// re-raise it once the pass finishes. securityFailClosedPending
+	// accumulates the units THIS pass has found so far in an ordinary
+	// (non-atomic) field — safe because only the single RunOnce goroutine
+	// ever touches it — and publishFailClosed swaps the atomic pointer over
+	// to it in ONE Store call after the attach/reattach loops finish, so a
+	// concurrent reader only ever sees the previous pass's complete result or
+	// this pass's complete result, never a value from mid-pass.
+	securityFailClosedUnits   atomic.Pointer[[]string]
+	securityFailClosedPending []string
+
+	// securityFailClosedRecovered names units whose LIVE (attachModule)
+	// security drop-in write has SUCCEEDED at least once since this boot —
+	// proof this boot CAN write that unit's confinement correctly, regardless
+	// of what a boot-time (pivot) compose attempt saw (review round 5, G5).
+	// buildHeartbeat subtracts this set from the boot breadcrumb's
+	// PivotSecurityFailClosedUnits: without it, a unit refused once at boot
+	// keeps SecurityFailClosedSensor alarming for the ENTIRE uptime, even
+	// after the live path proves the confinement now applies — the
+	// breadcrumb is a one-time boot fact re-read unchanged on every
+	// heartbeat, and nothing else ever revisits it.
+	//
+	// MONOTONIC for the life of the boot (only ever grows, never reset by
+	// resetSecurityFailClosed) — a LATER live failure for the SAME unit is
+	// still fully and separately visible via RuntimeSecurityFailClosedUnits,
+	// so this suppression can never hide an ONGOING problem, only a stale
+	// boot-time one. Merge-on-write directly into the atomic (unlike
+	// securityFailClosedUnits, this field has no reset step to race with, so
+	// it needs no separate pending/publish split).
+	securityFailClosedRecovered atomic.Pointer[map[string]bool]
 
 	// Latched result of the self-host probe (see selfhost.go). Guarded
 	// separately from mu because selfHosted() is called from inside a
@@ -962,6 +997,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.attachModuleServices(ctx, mod, mf)
 	}
 
+	// Publish this pass's complete security-fail-closed result in ONE Store
+	// (G4) — attachModule (called from both loops above) only ACCUMULATES
+	// into the pending, non-atomic field; this is the one place the
+	// atomically-published value a concurrent heartbeat reads actually moves,
+	// so no reader can observe a mid-pass partial result.
+	r.publishSecurityFailClosed()
+
 	// Deferred leaver prunes — after both attach loops so every desired
 	// module's tree is mounted before any surviving-layer resolution.
 	// desiredForLayers, not `desired` (review finding N3): a retained module
@@ -1427,25 +1469,45 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 
 	if len(failedUnits) > 0 {
 		r.recordSecurityFailClosed(failedUnits)
-		// STOP any of the failed units that are CURRENTLY RUNNING, not just
-		// decline to (re)start them. A module already running under an
-		// older, successfully-written drop-in could be running a WIDER
-		// posture than this pass intends (a manifest edit narrowing its
-		// ceiling is exactly why a re-attach ran at all) — leaving it
-		// running because the refresh failed would silently keep the wider,
-		// pre-edit posture in force. Best-effort: an IsActive read error is
-		// treated as "not active" (nothing to stop), and a Stop failure is
-		// reported separately and does not mask the original write error.
-		for _, unit := range failedUnits {
-			if active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit); active {
-				if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Stop); err != nil {
-					r.cfg.OnError("reconciler:security_dropin_fail_closed_stop",
-						fmt.Errorf("module %s unit %s: could not stop after fail-closed refusal: %w", mod.ID, unit, err))
-				}
-			}
-		}
+		// DELIBERATELY NOT stopping a currently-running unit here (review
+		// round 4 shipped that, round 5 both reviewers required removing it —
+		// G1, CRITICAL). Two independent reasons, either alone sufficient:
+		//
+		//  1. UNRECOVERABLE ON A SELF-HOSTED NODE. ops-hub reconciles ITSELF —
+		//     if the failing unit is rails or postgres, stopping it here
+		//     takes down the control plane THIS RunOnce needs to keep
+		//     working: the next tick's FetchAssignedModules call goes to the
+		//     now-dead rails and returns before ever reaching attachModule
+		//     again, so nothing on this node ever restarts the unit. The
+		//     heartbeat and the sensor this fail-closed state feeds
+		//     (SecurityFailClosedSensor) both report to that same dead rails.
+		//     A node that cannot repair itself must never be the thing this
+		//     code stops.
+		//  2. IT ENFORCED SOMETHING SUCCESS DOESN'T. AttachServicesModeOpts
+		//     (attachModuleServices, below) only restarts a unit whose BODY
+		//     changed on this pass AND the node is not self-hosted
+		//     (RestartChanged: !r.selfHosted()) — a security drop-in write
+		//     succeeding does not itself trigger a restart or a
+		//     daemon-reload; the running process keeps its OLD effective
+		//     capabilities until something ELSE restarts it. Stopping the
+		//     unit specifically when the write FAILS would have enforced a
+		//     stricter guarantee ("the running process always reflects the
+		//     latest drop-in") than a SUCCESSFUL write ever gives — the
+		//     asymmetry is itself a defect, not an extra safety margin.
+		//
+		// What actually satisfies "never run a module unconfined" here:
+		// refusing to (re)attach/start the module (this error return, which
+		// the caller treats identically to an invalid-policy or
+		// privileged-unapproved refusal — no attach stamp, no
+		// attachModuleServices call) plus recording + alerting
+		// (recordSecurityFailClosed above, surfaced by
+		// SecurityFailClosedSensor). A unit that was NEVER running is
+		// correctly kept that way; a unit that WAS already running keeps
+		// running under whatever drop-in it already had — which is a state
+		// the node was already in, the same posture hotReconcileIfNeeded's
+		// scratch-budget refusal already accepts for file materialization.
 		r.cfg.OnError("reconciler:security_dropin_fail_closed",
-			fmt.Errorf("module %s: security drop-in write failed for unit(s) %v — refusing to (re)start, stopping any that are running (fail closed, not unconfined)", mod.ID, failedUnits))
+			fmt.Errorf("module %s: security drop-in write failed for unit(s) %v — refusing to (re)attach/start (fail closed, not unconfined)", mod.ID, failedUnits))
 		// Returning an error here reuses the SAME refusal path attachModule
 		// already has for an invalid policy or an unapproved privileged
 		// request (above): the caller's noteUnconverged does not record this
@@ -1455,6 +1517,16 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// toReattach on every later tick until the write succeeds.
 		return fmt.Errorf("module %s: security drop-in write failed for unit(s) %v (fail closed)", mod.ID, failedUnits)
 	}
+
+	// Every one of this module's security drop-ins just wrote successfully —
+	// mark its units RECOVERED for the rest of this boot (G5), so
+	// buildHeartbeat can stop reporting a stale boot-time pivot refusal for
+	// any of them once the live path has proven it can write their
+	// confinement correctly. Unconditional (not gated on whether any of
+	// these units were ever pivot-refused): a no-op for a unit the pivot
+	// breadcrumb never named, and exactly the signal buildHeartbeat needs
+	// for one that was.
+	r.recordSecurityFailClosedRecovered(mf.UnitNames())
 
 	return nil
 }
@@ -2107,21 +2179,19 @@ func (r *Reconciler) SecurityFailClosedUnits() []string {
 	return nil
 }
 
-// recordSecurityFailClosed merges units into the atomically-published set
-// SecurityFailClosedUnits reads, deduped. Called only from attachModule,
-// which only ever runs from the single RunOnce goroutine — so this
-// load-merge-store needs no lock of its own beyond what atomic.Pointer
-// already gives concurrent READERS (buildHeartbeat, on a different
-// goroutine); see securityFailClosedUnits' own doc for why that field is
-// atomic rather than mu-guarded.
+// recordSecurityFailClosed merges units into securityFailClosedPending,
+// deduped. Called only from attachModule, which only ever runs from the
+// single RunOnce goroutine, so this plain (non-atomic) field needs no lock —
+// it is never read from any other goroutine. See securityFailClosedUnits'
+// own doc for why the PUBLISHED value is atomic and updated separately
+// (publishSecurityFailClosed), not here.
 func (r *Reconciler) recordSecurityFailClosed(units []string) {
 	if len(units) == 0 {
 		return
 	}
-	existing := r.SecurityFailClosedUnits()
-	merged := make([]string, 0, len(existing)+len(units))
-	seen := make(map[string]bool, len(existing)+len(units))
-	for _, u := range existing {
+	seen := make(map[string]bool, len(r.securityFailClosedPending)+len(units))
+	merged := make([]string, 0, len(r.securityFailClosedPending)+len(units))
+	for _, u := range r.securityFailClosedPending {
 		if !seen[u] {
 			seen[u] = true
 			merged = append(merged, u)
@@ -2133,16 +2203,63 @@ func (r *Reconciler) recordSecurityFailClosed(units []string) {
 			merged = append(merged, u)
 		}
 	}
-	r.securityFailClosedUnits.Store(&merged)
+	r.securityFailClosedPending = merged
 }
 
-// resetSecurityFailClosed clears the published set at the top of a fresh
-// RunOnce pass — same reasoning as composeFailed.Store(false): the set must
-// describe the pass that just ran, never an older one, so a module that
-// fixed its drop-in this tick drops off rather than staying flagged forever.
+// resetSecurityFailClosed clears the PENDING (not yet published) set at the
+// top of a fresh RunOnce pass — same reasoning as composeFailed.Store(false):
+// the set must describe the pass that just ran, never an older one, so a
+// module that fixed its drop-in this tick drops off rather than staying
+// flagged forever. Deliberately does NOT touch the published atomic value —
+// see publishSecurityFailClosed and securityFailClosedUnits' own doc (G4).
 func (r *Reconciler) resetSecurityFailClosed() {
-	empty := []string(nil)
-	r.securityFailClosedUnits.Store(&empty)
+	r.securityFailClosedPending = nil
+}
+
+// publishSecurityFailClosed swaps the PUBLISHED atomic value over to
+// whatever this pass accumulated, in ONE Store call. Called once, after the
+// attach/reattach loops finish (the only place recordSecurityFailClosed is
+// called from), so a concurrent buildHeartbeat call reading
+// SecurityFailClosedUnits mid-pass sees the PREVIOUS pass's complete result
+// right up until this pass's own complete result replaces it — never an
+// empty value manufactured by resetting before this pass has finished
+// finding its own failures (G4: that gap would read as "recovered" to
+// SecurityFailClosedSensor, clearing a real alarm, then re-raise it once the
+// pass finishes).
+func (r *Reconciler) publishSecurityFailClosed() {
+	published := r.securityFailClosedPending
+	r.securityFailClosedUnits.Store(&published)
+}
+
+// SecurityFailClosedRecovered returns the units whose live security drop-in
+// write has succeeded at least once this boot. nil/empty means none — read
+// by buildHeartbeat to suppress a stale boot-time pivot refusal (G5).
+func (r *Reconciler) SecurityFailClosedRecovered() map[string]bool {
+	if p := r.securityFailClosedRecovered.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// recordSecurityFailClosedRecovered merges units into the atomically-
+// published recovered set. Called only from attachModule on a FULLY
+// successful attach (every one of the module's security drop-ins wrote), so
+// only the single RunOnce goroutine ever writes it — the load-merge-store
+// needs no lock of its own beyond what atomic.Pointer already gives
+// concurrent readers.
+func (r *Reconciler) recordSecurityFailClosedRecovered(units []string) {
+	if len(units) == 0 {
+		return
+	}
+	existing := r.SecurityFailClosedRecovered()
+	merged := make(map[string]bool, len(existing)+len(units))
+	for u := range existing {
+		merged[u] = true
+	}
+	for _, u := range units {
+		merged[u] = true
+	}
+	r.securityFailClosedRecovered.Store(&merged)
 }
 
 // AttachOne pulls + verifies + mounts a single module without

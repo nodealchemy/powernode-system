@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,81 +78,71 @@ func TestAttachModule_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite(t *
 		t.Errorf("expected the module-level fail-closed refusal signal, got stages: %v", onErrors)
 	}
 
+	// G4: attachModule only accumulates into the pending set; RunOnce
+	// publishes it once, after the attach/reattach loops finish. Called
+	// directly here (this test calls attachModule, not the full RunOnce
+	// pass) to observe what a real pass would publish.
+	r.publishSecurityFailClosed()
 	got := r.SecurityFailClosedUnits()
 	if !containsArg(got, failingUnit) {
 		t.Errorf("Reconciler.SecurityFailClosedUnits() must name %s, got %v", failingUnit, got)
 	}
 }
 
-// The failed units must be STOPPED if currently running, not merely left
-// un-restarted — a re-attach whose manifest NARROWED the ceiling this pass,
-// and whose drop-in write then failed, must not leave the OLDER (wider)
-// drop-in's unit running just because the refresh could not land.
-func TestAttachModule_StopsARunningUnitWhenItFailsClosed(t *testing.T) {
-	dropIns := t.TempDir()
-	t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+// REMOVED (review round 5, G1, CRITICAL — both reviewers): a fail-closed
+// refusal must NOT stop an already-running unit. Two independent reasons:
+//
+//  1. UNRECOVERABLE ON A SELF-HOSTED NODE. ops-hub reconciles ITSELF — if the
+//     failing unit is rails or postgres, stopping it here takes down the
+//     control plane THIS RunOnce needs: the next tick's FetchAssignedModules
+//     call goes to the now-dead rails and returns before ever reaching
+//     attachModule again, so nothing on this node ever restarts the unit.
+//  2. IT ENFORCED SOMETHING SUCCESS DOESN'T. attachModuleServices only
+//     restarts a unit whose BODY changed this pass AND the node is not
+//     self-hosted — a security drop-in write SUCCEEDING does not itself
+//     restart anything. Stopping the unit specifically when the write FAILS
+//     enforced a stricter guarantee than a successful write ever gives.
+//
+// This test pins the removal on BOTH self-hosted and non-self-hosted nodes —
+// the self-host distinction mattered only to the stop logic this replaces;
+// a regression that reintroduces the stop conditionally on self-hosted would
+// still be wrong for reason 2 regardless of which arm it ran on.
+func TestAttachModule_DoesNotStopARunningUnitOnFailedReattach(t *testing.T) {
+	for _, selfHosted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("selfHosted=%v", selfHosted), func(t *testing.T) {
+			dropIns := t.TempDir()
+			t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
 
-	mf := hubBackendLike(t)
-	failingUnit := lifecycle.UnitName(mf.ID, "rails-setup")
-	dropInDir := filepath.Join(dropIns, failingUnit+".d")
-	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			mf := hubBackendLike(t)
+			failingUnit := lifecycle.UnitName(mf.ID, "rails-setup")
+			dropInDir := filepath.Join(dropIns, failingUnit+".d")
+			if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	rec := &mount.RecorderRunner{
-		StubOutput: map[string][]byte{
-			"systemctl is-active " + failingUnit: []byte("active\n"),
-		},
-	}
-	r := liveReconciler(t, rec)
+			// Stubbed as ACTIVE — if a stop call were (re)issued, this is the
+			// shape that would trigger it.
+			rec := &mount.RecorderRunner{
+				StubOutput: map[string][]byte{
+					"systemctl is-active " + failingUnit: []byte("active\n"),
+				},
+			}
+			r := liveReconciler(t, rec)
+			r.selfHostLatched = selfHosted
 
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
-		t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
-	}
+			if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
+				t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
+			}
 
-	sawStop := false
-	for _, inv := range rec.Invocations {
-		if inv.Name == "systemctl" && containsArg(inv.Args, "stop") && containsArg(inv.Args, failingUnit) {
-			sawStop = true
-		}
-	}
-	if !sawStop {
-		t.Errorf("expected `systemctl stop %s` after a fail-closed refusal of an ACTIVE unit, got invocations: %v", failingUnit, rec.Invocations)
-	}
-}
-
-// A unit that is NOT running when it fails closed must not get a spurious
-// stop call — IsActive reads it as inactive (RecorderRunner's zero-value
-// Output is empty, which systemd.IsActive treats as not-active) and nothing
-// else should be issued for it.
-func TestAttachModule_DoesNotStopAnAlreadyInactiveUnit(t *testing.T) {
-	dropIns := t.TempDir()
-	t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
-
-	mf := hubBackendLike(t)
-	failingUnit := lifecycle.UnitName(mf.ID, "rails-setup")
-	dropInDir := filepath.Join(dropIns, failingUnit+".d")
-	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	rec := &mount.RecorderRunner{}
-	r := liveReconciler(t, rec)
-
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
-		t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
-	}
-
-	for _, inv := range rec.Invocations {
-		if inv.Name == "systemctl" && containsArg(inv.Args, "stop") {
-			t.Errorf("unexpected systemctl stop for a unit IsActive reported as inactive: %v", inv)
-		}
+			for _, inv := range rec.Invocations {
+				if inv.Name == "systemctl" && containsArg(inv.Args, "stop") {
+					t.Errorf("unexpected systemctl stop for unit %v on a fail-closed refusal: %v", failingUnit, inv)
+				}
+			}
+		})
 	}
 }
 
@@ -199,6 +190,30 @@ func TestAttachModule_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 	}
 }
 
+// G5 wiring: a FULLY successful attachModule must mark its units recovered —
+// this is the write side of buildHeartbeat's pivot-suppression read
+// (security_fail_closed_heartbeat_test.go pins the read side directly).
+func TestAttachModule_SuccessRecordsUnitsAsRecovered(t *testing.T) {
+	dropIns := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+
+	mf := hubBackendLike(t) // rails-setup, rails, chowner — no forced failure
+	rec := &mount.RecorderRunner{}
+	r := liveReconciler(t, rec)
+
+	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+		t.Fatalf("attachModule: %v", err)
+	}
+
+	recovered := r.SecurityFailClosedRecovered()
+	for _, name := range []string{"rails-setup", "rails", "chowner"} {
+		unit := lifecycle.UnitName(mf.ID, name)
+		if !recovered[unit] {
+			t.Errorf("expected %s marked recovered after a successful attach, got %v", unit, recovered)
+		}
+	}
+}
+
 // EXPLICIT PARITY (review round 3): the SAME manifest, forced the SAME way,
 // through BOTH real call sites — attachModule (live) and renderPivotUnits
 // (boot/pivot-compose) — must reach the SAME refuse-or-exempt verdict. Both
@@ -212,12 +227,19 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 	}
 
 	cases := []struct {
-		name        string
-		mf          func() *manifest.Manifest
+		name string
+		mf   func() *manifest.Manifest
+		// blockFile is the ONE drop-in file made a pre-existing directory —
+		// isolating that single write failure, not the whole <unit>.d dir
+		// (review round 5, G3: a whole-dir block can't distinguish "the live
+		// path ignores userns/seccomp errors" from "it fails closed
+		// correctly", since the capability failure alone is enough to trip
+		// refusal on a narrow ceiling either way).
+		blockFile   string
 		wantRefused bool
 	}{
 		{
-			name: "narrow ceiling refuses on both paths",
+			name: "narrow capability ceiling refuses on both paths",
 			mf: func() *manifest.Manifest {
 				return &manifest.Manifest{
 					ID:                          "parity-narrow",
@@ -225,15 +247,16 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 					ServiceCapabilitiesPresence: true,
 					Config: map[string]any{"security": map[string]any{
 						"capabilities":   []any{"CAP_CHOWN"},
-						"user_namespace": false,
+						"user_namespace": false, // exempt on its own — isolates capabilities
 					}},
 					Services: []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
 				}
 			},
+			blockFile:   "capabilities.conf",
 			wantRefused: true,
 		},
 		{
-			name: "full ceiling is exempt on both paths",
+			name: "full capability ceiling is exempt on both paths",
 			mf: func() *manifest.Manifest {
 				return &manifest.Manifest{
 					ID:                          "parity-full",
@@ -243,7 +266,44 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 					Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
 				}
 			},
+			blockFile:   "capabilities.conf",
 			wantRefused: false,
+		},
+		{
+			// G3: neither path may silently ignore a userns write failure.
+			// No security block at all -> policy.UserNamespace defaults to
+			// TRUE (non-exempt); capabilities/seccomp are absent, so their
+			// own writes succeed trivially and cannot be what trips refusal.
+			name: "user_namespace:true (default) failure refuses on both paths",
+			mf: func() *manifest.Manifest {
+				return &manifest.Manifest{
+					ID:                          "parity-userns",
+					Name:                        "parity-userns",
+					ServiceCapabilitiesPresence: true,
+					Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+				}
+			},
+			blockFile:   "userns.conf",
+			wantRefused: true,
+		},
+		{
+			// G3: neither path may silently ignore a seccomp write failure —
+			// seccomp has NO exemption at all, unlike the other two branches.
+			name: "seccomp failure refuses on both paths",
+			mf: func() *manifest.Manifest {
+				return &manifest.Manifest{
+					ID:                          "parity-seccomp",
+					Name:                        "parity-seccomp",
+					ServiceCapabilitiesPresence: true,
+					Config: map[string]any{"security": map[string]any{
+						"seccomp_profile": "system-service",
+						"user_namespace":  false, // exempt on its own — isolates seccomp
+					}},
+					Services: []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+				}
+			},
+			blockFile:   "seccomp.conf",
+			wantRefused: true,
 		},
 	}
 
@@ -254,11 +314,11 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 			t.Cleanup(security.SetSystemdDropInRootForTest(liveDropIns))
 			liveMf := tc.mf()
 			unit := lifecycle.UnitName(liveMf.ID, "app")
-			liveDropInDir := filepath.Join(liveDropIns, unit+".d")
-			if err := os.MkdirAll(filepath.Dir(liveDropInDir), 0o755); err != nil {
+			liveUnitDir := filepath.Join(liveDropIns, unit+".d")
+			if err := os.MkdirAll(liveUnitDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(liveDropInDir, []byte("not a directory"), 0o644); err != nil {
+			if err := os.MkdirAll(filepath.Join(liveUnitDir, tc.blockFile), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			liveRec := &mount.RecorderRunner{}
@@ -271,11 +331,11 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 			pivotRec := &mount.RecorderRunner{}
 			pivotR := newPivotReconciler(pivotRec)
 			pivotMf := tc.mf()
-			pivotDropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
-			if err := os.MkdirAll(filepath.Dir(pivotDropInDir), 0o755); err != nil {
+			pivotUnitDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+			if err := os.MkdirAll(pivotUnitDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(pivotDropInDir, []byte("not a directory"), 0o644); err != nil {
+			if err := os.MkdirAll(filepath.Join(pivotUnitDir, tc.blockFile), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			stack := mount.ModuleStack{{ID: pivotMf.ID, Priority: 1}}
