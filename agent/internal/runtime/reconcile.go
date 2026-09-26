@@ -166,10 +166,13 @@ type Reconciler struct {
 	composeFailed atomic.Bool
 
 	// securityFailClosedUnits is the LIVE set of units this reconciler
-	// currently keeps stopped/un-started on the cloud-init/pivot-reconcile
-	// path because a non-exempt security drop-in write failed
-	// (attachModule, IMP-caef5c00d63f phase 4 — operator decision: fail
-	// closed identically on the boot AND the runtime path). Read by
+	// currently REFUSES to (re)attach/start on the cloud-init/pivot-reconcile
+	// path because a non-exempt security drop-in write failed (attachModule,
+	// IMP-caef5c00d63f phase 4 — operator decision: fail closed identically
+	// on the boot AND the runtime path). A named unit is not necessarily
+	// STOPPED — round 5 (G1) removed stopping an already-running unit on this
+	// path as unrecoverable on a self-hosted node; a re-attach refusal leaves
+	// it running under whatever confinement it already had. Read by
 	// buildHeartbeat (HeartbeatPayload.RuntimeSecurityFailClosedUnits).
 	//
 	// ATOMIC, not guarded by mu, for the exact reason composeFailed is:
@@ -2171,9 +2174,11 @@ func (r *Reconciler) LastReconcileAt() time.Time {
 }
 
 // SecurityFailClosedUnits returns the units the LIVE (cloud-init/pivot-
-// reconcile) attach path currently keeps stopped/un-started because a
-// non-exempt security drop-in write failed. nil/empty means none — read by
-// buildHeartbeat into HeartbeatPayload.RuntimeSecurityFailClosedUnits.
+// reconcile) attach path currently REFUSES to (re)attach/start because a
+// non-exempt security drop-in write failed — not necessarily stopped; an
+// already-running re-attach target keeps running under its previous
+// confinement (round 5, G1). nil/empty means none — read by buildHeartbeat
+// into HeartbeatPayload.RuntimeSecurityFailClosedUnits.
 func (r *Reconciler) SecurityFailClosedUnits() []string {
 	if p := r.securityFailClosedUnits.Load(); p != nil {
 		return *p
