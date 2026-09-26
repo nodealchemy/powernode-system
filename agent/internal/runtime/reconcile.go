@@ -951,11 +951,40 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	pendingRevertIDs := make(map[string]bool, len(current.AttachedModules))
 	pendingAttemptsByID := make(map[string]int, len(current.AttachedModules))
 	pendingLastAttemptByID := make(map[string]int64, len(current.AttachedModules))
-	for _, m := range current.AttachedModules {
-		if m.PendingDigest != "" {
-			pendingRevertIDs[m.ID] = true
-			pendingAttemptsByID[m.ID] = m.PendingDigestAttempts
-			pendingLastAttemptByID[m.ID] = m.PendingDigestLastAttemptUnix
+	revertAttemptsResetThisTick := false
+	for i, m := range current.AttachedModules {
+		if m.PendingDigest == "" {
+			continue
+		}
+		pendingRevertIDs[m.ID] = true
+		// Q5 (review round 14, LOW): a module genuinely REVERTING this tick
+		// (bumpIDsThisTick already excludes anything still actively
+		// bumping) that has never had its counter reset FOR THIS REVERT
+		// EPISODE carries PendingDigestAttempts accumulated by the
+		// ABANDONED upgrade attempt's own step 1-3 refusals (P7) against a
+		// DIFFERENT target (mod.PendingDigest, not the stable digest being
+		// reverted to) — feeding that stale count into the revert's own
+		// backoff gate would back off its very FIRST force-restart attempt
+		// as though it were already deep into a crash loop. Reset ONCE per
+		// episode (PendingRevertAttemptsReset), not on every revert-retry
+		// tick — a revert that keeps failing on its OWN attempts must still
+		// back off normally from there, exactly as O3 (review round 12)
+		// intends.
+		if !bumpIDsThisTick[m.ID] && !m.PendingRevertAttemptsReset {
+			current.AttachedModules[i].PendingDigestAttempts = 0
+			current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
+			current.AttachedModules[i].PendingRevertAttemptsReset = true
+			revertAttemptsResetThisTick = true
+			pendingAttemptsByID[m.ID] = 0
+			pendingLastAttemptByID[m.ID] = 0
+			continue
+		}
+		pendingAttemptsByID[m.ID] = m.PendingDigestAttempts
+		pendingLastAttemptByID[m.ID] = m.PendingDigestLastAttemptUnix
+	}
+	if revertAttemptsResetThisTick {
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:revert_attempts_reset_save", fmt.Errorf("could not persist a revert episode's attempts reset: %w", err))
 		}
 	}
 	toReattach := make(mount.ModuleStack, 0)

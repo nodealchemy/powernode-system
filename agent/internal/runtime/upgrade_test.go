@@ -1637,9 +1637,15 @@ func TestUpgradeModule_RevertBackoffBoundsRepeatedFailures(t *testing.T) {
 	backdateManifestCache(t, manifestRoot, "m1")
 	runner.StubErr = map[string]error{"systemctl start " + appUnit: errors.New("start refused (test)")}
 
-	// Tick 3: this is the revert's FIRST attempt (attempts was 1 from tick
-	// 2's own failed upgrade — see backoffAllows: attempts<2 always
-	// proceeds) — fails, attempts becomes 2.
+	// Q5 (review round 14, LOW): the revert's OWN attempts counter is reset
+	// to 0 the first tick it genuinely reverts (not merely carried over from
+	// tick 2's own failed UPGRADE attempt against the ABANDONED d2 target) —
+	// see PendingRevertAttemptsReset's own doc. So the revert gets its own
+	// two free tries (matching TestUpgradeModule_BackoffBoundsRepeatedRetries'
+	// own tolerance for the upgrade side) before backoff applies, not one.
+	//
+	// Tick 3: the revert's FIRST attempt (freshly reset to 0, attempts<2
+	// always proceeds) — fails, attempts becomes 1.
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce tick 3 (revert attempt 1, fails): %v", err)
 	}
@@ -1647,31 +1653,115 @@ func TestUpgradeModule_RevertBackoffBoundsRepeatedFailures(t *testing.T) {
 		t.Fatalf("tick 3: expected PendingDigest to remain d2 (revert failed), got %q ok=%v", pd, ok)
 	}
 
-	// Tick 4: attempts=2 now — the SECOND retry is subject to backoff, and
-	// no time has passed. No start attempt must be issued at all.
-	tick4Start := len(runner.Invocations)
+	// Tick 4: the revert's SECOND attempt (attempts=1, still <2, its own
+	// free retry) — fails, attempts becomes 2.
 	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce tick 4 (backed off): %v", err)
+		t.Fatalf("RunOnce tick 4 (revert attempt 2, fails): %v", err)
 	}
-	tick4 := runner.Invocations[tick4Start:]
-	if hasSystemctlOp(tick4, "start", appUnit) || hasSystemctlOp(tick4, "restart", appUnit) {
-		t.Errorf("O3 REGRESSION: a backed-off revert tick must issue no start/restart at all: %v", tick4)
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 4: expected PendingDigest to remain d2 (revert failed again), got %q ok=%v", pd, ok)
+	}
+
+	// Tick 5: attempts=2 now — the THIRD attempt is subject to backoff, and
+	// no time has passed. No start attempt must be issued at all.
+	tick5Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 5 (backed off): %v", err)
+	}
+	tick5 := runner.Invocations[tick5Start:]
+	if hasSystemctlOp(tick5, "start", appUnit) || hasSystemctlOp(tick5, "restart", appUnit) {
+		t.Errorf("O3 REGRESSION: a backed-off revert tick must issue no start/restart at all: %v", tick5)
 	}
 
 	// Advance the clock past the backoff window (attempts=2 -> 20s), clear
 	// the stub error — the next tick must retry and succeed.
 	fakeNow = fakeNow.Add(30 * time.Second)
 	delete(runner.StubErr, "systemctl start "+appUnit)
-	tick5Start := len(runner.Invocations)
+	tick6Start := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce tick 5 (backoff elapsed): %v", err)
+		t.Fatalf("RunOnce tick 6 (backoff elapsed): %v", err)
 	}
-	tick5 := runner.Invocations[tick5Start:]
-	if !hasSystemctlOp(tick5, "start", appUnit) && !hasSystemctlOp(tick5, "restart", appUnit) {
-		t.Errorf("O3 REGRESSION: once the backoff window elapses, the revert must retry, invocations: %v", tick5)
+	tick6 := runner.Invocations[tick6Start:]
+	if !hasSystemctlOp(tick6, "start", appUnit) && !hasSystemctlOp(tick6, "restart", appUnit) {
+		t.Errorf("O3 REGRESSION: once the backoff window elapses, the revert must retry, invocations: %v", tick6)
 	}
 	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
 		t.Errorf("O3 REGRESSION: PendingDigest must be cleared once the delayed revert retry succeeds, got %q", pd)
+	}
+}
+
+// TestReconcile_RevertResetsAttemptsCarriedOverFromTheAbandonedUpgrade is Q5
+// (review round 14, LOW): the revert's own backoff gate read whatever
+// PendingDigestAttempts the ABANDONED upgrade attempt had already
+// accumulated against d2 — a target reaching several allowed, well-spaced
+// retries (each crashing inside the settle window) before the operator
+// reverts leaves a LARGE attempts count that has nothing to do with the
+// revert's own, brand-new attempt at the stable digest. Without the Q5
+// reset, the revert's very FIRST try would read that large count and back
+// off immediately, as though it were already deep into its own crash loop.
+func TestReconcile_RevertResetsAttemptsCarriedOverFromTheAbandonedUpgrade(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	appIsActiveKey := "systemctl is-active " + appUnit
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
+	// Drive several allowed upgrade retries against d2, each crashing
+	// inside the settle window, advancing the clock well past every
+	// successive backoff window so none of them is itself backed off —
+	// attempts climbs well past what a genuine FIRST revert attempt should
+	// ever see.
+	for i := 0; i < 4; i++ {
+		if i > 0 {
+			fakeNow = fakeNow.Add(6 * time.Minute)
+		}
+		runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce upgrade attempt %d: %v", i+1, err)
+		}
+	}
+	attempts := pendingDigestAttempts(t, statePath, "m1")
+	if attempts < 3 {
+		t.Fatalf("precondition: expected several accumulated attempts against d2, got %d", attempts)
+	}
+
+	// Revert to d1 — app is active (d2's own restart put it there); the
+	// FIRST revert attempt must proceed immediately (freshly reset to 0),
+	// not be backed off by the carried-over attempts count above. NO clock
+	// advance since the last upgrade attempt — with the accumulated
+	// attempts carried over unreset, backoffAllows would require real time
+	// to have elapsed; zero elapsed time is what actually distinguishes the
+	// fix from its absence here.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput[appIsActiveKey] = []byte("active\n")
+
+	revertStart := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce revert tick: %v", err)
+	}
+	revertTick := runner.Invocations[revertStart:]
+	if !hasSystemctlOp(revertTick, "restart", appUnit) {
+		t.Errorf("Q5 REGRESSION: the revert's FIRST attempt must restart %s immediately, not be backed off by %d attempts carried over from the abandoned d2 upgrade: %v", appUnit, attempts, revertTick)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("expected the revert to commit to d1 on its first attempt, got digest=%q ok=%v", digest, ok)
 	}
 }
 

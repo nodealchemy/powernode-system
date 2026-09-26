@@ -381,6 +381,10 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 				// not run yet — any refusal recorded belonged to whatever
 				// was PREVIOUSLY pending, not this one.
 				current.AttachedModules[i].PendingDigestActuallyRefused = false
+				// Q5 (review round 14): a fresh upgrade episode's own
+				// attempts have not been reset-for-revert yet either — see
+				// PendingRevertAttemptsReset's own doc.
+				current.AttachedModules[i].PendingRevertAttemptsReset = false
 				break
 			}
 		}

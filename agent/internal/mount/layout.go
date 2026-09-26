@@ -300,6 +300,19 @@ type Module struct {
 	// "refused", it is touched — PendingTouchedDigests/PendingIntroducedUnits
 	// take over from there).
 	PendingDigestActuallyRefused bool `json:"PendingDigestActuallyRefused,omitempty"`
+	// PendingRevertAttemptsReset (Q5, review round 14) marks that
+	// PendingDigestAttempts/PendingDigestLastAttemptUnix have already been
+	// reset for THIS revert episode's own force-restart retries
+	// (reconcile.go). Without this, the revert's own backoff gate read
+	// whatever PendingDigestAttempts the ABANDONED upgrade attempt's own
+	// step 1-3 refusals (P7) had already accumulated against a DIFFERENT
+	// target — backing off the revert's very FIRST attempt as though it
+	// were already deep into a crash loop. Set true the first tick this
+	// module is genuinely reverting (not still actively bumping) after
+	// resetting the counter to 0; reset false the moment a fresh upgrade
+	// attempt begins, so a LATER bump's own episode starts with a clean
+	// slate for this tracking too.
+	PendingRevertAttemptsReset bool `json:"PendingRevertAttemptsReset,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result
