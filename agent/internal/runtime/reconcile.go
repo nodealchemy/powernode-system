@@ -723,6 +723,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// removal on ANY node, self-hosted or not.
 	toDetach = r.filterUnverifiedDetaches(toDetach, manifestFetchFailed)
 
+	// Defer a version bump's detach when the NEW digest would refuse to
+	// (re)attach — see filterUnsafeVersionBumpDetaches (selfhost.go), J1
+	// review round 5. UNCONDITIONAL like filterUnverifiedDetaches above (not
+	// gated on selfHosted()): detaching the old, working digest before
+	// learning the new one cannot attach is a real outage on ANY node, only
+	// WORSE — unrecoverable — on one that hosts its own control plane.
+	// Applied BEFORE filterUnsafeDetaches: that function's own version-bump
+	// branch answers a different question ("is this a bump or a removal")
+	// and would otherwise let a doomed bump's detach through on the strength
+	// of it being a bump at all.
+	toDetach = r.filterUnsafeVersionBumpDetaches(ctx, toDetach, toAttach, manifests)
+
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the
 	// state bookkeeping below, so a refused module stays in
@@ -1400,22 +1412,33 @@ func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.Mo
 	}
 }
 
-// attachModule pulls + verifies + mounts a single module and applies its
-// security policy. It deliberately does NOT start the module's units — that is
-// attachModuleServices, which every caller must invoke separately once the
-// module's FILES are on disk. See attachModuleServices for why the two halves
-// are split.
-func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
-	if err := r.mountModuleArtifact(ctx, mod); err != nil {
-		return err
-	}
-
-	// Apply PER-MODULE security policy (MAC + seccomp + capabilities).
-	// SeccompProfile is a path inside the module's mounted root; the
-	// drop-in for each unit is written here so subsequent systemctl start
-	// picks it up. Egress is NOT applied here — see Policy.Apply's doc
-	// comment; it's unioned across all attached modules once per RunOnce
-	// tick (below, alongside the etcidentity/etcsudoers union step).
+// applyModuleSecurityPolicy builds and applies mod's PER-MODULE security
+// policy (MAC + seccomp + capabilities) and returns the units (if any) whose
+// drop-in write failed non-exempt. SeccompProfile is a path inside the
+// module's mounted root; the drop-in for each unit is written here so a
+// subsequent systemctl start picks it up. Egress is NOT applied here — see
+// Policy.Apply's doc comment; it's unioned across all attached modules once
+// per RunOnce tick (alongside the etcidentity/etcsudoers union step).
+//
+// Extracted out of attachModule (J1, review round 5) so the EXACT SAME
+// decision can run twice for a same-module-ID version bump: once here, from
+// attachModule itself, for the real (re)attach; and once from
+// filterUnsafeVersionBumpDetaches (selfhost.go), BEFORE the old digest is
+// detached, to decide whether detaching it is safe. The decision depends
+// only on mf + policy, never on the module's mounted content or on whether
+// an older digest of the same module is currently attached — mountModuleArtifact
+// (attachModule's own first step, and prefetchNewArtifacts's, above) is the
+// only part of an attach that touches the module's own files, and neither
+// caller of this function needs it repeated. Running this twice for one
+// version bump is therefore idempotent (same manifest, same target unit
+// files) and safe: DropCapabilitiesExcept/ApplySeccompProfile are pure
+// validation (no host mutation), the drop-in writers are unconditional
+// write-to-temp-then-rename (last writer wins, not append), and
+// Policy.Apply's only real host mutation — loadMACProfile's semodule -i /
+// apparmor_parser -r — is the standard idempotent-reload idiom for exactly
+// this case (see attachStamp's doc comment on that being otherwise
+// unverified on a real LSM host; unchanged by this refactor).
+func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
 	policy := buildPolicy(mf)
 	if policy.Privileged && !privilegedApproved(mod.ID, r.privilegedAllow) {
 		// The module REQUESTS privileged (all confinement off) but the operator
@@ -1424,13 +1447,13 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// the hole IMP-01a02f70-20b1 named. Fatal + loud: the attach loop marks
 		// the pass unconverged, so the platform sees a convergence failure
 		// rather than a module silently running with no confinement.
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"module %s requests security.privileged=true (disables all on-node confinement) "+
 				"but is not in the operator-approved privileged allowlist (privileged_module_ids); "+
 				"refusing to attach it unconfined", mod.ID)
 	}
 	if errs := policy.Validate(); len(errs) > 0 {
-		return fmt.Errorf("policy invalid: %v", errs)
+		return nil, fmt.Errorf("policy invalid: %v", errs)
 	}
 	// Per-service capabilities (IMP-caef5c00d63f), resolved BEFORE anything is
 	// applied: a service asking for more than the module ceiling refuses the
@@ -1439,13 +1462,12 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// capability drop-ins at all, so they are not resolved.
 	var unitCaps []security.UnitCapabilities
 	if !policy.Privileged {
-		var err error
 		if unitCaps, err = attachCapabilityWrites(mf, policy); err != nil {
-			return fmt.Errorf("policy invalid: %w", err)
+			return nil, fmt.Errorf("policy invalid: %w", err)
 		}
 	}
 	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
-		return fmt.Errorf("apply policy: %w", err)
+		return nil, fmt.Errorf("apply policy: %w", err)
 	}
 	// Seccomp + capability + user-namespace drop-ins, through the SAME
 	// decision renderPivotUnits (compose.go) uses — applyModuleSecurityDropIns
@@ -1463,7 +1485,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	for _, uc := range unitCaps {
 		unitAllow[uc.Unit] = uc.Allow
 	}
-	failedUnits := applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
+	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
 		securityDropInFuncs{
 			userNamespace: security.WriteUserNamespaceDropIn,
 			seccomp:       security.WriteSeccompDropIn,
@@ -1471,6 +1493,23 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		},
 		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
 	)
+	return failedUnits, nil
+}
+
+// attachModule pulls + verifies + mounts a single module and applies its
+// security policy. It deliberately does NOT start the module's units — that is
+// attachModuleServices, which every caller must invoke separately once the
+// module's FILES are on disk. See attachModuleServices for why the two halves
+// are split.
+func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+	if err := r.mountModuleArtifact(ctx, mod); err != nil {
+		return err
+	}
+
+	failedUnits, err := r.applyModuleSecurityPolicy(ctx, mod, mf)
+	if err != nil {
+		return err
+	}
 
 	if len(failedUnits) > 0 {
 		r.recordSecurityFailClosed(failedUnits)

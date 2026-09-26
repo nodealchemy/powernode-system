@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -112,13 +113,23 @@ func (r *Reconciler) selfHosted() bool {
 // is not proof of absence, and on a self-hosted node being wrong is
 // unrecoverable while being over-cautious costs only a deferred removal.
 //
-// A VERSION BUMP IS NOT A REMOVAL and must pass through untouched. The old
-// digest lands in toDetach and the new one in toAttach, so refusing that
-// detach would leave both versions attached at once and break upgrades on
+// A VERSION BUMP IS NOT A REMOVAL and, as far as THIS function's own
+// concern (an erroneous "removal" reading of a degraded FetchAssignedModules
+// response) goes, must pass through untouched. The old digest lands in
+// toDetach and the new one in toAttach, so refusing that detach on THAT
+// basis would leave both versions attached at once and break upgrades on
 // exactly the node that most needs to receive them. An upgrade is also
 // self-correcting in a way a removal is not: the replacement immediately
 // re-provides the same services. Only a module with no same-ID successor is
-// genuinely leaving, and only that case is guarded.
+// genuinely leaving, and only that case is guarded HERE.
+//
+// A version bump can still be deferred for a DIFFERENT reason — see
+// filterUnsafeVersionBumpDetaches below, applied UNCONDITIONALLY (not just
+// on a self-hosted node) alongside this one: this function only ever asks
+// "is this a removal or a bump", never "will the bump's new digest actually
+// attach" — that second question is J1's (review round 5), and answering it
+// requires actually running the new manifest's security-policy decision,
+// which this function has no reason to do.
 func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest) mount.ModuleStack {
 	if len(toDetach) == 0 || !r.selfHosted() {
 		return toDetach
@@ -197,6 +208,93 @@ func (r *Reconciler) filterUnverifiedDetaches(toDetach mount.ModuleStack, failed
 	if len(deferred) > 0 {
 		r.cfg.OnError("reconciler:detach_deferred_manifest_fetch_failed",
 			fmt.Errorf("this pass could not load %d assigned module(s)' manifest(s) [%s]; deferring their detach rather than treating the fetch failure as a removal — they will be re-evaluated next tick",
+				len(deferred), strings.Join(deferred, ", ")))
+	}
+	return safe
+}
+
+// filterUnsafeVersionBumpDetaches defers detaching a module's OLD digest, on
+// a same-module-ID version bump, when the NEW digest's attach would refuse
+// to (re)attach/start it (J1, review round 5 — a replacement review found
+// the DIGEST-BUMP OUTAGE this task's own G1/H-series fixes had not covered).
+//
+// THE BUG. mount.Reconcile compares by digest, so a version bump puts the
+// old digest in toDetach and the new one in toAttach. filterUnsafeDetaches
+// (above) deliberately lets a version bump's detach through UNCONDITIONALLY
+// — that is correct for the failure mode IT guards (a degraded
+// FetchAssignedModules response misread as a removal), but it means nothing
+// upstream of the detach/attach loops asks whether the new digest can
+// actually attach. RunOnce runs the detach loop BEFORE the attach loop, so a
+// version bump whose new digest refuses (a security drop-in write failure,
+// an unapproved privileged request, or an invalid policy) detaches the OLD,
+// WORKING units first and then fails to bring up the new ones — the module
+// is down, on every node, until some later tick's new digest attach
+// succeeds. On a SELF-HOSTED node this is worse than "down": if the module
+// is ops-hub's own rails/postgres, the next tick's FetchAssignedModules call
+// goes to the now-dead rails and never runs the attach loop that would have
+// restored it (the same shape as the 2026-07-28 incident selfhost.go's own
+// doc comment describes, reached via a different route: THAT incident lost
+// the assignment entirely; this one keeps the assignment but the new
+// digest's own attach refuses it). It is UNCONDITIONAL, not gated on
+// selfHosted() like filterUnsafeDetaches: the outage is real on any node,
+// merely unrecoverable (rather than self-correcting next tick) on one that
+// hosts its own control plane.
+//
+// THE PRE-CHECK. Runs applyModuleSecurityPolicy — the EXACT SAME decision
+// attachModule uses for a real attach — against the NEW manifest, for every
+// version-bump module, before either detach loop or attach loop runs. A
+// real write attempt (not a simulated/dry-run decision) is the only
+// authoritative answer, and applyModuleSecurityPolicy's own doc comment
+// establishes why running it twice — once here, once for real in RunOnce's
+// attach loop — is safe. If the pre-check refuses, the old digest is left
+// OUT of the returned (safe-to-detach) set: the currently-running units keep
+// running under their previous, already-applied confinement, exactly the
+// posture attachModule's own drop-in-failure branch already accepts for a
+// live re-attach. toAttach is NOT modified — the real attach loop still runs
+// attachModule for the new digest and gets the SAME refusal, which is what
+// actually calls recordSecurityFailClosed and marks the pass unconverged;
+// this function's job is only to keep the old digest attached while that
+// happens, never to suppress or duplicate that reporting.
+//
+// A module with NO fresh manifest for its new digest at all is treated the
+// same as a refusal (deferred, not detached) — RunOnce's own attach loop
+// already refuses a toAttach entry with no loaded manifest
+// (reconciler:missing_manifest) without ever reaching a security decision,
+// and detaching the old digest ahead of a new one that cannot even be
+// inspected would be strictly worse than that existing refusal.
+func (r *Reconciler) filterUnsafeVersionBumpDetaches(ctx context.Context, toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest) mount.ModuleStack {
+	if len(toDetach) == 0 {
+		return toDetach
+	}
+
+	newByID := make(map[string]mount.Module, len(toAttach))
+	for _, m := range toAttach {
+		newByID[m.ID] = m
+	}
+
+	safe := make(mount.ModuleStack, 0, len(toDetach))
+	deferred := make([]string, 0)
+	for _, mod := range toDetach {
+		newMod, isBump := newByID[mod.ID]
+		if !isBump {
+			safe = append(safe, mod) // not a version bump — nothing for this guard to say
+			continue
+		}
+		mf, ok := manifests[mod.ID]
+		if !ok || mf == nil {
+			deferred = append(deferred, mod.ID)
+			continue
+		}
+		if failedUnits, err := r.applyModuleSecurityPolicy(ctx, newMod, mf); err != nil || len(failedUnits) > 0 {
+			deferred = append(deferred, mod.ID)
+			continue
+		}
+		safe = append(safe, mod)
+	}
+
+	if len(deferred) > 0 {
+		r.cfg.OnError("reconciler:version_bump_detach_deferred_would_fail_closed",
+			fmt.Errorf("this tick's version bump for %d module(s) [%s] would refuse to (re)attach its new digest; keeping the currently-running (old digest) units in place instead of detaching them first — they will be re-evaluated next tick",
 				len(deferred), strings.Join(deferred, ", ")))
 	}
 	return safe
