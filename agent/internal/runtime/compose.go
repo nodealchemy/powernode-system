@@ -130,6 +130,24 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 	// applyTraefikIngressPersistence's doc comment for the race this avoids).
 	applyTraefikIngressPersistence(sysroot, TraefikIngressPersistRoot, manifests, r.cfg.OnError)
 
+	// A4 (review round 9), DOCUMENTED KNOWN GAP, not fixed here: renderPivotUnits
+	// never calls Policy.Apply, so a module's selinux_profile/apparmor_profile is
+	// never loaded on the pivot/boot-compose path — only the live reconcile path
+	// (applyModuleSecurityPolicy) loads MAC profiles. Investigated and left
+	// unchanged rather than guessed at: Policy.Apply's OTHER two steps
+	// (seccomp/capability) are pure validation with no host mutation of their own
+	// (real enforcement is the per-unit drop-in writers, which renderPivotUnits
+	// already calls) — only loadMACProfile does real work (semodule -i /
+	// apparmor_parser -r against the live kernel LSM state), gated behind
+	// selinuxAvailable()/apparmorAvailable() checks that fail closed when the
+	// interface isn't present. Whether /sys/fs/selinux, AppArmor's securityfs, or
+	// the semodule/apparmor_parser binaries themselves are available at THIS
+	// point in boot (pre-switch_root, before the module union becomes /) is a
+	// boot-environment fact this Go codebase cannot verify — calling Policy.Apply
+	// here speculatively risks turning every module that declares a MAC profile
+	// into a fail-closed refusal on every pivot boot. Currently latent, not live:
+	// no module in this fleet declares selinux_profile/apparmor_profile today
+	// (docs/ATTACH_STAMP_SECURITY_POLICY_SURVEY.md).
 	r.renderPivotUnits(ctx, sysroot, stack, manifests, bc)
 
 	// Record what THIS boot composed (best-effort — a failed breadcrumb write

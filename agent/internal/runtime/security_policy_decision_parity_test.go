@@ -78,6 +78,47 @@ func TestSecurityPolicyDecision_LiveAndPivotAgreeOnCapabilitiesCeilingViolation(
 	}
 }
 
+// TestDecideModuleSecurityPolicy_RefusesAnIDMismatch is point 10's second
+// entry point (review round 9): decideModuleSecurityPolicy must refuse a
+// manifest whose OWN declared ID disagrees with the module it's being
+// decided FOR, before building any policy from it at all — the same
+// invariant FetchAndCache now enforces at the fetch boundary, closing it
+// here too for a caller that already holds an in-memory manifest (e.g. a
+// stale cache/breadcrumb fallback resolved for the wrong ID).
+func TestDecideModuleSecurityPolicy_RefusesAnIDMismatch(t *testing.T) {
+	mod := mount.Module{ID: "m1", Priority: 100}
+	mf := &manifest.Manifest{ID: "wrong-id", Name: "m1"}
+
+	_, _, _, err := decideModuleSecurityPolicy(mod, mf, nil, true, func(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error) {
+		t.Fatal("capabilityWriter must not be reached — the ID mismatch must refuse before it")
+		return nil, nil, nil
+	})
+	if err == nil {
+		t.Fatal("expected an error for an ID mismatch")
+	}
+	var pde *PolicyDecisionError
+	if !errors.As(err, &pde) || pde.Reason != PolicyDecisionInvalid {
+		t.Errorf("expected a PolicyDecisionInvalid reason, got %v", err)
+	}
+}
+
+// TestDecideModuleSecurityPolicy_AllowsAnEmptyManifestID is the control: a
+// manifest that simply omits its own id field is not itself an ID mismatch.
+func TestDecideModuleSecurityPolicy_AllowsAnEmptyManifestID(t *testing.T) {
+	mod := mount.Module{ID: "m1", Priority: 100}
+	mf := &manifest.Manifest{Name: "m1"}
+
+	_, _, _, err := decideModuleSecurityPolicy(mod, mf, nil, true, func(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error) {
+		return nil, nil, nil
+	})
+	if err != nil {
+		var pde *PolicyDecisionError
+		if errors.As(err, &pde) && pde.Reason == PolicyDecisionInvalid {
+			t.Errorf("an empty manifest ID must not itself be refused as a mismatch: %v", err)
+		}
+	}
+}
+
 // TestSecurityPolicyDecision_LiveAndPivotAgreeOnUnapprovedPrivileged is the
 // same parity proof for the OTHER refusal class the two paths used to
 // duplicate: security.privileged=true with no operator grant. Pivot's own

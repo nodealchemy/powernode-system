@@ -56,6 +56,23 @@ func FetchAndCache(c Client, root, moduleID string) (*Manifest, error) {
 	if env.Data == nil {
 		return nil, fmt.Errorf("manifest %s: empty data envelope", moduleID)
 	}
+	// Point 10 (review round 9): refuse a manifest whose OWN declared ID
+	// disagrees with the ID this fetch was FOR — without caching it. This
+	// closes a real, previously-unproven assumption: several call sites in
+	// internal/runtime (attachCapabilityWrites naming units from mf.ID,
+	// mf.UnitNames() likewise) trust mf.ID as interchangeable with the
+	// requesting module's own ID, while lifecycle.AttachServicesModeOpts
+	// (the path that actually starts units) names them from the CALLER's
+	// mod.ID instead — a mismatched payload here would silently diverge
+	// which units get security drop-ins from which units actually run.
+	// Refusing at the SOURCE, before either value is ever trusted downstream
+	// or written to the on-disk cache another tick could read back as
+	// "known good", is cheaper and more certain than auditing every
+	// consumer for the assumption. See decideModuleSecurityPolicy's own
+	// mirror of this check for the second entry point.
+	if env.Data.ID != "" && env.Data.ID != moduleID {
+		return nil, fmt.Errorf("manifest requested for module %s: response declares id %q — refusing a mismatched payload", moduleID, env.Data.ID)
+	}
 
 	// IMP-2dfbd7f62441 review finding R2-N1: the on-disk cache is a
 	// FALLBACK OF LAST RESORT for later ticks (agent/internal/runtime's

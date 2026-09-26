@@ -1856,6 +1856,20 @@ func decideModuleSecurityPolicy(
 	enforcePrivileged bool,
 	capabilityWriter func(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error),
 ) (policy *security.Policy, unitAllow map[string][]string, droppedCaps []string, err error) {
+	// Point 10 (review round 9), second entry point: refuse before building
+	// ANY policy from mf when its own declared ID disagrees with mod.ID —
+	// mirrors FetchAndCache's own refusal (manifest/loader.go) at the fetch
+	// boundary, closing the same gap at the boundary a caller who already
+	// holds an in-memory *manifest.Manifest crosses instead (e.g. a
+	// breadcrumb/cache fallback manifest resolved for a DIFFERENT module ID
+	// than the one actually being decided for). An empty mf.ID makes no
+	// claim at all and is not itself a mismatch — same leniency
+	// FetchAndCache applies, since many fixtures across this codebase
+	// simply omit it.
+	if mf != nil && mf.ID != "" && mf.ID != mod.ID {
+		return nil, nil, nil, &PolicyDecisionError{Reason: PolicyDecisionInvalid, Err: fmt.Errorf(
+			"policy invalid: manifest id %q disagrees with module id %q — refusing a mismatched manifest", mf.ID, mod.ID)}
+	}
 	policy = buildPolicy(mf)
 	droppedCaps = policy.DropUnknownCapabilities()
 	if enforcePrivileged && policy.Privileged && !privilegedApproved(mod.ID, privilegedAllow) {

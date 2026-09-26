@@ -246,3 +246,89 @@ func TestFetchAndCacheRequiresID(t *testing.T) {
 		t.Errorf("expected error for empty moduleID")
 	}
 }
+
+// TestFetchAndCacheRefusesAnIDMismatch is point 10 (review round 9): a
+// response whose OWN declared id disagrees with the module ID this fetch
+// was FOR must be refused outright, not cached — several downstream
+// consumers (attachCapabilityWrites naming units from mf.ID,
+// mf.UnitNames() likewise) trust mf.ID as interchangeable with the
+// requesting module's own ID, while the path that actually starts units
+// (lifecycle.AttachServicesModeOpts) uses the CALLER's own ID instead. A
+// mismatched payload reaching either trust point would silently diverge
+// which units get security drop-ins from which units actually run.
+func TestFetchAndCacheRefusesAnIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	body := `{
+		"success": true,
+		"data": {
+			"id": "wrong-id",
+			"name": "nginx",
+			"priority": 100,
+			"effective_priority": 100,
+			"digest": "sha256:aaaa",
+			"services": [{"name": "app", "start_command": "/bin/true"}]
+		}
+	}`
+	c := &stubClient{resp: makeResp(200, body)}
+
+	if _, err := FetchAndCache(c, root, "mod-1"); err == nil {
+		t.Fatal("expected an error for an ID mismatch")
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "mod-1", "manifest.json")); !os.IsNotExist(err) {
+		t.Errorf("REGRESSION: a mismatched-ID response must NOT be cached — a later fallback read would trust it as this module's own manifest, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "wrong-id", "manifest.json")); !os.IsNotExist(err) {
+		t.Errorf("REGRESSION: a mismatched-ID response must not be cached under EITHER id, stat err=%v", err)
+	}
+}
+
+// TestFetchAndCacheAllowsAMatchingDeclaredID is the control proving the
+// mismatch check is not over-eager: a response whose id agrees with the
+// requested moduleID is unaffected.
+func TestFetchAndCacheAllowsAMatchingDeclaredID(t *testing.T) {
+	root := t.TempDir()
+	body := `{
+		"success": true,
+		"data": {
+			"id": "mod-1",
+			"name": "nginx",
+			"priority": 100,
+			"effective_priority": 100,
+			"digest": "sha256:aaaa",
+			"services": [{"name": "app", "start_command": "/bin/true"}]
+		}
+	}`
+	c := &stubClient{resp: makeResp(200, body)}
+
+	if _, err := FetchAndCache(c, root, "mod-1"); err != nil {
+		t.Fatalf("FetchAndCache: %v", err)
+	}
+}
+
+// TestFetchAndCacheAllowsAnEmptyDeclaredID is a NARROWER control: a response
+// that simply omits "id" (many test fixtures across this codebase, and
+// potentially an older platform payload shape) is not itself evidence of an
+// ID MISMATCH — only a non-empty id that disagrees is refused for that
+// reason. writeCache's own pre-existing (unrelated to this check) refusal
+// of a nil/empty ID still applies, so this asserts the absence of the
+// MISMATCH error specifically, not a nil overall error.
+func TestFetchAndCacheAllowsAnEmptyDeclaredID(t *testing.T) {
+	root := t.TempDir()
+	body := `{
+		"success": true,
+		"data": {
+			"name": "nginx",
+			"priority": 100,
+			"effective_priority": 100,
+			"digest": "sha256:aaaa",
+			"services": [{"name": "app", "start_command": "/bin/true"}]
+		}
+	}`
+	c := &stubClient{resp: makeResp(200, body)}
+
+	_, err := FetchAndCache(c, root, "mod-1")
+	if err != nil && strings.Contains(err.Error(), "refusing a mismatched payload") {
+		t.Fatalf("an empty declared id must not be treated as a mismatch: %v", err)
+	}
+}
