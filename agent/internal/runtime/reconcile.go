@@ -1241,8 +1241,33 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			unmaterialized[mod.ID] = true
 			// AND DO NOT START THE UNITS. Starting them here would run the new
 			// unit definitions against content that was never written — the
-			// deploy-4 shape. Declining leaves whatever is already running
-			// untouched, which is a state the node was already in.
+			// deploy-4 shape. For an ORDINARY first attach (not a version
+			// bump), declining leaves whatever is already running untouched
+			// — nothing was stopped to reach this point, so "the node was
+			// already in this state" holds.
+			//
+			// L6(a) (review round 7, LOW, documented rather than fixed this
+			// round): that is FALSE for a version bump specifically. This
+			// module's OLD digest was already detached — its units stopped —
+			// by the detach loop earlier in THIS SAME tick
+			// (bumpedOldModules[mod.ID] names it), before attachModule (just
+			// above) mounted the new digest and applied its security policy.
+			// A materialization refusal here neither starts the new units
+			// (this continue) nor restores the old ones (no rollback is
+			// attempted for a refusal reached this late) — the module ends
+			// up with ZERO running units, a real outage, not "untouched".
+			// Two fixes were considered and deliberately NOT attempted this
+			// round: (a) route this case through rollbackVersionBumpDetach
+			// (K2b) — tractable in principle (bumpedOldModules/
+			// bumpedOldManifests are already in scope here), but `mod` was
+			// already appended to current.AttachedModules a few lines above
+			// this block, so a correct rollback must also undo that append,
+			// not just call the same helper the attachModule-error branch
+			// above uses; (b) run hotReconcileIfNeeded's refusal DECISION
+			// before the detach loop, mirroring K1's own pure/effectful
+			// split for the security pre-check — more principled but a
+			// materially larger change to a function this task has not
+			// otherwise touched. Reported to the driver rather than rushed.
 			continue
 		}
 		r.attachModuleServices(ctx, mod, mf)
@@ -2607,11 +2632,30 @@ func (r *Reconciler) captureOutgoingPaths(toDetach, toAttach mount.ModuleStack, 
 
 // detachModule stops the module's units and unmounts it.
 func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod mount.Module, manifests map[string]*manifest.Manifest) error {
-	// Look up the manifest for unit names — it may already be on disk
-	// even though the platform no longer assigns the module.
-	mf, ok := manifests[mod.ID]
-	if !ok {
-		mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
+	// L6(b) (review round 7, LOW): resolve the manifest THIS EXACT DIGEST
+	// (mod.Digest) was attached with — L1's digest-keyed attached-snapshot
+	// store — rather than the fresh per-ID `manifests` map. For an ordinary
+	// removal that map is fine (mod.ID is leaving entirely, no fresher
+	// manifest exists to disagree with it), but for a VERSION BUMP's old
+	// digest it is actively wrong: `manifests[mod.ID]` holds THIS TICK'S
+	// manifest for the NEW digest, not the one mod.Digest was actually
+	// running under. A service renamed between the two (old
+	// "worker-v1" -> new "worker-v2") made DetachServices stop a unit that
+	// was never started (the new name) while the OLD digest's real,
+	// running unit (the old name) was never named at all — a permanent
+	// leak, since nothing else ever revisits an already-"detached" module.
+	mf, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest)
+	if err != nil || mf == nil {
+		// Fallback chain unchanged from every round before L1 existed: the
+		// fresh per-tick map, then the mutable per-ID disk cache. Reachable
+		// only for a digest attached by a pre-L1 agent build, or one whose
+		// snapshot write itself failed — a real (if narrowing) degradation,
+		// not a new one this fix introduces.
+		var ok bool
+		mf, ok = manifests[mod.ID]
+		if !ok {
+			mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
+		}
 	}
 	// P8.1 — Service detach via lifecycle.DetachServices: reverse
 	// topological stop + unit-file removal + daemon-reload. Content-only
