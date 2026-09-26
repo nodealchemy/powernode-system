@@ -1900,9 +1900,15 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 // writers, it runs security.ProbeDropInWritable through the SAME
 // applyModuleSecurityDropIns exemption/dedup logic the real path uses — a
 // unit's directory either accepts a throwaway, uniquely-named temp file
-// right now or it doesn't, which reproduces every failure mode a real write
-// would hit (ENOSPC, EROFS, a stray blocking file, permission denied)
-// without ever writing the content a real write would.
+// right now or it doesn't. As of L3 (review round 7, HIGH) that throwaway
+// file is written with the REAL rendered body's exact bytes (not merely
+// created empty), because an empty-file probe needs no DATA blocks at all
+// and so passes on a disk that is full of data but still has free
+// inodes/metadata space — exactly the ordinary shape of "disk full", and
+// exactly the case an earlier version of this doc comment overclaimed as
+// covered by ENOSPC alone. The probe still never writes to the unit's REAL
+// drop-in path (target or its fixed .tmp staging name — both are checked,
+// never touched) — only its own throwaway, uniquely-named file.
 func (r *Reconciler) wouldModuleSecurityPolicyRefuse(mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
 	// droppedCaps ignored here deliberately — same reasoning as the missing
 	// OnError below: the real attach's own call to decideModuleSecurityPolicy
@@ -1915,9 +1921,41 @@ func (r *Reconciler) wouldModuleSecurityPolicyRefuse(mod mount.Module, mf *manif
 	}
 	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
 		securityDropInFuncs{
-			userNamespace: func(unit string, _ bool) error { return security.ProbeDropInWritable(unit, "userns.conf") },
-			seccomp:       func(unit, _ string) error { return security.ProbeDropInWritable(unit, "seccomp.conf") },
-			capability:    func(unit string, _ []string) error { return security.ProbeDropInWritable(unit, "capabilities.conf") },
+			// L3(a) (review round 7, HIGH): probe with the REAL rendered
+			// body's exact bytes, not an empty throwaway — see
+			// security.ProbeDropInWritable's own doc for why an empty-file
+			// probe passes on a disk that is full of DATA but still has free
+			// inode/metadata space, where the real (non-empty) write would
+			// fail. Rendered through the SAME exported functions the real
+			// writers use (security.RenderUserNamespaceDropInBody /
+			// RenderSeccompDropInBody / RenderCapabilityDropInBody), so a
+			// future change to any of the three renders is automatically
+			// reflected in what this probes, never a second, driftable copy.
+			userNamespace: func(unit string, enabled bool) error {
+				return security.ProbeDropInWritable(unit, "userns.conf", security.RenderUserNamespaceDropInBody(enabled))
+			},
+			seccomp: func(unit, profilePath string) error {
+				body, rerr := security.RenderSeccompDropInBody(profilePath)
+				if rerr != nil {
+					// decideModuleSecurityPolicy already validated this
+					// profile name (Policy.Validate, via SeccompFilterName)
+					// before this pre-check ever runs, so reaching a render
+					// error here would mean the two have drifted apart —
+					// treat it as a refusal rather than probe with an empty
+					// body that would understate the real write's size.
+					return fmt.Errorf("render seccomp drop-in for probe: %w", rerr)
+				}
+				return security.ProbeDropInWritable(unit, "seccomp.conf", body)
+			},
+			capability: func(unit string, allow []string) error {
+				body, rerr := security.RenderCapabilityDropInBody(allow)
+				if rerr != nil {
+					// Same reasoning as seccomp above: decideModuleSecurityPolicy
+					// already resolved this exact allow list successfully.
+					return fmt.Errorf("render capability drop-in for probe: %w", rerr)
+				}
+				return security.ProbeDropInWritable(unit, "capabilities.conf", body)
+			},
 		},
 		// No OnError here — this is a PRE-check, not a real failure; the
 		// caller (filterUnsafeVersionBumpDetaches) emits its own single,

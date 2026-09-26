@@ -75,11 +75,11 @@ func TestResolveServiceCapabilities_UnknownNameIsRefused(t *testing.T) {
 // and CAP_CHOWN) must render the same drop-in, and therefore the same stamp,
 // as one that lists it once — otherwise a no-op manifest edit re-attaches.
 func TestRenderCapabilityDropInBody_DeduplicatesEquivalentNames(t *testing.T) {
-	once, err := renderCapabilityDropInBody([]string{"CAP_CHOWN", "CAP_FOWNER"})
+	once, err := RenderCapabilityDropInBody([]string{"CAP_CHOWN", "CAP_FOWNER"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	twice, err := renderCapabilityDropInBody([]string{"cap_chown", "CAP_FOWNER", "CAP_CHOWN"})
+	twice, err := RenderCapabilityDropInBody([]string{"cap_chown", "CAP_FOWNER", "CAP_CHOWN"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,8 +25,8 @@ import (
 // hash even with the Policy fields held fixed, which is exactly the shape
 // of defect IMP-01a05efa closed for unit bodies and re-opened here if this
 // hashed the fields instead of the render. So every component below calls
-// the SAME pure render function (renderCapabilityDropInBody /
-// renderSeccompDropInBody / renderUserNamespaceDropInBody) the corresponding
+// the SAME pure render function (RenderCapabilityDropInBody /
+// RenderSeccompDropInBody / RenderUserNamespaceDropInBody) the corresponding
 // writer uses to produce its file bytes — one render, two consumers, same
 // relationship RenderUnitModeGraph has to RenderedServicesHash.
 //
@@ -109,7 +109,7 @@ func RenderedPolicyHashForUnits(p *Policy, units []UnitCapabilities) string {
 			bodies := make([]string, len(units))
 			uniform := true
 			for i, u := range units {
-				if body, err := renderCapabilityDropInBody(u.Allow); err == nil {
+				if body, err := RenderCapabilityDropInBody(u.Allow); err == nil {
 					tags[i], bodies[i] = "cap", body
 				} else {
 					// Unresolvable (unknown capability name): fall back to the raw
@@ -141,7 +141,7 @@ func RenderedPolicyHashForUnits(p *Policy, units []UnitCapabilities) string {
 	}
 
 	if hasUnits && p.SeccompProfile != "" {
-		if body, err := renderSeccompDropInBody(p.SeccompProfile); err == nil {
+		if body, err := RenderSeccompDropInBody(p.SeccompProfile); err == nil {
 			write("seccomp", body)
 		} else {
 			write("seccomp-unresolved", p.SeccompProfile)
@@ -153,7 +153,7 @@ func RenderedPolicyHashForUnits(p *Policy, units []UnitCapabilities) string {
 	// orthogonal to the privileged capability/MAC opt-out) — so it is the one
 	// component gated on hasUnits alone, never on Privileged.
 	if hasUnits {
-		write("userns", renderUserNamespaceDropInBody(p.UserNamespace))
+		write("userns", RenderUserNamespaceDropInBody(p.UserNamespace))
 	}
 
 	if !wrote {

@@ -143,12 +143,12 @@ func WriteSeccompDropInAt(root, unit, profilePath string) error {
 	return writeSeccompDropInAt(base, unit, profilePath)
 }
 
-// renderSeccompDropInBody is WriteSeccompDropIn's file body, factored out to
-// a pure function for the same reason renderCapabilityDropInBody is
+// RenderSeccompDropInBody is WriteSeccompDropIn's file body, factored out to
+// a pure function for the same reason RenderCapabilityDropInBody is
 // (capabilities.go) — RenderedPolicyHash (policy_stamp.go) and the writer
 // must share one render, or a future fix to this rendering logic could ship
 // with the stamp never moving (IMP-f5c0afa7183a).
-func renderSeccompDropInBody(profilePath string) (string, error) {
+func RenderSeccompDropInBody(profilePath string) (string, error) {
 	name, err := SeccompFilterName(profilePath)
 	if err != nil {
 		return "", err
@@ -165,27 +165,20 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 	if err := validateDropInUnitName("WriteSeccompDropIn", unit); err != nil {
 		return err
 	}
-	body, err := renderSeccompDropInBody(profilePath)
+	body, err := RenderSeccompDropInBody(profilePath)
 	if err != nil {
 		return fmt.Errorf("WriteSeccompDropIn: %w", err)
 	}
 
 	dropInDir := filepath.Join(base, unit+".d")
-	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return errors.New("WriteSeccompDropIn: mkdir " + dropInDir + ": " + err.Error())
-	}
-	dropInPath := filepath.Join(dropInDir, "seccomp.conf")
-	// Atomic tmp+rename (parity with WriteCapabilityDropIn / userns) so a
-	// mid-write failure can never leave a TRUNCATED directive that systemd would
-	// still load — which on the pivot path (drop-in writes are non-fatal/OnError)
-	// would silently weaken confinement rather than fail loudly (review F5).
-	tmp := dropInPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return errors.New("WriteSeccompDropIn: write " + tmp + ": " + err.Error())
-	}
-	if err := os.Rename(tmp, dropInPath); err != nil {
-		_ = os.Remove(tmp)
-		return errors.New("WriteSeccompDropIn: rename " + dropInPath + ": " + err.Error())
+	// writeDropInFile: atomic tmp+rename (parity with WriteCapabilityDropIn /
+	// userns) so a mid-write failure can never leave a TRUNCATED directive
+	// that systemd would still load — which on the pivot path (drop-in
+	// writes are non-fatal/OnError) would silently weaken confinement rather
+	// than fail loudly (review F5). Also skips the write entirely when the
+	// on-disk content is already byte-identical (L3(c), review round 7).
+	if err := writeDropInFile(dropInDir, "seccomp.conf", body); err != nil {
+		return errors.New("WriteSeccompDropIn: " + err.Error())
 	}
 	return nil
 }

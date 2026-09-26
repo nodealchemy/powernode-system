@@ -2,7 +2,6 @@ package security
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -52,11 +51,11 @@ func WriteUserNamespaceDropInAt(root, unit string, enabled bool) error {
 	return writeUserNamespaceDropInAt(base, unit, enabled)
 }
 
-// renderUserNamespaceDropInBody is WriteUserNamespaceDropIn's file body,
+// RenderUserNamespaceDropInBody is WriteUserNamespaceDropIn's file body,
 // factored out to a pure function for the same reason
-// renderCapabilityDropInBody is (capabilities.go) — RenderedPolicyHash
+// RenderCapabilityDropInBody is (capabilities.go) — RenderedPolicyHash
 // (policy_stamp.go) and the writer must share one render (IMP-f5c0afa7183a).
-func renderUserNamespaceDropInBody(enabled bool) string {
+func RenderUserNamespaceDropInBody(enabled bool) string {
 	value := "no"
 	if enabled {
 		value = "yes"
@@ -84,21 +83,11 @@ func writeUserNamespaceDropInAt(base, unit string, enabled bool) error {
 		return err
 	}
 
-	body := renderUserNamespaceDropInBody(enabled)
+	body := RenderUserNamespaceDropInBody(enabled)
 
 	dropInDir := filepath.Join(base, unit+".d")
-	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return fmt.Errorf("WriteUserNamespaceDropIn: mkdir %s: %w", dropInDir, err)
-	}
-
-	dropInPath := filepath.Join(dropInDir, "userns.conf")
-	tmp := dropInPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("WriteUserNamespaceDropIn: write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, dropInPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("WriteUserNamespaceDropIn: rename: %w", err)
+	if err := writeDropInFile(dropInDir, "userns.conf", body); err != nil {
+		return fmt.Errorf("WriteUserNamespaceDropIn: %w", err)
 	}
 	return nil
 }

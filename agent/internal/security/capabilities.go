@@ -3,7 +3,6 @@ package security
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -193,29 +192,19 @@ func WriteCapabilityDropIn(unit string, allow []string) error {
 		return err
 	}
 
-	body, err := renderCapabilityDropInBody(allow)
+	body, err := RenderCapabilityDropInBody(allow)
 	if err != nil {
 		return fmt.Errorf("WriteCapabilityDropIn: %w", err)
 	}
 
 	dropInDir := filepath.Join(systemdDropInRoot, unit+".d")
-	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return fmt.Errorf("WriteCapabilityDropIn: mkdir %s: %w", dropInDir, err)
-	}
-
-	dropInPath := filepath.Join(dropInDir, "capabilities.conf")
-	tmp := dropInPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("WriteCapabilityDropIn: write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, dropInPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("WriteCapabilityDropIn: rename: %w", err)
+	if err := writeDropInFile(dropInDir, "capabilities.conf", body); err != nil {
+		return fmt.Errorf("WriteCapabilityDropIn: %w", err)
 	}
 	return nil
 }
 
-// renderCapabilityDropInBody is WriteCapabilityDropIn's file body, factored
+// RenderCapabilityDropInBody is WriteCapabilityDropIn's file body, factored
 // out to a pure function so RenderedPolicyHash (policy_stamp.go) and the
 // writer share exactly one render — the same reason RenderUnitModeGraph
 // feeds both the unit-body writer and RenderedServicesHash (IMP-f5c0afa7183a).
@@ -223,7 +212,7 @@ func WriteCapabilityDropIn(unit string, allow []string) error {
 // CAPABILITY LIST, not the bytes the writer actually produces, and could go
 // stale the moment this rendering logic itself changes without the list
 // changing — the same defect class one layer over.
-func renderCapabilityDropInBody(allow []string) (string, error) {
+func RenderCapabilityDropInBody(allow []string) (string, error) {
 	canonical := make([]string, 0, len(allow))
 	seen := make(map[string]struct{}, len(allow))
 	for _, cap := range allow {
@@ -264,7 +253,7 @@ func renderCapabilityDropInBody(allow []string) (string, error) {
 }
 
 // WriteCapabilityDropInAt is WriteCapabilityDropIn's pivot-compose
-// counterpart: it renders the SAME drop-in body (renderCapabilityDropInBody —
+// counterpart: it renders the SAME drop-in body (RenderCapabilityDropInBody —
 // CapabilityBoundingSet AND AmbientCapabilities both reset then re-asserted to
 // the resolved allow list) under an EXPLICIT root instead of the
 // systemdDropInRoot package var, because on the direct_kernel / pivot_root
@@ -299,24 +288,14 @@ func WriteCapabilityDropInAt(root, unit string, allow []string) error {
 		return err
 	}
 
-	body, err := renderCapabilityDropInBody(allow)
+	body, err := RenderCapabilityDropInBody(allow)
 	if err != nil {
 		return fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
 
 	dropInDir := filepath.Join(root, "etc", "systemd", "system", unit+".d")
-	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return fmt.Errorf("WriteCapabilityDropInAt: mkdir %s: %w", dropInDir, err)
-	}
-
-	dropInPath := filepath.Join(dropInDir, "capabilities.conf")
-	tmp := dropInPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("WriteCapabilityDropInAt: write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, dropInPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("WriteCapabilityDropInAt: rename: %w", err)
+	if err := writeDropInFile(dropInDir, "capabilities.conf", body); err != nil {
+		return fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
 	return nil
 }
