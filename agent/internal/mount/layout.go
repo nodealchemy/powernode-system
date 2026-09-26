@@ -154,6 +154,20 @@ type Module struct {
 	// materialises it beside the blob. Empty when the platform published no
 	// blob signature for this version.
 	CosignBundleB64 string
+	// Units names the systemd unit names (lifecycle.UnitName(ID, service))
+	// this attached entry's manifest declared at the time it was attached
+	// (round 9, in-place upgrade). Persisted in state.json alongside the
+	// rest of the entry so a LATER upgrade of this same module ID can
+	// compute exactly which units are leaving (Units minus the new
+	// manifest's own UnitNames()) without needing the OLD manifest's full
+	// content — the digest-keyed attached-snapshot store this replaced
+	// (manifest.SaveAttachedSnapshot/LoadAttachedSnapshot, round 7) existed
+	// only to answer this same question, at a heavier cost (a full manifest
+	// round-trip through disk) for what is really just a name list. Empty
+	// (omitted from state.json) for an entry attached by a pre-round-9
+	// agent build; upgradeModule falls back to previousManifests for that
+	// one case.
+	Units []string `json:"Units,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

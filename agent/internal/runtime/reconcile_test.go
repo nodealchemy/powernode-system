@@ -61,6 +61,84 @@ func versionBumpFixture(digest string) string {
 	}`, digest)
 }
 
+// versionBumpReconciler builds a Reconciler wired to a stubModulesClient and
+// a RecorderRunner for a single-module version-bump scenario — relocated
+// here (round 9) from the now-deleted detach-before-attach test files; the
+// round-9 in-place-upgrade tests need the identical fixture shape.
+func versionBumpReconciler(t *testing.T, tmpRoot, statePath string, client *stubModulesClient, runner *mount.RecorderRunner) *Reconciler {
+	t.Helper()
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         &stubPuller{cacheDir: layout.ModulesCacheRoot},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	return r
+}
+
+// bumpModuleDigest updates the stub manifest response for moduleID AND
+// DELETES the on-disk manifest cache LoadOrFetch wrote for the OLD digest —
+// NewReconciler defaults ManifestTTL to 90s (not 0: a corrected claim, this
+// comment previously said the opposite), so without evicting the cache the
+// next RunOnce pass would keep reading the OLD digest from disk (still
+// fresh) and never observe the bump at all.
+//
+// round 9 CAVEAT, discovered writing upgrade_test.go: deleting the cache
+// file destroys the OLD manifest's on-disk bytes BEFORE the next RunOnce
+// call even starts, which is exactly what upgradeModule's
+// reapplyOldPolicyBestEffort needs (via RunOnce's previousManifests
+// snapshot, captured at the top of RunOnce from whatever LoadFromDisk
+// currently returns) to restore the OLD digest's security policy on a
+// refused bump. A test that needs reapplyOldPolicyBestEffort to see the
+// real old manifest — i.e. anything asserting ON-DISK POLICY CONTENT after
+// an upgradeModule refusal, not just "old stayed attached" — MUST use
+// backdateManifestCache instead: it forces the same refetch by making the
+// cache look stale (mtime), without deleting the file, so previousManifests
+// still reads real old content when RunOnce takes its snapshot BEFORE this
+// tick's own fetch loop overwrites it. This function remains correct for
+// every OTHER use (any test that doesn't inspect post-refusal policy
+// content) — see upgrade_test.go's own reconciler fixtures for the pattern.
+func bumpModuleDigest(t *testing.T, manifestRoot, moduleID string, client *stubModulesClient, newDigest string) {
+	t.Helper()
+	client.responses["/api/v1/system/node_api/modules/"+moduleID] = versionBumpFixture(newDigest)
+	if err := os.RemoveAll(filepath.Join(manifestRoot, moduleID)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasSystemctlOp(invocations []mount.Invocation, op, unit string) bool {
+	for _, inv := range invocations {
+		if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, op) && containsArg(inv.Args, unit) {
+			return true
+		}
+	}
+	return false
+}
+
+func attachedDigest(t *testing.T, statePath, moduleID string) (digest string, ok bool) {
+	t.Helper()
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == moduleID {
+			return m.Digest, true
+		}
+	}
+	return "", false
+}
+
 // backdateManifestCache pushes the on-disk manifest cache's mtime into the
 // past so NewReconciler's default ManifestTTL treats it as stale on the
 // next pass, WITHOUT deleting the file — relocated here (round 9) from the
@@ -462,10 +540,14 @@ func (p *orderTrackingPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, 
 // TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService is the
 // regression test for the 2026-07-20 ops-hub outage: a same-tick version
 // bump (same module ID, old digest → new digest) must pull+mount the NEW
-// blob before stopping the OLD service, never after. If this test fails
-// after a refactor, the reconcile has regressed into fetching a self-hosted
-// module's replacement content through a service the SAME tick just tore
-// down — an unrecoverable circular dependency on a self-hosted platform.
+// blob before EVER touching the unit that answers this node's own
+// FetchAssignedModules calls (round 9: upgradeModule never stops the old
+// unit at all for a successful in-place upgrade — it restarts it once the
+// new digest's own artifact/policy/files are already in place). If this
+// test fails after a refactor, the reconcile has regressed into fetching a
+// self-hosted module's replacement content through a service the SAME
+// tick has already disrupted — an unrecoverable circular dependency on a
+// self-hosted platform.
 func TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
@@ -521,25 +603,37 @@ func TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService(t *testing
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	pullIdx, stopIdx := -1, -1
+	pullIdx, firstUnitActionIdx := -1, -1
+	stopSeen := false
 	for i, inv := range runner.Invocations {
 		if inv.Name == "PULL" && len(inv.Args) >= 2 && inv.Args[1] == "new-digest" && pullIdx == -1 {
 			pullIdx = i
 		}
-		if inv.Name == "systemctl" && len(inv.Args) >= 2 &&
-			inv.Args[0] == "stop" && inv.Args[1] == "powernode-hub-rails.service" && stopIdx == -1 {
-			stopIdx = i
+		if inv.Name == "systemctl" && len(inv.Args) >= 2 && inv.Args[1] == "powernode-hub-rails.service" {
+			if firstUnitActionIdx == -1 {
+				firstUnitActionIdx = i
+			}
+			if inv.Args[0] == "stop" {
+				stopSeen = true
+			}
 		}
 	}
 	if pullIdx == -1 {
 		t.Fatalf("expected a PULL for the new digest, got: %v", runner.Invocations)
 	}
-	if stopIdx == -1 {
-		t.Fatalf("expected `systemctl stop powernode-hub-rails.service`, got: %v", runner.Invocations)
+	if firstUnitActionIdx == -1 {
+		t.Fatalf("expected at least one systemctl action naming the unit, got: %v", runner.Invocations)
 	}
-	if pullIdx > stopIdx {
-		t.Errorf("new artifact must be pulled BEFORE the old service is stopped — pull at index %d, stop at index %d: %v",
-			pullIdx, stopIdx, runner.Invocations)
+	if pullIdx > firstUnitActionIdx {
+		t.Errorf("new artifact must be pulled BEFORE the unit is touched at all — pull at index %d, first unit action at index %d: %v",
+			pullIdx, firstUnitActionIdx, runner.Invocations)
+	}
+	// round 9: a SUCCESSFUL in-place upgrade never stops the unit at all —
+	// it restarts (or starts, if not yet active) once the new digest's own
+	// artifact/policy/files are already in place. A stop appearing here
+	// would mean the upgrade regressed back into detach-then-attach.
+	if stopSeen {
+		t.Errorf("round 9 REGRESSION: a successful in-place upgrade must never stop the unit, got: %v", runner.Invocations)
 	}
 
 	// Sanity: the new module actually ends up attached at the new digest.

@@ -112,12 +112,17 @@ func heartbeatFrom(t *testing.T, statePath string) HeartbeatPayload {
 	return svc.buildHeartbeat("boot-1", nil)
 }
 
-func TestHeartbeatOmitsDigestOfBudgetAbortedModule(t *testing.T) {
+// Round 9 (in-place upgrade) changed what a mid-walk abort leaves in state —
+// see TestHeartbeatReportsOldDigestWhenAnUpgradeEscalates's own doc for the
+// full reasoning: upgradeModule never touches current.AttachedModules until
+// every step has succeeded, so an abort here leaves the OLD digest's own
+// entry untouched and the heartbeat correctly keeps reporting it.
+func TestHeartbeatReportsOldDigestWhenABudgetAbortRefusesAnUpgrade(t *testing.T) {
 	r, statePath := budgetReportingFixture(t)
 
 	// The MID-WALK abort, specifically — an unsatisfiable floor is now caught
 	// earlier by the scratch pre-flight (escalateIfHotRungTooSmall), whose own
-	// heartbeat guarantee is pinned by TestHeartbeatOmitsDigestOfEscalatedModule.
+	// heartbeat guarantee is pinned by TestHeartbeatReportsOldDigestWhenAnUpgradeEscalates.
 	// Same lever as TestHotReconcile_BudgetAbortRequestsRetry: the pre-flight
 	// sees room, the copy does not.
 	r.cfg.ScratchMinFreeBytes = 1000
@@ -144,9 +149,9 @@ func TestHeartbeatOmitsDigestOfBudgetAbortedModule(t *testing.T) {
 	}
 
 	payload := heartbeatFrom(t, statePath)
-	if got, ok := payload.ModuleDigests["m1"]; ok {
-		t.Fatalf("heartbeat reports m1 running digest %q after the materialization was REFUSED; "+
-			"the platform records that as running_module_digests and the operator reads a successful deploy", got)
+	if got, ok := payload.ModuleDigests["m1"]; !ok || got != "d1" {
+		t.Fatalf("round 9 REGRESSION: heartbeat must keep reporting m1 at its OLD digest d1 after a failed "+
+			"upgrade attempt (the old process was never touched), got %q ok=%v", got, ok)
 	}
 }
 
@@ -171,18 +176,23 @@ func TestHeartbeatStillReportsDigestOfMaterializedModule(t *testing.T) {
 	}
 }
 
-// The abort must not LATCH. Once the scratch has room the next tick materializes
-// the module, and the heartbeat has to start reporting it again — otherwise the
-// fix trades a permanent false success for a permanent false drift.
-func TestHeartbeatReportsDigestAgainOnceMaterializationSucceeds(t *testing.T) {
+// The upgrade attempt must not get STUCK reporting the old digest forever.
+// Once the scratch has room the next tick completes the in-place upgrade,
+// and the heartbeat has to start reporting the NEW digest — otherwise the
+// fix trades "never confirms a deploy" for "never confirms a deploy either".
+func TestHeartbeatReportsNewDigestOnceTheUpgradeSucceeds(t *testing.T) {
 	r, statePath := budgetReportingFixture(t)
 	r.cfg.ScratchMinFreeBytes = ^uint64(0) >> 1
 
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce (aborting tick): %v", err)
 	}
-	if _, ok := heartbeatFrom(t, statePath).ModuleDigests["m1"]; ok {
-		t.Fatalf("precondition: the aborting tick must not report m1 as running")
+	// round 9: the aborting tick leaves the OLD digest's own entry
+	// untouched (see TestHeartbeatReportsOldDigestWhenAnUpgradeEscalates)
+	// — this is the precondition the recovery below builds on, not the
+	// assertion under test.
+	if got, ok := heartbeatFrom(t, statePath).ModuleDigests["m1"]; !ok || got != "d1" {
+		t.Fatalf("precondition: the aborting tick must still report m1 at its OLD digest d1, got %q ok=%v", got, ok)
 	}
 
 	// Scratch freed by hand — the incident's actual resolution.
@@ -192,6 +202,6 @@ func TestHeartbeatReportsDigestAgainOnceMaterializationSucceeds(t *testing.T) {
 	}
 
 	if got := heartbeatFrom(t, statePath).ModuleDigests["m1"]; got != "d2" {
-		t.Fatalf("after a successful materialization the heartbeat must report m1 at d2, got %q", got)
+		t.Fatalf("after a successful upgrade the heartbeat must report m1 at d2, got %q", got)
 	}
 }

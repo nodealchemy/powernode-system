@@ -701,6 +701,45 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
+	// Partition version bumps OUT of toDetach/toAttach entirely (round 9,
+	// in-place-upgrade redesign). mount.Reconcile compares by DIGEST, so a
+	// same-module-ID change (a bump) shows up as an OLD entry in toDetach
+	// and a NEW entry in toAttach — under detach-before-attach (rounds
+	// 5-7, removed) those flowed through the ordinary detach/attach loops,
+	// which is exactly the outage shape that stack existed to mitigate. As
+	// of round 9, a bump never enters either loop: it is handled entirely
+	// by upgradeModule, which never stops the old digest's units until the
+	// new digest has fully succeeded. A module with no same-ID entry on
+	// the other side is a genuine removal or a genuine fresh attach and is
+	// untouched by this partition.
+	newByID := make(map[string]mount.Module, len(toAttach))
+	for _, m := range toAttach {
+		newByID[m.ID] = m
+	}
+	var bumps []moduleUpgrade
+	removals := make(mount.ModuleStack, 0, len(toDetach))
+	for _, m := range toDetach {
+		if newMod, isBump := newByID[m.ID]; isBump {
+			bumps = append(bumps, moduleUpgrade{old: m, new: newMod})
+			continue
+		}
+		removals = append(removals, m)
+	}
+	toDetach = removals
+	if len(bumps) > 0 {
+		bumpIDs := make(map[string]bool, len(bumps))
+		for _, b := range bumps {
+			bumpIDs[b.new.ID] = true
+		}
+		filteredAttach := make(mount.ModuleStack, 0, len(toAttach))
+		for _, m := range toAttach {
+			if !bumpIDs[m.ID] {
+				filteredAttach = append(filteredAttach, m)
+			}
+		}
+		toAttach = filteredAttach
+	}
+
 	// Detect already-attached modules whose manifest content changed
 	// since the last attach. Reconcile() above only returns new mounts
 	// in toAttach (digest-based diff against current.AttachedModules);
@@ -727,10 +766,27 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	for _, m := range current.AttachedModules {
 		attachedNow[m.ID] = true
 	}
+	bumpIDsThisTick := make(map[string]bool, len(bumps))
+	for _, b := range bumps {
+		bumpIDsThisTick[b.new.ID] = true
+	}
 	toReattach := make(mount.ModuleStack, 0)
 	for _, mod := range desired {
 		if !attachedNow[mod.ID] {
 			continue // either freshly attaching (handled below) or not yet pulled
+		}
+		// round 9: a module this tick already partitioned into `bumps`
+		// (above) is handled ENTIRELY by upgradeModule. Without this,
+		// EVERY version bump also landed in toReattach — attachStamp always
+		// differs across a digest change, so the stamp-diff check below
+		// could never tell "manifest-only edit" from "this is also a
+		// digest bump" apart — closing the exact bypass that let a
+		// deferred bump's new digest still reach a real attachModule call
+		// through this loop even when the (now-removed) detach-before-
+		// attach deferral logic had decided to touch nothing at all
+		// (round 7 finding, L2 part 1's own red-first test).
+		if bumpIDsThisTick[mod.ID] {
+			continue
 		}
 		mf, ok := manifests[mod.ID]
 		if !ok {
@@ -777,7 +833,32 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// without their path sets a hot-reconcile cannot tell "the new version
 	// dropped this file" from "this file was never ours" — which is why
 	// deletions were originally out of scope. See hotprune.go.
+	//
+	// round 9: captureOutgoingPaths only ever produces an entry for a
+	// module ID present in BOTH its toDetach and toAttach arguments (its
+	// own incoming[] check) — which, before this tick's bump partition
+	// above, was exactly how it captured a version bump's outgoing paths.
+	// Now that bumps never appear in toDetach/toAttach at all, that path
+	// is called SEPARATELY here, against the bump pairs directly, and
+	// merged into the same map upgradeModule's own hotReconcileIfNeeded
+	// call (below) reads from.
 	outgoingPaths := r.captureOutgoingPaths(toDetach, toAttach, manifests)
+	if len(bumps) > 0 {
+		bumpOld := make(mount.ModuleStack, 0, len(bumps))
+		bumpNew := make(mount.ModuleStack, 0, len(bumps))
+		for _, b := range bumps {
+			bumpOld = append(bumpOld, b.old)
+			bumpNew = append(bumpNew, b.new)
+		}
+		if bumpOutgoing := r.captureOutgoingPaths(bumpOld, bumpNew, manifests); len(bumpOutgoing) > 0 {
+			if outgoingPaths == nil {
+				outgoingPaths = make(map[string]map[string]bool, len(bumpOutgoing))
+			}
+			for id, paths := range bumpOutgoing {
+				outgoingPaths[id] = paths
+			}
+		}
+	}
 
 	// Same pre-unmount window, other half of the split: inventory modules
 	// LEAVING the composition (no same-ID successor) for the deferred
@@ -999,6 +1080,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// (round 9) that replaces this whole attach/detach shape.
 			continue
 		}
+		mod.Units = mf.UnitNames()
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
@@ -1032,6 +1114,23 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.attachModuleServices(ctx, mod, mf)
 	}
 
+	// In-place upgrades (round 9) — every version bump partitioned out of
+	// toDetach/toAttach above, run through upgradeModule instead of the
+	// ordinary detach-then-attach loops. See upgradeModule's own doc for
+	// the full step ordering and the HARD invariant it upholds (never
+	// leave a previously-running module stopped).
+	sortedBumps := make([]moduleUpgrade, len(bumps))
+	copy(sortedBumps, bumps)
+	sort.Slice(sortedBumps, func(i, j int) bool { return sortedBumps[i].new.Priority < sortedBumps[j].new.Priority })
+	for _, u := range sortedBumps {
+		newMf, ok := manifests[u.new.ID]
+		if !ok {
+			r.noteUnconverged("reconciler:missing_manifest", u.new.ID, fmt.Errorf("module %s: manifest not loaded", u.new.ID))
+			continue
+		}
+		r.upgradeModule(ctx, current, u, newMf, previousManifests[u.old.ID], outgoingPaths[u.new.ID], desiredForLayers, stateWasEmpty)
+	}
+
 	// Re-attach loop for manifest-only changes. attachModule is
 	// idempotent on its mount + cosign + fs-verity + policy steps
 	// (cached results return immediately) — the meaningful work here is
@@ -1058,6 +1157,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		r.attachModuleServices(ctx, mod, mf)
+		// round 9: refresh the STORED entry's Units for a manifest-only
+		// change too (same digest, edited services) — upgradeModule's own
+		// future delta-stop for a LATER version bump of this same module
+		// reads old.Units, and a stale list there (from before this
+		// manifest edit) would misjudge which units are genuinely
+		// departing on that later bump.
+		for i, m := range current.AttachedModules {
+			if m.ID == mod.ID {
+				current.AttachedModules[i].Units = mf.UnitNames()
+				break
+			}
+		}
 	}
 
 	// K4 (review round 6): bound J3's carry-forward to units belonging to a
@@ -1881,8 +1992,34 @@ func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string 
 }
 
 func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest) {
+	// FENCED ON THE SELF-HOSTED NODE, for the same reason and by the same
+	// invariant as filterUnsafeDetaches (selfhost.go): the services that
+	// answer this node's own reconcile endpoint are the ones it would be
+	// restarting, and a restart window there is self-inflicted on the one node
+	// that cannot be told to recover. Milder than the detach incident — a
+	// restarted service does come back — but the asymmetry is the same, so the
+	// new body lands on disk and takes effect at the next recompose, which is
+	// already the documented behaviour for composition changes.
+	//
+	// round 9: this fence is NOT universal — upgradeModule's own call
+	// (attachModuleServicesOpts, below, with restartChanged forced true)
+	// deliberately bypasses it for a version bump specifically (A2, review
+	// round 9): a bump genuinely needs the new binary running, and the
+	// detach-before-attach path this replaces ALSO restarted a self-hosted
+	// node's own rails/postgres via its own stop+start cycle. Every OTHER
+	// caller — an ordinary manifest-only reattach, a fresh attach — still
+	// goes through this fenced path unchanged.
+	_ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted())
+}
+
+// attachModuleServicesOpts is attachModuleServices' parameterized core
+// (round 9): the systemd half of an attach, with the RestartChanged
+// decision taken as an explicit argument instead of always deriving it
+// from selfHosted(). See attachModuleServices' own doc for why the fence
+// exists and upgradeModule's own doc for why it bypasses it.
+func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged bool) error {
 	if len(mf.Services) == 0 {
-		return
+		return nil
 	}
 	// Boot-model-aware: the reconcile loop runs post-pivot on a hub
 	// (module union IS /, render native) AND on cloud_init hosts (guest
@@ -1898,20 +2035,13 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 	// service kept running the old definition until something else restarted
 	// it. AttachServicesModeOpts restarts a unit only when its body actually
 	// changed on this pass AND it is currently active.
-	//
-	// FENCED ON THE SELF-HOSTED NODE, for the same reason and by the same
-	// invariant as filterUnsafeDetaches (selfhost.go): the services that
-	// answer this node's own reconcile endpoint are the ones it would be
-	// restarting, and a restart window there is self-inflicted on the one node
-	// that cannot be told to recover. Milder than the detach incident — a
-	// restarted service does come back — but the asymmetry is the same, so the
-	// new body lands on disk and takes effect at the next recompose, which is
-	// already the documented behaviour for composition changes.
-	opts := lifecycle.AttachOptions{RestartChanged: !r.selfHosted()}
+	opts := lifecycle.AttachOptions{RestartChanged: restartChanged}
 	if _, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts); err != nil {
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
+		return err
 	}
+	return nil
 }
 
 // hotReconcileIfNeeded is called after a successful attachModule for BOTH
@@ -2637,6 +2767,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	// with no unit would be a false success.
 	r.attachModuleServices(ctx, mod, mf)
 
+	mod.Units = mf.UnitNames()
 	current.AttachedModules = append(current.AttachedModules, mod)
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		return "", fmt.Errorf("save state: %w", err)

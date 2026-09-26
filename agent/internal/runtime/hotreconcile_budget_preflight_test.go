@@ -315,12 +315,23 @@ func TestHotReconcile_PreflightPricesOnlyTheRemainingDiff(t *testing.T) {
 	}
 }
 
-// The sibling fix (IMP-bc1b0495352d, f72ede5a) must survive the escalation: a
-// node that escalates has NOT written the new version's files, so the heartbeat
-// must still omit its digest and the state must still list it as unmaterialized.
-// Asserted through RunOnce + buildHeartbeat, the production path, not the
-// single-module helper.
-func TestHeartbeatOmitsDigestOfEscalatedModule(t *testing.T) {
+// The sibling fix (IMP-bc1b0495352d, f72ede5a) used to require that a node
+// which escalates OMIT the digest entirely, since under detach-before-attach
+// (rounds 5-7, removed) current.AttachedModules had ALREADY been updated to
+// the new digest by the time the escalation refused materialization — the
+// module was "attached" (mounted) but not running, an ambiguous state the
+// unmaterialized flag existed to disambiguate.
+//
+// Round 9 (in-place upgrade) removes that ambiguity structurally:
+// upgradeModule never touches current.AttachedModules until EVERY step
+// (artifact, policy, materialization, service start) has fully succeeded —
+// see its own doc. An escalation at the materialization step therefore
+// leaves current.AttachedModules exactly as it was: the OLD digest, still
+// genuinely attached and running, untouched. There is nothing to mark
+// unmaterialized, and the heartbeat correctly keeps reporting the OLD
+// digest rather than omitting it. Asserted through RunOnce + buildHeartbeat,
+// the production path, not the single-module helper.
+func TestHeartbeatReportsOldDigestWhenAnUpgradeEscalates(t *testing.T) {
 	r, statePath := budgetReportingFixture(t)
 	r.cfg.ScratchMinFreeBytes = ^uint64(0) >> 1 // no filesystem satisfies this floor
 
@@ -338,12 +349,12 @@ func TestHeartbeatOmitsDigestOfEscalatedModule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if len(st.UnmaterializedModules) != 1 || st.UnmaterializedModules[0] != "m1" {
-		t.Fatalf("UnmaterializedModules = %v, want [m1] — an escalated module is mounted but not running",
-			st.UnmaterializedModules)
+	if len(st.UnmaterializedModules) != 0 {
+		t.Fatalf("round 9 REGRESSION: UnmaterializedModules = %v, want empty — a failed upgrade attempt must leave "+
+			"the OLD digest's own AttachedModules entry untouched, not mark it unmaterialized", st.UnmaterializedModules)
 	}
-	if got, ok := heartbeatFrom(t, statePath).ModuleDigests["m1"]; ok {
-		t.Fatalf("heartbeat reports m1 running digest %q after the materialization was ESCALATED, "+
-			"not performed; that is the false 'deployed' signal f72ede5a removed", got)
+	if got, ok := heartbeatFrom(t, statePath).ModuleDigests["m1"]; !ok || got != "d1" {
+		t.Fatalf("round 9 REGRESSION: heartbeat must keep reporting m1 at its OLD digest d1 after a failed "+
+			"upgrade attempt (the old process was never touched), got %q ok=%v", got, ok)
 	}
 }
