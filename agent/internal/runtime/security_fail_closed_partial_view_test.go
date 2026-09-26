@@ -120,3 +120,107 @@ func TestSecurityFailClosed_SurvivesAPartialViewTickThatCannotReachTheModule(t *
 		t.Errorf("tick 3: expected SecurityFailClosedUnits() to clear once the module's decision is actually reached and clean, got %v", got)
 	}
 }
+
+// J4 mutant M3 (review round 5), applied to J3's merge rather than H1's
+// (reverted, J2): the carry-forward in publishSecurityFailClosed must touch
+// ONLY the units of modules this pass could not attempt — a mutant that
+// dropped or duplicated a DIFFERENT module's published entry while merging
+// would pass every single-module test in this file. Two modules: m1 refuses
+// tick 1 and is unreachable (partial view) tick 2; m2 doesn't exist until
+// tick 2, where it attaches cleanly. Both must be independently correct on
+// tick 2 — m1's stale refusal preserved, m2 present with no refusal.
+func TestSecurityFailClosed_PartialViewPreservesAnotherModulesPublishedRefusal(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+
+	dropIns := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": versionBumpFixture("abc123"),
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	runner := &mount.RecorderRunner{}
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         &stubPuller{cacheDir: layout.ModulesCacheRoot},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+
+	m1Unit := lifecycle.UnitName("m1", "app")
+	m2Unit := lifecycle.UnitName("m2", "app")
+
+	// TICK 1: only m1 exists, and its drop-in write fails.
+	m1DropInDir := filepath.Join(dropIns, m1Unit+".d")
+	m1Blocked := filepath.Join(m1DropInDir, "capabilities.conf")
+	if err := os.MkdirAll(m1Blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 1: %v", err)
+	}
+	if got := r.SecurityFailClosedUnits(); !containsArg(got, m1Unit) {
+		t.Fatalf("tick 1: expected %s in SecurityFailClosedUnits(), got %v", m1Unit, got)
+	}
+
+	// TICK 2: m1 becomes an unreachable partial view (fetch fails); m2 is
+	// newly assigned and attaches CLEANLY.
+	if err := os.RemoveAll(filepath.Join(tmpRoot, "manifests", "m1")); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules"] = `{
+		"success": true,
+		"data": {"modules": [
+			{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+			{"id":"m2", "name":"other-mod", "priority":90, "effective_priority":90, "has_data_file":true}
+		]}
+	}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = `{"success":false,"error":"boom"}`
+	client.statuses = map[string]int{"/api/v1/system/node_api/modules/m1": 502}
+	client.responses["/api/v1/system/node_api/modules/m2"] = `{
+		"success": true,
+		"data": {
+			"id":"m2", "name":"other-mod",
+			"priority":90, "effective_priority":90,
+			"digest":"def456",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"services": [
+				{"name":"app", "start_command":"/bin/true", "restart_policy":"always"}
+			]
+		}
+	}`
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+
+	got := r.SecurityFailClosedUnits()
+	if !containsArg(got, m1Unit) {
+		t.Errorf("J4/M3 REGRESSION: m1's stale (partial-view) refusal must be preserved when merging in m2's own tick-2 result, got %v", got)
+	}
+	if containsArg(got, m2Unit) {
+		t.Errorf("J4/M3 REGRESSION: m2 attached cleanly this tick and must NOT appear in SecurityFailClosedUnits(), got %v", got)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected exactly m1's unit published (no duplication), got %v", got)
+	}
+}
