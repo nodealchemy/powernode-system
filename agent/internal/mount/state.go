@@ -75,6 +75,21 @@ type State struct {
 	// skipped or only reported the rebase never sets it, so the rebase is
 	// retried rather than silently marked done.
 	RebasedAgainst string `json:"rebased_against,omitempty"`
+
+	// SecurityFailClosedUnits (R6, review round 14) is the LAST PUBLISHED
+	// copy of the live reconcile path's own fail-closed set
+	// (Reconciler.SecurityFailClosedUnits — see that method's own doc for
+	// what "fail closed" means here). Written every time
+	// publishSecurityFailClosed runs, purely so NewReconciler can seed the
+	// in-memory atomic from it on startup: without this, an agent restart
+	// (a real one, or this process simply exiting and a fresh one starting)
+	// makes the FIRST heartbeat after that restart report a clean node —
+	// SecurityFailClosedUnits() returns nil until the first RunOnce pass
+	// actually reaches and re-decides every module — even though a module
+	// was refused, unconfined, right up until the restart. A brief false
+	// "clean" reading on an ALREADY-refused module is exactly the gap a
+	// security-fail-closed sensor must never have.
+	SecurityFailClosedUnits []string `json:"security_fail_closed_units,omitempty"`
 }
 
 // LoadState reads State from `path`. Returns a zero-value State and

@@ -308,6 +308,15 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 				}
 			}
 			r.cfg.OnError(stage, fmt.Errorf("module %s: %w — services NOT enabled post-pivot", mod.ID, err))
+			// R6 (review round 14): before this, ONLY the per-unit
+			// drop-in-write-failure branch below appended to
+			// bc.SecurityFailClosedUnits — an invalid policy, an unapproved
+			// privileged request, or capabilities exceeding the ceiling
+			// (all three stages above) never did, despite refusing to
+			// enable the module's services for the exact same reason.
+			if bc != nil {
+				bc.SecurityFailClosedUnits = append(bc.SecurityFailClosedUnits, mf.UnitNames()...)
+			}
 			continue
 		}
 
@@ -356,6 +365,17 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 
 		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
 			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
+			// R6 (review round 14): every unit's own security drop-ins
+			// already succeeded (the len(failedUnits) > 0 branch above
+			// would have continued first) at THIS point, but the unit file
+			// itself never got written/enabled — the module's services
+			// simply do not run this boot, the same outcome the two
+			// refusal classes above report; report it identically rather
+			// than leaving this ONE remaining pivot failure mode invisible
+			// to SecurityFailClosedUnits/the heartbeat.
+			if bc != nil {
+				bc.SecurityFailClosedUnits = append(bc.SecurityFailClosedUnits, mf.UnitNames()...)
+			}
 		}
 	}
 }

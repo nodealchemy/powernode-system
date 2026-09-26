@@ -787,6 +787,93 @@ func TestRenderPivotUnits_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 	}
 }
 
+// TestRenderPivotUnits_UnapprovedPrivilegedAppendsSecurityFailClosedUnits is
+// R6 (review round 14): the pivot path's own decideModuleSecurityPolicy
+// refusal branch (compose:policy_invalid / compose:privileged_unapproved /
+// compose:capabilities_invalid) reported an OnError line but never appended
+// to bc.SecurityFailClosedUnits — only the per-unit drop-in-write-failure
+// branch did. A module requesting security.privileged with no operator
+// approval refused to enable its services (correctly) but stayed invisible
+// to buildHeartbeat's PivotSecurityFailClosedUnits.
+func TestRenderPivotUnits_UnapprovedPrivilegedAppendsSecurityFailClosedUnits(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "unapproved-privileged-pivot-mod",
+		Name:                        "unapproved-privileged-pivot-mod",
+		ServiceCapabilitiesPresence: true,
+		Config:                      map[string]any{"security": map[string]any{"privileged": true}},
+		Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	bc := &BootComposedBreadcrumb{PrivilegedAllowlistFrozen: true} // enforce — empty allowlist, so this is refused
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, bc)
+
+	if !containsArg(onErrors, "compose:privileged_unapproved") {
+		t.Fatalf("precondition: expected the privileged-unapproved refusal signal, got stages: %v", onErrors)
+	}
+	if unitEnabled(t, sysroot, rec, mf.ID) {
+		t.Fatal("precondition: the module must NOT be enabled")
+	}
+	if !containsArg(bc.SecurityFailClosedUnits, unit) {
+		t.Errorf("R6 REGRESSION: bc.SecurityFailClosedUnits must name %s after an unapproved-privileged refusal, got %v", unit, bc.SecurityFailClosedUnits)
+	}
+}
+
+// TestRenderPivotUnits_AttachNativeFailureAppendsSecurityFailClosedUnits is
+// R6 (review round 14): AttachServicesNative failing AFTER every unit's own
+// security drop-ins already succeeded reported an OnError line
+// (compose:attach_native) but never appended to bc.SecurityFailClosedUnits —
+// the module's services simply do not run this boot, the same outcome the
+// two refusal classes above (policy decision, drop-in write) already report
+// through that field.
+func TestRenderPivotUnits_AttachNativeFailureAppendsSecurityFailClosedUnits(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "attach-native-fail-mod",
+		Name:                        "attach-native-fail-mod",
+		ServiceCapabilitiesPresence: true,
+		Config:                      map[string]any{"security": map[string]any{"capabilities": []any{"CAP_CHOWN"}, "user_namespace": false}},
+		Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+
+	// Every drop-in write below succeeds normally (a real tempdir, nothing
+	// blocked) — only the unit FILE write itself (AttachServicesNative's own
+	// path, dir/unitName, distinct from dir/unitName.d/ where the drop-ins
+	// land) is forced to fail, by pre-occupying that exact path with a
+	// directory.
+	unitFilePath := filepath.Join(sysroot, "etc", "systemd", "system", unit)
+	if err := os.MkdirAll(unitFilePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	bc := &BootComposedBreadcrumb{}
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, bc)
+
+	if !containsArg(onErrors, "compose:attach_native") {
+		t.Fatalf("precondition: expected the attach_native failure signal, got stages: %v", onErrors)
+	}
+	if containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Fatalf("precondition drifted: the drop-in writes must have succeeded (only the unit file write was blocked), got stages: %v", onErrors)
+	}
+	if !containsArg(bc.SecurityFailClosedUnits, unit) {
+		t.Errorf("R6 REGRESSION: bc.SecurityFailClosedUnits must name %s after an attach_native failure, got %v", unit, bc.SecurityFailClosedUnits)
+	}
+}
+
 // ISOLATED FAILURES (review round 3: both reviewers proved by mutation that
 // blocking the WHOLE <unit>.d directory — as
 // TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite

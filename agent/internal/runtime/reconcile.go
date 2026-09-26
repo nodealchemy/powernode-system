@@ -521,7 +521,22 @@ func NewReconciler(cfg ReconcilerConfig) (*Reconciler, error) {
 	if cfg.OnError == nil {
 		cfg.OnError = func(string, error) {}
 	}
-	return &Reconciler{cfg: cfg}, nil
+	r := &Reconciler{cfg: cfg}
+	// R6 (review round 14): seed the published fail-closed set from
+	// state.json's own last-persisted copy (mount.State.SecurityFailClosedUnits,
+	// written by publishSecurityFailClosed) — without this, a fresh process
+	// (a real agent restart, or simply this process exiting and a new one
+	// starting) reports a CLEAN node on its very first heartbeat, until the
+	// first RunOnce pass re-decides every module — even for a module that
+	// was refused, unconfined, right up until the restart. Best-effort: a
+	// missing or unreadable state.json seeds nothing (mount.LoadState
+	// itself returns a zero-value State, not an error, for a missing file)
+	// rather than failing construction over a purely advisory seed.
+	if st, err := mount.LoadState(cfg.StatePath); err == nil && len(st.SecurityFailClosedUnits) > 0 {
+		seeded := append([]string(nil), st.SecurityFailClosedUnits...)
+		r.securityFailClosedUnits.Store(&seeded)
+	}
+	return r, nil
 }
 
 // Run blocks until ctx is canceled. Each tick: jitter the interval
@@ -1820,7 +1835,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// into the pending, non-atomic field; this is the one place the
 	// atomically-published value a concurrent heartbeat reads actually moves,
 	// so no reader can observe a mid-pass partial result.
-	r.publishSecurityFailClosed(relevantUnits)
+	r.publishSecurityFailClosed(current, relevantUnits)
 
 	// Deferred leaver prunes — after both attach loops so every desired
 	// module's tree is mounted before any surviving-layer resolution.
@@ -2497,6 +2512,14 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// typed error, not a bare fmt.Errorf. No single unit is "the" failing
 		// one here (the refusal happened before any per-unit drop-in was even
 		// attempted), so Units names every unit the module owns.
+		//
+		// R6 (review round 14): record it too — before this, ONLY the
+		// per-unit drop-in-write-failure branch below called
+		// recordSecurityFailClosed, so an unapproved-privileged request, an
+		// invalid policy, or a Policy.Apply failure never reached
+		// SecurityFailClosedUnits()/the heartbeat's RuntimeSecurityFailClosedUnits
+		// at all — despite being, per K5a's own doc, the SAME kind of event.
+		r.recordSecurityFailClosed(mf.UnitNames())
 		return &SecurityFailClosedError{ModuleID: mod.ID, Units: mf.UnitNames(), Reason: err.Error()}
 	}
 
@@ -3407,7 +3430,14 @@ func (r *Reconciler) resetSecurityFailClosed() {
 // refusal FOREVER, with no tick ever able to clear it. A unit whose module
 // vanished (not in relevantUnits) is dropped here, same as one that was
 // actively attempted and found clean.
-func (r *Reconciler) publishSecurityFailClosed(relevantUnits map[string]bool) {
+//
+// R6 (review round 14): ALSO persists the merged result into current's own
+// SecurityFailClosedUnits field and saves state.json — purely so
+// NewReconciler can seed the in-memory atomic on the NEXT process start (see
+// that field's own doc on mount.State). current may be nil (AttachOne's own
+// SecurityFailClosedError path never reaches this function at all, per this
+// function's own doc, but a defensive nil check costs nothing).
+func (r *Reconciler) publishSecurityFailClosed(current *mount.State, relevantUnits map[string]bool) {
 	attempted := make(map[string]bool, len(r.securityPolicyAttemptedUnits))
 	for _, u := range r.securityPolicyAttemptedUnits {
 		attempted[u] = true
@@ -3434,6 +3464,13 @@ func (r *Reconciler) publishSecurityFailClosed(relevantUnits map[string]bool) {
 		}
 	}
 	r.securityFailClosedUnits.Store(&merged)
+
+	if current != nil {
+		current.SecurityFailClosedUnits = merged
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:security_fail_closed_persist", fmt.Errorf("could not persist the published fail-closed set: %w", err))
+		}
+	}
 }
 
 // SecurityFailClosedRecovered returns the units whose live security drop-in

@@ -447,6 +447,14 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// invalid policy, an Apply failure) never reach a per-unit drop-in
 		// write in that case — nothing was written onto the old digest's
 		// shared paths, so there is nothing to recover here.
+		//
+		// R6 (review round 14): record it too — same gap as attachModule's
+		// own K5a branch (reconcile.go). This target's own new-digest units
+		// never ran, so nothing here is actually unconfined — but the
+		// refusal itself is exactly the kind of event SecurityFailClosedUnits
+		// exists to report, and before this it silently never did for this
+		// class.
+		r.recordSecurityFailClosed(newMf.UnitNames())
 		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}

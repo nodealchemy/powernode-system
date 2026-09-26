@@ -4054,6 +4054,37 @@ func TestReconcile_RefusedBumpNeverRendersItsOwnSudoersGrant(t *testing.T) {
 	}
 }
 
+// TestUpgradeModule_UnapprovedPrivilegedRecordsSecurityFailClosed is R6
+// (review round 14): upgradeModule's OWN step-2 refusal branch (an
+// unapproved privileged request, an invalid policy, or a Policy.Apply
+// failure) never called recordSecurityFailClosed either — the SAME gap as
+// attachModule's own K5a branch (reconcile.go), just on the bump path. A
+// bump requesting security.privileged with no operator approval stayed
+// refused at the stable digest (correctly) but never reached
+// SecurityFailClosedUnits()/the heartbeat's RuntimeSecurityFailClosedUnits.
+func TestUpgradeModule_UnapprovedPrivilegedRecordsSecurityFailClosed(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixturePrivilegedWithSudoer("d2", true, "d2-grant")
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (d2 refused at step 2): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("precondition: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+
+	got := r.SecurityFailClosedUnits()
+	appUnit := lifecycle.UnitName("m1", "app")
+	if !containsArg(got, appUnit) {
+		t.Errorf("R6 REGRESSION: Reconciler.SecurityFailClosedUnits() must name %s after a bump's own unapproved-privileged refusal, got %v", appUnit, got)
+	}
+}
+
 // upgradeModuleFixtureWithUser is like upgradeModuleFixture but also
 // declares a single, distinguishing fleet-managed user — Q1's own test uses
 // it to prove a touched-but-abandoned digest's identity content is still

@@ -82,10 +82,104 @@ func TestAttachModule_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite(t *
 	// publishes it once, after the attach/reattach loops finish. Called
 	// directly here (this test calls attachModule, not the full RunOnce
 	// pass) to observe what a real pass would publish.
-	r.publishSecurityFailClosed(nil)
+	r.publishSecurityFailClosed(nil, nil)
 	got := r.SecurityFailClosedUnits()
 	if !containsArg(got, failingUnit) {
 		t.Errorf("Reconciler.SecurityFailClosedUnits() must name %s, got %v", failingUnit, got)
+	}
+}
+
+// TestAttachModule_UnapprovedPrivilegedRecordsSecurityFailClosed is R6
+// (review round 14): applyModuleSecurityPolicy's OWN refusals — unapproved
+// privileged, invalid policy, a Policy.Apply failure — never called
+// recordSecurityFailClosed at all before this fix, despite K5a's own doc
+// (a few lines above the fix) already stating they are "the SAME kind of
+// event as a drop-in write failure". A module requesting security.privileged
+// with no operator approval reached ONLY the SecurityFailClosedError return
+// (attachModule's own caller sees it refused), never SecurityFailClosedUnits()
+// / the heartbeat's RuntimeSecurityFailClosedUnits.
+func TestAttachModule_UnapprovedPrivilegedRecordsSecurityFailClosed(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	r := liveReconciler(t, rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "unapproved-privileged-mod",
+		Name:                        "unapproved-privileged-mod",
+		ServiceCapabilitiesPresence: true,
+		Config:                      map[string]any{"security": map[string]any{"privileged": true}},
+		Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+
+	err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf)
+	if err == nil {
+		t.Fatal("attachModule must refuse an unapproved privileged request")
+	}
+
+	r.publishSecurityFailClosed(nil, nil)
+	got := r.SecurityFailClosedUnits()
+	if !containsArg(got, unit) {
+		t.Errorf("R6 REGRESSION: Reconciler.SecurityFailClosedUnits() must name %s after an unapproved-privileged refusal, got %v", unit, got)
+	}
+}
+
+// TestPublishSecurityFailClosed_PersistsToStateAndNewReconcilerSeedsFromIt is
+// R6's own persistence test (review round 14): publishSecurityFailClosed
+// must write the published set into state.json (mount.State.
+// SecurityFailClosedUnits), and NewReconciler must seed the in-memory
+// atomic from it — without this, a fresh process (a real agent restart, or
+// this process simply exiting and a new one starting) reports a CLEAN node
+// on its very first heartbeat until the first RunOnce pass re-decides every
+// module, even for a module that was refused, unconfined, right up until
+// the restart.
+func TestPublishSecurityFailClosed_PersistsToStateAndNewReconcilerSeedsFromIt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	unit := lifecycle.UnitName("m1", "app")
+
+	first, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  &stubModulesClient{},
+		ManifestClient: &stubModulesClient{},
+		Puller:         &stubPuller{},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    &mount.RecorderRunner{},
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first.SecurityFailClosedUnits(); len(got) != 0 {
+		t.Fatalf("precondition: expected a fresh reconciler with no state.json to start clean, got %v", got)
+	}
+
+	current := &mount.State{LastAttachedManifestHashes: map[string]string{}}
+	first.securityFailClosedPending = []string{unit}
+	first.securityPolicyAttemptedUnits = []string{unit}
+	first.publishSecurityFailClosed(current, map[string]bool{unit: true})
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if !containsArg(st.SecurityFailClosedUnits, unit) {
+		t.Fatalf("R6 REGRESSION: expected state.json's own SecurityFailClosedUnits to name %s, got %v", unit, st.SecurityFailClosedUnits)
+	}
+
+	// A SECOND, freshly-constructed reconciler — simulating a process
+	// restart — pointed at the SAME state.json, with no RunOnce pass ever
+	// run against it.
+	second, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  &stubModulesClient{},
+		ManifestClient: &stubModulesClient{},
+		Puller:         &stubPuller{},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    &mount.RecorderRunner{},
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.SecurityFailClosedUnits(); !containsArg(got, unit) {
+		t.Errorf("R6 REGRESSION: a freshly-constructed Reconciler must seed SecurityFailClosedUnits() from state.json (not report clean before its first RunOnce pass), got %v", got)
 	}
 }
 

@@ -17,7 +17,7 @@ func TestSecurityFailClosed_ResetDoesNotClearThePublishedValueUntilPublish(t *te
 
 	// Pass 1: records and publishes.
 	r.recordSecurityFailClosed([]string{"unit-a.service"})
-	r.publishSecurityFailClosed(nil)
+	r.publishSecurityFailClosed(nil, nil)
 	if got := r.SecurityFailClosedUnits(); !containsArg(got, "unit-a.service") {
 		t.Fatalf("test setup: expected unit-a.service published after pass 1, got %v", got)
 	}
@@ -45,7 +45,7 @@ func TestSecurityFailClosed_ResetDoesNotClearThePublishedValueUntilPublish(t *te
 	// unit forward rather than clear it — a materially different scenario
 	// from the one this test means to cover.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, "unit-a.service")
-	r.publishSecurityFailClosed(nil)
+	r.publishSecurityFailClosed(nil, nil)
 	if got := r.SecurityFailClosedUnits(); len(got) != 0 {
 		t.Errorf("expected the published value to clear once pass 2 published its empty result, got %v", got)
 	}
@@ -63,14 +63,14 @@ func TestSecurityFailClosed_PublishDedupesAUnitPresentInBothCarryForwardAndPendi
 	r := &Reconciler{}
 
 	r.recordSecurityFailClosed([]string{"unit-a.service"})
-	r.publishSecurityFailClosed(nil)
+	r.publishSecurityFailClosed(nil, nil)
 
 	r.resetSecurityFailClosed()
 	// unit-a.service is NOT marked attempted, and IS in relevantUnits — so
 	// K4's gate alone would carry it forward — but this pass ALSO
 	// independently records it as failing again via pending.
 	r.recordSecurityFailClosed([]string{"unit-a.service"})
-	r.publishSecurityFailClosed(map[string]bool{"unit-a.service": true})
+	r.publishSecurityFailClosed(nil, map[string]bool{"unit-a.service": true})
 
 	got := r.SecurityFailClosedUnits()
 	count := 0
