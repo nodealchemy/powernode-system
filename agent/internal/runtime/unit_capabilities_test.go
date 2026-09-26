@@ -80,7 +80,7 @@ func capsByUnit(t *testing.T, writes []security.UnitCapabilities) map[string][]s
 
 func TestUnitCapabilities_ResolvesPerService(t *testing.T) {
 	mf := hubBackendLike(t)
-	writes, err := attachCapabilityWrites(mf, buildPolicy(mf))
+	writes, _, err := attachCapabilityWrites(mf, buildPolicy(mf))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,11 +109,11 @@ func TestUnitCapabilities_ReconcileAndComposeResolveIdentically(t *testing.T) {
 	mf := hubBackendLike(t)
 	policy := buildPolicy(mf)
 
-	attach, err := attachCapabilityWrites(mf, policy)
+	attach, _, err := attachCapabilityWrites(mf, policy)
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	compose, err := composeCapabilityWrites(mf.ID, mf, policy)
+	compose, _, err := composeCapabilityWrites(mf.ID, mf, policy)
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}
@@ -134,10 +134,10 @@ func TestUnitCapabilities_BothPathsRefuseASetWiderThanTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := buildPolicy(&mf)
-	if _, err := attachCapabilityWrites(&mf, policy); err == nil {
+	if _, _, err := attachCapabilityWrites(&mf, policy); err == nil {
 		t.Error("reconcile path must refuse a service capability outside the module ceiling")
 	}
-	if _, err := composeCapabilityWrites(mf.ID, &mf, policy); err == nil {
+	if _, _, err := composeCapabilityWrites(mf.ID, &mf, policy); err == nil {
 		t.Error("compose path must refuse a service capability outside the module ceiling")
 	}
 }
@@ -303,7 +303,7 @@ func oldServerPayload(t *testing.T, marker bool) *manifest.Manifest {
 
 func TestUnitCapabilities_LegacyPayloadWithoutMarkerInheritsTheCeiling(t *testing.T) {
 	mf := oldServerPayload(t, false)
-	writes, err := attachCapabilityWrites(mf, buildPolicy(mf))
+	writes, _, err := attachCapabilityWrites(mf, buildPolicy(mf))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestUnitCapabilities_LegacyPayloadWithoutMarkerInheritsTheCeiling(t *testin
 
 func TestUnitCapabilities_MarkedPayloadHonoursExplicitEmptyAsZero(t *testing.T) {
 	mf := oldServerPayload(t, true)
-	writes, err := attachCapabilityWrites(mf, buildPolicy(mf))
+	writes, _, err := attachCapabilityWrites(mf, buildPolicy(mf))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -355,8 +355,8 @@ func TestUnitCapabilities_ParityHoldsInBothModes(t *testing.T) {
 	for _, marker := range []bool{false, true} {
 		mf := oldServerPayload(t, marker)
 		policy := buildPolicy(mf)
-		attach, aerr := attachCapabilityWrites(mf, policy)
-		compose, cerr := composeCapabilityWrites(mf.ID, mf, policy)
+		attach, _, aerr := attachCapabilityWrites(mf, policy)
+		compose, _, cerr := composeCapabilityWrites(mf.ID, mf, policy)
 		if aerr != nil || cerr != nil {
 			t.Fatalf("marker=%v: attach err %v, compose err %v", marker, aerr, cerr)
 		}
@@ -455,13 +455,15 @@ func TestUnitCapabilities_ClaudeTmuxShapedManifestGrantsOnlyCredential(t *testin
 
 	for _, resolve := range []struct {
 		name string
-		fn   func() ([]security.UnitCapabilities, error)
+		fn   func() ([]security.UnitCapabilities, []string, error)
 	}{
-		{"attach", func() ([]security.UnitCapabilities, error) { return attachCapabilityWrites(&mf, policy) }},
-		{"compose", func() ([]security.UnitCapabilities, error) { return composeCapabilityWrites(mf.ID, &mf, policy) }},
+		{"attach", func() ([]security.UnitCapabilities, []string, error) { return attachCapabilityWrites(&mf, policy) }},
+		{"compose", func() ([]security.UnitCapabilities, []string, error) {
+			return composeCapabilityWrites(mf.ID, &mf, policy)
+		}},
 	} {
 		t.Run(resolve.name, func(t *testing.T) {
-			writes, err := resolve.fn()
+			writes, _, err := resolve.fn()
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -514,13 +516,15 @@ func TestUnitCapabilities_QgaShapedManifestGrantsTheFullKnownSet(t *testing.T) {
 
 	for _, resolve := range []struct {
 		name string
-		fn   func() ([]security.UnitCapabilities, error)
+		fn   func() ([]security.UnitCapabilities, []string, error)
 	}{
-		{"attach", func() ([]security.UnitCapabilities, error) { return attachCapabilityWrites(&mf, policy) }},
-		{"compose", func() ([]security.UnitCapabilities, error) { return composeCapabilityWrites(mf.ID, &mf, policy) }},
+		{"attach", func() ([]security.UnitCapabilities, []string, error) { return attachCapabilityWrites(&mf, policy) }},
+		{"compose", func() ([]security.UnitCapabilities, []string, error) {
+			return composeCapabilityWrites(mf.ID, &mf, policy)
+		}},
 	} {
 		t.Run(resolve.name, func(t *testing.T) {
-			writes, err := resolve.fn()
+			writes, _, err := resolve.fn()
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1093,7 +1097,7 @@ func TestUnitCapabilities_OldAgentLKGBytesAreLegacyUntilRefetched(t *testing.T) 
 		t.Fatalf("ToComposeInputs: %v", err)
 	}
 	mf := manifests["hub-backend"]
-	writes, err := composeCapabilityWrites("hub-backend", mf, buildPolicy(mf))
+	writes, _, err := composeCapabilityWrites("hub-backend", mf, buildPolicy(mf))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -1106,7 +1110,7 @@ func TestUnitCapabilities_OldAgentLKGBytesAreLegacyUntilRefetched(t *testing.T) 
 
 	// The refetch from a presence-marking server corrects it.
 	fresh := hubBackendLike(t)
-	writes, err = attachCapabilityWrites(fresh, buildPolicy(fresh))
+	writes, _, err = attachCapabilityWrites(fresh, buildPolicy(fresh))
 	if err != nil {
 		t.Fatalf("resolve fresh: %v", err)
 	}

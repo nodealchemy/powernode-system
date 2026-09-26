@@ -1813,7 +1813,19 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 	// capability drop-ins at all, so they are not resolved.
 	var unitCaps []security.UnitCapabilities
 	if !policy.Privileged {
-		if unitCaps, err = attachCapabilityWrites(mf, policy); err != nil {
+		var svcDropped []string
+		unitCaps, svcDropped, err = attachCapabilityWrites(mf, policy)
+		// L4 (review round 7, MEDIUM): merged into the SAME droppedCaps this
+		// function already returns for the module-wide ceiling (K5b) — one
+		// OnError call site (applyModuleSecurityPolicy, below) covers both,
+		// rather than a second, easily-forgotten diagnostic for the
+		// per-service case. Appended even when err != nil: a version-skew
+		// name and a genuine "outside the ceiling" violation on a DIFFERENT
+		// name can both be true for the same manifest at once, and the
+		// caller deserves to see the drop regardless of whether the error
+		// also refuses the module.
+		droppedCaps = append(droppedCaps, svcDropped...)
+		if err != nil {
 			return nil, nil, droppedCaps, fmt.Errorf("policy invalid: %w", err)
 		}
 	}
@@ -2199,12 +2211,24 @@ func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string 
 		return ""
 	}
 	policy := buildPolicy(mf)
+	// L4 (review round 7, MEDIUM): drop unrecognized ceiling capability names
+	// BEFORE resolving per-unit sets, exactly as decideModuleSecurityPolicy
+	// (the real attach path) does — without this, a version-skew name in the
+	// ceiling made THIS stamp's capability resolution fail (or resolve
+	// against the raw, undropped ceiling) while the real attach path,
+	// already narrowed, computed a DIFFERENT effective set — the two could
+	// disagree about whether anything changed. The dropped names themselves
+	// are not surfaced here (attachModule's own call, moments later for a
+	// module this stamp says needs re-attaching, already warns once); this
+	// call exists only to keep policy.Capabilities in agreement with what
+	// the real attach will actually use.
+	policy.DropUnknownCapabilities()
 	// Per-unit RESOLVED capability sets (IMP-caef5c00d63f), so a change to one
 	// service's own capabilities key moves the stamp. A resolution error is
 	// ignored here on purpose: attachModule refuses that module loudly, and
 	// the entries still carry the raw lists, so fixing the manifest moves the
 	// stamp and retries the attach.
-	unitCaps, _ := attachCapabilityWrites(mf, policy)
+	unitCaps, _, _ := attachCapabilityWrites(mf, policy)
 	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
 		"|" + security.RenderedPolicyHashForUnits(policy, unitCaps) +
 		"|" + r.cfg.AgentVersion

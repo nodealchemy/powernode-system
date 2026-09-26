@@ -278,7 +278,17 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 		// ceiling is refused here exactly as it is there.
 		unitAllow := map[string][]string{}
 		if !policy.Privileged {
-			unitCaps, err := composeCapabilityWrites(mod.ID, mf, policy)
+			unitCaps, capDropped, err := composeCapabilityWrites(mod.ID, mf, policy)
+			// L4 (review round 7, MEDIUM): the per-service extension of the
+			// SAME K5b drop this loop already applies to the module-wide
+			// ceiling above — reported through the SAME stage name, since
+			// it is the identical narrower-never-wider response to the
+			// identical version-skew cause, just discovered at a different
+			// scope.
+			if len(capDropped) > 0 {
+				r.cfg.OnError("compose:unknown_capability_dropped",
+					fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from a service's declared set (this agent version does not know them) — narrowing, never widening, what the service is confined to", mod.ID, capDropped))
+			}
 			if err != nil {
 				r.cfg.OnError("compose:capabilities_invalid",
 					fmt.Errorf("module %s: %w — services NOT enabled post-pivot", mod.ID, err))

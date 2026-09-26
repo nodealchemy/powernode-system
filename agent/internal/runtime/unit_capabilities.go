@@ -37,7 +37,15 @@ import (
 // (or the raw ceiling when it declared none). The attach callers refuse the
 // module on a non-nil error and never write those entries; the stamp still
 // needs them so a fix to the offending manifest moves it.
-func resolveUnitCapabilities(mf *manifest.Manifest, policy *security.Policy, moduleID string) ([]security.UnitCapabilities, error) {
+//
+// dropped (L4, review round 7, MEDIUM) collects every unrecognized capability
+// name security.ResolveServiceCapabilities dropped, across every service —
+// including one whose resolution otherwise errored (a real "outside the
+// ceiling" violation is a separate manifest problem from a version-skew
+// name; both can be true for the same service at once, and the caller
+// deserves to know about the drop regardless of whether the error also
+// refuses the module).
+func resolveUnitCapabilities(mf *manifest.Manifest, policy *security.Policy, moduleID string) (units []security.UnitCapabilities, dropped []string, err error) {
 	out := make([]security.UnitCapabilities, 0, len(mf.Services))
 	var errs []error
 	for _, svc := range mf.Services {
@@ -46,9 +54,10 @@ func resolveUnitCapabilities(mf *manifest.Manifest, policy *security.Policy, mod
 		if declared && len(svc.Capabilities.Names) == 0 && !mf.ServiceCapabilitiesPresence {
 			declared = false // legacy payload: its [] carries no intent
 		}
-		allow, err := security.ResolveServiceCapabilities(policy.Capabilities, declared, svc.Capabilities.Names)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("service %s: %w", svc.Name, err))
+		allow, svcDropped, rerr := security.ResolveServiceCapabilities(policy.Capabilities, declared, svc.Capabilities.Names)
+		dropped = append(dropped, svcDropped...)
+		if rerr != nil {
+			errs = append(errs, fmt.Errorf("service %s: %w", svc.Name, rerr))
 			allow = policy.Capabilities
 			if declared {
 				allow = svc.Capabilities.Names
@@ -56,17 +65,17 @@ func resolveUnitCapabilities(mf *manifest.Manifest, policy *security.Policy, mod
 		}
 		out = append(out, security.UnitCapabilities{Unit: unit, Allow: allow})
 	}
-	return out, errors.Join(errs...)
+	return out, dropped, errors.Join(errs...)
 }
 
 // attachCapabilityWrites is the reconcile path's view: units are named from
 // the manifest's own id, exactly as mf.UnitNames() names them.
-func attachCapabilityWrites(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, error) {
+func attachCapabilityWrites(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error) {
 	return resolveUnitCapabilities(mf, policy, mf.ID)
 }
 
 // composeCapabilityWrites is the pivot-compose path's view: units are named
 // from the stack entry's module id, as ComposeForPivot names them.
-func composeCapabilityWrites(moduleID string, mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, error) {
+func composeCapabilityWrites(moduleID string, mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error) {
 	return resolveUnitCapabilities(mf, policy, moduleID)
 }

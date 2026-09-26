@@ -153,7 +153,7 @@ func TestRealQgaManifest_ResolvesToFullCapabilitySetAndNoUserNamespace(t *testin
 		t.Errorf("qga's real manifest must declare NO seccomp_profile (seccomp has no fail-closed exemption); got %q", policy.SeccompProfile)
 	}
 
-	writes, err := attachCapabilityWrites(mf, policy)
+	writes, _, err := attachCapabilityWrites(mf, policy)
 	if err != nil {
 		t.Fatalf("attachCapabilityWrites: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestRealQgaManifest_ResolvesToFullCapabilitySetAndNoUserNamespace(t *testin
 func TestRealHubBackendManifest_RailsSetupCeilingIsNarrowNotFull(t *testing.T) {
 	mf := loadModuleManifestYAML(t, "powernode-hub-backend")
 	policy := buildPolicy(mf)
-	writes, err := attachCapabilityWrites(mf, policy)
+	writes, _, err := attachCapabilityWrites(mf, policy)
 	if err != nil {
 		t.Fatalf("attachCapabilityWrites: %v", err)
 	}
