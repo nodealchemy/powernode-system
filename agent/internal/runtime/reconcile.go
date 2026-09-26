@@ -1063,13 +1063,56 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if len(bumps) > 0 {
 			bumpOldMf := make(map[string]*manifest.Manifest, len(bumps))
 			for _, b := range bumps {
-				if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
+				// N3 (review round 11): the digest-keyed attached snapshot is
+				// the AUTHORITATIVE old side — unlike previousManifests
+				// (RunOnce's own ID-keyed pre-fetch disk snapshot, captured
+				// fresh every tick), it is written ONLY at the moment b.old's
+				// OWN digest was actually attached/committed, so a later
+				// tick's fetch of a DIFFERENT (attempted upgrade) digest can
+				// never overwrite it. previousManifests remains the fallback
+				// for an entry attached by a pre-N3 build, which has no
+				// snapshot on disk at all yet.
+				if bmf, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, b.old.ID, b.old.Digest); err == nil && bmf != nil {
+					bumpOldMf[b.new.ID] = bmf
+				} else if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
 					bumpOldMf[b.new.ID] = bmf
 				}
 			}
 			if len(bumpOldMf) > 0 {
 				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldMf))
 				egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
+				// Doc (review round 11, requested alongside N3): precedence and
+				// its accepted cost, stated explicitly rather than left
+				// implicit in append order. NEW is appended before OLD for
+				// each bumped ID below — etcidentity.Collect/etcsudoers.
+				// CollectFromManifests both keep the FIRST occurrence of a
+				// given name and only ever CONFLICT-REPORT (never silently
+				// merge) a same-name entry that later disagrees on UID/GID —
+				// so a user or group the old and new manifests both declare
+				// under the SAME name resolves to the NEW manifest's values,
+				// with the discrepancy surfaced via reconciler:identity_conflict
+				// rather than silently applied. This is ACCEPTED: the
+				// alternative (old wins) would describe the old digest's
+				// values under a name the new digest is about to redefine,
+				// which is no better once the bump commits. What this does
+				// NOT catch: two DIFFERENT names colliding on the SAME UID/GID
+				// (old declares "olduser" at 5001, new declares "svc" at
+				// 5001) — Collect's own conflict detection is keyed by name,
+				// not by id, so that case renders two passwd entries sharing
+				// one UID with no warning at all. Also accepted here — a bump
+				// that both renames a user's login name AND keeps its exact
+				// old numeric id is exactly the shape a real "svc user
+				// rename" migration takes, and this union render only ever
+				// lasts until the bump commits or reverts.
+				//
+				// The sudoers side of the SAME union is a temporary
+				// old∪new — a grant either manifest declares is honoured for
+				// as long as the bump is pending, WIDER than either digest
+				// alone would grant on its own. Also accepted: sudoers scope
+				// creep for the (bounded, visible-via-PendingDigest) duration
+				// of an in-flight upgrade is a smaller risk than a
+				// crash-restarting unit finding a sudo rule it needs
+				// missing.
 				for id, m := range mergedManifests {
 					identityManifests = append(identityManifests, m)
 					if oldMf, isBump := bumpOldMf[id]; isBump {
@@ -1237,6 +1280,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		mod.Units = mf.UnitNames()
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
+		// N3 (review round 11): persist THIS digest's manifest content,
+		// independent of the ID-keyed "latest fetch" cache a LATER tick's
+		// fetch of a different (attempted upgrade) digest will overwrite —
+		// see manifest.SaveAttachedSnapshot's own doc.
+		if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, mf); err != nil {
+			r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, err))
+		}
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
 			// The stamp above is what the reattach gate compares, so leaving
 			// it in place after a refused materialization tells the next tick
@@ -1275,7 +1325,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.noteUnconverged("reconciler:missing_manifest", u.new.ID, fmt.Errorf("module %s: manifest not loaded", u.new.ID))
 			continue
 		}
-		r.upgradeModule(ctx, current, u, newMf, previousManifests[u.old.ID], outgoingPaths[u.new.ID], desiredForLayers, stateWasEmpty)
+		// N3 (review round 11): prefer the digest-keyed attached snapshot for
+		// oldMf too (oldUnitNames' own pre-round-9-entry fallback) — same
+		// staleness reasoning as the identity/egress union above.
+		oldMf := previousManifests[u.old.ID]
+		if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, u.old.ID, u.old.Digest); err == nil && snap != nil {
+			oldMf = snap
+		}
+		r.upgradeModule(ctx, current, u, newMf, oldMf, outgoingPaths[u.new.ID], desiredForLayers, stateWasEmpty)
 	}
 
 	// Re-attach loop for manifest-only changes. attachModule is
@@ -1294,6 +1351,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
+		// N3 (review round 11): a manifest-only edit at this STABLE digest
+		// still changes what "the content attached at this digest" means —
+		// refresh the snapshot so a LATER bump's old-side union reads the
+		// current content, not whatever was true at the original attach.
+		if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, mf); err != nil {
+			r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, err))
+		}
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
 			// Same re-queue as the attach loop: a refused materialization must
 			// not leave a stamp claiming this manifest is materialized, and

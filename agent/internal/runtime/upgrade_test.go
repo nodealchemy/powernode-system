@@ -398,6 +398,28 @@ func TestUpgradeModule_PendingUpgradeStillRendersOldUser(t *testing.T) {
 	if captured == nil || !hasUser(captured, "olduser") {
 		t.Errorf("M3 REGRESSION: a pending (blocked) upgrade must still render olduser — the OLD unit is still running and may crash-restart against a passwd that no longer has it, got %+v", captured)
 	}
+
+	// N3 (review round 11, adapted from reviewer A's
+	// TestR10A_IdentityUnionLostOnSecondFailedTick): a SECOND consecutive
+	// blocked tick must ALSO still render olduser. Before N3, the identity
+	// union's old side came from previousManifests — RunOnce's own ID-keyed
+	// pre-fetch disk snapshot, captured fresh at the top of EVERY tick from
+	// whatever the LAST fetch wrote to the on-disk cache. Pass 2's own
+	// fetch (the d2 manifest, dropping olduser) already overwrote that
+	// cache before pass 2 even finished, so pass 3's previousManifests
+	// snapshot read back d2 — the "new" manifest — as if it were the old
+	// one, reverting the union to new-only and dropping olduser while the
+	// OLD unit (still running d1) was never actually touched.
+	captured = nil
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3: %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("pass 3: expected the still-blocked upgrade to leave m1 at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if captured == nil || !hasUser(captured, "olduser") {
+		t.Errorf("N3 REGRESSION: a SECOND consecutive blocked tick must still render olduser — got %+v", captured)
+	}
 }
 
 func hasUser(set *etcidentity.Set, name string) bool {

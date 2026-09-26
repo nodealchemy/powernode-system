@@ -385,6 +385,14 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		current.AttachedModules = append(current.AttachedModules, newMod)
 	}
 	current.LastAttachedManifestHashes[newMod.ID] = r.attachStamp(newMod.ID, newMf)
+	// N3 (review round 11): persist the NEW digest's own snapshot at the
+	// moment it becomes the attached, running content — a LATER bump of
+	// this same module ID reads it as ITS old side, independent of
+	// whatever a still-later tick's own fetch attempt overwrites the
+	// ID-keyed "latest fetch" cache with.
+	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, newMod.ID, newMod.Digest, newMf); err != nil {
+		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
+	}
 }
 
 // oldUnitNames resolves the unit names the OLD digest owned: old.Units
