@@ -2745,3 +2745,190 @@ func TestUpgradeModule_RevertAfterStep1RefusalNeverRestartsTheUntouchedUnit(t *t
 		t.Errorf("O8(d) REGRESSION: the revert must still clear PendingDigest, got %q", pd)
 	}
 }
+
+// TestUpgradeBackoffFor_CapsAtFiveMinutes is O9's own mutant-kill test
+// (review round 12, "5m backoff cap removed"): upgradeBackoffFor grows
+// geometrically (10s * 2^(attempts-1)) but must never exceed 5 minutes — a
+// crash-looping binary must be retried eventually, not backed off into the
+// next hour. Direct unit test: no existing test pinned this cap at all
+// (the O3/backoffAllows tests only ever exercise a couple of attempts, well
+// under where the cap would bite).
+func TestUpgradeBackoffFor_CapsAtFiveMinutes(t *testing.T) {
+	const maxWait = 5 * time.Minute
+	// 10s * 2^5 = 320s > 300s (5m) — attempts=6 is the first value the
+	// UNCAPPED formula would exceed 5m at; anything beyond must stay pinned
+	// at exactly maxWait, never keep growing.
+	for _, attempts := range []int{6, 7, 20, 1000} {
+		if got := upgradeBackoffFor(attempts); got != maxWait {
+			t.Errorf("upgradeBackoffFor(%d) = %v, want the capped %v", attempts, got, maxWait)
+		}
+	}
+	// Sanity: below the cap, it still actually grows (the cap engages
+	// somewhere, not everywhere) — a mutant that always returns maxWait
+	// would otherwise slip through the assertions above undetected.
+	if got := upgradeBackoffFor(1); got != 10*time.Second {
+		t.Errorf("upgradeBackoffFor(1) = %v, want 10s (uncapped)", got)
+	}
+	if got := upgradeBackoffFor(3); got != 40*time.Second {
+		t.Errorf("upgradeBackoffFor(3) = %v, want 40s (uncapped)", got)
+	}
+	if got := upgradeBackoffFor(5); got >= maxWait {
+		t.Errorf("upgradeBackoffFor(5) = %v, want still below the %v cap (160s uncapped)", got, maxWait)
+	}
+}
+
+// TestUpgradeModule_N8DeclinesWhenTheFailingUnitIsShared is O9's own
+// mutant-kill test (review round 12, "N8 shared-unit guard removed"):
+// recoverFromDepartingUnitConflict's own oldUnitSet check declines to act
+// at all when a FAILING unit is one the OLD digest also owned — a unit
+// that existed before this upgrade cannot be "a new unit that lost a bind
+// race against a departing one", so its failure is a genuine crash, never
+// N8's class of bug.
+//
+// TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning
+// already has a shared unit (app) fail, but its departing unit (old-worker)
+// is never marked active there, so N8 would ALSO decline via its separate
+// "nothing departing is even holding anything" check even with the
+// oldUnitSet guard removed entirely — that test cannot tell the two guards
+// apart. This test marks the departing unit ACTIVE, so removing JUST the
+// oldUnitSet guard would let N8 proceed: stop the healthy departing unit
+// and retry the shared unit, wrongly treating a genuine crash as a port
+// conflict.
+func TestUpgradeModule_N8DeclinesWhenTheFailingUnitIsShared(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump drops old-worker (a genuine departure) but app — SHARED by both
+	// digests — is what actually crashes on restart, exactly like
+	// TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning,
+	// except old-worker is explicitly ACTIVE so a guard-removed N8 would
+	// find something to "recover" from.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{
+		appIsActiveKey:                         []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey) // app crashes inside the settle window
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	tick2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+	tick2 := runner.Invocations[tick2Start:]
+
+	if hasSystemctlOp(tick2, "stop", oldWorkerUnit) {
+		t.Errorf("O9 REGRESSION (N8 shared-unit guard removed): a SHARED unit's genuine crash must never trigger N8's conflict recovery — old-worker (healthy, departing) must not be stopped: %v", tick2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("expected the genuine crash to refuse the commit, m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("expected PendingDigest=d2 to remain set after the refusal, got %q ok=%v", pd, ok)
+	}
+}
+
+// TestUpgradeModule_CommitClearsTheDropInSnapshotStoreFile is O9's own
+// mutant-kill test (review round 12, "N7 snapshot clear on commit
+// dropped"): upgradeModule's step 7 commit prunes the STATE-dir drop-in
+// snapshot store for (moduleID, committedDigest) via
+// pruneDropInSnapshotsForModule(..., ""). TestLoadOrTakeDropInSnapshot_
+// PersistsAndReusesAcrossAttempts already pins clearDropInSnapshotStore's
+// OWN reuse semantics by calling it directly, but never exercises whether
+// upgradeModule's actual commit path calls it AT ALL — a mutant that drops
+// just that call site survives that test untouched. This test goes through
+// RunOnce end to end and checks the on-disk file itself.
+func TestUpgradeModule_CommitClearsTheDropInSnapshotStoreFile(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (commits to d2): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Fatalf("precondition: expected m1 committed to d2, got digest=%q ok=%v", digest, ok)
+	}
+
+	snapPath := dropInSnapshotStorePath(filepath.Dir(statePath), "m1", "d2")
+	if _, err := os.Stat(snapPath); !os.IsNotExist(err) {
+		t.Errorf("O9 REGRESSION (N7 snapshot clear on commit dropped): expected the drop-in snapshot file %s to be removed once the upgrade commits, stat err=%v", snapPath, err)
+	}
+}
+
+// TestUpgradeModule_RevertActuallyRestartsAnActiveUnit is O9's own
+// mutant-kill test (review round 12, "revert with forceRestartActive=false"):
+// the revert path's own attachModuleServicesOpts call passes
+// forceRestartActive=true specifically so a unit the failed attempt left
+// running the OLD binary in a bad state gets RESTARTED, not merely left
+// alone. Every existing revert test (e.g.
+// TestUpgradeModule_RevertAfterSettleFailureRestartsAndClearsPending)
+// leaves app at RecorderRunner's default "not active" and asserts only
+// "SOME start/restart" — AttachServicesModeOpts issues a plain `start` for
+// an inactive unit regardless of forceRestartActive, so those tests cannot
+// tell true from false. This test marks app ACTIVE throughout and asserts
+// the exact verb: only forceRestartActive=true (with the unit active)
+// produces `restart`; false would produce nothing at all here (Skipped,
+// since d1's manifest body is unchanged).
+func TestUpgradeModule_RevertActuallyRestartsAnActiveUnit(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey) // crash inside the settle window
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (crash inside settle window): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2, got %q ok=%v", pd, ok)
+	}
+
+	// Revert to d1 — app is marked ACTIVE this time (the crash left SOME
+	// process running, e.g. a supervisor that respawned it) so the verb
+	// choice is actually observable.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+
+	tick3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (revert): %v", err)
+	}
+	tick3 := runner.Invocations[tick3Start:]
+	if !hasSystemctlOp(tick3, "restart", appUnit) {
+		t.Errorf("O9 REGRESSION (forceRestartActive=false): the revert must RESTART an active unit left over from the failed attempt, got: %v", tick3)
+	}
+}
