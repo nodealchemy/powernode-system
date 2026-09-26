@@ -154,3 +154,50 @@ func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, 
 	}
 	return safe
 }
+
+// filterUnverifiedDetaches drops from a detach set any module whose manifest
+// THIS TICK could not be loaded at all (see manifestFetchFailed's doc in
+// RunOnce) — a distinct failure mode from the one filterUnsafeDetaches
+// guards, and applied UNCONDITIONALLY (self-hosted or not).
+//
+// WHY UNCONDITIONAL. filterUnsafeDetaches above exists for the case where
+// FetchAssignedModules itself came back degraded — see this file's doc
+// comment on the 2026-07-28 incident — and only self-hosted nodes are
+// unrecoverable from that. This guards a DIFFERENT input: the assigned-
+// modules list is fine, but one module's manifest.LoadOrFetch call (a
+// PER-MODULE, mid-tick network call) errored — e.g. the platform 502ing
+// while it restarts (IMP-2dfbd7f62441, the 2026-09-22 ops-hub outage). A
+// module in that state is excluded from `desired` entirely (RunOnce never
+// learns its digest), so mount.Reconcile cannot distinguish "the operator
+// unassigned this" from "we transiently failed to ask about it" — both look
+// identical: absent from desired, present in current. Being wrong here costs
+// a live service outage on ANY node, self-hosted or not (a non-self-hosted
+// node recovers on its own next successful tick, but the outage in between
+// is real and unnecessary), so this filter does not gate on selfHosted().
+//
+// A module that legitimately left the assignment list was NEVER a manifest
+// fetch failure — it is simply absent from desiredModules, which never
+// enters `failed`. So this can only ever make a detach MORE conservative,
+// never block a real removal.
+func (r *Reconciler) filterUnverifiedDetaches(toDetach mount.ModuleStack, failed map[string]bool) mount.ModuleStack {
+	if len(toDetach) == 0 || len(failed) == 0 {
+		return toDetach
+	}
+
+	safe := make(mount.ModuleStack, 0, len(toDetach))
+	deferred := make([]string, 0)
+	for _, mod := range toDetach {
+		if failed[mod.ID] {
+			deferred = append(deferred, mod.ID)
+			continue
+		}
+		safe = append(safe, mod)
+	}
+
+	if len(deferred) > 0 {
+		r.cfg.OnError("reconciler:detach_deferred_manifest_fetch_failed",
+			fmt.Errorf("this pass could not load %d assigned module(s)' manifest(s) [%s]; deferring their detach rather than treating the fetch failure as a removal — they will be re-evaluated next tick",
+				len(deferred), strings.Join(deferred, ", ")))
+	}
+	return safe
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
@@ -87,6 +88,21 @@ func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profile strin
 // overrides from. Variable so tests can redirect.
 var systemdDropInRoot = "/etc/systemd/system"
 
+// SetSystemdDropInRootForTest redirects every per-unit drop-in writer in this
+// package to dir and returns a restore func. For tests in OTHER packages that
+// drive a real attach path (runtime's attachModule) and must read back what
+// it wrote, without touching the host's /etc/systemd/system.
+func SetSystemdDropInRootForTest(dir string) (restore func()) {
+	// Exported for cross-package tests only; redirecting the drop-in root in a
+	// running agent would silently write every unit's confinement elsewhere.
+	if !testing.Testing() {
+		panic("security.SetSystemdDropInRootForTest called outside a test binary")
+	}
+	prev := systemdDropInRoot
+	systemdDropInRoot = dir
+	return func() { systemdDropInRoot = prev }
+}
+
 // WriteSeccompDropIn renders a systemd drop-in that adds
 // `SystemCallFilter=@<name>` to the named unit, where <name> is derived
 // from the module's manifest-declared seccomp_profile value. The drop-in
@@ -127,6 +143,19 @@ func WriteSeccompDropInAt(root, unit, profilePath string) error {
 	return writeSeccompDropInAt(base, unit, profilePath)
 }
 
+// renderSeccompDropInBody is WriteSeccompDropIn's file body, factored out to
+// a pure function for the same reason renderCapabilityDropInBody is
+// (capabilities.go) — RenderedPolicyHash (policy_stamp.go) and the writer
+// must share one render, or a future fix to this rendering logic could ship
+// with the stamp never moving (IMP-f5c0afa7183a).
+func renderSeccompDropInBody(profilePath string) (string, error) {
+	name, err := SeccompFilterName(profilePath)
+	if err != nil {
+		return "", err
+	}
+	return "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n", nil
+}
+
 func writeSeccompDropInAt(base, unit, profilePath string) error {
 	if unit == "" {
 		return errors.New("WriteSeccompDropIn: empty unit")
@@ -137,7 +166,7 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 	if strings.HasPrefix(unit, "-") {
 		return errors.New("WriteSeccompDropIn: invalid unit name (leading dash)")
 	}
-	name, err := SeccompFilterName(profilePath)
+	body, err := renderSeccompDropInBody(profilePath)
 	if err != nil {
 		return fmt.Errorf("WriteSeccompDropIn: %w", err)
 	}
@@ -147,7 +176,6 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 		return errors.New("WriteSeccompDropIn: mkdir " + dropInDir + ": " + err.Error())
 	}
 	dropInPath := filepath.Join(dropInDir, "seccomp.conf")
-	body := "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n"
 	// Atomic tmp+rename (parity with WriteCapabilityDropIn / userns) so a
 	// mid-write failure can never leave a TRUNCATED directive that systemd would
 	// still load — which on the pivot path (drop-in writes are non-fatal/OnError)

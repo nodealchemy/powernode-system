@@ -260,6 +260,24 @@ RSpec.describe System::DevCellBootstrapService do
         .to contain_exactly(*described_class::DEV_CELL_MCP_TOOLS)
     end
 
+    it "grants the cell the environment write as a REQUEST, never the write itself" do
+      service.send(:build_mcp)
+      principal_grant = peer_for(instance).granted_mcp_tools
+      expect(principal_grant).to include("platform.environment_update", "platform.environment_list")
+
+      # The grant is safe only because every GOVERNANCE_REQUEST write parks for a
+      # person: an instance principal skips the per-user permission check, so an
+      # ungated action here would be a direct governance write from the cell.
+      described_class::GOVERNANCE_REQUEST_MCP_TOOLS.each do |name|
+        action = name.delete_prefix("platform.")
+        tool_class = ::Ai::Tools::PlatformApiToolRegistry.all_tools.fetch(action).constantize
+        declaration = tool_class.declared_action(action)
+        next unless declaration[:mutating]
+
+        expect(declaration[:human_only]).to be(true), "#{name} is granted to dev cells but is not human_only"
+      end
+    end
+
     it "leaves an operator-widened grant intact across a re-bootstrap" do
       service.send(:build_mcp)
       peer = peer_for(instance)

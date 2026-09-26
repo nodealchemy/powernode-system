@@ -335,7 +335,7 @@ RSpec.describe "Approved-lane remediation outcomes (IMP-31f1e5f9b365)" do
   describe "tick! integration" do
     it "the approved lane's row is minted during the tick and reported" do
       stub_reboot_ok!
-      allow(service).to receive(:collect_signals).and_return([ [], [] ])
+      allow(service).to receive(:collect_signals).and_return([ [], [], {} ])
       allow(service).to receive(:collect_project_metrics!)
       approved_request!(payload: silent_payload)
 

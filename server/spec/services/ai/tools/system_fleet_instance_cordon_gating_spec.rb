@@ -321,6 +321,17 @@ RSpec.describe "SystemFleetTool instance cordon gating (IMP-0467eee9fc57)" do
       expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty
     end
 
+    # IMP-fdaab67b6fc5 — the uncordon half of the same "Instance not found"
+    # raise (find_cordon_target/#uncordon_instance_gate_context) the two
+    # cordon examples above already pin; not previously exercised on its own.
+    it "refuses to park an uncordon of an unknown instance with the inline error" do
+      response = uncordon!(SecureRandom.uuid)
+
+      expect(response[:success]).to be(false)
+      expect(response[:error]).to eq("Instance not found")
+      expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty
+    end
+
     it "refuses another account's instance the same way" do
       other = create(:account)
       foreign_node = create(:system_node, account: other, node_template: create(:system_node_template, account: other))

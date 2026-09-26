@@ -189,6 +189,15 @@ module System
           raise NotImplementedError
         end
 
+        # Counts about the LAST #sense that are not signals, e.g. candidates a
+        # sensor skipped on purpose. FleetAutonomyService puts every non-empty
+        # hash on fleet.tick_complete under sensor_diagnostics, keyed by
+        # sensor_key. Never a signal: the decision engine acts on signals, and
+        # a skip re-signalled is the noise the skip removed.
+        def diagnostics
+          {}
+        end
+
         protected
 
         attr_reader :account

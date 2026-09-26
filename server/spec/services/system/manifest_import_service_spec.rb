@@ -225,6 +225,19 @@ RSpec.describe System::ManifestImportService, type: :service do
           expect(result.validation_errors.join).to include("security.capabilities[0]")
         end
 
+        # IMP-caef5c00d63f: the grammar alone admits CAP_BOGUS, and the agent
+        # then refuses the WHOLE module (an outage), so the server holds the
+        # ceiling to the agent's KnownCapabilities list.
+        it "rejects a well-formed but unknown capability in the module ceiling" do
+          result = import_with_security(<<~YAML)
+            security:
+              capabilities:
+                - CAP_BOGUS
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security.capabilities[0] \"CAP_BOGUS\" is not a known Linux capability")
+        end
+
         it "rejects a seccomp_profile that is a path" do
           result = import_with_security(<<~YAML)
             security:
@@ -729,6 +742,178 @@ RSpec.describe System::ManifestImportService, type: :service do
           result = described_class.import!(node_module: mod, yaml: edge_yaml(target: "tokenizer", kind: "softdep"))
           expect(result.ok?).to be true
         end
+      end
+    end
+
+    # IMP-074fcd68284f — stage 1 of 3 for per-service Linux capabilities.
+    # Module security.capabilities is a CEILING; a service's own
+    # capabilities is its effective set and must be a SUBSET; absent
+    # means inherit the whole ceiling; explicit [] means zero.
+    context "service capability ceiling (per-service Linux capabilities, IMP-074fcd68284f)" do
+      it "preserves nil for a service that never declares capabilities, distinct from an explicit []" do
+        # rails declares `capabilities: []`, postgres declares no
+        # capabilities key at all — the exact absent-vs-empty pair the
+        # whole design exists to distinguish.
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: []
+            - name: postgres
+              start_command: "y"
+              user: postgres
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be true
+        mod.reload
+        expect(mod.module_services.find_by(name: "rails").capabilities).to eq([])
+        expect(mod.module_services.find_by(name: "postgres").capabilities).to be_nil
+      end
+
+      # IMP-caef5c00d63f — the agent decodes a service's capabilities as
+      # presence + list; a non-array value would fail decoding the WHOLE
+      # manifest on the node, and a string would raise NoMethodError in the
+      # ceiling check below before any validation error reached the caller.
+      it "marks every service row it writes as presence-recorded, so the node payload carries the module marker" do
+        legacy = create(:system_module_service, node_module: mod, account: mod.account,
+                        name: "rails", start_command: "old", capabilities: [], capabilities_presence_recorded: false)
+        expect(System::NodeModuleNodeApiSerializer.new(mod.reload).full).not_to have_key(:service_capabilities_presence)
+
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: []
+            - name: worker
+              start_command: "y"
+              user: powernode
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+
+        expect(result.ok?).to be true
+        expect(legacy.reload.capabilities_presence_recorded).to be(true)
+        expect(mod.reload.module_services.pluck(:capabilities_presence_recorded)).to all(be(true))
+        expect(System::NodeModuleNodeApiSerializer.new(mod).full[:service_capabilities_presence]).to be(true)
+      end
+
+      it "rejects a service capabilities value that is not an array, as a validation error" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: CAP_NET_BIND_SERVICE
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(a_string_including("services[rails].capabilities must be an array"))
+      end
+
+      it "rejects a service capability outside the CAP_ grammar, as the module-level block does" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [net_bind_service]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(a_string_including("services[rails].capabilities[0]"))
+      end
+
+      it "rejects a well-formed but unknown service capability, keyed by service name" do
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [CAP_BOGUS]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors).to include(
+          a_string_including("services[rails].capabilities[0] \"CAP_BOGUS\" is not a known Linux capability")
+        )
+      end
+
+      it "accepts a service capability that is a subset of the module's ceiling" do
+        # manifest_yaml's own security.capabilities ceiling is [CAP_NET_BIND_SERVICE].
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [CAP_NET_BIND_SERVICE]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be true
+        expect(mod.reload.module_services.find_by(name: "rails").capabilities).to eq([ "CAP_NET_BIND_SERVICE" ])
+      end
+
+      it "refuses a service capability that exceeds the module's ceiling — the input that makes the guard FIRE" do
+        # Ceiling is [CAP_NET_BIND_SERVICE]; the service asks for a
+        # DIFFERENT capability the module was never approved for.
+        yaml = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [CAP_CHOWN]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.error).to include("services[rails].capabilities")
+        expect(result.error).to include("CAP_CHOWN")
+        expect(mod.reload.module_services.find_by(name: "rails")).to be_nil
+      end
+
+      it "refuses ANY service capability under a module with no security.capabilities ceiling at all" do
+        # modules/runtime-{go,node,ruby} ship with no `security:` block
+        # today — inert only because they declare no services. Absent
+        # ceiling means EMPTY, never unrestricted, so the first service
+        # such a module ever adds must be refused if it asks for
+        # anything, not silently granted everything.
+        no_security_manifest = manifest_yaml.sub(<<~OLD, "")
+          security:
+            capabilities:
+              - CAP_NET_BIND_SERVICE
+            egress_allow: []
+            privileged: false
+        OLD
+        yaml = no_security_manifest + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+              capabilities: [CAP_CHOWN]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.error).to include("services[rails].capabilities")
+        expect(result.error).to include("CAP_CHOWN")
+      end
+
+      it "does not raise, and imports cleanly, for a service with NO capabilities under a ceiling-less module — the input that makes the guard PASS" do
+        no_security_manifest = manifest_yaml.sub(<<~OLD, "")
+          security:
+            capabilities:
+              - CAP_NET_BIND_SERVICE
+            egress_allow: []
+            privileged: false
+        OLD
+        yaml = no_security_manifest + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              user: powernode
+        YAML
+        result = nil
+        expect { result = described_class.import!(node_module: mod, yaml: yaml) }.not_to raise_error
+        expect(result.ok?).to be true
+        expect(mod.reload.module_services.find_by(name: "rails").capabilities).to be_nil
       end
     end
 

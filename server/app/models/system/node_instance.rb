@@ -1096,6 +1096,19 @@ module System
     # queue is a footgun on a model this widely passed around.
     private :confirmed_termination?, :cancel_unrunnable_tasks!
 
+    # The one caller-driven entry to the sweep above, fenced to the case the
+    # callback cannot see. A row that gave up its provider identity
+    # (#provider_guest_lost?) is finalized with the OPTIMISTIC terminate!: the
+    # provider proved only that the id names another guest, so a
+    # mark_terminated would record a confirmation nobody gave (it is audited
+    # and exported). Its tasks can still never run. A no-op on any row that is
+    # not both terminated and lost, so it cannot empty a live queue.
+    def cancel_unrunnable_tasks_of_lost_row!
+      return unless status == "terminated" && provider_guest_lost?
+
+      cancel_unrunnable_tasks!
+    end
+
     def stale_heartbeat?
       return true if last_heartbeat_at.nil?
 

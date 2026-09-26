@@ -10,6 +10,14 @@ module System
       # ("run this module"). Distinct from ModuleDriftSensor — that one detects
       # *running* drift; this one detects *intent* drift.
       class ConfigDriftSensor < BaseSensor
+        # The same INV-1 predicate DecisionEngine#dispatch_reconcile_task
+        # refuses on: apply_config is never dispatched to this deployment's own
+        # hosting node, so drift there cannot be remediated by this signal and
+        # re-emitted every tick forever (ops-hub: every one of its assignments,
+        # ~4,100 signals per 6h). The self-hosting node is upgraded by the
+        # operator on the node itself, not by the reconciler.
+        include ::System::Autonomy::SelfManagementFence
+
         # Don't fire for very recent changes — the dispatch loop runs every
         # 60s, so a 5-minute window is the natural floor before this signal
         # is meaningful.
@@ -35,7 +43,14 @@ module System
         APPLY_COMMAND = "apply_config"
         APPLIED_STATUS = "complete"
 
+        # skipped_self_managed is present even at 0, so "ran and skipped
+        # none" reads differently from a sensor that never ran.
+        def diagnostics
+          { skipped_self_managed: @skipped_self_managed.to_i }
+        end
+
         def sense
+          @skipped_self_managed = 0
           cutoff = Time.current - STALE_THRESHOLD
           stale = ::System::NodeModuleAssignment
             .joins(:node)
@@ -45,6 +60,11 @@ module System
           last_apply_by_node = last_apply_at_by_node(stale)
 
           stale.find_each.filter_map do |asgn|
+            if self_managed_target?(asgn.node_id)
+              @skipped_self_managed += 1
+              next
+            end
+
             last_apply = last_apply_by_node[asgn.node_id]
 
             next if last_apply && last_apply > asgn.updated_at

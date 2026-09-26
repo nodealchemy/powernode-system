@@ -81,6 +81,23 @@ func TestPolicy_Validate_RejectsMixedPrivilegedAndPolicy(t *testing.T) {
 	}
 }
 
+// TestPolicyValidate_RejectsPrivilegedWithSeccomp pins the coupling
+// RenderedPolicyHash's seccomp gating depends on (policy_stamp.go): unlike
+// capabilities, attachModule's seccomp write loop (reconcile.go) has no
+// `!policy.Privileged` condition of its own — a Privileged module can only
+// ever reach that loop with an empty SeccompProfile because Validate refuses
+// the combination here, in a different file. If this test is ever the one
+// that breaks, RenderedPolicyHash's seccomp component (deliberately gated on
+// `SeccompProfile != ""` alone, NOT on `!p.Privileged`) needs the same
+// re-examination, not just this assertion updated.
+func TestPolicyValidate_RejectsPrivilegedWithSeccomp(t *testing.T) {
+	p := &Policy{Privileged: true, SeccompProfile: "default"}
+	errs := p.Validate()
+	if len(errs) == 0 {
+		t.Fatal("expected error: privileged=true with an explicit seccomp_profile")
+	}
+}
+
 func TestPolicy_Privileged_SkipsMACAndCaps(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	p := &Policy{Privileged: true, EgressDeclared: true, EgressAllow: []string{"api.example.com:443"}}

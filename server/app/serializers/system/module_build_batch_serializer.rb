@@ -39,6 +39,10 @@ module System
         active:           @batch.active?,
         finished:         @batch.finished?,
         package_context:  package_context_summary,
+        # No-op skips (a stale re-tag published nothing): a `complete` batch
+        # with noop_count == planned_count shipped nothing at all.
+        noop_count:       @batch.metadata["noop_count"].to_i,
+        noop_modules:     Array(@batch.metadata["noop_modules"]),
         created_at:       @batch.created_at,
         updated_at:       @batch.updated_at
       }
@@ -53,6 +57,7 @@ module System
         failed_at:             @batch.failed_at,
         cancelled_at:          @batch.cancelled_at,
         error_message:         @batch.error_message,
+        selection:             @batch.metadata["selection"],
         modules:                module_rows
       )
     end
@@ -107,6 +112,7 @@ module System
           architecture: entry["architecture"],
           tag:          entry["tag"],
           state:        entry["state"],
+          outcome:      entry["outcome"],
           attempts:     entry["attempts"],
           error:        entry["error"],
           task:         task && serialize_task(task),

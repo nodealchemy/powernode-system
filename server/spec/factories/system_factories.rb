@@ -743,7 +743,14 @@ FactoryBot.define do
     health_initial_delay_seconds { 10 }
     env { {} }
     exposed_ports { [] }
-    capabilities { [] }
+    # nil, not [] (IMP-074fcd68284f): nil means "inherit the module's
+    # security.capabilities ceiling", which is what an unspecified
+    # capabilities field means everywhere else in the system now — a
+    # factory default of [] would make every fixture that doesn't name
+    # `capabilities` explicitly assert the rarer "explicit zero" shape
+    # instead of the common "unspecified" one, drifting from production
+    # the moment a spec relies on the default rather than overriding it.
+    capabilities { nil }
     metadata { {} }
     # Every service MUST run as a platform-managed Unix user (system_module_services.service_user_id is NOT NULL).
     service_user { association :system_service_user }

@@ -267,6 +267,19 @@ RSpec.describe "SystemFleetTool disk-image verb gating (HIER-P2H)" do
         expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty
       end
 
+      # IMP-fdaab67b6fc5 review finding — a scoped relation's
+      # ActiveRecord::RecordNotFound#message (e.g. from
+      # `.where(account_id: ...).find(...)`) has Rails append the scoping
+      # predicate, e.g. `[WHERE "system_disk_image_publications"."account_id"
+      # = $1]` — raw SQL, never authored for the caller. Forwarding e.message
+      # verbatim through CallerFacingError would leak it; the gate_context
+      # must build a literal message instead.
+      it "does not leak the scoped relation's SQL predicate in the refusal" do
+        response = promote!(SecureRandom.uuid)
+
+        expect(response[:error]).not_to include("WHERE")
+      end
+
       it "refuses another account's publication the same way" do
         other = create(:account)
         foreign = create(:system_disk_image_publication, :published, account: other,

@@ -35,10 +35,17 @@ package_spec:
 # own, but the SAME class of bug applies to any future closure change),
 # so literal per-file entries are used here from the start. /usr/bin,
 # /usr/sbin, /etc are enumerated individually for the same base-shared-
-# candidate reason. /var is intentionally omitted — the data dir at
-# /var/lib/postgresql/16/replica initializes from the streaming base
-# backup at first boot (see the services: start_command below); this
-# module's own hand-authored /etc/postgresql/16/replica/conf.d/replica.conf
+# candidate reason. /var is intentionally omitted — but see the
+# services: entry's own IMP-e75df089523d comment below: how the data
+# dir at /var/lib/postgresql/16/replica actually gets initialized is
+# an OPEN QUESTION as of that audit, not something this comment can
+# state with confidence. It previously claimed "initializes from the
+# streaming base backup at first boot (see the services: start_command
+# below)" — that start_command is a bare `postgres -D ... -c
+# config_file=...` exec with no base-backup step of any kind, so that
+# claim was false; see the services: entry for the actual leads (this
+# manifest's own unused pg_basebackup@.service/.timer, and the still-
+# unresolved provisioning question). This module's own hand-authored /etc/postgresql/16/replica/conf.d/replica.conf
 # rides rootfs/ overlay (stage2-carve.sh layers it unconditionally,
 # exempted from this check's over-inclusion count — see the tool's own
 # header), declared here anyway for readability, matching claude-tmux's/
@@ -320,6 +327,55 @@ services:
     working_directory: /var/lib/postgresql/16/replica
     exposed_ports:
       - { port: 5433, protocol: tcp, name: pg-replica }
+    # IMP-e75df089523d — KEPT as an explicit `[]`, unlike postgres-
+    # primary/redis/vault, because this service is structurally
+    # different from all three: `start_command` above execs the bare
+    # `postgres` binary directly, and `user: postgres` is set at the
+    # SYSTEMD UNIT level — there is no wrapper script, no root phase, no
+    # runuser/setpriv drop anywhere in this unit's own lifecycle. Its
+    # own command line never does anything that needs a Linux
+    # capability, so `[]` genuinely reflects this unit's real
+    # requirement, confirmed directly from what it executes.
+    #
+    # The module's own security.capabilities block below is STALE — its
+    # comment describes "the start script runs as root to prep the data
+    # dir then drops to postgres via runuser", which does not exist in
+    # THIS manifest (that's postgres-primary's shape, apparently copied
+    # here and never updated when this service's design diverged to a
+    # direct non-root exec). Left the ceiling itself untouched (out of
+    # this task's scope, and harmless while nothing reads the per-
+    # service field), but corrected the comment so it doesn't keep
+    # telling the next reader a mechanism this module doesn't have.
+    #
+    # COULD NOT DETERMINE, and saying so rather than guessing: what
+    # actually creates and chowns /var/lib/postgresql/16/replica before
+    # this unit's first start. It isn't this module (no script). Of the
+    # two Ruby services that mention this role: ClusterMemberPgReplica-
+    # SetupService operates on the PRIMARY side (materializes a
+    # replication slot + credential there); System::Ai::Skills::
+    # PromoteReplicaExecutor operates on the REPLICA (it dispatches the
+    # module-declared `pg_ctl -D .../replica promote` TO the replica),
+    # but only as an operator-initiated failover action long after first
+    # boot — neither creates or chowns this node's data directory, so
+    # that conclusion stands even though the first draft of this
+    # comment wrongly lumped both as "the PRIMARY side". Grepped the
+    # agent tree for any postgres-replica-specific handling too, found
+    # none.
+    #
+    # Two concrete leads for whoever picks this up, rather than a flat
+    # "look everywhere": (1) this module's own file_spec ships
+    # /usr/lib/systemd/system/pg_basebackup@.service and its .timer,
+    # but nothing in this manifest's services: enables either — dead
+    # weight, or the actual (unwired) mechanism the data dir was meant
+    # to come from; (2) this manifest's own header comment used to claim
+    # the data dir "initializes from the streaming base backup at first
+    # boot (see the services: start_command below)" — that start_command
+    # is a bare `postgres` exec with no base-backup step at all, so that
+    # claim was false (corrected in the header) and reads like a
+    # designed-but-never-wired mechanism rather than a documentation
+    # slip. Whatever the real answer, it sits outside this manifest's
+    # security envelope, so a service-level capability grant on THIS
+    # unit could not reach it either way.
     capabilities: []
     # TCP health probe deferred — see postgres-primary.
     metadata:
@@ -367,10 +423,17 @@ dependencies:
     - database.postgres.v16
 
 security:
-  # See postgres-primary/manifest.yaml — the start script runs as root to
-  # prep the data dir then drops to postgres via runuser. An empty
-  # CapabilityBoundingSet (the default under RootDirectory=/sysroot)
-  # strips root's chown/chmod, so declare the minimal init-sequence set.
+  # IMP-e75df089523d — this comment previously described postgres-
+  # primary's shape (a root start script that preps the data dir then
+  # drops via runuser) and did not match this module: pg-replica's own
+  # `services:` entry above execs the bare postgres binary directly as
+  # `user: postgres`, with no wrapper script and no root phase at all —
+  # see that entry's own comment for what could and could not be
+  # established about who actually preps this module's data directory.
+  # Left this ceiling AS DECLARED (not this task's scope to change, and
+  # harmless while nothing reads the per-service field either way);
+  # correcting only the comment so it stops describing a mechanism this
+  # module doesn't have.
   capabilities:
     - CAP_CHOWN
     - CAP_DAC_OVERRIDE

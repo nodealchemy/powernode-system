@@ -75,7 +75,6 @@ services:
       # exit(1)s in production if blank). mTLS internal calls identify via the
       # client-cert CN (= NodeInstance id); this is the JWT-side identifier.
       WORKER_ID: "powernode-hub-worker"
-    capabilities: []
     # Cross-module ordering (rails + redis must be up first) lives in
     # the top-level dependencies.requires above. Service-level
     # dependencies is intra-module only.
@@ -117,7 +116,6 @@ services:
       WORKER_ID: "powernode-hub-worker"
     exposed_ports:
       - { port: 4567, protocol: tcp, name: http }
-    capabilities: []
     health:
       endpoint: "/health"
       method: GET

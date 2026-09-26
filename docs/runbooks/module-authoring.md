@@ -517,8 +517,11 @@ increment 4b). `NodeModule#current_version_id` is what a node in a FOLLOWING env
 (`auto_promote_on_publish` true — dev, ci, ops by default) is served. A node in a PINNED
 environment (staging, prod by default) is served that environment's pin instead
 (`NodeModule#served_version_for(environment)`) — and NOTHING of a module that has never been
-promoted into it. Flipping an environment to pinned freezes every module there at its
-current version; a publish never touches a pinned environment; only
+promoted into it. Flipping an environment to pinned (`environment_update`
+`auto_promote_on_publish: false`) freezes every module there at its current version. That
+write is human-only: from any MCP door, a dev cell's included, it parks until a person
+approves it in their own session (Autonomy → approval queue), then runs as that person. A
+publish never touches a pinned environment; only
 `system_promote_module_version` with `environment:` moves a pin, one pinned rung at a time
 (a following environment is not a rung). Start by finding out what the pointer points at —
 `system_list_module_versions` marks the served row `current: true` and lists the pinned

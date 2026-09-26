@@ -149,6 +149,52 @@ RSpec.describe System::Fleet::Sensors::ConfigDriftSensor do
   # probe has to look there — and it has to keep SIGNALLING for an apply that
   # predates the change, which is the half a suppression bug would silently
   # break.
+  # The decision engine refuses to dispatch apply_config to this deployment's
+  # own hosting node (INV-1, DecisionEngine#self_managed_target?), so drift on
+  # it can never be remediated and re-signalled every tick forever. Both arms
+  # are asserted with the same data, so the fence cannot pass by silencing
+  # every node.
+  describe "this deployment's own hosting node" do
+    let(:other_node) { create(:system_node, account: account, node_template: template) }
+
+    before { create(:system_node_instance, :running, node: other_node) }
+
+    def stale_assignment_on!(target_node)
+      create(:system_node_module_assignment, node: target_node).tap { |a| a.update_columns(updated_at: 10.minutes.ago) }
+    end
+
+    it "does not signal drift on the self-hosting node, and still signals it on another node" do
+      stale_assignment_on!(node)
+      other = stale_assignment_on!(other_node)
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      signals = sensor.sense
+
+      expect(signals.map { |s| s.payload["node_id"] }).to eq([ other_node.id ])
+      expect(signals.map { |s| s.payload["assignment_id"] }).to eq([ other.id ])
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 1)
+    end
+
+    it "signals both nodes when no self-hosting node is configured, and reports zero skipped" do
+      stale_assignment_on!(node)
+      stale_assignment_on!(other_node)
+
+      expect(sensor.sense.map { |s| s.payload["node_id"] }).to contain_exactly(node.id, other_node.id)
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 0)
+    end
+
+    it "counts every skipped assignment on the self-hosting node, from a fresh count each sense" do
+      stale_assignment_on!(node)
+      stale_assignment_on!(node)
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      sensor.sense
+      sensor.sense
+
+      expect(sensor.diagnostics).to eq(skipped_self_managed: 2)
+    end
+  end
+
   describe "suppression once the change has been applied" do
     # completed_at is passed independently of status ON PURPOSE: System::Task
     # stamps it on fail!/abort!/cancel! as well as complete!

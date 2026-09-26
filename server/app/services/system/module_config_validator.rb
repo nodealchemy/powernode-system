@@ -351,6 +351,35 @@ module System
       seccomp_profile apparmor_profile selinux_profile
     ].freeze
     CAPABILITY_RX = /\ACAP_[A-Z_]{1,60}\z/
+    # The agent's KnownCapabilities (agent/internal/security/capabilities.go).
+    # CAPABILITY_RX alone admits a name like CAP_BOGUS, which the agent then
+    # refuses, taking the WHOLE module down with it, so a capability must be
+    # both well-formed and on this list (IMP-caef5c00d63f). Kept equal to the
+    # Go map by spec/lint/known_capabilities_parity_spec.rb.
+    KNOWN_CAPABILITIES = %w[
+      CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_AUDIT_WRITE CAP_BLOCK_SUSPEND CAP_BPF
+      CAP_CHECKPOINT_RESTORE CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+      CAP_FOWNER CAP_FSETID CAP_IPC_LOCK CAP_IPC_OWNER CAP_KILL CAP_LEASE
+      CAP_LINUX_IMMUTABLE CAP_MAC_ADMIN CAP_MAC_OVERRIDE CAP_MKNOD CAP_NET_ADMIN
+      CAP_NET_BIND_SERVICE CAP_NET_BROADCAST CAP_NET_RAW CAP_PERFMON CAP_SETGID
+      CAP_SETFCAP CAP_SETPCAP CAP_SETUID CAP_SYS_ADMIN CAP_SYS_BOOT CAP_SYS_CHROOT
+      CAP_SYS_MODULE CAP_SYS_NICE CAP_SYS_PACCT CAP_SYS_PTRACE CAP_SYS_RAWIO
+      CAP_SYS_RESOURCE CAP_SYS_TIME CAP_SYS_TTY_CONFIG CAP_SYSLOG CAP_WAKE_ALARM
+    ].freeze
+
+    # One capability-list entry's error, or nil when it is well-formed and
+    # known. Shared by the module ceiling (security.capabilities) and each
+    # service's own capabilities list, so both reject the same names.
+    def capability_entry_error(label, cap)
+      unless cap.is_a?(String) && cap.match?(CAPABILITY_RX)
+        return "#{label} #{cap.inspect} must be a string matching #{CAPABILITY_RX.source} — it is " \
+               "rendered into a root-owned systemd CapabilityBoundingSet drop-in on the node"
+      end
+      return nil if KNOWN_CAPABILITIES.include?(cap)
+
+      "#{label} #{cap.inspect} is not a known Linux capability — the agent refuses the whole " \
+        "module for an unknown name"
+    end
     PROFILE_NAME_RX = /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/
     HOSTNAME_RX = /\A[a-z0-9]([a-z0-9-]{0,62})?(\.[a-z0-9]([a-z0-9-]{0,62})?)*\z/i
     MAX_CAPABILITIES = 64
@@ -397,11 +426,8 @@ module System
         errors << "security.capabilities has #{caps.size} entries (max #{MAX_CAPABILITIES})"
       end
       caps.each_with_index do |cap, i|
-        next if cap.is_a?(String) && cap.match?(CAPABILITY_RX)
-
-        errors << "security.capabilities[#{i}] #{cap.inspect} must be a string matching " \
-                  "#{CAPABILITY_RX.source} — it is rendered into a root-owned systemd " \
-                  "CapabilityBoundingSet drop-in on the node"
+        error = capability_entry_error("security.capabilities[#{i}]", cap)
+        errors << error if error
       end
     end
 

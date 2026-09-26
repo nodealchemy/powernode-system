@@ -384,6 +384,18 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
         .not_to change(::Ai::DeferredOperation, :count)
     end
 
+    # IMP-fdaab67b6fc5 — create_instance_pool_gate_context resolves
+    # `NodeTemplate.for_account(@account).find`, a SCOPED relation; a bare
+    # RecordNotFound from it was flattening to the generic dispatch fallback
+    # (046a545bc). Also pins that the caller-facing message never leaks the
+    # scoped relation's SQL predicate.
+    it "names the missing template in the inline error, not the generic fallback" do
+      response = create!(template_id: ::SecureRandom.uuid)
+
+      expect(response[:error]).to include("Couldn't find System::NodeTemplate")
+      expect(response[:error]).not_to include("WHERE")
+    end
+
     it "refuses an invalid payload without parking anything" do
       expect { create!(name: "") }.not_to change(::Ai::DeferredOperation, :count)
     end
@@ -472,6 +484,19 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
       expect(response[:success]).to be(false)
       expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty
       expect(other_pool.reload.target_size).to eq(1)
+    end
+
+    # IMP-fdaab67b6fc5 — instance_pool_update_gate_context resolves
+    # `InstancePool.for_account(@account).find`, a SCOPED relation; a bare
+    # RecordNotFound from it was flattening to the generic dispatch fallback
+    # (046a545bc). Also pins that the caller-facing message never leaks the
+    # scoped relation's SQL predicate.
+    it "names the missing pool in the inline error, not the generic fallback" do
+      response = tool.execute(params: { action: "system_update_instance_pool",
+                                        pool_id: other_pool.id, target_size: 4 })
+
+      expect(response[:error]).to include("Couldn't find System::InstancePool")
+      expect(response[:error]).not_to include("WHERE")
     end
   end
 end

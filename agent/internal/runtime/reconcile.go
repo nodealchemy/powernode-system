@@ -36,6 +36,25 @@ import (
 // lifecycle/service.go itself uses internally (rootFSType).
 var pivotAwareRootMode = lifecycle.PivotAwareRootMode
 
+// pivotAwareRootModeChecked indirects lifecycle.PivotAwareRootModeChecked,
+// same reason and same pattern as pivotAwareRootMode above. Kept as a
+// SEPARATE var (not folded into pivotAwareRootMode's signature) because
+// every existing caller of the unchecked form deliberately wants the
+// swallow-to-chroot default — only the union-mount step below needs the
+// error (IMP-81aa3112).
+var pivotAwareRootModeChecked = lifecycle.PivotAwareRootModeChecked
+
+// applyIdentity, applySudoers and reconcileHomeOwnership indirect
+// etcidentity.Apply / etcsudoers.Apply / etcidentity.ReconcileHomeOwnership
+// so tests can observe (or stub) the host-global render without touching
+// real /etc or /home — same var-indirection pattern as pivotAwareRootMode
+// above. TestMain (main_test.go) defaults all three to no-ops so a test that
+// forgets to override them cannot touch the host even when run as root
+// (review finding N5).
+var applyIdentity = etcidentity.Apply
+var applySudoers = etcsudoers.Apply
+var reconcileHomeOwnership = etcidentity.ReconcileHomeOwnership
+
 // PullerAPI is the subset of *oci.Puller the reconciler depends on.
 // Defined as an interface so tests can stub without standing up an
 // httptest server for the blob download path.
@@ -152,6 +171,14 @@ type Reconciler struct {
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
 
+	// Boot state rebase bookkeeping (see state_rebase.go), guarded by mu —
+	// only RunOnce touches it. stateRebaseActive holds the condition ids the
+	// last evaluation raised (a condition is signalled when it newly appears);
+	// stateRebaseMemo is the composition key + fingerprint of the last verdict
+	// that changed nothing, so an unchanged node is not re-probed every tick.
+	stateRebaseActive map[string]bool
+	stateRebaseMemo   string
+
 	// IMP-f1c1e6d61104 — per-module convergence failures observed by the LAST
 	// pass, reset at the top of RunOnce. Read by the apply_config/sync task
 	// handler so a pass that did not converge the desired set FAILS the task
@@ -249,6 +276,110 @@ func (r *Reconciler) ConvergenceFailures() []string {
 	out := make([]string, len(r.convergeFailures))
 	copy(out, r.convergeFailures)
 	return out
+}
+
+// retainedAfterDetach returns the subset of attached NOT present in
+// toDetach, matched by Digest — mount.Reconcile's own diff key, and the
+// same key filterUnsafeDetaches and the later "filter out detached
+// modules" block in RunOnce already use. Two versions of the same module
+// ID never share a digest, so this is exactly "what mount.Reconcile (as
+// filtered by every detach guard) decided must actually go" applied back
+// against the PRIOR attached list.
+//
+// This is the authoritative "what is actually staying attached this tick"
+// set (IMP-2dfbd7f62441 review finding B1). It is DELIBERATELY not the same
+// thing as `desired`: `desired` is only the modules this tick could fetch a
+// FRESH manifest for, and a module can stay attached without ever entering
+// that set — e.g. filterUnsafeDetaches's self-host refusal, or simply
+// because the assigned-modules list itself omitted it this tick (a
+// degraded-but-200 response; FetchAssignedModules erroring outright already
+// aborts RunOnce before this point and touches nothing). Every render and
+// hot-prune decision that asks "what modules are really here" must use
+// this, not `desired` — using `desired` is how a retained-but-unlisted
+// module's declared users silently disappear from /etc/passwd while the
+// module keeps running.
+func retainedAfterDetach(attached, toDetach mount.ModuleStack) mount.ModuleStack {
+	if len(toDetach) == 0 {
+		return attached
+	}
+	detachedDigests := make(map[string]bool, len(toDetach))
+	for _, m := range toDetach {
+		detachedDigests[m.Digest] = true
+	}
+	out := make(mount.ModuleStack, 0, len(attached))
+	for _, m := range attached {
+		if !detachedDigests[m.Digest] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// loadBreadcrumbManifests returns the manifest embedded in each boot-composed
+// breadcrumb entry (LKGModule.Manifest — exactly what ComposeForPivot
+// rendered identity from at boot, see compose.go's identity render), the full
+// set of module IDs the breadcrumb lists, and the subset of those IDs that
+// are data-bearing (HasDataFile — the same gate the live manifest-fetch loop
+// applies; a config/skill module never enters identity/sudoers resolution
+// either way, so it must not become a "candidate" via the breadcrumb path).
+// The plain ID set is deliberately wider than the manifest map: a breadcrumb
+// entry without HasDataFile, or one whose embedded manifest bytes are
+// empty/unparseable, still names a module this boot genuinely composed
+// (IMP-2dfbd7f62441 review finding R2-B1) — callers use the ID set to tell
+// "this module IS real, we just can't recover its manifest" from "this
+// module was never part of anything".
+//
+// REFUSES a breadcrumb from a DIFFERENT boot (review finding round-4 #2,
+// same rationale as lkg_capture.go's own promotion guard, which this
+// mirrors exactly): the breadcrumb write is best-effort, so a failed write
+// on THIS boot leaves the PREVIOUS boot's file on disk — that stale file
+// describes a composition this boot did not necessarily still have running
+// (a module could have been detached, or never even pulled, in the
+// meantime), so trusting it as "real" would manufacture false positives.
+// Empty on either side (bc.BootID or CurrentBootID()) means the id is
+// unavailable (non-Linux, /proc absent pre-mount) — proceeding without
+// verification there is deliberate, matching lkg_capture.go, rather than
+// silently disabling this fallback in every sandboxed test and non-Linux
+// build.
+//
+// Best-effort throughout: absent, unreadable, or stale all return empty
+// maps, never an error the caller must handle (mirrors stagePendingCompose's
+// own LoadBreadcrumb use).
+func loadBreadcrumbManifests() (manifests map[string]*manifest.Manifest, ids map[string]bool, dataIDs map[string]bool) {
+	manifests = map[string]*manifest.Manifest{}
+	ids = map[string]bool{}
+	dataIDs = map[string]bool{}
+	bc, err := LoadBreadcrumb(BootBreadcrumbPath)
+	if err != nil || bc == nil {
+		return manifests, ids, dataIDs
+	}
+	nowBoot := currentBootID()
+	if nowBoot != "" && bc.BootID != "" && bc.BootID != nowBoot {
+		return manifests, ids, dataIDs
+	}
+	return breadcrumbManifestSets(bc)
+}
+
+// breadcrumbManifestSets decodes a breadcrumb the caller has already vetted
+// into loadBreadcrumbManifests' three sets.
+func breadcrumbManifestSets(bc *BootComposedBreadcrumb) (manifests map[string]*manifest.Manifest, ids map[string]bool, dataIDs map[string]bool) {
+	manifests = map[string]*manifest.Manifest{}
+	ids = map[string]bool{}
+	dataIDs = map[string]bool{}
+	for _, lm := range bc.Modules {
+		ids[lm.ID] = true
+		if lm.HasDataFile {
+			dataIDs[lm.ID] = true
+		}
+		if len(lm.Manifest) == 0 {
+			continue
+		}
+		var m manifest.Manifest
+		if uerr := json.Unmarshal(lm.Manifest, &m); uerr == nil {
+			manifests[lm.ID] = &m
+		}
+	}
+	return manifests, ids, dataIDs
 }
 
 // NewReconciler validates required fields and returns a Reconciler.
@@ -358,16 +489,73 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Build desired ModuleStack by fetching manifests for modules with data files.
 	desired := make(mount.ModuleStack, 0, len(desiredModules))
 	manifests := make(map[string]*manifest.Manifest, len(desiredModules))
+	// manifestFetchFailed records every assigned, data-bearing module whose
+	// manifest.LoadOrFetch call errored THIS tick (a transient failure — e.g.
+	// the platform 502ing mid-restart, IMP-2dfbd7f62441 / the 2026-09-22
+	// ops-hub outage) — as opposed to a module that is simply not assigned at
+	// all, which never reaches this loop. Deliberately NOT set for the
+	// no-digest case just below: that manifest DID load, it is just an
+	// honestly-observed "not published yet" state, not a degraded view of
+	// this tick.
+	//
+	// Consumed in two places below: filterUnverifiedDetaches (defers this
+	// module's detach rather than reading the fetch failure as a real
+	// unassignment), and — unioned with `retained` into `candidateIDs`
+	// (review finding R2-B1) — the manifest-resolution loop that decides what
+	// the identity/sudoers/egress render and the hot-prune layer stack see.
+	// The union matters: a module can be in manifestFetchFailed but NOT
+	// retained (its fetch failed on a tick where state.json itself is empty
+	// — e.g. a reprovisioned /persist — so `retained` has nothing to say
+	// about it at all), and resolving it needs the SAME cache/breadcrumb
+	// fallback treatment a retained module gets.
+	manifestFetchFailed := map[string]bool{}
 	for _, mod := range desiredModules {
 		if !mod.HasDataFile {
 			continue // config-variety + skill modules have no blob to mount
 		}
 		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, r.cfg.ManifestTTL)
 		if err != nil {
-			r.noteUnconverged("reconciler:fetch_manifest", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
-			continue
+			if m == nil {
+				r.noteUnconverged("reconciler:fetch_manifest", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
+				manifestFetchFailed[mod.ID] = true
+				continue
+			}
+			// FetchAndCache (manifest/loader.go) returns a VALID manifest
+			// alongside a non-nil error when only the on-disk cache WRITE
+			// failed — the platform fetch itself succeeded, so this tick's
+			// in-memory view of the module is current. Treating this as a
+			// fetch failure (dropping `m`) would manufacture a partial view
+			// out of a write-side problem that has nothing to do with
+			// whether we know the module's real state. Log and use `m`
+			// normally; the next tick's cache read simply refetches.
+			r.cfg.OnError("reconciler:manifest_cache_write_failed", fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 		if m.Digest == "" {
+			// REVIEWED 2026-09-23 (IMP-2dfbd7f62441 review, MINOR item): this is
+			// reachable for a genuinely LIVE assignment, not only a module that
+			// was "never published". NodeModuleVersion#artifact (server/app/
+			// models/system/node_module_version.rb) picks specifically the
+			// "erofs" key out of #artifacts; NodeModuleNodeApiSerializer's
+			// `has_data_file` (the gate that puts a module into this loop at
+			// all) instead checks `#artifacts.present?` — ANY published format.
+			// So a module published only in a non-erofs format (e.g. mid
+			// composefs-format migration, or a publish that wrote the wrong
+			// key) is has_data_file=true with digest=="" here, indistinguishable
+			// from "not published" by this check alone. Both cases are handled
+			// identically below (skip this module's desired-set entry, note
+			// unconverged) — but that is NOT safe on every node. This module
+			// is deliberately NOT added to manifestFetchFailed (the fetch DID
+			// succeed; this is an honest live answer, not a transient error),
+			// so on a NON-self-hosted node it is simply absent from `desired`
+			// with no failure-guard protecting it: mount.Reconcile reads that
+			// as a real unassignment, filterUnverifiedDetaches does not apply
+			// (it is keyed on manifestFetchFailed), and the module — with its
+			// declared users — IS detached this tick on any node that is not
+			// self-hosted (filterUnsafeDetaches's "unknown manifest" guard
+			// only fires there). Filed as a follow-up rather than fixed here:
+			// this task's scope was the transient-failure and partial-view
+			// cases, and this one is a live, honest signal instead of an
+			// ambiguous one — but it is a real gap, not a benign one.
 			r.noteUnconverged("reconciler:no_digest", mod.ID, fmt.Errorf("module %s has no digest (not published)", mod.ID))
 			continue
 		}
@@ -395,15 +583,30 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		return r.lastError
 	}
 
-	// Captured before anything below mutates current.AttachedModules.
-	// ComposeForPivot doesn't persist a state.json at boot, so on the
-	// FIRST reconcile tick after a pivot boot, current is empty and every
-	// boot module shows up in toAttach even though its files are ALREADY
-	// part of the boot union — hotReconcileIfNeeded must not copy on that
-	// baseline tick (see its doc comment). Tick 2+ has real prior state
-	// (RunOnce SaveState's at the end of every cycle), so stateWasEmpty
-	// correctly reflects "is this a genuine post-boot change".
+	// Captured BEFORE the state rebase below and before anything else mutates
+	// current.AttachedModules. ComposeForPivot doesn't persist a state.json at
+	// boot, so on the very first reconcile tick of a node, current is empty
+	// and every boot module shows up in toAttach even though its files are
+	// ALREADY part of the boot union — hotReconcileIfNeeded must not copy on
+	// that baseline tick (see its doc comment). Later ticks have real prior
+	// state (RunOnce SaveState's at the end of every cycle), so stateWasEmpty
+	// reflects "is this a genuine post-boot change".
+	//
+	// Not re-measured after the rebase: a rebase that empties a non-empty state
+	// is not that baseline. The skip is silent (no unmaterialized record, units
+	// still start), so treating it as baseline would leave a newly assigned
+	// module the boot did not compose running against files never copied onto
+	// /. Measured here, the rebase leaves the hot-copy decision exactly as it
+	// was before the rebase existed.
 	stateWasEmpty := len(current.AttachedModules) == 0
+
+	// Drop entries for modules this boot did not compose and that nothing
+	// shows live (see state_rebase.go). Report-only unless explicitly enabled.
+	assignedIDs := make(map[string]bool, len(desiredModules))
+	for _, mod := range desiredModules {
+		assignedIDs[mod.ID] = true
+	}
+	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
 
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
@@ -459,6 +662,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// loop below — that ordering is the entire point of this call.
 	r.prefetchNewArtifacts(ctx, toAttach)
 
+	// Defer detaches for modules this tick could not get a manifest for at
+	// all — see filterUnverifiedDetaches. Applied BEFORE filterUnsafeDetaches
+	// (and unconditionally, not just on a self-hosted node): a fetch failure
+	// means "we don't know", never "removed", so it must never be read as a
+	// removal on ANY node, self-hosted or not.
+	toDetach = r.filterUnverifiedDetaches(toDetach, manifestFetchFailed)
+
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the
 	// state bookkeeping below, so a refused module stays in
@@ -492,78 +702,134 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	r.writePendingPrunes(leavers)
 
-	// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from
-	// the post-detach manifest set BEFORE any attach kicks off systemd
-	// units that reference platform-managed users via `User=`. Sudoers
-	// follows so any grant referencing the just-rendered users is in
-	// place before service start. Both renderers are idempotent and
-	// run every reconcile tick — atomic writes are no-ops if contents
-	// match.
-	manifestsSlice := make([]*manifest.Manifest, 0, len(manifests))
-	for _, m := range manifests {
-		manifestsSlice = append(manifestsSlice, m)
+	// retained is what mount.Reconcile (as filtered by every detach guard
+	// above) decided is ACTUALLY still attached this tick — see
+	// retainedAfterDetach. This, not `desired`, is the set the identity/
+	// sudoers/egress render and the hot-prune layer resolution below must
+	// agree with (IMP-2dfbd7f62441 review finding B1).
+	retained := retainedAfterDetach(current.AttachedModules, toDetach)
+
+	// The render's manifest set — see resolveRenderCandidates for how every
+	// candidate is chosen and resolved (review findings R2-B1, round-4 #1, N2,
+	// N3).
+	breadcrumbManifests, breadcrumbIDs, breadcrumbDataIDs := loadBreadcrumbManifests()
+	rc := r.resolveRenderCandidates(manifests, retained, manifestFetchFailed, breadcrumbManifests, breadcrumbIDs, breadcrumbDataIDs)
+	mergedManifests := rc.merged
+	desiredForLayers := make(mount.ModuleStack, len(desired), len(desired)+len(rc.retainedNotFresh))
+	copy(desiredForLayers, desired)
+	desiredForLayers = append(desiredForLayers, rc.retainedNotFresh...)
+	staleFallback, breadcrumbFallback, unresolvedHarmless, unresolvedReal := rc.staleFallback, rc.breadcrumbFallback, rc.unresolvedHarmless, rc.unresolvedReal
+	mustSkipRender := len(unresolvedReal) > 0
+
+	if len(staleFallback) > 0 {
+		sort.Strings(staleFallback)
+		r.cfg.OnError("reconciler:identity_render_stale_manifest", fmt.Errorf(
+			"this pass could not refresh %d module(s)' manifest(s) [%s]; rendering /etc/passwd + sudoers + egress from their last CACHED manifest instead of treating them as gone",
+			len(staleFallback), strings.Join(staleFallback, ", ")))
 	}
-	identitySet, conflicts := etcidentity.Collect(manifestsSlice)
-	for _, c := range conflicts {
-		r.cfg.OnError("reconciler:identity_conflict",
-			fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
-				c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
+	if len(breadcrumbFallback) > 0 {
+		sort.Strings(breadcrumbFallback)
+		r.cfg.OnError("reconciler:identity_render_breadcrumb_manifest", fmt.Errorf(
+			"this pass could not refresh or find a cache for %d module(s)' manifest(s) [%s]; rendering /etc/passwd + sudoers + egress from the boot breadcrumb's embedded manifest instead of treating them as gone",
+			len(breadcrumbFallback), strings.Join(breadcrumbFallback, ", ")))
 	}
-	if err := etcidentity.Apply(identitySet); err != nil {
-		r.cfg.OnError("reconciler:identity_write", err)
-	}
-	// Make the filesystem agree with the passwd we just rendered: managed
-	// home dirs must be owned by the user etcidentity declared (uid/gid =
-	// platform source of truth) and /home must stay traversable, else sshd
-	// and any unprivileged service with HOME there break. Idempotent.
-	etcidentity.ReconcileHomeOwnership(identitySet, "", r.cfg.OnError)
-	if err := etcsudoers.Apply(etcsudoers.CollectFromManifests(manifestsSlice)); err != nil {
-		r.cfg.OnError("reconciler:sudoers_write", err)
+	if len(unresolvedHarmless) > 0 {
+		sort.Strings(unresolvedHarmless)
+		r.cfg.OnError("reconciler:identity_render_unresolved", fmt.Errorf(
+			"this pass has %d module(s) [%s] with no fresh, cached, or breadcrumb manifest; they are omitted from this tick's render (harmless — none of them was ever attached or boot-composed)",
+			len(unresolvedHarmless), strings.Join(unresolvedHarmless, ", ")))
 	}
 
-	// Node-wide egress enforcement, same pattern as identity/sudoers just
-	// above: one shared nftables OUTPUT chain governs the WHOLE node, so it
-	// must reflect the UNION of every currently-desired module's declared
-	// policy, recomputed fresh from the same manifestsSlice every tick —
-	// never a single module's own Policy.Apply, which would let whichever
-	// module happens to reconcile last silently clobber every sibling's
-	// intent (see security.UnionEgressPolicy's doc comment for the full
-	// history of that bug).
-	egressPolicies := make([]*security.Policy, 0, len(manifestsSlice))
-	for _, m := range manifestsSlice {
-		egressPolicies = append(egressPolicies, buildPolicy(m))
-	}
-	egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
-	if egressEnforced {
-		var protectedHosts []string
-		if h := hostFromURL(r.cfg.PlatformURL); h != "" {
-			// The agent's own control-plane URL host must stay reachable
-			// regardless of any module's policy — without this, a
-			// restrictive module attaching would firewall the agent off
-			// from its own parent on the very next tick (dial i/o timeout
-			// after the chain installs).
-			protectedHosts = append(protectedHosts, h)
-		}
-		// Backend-configured hosts (account settings / SiteSetting -- see
-		// Api::V1::System::NodeApi::ModulesController#protected_egress_hosts)
-		// that must ALSO always be reachable regardless of module policy,
-		// e.g. a hub's own Gitea host. Fetched fresh every tick alongside
-		// the module list, so a config change (or that host's IP changing)
-		// takes effect on the next reconcile with no agent restart and no
-		// module rebuild -- the alternative of baking a static IP into a
-		// module manifest was rejected as exactly the kind of real-hostname-
-		// in-tracked-source coupling this project avoids.
-		protectedHosts = append(protectedHosts, assignmentMeta.ProtectedEgressHosts...)
-		if err := security.ApplyEgressAllowlistWithProtected(ctx, r.cfg.MountRunner, egressAllow, protectedHosts); err != nil {
-			r.cfg.OnError("reconciler:egress", err)
-		}
+	if mustSkipRender {
+		sort.Strings(unresolvedReal)
+		r.cfg.OnError("reconciler:identity_render_skipped", fmt.Errorf(
+			"this pass could not resolve %d module(s) [%s] that ARE attached or boot-composed (no fresh manifest, no usable cache, no breadcrumb entry); skipping the /etc/passwd + sudoers + egress render entirely rather than render a view known to be missing a real module — the previous render stays in effect",
+			len(unresolvedReal), strings.Join(unresolvedReal, ", ")))
 	} else {
-		// No currently-desired module declared an egress policy this tick
-		// (e.g. the one module that did was just detached) — best-effort
-		// teardown so a stale restrictive chain never lingers past the
-		// module that asked for it. Error ignored deliberately: "no such
-		// chain" is the common, expected case.
-		_ = security.RemoveEgressAllowlist(ctx, r.cfg.MountRunner)
+		mergedManifestsSlice := make([]*manifest.Manifest, 0, len(mergedManifests))
+		for _, m := range mergedManifests {
+			mergedManifestsSlice = append(mergedManifestsSlice, m)
+		}
+
+		// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from the
+		// merged (fresh + cached/breadcrumb-fallback) manifest set BEFORE any
+		// attach kicks off systemd units that reference platform-managed
+		// users via `User=`. Sudoers follows so any grant referencing the
+		// just-rendered users is in place before service start. Both
+		// renderers are idempotent and run every reconcile tick — atomic
+		// writes are no-ops if contents match.
+		identitySet, conflicts := etcidentity.Collect(mergedManifestsSlice)
+		for _, c := range conflicts {
+			r.cfg.OnError("reconciler:identity_conflict",
+				fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
+					c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
+		}
+		if err := applyIdentity(identitySet); err != nil {
+			r.cfg.OnError("reconciler:identity_write", err)
+		}
+		// Make the filesystem agree with the passwd we just rendered: managed
+		// home dirs must be owned by the user etcidentity declared (uid/gid =
+		// platform source of truth) and /home must stay traversable, else sshd
+		// and any unprivileged service with HOME there break. Idempotent.
+		reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
+		if err := applySudoers(etcsudoers.CollectFromManifests(mergedManifestsSlice)); err != nil {
+			r.cfg.OnError("reconciler:sudoers_write", err)
+		}
+
+		// Node-wide egress enforcement, same pattern as identity/sudoers just
+		// above: one shared nftables OUTPUT chain governs the WHOLE node, so
+		// it must reflect the UNION of every currently-desired module's
+		// declared policy, recomputed fresh from the same
+		// mergedManifestsSlice every tick — never a single module's own
+		// Policy.Apply, which would let whichever module happens to
+		// reconcile last silently clobber every sibling's intent (see
+		// security.UnionEgressPolicy's doc comment for the full history of
+		// that bug).
+		//
+		// Gated on the SAME mustSkipRender predicate as identity/sudoers
+		// above (review finding N3/R2-N3): reachable only when every
+		// candidate resolved, so there is no separate "unresolved but
+		// enforcement looked off" case left to guard here — that case IS
+		// mustSkipRender, handled by skipping this whole block.
+		egressPolicies := make([]*security.Policy, 0, len(mergedManifestsSlice))
+		for _, m := range mergedManifestsSlice {
+			egressPolicies = append(egressPolicies, buildPolicy(m))
+		}
+		egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
+		if egressEnforced {
+			var protectedHosts []string
+			if h := hostFromURL(r.cfg.PlatformURL); h != "" {
+				// The agent's own control-plane URL host must stay reachable
+				// regardless of any module's policy — without this, a
+				// restrictive module attaching would firewall the agent off
+				// from its own parent on the very next tick (dial i/o timeout
+				// after the chain installs).
+				protectedHosts = append(protectedHosts, h)
+			}
+			// Backend-configured hosts (account settings / SiteSetting -- see
+			// Api::V1::System::NodeApi::ModulesController#protected_egress_hosts)
+			// that must ALSO always be reachable regardless of module policy,
+			// e.g. a hub's own Gitea host. Fetched fresh every tick alongside
+			// the module list, so a config change (or that host's IP changing)
+			// takes effect on the next reconcile with no agent restart and no
+			// module rebuild -- the alternative of baking a static IP into a
+			// module manifest was rejected as exactly the kind of real-hostname-
+			// in-tracked-source coupling this project avoids.
+			protectedHosts = append(protectedHosts, assignmentMeta.ProtectedEgressHosts...)
+			if err := security.ApplyEgressAllowlistWithProtected(ctx, r.cfg.MountRunner, egressAllow, protectedHosts); err != nil {
+				r.cfg.OnError("reconciler:egress", err)
+			}
+		} else {
+			// No currently-desired module declared an egress policy this
+			// tick (e.g. the one module that did was just detached) — and
+			// (per the mustSkipRender gate above) every candidate resolved,
+			// so this is a genuine "nobody wants enforcement", not an
+			// unresolved view. Best-effort teardown so a stale restrictive
+			// chain never lingers past the module that asked for it. Error
+			// ignored deliberately: "no such chain" is the common, expected
+			// case.
+			_ = security.RemoveEgressAllowlist(ctx, r.cfg.MountRunner)
+		}
 	}
 
 	// Reassert the platform-assigned hostname every reconcile tick — live
@@ -633,7 +899,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
-		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
+		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
 			// The stamp above is what the reattach gate compares, so leaving
 			// it in place after a refused materialization tells the next tick
 			// this module is fully synced when it is not. Clear it to re-queue.
@@ -669,7 +935,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
-		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
+		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
 			// Same re-queue as the attach loop: a refused materialization must
 			// not leave a stamp claiming this manifest is materialized, and
 			// must not leave the heartbeat claiming it is running — and must
@@ -683,25 +949,26 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	// Deferred leaver prunes — after both attach loops so every desired
 	// module's tree is mounted before any surviving-layer resolution.
-	r.processPendingPrunes(desired)
+	// desiredForLayers, not `desired` (review finding N3): a retained module
+	// this tick could not fetch a fresh manifest for is still genuinely
+	// mounted and serving content, and survivingLayerDirs must be able to see
+	// it — omitting it here would make a REAL leaver's prune read that
+	// module's paths as unclaimed and delete them.
+	r.processPendingPrunes(desiredForLayers)
 
 	// Filter out detached modules from current — both from the attached
 	// list and from the manifest-hash map (so a later re-add doesn't
-	// see a stale hash and skip the initial attach).
+	// see a stale hash and skip the initial attach). Same digest-keyed
+	// definition of "retained" as the one computed earlier for the
+	// render/hot-prune guards (retainedAfterDetach) — reusing it here keeps
+	// the two in permanent agreement rather than two independent filters
+	// that could silently drift apart.
 	if len(toDetach) > 0 {
-		detached := make(map[string]bool, len(toDetach))
 		detachedIDs := make(map[string]bool, len(toDetach))
 		for _, m := range toDetach {
-			detached[m.Digest] = true
 			detachedIDs[m.ID] = true
 		}
-		filtered := current.AttachedModules[:0]
-		for _, m := range current.AttachedModules {
-			if !detached[m.Digest] {
-				filtered = append(filtered, m)
-			}
-		}
-		current.AttachedModules = filtered
+		current.AttachedModules = retainedAfterDetach(current.AttachedModules, toDetach)
 		for id := range detachedIDs {
 			delete(current.LastAttachedManifestHashes, id)
 		}
@@ -717,7 +984,28 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Skipped when no modules are attached — the sysroot has nothing
 	// to union and overlay's lowerdir requires at least one entry.
 	if !r.cfg.DryRun && len(current.AttachedModules) > 0 {
-		if lifecycle.PivotAwareRootMode() == lifecycle.RootModeNative {
+		// FAIL CLOSED on an unresolved root-mode probe (IMP-81aa3112): using
+		// the swallow-to-chroot lifecycle.PivotAwareRootMode() here would read
+		// a statfs failure as "definitely chroot" and take the MUTATING else
+		// branch below — mounting a second overlay. On a node that is
+		// genuinely pivot-booted that shares the live root's upperdir/workdir
+		// with a second mount, which the kernel documents as undefined
+		// behavior (see the RootModeNative comment just below). The
+		// asymmetry is the same one already established for detachModule's
+		// unmountWouldStripLiveRoot: an unreadable probe resolves to the
+		// non-mutating outcome, never the mutating one. Declining costs one
+		// deferred tick (current.UnionMounted is left exactly as it was);
+		// guessing wrong costs a kernel-UB double mount.
+		rootMode, rmErr := pivotAwareRootModeChecked()
+		if rmErr != nil {
+			// noteUnconverged (not a bare OnError) so this pass is not
+			// reported as having converged: the union step was declined, so
+			// whatever lowerdir is live right now may already be stale
+			// relative to current.AttachedModules, and the caller must know
+			// this tick did not resolve that.
+			r.noteUnconverged("reconciler:root_mode_probe_failed", "", fmt.Errorf(
+				"could not determine pivot-vs-chroot root mode this tick (%w); declining the union-mount step rather than guessing — a wrong chroot guess on an actually-pivoted root risks a double overlay mount", rmErr))
+		} else if rootMode == lifecycle.RootModeNative {
 			// Pivot-booted node: / is ALREADY the composed module union
 			// (switch_root'd into it at boot). Re-mounting a second union at
 			// /sysroot here creates two overlays sharing this live root's
@@ -1082,6 +1370,18 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	if errs := policy.Validate(); len(errs) > 0 {
 		return fmt.Errorf("policy invalid: %v", errs)
 	}
+	// Per-service capabilities (IMP-caef5c00d63f), resolved BEFORE anything is
+	// applied: a service asking for more than the module ceiling refuses the
+	// whole attach, the same way an invalid policy does, rather than guessing
+	// which of the two lists the author meant. Privileged modules take no
+	// capability drop-ins at all, so they are not resolved.
+	var unitCaps []security.UnitCapabilities
+	if !policy.Privileged {
+		var err error
+		if unitCaps, err = attachCapabilityWrites(mf, policy); err != nil {
+			return fmt.Errorf("policy invalid: %w", err)
+		}
+	}
 	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
 		return fmt.Errorf("apply policy: %w", err)
 	}
@@ -1098,15 +1398,16 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// drop-in for non-privileged modules even when the allowlist is
 	// empty, because an empty CapabilityBoundingSet= is the strictest
 	// (and safest default) posture and an absent drop-in would inherit
-	// systemd's full caps. Drop-in failures are non-fatal — surface via
+	// systemd's full caps. Each unit gets its OWN resolved set
+	// (resolveUnitCapabilities): the module ceiling when the service
+	// declares no capabilities key, exactly its declared subset — [] meaning
+	// none — when it does. Drop-in failures are non-fatal — surface via
 	// OnError so the operator sees them; the service still starts with
 	// whatever caps systemd's defaults give it.
-	if !policy.Privileged {
-		for _, unit := range mf.UnitNames() {
-			if err := security.WriteCapabilityDropIn(unit, policy.Capabilities); err != nil {
-				r.cfg.OnError("reconciler:capability_dropin",
-					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-			}
+	for _, uc := range unitCaps {
+		if err := security.WriteCapabilityDropIn(uc.Unit, uc.Allow); err != nil {
+			r.cfg.OnError("reconciler:capability_dropin",
+				fmt.Errorf("module %s unit %s: %w", mod.ID, uc.Unit, err))
 		}
 	}
 	// User-namespace isolation (PrivateUsers=) enforces via a per-unit
@@ -1162,9 +1463,10 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 // silent no-op is the right behavior. The detach path below mirrors
 // this: it skips DetachServices when Services is empty without
 // surfacing anything to OnError.
-// attachStamp is the value the re-attach gate compares (IMP-01a05efa).
+// attachStamp is the value the re-attach gate compares (IMP-01a05efa,
+// IMP-f5c0afa7183a).
 //
-// TWO INPUTS, for two different failure modes:
+// THREE INPUTS, for three different failure modes:
 //
 //   - The RENDERED unit bodies (lifecycle.RenderedServicesHash), not the
 //     manifest. The unit body is not a function of the manifest alone — the
@@ -1173,22 +1475,73 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     manifest-hash stamp byte-identical, queued no module for re-attach, and
 //     never replaced the stale unit on disk.
 //
-//   - The AGENT VERSION, so a change in an input the render path does not
-//     cover still forces one pass. This is the belt to the rendered hash's
+//   - The rendered SECURITY POLICY (security.RenderedPolicyHash), not the
+//     manifest's security: block either. attachModule applies a module's
+//     entire resolved Policy — capability/seccomp/user-namespace drop-ins AND
+//     SELinux/AppArmor profile loads — and NONE of that is a function of
+//     mf.Services, so it was invisible to the unit-body hash above by
+//     construction. A manifest edit confined to security: (a capability
+//     added, a profile swapped) left this stamp byte-identical, so the
+//     change never reached an already-attached node until an unrelated
+//     unit-body change or an agent-version bump forced a pass. Fixing this
+//     the way IMP-01a05efa fixed the unit-body half — stamp the manifest's
+//     security: block directly — would have repeated that exact defect one
+//     layer over: RenderedPolicyHash stamps what the drop-in writers and MAC
+//     loaders actually RENDER/RESOLVE, via the same render functions they
+//     use to produce their bytes, for the identical reason
+//     RenderedServicesHash stamps rendered unit bodies rather than manifest
+//     content. See security.RenderedPolicyHash's own doc for the full
+//     reasoning, including why it is scoped to the cloud-init hot-reconcile
+//     path only — ComposeForPivot (boot / soft-recompose) rebuilds every
+//     module's units and drop-ins from scratch on every invocation and has
+//     no stamp to go stale.
+//
+//   - The AGENT VERSION, so a change in an input neither render path covers
+//     still forces one pass. This is the belt to both rendered hashes'
 //     braces: it re-attaches every module once per agent upgrade whether or
 //     not rendering changed.
 //
-// A false-positive re-attach is deliberately cheap and the design already
-// says so: attachModule is idempotent on its mount/cosign/fs-verity/policy
-// steps, each unit goes through writeIfChanged, daemon-reload runs only if
-// something was written, and an unchanged unit gets a start that is a no-op on
-// a running service. So paying one extra pass per agent upgrade buys the
-// guarantee that a renderer fix actually ships.
+// Adding a second stamp segment does NOT add an incremental one-time cost of
+// its own, and that is worth stating precisely rather than assuming a
+// re-attach is cheap merely because the drop-in writers are small files.
+// It is not: mountModuleArtifact's Puller.Pull, called at the start of every
+// attachModule regardless of which stamp segment changed, streams the ENTIRE
+// cached erofs blob through SHA-256 on its cache-hit path (oci.readDigest)
+// before returning, then VerifyBlob runs on top of that — real, size-
+// proportional work per module, not a bounded three-small-files-plus-
+// daemon-reload cost. (WriteCapabilityDropIn / WriteSeccompDropIn /
+// WriteUserNamespaceDropIn are themselves an unconditional tmp-write +
+// rename with no existing-content comparison — not writeIfChanged the way
+// the unit-body path is — but that is a small piece of a pass whose real
+// cost lives in the pull/verify step above it, not in the drop-ins.)
+//
+// The reason this stamp change is still safe to ship is not "the extra pass
+// is cheap" — it's that THIS FIX SHIPS INSIDE A NEW AGENT BINARY, which is
+// necessarily a new AgentVersion, which was ALREADY the third stamp segment
+// before this change existed. Shipping this fix therefore forces exactly one
+// fleet-wide re-attach pass on THIS upgrade regardless of whether the
+// security-policy segment is also new — the new segment adds no additional
+// fleet-wide pass beyond the one an agent upgrade already causes every time.
+// semodule -i / apparmor_parser -r (the SELinux/AppArmor re-application, when
+// either profile is declared) are the standard idempotent-reload idiom those
+// tools document for exactly this case, but that is UNVERIFIED against a
+// real LSM host from this codebase, and currently unexercised on this fleet
+// because no module declares selinux_profile/apparmor_profile — it is a
+// precondition to verify before the first module does, not a closed
+// question. See docs/ATTACH_STAMP_SECURITY_POLICY_SURVEY.md.
 func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string {
 	if mf == nil {
 		return ""
 	}
+	policy := buildPolicy(mf)
+	// Per-unit RESOLVED capability sets (IMP-caef5c00d63f), so a change to one
+	// service's own capabilities key moves the stamp. A resolution error is
+	// ignored here on purpose: attachModule refuses that module loudly, and
+	// the entries still carry the raw lists, so fixing the manifest moves the
+	// stamp and retries the attach.
+	unitCaps, _ := attachCapabilityWrites(mf, policy)
 	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
+		"|" + security.RenderedPolicyHashForUnits(policy, unitCaps) +
 		"|" + r.cfg.AgentVersion
 }
 

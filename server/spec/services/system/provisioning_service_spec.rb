@@ -570,6 +570,31 @@ RSpec.describe System::ProvisioningService do
         expect(instance.reload.status).to eq("terminated")
         expect(adapter).to have_received(:terminate_instance).once
       end
+
+      # The provider proved only that the id names ANOTHER guest, not that ours
+      # is gone, so this branch must not land the confirmed termination: its
+      # mark_terminated audit row is exported as a record that the provider
+      # confirmed. The row's tasks still can never run, so they are cancelled
+      # explicitly.
+      it "cancels the pending tasks of the row it gives up on, and leaves it terminated" do
+        queued = create(:system_task, account: instance.account, operable: instance, status: "pending")
+        terminate
+
+        described_class.terminate_instance(instance: instance.reload)
+
+        expect(instance.reload.status).to eq("terminated")
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "records no confirmed termination for the row it gives up on" do
+        terminate
+
+        described_class.terminate_instance(instance: instance.reload)
+
+        actions = AuditLog.where(resource_type: "System::NodeInstance", resource_id: instance.id).pluck(:action)
+        expect(actions).to include("system.node_instance.terminate")
+        expect(actions).not_to include("system.node_instance.mark_terminated")
+      end
     end
 
     it "still refuses a row with no provider id that was never marked lost" do
@@ -579,6 +604,71 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(bare.reload.status).to eq("running")
+    end
+
+    # Every finalize_termination! caller has the provider's word that the guest
+    # is gone (success, NotFound, or an identity already lost), so the row lands
+    # the CONFIRMED termination that cancels its unrunnable tasks. The
+    # optimistic terminate! stamp alone cancelled nothing, and a recycled pool
+    # builder's queued tasks sat until the janitor's 48h threshold.
+    describe "the tasks of the instance it terminates" do
+      let!(:queued) { create(:system_task, account: instance.account, operable: instance, status: "pending") }
+
+      it "cancels a pending task once the provider confirms the terminate" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels it when the provider reports the guest already gone" do
+        allow(adapter).to receive(:terminate_instance)
+          .and_return({ success: false, error_code: "NotFound", error: "Instance not found" })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels it on a confirming retry against a row already stamped terminated" do
+        instance.update_columns(status: "terminated")
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+      end
+
+      it "cancels only this instance's tasks, and leaves a claimed one to the janitor" do
+        other = create(:system_node_instance, node: node, status: "running", config: { "cloud_instance_id" => "i-other" })
+        elsewhere = create(:system_task, account: other.account, operable: other, status: "pending")
+        claimed = create(:system_task, account: instance.account, operable: instance, status: "running")
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        expect(queued.reload.status).to eq("cancelled")
+        expect(elsewhere.reload.status).to eq("pending")
+        expect(claimed.reload.status).to eq("running")
+      end
+
+      it "records the confirmed termination in the audit trail" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+
+        terminate
+
+        actions = AuditLog.where(resource_type: "System::NodeInstance", resource_id: instance.id).pluck(:action)
+        expect(actions).to include("system.node_instance.mark_terminated")
+      end
+
+      it "leaves the task pending when the provider refuses the terminate" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: false, error: "rate limited" })
+
+        terminate
+
+        expect(queued.reload.status).to eq("pending")
+      end
     end
 
     # F4-09 — codify the F4-02 fix across the full status matrix: terminate

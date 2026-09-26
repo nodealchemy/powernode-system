@@ -337,7 +337,7 @@ module System
       if instance.cloud_instance_id.blank? && instance.provider_guest_lost?
         Rails.logger.warn("[ProvisioningService] Terminate: #{instance.name} lost its provider identity " \
                           "(#{instance.config.to_h['provider_guest_lost_reason']}) — finalizing the row")
-        finalize_termination!(instance)
+        finalize_termination!(instance, confirmed: false)
         return Runtime::Result.ok(data: { guest_lost: true })
       end
 
@@ -401,7 +401,10 @@ module System
     # may_terminate? only means the row is already terminated — warn (don't
     # silently pretend a transition happened) and skip re-metering so an
     # idempotent retry can't double-close the instance's accrued hours.
-    def finalize_termination!(instance)
+    # confirmed: false is the lost-identity finalize only (see
+    # #terminate_instance): the row is stamped terminated without a provider
+    # confirmation, and its unrunnable tasks are cancelled explicitly.
+    def finalize_termination!(instance, confirmed: true)
       # Increment 13 — detach unconditionally, ahead of the may_terminate?
       # guard: every call into finalize_termination! (fresh terminate, the
       # idempotent NotFound/ResourceNotFoundError paths, and a redundant
@@ -417,15 +420,37 @@ module System
       # never block the terminate transition.
       revoke_dev_cell_deploy_key!(instance)
 
-      unless instance.may_terminate?
+      if instance.may_terminate?
+        if confirmed
+          # mark_terminated is not legal from the transitional statuses, so
+          # those take the stamp first and confirm it as a self-transition.
+          instance.terminate! unless instance.may_mark_terminated?
+          confirm_termination!(instance)
+        else
+          instance.terminate!
+        end
+        # M1 Self-Serve Hardening — meter the terminate event so the rollup
+        # job can close out accrued hours for this instance.
+        record_meter_event(instance, "terminated")
+      else
         Rails.logger.warn("[ProvisioningService] Instance #{instance.name} already #{instance.status} — skipping terminate transition and meter event")
-        return
+        # An optimistic stamp someone else wrote is still confirmed: the
+        # provider has now said the guest is gone.
+        confirm_termination!(instance) if confirmed
       end
 
-      instance.terminate!
-      # M1 Self-Serve Hardening — meter the terminate event so the rollup
-      # job can close out accrued hours for this instance.
-      record_meter_event(instance, "terminated")
+      instance.cancel_unrunnable_tasks_of_lost_row! unless confirmed
+    end
+
+    # Every caller of finalize_termination! has the provider's word that the
+    # guest is gone (success, NotFound, or an identity already lost), so this
+    # lands mark_terminated, the CONFIRMED event that cancels the row's
+    # unrunnable tasks (NodeInstance#confirmed_termination?). terminate! alone
+    # is the optimistic pre-provider stamp and cancels nothing, which left a
+    # recycled builder's queued tasks to the janitor's 48h threshold. Same
+    # shape as CloudSyncService's sweep (IMP-ed10c0c4577c).
+    def confirm_termination!(instance)
+      instance.mark_terminated! if instance.may_mark_terminated?
     end
 
     # Same NotFound detection as BaseProvider#sync_status: an error hash with

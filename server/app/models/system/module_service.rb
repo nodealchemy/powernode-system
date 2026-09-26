@@ -45,7 +45,16 @@ module System
 
     attribute :env,           :jsonb, default: -> { {} }
     attribute :exposed_ports, :jsonb, default: -> { [] }
-    attribute :capabilities,  :jsonb, default: -> { [] }
+    # No default (IMP-074fcd68284f): nil is a real, distinct value here —
+    # "this service inherits its module's security.capabilities ceiling"
+    # — not "not yet set". A `default: -> { [] }` would silently give
+    # every NEW row "explicit zero" instead, the opposite of today's
+    # actual behavior (nothing reads this column yet) and the opposite
+    # of what an author who never wrote `capabilities:` intended. env/
+    # exposed_ports/metadata keep their defaults: none composes against
+    # a module-level ceiling, so absent and empty genuinely mean the
+    # same thing for them.
+    attribute :capabilities,  :jsonb
     attribute :metadata,      :jsonb, default: -> { {} }
 
     validates :name, presence: true, length: { maximum: 100 },

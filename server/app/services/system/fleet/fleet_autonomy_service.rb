@@ -159,7 +159,7 @@ module System
         # breaking the entire tick.
         collect_project_metrics!(correlation_id: tick_correlation)
 
-        signals, failed_sensors = collect_signals
+        signals, failed_sensors, sensor_diagnostics = collect_signals
 
         # Self-improvement Phase 0 — the validate step. Score the PREVIOUS tick's
         # remediations against THIS fresh sense pass before deciding anew: a prior
@@ -201,7 +201,11 @@ module System
             # B5: the sensors that raised this tick. Collected since F3-11(a)
             # but handed only to the validator, so a tick whose honeypot sensor
             # raised read as healthy to every other reader of this event.
-            failed_sensors: failed_sensors
+            failed_sensors: failed_sensors,
+            # Each sensor's non-signal counts, by sensor_key. A sensor that
+            # raised is absent here and named in failed_sensors, so a present
+            # 0 means "ran, none" and an absent key means "not measured".
+            sensor_diagnostics: sensor_diagnostics
           },
           source: "fleet_autonomy", correlation_id: tick_correlation
         )
@@ -219,20 +223,26 @@ module System
         }
       end
 
-      # Returns [signals, failed_sensor_names]. F3-11(a): the per-sensor rescue
+      # Returns [signals, failed_sensor_names, diagnostics_by_sensor_key]. F3-11(a): the per-sensor rescue
       # keeps one bad sensor from breaking the tick, but it also removes that
       # sensor's fingerprints from the pass — so the failures must be REPORTED,
       # not just logged, or the validator scores the absence as "effective".
       def collect_signals
         signals = []
         failed = []
+        diagnostics = {}
         SENSORS.each do |sensor_class|
-          signals.concat(sensor_class.new(account: account).sense)
+          sensor = sensor_class.new(account: account)
+          signals.concat(sensor.sense)
+          # Only after a sense that returned: a sensor that raised is reported
+          # in `failed`, never with a count it did not finish taking.
+          sensed = sensor.respond_to?(:diagnostics) ? sensor.diagnostics : {}
+          diagnostics[sensor_class.sensor_key] = sensed if sensed.present?
         rescue StandardError => e
           failed << sensor_class.name.demodulize
           Rails.logger.error("[FleetAutonomy] sensor #{sensor_class.name} failed: #{e.message}")
         end
-        [ signals, failed ]
+        [ signals, failed, diagnostics ]
       end
 
       # Best-effort wrappers — a self-improvement validator hiccup must never

@@ -2363,14 +2363,18 @@ module Ai
             parameters: { **PAGINATION_PARAMETERS }
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks.",
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully. APPROVAL-GATED (release.build_dispatch): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is planned or dispatched until an operator approves — do not retry and do not report the batch as dispatched on that response. The seeded Release Manager row and the account-wide floor are auto_approve (the batch is created and dispatched inline, same envelope as before); a caller in an account with neither row meets the unmatched default and parks. NARROW-DISPATCH: pass module_slugs (an explicit allowlist) with expand_dependents: false to build EXACTLY those modules, with no reverse-dependency expansion — e.g. an agent/-only range ships powernode-system-base alone instead of the ~20-module closure that requires it. Every allowlisted slug must be a buildable (manifest-backed) module that the base_sha..head_sha range itself changed; an unknown, package-origin or untouched slug is refused by name, and module_slugs cannot be combined with force_all. The batch records the allowlist, the closure it withheld (withheld_dependents) and the requester under metadata.selection. All publish gates still apply. Caller's responsibility: withheld dependents keep their current versions, so the allowlist is only sound when they need the changed module's CAPABILITY, not its bytes — system-base is the only module that embeds the agent binary — and when its service contract is unchanged (base-os's powernode-agent.service invokes `/usr/sbin/powernode-agent service`; an agent change to that CLI or unit contract needs base-os rebuilt too).",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
               force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
               trigger: { type: "string", required: false, enum: ::System::ModuleBuildBatch::TRIGGERS,
                         description: "push | manual | cve | package (default manual) — recorded on the batch for audit" },
-              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." }
+              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." },
+              module_slugs: { type: "array", required: false, items: { type: "string" },
+                              description: "NARROW-DISPATCH allowlist: build only these module slugs. Each must be manifest-backed and changed by the range. Cannot be combined with force_all." },
+              expand_dependents: { type: "boolean", required: false,
+                                   description: "Default true (reverse-dependency expansion, seeded from module_slugs when given). false builds exactly module_slugs and reports the withheld closure; requires module_slugs." }
             }
           },
 
@@ -4624,7 +4628,17 @@ module Ai
       # re-parented between parking and approval, and the executor is the half
       # that runs then.
       def terminate_instance_gate_context(params)
-        instance = account_instances.find(params[:instance_id])
+        instance =
+          begin
+            account_instances.find(params[:instance_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message, never
+            # e.message — see set_default_disk_image_publication_gate_context
+            # (account_instances is a scoped relation; a bare .find's
+            # RecordNotFound#message has Rails append the SQL WHERE
+            # predicate, which is not authored for the caller).
+            raise CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].inspect}"
+          end
 
         {
           executor_params: { instance_id: instance.id },
@@ -4648,8 +4662,9 @@ module Ai
       # Both resolve the target under the ACCOUNT scope first, so a
       # cross-account id is refused BEFORE any operation is created rather than
       # producing an approval card that names another tenant's instance.
-      # ActiveRecord::RecordNotFound is one of the two raises
-      # BaseTool#run_through_autonomy_gate converts to an error envelope. The
+      # dr_lane_instance raises CallerFacingError (IMP-fdaab67b6fc5) with a
+      # literal "not found" message on a miss — the one raise
+      # BaseTool#run_through_autonomy_gate forwards verbatim. The
       # executor re-resolves at approval time (its own #find_instance): the row
       # can be re-parented between parking and approval, and the executor is
       # the half that runs then.
@@ -4699,7 +4714,14 @@ module Ai
       end
 
       def dr_lane_instance(params)
-        instance = account_instances.find(params[:instance_id])
+        instance =
+          begin
+            account_instances.find(params[:instance_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # terminate_instance_gate_context above.
+            raise CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].inspect}"
+          end
         dr_lane_liveness_refusal!(instance, params)
         instance
       end
@@ -4749,7 +4771,10 @@ module Ai
         return if heartbeat.blank?
         return if heartbeat < Time.current - dr_lane_silent_threshold_seconds.seconds
 
-        raise ArgumentError,
+        # CallerFacingError (IMP-fdaab67b6fc5) — this message is authored for
+        # the caller; since 046a545bc a bare ArgumentError raised from a
+        # gate_context flattens to the generic dispatch fallback.
+        raise CallerFacingError,
               "Instance #{instance.id} is #{instance.status} and last reported " \
               "#{heartbeat.iso8601} — inside the #{dr_lane_silent_threshold_seconds}s silence " \
               "window InstanceUnrecoverableSensor requires a candidate to be outside of, so " \
@@ -4818,7 +4843,8 @@ module Ai
         return unless reap
         return unless instance_authorized?
 
-        raise ArgumentError,
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError,
               "reap: true is refused for an instance principal: it raises a " \
               "system.instance_reap terminate, and Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS " \
               "denies this principal system_replace_instance and system_reap_instance alike. " \
@@ -4830,14 +4856,16 @@ module Ai
       # a step has already run — so minting one per call would let a retry after
       # a timeout claim a SECOND pool member, and a replace and its reap that
       # disagreed about the id would write two unrelated ledgers for one
-      # operation. ArgumentError is the other raise the gate seam converts, so a
-      # caller that omits it gets an error envelope rather than an approval that
+      # operation. Raises CallerFacingError (IMP-fdaab67b6fc5) — the class
+      # BaseTool#run_through_autonomy_gate forwards verbatim — so a caller
+      # that omits it gets an error envelope rather than an approval that
       # could only ever do the wrong thing.
       def dr_lane_operation_id(params)
         id = params[:operation_id].presence
         return id.to_s if id
 
-        raise ArgumentError,
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError,
               "operation_id is required: the replace and reap executors are idempotent on it, " \
               "and an approval parked without one could not be told apart from a second replacement"
       end
@@ -5403,16 +5431,22 @@ module Ai
       end
 
       # Resolves (module, environment, version) for the ladder verbs and raises
-      # ArgumentError with the same message the body would refuse with, so the
-      # gate context parks nothing that could only be refused on replay.
+      # CallerFacingError with the same message the body would refuse with, so
+      # the gate context parks nothing that could only be refused on replay.
+      # CallerFacingError (IMP-fdaab67b6fc5), not bare ArgumentError: since
+      # 046a545bc, BaseTool#run_through_autonomy_gate only forwards a
+      # gate_context raise verbatim when it opts into that class — every one of
+      # these five messages is authored for the caller (this method's own
+      # #call rescue below also still catches it, since CallerFacingError IS
+      # an ArgumentError).
       def ladder_target!(params, direction: :up)
         node_module = account_modules.find_by(id: params[:module_id].to_s)
-        raise ArgumentError, "module_id is required and must name a module in this account" unless node_module
+        raise CallerFacingError, "module_id is required and must name a module in this account" unless node_module
 
-        raise ArgumentError, "environment is required: name the plane to promote into" if params[:environment].blank?
+        raise CallerFacingError, "environment is required: name the plane to promote into" if params[:environment].blank?
 
         environment = ::Ai::Environment.find_for_account(@account.id, params[:environment].to_s)
-        raise ArgumentError, "environment '#{params[:environment]}' not found in this account" unless environment
+        raise CallerFacingError, "environment '#{params[:environment]}' not found in this account" unless environment
 
         version =
           if params[:version_id].present?
@@ -5421,10 +5455,10 @@ module Ai
             predecessor = environment.ladder_predecessor
             predecessor ? node_module.served_version_for(predecessor) : node_module.current_version
           end
-        raise ArgumentError, "version_id is required (no version could be inferred for #{environment.slug})" unless version
+        raise CallerFacingError, "version_id is required (no version could be inferred for #{environment.slug})" unless version
 
         refusal = node_module.ladder_refusal(environment: environment, version: version, direction: direction)
-        raise ArgumentError, refusal if refusal
+        raise CallerFacingError, refusal if refusal
 
         [ node_module, environment, version ]
       end
@@ -5760,13 +5794,16 @@ module Ai
       # The description names the mode and the template (caller values that
       # identify the request, not secrets) and never the hostname.
       def deploy_platform_gate_context(params)
-        raise ArgumentError, FEDERATED_DEPLOY_REFUSAL if federated_mode?(params[:mode])
+        # CallerFacingError (IMP-fdaab67b6fc5), not bare ArgumentError — see
+        # dr_lane_liveness_refusal!; all three of these are authored for the
+        # caller.
+        raise CallerFacingError, FEDERATED_DEPLOY_REFUSAL if federated_mode?(params[:mode])
 
         mode = params[:mode].to_s.strip
         unless ::System::Ai::Skills::PlatformDeployExecutor::MODES.include?(mode)
-          raise ArgumentError, "Unknown mode: #{params[:mode].inspect}; allowed: #{::System::Ai::Skills::PlatformDeployExecutor::MODES.inspect}"
+          raise CallerFacingError, "Unknown mode: #{params[:mode].inspect}; allowed: #{::System::Ai::Skills::PlatformDeployExecutor::MODES.inspect}"
         end
-        raise ArgumentError, "name is required for deployment" if params[:name].blank?
+        raise CallerFacingError, "name is required for deployment" if params[:name].blank?
 
         deferred_tool_call_context(params).merge(
           description: "Deploy a new #{mode} Powernode platform '#{params[:name]}' from template " \
@@ -6474,15 +6511,21 @@ module Ai
       # unattributed caller; this resolves the snapshot under the account
       # FIRST, so an unknown or foreign id answers with the same inline error
       # #delete_volume_snapshot gives rather than parking an approval an
-      # operator then has to dispose of (RecordNotFound is the raise
-      # BaseTool#run_through_autonomy_gate converts to the error envelope).
+      # operator then has to dispose of (CallerFacingError, since IMP-fdaab67b6fc5,
+      # is the raise BaseTool#run_through_autonomy_gate converts to the error
+      # envelope VERBATIM — a bare RecordNotFound would flatten instead).
       # source_type/source_id anchor the operation to the row — that is what
       # arms Ai::DeferredOperation#assert_source_within_account! — and the
       # description names the restore point the operator is being asked to
       # destroy: row values, never caller-supplied ones.
       def delete_volume_snapshot_gate_context(params)
         snapshot = find_volume_snapshot(params[:snapshot_id])
-        raise ActiveRecord::RecordNotFound, "Snapshot not found" unless snapshot
+        # CallerFacingError (IMP-fdaab67b6fc5), not ActiveRecord::RecordNotFound
+        # — since 046a545bc, BaseTool#run_through_autonomy_gate's gate_context
+        # rescue only forwards a raise verbatim when it opts into that class;
+        # RecordNotFound (even with this authored message) now flattens to the
+        # generic dispatch fallback exactly like a bare ArgumentError would.
+        raise CallerFacingError, "Snapshot not found" unless snapshot
 
         deferred_tool_call_context(params).merge(
           source_type: "System::ProviderVolumeSnapshot",
@@ -7370,7 +7413,20 @@ module Ai
       # the error envelope the pre-gate arm produced rather than as an approval
       # card naming another tenant's pool, or one that could only ever fail.
       def instance_pool_update_gate_decision(params)
-        pool  = ::System::InstancePool.for_account(@account).find(params[:pool_id])
+        pool =
+          begin
+            ::System::InstancePool.for_account(@account).find(params[:pool_id])
+          rescue ActiveRecord::RecordNotFound
+            # A LITERAL message (IMP-fdaab67b6fc5), never e.message: this is
+            # a SCOPED relation's `.find`, and Rails appends the SQL WHERE
+            # predicate to a scoped find's RecordNotFound#message — not
+            # something authored for the caller. `error_result` here (not
+            # CallerFacingError) because this method answers the caller
+            # DIRECTLY with `{ result: ... }`, ahead of
+            # #run_through_autonomy_gate's own CallerFacingError seam, not
+            # through it.
+            return { result: error_result("Couldn't find System::InstancePool with 'id'=#{params[:pool_id].inspect}") }
+          end
         attrs = instance_pool_update_attributes(params)
         categories = gated_pool_update_categories(pool, attrs)
 
@@ -7391,8 +7447,6 @@ module Ai
         return { result: invalid } if invalid
 
         { category: categories.first }
-      rescue ActiveRecord::RecordNotFound => e
-        { result: error_result(e.message) }
       end
 
       # Categories this payload has to clear before it may be written, in a
@@ -7460,7 +7514,14 @@ module Ai
       #     for an unrecorded pair rather than guessing) and anchors the
       #     operation to the pool the way InstancePoolsController#update does.
       def instance_pool_update_gate_context(params)
-        pool  = ::System::InstancePool.for_account(@account).find(params[:pool_id])
+        pool =
+          begin
+            ::System::InstancePool.for_account(@account).find(params[:pool_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # set_default_disk_image_publication_gate_context above.
+            raise CallerFacingError, "Couldn't find System::InstancePool with 'id'=#{params[:pool_id].inspect}"
+          end
         attrs = instance_pool_update_attributes(params)
 
         replay_params = params.except(
@@ -7482,13 +7543,23 @@ module Ai
       # unattributed caller; this adds what the REST twin does before ITS gate:
       # resolve the template under the account scope and validate the candidate,
       # so a payload that could only ever fail keeps its own error rather than
-      # becoming an approval an operator has to dispose of. Both raises are the
-      # ones BaseTool#run_through_autonomy_gate converts to an error envelope.
+      # becoming an approval an operator has to dispose of. Both raise
+      # CallerFacingError (IMP-fdaab67b6fc5) — the class
+      # BaseTool#run_through_autonomy_gate converts to an error envelope
+      # verbatim.
       def create_instance_pool_gate_context(params)
-        template  = ::System::NodeTemplate.for_account(@account).find(params[:template_id])
+        template =
+          begin
+            ::System::NodeTemplate.for_account(@account).find(params[:template_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # set_default_disk_image_publication_gate_context above.
+            raise CallerFacingError, "Couldn't find System::NodeTemplate with 'id'=#{params[:template_id].inspect}"
+          end
         candidate = ::System::InstancePool.new(instance_pool_create_attributes(params, template))
         unless candidate.valid?
-          raise ArgumentError,
+          # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+          raise CallerFacingError,
                 "instance pool validation failed: #{candidate.errors.full_messages.to_sentence}"
         end
 
@@ -7732,9 +7803,11 @@ module Ai
       # Gate contexts: source_type/source_id anchor the parked operation to
       # the instance row (arms Ai::DeferredOperation
       # #assert_source_within_account!); the description names the row's
-      # values, never caller-supplied ones. RecordNotFound and ArgumentError
-      # are the raises BaseTool#run_through_autonomy_gate converts to the
-      # inline error — VALIDATE FIRST (the IMP-785d60f5ec3e shape), so a
+      # values, never caller-supplied ones. CallerFacingError (IMP-fdaab67b6fc5)
+      # is the raise BaseTool#run_through_autonomy_gate converts to the
+      # inline error VERBATIM — a bare RecordNotFound or ArgumentError would
+      # flatten to the generic fallback instead — VALIDATE FIRST (the
+      # IMP-785d60f5ec3e shape), so a
       # cordon that could only ever be refused on replay (already cordoned,
       # blank reason, warming member) or an uncordon of something not
       # cordoned keeps its error instead of parking an approval an operator
@@ -7742,10 +7815,13 @@ module Ai
       # replay, so the two cannot disagree.
       def cordon_instance_gate_context(params)
         instance = find_cordon_target(params[:instance_id])
-        raise ActiveRecord::RecordNotFound, "Instance not found" unless instance
+        # CallerFacingError (IMP-fdaab67b6fc5) — see
+        # delete_volume_snapshot_gate_context above.
+        raise CallerFacingError, "Instance not found" unless instance
 
         why = ::System::InstanceCordonService.cordon_refusal(instance: instance, reason: params[:reason].to_s)
-        raise ArgumentError, why if why
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, why if why
 
         deferred_tool_call_context(params).merge(
           source_type: "System::NodeInstance",
@@ -7758,10 +7834,13 @@ module Ai
 
       def uncordon_instance_gate_context(params)
         instance = find_cordon_target(params[:instance_id])
-        raise ActiveRecord::RecordNotFound, "Instance not found" unless instance
+        # CallerFacingError (IMP-fdaab67b6fc5) — see
+        # delete_volume_snapshot_gate_context above.
+        raise CallerFacingError, "Instance not found" unless instance
 
         why = ::System::InstanceCordonService.uncordon_refusal(instance: instance)
-        raise ArgumentError, why if why
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, why if why
 
         marker = ::System::InstanceCordonService.marker(instance) || {}
         deferred_tool_call_context(params).merge(
@@ -8225,20 +8304,38 @@ module Ai
 
       # The gated promote's context (HIER-P2H). Resolves the publication under
       # the account with the SAME scoped `find` the body opens with, so an
-      # unknown or foreign id answers the identical RecordNotFound message
-      # rather than parking an approval an operator then has to dispose of
-      # (BaseTool#run_through_autonomy_gate converts that raise to the error
-      # envelope), and applies the verb's own admission rule for the same
-      # reason — the executor's #promotable? re-check still runs at the moment
-      # of mutation, on replay. source_type/source_id anchor the operation to
-      # the row (what arms Ai::DeferredOperation#assert_source_within_account!)
-      # and the description names the image the operator is being asked to
-      # roll out: row values, never caller-supplied ones.
+      # unknown or foreign id is refused here too rather than parking an
+      # approval an operator then has to dispose of — with a DIFFERENT
+      # message, though, not the identical one: this raises CallerFacingError
+      # with a literal "Couldn't find ..." (IMP-fdaab67b6fc5), forwarded
+      # verbatim, while the ungated body's own `find` still leaks Rails' raw
+      # RecordNotFound#message (SQL WHERE predicate and all) through #call's
+      # generic rescue. Also applies the verb's own admission rule for the
+      # same reason — the executor's #promotable? re-check still runs at the
+      # moment of mutation, on replay. source_type/source_id anchor the
+      # operation to the row (what arms
+      # Ai::DeferredOperation#assert_source_within_account!) and the
+      # description names the image the operator is being asked to roll out:
+      # row values, never caller-supplied ones.
       def set_default_disk_image_publication_gate_context(params)
-        publication = ::System::DiskImagePublication.where(account_id: @account.id).find(params[:publication_id])
+        publication =
+          begin
+            ::System::DiskImagePublication.where(account_id: @account.id).find(params[:publication_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5) — a LITERAL message, never
+            # e.message: Rails appends the scoping predicate to a scoped
+            # relation's RecordNotFound message (e.g. `[WHERE
+            # "system_disk_image_publications"."account_id" = $1]`), which is
+            # raw SQL, not something authored for the caller — forwarding
+            # e.message verbatim here would leak it through the very seam
+            # this class exists to keep clean. Model class + the caller's own
+            # id only.
+            raise CallerFacingError, "Couldn't find System::DiskImagePublication with 'id'=#{params[:publication_id].inspect}"
+          end
 
         refusal = set_default_disk_image_publication_refusal(publication)
-        raise ArgumentError, refusal if refusal
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, refusal if refusal
 
         platform = publication.node_platform
         deferred_tool_call_context(params).merge(
@@ -8315,10 +8412,19 @@ module Ai
       # Anchored to the target publication, exactly as the REST rollback door
       # anchors its own deferred operation.
       def revert_disk_image_gate_context(params)
-        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:platform_id])
+        platform =
+          begin
+            ::System::NodePlatform.where(account_id: @account.id).find(params[:platform_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # set_default_disk_image_publication_gate_context above (never
+            # e.message: it leaks the scoped relation's SQL WHERE clause).
+            raise CallerFacingError, "Couldn't find System::NodePlatform with 'id'=#{params[:platform_id].inspect}"
+          end
 
         target, refusal = revert_disk_image_target(platform, params)
-        raise ArgumentError, refusal if refusal
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, refusal if refusal
 
         deferred_tool_call_context(params.merge(publication_id: target.id)).merge(
           source_type: "System::DiskImagePublication",
@@ -8387,10 +8493,19 @@ module Ai
       # belongs on the operation's params, which the approval card renders
       # under Ai::SensitiveParams' cover (BaseTool#deferred_tool_call_description).
       def set_disk_image_retention_gate_context(params)
-        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:node_platform_id])
+        platform =
+          begin
+            ::System::NodePlatform.where(account_id: @account.id).find(params[:node_platform_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # set_default_disk_image_publication_gate_context above (never
+            # e.message: it leaks the scoped relation's SQL WHERE clause).
+            raise CallerFacingError, "Couldn't find System::NodePlatform with 'id'=#{params[:node_platform_id].inspect}"
+          end
 
         refusal = set_disk_image_retention_refusal(params[:retention_count].to_i)
-        raise ArgumentError, refusal if refusal
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, refusal if refusal
 
         deferred_tool_call_context(params).merge(
           source_type: "System::NodePlatform",
@@ -8548,15 +8663,18 @@ module Ai
         return error_result("base_sha and head_sha are required") if base_sha.blank? || head_sha.blank?
 
         source_repo = params[:source_repo].presence
+        selection = dispatch_selection_params(params)
+        return error_result(selection) if selection.is_a?(String)
 
         planned = ::System::ModuleBuildPlannerService.plan_with_diagnostics(
           base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true,
-          source_repo: source_repo
+          source_repo: source_repo, **selection
         )
 
         batch = ::System::ModuleBuildBatch.create_for(
           account: @account, plan: planned.entries, trigger: params[:trigger].presence || "manual",
-          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded
+          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded,
+          selection: selection.any? ? selection_audit(selection, planned) : nil
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
@@ -8577,10 +8695,35 @@ module Ai
           payload[:excluded_modules] = planned.excluded.first(EXCLUDED_MODULE_SAMPLE_LIMIT)
           payload[:excluded_count]   = planned.excluded.size
         end
+        payload[:withheld_dependents] = Array(planned.withheld_dependents) if selection.any?
 
         success_result(payload)
       rescue ::System::ModuleBuildPlannerService::PlanningError => e
         error_result(e.message)
+      end
+
+      # NARROW-DISPATCH: the allowlist kwargs for the planner, {} in default
+      # mode (so the default call is byte-identical), or a String refusal.
+      # Only shape is checked here; the planner owns the semantic rules.
+      def dispatch_selection_params(params)
+        slugs = params[:module_slugs]
+        expand = params[:expand_dependents]
+        expand = ::ActiveModel::Type::Boolean.new.cast(expand) unless expand.nil?
+        # expand_dependents: true alone IS default mode — record nothing.
+        return {} if slugs.nil? && expand != false
+
+        slugs = slugs.to_a if slugs.respond_to?(:to_ary)
+        return "module_slugs must be an array of module slugs" unless slugs.nil? || slugs.is_a?(Array)
+
+        { module_slugs: slugs&.map(&:to_s),
+          expand_dependents: expand.nil? ? true : expand }
+      end
+
+      def selection_audit(selection, planned)
+        selection.merge(
+          withheld_dependents: Array(planned.withheld_dependents),
+          requested_by: { type: promotion_actor_type, id: promotion_actor_id }
+        )
       end
 
       # The gated dispatch's context (HIER-P2B-ENG). The sha admission rule the
@@ -8592,13 +8735,23 @@ module Ai
       def dispatch_module_build_batch_gate_context(params)
         base_sha = params[:base_sha].to_s
         head_sha = params[:head_sha].to_s
-        raise ArgumentError, "base_sha and head_sha are required" if base_sha.blank? || head_sha.blank?
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, "base_sha and head_sha are required" if base_sha.blank? || head_sha.blank?
 
         deferred_tool_call_context(params).merge(
           description: "Plan and dispatch a native module-build batch for #{base_sha[0, 12]}..#{head_sha[0, 12]}" \
                        "#{params[:force_all] == true ? ' (force_all: every manifest-backed module)' : ''}" \
+                       "#{dispatch_selection_description(params)}" \
                        " — trigger #{params[:trigger].presence || 'manual'}, leases module-forge builders"
         )
+      end
+
+      def dispatch_selection_description(params)
+        selection = dispatch_selection_params(params)
+        return "" unless selection.is_a?(Hash) && selection[:module_slugs]
+
+        " (allowlist [#{selection[:module_slugs].join(', ')}]" \
+          "#{selection[:expand_dependents] ? ', dependents expanded' : ', no reverse-dependency expansion'})"
       end
 
       # The undo for auto-promotion, and the forward-repoint when a good build
@@ -8707,7 +8860,8 @@ module Ai
 
       def rollback_module_version_gate_context(params)
         if params[:environment].present?
-          raise ArgumentError, "version_id is required for an environment rollback" if params[:version_id].blank?
+          # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+          raise CallerFacingError, "version_id is required for an environment rollback" if params[:version_id].blank?
 
           node_module, environment, version = ladder_target!(params, direction: :down)
 
@@ -8719,10 +8873,11 @@ module Ai
         end
 
         module_id = params[:module_id].to_s
-        raise ArgumentError, "module_id is required" if module_id.blank?
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, "module_id is required" if module_id.blank?
 
         node_module = ::System::NodeModule.where(account: @account).find_by(id: module_id)
-        raise ArgumentError, "Module '#{module_id}' not found" unless node_module
+        raise CallerFacingError, "Module '#{module_id}' not found" unless node_module
 
         target =
           if params[:version_id].present?
@@ -8730,9 +8885,10 @@ module Ai
           else
             node_module.latest_rollback_target
           end
-        raise ArgumentError, target[:error] if target.is_a?(Hash)
+        # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+        raise CallerFacingError, target[:error] if target.is_a?(Hash)
         unless target
-          raise ArgumentError,
+          raise CallerFacingError,
                 "No usable rollback target for '#{node_module.name}': no other version has a mountable artifact. " \
                 "Republish a good build instead."
         end
@@ -8817,6 +8973,7 @@ module Ai
           plan: meta["plan"],
           excluded: meta["excluded"],
           excluded_count: meta["excluded_count"],
+          selection: meta["selection"],
           modules: entries.map do |key, entry|
             task  = tasks[entry["task_id"]]
             lease = leases[entry["lease_id"]]
@@ -8826,6 +8983,7 @@ module Ai
               architecture: entry["architecture"],
               tag: entry["tag"],
               state: entry["state"],
+              outcome: entry["outcome"],
               attempts: entry["attempts"],
               error: entry["error"],
               stalled: entry["state"] == "dispatched" && task.present? && task.finished?,
@@ -8850,6 +9008,8 @@ module Ai
           planned_count: batch.planned_count,
           succeeded_count: batch.succeeded_count,
           failed_count: batch.failed_count,
+          noop_count: (batch.metadata || {})["noop_count"].to_i,
+          noop_modules: Array((batch.metadata || {})["noop_modules"]),
           error_message: batch.error_message,
           cancelled_at: batch.cancelled_at&.iso8601
         }
@@ -8936,7 +9096,8 @@ module Ai
       def gitops_register_repository_gate_context(params)
         candidate = ::System::GitopsRepository.new(gitops_repository_attributes(params))
         unless candidate.valid?
-          raise ArgumentError,
+          # CallerFacingError (IMP-fdaab67b6fc5) — see dr_lane_liveness_refusal!.
+          raise CallerFacingError,
                 "gitops repository validation failed: #{candidate.errors.full_messages.to_sentence}"
         end
 
@@ -9195,11 +9356,13 @@ module Ai
       # BaseTool#deferred_tool_call_context packs the replay and refuses an
       # unattributed caller; this resolves the proposal under the account
       # FIRST — the same scoped `find` #gitops_apply_proposal opens with, so
-      # an unknown or foreign id answers with the identical RecordNotFound
-      # message rather than parking an approval an operator then has to
-      # dispose of (BaseTool#run_through_autonomy_gate converts that raise to
-      # the error envelope). ApplyService's own preconditions (status,
-      # source, diff shape) are deliberately NOT re-derived here: they are
+      # an unknown or foreign id is refused here too rather than parking an
+      # approval — with a literal "Couldn't find Ai::AgentProposal..."
+      # CallerFacingError (IMP-fdaab67b6fc5), forwarded verbatim, NOT the raw
+      # Rails RecordNotFound#message #gitops_apply_proposal's own `find`
+      # still leaks through #call's generic rescue. ApplyService's own
+      # preconditions (status, source, diff shape) are deliberately NOT
+      # re-derived here: they are
       # evaluated at apply time on replay, and a proposal's status can
       # legitimately change between the park and the approval.
       # source_type/source_id anchor the operation to the row — that is what
@@ -9207,7 +9370,15 @@ module Ai
       # description names the proposal the operator is being asked to write
       # to the fleet: row values, never caller-supplied ones.
       def gitops_apply_proposal_gate_context(params)
-        proposal = ::Ai::AgentProposal.where(account_id: @account.id).find(params[:proposal_id])
+        proposal =
+          begin
+            ::Ai::AgentProposal.where(account_id: @account.id).find(params[:proposal_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message, never
+            # e.message — see set_default_disk_image_publication_gate_context
+            # above.
+            raise CallerFacingError, "Couldn't find Ai::AgentProposal with 'id'=#{params[:proposal_id].inspect}"
+          end
 
         deferred_tool_call_context(params).merge(
           source_type: "Ai::AgentProposal",

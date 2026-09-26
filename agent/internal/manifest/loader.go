@@ -57,6 +57,26 @@ func FetchAndCache(c Client, root, moduleID string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest %s: empty data envelope", moduleID)
 	}
 
+	// IMP-2dfbd7f62441 review finding R2-N1: the on-disk cache is a
+	// FALLBACK OF LAST RESORT for later ticks (agent/internal/runtime's
+	// RunOnce falls back to it when a later fetch fails) — its contract is
+	// "last KNOWN GOOD", not "last fetched". A response with no digest is a
+	// live-but-degraded view (see the caller-side comment on the no-digest
+	// branch in RunOnce for why this is reachable for a genuinely assigned
+	// module, not only an unpublished one): if a PREVIOUSLY cached manifest
+	// for this module had a real digest, writing this digest-less one over
+	// it would destroy the only usable fallback a later failed fetch could
+	// have used, for no benefit — nothing reads "the cache" as "what the
+	// platform said most recently", only as "the last manifest we know was
+	// usable". The in-memory return value is NOT touched: the caller still
+	// sees THIS tick's real (degraded) response and reacts accordingly; only
+	// the on-disk file is protected.
+	if env.Data.Digest == "" {
+		if existing, lerr := LoadFromDisk(root, moduleID); lerr == nil && existing != nil && existing.Digest != "" {
+			return env.Data, nil
+		}
+	}
+
 	if err := writeCache(root, env.Data); err != nil {
 		// Cache failures don't fail the fetch — caller still gets
 		// the in-memory manifest. Surface as warning via the

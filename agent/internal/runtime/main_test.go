@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 )
 
 // TestMain sandboxes every /persist-backed path in this package BEFORE any test
@@ -62,6 +64,22 @@ func TestMain(m *testing.M) {
 	// systemd-boot, booted slot undeterminable — which is the inert default. Tests
 	// needing a real answer override it locally.
 	bootslots.SetEfivarsDirForTest(filepath.Join(sandbox, "efivars-absent"))
+
+	// IMP-2dfbd7f62441 review finding N5: default the host-global render
+	// seams to no-ops BEFORE any test runs, the same floor-not-convention
+	// principle as the rest of this function. RunOnce calls these on EVERY
+	// tick unconditionally (identity/sudoers render always runs now — see
+	// its own comment), so any test that exercises RunOnce without
+	// overriding them would otherwise call the REAL etcidentity.Apply /
+	// etcsudoers.Apply / etcidentity.ReconcileHomeOwnership against actual
+	// /etc and /home. Unprivileged that merely fails harmlessly (permission
+	// denied); as root — exactly the case a known sibling bug already hit —
+	// it writes them for real. A test that specifically wants to observe or
+	// exercise these overrides the var locally (see partial_manifest_guard_
+	// test.go) and restores it via t.Cleanup.
+	applyIdentity = func(*etcidentity.Set) error { return nil }
+	applySudoers = func([]etcsudoers.Grant) error { return nil }
+	reconcileHomeOwnership = func(*etcidentity.Set, string, func(string, error)) {}
 
 	code := m.Run()
 	_ = os.RemoveAll(sandbox)

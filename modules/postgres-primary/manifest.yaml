@@ -350,7 +350,35 @@ services:
     # and execs `postgres -D <datadir>`, so it needs no specific cwd.
     exposed_ports:
       - { port: 5432, protocol: tcp, name: postgres }
-    capabilities: []
+    # IMP-e75df089523d — deliberately NO capabilities key here (inherit
+    # the module's full security.capabilities ceiling below), not an
+    # oversight and not "boilerplate". postgres-start.sh is the ONLY
+    # process this service ever runs: it does its root-prep (mkdir,
+    # chown -R, chmod) and its privilege drop (`exec runuser -u
+    # postgres -- postgres ...`) inside ONE script, in this ONE unit —
+    # there is no separate setup unit the way powernode-hub-backend
+    # splits rails-setup from rails. A capability grant applies to the
+    # WHOLE unit's process tree from boot, not to one phase of its
+    # script. Reading postgres-start.sh line by line establishes FIVE
+    # of the ceiling's six as genuinely used by the prep phase:
+    # CAP_DAC_OVERRIDE (mkdir into root-owned parents), CAP_CHOWN
+    # (chown -R), CAP_FOWNER (the chmods that follow), CAP_SETUID/GID
+    # (runuser) — see the security block below for the per-capability
+    # detail, including CAP_SETPCAP, which is retained as declared but
+    # not established as needed. This service therefore inherits the
+    # ceiling AS DECLARED TODAY — the correct call regardless, since the
+    # ceiling already reaches this unit under today's module-wide
+    # stamping and deleting the key only preserves that, it doesn't
+    # widen it — even though the long-running `postgres` process
+    # itself, once runuser has actually changed its uid, retains none
+    # of them (a real uid transition clears the permitted/effective/
+    # ambient capability sets; verified empirically for this exact
+    # runuser pattern in
+    # vault-start.sh's own comment). A prior version of this line
+    # declared `[]`, written before the per-service resolver existed
+    # and before it could have any effect; keeping it once the resolver
+    # ships would strip the prep phase's caps and reproduce the exact
+    # EPERM outage IMP-d01746bfcf75 fixed for powernode-hub-backend.
     # TCP health probe deferred: ModuleService.HEALTH_METHODS = GET/POST/PUT only.
     # Operator monitors Postgres readiness via `pg_isready` in a sidecar
     # systemd unit (future work) — model schema needs a TCP/exec method
@@ -413,7 +441,11 @@ security:
   #   CAP_DAC_OVERRIDE— write into postgres-owned dirs while still root
   #   CAP_FOWNER      — chmod 700 the data dir after it's postgres-owned
   #   CAP_SETUID/GID  — runuser drops to the postgres user for initdb/postgres
-  #   CAP_SETPCAP     — runuser adjusts the capability set on the dropped child
+  #   CAP_SETPCAP     — retained as declared; util-linux runuser does NOT
+  #                     touch capability sets (no pam_cap/capability.conf
+  #                     anywhere in modules/ either), so this may prove
+  #                     unnecessary here — pending the prep/daemon unit
+  #                     split follow-up, not removed as part of this audit.
   capabilities:
     - CAP_CHOWN
     - CAP_DAC_OVERRIDE

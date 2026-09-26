@@ -90,6 +90,11 @@ file_spec:
   - /usr/bin/vtysh
   - /usr/bin/mtracebis
   - /usr/lib/frr/**
+  # FRR's OWN shared objects (libfrr.so.0, libfrrcares, libfrrospfapiclient)
+  # and daemon plugins (modules/*.so), reached via the binaries' RUNPATH —
+  # without this carve every FRR daemon dies at exec on "libfrr.so.0: cannot
+  # open shared object file".
+  - /usr/lib/x86_64-linux-gnu/frr/**
   - /usr/lib/systemd/system/frr.service
   - /etc/logrotate.d/frr
   - /etc/pam.d/frr
