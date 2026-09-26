@@ -4148,6 +4148,106 @@ func TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop(t *testing.T) {
 	}
 }
 
+// TestReconcile_RevertPriorityRetryRunsEvenWhenReattachFails is Q4 (review
+// round 14, LOW): P4's own priority retry sat INSIDE the
+// `if pendingRevertIDs[mod.ID]` branch, reached only AFTER this same loop
+// iteration's own attachModule and hotReconcileIfNeeded calls — both of
+// which `continue` to the next module on failure. A reattach that was
+// ITSELF struggling this tick (arguably the tick this priority retry
+// matters MOST) skipped the whole branch, including the retry, silently
+// contradicting its own doc's "tried BEFORE ANYTHING ELSE" claim. Same
+// setup as TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop (old-worker
+// stuck in PendingUndoUnits from a failed N8 undo), but this revert tick's
+// OWN reattach is ALSO refused (capabilities.conf blocked) — the retry must
+// still run and reactivate old-worker regardless.
+func TestReconcile_RevertPriorityRetryRunsEvenWhenReattachFails(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump to d2: new-worker never comes up (N8 fires), and old-worker's own
+	// undo restart fails on BOTH attempts — PendingUndoUnits=[old-worker].
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	oldWorkerStartKey := "systemctl start " + oldWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"),
+	}
+	runner.StubErr = map[string]error{oldWorkerStartKey: errors.New("undo failed (both attempts)")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (N8 fires, undo fails twice): %v", err)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	found := false
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			found = containsArg(m.PendingUndoUnits, oldWorkerUnit)
+		}
+	}
+	if !found {
+		t.Fatalf("precondition: expected PendingUndoUnits to contain %s after pass 2, got state: %+v", oldWorkerUnit, st.AttachedModules)
+	}
+
+	// Revert to d1, but THIS tick's own reattach is refused — block
+	// capabilities.conf for appUnit, same technique as the P3/P6 tests.
+	// attachModule fails as a WHOLE (not just the blocked file), so it
+	// returns an error and this iteration `continue`s before ever reaching
+	// the (old position of the) priority retry.
+	unitDropInDir := filepath.Join(dropInRoot, appUnit+".d")
+	blocked := filepath.Join(unitDropInDir, "capabilities.conf")
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	delete(runner.StubErr, oldWorkerStartKey)
+	runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("inactive\n")
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "start") && containsArg(args, oldWorkerUnit) {
+			runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("active\n")
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert, reattach refused): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+
+	if !hasSystemctlOp(pass3, "start", oldWorkerUnit) {
+		t.Errorf("Q4 REGRESSION: the priority retry must still run and start %s even though this tick's own reattach was refused — it must not be starved by attachModule's failure: %v", oldWorkerUnit, pass3)
+	}
+	st, err = mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after pass 3: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && len(m.PendingUndoUnits) > 0 {
+			t.Errorf("Q4 REGRESSION: PendingUndoUnits must be cleared once %s is confirmed active, got %v", oldWorkerUnit, m.PendingUndoUnits)
+		}
+	}
+}
+
 // TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit is P5's own
 // mutant-kill test (review round 13, MEDIUM — "never clear it after
 // success"): a direct, isolated call to retryPendingUndoUnits, bypassing

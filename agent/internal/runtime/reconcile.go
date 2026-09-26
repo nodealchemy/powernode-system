@@ -1505,6 +1505,33 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// file and runs daemon-reload only when at least one wrote. It runs only
 	// after the materialization is known to have succeeded.
 	for _, mod := range mount.ModuleStack(toReattach).SortByPriority() {
+		// Q4 (review round 14, LOW): moved to the very top of this loop
+		// body, above attachModule and hotReconcileIfNeeded — see this
+		// call's own doc a little further down (still explaining WHY it
+		// exists) for the full reasoning. Before this fix, both of those
+		// calls could `continue` before this branch was ever reached, so a
+		// reattach that was ITSELF struggling (the exact tick this priority
+		// retry matters most) silently starved it — the "try it again
+		// BEFORE ANYTHING ELSE" promise in that doc was not actually true
+		// while this call sat below two things that could skip it.
+		if pendingRevertIDs[mod.ID] {
+			// P9 (review round 13, LOW, rule-1 edge): union PendingUndoUnits
+			// across EVERY matching row for this ID, not just the first —
+			// the M4 duplicate-state-entry case (see O8(a)'s own doc,
+			// below) means a second row could independently carry its own
+			// stuck departing unit(s) that the first row's own value never
+			// mentions. Reading only the first left that second row's
+			// stuck unit unattended by this priority retry forever.
+			var pendingUndo []string
+			for _, m := range current.AttachedModules {
+				if m.ID == mod.ID {
+					pendingUndo = unionStrings(pendingUndo, m.PendingUndoUnits)
+				}
+			}
+			if len(pendingUndo) > 0 {
+				r.retryPendingUndoUnits(ctx, current, mod.ID, pendingUndo)
+			}
+		}
 		mf, ok := manifests[mod.ID]
 		if !ok {
 			continue
@@ -1531,37 +1558,15 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if pendingRevertIDs[mod.ID] {
-			// P4 (review round 13, MEDIUM): a departing unit N8's own undo
-			// could not restart is a genuine OUTAGE, same reasoning as
-			// upgradeModule's OWN top-of-function priority retry (O6, review
-			// round 12) — try it again BEFORE ANYTHING ELSE in this branch
-			// too, not only on the bump path. Before this, a module that had
-			// re-targeted or reverted away from the digest N8 fired for
-			// never reached upgradeModule again at all (it comes through
-			// THIS branch instead), so its own PendingUndoUnits sat
-			// unattended — the revert's own force-restart below might
-			// coincidentally restart the same unit as part of the stable
-			// digest's own manifest, but never CONFIRMS it or clears the
-			// list, leaving a unit that recovered stay marked down.
+			// P4 (review round 13, MEDIUM) / Q4 (review round 14, LOW): a
+			// departing unit N8's own undo could not restart is a genuine
+			// OUTAGE, same reasoning as upgradeModule's OWN top-of-function
+			// priority retry (O6, review round 12) — tried BEFORE ANYTHING
+			// ELSE for this module, including attachModule/hotReconcileIfNeeded
+			// above (see the top-of-loop call site, moved there by Q4).
 			// retryPendingUndoUnits itself already clears an entry ONLY once
 			// confirmed active and leaves a still-failing one both in the
 			// list and visible (its own doc, O6).
-			// P9 (review round 13, LOW, rule-1 edge): union PendingUndoUnits
-			// across EVERY matching row for this ID, not just the first — the
-			// M4 duplicate-state-entry case (see O8(a)'s own doc, below) means
-			// a second row could independently carry its own stuck departing
-			// unit(s) that the first row's own value never mentions. Reading
-			// only the first left that second row's stuck unit unattended by
-			// this priority retry forever.
-			var pendingUndo []string
-			for _, m := range current.AttachedModules {
-				if m.ID == mod.ID {
-					pendingUndo = unionStrings(pendingUndo, m.PendingUndoUnits)
-				}
-			}
-			if len(pendingUndo) > 0 {
-				r.retryPendingUndoUnits(ctx, current, mod.ID, pendingUndo)
-			}
 			// O8(d) (review round 12): PendingDigest is now set the MOMENT an
 			// upgrade attempt begins (upgrade.go, before step 1), for N4
 			// visibility of a mount/policy/hot-reconcile refusal that never
