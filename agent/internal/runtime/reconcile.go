@@ -2473,9 +2473,11 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 	// attach from an ordinary successful one.
 	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
 		securityDropInFuncs{
-			userNamespace: security.WriteUserNamespaceDropIn,
-			seccomp:       security.WriteSeccompDropIn,
-			capability:    security.WriteCapabilityDropIn,
+			userNamespace:    security.WriteUserNamespaceDropIn,
+			seccomp:          security.WriteSeccompDropIn,
+			capability:       security.WriteCapabilityDropIn,
+			removeSeccomp:    security.RemoveSeccompDropIn,
+			removeCapability: security.RemoveCapabilityDropIn,
 		},
 		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
 	)

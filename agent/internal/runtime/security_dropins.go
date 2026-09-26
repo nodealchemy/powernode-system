@@ -18,6 +18,14 @@ type securityDropInFuncs struct {
 	userNamespace func(unit string, enabled bool) error
 	seccomp       func(unit, profilePath string) error
 	capability    func(unit string, allow []string) error
+	// removeSeccomp/removeCapability (R7, review round 14, hygiene) remove a
+	// STALE seccomp.conf/capabilities.conf a PRIOR policy left behind — a
+	// manifest edit that stops declaring a profile, or a unit becoming
+	// privileged (which opts out of the corresponding write entirely), must
+	// not leave that file still enforced. Absence is success; see
+	// security.RemoveSeccompDropIn(At)/RemoveCapabilityDropIn(At)'s own doc.
+	removeSeccomp    func(unit string) error
+	removeCapability func(unit string) error
 }
 
 // qgaModuleName is R5's own pinned recovery-channel identity check (review
@@ -122,6 +130,20 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 		}
 
 		if policy.Privileged {
+			// R7 (review round 14, hygiene): a unit that has since become
+			// privileged opts out of the capability/seccomp WRITES entirely
+			// (below) — but a STALE seccomp.conf/capabilities.conf from a
+			// PRIOR non-privileged state must not keep narrowing it below
+			// what "privileged" means, forever. Best-effort: a removal
+			// failure is reported but never fails the unit closed — unlike
+			// a write failure, it cannot leave the unit MORE exposed than
+			// its manifest declares.
+			if err := funcs.removeSeccomp(unit); err != nil {
+				onError("seccomp_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+			}
+			if err := funcs.removeCapability(unit); err != nil {
+				onError("capability_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+			}
 			continue
 		}
 
@@ -130,6 +152,13 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 				onError("seccomp_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 				fail(unit)
 			}
+		} else if err := funcs.removeSeccomp(unit); err != nil {
+			// R7: no profile declared (or no longer declared) — remove any
+			// STALE seccomp.conf a PRIOR policy left behind, so a manifest
+			// edit that drops seccomp_profile actually takes effect on the
+			// NEXT attach, not just "stop writing a new one" while the old
+			// one stays loaded and enforced.
+			onError("seccomp_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 		}
 
 		allow := unitAllow[unit]

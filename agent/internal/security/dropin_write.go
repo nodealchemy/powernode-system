@@ -68,3 +68,24 @@ func writeDropInFile(dropInDir, filename, body string) error {
 	}
 	return nil
 }
+
+// removeDropInFile removes ONE drop-in file, shared by every stale-drop-in
+// remover (R7, review round 14, hygiene — RemoveSeccompDropIn(At),
+// RemoveCapabilityDropIn(At)): a manifest edit that stops declaring a
+// seccomp profile, or a unit becoming privileged (which opts out of the
+// capability/seccomp WRITES entirely), must not leave the file a PRIOR
+// policy wrote still in effect — systemd keeps loading it until something
+// removes it, unlike a write, which the reconciler re-runs every tick
+// regardless of whether the content changed. Absence is success
+// (os.ErrNotExist), matching every other drop-in remover in this codebase
+// (stopDepartingUnits' own os.Remove/os.RemoveAll for a genuinely departed
+// unit's WHOLE <unit>.d directory) — this function removes exactly one file
+// within it, for a unit that is NOT departing, just no longer declaring
+// that one directive.
+func removeDropInFile(dropInDir, filename string) error {
+	path := filepath.Join(dropInDir, filename)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removeDropInFile: remove %s: %w", path, err)
+	}
+	return nil
+}

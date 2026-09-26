@@ -350,6 +350,12 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 				capability: func(unit string, allow []string) error {
 					return security.WriteCapabilityDropInAt(sysroot, unit, allow)
 				},
+				removeSeccomp: func(unit string) error {
+					return security.RemoveSeccompDropInAt(sysroot, unit)
+				},
+				removeCapability: func(unit string) error {
+					return security.RemoveCapabilityDropInAt(sysroot, unit)
+				},
 			},
 			func(stage string, err error) { r.cfg.OnError("compose:"+stage, err) },
 		)

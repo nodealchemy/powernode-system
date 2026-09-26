@@ -176,6 +176,30 @@ func RenderSeccompDropInBody(profilePath string) (string, error) {
 	return "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n", nil
 }
 
+// RemoveSeccompDropIn removes THIS unit's seccomp.conf, if any (R7, review
+// round 14, hygiene): a manifest edit that stops declaring a
+// seccomp_profile, or a unit becoming privileged, must not leave the
+// PREVIOUS profile still enforced — the reconciler never re-decides "no
+// profile declared" into "remove the stale one" on its own, only ever
+// "write a new one when one IS declared" (WriteSeccompDropIn's own doc).
+// Absence is success — see removeDropInFile's own doc.
+func RemoveSeccompDropIn(unit string) error {
+	if err := validateDropInUnitName("RemoveSeccompDropIn", unit); err != nil {
+		return err
+	}
+	return removeDropInFile(filepath.Join(systemdDropInRoot, unit+".d"), "seccomp.conf")
+}
+
+// RemoveSeccompDropInAt is RemoveSeccompDropIn's pivot-compose counterpart,
+// mirroring WriteSeccompDropInAt's own explicit-root targeting.
+func RemoveSeccompDropInAt(root, unit string) error {
+	if err := validateDropInUnitName("RemoveSeccompDropInAt", unit); err != nil {
+		return err
+	}
+	base := filepath.Join(root, "etc", "systemd", "system")
+	return removeDropInFile(filepath.Join(base, unit+".d"), "seccomp.conf")
+}
+
 func writeSeccompDropInAt(base, unit, profilePath string) error {
 	// Shared with WriteCapabilityDropIn/WriteCapabilityDropInAt/
 	// WriteUserNamespaceDropIn (capabilities.go / userns_dropin.go) — one

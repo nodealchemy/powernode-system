@@ -204,6 +204,31 @@ func WriteCapabilityDropIn(unit string, allow []string) error {
 	return nil
 }
 
+// RemoveCapabilityDropIn removes THIS unit's capabilities.conf, if any (R7,
+// review round 14, hygiene): a unit becoming privileged opts out of the
+// capability WRITE entirely (applyModuleSecurityDropIns' own `continue`) —
+// without this, a STALE capabilities.conf from a PRIOR non-privileged state
+// keeps narrowing the unit below what "privileged" is supposed to mean,
+// forever, since nothing ever re-writes OR removes it once that branch is
+// taken. Absence is success — see removeDropInFile's own doc.
+func RemoveCapabilityDropIn(unit string) error {
+	if err := validateDropInUnitName("RemoveCapabilityDropIn", unit); err != nil {
+		return err
+	}
+	return removeDropInFile(filepath.Join(systemdDropInRoot, unit+".d"), "capabilities.conf")
+}
+
+// RemoveCapabilityDropInAt is RemoveCapabilityDropIn's pivot-compose
+// counterpart, mirroring WriteCapabilityDropInAt's own explicit-root
+// targeting.
+func RemoveCapabilityDropInAt(root, unit string) error {
+	if err := validateDropInUnitName("RemoveCapabilityDropInAt", unit); err != nil {
+		return err
+	}
+	dropInDir := filepath.Join(root, "etc", "systemd", "system", unit+".d")
+	return removeDropInFile(dropInDir, "capabilities.conf")
+}
+
 // RenderCapabilityDropInBody is WriteCapabilityDropIn's file body, factored
 // out to a pure function so RenderedPolicyHash (policy_stamp.go) and the
 // writer share exactly one render — the same reason RenderUnitModeGraph
