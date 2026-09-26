@@ -87,28 +87,73 @@ type settleFailure struct {
 	result, condResult string
 }
 
+// unitRunsOnce decides whether unit is systemd-oneshot-shaped — settled
+// differently than a persistent unit, see unitSettled — by priority:
+//
+//  1. systemd's own LIVE Type= property (`systemctl show -p Type`). This is
+//     authoritative for what actually loaded: real modules (claude-tmux,
+//     grok-cli, dev-cell's credential/provision units) declare a hand-tuned
+//     unit_body (option A2, lifecycle.renderUnitBodyMode passes it through
+//     VERBATIM), and NONE of them declare the structured restart_policy
+//     field at all — for a unit_body service that field is INERT (never
+//     even read by rendering), so it can never be trusted as this signal's
+//     sole source. P1 (review round 13): treating restart_policy:"never" as
+//     the ONLY signal, as O5 originally did, misjudged every real
+//     unit_body oneshot as PERSISTENT — claude-tmux's credential unit
+//     (Type=oneshot, no RemainAfterExit) legitimately exits Result=success
+//     on every module reconcile, got refused as a "crash" every time, and
+//     the resulting retry force-restarted every active unit of the module
+//     (including the live tmux session) roughly every 5 minutes, fleet-wide.
+//  2. A static parse of svc.UnitBody for a literal "Type=oneshot" line — a
+//     fallback for when the live query itself fails (e.g. the unit was
+//     never successfully loaded at all, so systemctl show has nothing
+//     authoritative to report).
+//  3. svc.RestartPolicy == "never" — kept as an ADDITIONAL signal for a
+//     structured (non unit_body) service that genuinely declares it; never
+//     the only one consulted, per (1)'s finding.
+func unitRunsOnce(ctx context.Context, runner mount.Runner, unit string, svc manifest.Service) bool {
+	if t, err := systemd.ShowProperty(ctx, runner, unit, "Type"); err == nil && strings.EqualFold(strings.TrimSpace(t), "oneshot") {
+		return true
+	}
+	if unitBodyDeclaresOneshot(svc.UnitBody) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(svc.RestartPolicy), "never")
+}
+
+// unitBodyDeclaresOneshot scans a verbatim unit_body (option A2) for a
+// literal "Type=oneshot" directive line, tolerant of surrounding
+// whitespace and case — the same shape systemd itself accepts.
+func unitBodyDeclaresOneshot(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "Type=oneshot") {
+			return true
+		}
+	}
+	return false
+}
+
 // unitSettled is the shared "is this unit settled" predicate (O5, review
 // round 12, correcting round 11's own N1 predicate in BOTH directions it
-// had wrong):
+// had wrong; P1, review round 13, correcting O5's own run-once SOURCE —
+// see unitRunsOnce):
 //
-//   - PERSISTENT units (runsOnce == false, i.e. restart_policy empty/
-//     "always"/"on-failure"): settled iff ACTIVE, or ConditionResult=="no"
-//     (a start genuinely skipped by an unmet Condition*=). Result=="success"
-//     is NOT accepted here — a Restart=always unit that exits 0 and
-//     immediately relaunches (a crash loop with a clean exit code each
-//     time) reports Result=success while genuinely down; round 11's
-//     predicate wrongly read that as settled.
-//   - RUN-ONCE units (runsOnce == true, restart_policy:"never"): settled
-//     iff ACTIVE, or ConditionResult=="no", or Result=="success" (it ran
-//     its course and exited cleanly, exactly as declared). Round 11's
-//     predicate SKIPPED these entirely — a genuinely crashed credential/
-//     provisioning unit (Result=="exit-code" or similar) never blocked the
-//     commit at all.
+//   - PERSISTENT units (unitRunsOnce == false): settled iff ACTIVE, or
+//     ConditionResult=="no" (a start genuinely skipped by an unmet
+//     Condition*=). Result=="success" is NOT accepted here — a
+//     Restart=always unit that exits 0 and immediately relaunches (a crash
+//     loop with a clean exit code each time) reports Result=success while
+//     genuinely down; round 11's predicate wrongly read that as settled.
+//   - RUN-ONCE (oneshot-shaped) units: settled iff ACTIVE, or
+//     ConditionResult=="no", or Result=="success" (it ran its course and
+//     exited cleanly, exactly as declared). Round 11's predicate SKIPPED
+//     these entirely — a genuinely crashed credential/provisioning unit
+//     (Result=="exit-code" or similar) never blocked the commit at all.
 //
 // Shared by upgradeModule's own settle-check loop and
 // recoverFromDepartingUnitConflict's post-recovery check (O1), so the two
 // call sites can never silently disagree about what "settled" means.
-func unitSettled(ctx context.Context, runner mount.Runner, unit string, runsOnce bool) (settled bool, aerr error, result, condResult string) {
+func unitSettled(ctx context.Context, runner mount.Runner, unit string, svc manifest.Service) (settled bool, aerr error, result, condResult string) {
 	active, aerr := systemd.IsActive(ctx, runner, unit)
 	if aerr == nil && active {
 		return true, aerr, "", ""
@@ -118,7 +163,7 @@ func unitSettled(ctx context.Context, runner mount.Runner, unit string, runsOnce
 	if condResult == "no" {
 		return true, aerr, result, condResult
 	}
-	if runsOnce && result == "success" {
+	if unitRunsOnce(ctx, runner, unit, svc) && result == "success" {
 		return true, aerr, result, condResult
 	}
 	return false, aerr, result, condResult
@@ -411,29 +456,31 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
 	}
 
-	// N1 (review round 11): index each NEW-manifest unit's DECLARED
-	// restart_policy — this codebase renders every unit Type=simple
-	// (lifecycle.RenderUnitModeGraph) with no manifest-level oneshot/
-	// RemainAfterExit concept, but restart_policy:"never" (→ systemd's own
-	// Restart=no) IS the manifest's existing, authoritative way to declare
-	// "this unit runs once and exits on its own" — a credential-fetch or
-	// provisioning script (claude-tmux's credential unit, grok-cli,
-	// dev-cell's own credential/provision units) declares exactly this. The
-	// settle check below skips such a unit entirely; every other unit
-	// (restart_policy empty/"always"/"on-failure" — lifecycle.
-	// restartDirective's own default is "on-failure", i.e. persistent
-	// unless declared otherwise) is settle-checked regardless of whether it
-	// happened to be active before this call, since a BRAND-NEW persistent
-	// unit this very upgrade introduces was NEVER active before by
-	// definition and still needs its first start verified (N8's own
-	// departing-unit-conflict recovery below depends on this: a brand-new
-	// unit that fails to bind a port must be DETECTED as a failure, not
-	// silently skipped as if it were a legitimate run-once exit).
-	runsOnceByUnit := make(map[string]bool, len(newMf.Services))
+	// P1 (review round 13, CORRECTED — this comment previously claimed
+	// restart_policy:"never" is "the manifest's existing, authoritative way"
+	// to declare a run-once unit; that was false for exactly the units named
+	// as examples). Index each NEW-manifest unit's manifest.Service by unit
+	// name — NOT a precomputed run-once bool — because run-once-ness is not
+	// reliably knowable from the structured restart_policy field alone:
+	// claude-tmux's credential unit, grok-cli, and dev-cell's own
+	// credential/provision units all declare a hand-tuned unit_body (option
+	// A2) with Type=oneshot, and lifecycle.renderUnitBodyMode passes that
+	// body through VERBATIM — restart_policy is never even read for a
+	// unit_body service. unitSettled (via unitRunsOnce) queries the unit's
+	// LIVE systemd Type= property instead, falling back to parsing
+	// unit_body and finally to restart_policy:"never" only as a last
+	// resort. The settle check below skips a genuine run-once unit's own
+	// post-settle inactivity entirely; every persistent unit is
+	// settle-checked regardless of whether it happened to be active before
+	// this call, since a BRAND-NEW persistent unit this very upgrade
+	// introduces was NEVER active before by definition and still needs its
+	// first start verified (N8's own departing-unit-conflict recovery below
+	// depends on this: a brand-new unit that fails to bind a port must be
+	// DETECTED as a failure, not silently skipped as if it were a
+	// legitimate run-once exit).
+	svcByUnit := make(map[string]manifest.Service, len(newMf.Services))
 	for _, svc := range newMf.Services {
-		if strings.EqualFold(strings.TrimSpace(svc.RestartPolicy), "never") {
-			runsOnceByUnit[lifecycle.UnitName(newMod.ID, svc.Name)] = true
-		}
+		svcByUnit[lifecycle.UnitName(newMod.ID, svc.Name)] = svc
 	}
 
 	// Step 4: write the new digest's unit files and FORCE-restart every unit
@@ -481,10 +528,10 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// binary that crashes immediately after exec (a bad migration, a
 	// config the new digest ships that the process rejects on boot) would
 	// otherwise sail through step 4 as a reported success. Settle briefly,
-	// then confirm every unit NOT declared restart_policy:"never" is STILL
+	// then confirm every PERSISTENT unit (unitRunsOnce == false) is STILL
 	// active before anything irreversible runs.
 	//
-	// A unit DECLARED run-once (runsOnceByUnit) is skipped entirely — its
+	// A genuine run-once unit (unitRunsOnce) is skipped entirely — its
 	// own inactivity after settling is not new information (N1). For any
 	// OTHER unit that reads inactive after settling, a clean, expected
 	// termination (Result=success — it ran its course and stopped on its
@@ -502,7 +549,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
 	var failures []settleFailure
 	for _, unit := range newMf.UnitNames() {
-		if settled, aerr, result, condResult := unitSettled(ctx, r.cfg.MountRunner, unit, runsOnceByUnit[unit]); !settled {
+		if settled, aerr, result, condResult := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
 			failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
 		}
 	}
@@ -531,7 +578,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 				r.cfg.OnError("reconciler:upgrade_port_conflict_flag_save", fmt.Errorf("module %s: could not persist the N8-attempted flag: %w", newMod.ID, err))
 			}
-			if r.recoverFromDepartingUnitConflict(ctx, current, old, oldUnits, newMf, failedUnitNames, runsOnceByUnit) {
+			if r.recoverFromDepartingUnitConflict(ctx, current, old, oldUnits, newMf, failedUnitNames, svcByUnit) {
 				// N8 (review round 11, MEDIUM): every failing unit was NEW-THIS-
 				// UPGRADE (never existed under the old digest) and a departing
 				// unit was still active — stopping it freed whatever it held
@@ -686,7 +733,7 @@ func (r *Reconciler) stopDepartingUnits(ctx context.Context, moduleID string, ol
 // PendingUndoUnits so a LATER tick tries it again before anything else
 // (retryPendingUndoUnits), since a stopped-and-not-restored departing unit
 // is a genuine outage, not merely a stuck upgrade.
-func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, current *mount.State, old mount.Module, oldUnits []string, newMf *manifest.Manifest, failedUnits []string, runsOnceByUnit map[string]bool) bool {
+func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, current *mount.State, old mount.Module, oldUnits []string, newMf *manifest.Manifest, failedUnits []string, svcByUnit map[string]manifest.Service) bool {
 	oldUnitSet := make(map[string]bool, len(oldUnits))
 	for _, u := range oldUnits {
 		oldUnitSet[u] = true
@@ -736,7 +783,7 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
 	recovered := true
 	for _, unit := range failedUnits {
-		if settled, _, _, _ := unitSettled(ctx, r.cfg.MountRunner, unit, runsOnceByUnit[unit]); !settled {
+		if settled, _, _, _ := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
 			recovered = false
 		}
 	}

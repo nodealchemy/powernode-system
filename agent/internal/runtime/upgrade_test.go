@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
+	"gopkg.in/yaml.v3"
 )
 
 // upgradeModulesListFixture is the "/api/v1/system/node_api/modules" body
@@ -3076,5 +3078,158 @@ func TestReconcile_DuplicateBumpEntryRunsUpgradeExactlyOnce(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("O10 REGRESSION: expected exactly ONE m1 entry once the orphaned duplicate is cleaned up, got %d: %+v", count, st.AttachedModules)
+	}
+}
+
+// loadModuleServiceUnitBody reads THE REAL modules/<moduleDir>/manifest.yaml
+// (not a fixture reproducing it — same posture as
+// qga_manifest_capabilities_test.go's loadModuleManifestYAML) and returns
+// the verbatim unit_body: block for the named service, so P1's own test
+// (review round 13) pins the settle check against the actual claude-tmux
+// credential unit shape, not a hand-written approximation that could drift
+// from it.
+func loadModuleServiceUnitBody(t *testing.T, moduleDir, serviceName string) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "modules", moduleDir, "manifest.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v (run from agent/internal/runtime? cwd assumption may be stale)", path, err)
+	}
+	var doc struct {
+		Services []struct {
+			Name     string `yaml:"name"`
+			UnitBody string `yaml:"unit_body"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, s := range doc.Services {
+		if s.Name == serviceName {
+			if s.UnitBody == "" {
+				t.Fatalf("%s: service %q has no unit_body — fixture drifted from what this test expects", path, serviceName)
+			}
+			return s.UnitBody
+		}
+	}
+	t.Fatalf("%s: no service named %q", path, serviceName)
+	return ""
+}
+
+// unitBodyServiceJSON builds a raw services: entry declaring ONLY name +
+// unit_body — no restart_policy at all, matching every real unit_body
+// service in this repo (P1, review round 13: restart_policy is INERT for a
+// unit_body service — lifecycle.renderUnitBodyMode never reads it — so a
+// fixture that also set restart_policy would test a shape no real manifest
+// has).
+func unitBodyServiceJSON(t *testing.T, name, unitBody string) string {
+	t.Helper()
+	encodedBody, err := json.Marshal(unitBody)
+	if err != nil {
+		t.Fatalf("marshal unit_body: %v", err)
+	}
+	encodedName, err := json.Marshal(name)
+	if err != nil {
+		t.Fatalf("marshal name: %v", err)
+	}
+	return fmt.Sprintf(`{"name":%s, "unit_body":%s}`, encodedName, encodedBody)
+}
+
+// TestUpgradeModule_RealClaudeTmuxCredentialUnitCommitsInOneTick is P1's own
+// test (review round 13, HIGH — Review A verified, Review B independently
+// confirmed): the real claude-tmux credential unit is Type=oneshot with NO
+// RemainAfterExit, declared via unit_body (option A2), and declares NO
+// restart_policy field at all — exactly the shape O5 (round 12) got wrong,
+// misjudging it as PERSISTENT (restart_policy:"never" was the only signal
+// O5 consulted) and refusing every bump forever, which force-restarted
+// every active unit of the module on every retry (including a live tmux
+// session) roughly every 5 minutes, fleet-wide, once this module was
+// assigned anywhere.
+//
+// Deliberately does NOT stub `systemctl show <unit> --property=Type
+// --value` — RecorderRunner's unstubbed default is an empty string, so this
+// exercises unitRunsOnce's SECOND signal (parsing Type=oneshot out of the
+// real unit_body text) rather than the live-systemd-query path, which
+// TestUpgradeModule_LiveSystemdTypeQueryOverridesUnitBodyOneshotGuess below
+// exercises on its own.
+func TestUpgradeModule_RealClaudeTmuxCredentialUnitCommitsInOneTick(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	appUnit := lifecycle.UnitName("m1", "app")
+	// app (a normal persistent unit) settles by staying active. credential
+	// runs its course and exits cleanly EVERY time this module reconciles —
+	// that is its designed steady state, exactly as real staging behaves
+	// (see the manifest's own comment: "no RemainAfterExit ... the session
+	// unit reads the staged file"). No is-active stub for credentialUnit at
+	// all (RecorderRunner's default, "not active", matches a oneshot that
+	// has already finished by the time the settle check looks).
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:                                  []byte("active\n"),
+		"systemctl show " + credentialUnit + " --property=Result --value": []byte("success\n"),
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("P1 REGRESSION: the real claude-tmux credential unit (Type=oneshot via unit_body, no restart_policy) must not block the commit — expected m1 at d2, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_LiveSystemdTypeQueryOverridesUnitBodyOneshotGuess proves
+// unitRunsOnce's PRIMARY signal — the live `systemctl show -p Type` query —
+// works standalone, independent of both the unit_body-text fallback and the
+// restart_policy field: a plain generated-unit service (no unit_body at
+// all, restart_policy left at the "on-failure" default) whose LIVE Type
+// property nonetheless reports "oneshot" must still be treated as run-once.
+// This is the review's own stated priority ("Query systemctl show -p Type
+// at settle time; that is authoritative") — a fixture using only the
+// unit_body-parse fallback (as the claude-tmux test above does) cannot
+// distinguish "the live query works" from "the fallback alone is doing all
+// the work".
+func TestUpgradeModule_LiveSystemdTypeQueryOverridesUnitBodyOneshotGuess(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + unit:                           []byte("active\n"),
+		"systemctl show " + unit + " --property=Type --value":   []byte("oneshot\n"),
+		"systemctl show " + unit + " --property=Result --value": []byte("success\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, "systemctl is-active "+unit)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("P1 REGRESSION: a unit whose LIVE systemd Type= reports oneshot must settle on Result=success even with no unit_body and no restart_policy:\"never\" declared — expected m1 at d2, got digest=%q ok=%v", digest, ok)
 	}
 }
