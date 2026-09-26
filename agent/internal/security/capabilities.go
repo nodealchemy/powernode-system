@@ -60,6 +60,41 @@ var KnownCapabilities = map[string]struct{}{
 	"CAP_WAKE_ALARM":         {},
 }
 
+// IsFullCapabilitySet reports whether allow, once normalized and
+// deduplicated, is EXACTLY security.KnownCapabilities — the full set the
+// agent recognizes, not merely "a large subset" or "the default given no
+// ceiling". Used by the pivot-compose fail-closed guard (IMP-caef5c00d63f
+// phase 3, review MEDIUM-1): a capabilities.conf write failure for a unit
+// whose resolved ceiling is already the full set changes nothing
+// security-wise — systemd's own un-dropped default bounding set for a
+// root-run unit is the practical equivalent — so refusing to enable it (e.g.
+// qemu-guest-agent, this self-hosted control plane's host-root recovery
+// channel) would cost a real capability for no confinement benefit, while a
+// node-wide write failure (ENOSPC/EROFS) very likely also affects a
+// genuinely-confined sibling unit in the same tick.
+//
+// Deliberately exact, not "close enough": len(allow) must equal
+// len(KnownCapabilities) AND every entry normalize to a distinct known name,
+// so neither an unknown name nor a duplicate (which would otherwise let a
+// shorter, wrong list satisfy a naive length check) can pass. A caller must
+// not read this as "any sufficiently large ceiling is exempt" — a module
+// whose manifest declares 38 of the 41 known capabilities is NOT exempt, and
+// must not be treated as if it were.
+func IsFullCapabilitySet(allow []string) bool {
+	if len(allow) != len(KnownCapabilities) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(allow))
+	for _, c := range allow {
+		name, ok := normalizeCapName(c)
+		if !ok {
+			return false
+		}
+		seen[name] = struct{}{}
+	}
+	return len(seen) == len(KnownCapabilities)
+}
+
 func isValidCapName(name string) bool {
 	_, ok := KnownCapabilities[strings.ToUpper(name)]
 	return ok

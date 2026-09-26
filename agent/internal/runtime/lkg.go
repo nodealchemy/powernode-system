@@ -148,8 +148,19 @@ type BootComposedBreadcrumb struct {
 	// ONLY when this is true; a false (old-format) set skips enforcement exactly
 	// as before, so the upgrade window cannot brick a node whose frozen set
 	// predates the field.
-	PrivilegedAllowlistFrozen bool        `json:"privileged_allowlist_frozen,omitempty"`
-	Modules                   []LKGModule `json:"modules"`
+	PrivilegedAllowlistFrozen bool `json:"privileged_allowlist_frozen,omitempty"`
+	// SecurityFailClosedUnits names every unit whose module was refused
+	// enablement THIS boot because one of its units' security drop-ins
+	// (capabilities.conf / userns.conf / seccomp) failed to write
+	// (IMP-caef5c00d63f phase 3). Populated by renderPivotUnits, read by
+	// buildHeartbeat into HeartbeatPayload.PivotSecurityFailClosedUnits so an
+	// operator sees the affected unit(s) rather than inferring it from a raw
+	// OnError log line. Persisted on the breadcrumb (not just reported
+	// in-process) because renderPivotUnits runs once, at boot, before the
+	// heartbeat loop exists — the breadcrumb is the only channel that
+	// survives to the first heartbeat tick.
+	SecurityFailClosedUnits []string    `json:"security_fail_closed_units,omitempty"`
+	Modules                 []LKGModule `json:"modules"`
 }
 
 // AppHealthCfg is the SiteSetting-delivered promotion-gate config, carried on

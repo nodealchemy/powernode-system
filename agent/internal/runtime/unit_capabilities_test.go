@@ -45,6 +45,28 @@ func hubBackendLike(t *testing.T) *manifest.Manifest {
 	return &mf
 }
 
+// hubBackendLikeWithStartBefore is hubBackendLike with rails' REAL dependency
+// shape restored: rails Requires= rails-setup via a start_before edge
+// (System::ModuleServiceDependency; lifecycle.writeDependencyDirectives). The
+// plain hubBackendLike fixture has no dependency edges at all, which is why
+// neither review round of the phase-2 fail-closed design could have caught
+// HIGH-1: `systemctl --root disable rails-setup` never actually stops
+// rails-setup once rails is enabled and Requires= it — rails' own start job
+// pulls rails-setup in regardless of rails-setup's own enabled state. See
+// TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite.
+func hubBackendLikeWithStartBefore(t *testing.T) *manifest.Manifest {
+	t.Helper()
+	mf := hubBackendLike(t)
+	for i := range mf.Services {
+		if mf.Services[i].Name == "rails" {
+			mf.Services[i].DependencyEdges = []manifest.DependencyEdge{
+				{Service: "rails-setup", Kind: manifest.DependencyKindStartBefore},
+			}
+		}
+	}
+	return mf
+}
+
 func capsByUnit(t *testing.T, writes []security.UnitCapabilities) map[string][]string {
 	t.Helper()
 	out := make(map[string][]string, len(writes))
@@ -582,29 +604,144 @@ func TestUnitCapabilities_QgaShapedManifestDisablesUserNamespaceOnBothPaths(t *t
 	}
 }
 
-// FAIL CLOSED ON A DROP-IN WRITE FAILURE (review round, IMP-caef5c00d63f
-// phase 2). AttachServicesNative enables a module's units BEFORE the
-// capability-drop-in loop runs, so a write failure with no further action
-// would leave that unit ENABLED with systemd's full default (unrestricted)
-// bounding set while the heartbeat's PivotConfinementOmitted still reports
-// capability enforcement as fully in force for pivot nodes — silently
-// unconfined, reported as confined. Forces the failure deterministically by
-// pre-creating the unit's OWN capabilities.conf drop-in directory AS A
-// REGULAR FILE, so os.MkdirAll inside WriteCapabilityDropInAt returns "not a
-// directory" — a real, if rare, failure mode (a stray file, a permission
-// issue, a full filesystem), not a synthetic one.
-func TestRenderPivotUnits_DisablesAUnitWhoseCapabilityDropInFailsToWrite(t *testing.T) {
+// FAIL CLOSED ON A DROP-IN WRITE FAILURE — REDESIGNED (both review round B
+// reviewers, IMP-caef5c00d63f phase 3, DO-NOT-SHIP on phase 2's per-unit
+// disable). Phase 2 reacted to a failed drop-in write with `systemctl --root
+// disable <unit>` for that one unit — but a Requires=/Wants= edge from an
+// ENABLED sibling (writeDependencyDirectives, lifecycle/service.go) pulls a
+// disabled dependency's start job in regardless of its own enabled state, and
+// `systemctl mask` is refused because AttachServicesNative already wrote a
+// REAL unit file. So phase 2's own fixture (hubBackendLike, no dependency
+// edges at all) could not have caught this. Uses
+// hubBackendLikeWithStartBefore (rails Requires= rails-setup) specifically so
+// this test WOULD catch a regression back to the per-unit disable.
+//
+// Forces the failure deterministically by pre-creating rails-setup's OWN
+// capabilities.conf drop-in directory AS A REGULAR FILE, so os.MkdirAll
+// inside WriteCapabilityDropInAt returns "not a directory" — a real, if rare,
+// failure mode (a stray file, a permission issue, a full filesystem), not a
+// synthetic one.
+func TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite(t *testing.T) {
 	sysroot := t.TempDir()
 	rec := &mount.RecorderRunner{}
 	r := newPivotReconciler(rec)
 
-	mf := hubBackendLike(t) // rails-setup, rails, chowner
-	unit := lifecycle.UnitName(mf.ID, "rails-setup")
-	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	mf := hubBackendLikeWithStartBefore(t) // rails-setup, rails (Requires= rails-setup), chowner
+	failingUnit := lifecycle.UnitName(mf.ID, "rails-setup")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", failingUnit+".d")
 	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The .d path exists as a FILE, not a directory — forces MkdirAll to fail.
+	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second, healthy module in the SAME compose stack — pins that the
+	// refusal is per-MODULE, not fleet-wide: a node-wide write failure
+	// (ENOSPC/EROFS) is the realistic trigger (MEDIUM-1), but a module whose
+	// own drop-ins all wrote fine must still boot normally.
+	healthyMod, healthyMf := plainModule("healthy-sibling")
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}, healthyMod}
+	manifests := map[string]*manifest.Manifest{mf.ID: mf, healthyMod.ID: healthyMf}
+	bc := &BootComposedBreadcrumb{}
+	r.renderPivotUnits(context.Background(), sysroot, stack, manifests, bc)
+
+	if !containsArg(onErrors, "compose:capability_dropin") {
+		t.Errorf("expected an OnError(\"compose:capability_dropin\", ...) report, got stages: %v", onErrors)
+	}
+	if !containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Errorf("expected the module-level fail-closed refusal signal, got stages: %v", onErrors)
+	}
+
+	// NOTHING in hub-backend may be enabled — neither the failing unit NOR
+	// its sibling that Requires= it. Asserted two ways: no `systemctl ...
+	// enable <unit>` invocation, AND no rendered unit file (AttachServicesNative
+	// was never called for this module at all, which is what actually closes
+	// the Requires= gap — there is no unit file for rails' Requires= to name).
+	for _, name := range []string{"rails-setup", "rails", "chowner"} {
+		unit := lifecycle.UnitName(mf.ID, name)
+		for _, inv := range rec.Invocations {
+			if inv.Name == "systemctl" && containsArg(inv.Args, "enable") && containsArg(inv.Args, unit) {
+				t.Errorf("unit %s must NOT be enabled: a sibling's security drop-in failed and the whole module is refused (fail closed)", unit)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(sysroot, "etc", "systemd", "system", unit)); !os.IsNotExist(err) {
+			t.Errorf("unit %s must have no rendered unit file (module refused before AttachServicesNative ran); stat err=%v", unit, err)
+		}
+	}
+
+	// The healthy sibling MODULE is unaffected, and — pinning the `--root=`
+	// sysroot on the systemctl call the redesign still needs — its enable
+	// invocation must carry this test's own sysroot.
+	if !unitEnabled(t, sysroot, rec, "healthy-sibling") {
+		t.Error("a module whose own security drop-ins all wrote fine must still be enabled, even though a DIFFERENT module in the same boot failed closed")
+	}
+	sawRootedEnable := false
+	for _, inv := range rec.Invocations {
+		if inv.Name == "systemctl" && containsArg(inv.Args, "--root="+sysroot) && containsArg(inv.Args, "enable") {
+			sawRootedEnable = true
+		}
+	}
+	if !sawRootedEnable {
+		t.Error("expected at least one systemctl enable call pinned to --root=<sysroot>")
+	}
+
+	// The breadcrumb must name the failing unit so buildHeartbeat can report
+	// it — never silently reporting capability bounding as enforced for it.
+	if !containsArg(bc.SecurityFailClosedUnits, failingUnit) {
+		t.Errorf("breadcrumb SecurityFailClosedUnits must name %s, got %v", failingUnit, bc.SecurityFailClosedUnits)
+	}
+}
+
+// FULL-SET EXEMPTION (review MEDIUM-1). A unit resolved to EXACTLY
+// security.KnownCapabilities — qemu-guest-agent's real shape — loses nothing
+// security-wise if its drop-in write fails (systemd's own un-dropped default
+// is the practical equivalent), so it must NOT fail closed. The "exactly", not
+// "close enough", distinction is pinned separately and more cheaply by
+// security.TestIsFullCapabilitySet; this test pins the WIRING — that
+// renderPivotUnits actually consults the exemption rather than always (or
+// never) failing closed on a capability write error.
+func TestRenderPivotUnits_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	full := make([]any, 0, len(security.KnownCapabilities))
+	for c := range security.KnownCapabilities {
+		full = append(full, c)
+	}
+	mf := &manifest.Manifest{
+		ID:                          "full-cap-mod",
+		Name:                        "full-cap-mod",
+		ServiceCapabilitiesPresence: true,
+		// Module-level CEILING is the full set, exactly like qemu-guest-agent's
+		// real manifest (modules/qemu-guest-agent/manifest.yaml) — the service
+		// declares NOTHING of its own and inherits the whole thing, rather than
+		// declaring the full list itself (which would exceed a smaller ceiling
+		// and be refused before this test ever reaches the drop-in write).
+		// user_namespace: false too (also qga's real value) so the FORCED
+		// write failure below — which blocks BOTH userns.conf and
+		// capabilities.conf, since they share one <unit>.d directory — is
+		// exempt on both counts, isolating this test to the capability
+		// exemption rather than conflating it with the (also correct, see
+		// TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite's
+		// sibling coverage) userns fail-closed path.
+		Config: map[string]any{"security": map[string]any{"capabilities": full, "user_namespace": false}},
+		Services: []manifest.Service{
+			// Named "app" — unitEnabled (compose_privileged_gate_test.go)
+			// hardcodes that service name for its enabled/unit-file check.
+			{Name: "app", StartCommand: "/bin/true"},
+		},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -614,44 +751,14 @@ func TestRenderPivotUnits_DisablesAUnitWhoseCapabilityDropInFailsToWrite(t *test
 	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
 	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
 
-	if !containsArg(onErrors, "compose:capability_dropin") {
-		t.Errorf("expected an OnError(\"compose:capability_dropin\", ...) report, got stages: %v", onErrors)
+	if !containsArg(onErrors, "compose:capability_dropin_exempt") {
+		t.Errorf("expected the full-set exemption signal, got stages: %v", onErrors)
 	}
-
-	// Fail closed: a disable call for THIS unit must follow its enable call.
-	var sawEnable, sawDisableAfterEnable bool
-	for _, inv := range rec.Invocations {
-		if inv.Name != "systemctl" {
-			continue
-		}
-		hasUnit := false
-		for _, a := range inv.Args {
-			if a == unit {
-				hasUnit = true
-			}
-		}
-		if !hasUnit {
-			continue
-		}
-		switch {
-		case containsArg(inv.Args, "enable"):
-			sawEnable = true
-		case containsArg(inv.Args, "disable") && sawEnable:
-			sawDisableAfterEnable = true
-		}
+	if containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Errorf("a full-known-capability-set write failure must NOT fail closed the module, got stages: %v", onErrors)
 	}
-	if !sawEnable {
-		t.Fatal("test setup problem: rails-setup was never enabled in the first place")
-	}
-	if !sawDisableAfterEnable {
-		t.Error("a unit whose capability drop-in failed to write must be DISABLED afterward (fail closed), not left enabled with the full default bounding set")
-	}
-
-	// The other units in the SAME module, whose drop-ins wrote fine, must be
-	// unaffected — this is a per-unit fail-closed, not per-module.
-	otherUnit := lifecycle.UnitName(mf.ID, "chowner")
-	if _, err := os.Stat(filepath.Join(sysroot, "etc", "systemd", "system", otherUnit+".d", "capabilities.conf")); err != nil {
-		t.Errorf("a sibling unit's own successful capability drop-in must be unaffected by rails-setup's failure: %v", err)
+	if !unitEnabled(t, sysroot, rec, mf.ID) {
+		t.Error("the module must still be enabled — the exemption exists precisely so a write failure here costs nothing")
 	}
 }
 

@@ -188,9 +188,58 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 	// resetting CapabilityBoundingSet AND AmbientCapabilities to the resolved
 	// per-service set — see reconcile.go's attachModule for why "always write,
 	// even when empty" is the safe default), not merely an additive ambient
-	// grant. A drop-in write failure for one unit disables that unit (fail
-	// closed) rather than leaving it enabled with systemd's full default
-	// bounding set — see the write call's own comment below.
+	// grant.
+	//
+	// FAIL-CLOSED REDESIGN (phase 3, both review round B reviewers DO-NOT-SHIP
+	// on phase 2's version of this). Phase 2 wrote drop-ins AFTER
+	// AttachServicesNative had already enabled the unit, and reacted to a
+	// write failure with `systemctl --root disable <unit>` for that one unit.
+	// That does not close the gap: writeDependencyDirectives
+	// (lifecycle/service.go) renders Requires= for a start_before/
+	// requires_health edge, and systemd pulls a Requires= dependency's start
+	// job in REGARDLESS of whether that dependency is itself enabled — a
+	// disabled rails-setup still starts, unconfined, the moment its enabled
+	// sibling `rails` (which Requires= it) starts. `systemctl mask` is not an
+	// escape hatch either: AttachServicesNative writes a REAL unit file, and
+	// mask refuses when one already exists (lifecycle/service.go).
+	//
+	// The fix is ordering, not a stronger disable: write EVERY unit's
+	// security drop-ins for a module BEFORE calling AttachServicesNative for
+	// ANY of that module's units, and refuse the WHOLE MODULE — skip
+	// AttachServicesNative entirely — if any of them fails. Drop-in writes
+	// only need the sysroot's directory tree (MkdirAll), never the unit file
+	// AttachServicesNative writes, so this reordering costs nothing on the
+	// success path. On failure it makes the module's own Requires=/Wants=
+	// graph irrelevant: recoveryDependents/writeDependencyDirectives resolve
+	// edges ONLY within one module's own `mf.Services` (lifecycle/service.go)
+	// — a module never enabled has no unit file for ANY of its own edges to
+	// pull in, hard or soft. Other modules in the same compose stack are
+	// unaffected (this is per-MODULE, not per-unit — MEDIUM-1: a write
+	// failure is usually a node-wide condition like ENOSPC/EROFS, which could
+	// plausibly hit several modules in the same boot, so each module's own
+	// units succeed or fail together rather than being disabled one at a
+	// time as the loop happens to reach them).
+	//
+	// EXEMPTIONS — a drop-in write failure that would change nothing
+	// security-wise must not cost a module its boot:
+	//   - capabilities: security.IsFullCapabilitySet(allow) — a unit already
+	//     resolved to the full known-capability ceiling (qemu-guest-agent,
+	//     this node's host-root recovery channel) loses nothing by staying at
+	//     systemd's own default bounding set instead.
+	//   - user_namespace: policy.UserNamespace == false — the drop-in would
+	//     have written PrivateUsers=no, which is systemd's own default for a
+	//     unit with no PrivateUsers= directive at all; a write failure here
+	//     leaves the SAME posture, not a weaker one.
+	//   - seccomp has NO exemption: an empty/absent SystemCallFilter= is
+	//     "every syscall allowed", which is never equivalent to any profile a
+	//     module actually declares, so a seccomp write failure always changes
+	//     the unit's posture and always fails closed.
+	// A module refused this way is named on the boot breadcrumb
+	// (bc.SecurityFailClosedUnits) so buildHeartbeat can report it
+	// (HeartbeatPayload.PivotSecurityFailClosedUnits) for the life of the
+	// boot — the module's services simply do not run this boot, and the
+	// operator must see which one and why, not infer it from a boot-time-only
+	// OnError line.
 	for _, mod := range stack {
 		mf := manifests[mod.ID]
 		if mf == nil {
@@ -231,10 +280,12 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			}
 		}
 
-		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
-			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
-		}
-
+		// Pre-write EVERY unit's security drop-ins BEFORE enabling ANY of
+		// them (see the fail-closed redesign comment above the loop). Nothing
+		// here calls AttachServicesNative or `systemctl` yet — a failure at
+		// this stage means the module simply never reaches that call.
+		var failClosed bool
+		var failedUnits []string
 		for _, svc := range mf.Services {
 			unit := lifecycle.UnitName(mod.ID, svc.Name)
 			// PrivateUsers= is orthogonal to the privileged capability/MAC
@@ -247,6 +298,21 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			if err := security.WriteUserNamespaceDropInAt(sysroot, unit, policy.UserNamespace); err != nil {
 				r.cfg.OnError("compose:userns_dropin",
 					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+				// Exempt exactly when the write would have changed nothing:
+				// PrivateUsers=no is systemd's own default absent the
+				// directive, so a false-policy write failure leaves the unit
+				// at the SAME posture it was meant to get. A true-policy
+				// (the strict default) failure is a real regression and
+				// fails closed — see the loop-level doc comment. This applies
+				// EVEN to a privileged module: PrivateUsers is written for
+				// privileged modules too (the comment above), so a failure
+				// here is exactly as real a regression for one as for any
+				// other module — privileged only opts out of the
+				// capability/seccomp writes below, never this one.
+				if policy.UserNamespace {
+					failClosed = true
+					failedUnits = append(failedUnits, unit)
+				}
 			}
 			// Privileged modules opt out of MAC/seccomp/cap confinement by
 			// design; for everyone else, write the same seccomp + capability
@@ -257,10 +323,15 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			// seccomp SystemCallFilter=@<set> — inert on the pivot path before
 			// this fix. buildPolicy.Validate above already refused a hostile/
 			// unresolvable profile, so a value reaching here is a resolvable set.
+			// NO exemption: an absent filter is "everything allowed", never
+			// equivalent to a declared profile, so any write failure here
+			// always fails closed.
 			if policy.SeccompProfile != "" {
 				if err := security.WriteSeccompDropInAt(sysroot, unit, policy.SeccompProfile); err != nil {
 					r.cfg.OnError("compose:seccomp_dropin",
 						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+					failClosed = true
+					failedUnits = append(failedUnits, unit)
 				}
 			}
 			// Capability bounding + ambient sets, reset to this unit's RESOLVED
@@ -269,28 +340,38 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			// CapabilityBoundingSet= is the strictest (and safest default)
 			// posture, and skipping the write here would silently leave the
 			// unit at systemd's full default bounding set instead.
-			//
-			// FAIL CLOSED on a write failure (review round, IMP-caef5c00d63f
-			// phase 2): AttachServicesNative above already enabled this unit
-			// (systemctl --root enable) before this loop ever runs, so a
-			// drop-in write failure — with no further action — would leave the
-			// unit ENABLED with systemd's full default bounding set while the
-			// heartbeat's PivotConfinementOmitted reports capability
-			// enforcement as fully in force. That combination (silently
-			// unconfined + reported as confined) is worse than simply not
-			// starting the unit, so best-effort DISABLE it instead — the
-			// module's other, successfully-confined units are unaffected
-			// (this is per-unit, not per-module). The disable call's own
-			// failure is reported separately and does not mask the original
-			// write error.
-			if err := security.WriteCapabilityDropInAt(sysroot, unit, unitAllow[unit]); err != nil {
-				r.cfg.OnError("compose:capability_dropin",
-					fmt.Errorf("module %s unit %s: %w — disabling the unit (fail closed, not unconfined)", mod.ID, unit, err))
-				if derr := r.cfg.MountRunner.Run(ctx, "systemctl", "--root="+sysroot, "disable", unit); derr != nil {
-					r.cfg.OnError("compose:capability_dropin_fail_closed",
-						fmt.Errorf("module %s unit %s: could not disable after capability drop-in failure: %w", mod.ID, unit, derr))
+			allow := unitAllow[unit]
+			if err := security.WriteCapabilityDropInAt(sysroot, unit, allow); err != nil {
+				if security.IsFullCapabilitySet(allow) {
+					// MEDIUM-1: this unit's ceiling is already the full known
+					// set — the write would have changed nothing, so a
+					// failure here must not cost the module its boot. Logged
+					// at the same stage name as a real failure would use, so
+					// an operator can still see the write itself failed
+					// (worth investigating even though nothing is unconfined
+					// as a result).
+					r.cfg.OnError("compose:capability_dropin_exempt",
+						fmt.Errorf("module %s unit %s: %w — resolved set is the full known-capability ceiling, not failing closed", mod.ID, unit, err))
+				} else {
+					r.cfg.OnError("compose:capability_dropin",
+						fmt.Errorf("module %s unit %s: %w — module NOT enabled this boot (fail closed)", mod.ID, unit, err))
+					failClosed = true
+					failedUnits = append(failedUnits, unit)
 				}
 			}
+		}
+
+		if failClosed {
+			r.cfg.OnError("compose:security_dropin_fail_closed",
+				fmt.Errorf("module %s: security drop-in write failed for unit(s) %v — module NOT enabled this boot (fail closed, not unconfined)", mod.ID, failedUnits))
+			if bc != nil {
+				bc.SecurityFailClosedUnits = append(bc.SecurityFailClosedUnits, failedUnits...)
+			}
+			continue
+		}
+
+		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
+			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
 }

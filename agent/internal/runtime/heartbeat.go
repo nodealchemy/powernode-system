@@ -133,6 +133,19 @@ type HeartbeatPayload struct {
 	// enforces the full set. Absence therefore means "full set enforced (or
 	// not a pivot node)", never "unknown".
 	PivotConfinementOmitted []string `json:"pivot_confinement_omitted,omitempty"`
+	// PivotSecurityFailClosedUnits names every unit the pivot-compose path
+	// refused to enable THIS boot because a sibling security drop-in
+	// (capabilities.conf / userns.conf / seccomp) failed to write
+	// (IMP-caef5c00d63f phase 3, review HIGH-1/MEDIUM-1). Read from the boot
+	// breadcrumb (BootComposedBreadcrumb.SecurityFailClosedUnits), so it
+	// covers the boot that just happened, not a live re-check. A unit named
+	// here is NOT running: this heartbeat must never ALSO report it as
+	// capability-confined (PivotConfinementOmitted's absence means "full set
+	// enforced OR not applicable" — a fail-closed unit is neither, it simply
+	// never started). Empty/omitted means no fail-closed refusal happened on
+	// this boot, never "not measured" — renderPivotUnits always runs on a
+	// pivot boot.
+	PivotSecurityFailClosedUnits []string `json:"pivot_security_fail_closed_units,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

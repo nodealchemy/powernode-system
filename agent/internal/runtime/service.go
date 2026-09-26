@@ -752,6 +752,11 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 				payload.LKGAgeSeconds = int64(time.Since(bc.LKGConfirmedAt).Seconds())
 			}
 		}
+		// IMP-caef5c00d63f phase 3: surface THIS boot's fail-closed refusals
+		// (if any) on every heartbeat for the life of the boot — an operator
+		// reading only the latest heartbeat must still see it, not just
+		// whoever was watching at boot time.
+		payload.PivotSecurityFailClosedUnits = bc.SecurityFailClosedUnits
 	}
 	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
 		payload.LKGPresent = true
