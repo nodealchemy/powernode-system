@@ -858,9 +858,23 @@ module System
 
     # Same SiteSetting -> ENV -> default chain the planner uses; duplicated for
     # the same reason that one documents (no shared config seam yet).
+    #
+    # ENV key CORRECTED (review round, IMP-caef5c00d63f phase 2): this read
+    # ENV["CI_BUILD_SOURCE_REPO"] (no prefix), which silently disagreed with
+    # every other reader of this same setting — ModuleBuildPlannerService's
+    # own #ci_build_source_repo (the method this comment claims to mirror),
+    # ManifestFetchService#platform_source_repo, and both
+    # ConfigController#ci_build_source_repo / PlatformPushController all read
+    # ENV["POWERNODE_CI_BUILD_SOURCE_REPO"]. An operator setting the
+    # POWERNODE_-prefixed var (the name every OTHER reader documents) would
+    # have this one method alone fall through to the default instead —
+    # exactly the "resolve the wrong repo" defect class this whole phase
+    # exists to close, reachable via config instead of code. Only matters
+    # when the SiteSetting is unset (SiteSetting wins first in both chains),
+    # which is why it went unnoticed rather than un-real.
     def module_source_repo
       ::SiteSetting.get("ci_build_source_repo").presence ||
-        ENV["CI_BUILD_SOURCE_REPO"].presence ||
+        ENV["POWERNODE_CI_BUILD_SOURCE_REPO"].presence ||
         ::System::ModuleBuildPlannerService::CI_BUILD_SOURCE_REPO_DEFAULT
     rescue StandardError
       ::System::ModuleBuildPlannerService::CI_BUILD_SOURCE_REPO_DEFAULT
@@ -1064,7 +1078,7 @@ module System
       # batch: a materialized package module has no modules/<slug>/
       # manifest.yaml on disk (apply_package_file_spec! above is its only
       # spec source).
-      apply_module_manifest!(node_module, slug) unless package_batch?
+      apply_module_manifest!(node_module, slug, task) unless package_batch?
 
       emit_event("system.module_build_batch_module_succeeded", module: node_module.name, tag: entry["tag"])
       true
@@ -1241,9 +1255,9 @@ module System
     # successfully, so the build itself succeeded; only the ModuleService/
     # spec sync is affected, and the operator needs a loud log line, not a
     # retried build (retrying can't fix a bad manifest).
-    def apply_module_manifest!(node_module, slug)
+    def apply_module_manifest!(node_module, slug, task)
       yaml = read_platform_module_manifest(slug)
-      yaml = fetch_module_manifest(node_module, slug) if yaml.blank?
+      yaml = fetch_module_manifest(node_module, slug, task) if yaml.blank?
 
       if yaml.blank?
         Rails.logger.error("[NativeModuleBuildOrchestrator] NO manifest.yaml for #{slug} — not on disk under " \
@@ -1295,17 +1309,30 @@ module System
     # batch — confirmed live on ops-hub: manifest_apply_skipped fired for
     # hub-backend, hub-worker and hub-frontend on every core-triggered rebuild,
     # so their ModuleService rows (ambient capability grants included) were
-    # never resynced. #module_source_build_sha already resolves the ONE
-    # correct ref for this — the manifest repo's own tip for a core-sourced
-    # batch, head_sha unchanged otherwise — because the ci.module_build Task's
-    # BUILD_SHA needed exactly the same fix (see that method's doc). Reusing it
-    # keeps the two from ever disagreeing about which commit's manifest.yaml a
-    # build actually used.
+    # never resynced.
+    #
+    # task.options["sha"], NOT a live #module_source_build_sha re-resolution
+    # (review round, IMP-caef5c00d63f phase 2): this method is called from
+    # #finalize_success! at the END of a build's lifecycle — an arbitrary time
+    # after #dispatch! resolved the module source tip ONCE and recorded it on
+    # the task via #build_task_options ("sha" => module_source_build_sha).
+    # #module_source_build_sha memoizes per ORCHESTRATOR INSTANCE
+    # (@module_source_build_sha ||=), and #advance! constructs a FRESH
+    # orchestrator per call (see .advance!(batch:) at the top of this class),
+    # so calling it again here re-hits Gitea and can resolve a DIFFERENT
+    # (newer) tip if the branch moved between dispatch and finalize — the
+    # manifest applied would then describe a commit that was never actually
+    # built. task.options["sha"] is the one value guaranteed to be the exact
+    # ref module-forge-build.sh cloned FOR THIS TASK; reading it back is not
+    # an optimisation, it is the only way to apply the manifest that matches
+    # the artifact that just published. Falls back to a live
+    # #module_source_build_sha resolution only when the task genuinely
+    # carries none (defensive — every task #build_task_options creates does).
     #
     # Best-effort by the same rationale as the caller: a fetch failure must not
     # fail a build whose artifact already published.
-    def fetch_module_manifest(node_module, slug)
-      ref = module_source_build_sha
+    def fetch_module_manifest(node_module, slug, task)
+      ref = task&.options&.[]("sha").presence || module_source_build_sha
       ::System::ManifestFetchService.fetch(node_module: node_module, ref: ref)
     rescue StandardError => e
       Rails.logger.warn("[NativeModuleBuildOrchestrator] manifest fetch fallback failed for #{slug} " \

@@ -59,6 +59,15 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
                                         base_sha: base_sha, head_sha: head_sha)
   end
 
+  # apply_module_manifest! reads its fetch ref off task.options["sha"] — the
+  # value #dispatch! resolved ONCE and recorded via #build_task_options, NOT
+  # a live re-resolution at finalize time (IMP-caef5c00d63f phase 2 review
+  # round — see that method's own comment). Direct-call specs stand in for
+  # the real dispatched Task with a double carrying exactly that value.
+  def task_double(sha)
+    double("Task", options: { "sha" => sha })
+  end
+
   before do
     allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("registry.example.com")
     # The GitHub-mirror pre-flight reaches the network for every Class-B batch.
@@ -239,6 +248,38 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
 
       task = System::Task.where(command: "ci.module_build", account: account).first
       expect(task.options["sha"]).to eq("systemsha987654")
+    end
+
+    # ENV KEY CORRECTED (review round, IMP-caef5c00d63f phase 2): #module_source_repo
+    # read ENV["CI_BUILD_SOURCE_REPO"] (no prefix), diverging from every other
+    # reader of this setting (ModuleBuildPlannerService#ci_build_source_repo,
+    # ManifestFetchService#platform_source_repo, ConfigController,
+    # PlatformPushController — all POWERNODE_-prefixed). An operator using the
+    # documented POWERNODE_-prefixed var would have this ONE method silently
+    # fall through to the hardcoded default instead of the configured repo.
+    it "resolves the module source repo from the POWERNODE_-prefixed env var, matching every other reader" do
+      seed_pool_member
+      original = ENV["POWERNODE_CI_BUILD_SOURCE_REPO"]
+      ENV["POWERNODE_CI_BUILD_SOURCE_REPO"] = "acme/forked-system"
+      begin
+        provider = create(:git_provider, :gitea, account: account)
+        create(:git_provider_credential, :gitea, account: account, provider: provider)
+        fake = instance_double(::Devops::Git::ApiClient)
+        allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+        allow(fake).to receive(:supports_runners?).and_return(false)
+        expect(fake).to receive(:get_repository).with("acme", "forked-system")
+          .and_return({ "default_branch" => "develop" })
+        allow(fake).to receive(:list_branches)
+          .and_return([ { "name" => "develop", "commit" => { "id" => "e8f31a9d1111111111111111111111111111aaaa" } } ])
+        batch = core_batch
+
+        described_class.dispatch!(batch: batch)
+
+        task = System::Task.where(command: "ci.module_build", account: account).first
+        expect(task.options["sha"]).to eq("e8f31a9d1111111111111111111111111111aaaa")
+      ensure
+        ENV["POWERNODE_CI_BUILD_SOURCE_REPO"] = original
+      end
     end
   end
 
@@ -1125,7 +1166,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       allow(File).to receive(:file?).with(/modules\/powernode-hub-worker\/manifest\.yaml/).and_return(false)
     end
 
-    it "falls back to fetching the manifest at the batch head_sha" do
+    it "fetches the manifest at the sha recorded on the dispatched task" do
       batch = build_batch(modules: [ mod ], head_sha: "sysTip999")
 
       expect(::System::ManifestFetchService).to receive(:fetch)
@@ -1134,7 +1175,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         .with(hash_including(node_module: mod, yaml: yaml))
         .and_return(double(ok?: true, error: nil, validation_errors: []))
 
-      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name, task_double("sysTip999"))
     end
 
     it "escalates loudly when neither disk nor fetch yields a manifest" do
@@ -1146,7 +1187,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(orchestrator).to receive(:emit_event)
         .with(a_string_matching(/manifest/), hash_including(severity: :high))
 
-      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+      orchestrator.send(:apply_module_manifest!, mod, mod.name, task_double("sysTip999"))
     end
 
     it "does not fetch when the on-disk manifest is present" do
@@ -1159,7 +1200,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       allow(::System::ManifestImportService).to receive(:import!)
         .and_return(double(ok?: true, error: nil, validation_errors: []))
 
-      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name, task_double("sysTip999"))
     end
   end
 
@@ -1216,9 +1257,16 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       allow(File).to receive(:file?).with(/modules\/powernode-hub-backend\/manifest\.yaml/).and_return(false)
     end
 
+    # These two tests no longer stub the live Gitea tip resolver at all
+    # (IMP-caef5c00d63f phase 2 review round): apply_module_manifest! reads
+    # task.options["sha"] — the value #dispatch! already resolved ONCE and
+    # recorded — rather than re-resolving it live at finalize time. A task
+    # double carrying that recorded value stands in for the real dispatched
+    # Task; see "the sha is read from the DISPATCHED task, not re-resolved
+    # live" below for the end-to-end version that exercises the real
+    # dispatch -> tip-moves -> finalize sequence this simplification assumes.
     it "fetches the manifest at the module source repo's own tip, not the core head_sha" do
       module_source_tip = "e8f31a9d1111111111111111111111111111aaaa"
-      stub_module_source_tip(module_source_tip)
       batch = core_batch
 
       expect(::System::ManifestFetchService).to receive(:fetch)
@@ -1227,12 +1275,11 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         .with(hash_including(node_module: mod, yaml: yaml))
         .and_return(double(ok?: true, error: nil, validation_errors: []))
 
-      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name, task_double(module_source_tip))
     end
 
     it "does not emit manifest_apply_skipped when the module source tip resolves and carries a manifest" do
       module_source_tip = "e8f31a9d1111111111111111111111111111aaaa"
-      stub_module_source_tip(module_source_tip)
       batch = core_batch
       allow(::System::ManifestFetchService).to receive(:fetch).and_return(yaml)
       allow(::System::ManifestImportService).to receive(:import!)
@@ -1242,17 +1289,19 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(orchestrator).not_to receive(:emit_event)
         .with("system.module_build.manifest_apply_skipped", anything)
 
-      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+      orchestrator.send(:apply_module_manifest!, mod, mod.name, task_double(module_source_tip))
     end
 
-    # The genuine-miss case must stay armed: a module source tip that itself
-    # cannot be resolved (network down) falls back to head_sha (no worse than
-    # before #module_source_build_sha existed), which is still the wrong repo's
-    # sha for a core-sourced batch — so the fetch still fails and the high-
-    # severity skip event still fires. This is not a regression this fix should
-    # paper over; it is the pre-existing "no worse than before" fallback that
+    # The genuine-miss case must stay armed: a task carrying no recorded sha
+    # (defensive fallback arm — every real task #build_task_options creates
+    # has one) falls back to a LIVE #module_source_build_sha resolution,
+    # which itself falls back to head_sha when the tip can't be resolved
+    # (network down) — still the wrong repo's sha for a core-sourced batch,
+    # so the fetch still fails and the high-severity skip event still fires.
+    # This is not a regression this fix should paper over; it is the
+    # pre-existing "no worse than before" fallback that
     # #resolve_module_source_tip documents for the BUILD_SHA case.
-    it "still emits manifest_apply_skipped when the module source tip cannot be resolved either" do
+    it "still emits manifest_apply_skipped when the task carries no sha and the module source tip cannot be resolved either" do
       provider = create(:git_provider, :gitea, account: account)
       create(:git_provider_credential, :gitea, account: account, provider: provider)
       fake = instance_double(::Devops::Git::ApiClient)
@@ -1265,7 +1314,85 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(orchestrator).to receive(:emit_event)
         .with("system.module_build.manifest_apply_skipped", hash_including(severity: :high))
 
-      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+      orchestrator.send(:apply_module_manifest!, mod, mod.name, task_double(nil))
+    end
+  end
+
+  # END-TO-END (IMP-caef5c00d63f phase 2 review round). The unit specs above
+  # drive apply_module_manifest! directly with a task double; this drives the
+  # REAL sequence dispatch! -> (branch tip moves) -> advance! through
+  # DIFFERENT orchestrator instances (exactly the production shape: dispatch!
+  # and advance! are separate top-level calls, `.advance!(batch:)` builds its
+  # own `new(batch: batch)` — memoized state on one instance never survives to
+  # the other) to prove the manifest is fetched at the sha #dispatch! actually
+  # recorded on the Task, NOT a fresh live resolution of wherever the branch
+  # has moved to by the time the build finishes and finalize runs.
+  describe "the sha is read from the DISPATCHED task, not re-resolved live" do
+    def core_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      mod = create_module("powernode-hub-backend")
+      plan = [ { module: mod.name, oci_ref: head_sha[0, 7] } ]
+      batch = System::ModuleBuildBatch.create_for(
+        account: account, plan: plan, trigger: "manual",
+        base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+        source_repo: "powernode/powernode-platform"
+      )
+      [ batch, mod ]
+    end
+
+    def stub_module_source_tip(fake, sha)
+      allow(fake).to receive(:list_branches)
+        .and_return([ { "name" => "develop", "commit" => { "id" => sha } } ])
+    end
+
+    it "fetches the manifest at dispatch time's tip even after the branch moves before finalize" do
+      seed_pool_member
+      batch, mod = core_batch
+      dispatch_time_tip = "aaaaaaaaaa1111111111111111111111111111"
+      finalize_time_tip = "bbbbbbbbbb2222222222222222222222222222"
+
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      allow(fake).to receive(:get_repository).and_return({ "default_branch" => "develop" })
+      stub_module_source_tip(fake, dispatch_time_tip)
+
+      described_class.dispatch!(batch: batch)
+      task = System::Task.where(command: "ci.module_build", account: account).first
+      expect(task.options["sha"]).to eq(dispatch_time_tip) # sanity: dispatch recorded THIS tip
+
+      # The branch moves while the builder is working — a fresh resolution
+      # from here on would see the NEW tip.
+      stub_module_source_tip(fake, finalize_time_tip)
+
+      task.update!(status: "complete", completed_at: Time.current,
+                   events: [ { "type" => "completed", "message" => "done",
+                               "result" => { "oci_digest" => "sha256:e2e1234" },
+                               "timestamp" => Time.current.iso8601 } ])
+
+      allow(::System::ModuleSigningService).to receive(:sign!)
+        .and_return(System::ModuleSigningService::Result.new(ok?: true, oci_ref: "irrelevant", digest: "sha256:e2e1234"))
+      allow(::System::ModulePublicationProcessor).to receive(:process!)
+        .and_return(System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: nil))
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(/modules\/powernode-hub-backend\/manifest\.yaml/).and_return(false)
+
+      yaml = <<~YAML
+        schema_version: 1
+        name: powernode-hub-backend
+        services:
+          - name: rails
+            start_command: "/usr/local/bin/rails-start.sh"
+      YAML
+      expect(::System::ManifestFetchService).to receive(:fetch)
+        .with(hash_including(node_module: mod, ref: dispatch_time_tip)).and_return(yaml)
+      expect(::System::ManifestImportService).to receive(:import!)
+        .with(hash_including(node_module: mod, yaml: yaml))
+        .and_return(double(ok?: true, error: nil, validation_errors: []))
+
+      result = described_class.advance!(batch: batch)
+      expect(result.succeeded).to eq(1) # sanity: the build path we're piggybacking on actually ran
     end
   end
 
