@@ -25,6 +25,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
+	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -164,6 +165,19 @@ type Reconciler struct {
 	// after a probe returns. sync.Mutex.Lock is also not context-aware, so a
 	// parked probe would hold up agent shutdown at wg.Wait().
 	composeFailed atomic.Bool
+
+	// securityFailClosedUnits is the LIVE set of units this reconciler
+	// currently keeps stopped/un-started on the cloud-init/pivot-reconcile
+	// path because a non-exempt security drop-in write failed
+	// (attachModule, IMP-caef5c00d63f phase 4 — operator decision: fail
+	// closed identically on the boot AND the runtime path). Read by
+	// buildHeartbeat (HeartbeatPayload.RuntimeSecurityFailClosedUnits).
+	//
+	// ATOMIC, not guarded by mu, for the exact reason composeFailed is: only
+	// the single RunOnce goroutine ever WRITES it (via recordSecurityFailClosed,
+	// called from attachModule), but buildHeartbeat reads it from a different
+	// goroutine, and mu is held across the entire RunOnce body.
+	securityFailClosedUnits atomic.Pointer[[]string]
 
 	// Latched result of the self-host probe (see selfhost.go). Guarded
 	// separately from mu because selfHosted() is called from inside a
@@ -873,6 +887,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Reaching the compose stage re-opens the verdict: a failure recorded on an
 	// earlier pass must not outlive a pass that composed cleanly.
 	r.composeFailed.Store(false)
+	r.resetSecurityFailClosed()
 
 	// Modules whose live materialization this pass refused. Rebuilt from
 	// nothing every pass for the same reason convergeFailures is: it must
@@ -1385,49 +1400,60 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
 		return fmt.Errorf("apply policy: %w", err)
 	}
-	if policy.SeccompProfile != "" {
-		for _, unit := range mf.UnitNames() {
-			if err := security.WriteSeccompDropIn(unit, policy.SeccompProfile); err != nil {
-				r.cfg.OnError("reconciler:seccomp_dropin", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+	// Seccomp + capability + user-namespace drop-ins, through the SAME
+	// decision renderPivotUnits (compose.go) uses — applyModuleSecurityDropIns
+	// (security_dropins.go) — so the live (this function) and boot/pivot-
+	// compose paths can never independently drift on which drop-in failures
+	// are exempt from failing closed. Operator decision (round 3,
+	// IMP-caef5c00d63f phase 4): fail closed on BOTH paths identically —
+	// never run a module unconfined, whether the confinement gap was
+	// discovered at boot or on a live reconcile tick. Before this, a
+	// drop-in write failure here was non-fatal: the caller went on to call
+	// attachModuleServices, which WRITES the unit and STARTS it — unconfined,
+	// because the drop-in never landed — while nothing distinguished that
+	// attach from an ordinary successful one.
+	unitAllow := make(map[string][]string, len(unitCaps))
+	for _, uc := range unitCaps {
+		unitAllow[uc.Unit] = uc.Allow
+	}
+	failedUnits := applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
+		securityDropInFuncs{
+			userNamespace: security.WriteUserNamespaceDropIn,
+			seccomp:       security.WriteSeccompDropIn,
+			capability:    security.WriteCapabilityDropIn,
+		},
+		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
+	)
+
+	if len(failedUnits) > 0 {
+		r.recordSecurityFailClosed(failedUnits)
+		// STOP any of the failed units that are CURRENTLY RUNNING, not just
+		// decline to (re)start them. A module already running under an
+		// older, successfully-written drop-in could be running a WIDER
+		// posture than this pass intends (a manifest edit narrowing its
+		// ceiling is exactly why a re-attach ran at all) — leaving it
+		// running because the refresh failed would silently keep the wider,
+		// pre-edit posture in force. Best-effort: an IsActive read error is
+		// treated as "not active" (nothing to stop), and a Stop failure is
+		// reported separately and does not mask the original write error.
+		for _, unit := range failedUnits {
+			if active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit); active {
+				if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Stop); err != nil {
+					r.cfg.OnError("reconciler:security_dropin_fail_closed_stop",
+						fmt.Errorf("module %s unit %s: could not stop after fail-closed refusal: %w", mod.ID, unit, err))
+				}
 			}
 		}
-	}
-	// Capability bounding + ambient sets enforce via per-unit systemd
-	// drop-ins (mirrors the seccomp pattern above). Privileged modules
-	// skip this — they opt into ALL caps by design. We always write the
-	// drop-in for non-privileged modules even when the allowlist is
-	// empty, because an empty CapabilityBoundingSet= is the strictest
-	// (and safest default) posture and an absent drop-in would inherit
-	// systemd's full caps. Each unit gets its OWN resolved set
-	// (resolveUnitCapabilities): the module ceiling when the service
-	// declares no capabilities key, exactly its declared subset — [] meaning
-	// none — when it does. Drop-in failures are non-fatal — surface via
-	// OnError so the operator sees them; the service still starts with
-	// whatever caps systemd's defaults give it.
-	for _, uc := range unitCaps {
-		if err := security.WriteCapabilityDropIn(uc.Unit, uc.Allow); err != nil {
-			r.cfg.OnError("reconciler:capability_dropin",
-				fmt.Errorf("module %s unit %s: %w", mod.ID, uc.Unit, err))
-		}
-	}
-	// User-namespace isolation (PrivateUsers=) enforces via a per-unit
-	// systemd drop-in. UNLIKE seccomp (conditional on a profile path) we
-	// ALWAYS write this drop-in to reflect policy.UserNamespace — that's the
-	// only way the documented default (true) is actually enforced; an absent
-	// drop-in would silently leave the unit in the host user namespace.
-	// We write it for ALL modules, including Privileged ones: PrivateUsers
-	// is orthogonal to the capability/MAC opt-out (it only remaps UID/GID
-	// namespaces, never relaxing the bounding set or seccomp filter). A
-	// module that genuinely needs the host user namespace (raw socket
-	// access) sets `user_namespace: false` in its manifest, which yields
-	// PrivateUsers=no here; Privileged is a separate, orthogonal opt-in.
-	// Drop-in failures are non-fatal — surface via OnError; the service
-	// still starts with whatever userns posture systemd's defaults give it.
-	for _, unit := range mf.UnitNames() {
-		if err := security.WriteUserNamespaceDropIn(unit, policy.UserNamespace); err != nil {
-			r.cfg.OnError("reconciler:userns_dropin",
-				fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-		}
+		r.cfg.OnError("reconciler:security_dropin_fail_closed",
+			fmt.Errorf("module %s: security drop-in write failed for unit(s) %v — refusing to (re)start, stopping any that are running (fail closed, not unconfined)", mod.ID, failedUnits))
+		// Returning an error here reuses the SAME refusal path attachModule
+		// already has for an invalid policy or an unapproved privileged
+		// request (above): the caller's noteUnconverged does not record this
+		// module's attach stamp and does not call attachModuleServices, so a
+		// first attach never starts the module's units at all, and a
+		// re-attach's stamp stays stale — which re-queues the module into
+		// toReattach on every later tick until the write succeeds.
+		return fmt.Errorf("module %s: security drop-in write failed for unit(s) %v (fail closed)", mod.ID, failedUnits)
 	}
 
 	return nil
@@ -2068,6 +2094,55 @@ func (r *Reconciler) LastReconcileAt() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lastReconcileAt
+}
+
+// SecurityFailClosedUnits returns the units the LIVE (cloud-init/pivot-
+// reconcile) attach path currently keeps stopped/un-started because a
+// non-exempt security drop-in write failed. nil/empty means none — read by
+// buildHeartbeat into HeartbeatPayload.RuntimeSecurityFailClosedUnits.
+func (r *Reconciler) SecurityFailClosedUnits() []string {
+	if p := r.securityFailClosedUnits.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// recordSecurityFailClosed merges units into the atomically-published set
+// SecurityFailClosedUnits reads, deduped. Called only from attachModule,
+// which only ever runs from the single RunOnce goroutine — so this
+// load-merge-store needs no lock of its own beyond what atomic.Pointer
+// already gives concurrent READERS (buildHeartbeat, on a different
+// goroutine); see securityFailClosedUnits' own doc for why that field is
+// atomic rather than mu-guarded.
+func (r *Reconciler) recordSecurityFailClosed(units []string) {
+	if len(units) == 0 {
+		return
+	}
+	existing := r.SecurityFailClosedUnits()
+	merged := make([]string, 0, len(existing)+len(units))
+	seen := make(map[string]bool, len(existing)+len(units))
+	for _, u := range existing {
+		if !seen[u] {
+			seen[u] = true
+			merged = append(merged, u)
+		}
+	}
+	for _, u := range units {
+		if !seen[u] {
+			seen[u] = true
+			merged = append(merged, u)
+		}
+	}
+	r.securityFailClosedUnits.Store(&merged)
+}
+
+// resetSecurityFailClosed clears the published set at the top of a fresh
+// RunOnce pass — same reasoning as composeFailed.Store(false): the set must
+// describe the pass that just ran, never an older one, so a module that
+// fixed its drop-in this tick drops off rather than staying flagged forever.
+func (r *Reconciler) resetSecurityFailClosed() {
+	empty := []string(nil)
+	r.securityFailClosedUnits.Store(&empty)
 }
 
 // AttachOne pulls + verifies + mounts a single module without

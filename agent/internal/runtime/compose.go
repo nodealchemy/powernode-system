@@ -284,84 +284,37 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 		// them (see the fail-closed redesign comment above the loop). Nothing
 		// here calls AttachServicesNative or `systemctl` yet — a failure at
 		// this stage means the module simply never reaches that call.
-		var failClosed bool
-		var failedUnits []string
-		for _, svc := range mf.Services {
-			unit := lifecycle.UnitName(mod.ID, svc.Name)
-			// PrivateUsers= is orthogonal to the privileged capability/MAC
-			// opt-out (it only remaps UID/GID namespaces), so it is written for
-			// ALL modules INCLUDING privileged ones — matching attachModule
-			// (reconcile.go), whose divergence here (privileged modules ran in
-			// the host userns on a pivot node but PrivateUsers=yes on cloud_init)
-			// was review finding F4. The documented user_namespace default (true)
-			// was also silently unenforced on the pivot path before this fix.
-			if err := security.WriteUserNamespaceDropInAt(sysroot, unit, policy.UserNamespace); err != nil {
-				r.cfg.OnError("compose:userns_dropin",
-					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-				// Exempt exactly when the write would have changed nothing:
-				// PrivateUsers=no is systemd's own default absent the
-				// directive, so a false-policy write failure leaves the unit
-				// at the SAME posture it was meant to get. A true-policy
-				// (the strict default) failure is a real regression and
-				// fails closed — see the loop-level doc comment. This applies
-				// EVEN to a privileged module: PrivateUsers is written for
-				// privileged modules too (the comment above), so a failure
-				// here is exactly as real a regression for one as for any
-				// other module — privileged only opts out of the
-				// capability/seccomp writes below, never this one.
-				if policy.UserNamespace {
-					failClosed = true
-					failedUnits = append(failedUnits, unit)
-				}
-			}
-			// Privileged modules opt out of MAC/seccomp/cap confinement by
-			// design; for everyone else, write the same seccomp + capability
-			// drop-ins attachModule writes, into the union at sysroot.
-			if policy.Privileged {
-				continue
-			}
-			// seccomp SystemCallFilter=@<set> — inert on the pivot path before
-			// this fix. buildPolicy.Validate above already refused a hostile/
-			// unresolvable profile, so a value reaching here is a resolvable set.
-			// NO exemption: an absent filter is "everything allowed", never
-			// equivalent to a declared profile, so any write failure here
-			// always fails closed.
-			if policy.SeccompProfile != "" {
-				if err := security.WriteSeccompDropInAt(sysroot, unit, policy.SeccompProfile); err != nil {
-					r.cfg.OnError("compose:seccomp_dropin",
-						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-					failClosed = true
-					failedUnits = append(failedUnits, unit)
-				}
-			}
-			// Capability bounding + ambient sets, reset to this unit's RESOLVED
-			// set — mirrors reconcile.go's attachModule exactly, including
-			// writing the drop-in for an EMPTY allow list: an empty
-			// CapabilityBoundingSet= is the strictest (and safest default)
-			// posture, and skipping the write here would silently leave the
-			// unit at systemd's full default bounding set instead.
-			allow := unitAllow[unit]
-			if err := security.WriteCapabilityDropInAt(sysroot, unit, allow); err != nil {
-				if security.IsFullCapabilitySet(allow) {
-					// MEDIUM-1: this unit's ceiling is already the full known
-					// set — the write would have changed nothing, so a
-					// failure here must not cost the module its boot. Logged
-					// at the same stage name as a real failure would use, so
-					// an operator can still see the write itself failed
-					// (worth investigating even though nothing is unconfined
-					// as a result).
-					r.cfg.OnError("compose:capability_dropin_exempt",
-						fmt.Errorf("module %s unit %s: %w — resolved set is the full known-capability ceiling, not failing closed", mod.ID, unit, err))
-				} else {
-					r.cfg.OnError("compose:capability_dropin",
-						fmt.Errorf("module %s unit %s: %w — module NOT enabled this boot (fail closed)", mod.ID, unit, err))
-					failClosed = true
-					failedUnits = append(failedUnits, unit)
-				}
-			}
-		}
+		// applyModuleSecurityDropIns (security_dropins.go) is the SAME
+		// decision attachModule (reconcile.go) uses for the live path — one
+		// function so the two paths can never independently drift on which
+		// failures are exempt (operator decision, round 3: fail closed on
+		// BOTH paths identically).
+		//
+		// NOTE ON TOTAL DISK EXHAUSTION: the full-capability-set exemption
+		// says a capabilities.conf write failure for qemu-guest-agent costs
+		// nothing, because systemd's own un-dropped default is the practical
+		// equivalent — but that reasoning only covers THIS write. Under total
+		// ENOSPC/EROFS, AttachServicesNative's own unit-file write (below)
+		// fails too, and qga does not start at all regardless of the
+		// exemption; the exemption's job is only to stop a qga-only drop-in
+		// failure from being treated as a security fail-closed event when
+		// the unit would otherwise have started fine.
+		failedUnits := applyModuleSecurityDropIns(mod.ID, mf, policy, unitAllow,
+			securityDropInFuncs{
+				userNamespace: func(unit string, enabled bool) error {
+					return security.WriteUserNamespaceDropInAt(sysroot, unit, enabled)
+				},
+				seccomp: func(unit, profilePath string) error {
+					return security.WriteSeccompDropInAt(sysroot, unit, profilePath)
+				},
+				capability: func(unit string, allow []string) error {
+					return security.WriteCapabilityDropInAt(sysroot, unit, allow)
+				},
+			},
+			func(stage string, err error) { r.cfg.OnError("compose:"+stage, err) },
+		)
 
-		if failClosed {
+		if len(failedUnits) > 0 {
 			r.cfg.OnError("compose:security_dropin_fail_closed",
 				fmt.Errorf("module %s: security drop-in write failed for unit(s) %v — module NOT enabled this boot (fail closed, not unconfined)", mod.ID, failedUnits))
 			if bc != nil {

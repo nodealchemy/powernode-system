@@ -146,6 +146,20 @@ type HeartbeatPayload struct {
 	// this boot, never "not measured" — renderPivotUnits always runs on a
 	// pivot boot.
 	PivotSecurityFailClosedUnits []string `json:"pivot_security_fail_closed_units,omitempty"`
+	// RuntimeSecurityFailClosedUnits is PivotSecurityFailClosedUnits'
+	// sibling for the LIVE (cloud-init/pivot-reconcile) attach path
+	// (IMP-caef5c00d63f phase 4): units attachModule currently keeps
+	// stopped/un-started because a non-exempt security drop-in write failed
+	// on THIS tick's reconcile, not at boot. A separate field, not the same
+	// one, because the two describe different facts with different
+	// lifetimes — Pivot's is a one-time statement about the boot that just
+	// happened (persisted via the boot breadcrumb, re-read every tick until
+	// the next boot); Runtime's is live and can clear on the very next
+	// successful reconcile. Read straight from the Reconciler
+	// (SecurityFailClosedUnits), not a breadcrumb — there is no boot event to
+	// persist across for a condition that can appear and clear mid-uptime.
+	// Empty/omitted means no live runtime-path refusal right now.
+	RuntimeSecurityFailClosedUnits []string `json:"runtime_security_fail_closed_units,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

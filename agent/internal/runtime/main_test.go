@@ -9,6 +9,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 )
 
 // TestMain sandboxes every /persist-backed path in this package BEFORE any test
@@ -64,6 +65,24 @@ func TestMain(m *testing.M) {
 	// systemd-boot, booted slot undeterminable — which is the inert default. Tests
 	// needing a real answer override it locally.
 	bootslots.SetEfivarsDirForTest(filepath.Join(sandbox, "efivars-absent"))
+
+	// Same floor, extended for IMP-caef5c00d63f phase 4: attachModule's
+	// security drop-in writes (userns/seccomp/capability) are now FAIL
+	// CLOSED — a write failure refuses the whole module rather than merely
+	// logging it (operator decision, round 3: never run a module unconfined
+	// on either the boot or the runtime path). Before that, a test exercising
+	// attachModule against the package default systemdDropInRoot
+	// (/etc/systemd/system, unwritable to an unprivileged test run) silently
+	// got a logged-and-ignored error; the exact same write failure now
+	// refuses the module outright, which would turn EVERY attachModule test
+	// in this package into a fail-closed test by accident. Redirecting here,
+	// once, for the whole binary, is the established pattern for this class
+	// of hazard (see the doc comment above) — a test that specifically wants
+	// to OBSERVE a real drop-in write failure overrides this again locally
+	// (see unit_capabilities_test.go's pivot-path fail-closed tests, which
+	// already worked this way via an explicit sysroot) and restores it via
+	// t.Cleanup.
+	_ = security.SetSystemdDropInRootForTest(filepath.Join(sandbox, "systemd-dropins"))
 
 	// IMP-2dfbd7f62441 review finding N5: default the host-global render
 	// seams to no-ops BEFORE any test runs, the same floor-not-convention

@@ -106,6 +106,14 @@ type Service struct {
 	// TEES the configured OnError hook rather than replacing it: stderr keeps
 	// every report, and the platform gets a bounded, de-duplicated summary.
 	signingAudit *signingaudit.Collector
+	// reconciler is set once Run() constructs it, so buildHeartbeat can read
+	// its LIVE security-fail-closed state (RuntimeSecurityFailClosedUnits,
+	// IMP-caef5c00d63f phase 4). Read-only from buildHeartbeat's goroutine;
+	// Reconciler's own exported accessor (SecurityFailClosedUnits) is what
+	// makes that safe without a lock here — see that field's doc. nil until
+	// Run() reaches the point below where it is set, and nil in any test that
+	// builds a Service without calling Run — buildHeartbeat guards for that.
+	reconciler *Reconciler
 }
 
 func New(cfg Config) *Service {
@@ -439,6 +447,10 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("build reconciler: %w", err)
 	}
+	// Published before the heartbeat loop (below) ever calls buildHeartbeat,
+	// so RuntimeSecurityFailClosedUnits has a live Reconciler to read from
+	// the first tick on.
+	s.reconciler = reconciler
 
 	var wg sync.WaitGroup
 	spawn := func(name string, fn func()) {
@@ -757,6 +769,11 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		// reading only the latest heartbeat must still see it, not just
 		// whoever was watching at boot time.
 		payload.PivotSecurityFailClosedUnits = bc.SecurityFailClosedUnits
+	}
+	// Live runtime-path fail-closed state (IMP-caef5c00d63f phase 4). nil
+	// Reconciler only in a test/constructor path that never called Run.
+	if s.reconciler != nil {
+		payload.RuntimeSecurityFailClosedUnits = s.reconciler.SecurityFailClosedUnits()
 	}
 	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
 		payload.LKGPresent = true
