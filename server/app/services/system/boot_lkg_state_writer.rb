@@ -11,7 +11,7 @@ module System
   # producer whose payload nothing consumes is invisible to unit specs on both
   # sides, because both pass while the wire between them is cut.
   #
-  # WIRE SHAPE (runtime.HeartbeatPayload — SEVEN TOP-LEVEL SCALAR KEYS, not a
+  # WIRE SHAPE (runtime.HeartbeatPayload — NINE TOP-LEVEL SCALAR KEYS, not a
   # nested block like the two sibling lanes):
   #
   #   lkg_present, lkg_confirmed_at, lkg_module_count   — ARM telemetry (HIGH-1):
@@ -24,6 +24,15 @@ module System
   #     incomplete assigned set (a data module was dropped at compose).
   #   pivot_confinement_omitted                         — confinements the
   #     direct_kernel/pivot boot path does NOT enforce.
+  #   pivot_security_fail_closed_units                  — IMP-caef5c00d63f phase 4.
+  #     Units the boot/pivot-compose path refused to enable THIS boot because a
+  #     security drop-in (capability/userns/seccomp) failed to write and was
+  #     not exempt. A named unit is NOT running — never read this as "running,
+  #     but confinement uncertain".
+  #   runtime_security_fail_closed_units                — same lane's LIVE
+  #     sibling: units the cloud-init/pivot-RECONCILE path currently keeps
+  #     stopped/un-started for the identical reason, on THIS tick, not at
+  #     boot. Can appear and clear between boots; pivot_* cannot.
   #
   # == THE ABSENCE RULE, AND WHY IT IS THE WHOLE POINT
   #
@@ -80,6 +89,7 @@ module System
     WIRE_KEYS = %w[
       booted_from_lkg lkg_age_seconds lkg_present lkg_confirmed_at
       lkg_module_count boot_incomplete pivot_confinement_omitted
+      pivot_security_fail_closed_units runtime_security_fail_closed_units
     ].freeze
 
     # Caps. The payload arrives from a node — a compromised or simply buggy
@@ -162,16 +172,29 @@ module System
           # storing `[]` for it would claim full confinement on a pivot node
           # with live gaps. nil says "unreported" and makes that misread
           # impossible, at the cost of a distinction the wire never carried.
-          "pivot_confinement_omitted" => normalize_confinements(fetch(payload, :pivot_confinement_omitted))
+          "pivot_confinement_omitted" => normalize_string_list(fetch(payload, :pivot_confinement_omitted)),
+
+          # IMP-caef5c00d63f phase 4 — same list-or-nil discipline as
+          # pivot_confinement_omitted, for the same reason: absence must read
+          # as "nothing refused (or an agent too old to say)", never as an
+          # empty-but-measured "confirmed clean", and a stored `[]` here would
+          # claim exactly that on a node whose agent predates the field.
+          "pivot_security_fail_closed_units"   => normalize_string_list(fetch(payload, :pivot_security_fail_closed_units)),
+          "runtime_security_fail_closed_units" => normalize_string_list(fetch(payload, :runtime_security_fail_closed_units))
         }
       end
 
-      # nil unless the wire carried a genuinely non-empty list. The cap can only
-      # ever SHRINK a list whose entries are alarming (each names a confinement
-      # NOT in force), so truncation cannot paint a node greener than it is —
-      # though 32 junk names WOULD push the real entries out of the window, so
-      # the list bounds the alarm, not the identity of the gap.
-      def normalize_confinements(raw)
+      # nil unless the wire carried a genuinely non-empty list. Shared by
+      # every list-shaped field this document stores (pivot_confinement_omitted,
+      # the two security_fail_closed_units fields) — same cap, same blank-entry
+      # and over-length handling for all of them, so a future list field does
+      # not need its own copy of these three decisions. The cap can only ever
+      # SHRINK a list whose entries are alarming (each names something NOT
+      # enforced or a refused unit), so truncation cannot paint a node
+      # greener than it is — though enough junk entries WOULD push the real
+      # ones out of the window, so the cap bounds the alarm, not the identity
+      # of the gap.
+      def normalize_string_list(raw)
         return nil unless raw.is_a?(Array)
 
         normalized = raw

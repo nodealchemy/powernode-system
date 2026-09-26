@@ -203,6 +203,54 @@ RSpec.describe System::BootLkgStateWriter do
     end
   end
 
+  describe "pivot_security_fail_closed_units / runtime_security_fail_closed_units" do
+    # IMP-caef5c00d63f phase 4 — producer-side contract: a heartbeat carrying
+    # either key persists it. Same list-or-nil discipline as
+    # pivot_confinement_omitted (they share one helper, normalize_string_list),
+    # pinned separately per field so a future edit that wires one but not the
+    # other is still caught here.
+    it "records the units the boot/pivot-compose path reports" do
+      write("pivot_security_fail_closed_units" => %w[powernode-hub-backend-rails-setup.service])
+
+      expect(stored["pivot_security_fail_closed_units"])
+        .to eq(%w[powernode-hub-backend-rails-setup.service])
+    end
+
+    it "records the units the live reconcile path reports, independently of the pivot field" do
+      write(
+        "pivot_security_fail_closed_units" => %w[powernode-hub-backend-rails-setup.service],
+        "runtime_security_fail_closed_units" => %w[powernode-hub-worker-sidekiq.service]
+      )
+
+      expect(stored["pivot_security_fail_closed_units"]).to eq(%w[powernode-hub-backend-rails-setup.service])
+      expect(stored["runtime_security_fail_closed_units"]).to eq(%w[powernode-hub-worker-sidekiq.service])
+    end
+
+    it "stores nil, never [], when either field is absent" do
+      write("lkg_present" => true)
+
+      expect(stored["pivot_security_fail_closed_units"]).to be_nil
+      expect(stored["runtime_security_fail_closed_units"]).to be_nil
+    end
+
+    it "stores nil for a non-array value on either field" do
+      write(
+        "lkg_present" => true,
+        "pivot_security_fail_closed_units" => "powernode-hub-backend-rails-setup.service",
+        "runtime_security_fail_closed_units" => "powernode-hub-worker-sidekiq.service"
+      )
+
+      expect(stored["pivot_security_fail_closed_units"]).to be_nil
+      expect(stored["runtime_security_fail_closed_units"]).to be_nil
+    end
+
+    it "caps the list at MAX_CONFINEMENTS" do
+      write("runtime_security_fail_closed_units" => Array.new(200) { |i| "unit-#{i}.service" })
+
+      expect(stored["runtime_security_fail_closed_units"].size).to eq(described_class::MAX_CONFINEMENTS)
+    end
+  end
+
   describe "the config write" do
     it "touches only its own key" do
       instance.update!(config: instance.config.merge("unrelated" => { "keep" => "me" }))

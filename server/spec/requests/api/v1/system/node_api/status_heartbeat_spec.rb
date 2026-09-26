@@ -666,6 +666,25 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(recorded["pivot_confinement_omitted"]).not_to eq([])
     end
 
+    # IMP-caef5c00d63f phase 4 — the wire IS connected: a heartbeat carrying
+    # either security-fail-closed field reaches the persisted document.
+    it "records the units the boot/pivot-compose path and the live reconcile path each report" do
+      post_heartbeat(
+        pivot_security_fail_closed_units: %w[powernode-hub-backend-rails-setup.service],
+        runtime_security_fail_closed_units: %w[powernode-hub-worker-sidekiq.service]
+      )
+
+      expect(recorded["pivot_security_fail_closed_units"]).to eq(%w[powernode-hub-backend-rails-setup.service])
+      expect(recorded["runtime_security_fail_closed_units"]).to eq(%w[powernode-hub-worker-sidekiq.service])
+    end
+
+    it "records an unreported security-fail-closed list as nil, never as an empty list" do
+      post_heartbeat(lkg_present: true)
+
+      expect(recorded["pivot_security_fail_closed_units"]).to be_nil
+      expect(recorded["runtime_security_fail_closed_units"]).to be_nil
+    end
+
     # `lkg_confirmed_at` is the AGENT's clock for the on-disk LKG. The
     # document's own observed_at is only when the report reached us — an agent
     # whose LKG froze keeps re-shipping the same confirmed_at while the server
