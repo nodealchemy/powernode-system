@@ -214,6 +214,44 @@ func TestAttachModule_SuccessRecordsUnitsAsRecovered(t *testing.T) {
 	}
 }
 
+// H2 (review round 5, proven by mutation): recordSecurityFailClosedRecovered
+// must NOT run on the fail-closed branch — a mutant moving that call earlier
+// (unconditional, before the failedUnits check) would mark a unit that just
+// FAILED as "recovered", which G5's buildHeartbeat filter would then read as
+// license to suppress a boot-time pivot entry for a unit that never actually
+// succeeded. Every OTHER test in this file already exercises success and
+// failure separately without asserting their absence in one another, which
+// is exactly why this mutant survived until now.
+func TestAttachModule_FailureDoesNotRecordUnitsAsRecovered(t *testing.T) {
+	dropIns := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+
+	mf := hubBackendLikeWithStartBefore(t)
+	failingUnit := lifecycle.UnitName(mf.ID, "rails-setup")
+	dropInDir := filepath.Join(dropIns, failingUnit+".d")
+	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &mount.RecorderRunner{}
+	r := liveReconciler(t, rec)
+
+	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
+		t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
+	}
+
+	recovered := r.SecurityFailClosedRecovered()
+	for _, name := range []string{"rails-setup", "rails", "chowner"} {
+		unit := lifecycle.UnitName(mf.ID, name)
+		if recovered[unit] {
+			t.Errorf("H2 REGRESSION: %s must NOT be marked recovered after a fail-closed refusal, got %v", unit, recovered)
+		}
+	}
+}
+
 // EXPLICIT PARITY (review round 3): the SAME manifest, forced the SAME way,
 // through BOTH real call sites — attachModule (live) and renderPivotUnits
 // (boot/pivot-compose) — must reach the SAME refuse-or-exempt verdict. Both
