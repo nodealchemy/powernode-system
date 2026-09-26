@@ -462,6 +462,17 @@ module System
         # own disk). Its binding keeps the default owner (fleet-autonomy),
         # which is the agent its policy is declared on.
         ::System::Fleet::Sensors::BootLkgArmSensor,
+        # IMP-caef5c00d63f phase 4 — the security-fail-closed oracle.
+        # BootLkgStateWriter has persisted pivot_security_fail_closed_units /
+        # runtime_security_fail_closed_units since this task's own round 3 and
+        # nothing consumed them: a unit the agent refused to enable (or
+        # stopped mid-tick) because a security drop-in write failed is a real
+        # confinement gap on a real node. Emits
+        # system.node_security_fail_closed ->
+        # system.node_security_fail_closed_investigate (notify-only; no
+        # applier exists — the repair is whatever made the write fail, or a
+        # manifest correction, both operator actions).
+        ::System::Fleet::Sensors::SecurityFailClosedSensor,
         # IMP-5b38cd356010 (APO-6b) — the replication-lag SAMPLER for the
         # postgres cluster_member lane. PromoteReplicaExecutor's data-loss
         # gate reads cluster_pg.replication_lag_bytes / lag_sampled_at off the

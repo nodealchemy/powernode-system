@@ -623,6 +623,15 @@ module System
         # pre-boot/LKG agents it stands indefinitely.
         "system.node_lkg_investigate" => "notify_and_proceed",
 
+        # IMP-caef5c00d63f phase 4 — SecurityFailClosedSensor. A unit refused
+        # or stopped because a security drop-in write failed non-exempt.
+        # notify_and_proceed, never auto_approve: the repair is whatever made
+        # the write fail (usually node-wide ENOSPC/EROFS) or a manifest
+        # correction — both operator actions, no applier exists. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person acts.
+        "system.node_security_fail_closed_investigate" => "notify_and_proceed",
+
         # IMP-ff6d46f2c3e1 — TerminatedGuestPresentSensor (gap (1) of
         # IMP-8225624f46b1). notify_and_proceed, never auto_approve: there is
         # no applier and can be none — only a person can confirm with the

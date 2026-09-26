@@ -138,6 +138,20 @@ module System
       #                                            when a rollout replaces
       #                                            them — indefinitely beyond
       #                                            SETTLE_WINDOW.
+      #   system.node_security_fail_closed_investigate — IMP-caef5c00d63f
+      #                                            phase 4. A unit the agent
+      #                                            refused to enable (or
+      #                                            stopped mid-tick) because a
+      #                                            security drop-in write
+      #                                            failed and was not exempt.
+      #                                            There is no applier: the
+      #                                            repair is whatever made
+      #                                            the write fail in the
+      #                                            first place (usually
+      #                                            node-wide ENOSPC/EROFS) or
+      #                                            a manifest correction —
+      #                                            both operator actions far
+      #                                            beyond SETTLE_WINDOW.
       #
       # system.instance_replace WAS LISTED HERE and is not any more
       # (IMP-555db48d41f1, APO-4). The exemption was correct while the lane had
@@ -160,6 +174,7 @@ module System
         system.module_verify_investigate
         system.task_backlog_investigate
         system.node_lkg_investigate
+        system.node_security_fail_closed_investigate
         system.module_promotion_investigate
         project.target_unmeasurable_investigate
         system.cloud_sync_terminated_guest_investigate

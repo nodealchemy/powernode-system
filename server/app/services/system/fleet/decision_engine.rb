@@ -688,6 +688,16 @@ module System
           skill: nil,
           action_category: "system.node_lkg_investigate"
         },
+        # IMP-caef5c00d63f phase 4 — SecurityFailClosedSensor. A unit the
+        # agent refused to enable (or stopped mid-tick) because a security
+        # drop-in write failed non-exempt. skill: nil, and there is NO safe
+        # applier to name: the repair is whatever made the write fail in the
+        # first place (usually node-wide ENOSPC/EROFS) or a manifest
+        # correction, both operator actions.
+        "system.node_security_fail_closed" => {
+          skill: nil,
+          action_category: "system.node_security_fail_closed_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",
