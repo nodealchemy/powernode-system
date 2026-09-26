@@ -944,6 +944,51 @@ func TestUpgradeModule_DropInRestoreSkipsUnitAlreadyRestartedOntoNewBinary(t *te
 	}
 }
 
+// TestUpgradeModule_SettleCheckCatchesCrashInANonFirstUnit is N10's third
+// mutant-kill test (review round 11): a module with TWO units, both active
+// before the bump, where the FIRST unit in topoSort order (app) settles
+// cleanly but the SECOND (zworker) crashes (inactive after, no Result/
+// ConditionResult opinion) — the settle check must still refuse the commit.
+// A settle loop that only inspected the first unit would miss this.
+func TestUpgradeModule_SettleCheckCatchesCrashInANonFirstUnit(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeZWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	zworkerUnit := lifecycle.UnitName("m1", "zworker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeZWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// Both active going in; only zworker (the SECOND unit, sorting after
+	// app under topoSort's lexicographic tiebreak) is flipped to inactive
+	// by the overridden settle-window sleep — app stays active throughout.
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:     []byte("active\n"),
+		"systemctl is-active " + zworkerUnit: []byte("active\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, "systemctl is-active "+zworkerUnit)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("N10 REGRESSION: a crash in the SECOND unit (zworker) must refuse the commit exactly like a crash in the first — expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestUpgradeModule_PartialMultiUnitRestartPersistsPendingDigest is M9's own
 // test (review B, HIGH): a module with TWO units where app's restart
 // succeeds but zworker's fails. upgradeModule returns before step 7, so
@@ -1040,6 +1085,79 @@ func TestUpgradeModule_PartialMultiUnitRestartPersistsPendingDigest(t *testing.T
 	}
 }
 
+// hookRunner wraps a mount.Runner and calls onRun for every Run invocation
+// BEFORE delegating to the wrapped runner. N10's SaveState-before-restart
+// mutant-kill test uses this to read state.json off disk at the EXACT
+// instant step 4 issues the restart — independent of RunOnce's own
+// end-of-cycle SaveState, which runs unconditionally after upgradeModule
+// returns and would otherwise mask a removed pre-restart persist: any test
+// that only inspects state.json AFTER RunOnce returns cannot tell the two
+// saves apart.
+type hookRunner struct {
+	mount.Runner
+	onRun func(name string, args []string)
+}
+
+func (h *hookRunner) Run(ctx context.Context, name string, args ...string) error {
+	if h.onRun != nil {
+		h.onRun(name, args)
+	}
+	return h.Runner.Run(ctx, name, args...)
+}
+
+// TestUpgradeModule_PendingDigestPersistedBeforeRestartIsIssued is N10's
+// second mutant-kill test (review round 11): the SaveState call ahead of
+// step 4's restart exists so that if the AGENT ITSELF dies between issuing
+// `systemctl restart` and RunOnce's own end-of-cycle save (e.g. an OOM-kill
+// racing the restart), state.json on disk already shows PendingDigest —
+// not just the in-memory struct RunOnce would otherwise save moments later.
+// A test that only checks state.json after RunOnce returns cannot
+// distinguish "saved before the restart" from "saved after, at end of
+// cycle" — both leave the same end-state. hookRunner reads state.json
+// SYNCHRONOUSLY inside the restart command itself, mid-RunOnce, before
+// RunOnce's own final save has any chance to run.
+func TestUpgradeModule_PendingDigestPersistedBeforeRestartIsIssued(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+
+	var sawPendingAtRestartTime string
+	var sawRestartCall bool
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name != "systemctl" || !containsArg(args, "restart") || !containsArg(args, unit) {
+			return
+		}
+		sawRestartCall = true
+		st, err := mount.LoadState(statePath)
+		if err != nil {
+			t.Fatalf("LoadState mid-restart: %v", err)
+		}
+		for _, m := range st.AttachedModules {
+			if m.ID == "m1" {
+				sawPendingAtRestartTime = m.PendingDigest
+			}
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	if !sawRestartCall {
+		t.Fatalf("fixture did not reach the restart call at all")
+	}
+	if sawPendingAtRestartTime != "d2" {
+		t.Errorf("N10 REGRESSION: state.json must already show PendingDigest=d2 ON DISK at the moment the restart is issued (not only after RunOnce's own end-of-cycle save), got %q", sawPendingAtRestartTime)
+	}
+}
+
 // TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting is
 // M2's own test (review round 9): a retry after a failed restart attempt
 // must still RESTART (not silently degrade to `start`) on the next attempt,
@@ -1049,6 +1167,15 @@ func TestUpgradeModule_PartialMultiUnitRestartPersistsPendingDigest(t *testing.T
 // across attempts, since the body stops looking "changed" after the very
 // first write. ForceRestartActive is evaluated fresh on every attempt
 // (never cached), so this must keep restarting until it succeeds.
+//
+// N5 (review round 11, test gap; reviewer B): also this round's dedicated
+// "restart of an ACTIVE unit fails" test — every OTHER test in this file
+// left is-active at RecorderRunner's default ("not active"), so the verb
+// decision always picked Start and the Restart code path (and its failure
+// mode) went unexercised. This one already stubbed is-active active and a
+// failing `restart`; it now additionally pins that the failure is VISIBLE
+// (PendingDigest set, surfaced in the heartbeat) rather than silently
+// swallowed, and that it clears once the retry succeeds (N2).
 func TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting(t *testing.T) {
 	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
@@ -1076,6 +1203,14 @@ func TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting(t *t
 		t.Fatalf("tick 2: a failed restart must not commit — expected m1 still at d1, got digest=%q ok=%v", digest, ok)
 	}
 
+	// N5: the failure must be VISIBLE, not silently swallowed.
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("N5 REGRESSION: tick 2's failed restart must leave PendingDigest=d2 on m1, got %q ok=%v", pd, ok)
+	}
+	if got := heartbeatFrom(t, statePath).PendingModuleDigests["m1"]; got != "d2" {
+		t.Errorf("N5 REGRESSION: tick 2's failed restart must surface PendingModuleDigests[m1]=d2 in the heartbeat, got %q", got)
+	}
+
 	// Clear the stub error — the retry succeeds.
 	delete(runner.StubErr, "systemctl restart "+unit)
 	tick3Start := len(runner.Invocations)
@@ -1088,6 +1223,12 @@ func TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting(t *t
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
 		t.Errorf("tick 3: expected the upgrade to commit to d2 now that the restart succeeds, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("N5 REGRESSION: PendingDigest must be cleared once the retry commits, got %q", pd)
+	}
+	if got, ok := heartbeatFrom(t, statePath).PendingModuleDigests["m1"]; ok {
+		t.Errorf("N5 REGRESSION: PendingModuleDigests must not still name m1 once committed, got %q", got)
 	}
 }
 

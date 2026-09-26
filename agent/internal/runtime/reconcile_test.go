@@ -146,6 +146,23 @@ func attachedDigest(t *testing.T, statePath, moduleID string) (digest string, ok
 	return "", false
 }
 
+// pendingDigest reads moduleID's PendingDigest (N5/N2, review round 11) —
+// mirrors attachedDigest's own shape for state.json's OTHER upgrade-in-
+// flight field.
+func pendingDigest(t *testing.T, statePath, moduleID string) (pending string, ok bool) {
+	t.Helper()
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == moduleID {
+			return m.PendingDigest, true
+		}
+	}
+	return "", false
+}
+
 // backdateManifestCache pushes the on-disk manifest cache's mtime into the
 // past so NewReconciler's default ManifestTTL treats it as stale on the
 // next pass, WITHOUT deleting the file — relocated here (round 9) from the
