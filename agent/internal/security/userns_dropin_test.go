@@ -84,7 +84,13 @@ func TestWriteUserNamespaceDropIn_IsIdempotent(t *testing.T) {
 
 func TestWriteUserNamespaceDropIn_RejectsBadUnitNames(t *testing.T) {
 	withTempSystemdRootUserns(t)
-	for _, bad := range []string{"", "../escape", "foo/bar", "foo\x00null", "-leading-dash"} {
+	for _, bad := range []string{
+		"", "../escape", "foo/bar", "foo\x00null", "-leading-dash",
+		// Mutant killers (IMP-caef5c00d63f phase 3, mirroring the capability
+		// writer's own): neither case has a "/", so a mutant requiring one
+		// alongside ".." or "\\" would still pass every case above.
+		"escape..d", "foo\\bar",
+	} {
 		if err := WriteUserNamespaceDropIn(bad, true); err == nil {
 			t.Errorf("expected error for unit name %q", bad)
 		}

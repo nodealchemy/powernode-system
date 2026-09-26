@@ -139,3 +139,31 @@ func TestRenderPivotUnits_UnfrozenSetSkipsGate(t *testing.T) {
 		t.Error("upgrade-safety REGRESSION: a pre-field frozen set must SKIP the gate, not refuse the module")
 	}
 }
+
+// MUTANT KILLER (IMP-caef5c00d63f phase 3): TestRenderPivotUnits_UnfrozenSetSkipsGate
+// above uses a NIL PrivilegedModuleIDs, which cannot distinguish
+// `enforcePrivileged := bc != nil && bc.PrivilegedAllowlistFrozen` (the real
+// gate, keyed on the Frozen flag) from a mutant keyed on list presence instead
+// (e.g. `len(bc.PrivilegedModuleIDs) > 0`) — both give the same "skip" answer
+// when the list is nil. This breadcrumb is unfrozen AND carries a POPULATED
+// allowlist that does NOT include the module under test: the real gate still
+// skips (unfrozen wins), but the list-presence mutant would wrongly refuse.
+func TestRenderPivotUnits_UnfrozenSetWithPopulatedAllowlistStillSkipsGate(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	pm, pmf := privModule("priv-legacy-populated")
+	stack := mount.ModuleStack{pm}
+	manifests := map[string]*manifest.Manifest{pm.ID: pmf}
+
+	bc := &BootComposedBreadcrumb{
+		PrivilegedAllowlistFrozen: false,                         // old-format set
+		PrivilegedModuleIDs:       []string{"some-other-module"}, // populated, but doesn't name this module
+	}
+	r.renderPivotUnits(context.Background(), sysroot, stack, manifests, bc)
+
+	if !unitEnabled(t, sysroot, rec, "priv-legacy-populated") {
+		t.Error("an unfrozen breadcrumb must skip the allowlist gate regardless of what its (not-yet-authoritative) list contains")
+	}
+}

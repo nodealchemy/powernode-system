@@ -71,7 +71,15 @@ func TestWriteCapabilityDropInAt_RejectsUnknownCap(t *testing.T) {
 
 func TestWriteCapabilityDropInAt_RejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
-	for _, bad := range []string{"../escape", "foo/bar", "foo\x00null", "-leading-dash", ""} {
+	for _, bad := range []string{
+		"../escape", "foo/bar", "foo\x00null", "-leading-dash", "",
+		// Mutant killers (review, IMP-caef5c00d63f phase 3): every prior case
+		// above pairs its bad character with a "/" (path-traversal shape), so
+		// a mutant that only rejects "/.." or "../" — instead of ".." on its
+		// own — would still pass them all. Neither case below has a slash.
+		"escape..d", // bare ".." with no path separator anywhere
+		"foo\\bar",  // bare backslash with no path separator anywhere
+	} {
 		if err := WriteCapabilityDropInAt(root, bad, []string{"CAP_CHOWN"}); err == nil {
 			t.Errorf("expected error for unit name %q", bad)
 		}
@@ -98,13 +106,14 @@ func TestWriteCapabilityDropInAt_IsIdempotentAndSorted(t *testing.T) {
 	}
 }
 
-// SHARED VALIDATION (R5): WriteCapabilityDropIn and WriteCapabilityDropInAt
-// must refuse the SAME invalid unit names, via the one shared
-// validateDropInUnitName helper, not two independently-maintained copies of
-// the same three checks (empty / path-traversal / leading-dash) that could
-// silently drift apart.
+// SHARED VALIDATION (R5, extended IMP-caef5c00d63f phase 3 to
+// WriteUserNamespaceDropIn once it stopped carrying its own copy of the same
+// three checks — userns_dropin.go). All THREE drop-in writers must refuse the
+// SAME invalid unit names, via the one shared validateDropInUnitName helper,
+// not independently-maintained copies of the same checks (empty /
+// path-traversal / leading-dash) that could silently drift apart.
 func TestCapabilityDropInWriters_ShareUnitNameValidation(t *testing.T) {
-	badNames := []string{"", "../escape", "foo/bar", "foo\x00null", "-leading-dash"}
+	badNames := []string{"", "../escape", "foo/bar", "foo\x00null", "-leading-dash", "escape..d", "foo\\bar"}
 	for _, bad := range badNames {
 		atErr := WriteCapabilityDropInAt(t.TempDir(), bad, nil)
 		liveErr := func() error {
@@ -113,8 +122,17 @@ func TestCapabilityDropInWriters_ShareUnitNameValidation(t *testing.T) {
 			defer func() { systemdDropInRoot = original }()
 			return WriteCapabilityDropIn(bad, nil)
 		}()
+		usernsErr := func() error {
+			original := systemdDropInRoot
+			systemdDropInRoot = t.TempDir()
+			defer func() { systemdDropInRoot = original }()
+			return WriteUserNamespaceDropIn(bad, true)
+		}()
 		if (atErr == nil) != (liveErr == nil) {
 			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteCapabilityDropIn err=%v — the two writers disagree", bad, atErr, liveErr)
+		}
+		if (atErr == nil) != (usernsErr == nil) {
+			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteUserNamespaceDropIn err=%v — the writers disagree", bad, atErr, usernsErr)
 		}
 	}
 }
