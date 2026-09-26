@@ -23,8 +23,18 @@ type HeartbeatPayload struct {
 	Architecture  string            `json:"architecture,omitempty"`
 	UptimeSeconds int64             `json:"uptime_seconds"`
 	ModuleDigests map[string]string `json:"module_digests"` // node_module_id → oci_digest
-	MountState    string            `json:"mount_state"`    // "mounted" | "unmounted" | "transitioning"
-	LoadAverage   string            `json:"load_average,omitempty"`
+	// PendingModuleDigests (M9, review round 9) names the digest an
+	// in-place upgrade is CURRENTLY MID-WAY toward for a module still
+	// reporting its OLD digest in ModuleDigests above — set once
+	// upgradeModule's step 4 starts restarting units (so a partial
+	// multi-unit restart, e.g. one unit landed on the new binary and a
+	// LATER one failed, is never invisible) and cleared once the upgrade
+	// actually commits. Omitted (nil map, omitempty) for a module with no
+	// upgrade in flight — never an empty-but-present block, which would
+	// read as "checked, nothing pending" rather than "not applicable".
+	PendingModuleDigests map[string]string `json:"pending_module_digests,omitempty"`
+	MountState           string            `json:"mount_state"` // "mounted" | "unmounted" | "transitioning"
+	LoadAverage          string            `json:"load_average,omitempty"`
 	// MemoryFreeKB is *int64, not omitempty: a nil pointer (not measured —
 	// /proc/meminfo missing or unparseable) marshals to `null`/absent-shaped
 	// distinct from an explicit 0, which is the most alarming reading a node

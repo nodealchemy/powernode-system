@@ -163,13 +163,35 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		return
 	}
 
+	// M9 (review round 9, HIGH): persist PendingDigest onto the EXISTING
+	// (still old-digest) state entry and save to disk IMMEDIATELY, before
+	// step 4 issues a single restart. A module can own several units, and
+	// AttachServicesModeOpts keeps attempting the REST of them even after
+	// one fails (its own "soft failure" continuation — see that function's
+	// doc) — so a partial multi-unit restart is a real, reachable outcome:
+	// one unit already running the NEW binary while a later one in the
+	// SAME module fails. Without this, state.json and the heartbeat both
+	// still claim old.Digest alone at that point, which by then describes
+	// NEITHER unit's actual running binary. Cleared at step 7 on commit
+	// (newMod, replacing this entry, carries no PendingDigest of its own).
+	for i, m := range current.AttachedModules {
+		if m.ID == newMod.ID {
+			current.AttachedModules[i].PendingDigest = newMod.Digest
+			break
+		}
+	}
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before restarting: %w", newMod.ID, newMod.Digest, err))
+	}
+
 	// Step 4: write the new digest's unit files and FORCE-restart every unit
 	// that is currently active, regardless of whether its own body changed
 	// this pass (M1, review round 9 — see lifecycle.AttachOptions.
 	// ForceRestartActive's own doc for why the ordinary RestartChanged
 	// decision is wrong for a digest bump specifically).
 	if err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true); err != nil {
-		r.noteUnconverged("reconciler:upgrade_attach_services", newMod.ID, fmt.Errorf("module %s: %w", newMod.ID, err))
+		r.noteUnconverged("reconciler:upgrade_attach_services", newMod.ID, fmt.Errorf(
+			"module %s: %w (PendingDigest %s left set — some units of this module may already be running the new binary; see PendingModuleDigests in the next heartbeat)", newMod.ID, err, newMod.Digest))
 		// ON DISK RIGHT NOW: the new digest's security drop-ins AND file
 		// content (step 3 succeeded) — but the unit body write and/or the
 		// restart itself failed. Per A3 this may mean the old process is

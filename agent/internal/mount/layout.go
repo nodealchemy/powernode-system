@@ -169,6 +169,19 @@ type Module struct {
 	// this field the first time it needs to (M7, review round 9), rather
 	// than re-deriving it from a manifest cache on every attempt.
 	Units []string `json:"Units,omitempty"`
+	// PendingDigest (M9, review round 9) names the digest an in-place
+	// upgrade of THIS entry is currently mid-way toward, while Digest above
+	// still names the old, still-running one. Set by upgradeModule right
+	// before step 4 starts restarting units — persisted and saved to disk
+	// IMMEDIATELY, before any restart, so a partial multi-unit restart (one
+	// unit lands on the new binary, a LATER one in the same module fails)
+	// is never invisible: without this, state.json and the heartbeat both
+	// still claimed Digest alone, which by then describes neither unit's
+	// actual running binary. Cleared (empty, omitted) once the upgrade
+	// commits (Digest itself becomes the new value) or the module is
+	// otherwise replaced/removed. See buildHeartbeat's own
+	// PendingModuleDigests for how this surfaces to the platform.
+	PendingDigest string `json:"PendingDigest,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

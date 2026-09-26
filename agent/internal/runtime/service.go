@@ -690,22 +690,33 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		unmaterialized[id] = true
 	}
 	digests := map[string]string{}
+	var pendingDigests map[string]string
 	for _, m := range st.AttachedModules {
 		if unmaterialized[m.ID] {
 			continue
 		}
 		digests[m.ID] = m.Digest
+		// M9 (review round 9): a module mid-way through an in-place upgrade
+		// whose step 4 has already started restarting units — see
+		// upgradeModule's own doc for exactly when this is set/cleared.
+		if m.PendingDigest != "" {
+			if pendingDigests == nil {
+				pendingDigests = map[string]string{}
+			}
+			pendingDigests[m.ID] = m.PendingDigest
+		}
 	}
 	mountState := "unmounted"
 	if st.UnionMounted {
 		mountState = "mounted"
 	}
 	payload := HeartbeatPayload{
-		BootID:        bootID,
-		AgentVersion:  s.cfg.AgentVersion,
-		Architecture:  runtime.GOARCH,
-		ModuleDigests: digests,
-		MountState:    mountState,
+		BootID:               bootID,
+		AgentVersion:         s.cfg.AgentVersion,
+		Architecture:         runtime.GOARCH,
+		ModuleDigests:        digests,
+		PendingModuleDigests: pendingDigests,
+		MountState:           mountState,
 		// Capabilities are detected once and cached on the Service.
 		// Stable across heartbeats — kernel features (and, on a pivot
 		// node, the image's fsverity binary) don't change without a

@@ -78,6 +78,12 @@ func upgradeModuleFixtureWithUserNS(digest string, capabilities []string, userNS
 const upgradeAppService = `{"name":"app", "start_command":"/bin/true", "restart_policy":"always"}`
 const upgradeWorkerService = `{"name":"old-worker", "start_command":"/bin/true", "restart_policy":"always"}`
 
+// upgradeZWorkerService sorts AFTER "app" under topoSort's lexicographic
+// tiebreak (no declared dependency edges between the two) — needed only by
+// M9's own test, which requires app's own restart to succeed BEFORE
+// zworker's fails, to exercise a genuine partial multi-unit restart.
+const upgradeZWorkerService = `{"name":"zworker", "start_command":"/bin/true", "restart_policy":"always"}`
+
 // upgradeTestReconciler wires a Reconciler + client + RecorderRunner for a
 // single-module round-9 in-place-upgrade scenario, with the systemd unit
 // dir and drop-in root both redirected to fresh temp dirs — see the round-9
@@ -728,6 +734,102 @@ func TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning(t *test
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Errorf("M6 REGRESSION: pass 2 must leave m1 attached at the OLD digest d1 (the settle check refused the commit), got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_PartialMultiUnitRestartPersistsPendingDigest is M9's own
+// test (review B, HIGH): a module with TWO units where app's restart
+// succeeds but zworker's fails. upgradeModule returns before step 7, so
+// neither unit is stopped and app may already be running the NEW binary —
+// but state.json (and the heartbeat) must say so via PendingDigest/
+// PendingModuleDigests rather than silently keep claiming the old digest
+// alone. A later tick that succeeds commits the new digest and clears it.
+func TestUpgradeModule_PartialMultiUnitRestartPersistsPendingDigest(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	zworkerUnit := lifecycle.UnitName("m1", "zworker")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeZWorkerService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeZWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubErr = map[string]error{"systemctl start " + zworkerUnit: errors.New("start refused (test)")}
+
+	tick1Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 1: %v", err)
+	}
+	tick1 := runner.Invocations[tick1Start:]
+
+	if !hasSystemctlOp(tick1, "start", appUnit) {
+		t.Fatalf("tick 1: expected app's own restart to have been attempted (and succeeded), invocations: %v", tick1)
+	}
+	if hasSystemctlOp(tick1, "stop", appUnit) || hasSystemctlOp(tick1, "stop", zworkerUnit) {
+		t.Errorf("M9 REGRESSION: a partial multi-unit restart must never stop anything, invocations: %v", tick1)
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	found := false
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			found = true
+			if m.Digest != "d1" {
+				t.Errorf("M9 REGRESSION: expected m1's own Digest to remain d1 after a partial restart, got %s", m.Digest)
+			}
+			if m.PendingDigest != "d2" {
+				t.Errorf("M9 REGRESSION: expected m1's PendingDigest to be d2 after step 4 started restarting, got %q", m.PendingDigest)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("m1 not found in state: %+v", st.AttachedModules)
+	}
+
+	payload := heartbeatFrom(t, statePath)
+	if got := payload.ModuleDigests["m1"]; got != "d1" {
+		t.Errorf("M9 REGRESSION: heartbeat must report m1 at its OLD digest d1 while the upgrade is only partially applied, got %q", got)
+	}
+	if got := payload.PendingModuleDigests["m1"]; got != "d2" {
+		t.Errorf("M9 REGRESSION: heartbeat must surface m1's PendingDigest d2, got %q (payload=%+v)", got, payload.PendingModuleDigests)
+	}
+
+	// Retry: unblock, mark both units active (M6), and confirm the second
+	// tick commits d2 and clears PendingDigest — still with no stop.
+	delete(runner.StubErr, "systemctl start "+zworkerUnit)
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:     []byte("active\n"),
+		"systemctl is-active " + zworkerUnit: []byte("active\n"),
+	}
+	tick2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+	tick2 := runner.Invocations[tick2Start:]
+	if hasSystemctlOp(tick2, "stop", appUnit) || hasSystemctlOp(tick2, "stop", zworkerUnit) {
+		t.Errorf("M9 REGRESSION: the eventual successful commit must never have stopped anything either, invocations: %v", tick2)
+	}
+
+	st2, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after tick 2: %v", err)
+	}
+	for _, m := range st2.AttachedModules {
+		if m.ID == "m1" {
+			if m.Digest != "d2" {
+				t.Errorf("expected m1 committed to d2, got %s", m.Digest)
+			}
+			if m.PendingDigest != "" {
+				t.Errorf("M9 REGRESSION: PendingDigest must be cleared once the upgrade commits, got %q", m.PendingDigest)
+			}
+		}
 	}
 }
 
