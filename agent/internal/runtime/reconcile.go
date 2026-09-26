@@ -1112,7 +1112,33 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		egressManifestsSlice := mergedManifestsSlice
 		if len(bumps) > 0 {
 			bumpOldMf := make(map[string]*manifest.Manifest, len(bumps))
+			// P3 (review round 13, MEDIUM, security): bumpRefusedOldMf names a
+			// bump whose new digest's policy this tick's own step 2 would
+			// REFUSE (predicted via decideModuleSecurityPolicy — the PURE
+			// half applyModuleSecurityPolicy itself calls later this same
+			// tick, no I/O, safe to call here before upgradeModule has
+			// actually run), UNLESS units have already been touched this
+			// episode (PendingDigestUnitsTouched — the union is already
+			// necessary regardless, some unit really is running a mix of
+			// old/new). Before this, mergedManifests[id] unconditionally
+			// carried the NEW (fetched, possibly refused) manifest into the
+			// render — union or not, the new digest's OWN sudoers/identity
+			// content still rendered every tick it stayed refused, since a
+			// step-2 refusal alone never clears PendingDigest. A refused-and-
+			// untouched bump now renders OLD ONLY: the new manifest is
+			// excluded from the render entirely, not merely left un-unioned.
+			bumpRefusedOldMf := make(map[string]*manifest.Manifest, len(bumps))
 			for _, b := range bumps {
+				newMfForBump, ok := mergedManifests[b.new.ID]
+				if !ok {
+					continue
+				}
+				refused := false
+				if !b.old.PendingDigestUnitsTouched {
+					if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
+						refused = true
+					}
+				}
 				// N3 (review round 11): the digest-keyed attached snapshot is
 				// the AUTHORITATIVE old side — unlike previousManifests
 				// (RunOnce's own ID-keyed pre-fetch disk snapshot, captured
@@ -1122,13 +1148,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				// never overwrite it. previousManifests remains the fallback
 				// for an entry attached by a pre-N3 build, which has no
 				// snapshot on disk at all yet.
+				var oldMf *manifest.Manifest
 				if bmf, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, b.old.ID, b.old.Digest); err == nil && bmf != nil {
-					bumpOldMf[b.new.ID] = bmf
+					oldMf = bmf
 				} else if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
-					bumpOldMf[b.new.ID] = bmf
+					oldMf = bmf
+				}
+				if oldMf == nil {
+					continue
+				}
+				if refused {
+					bumpRefusedOldMf[b.new.ID] = oldMf
+				} else {
+					bumpOldMf[b.new.ID] = oldMf
 				}
 			}
-			if len(bumpOldMf) > 0 {
+			if len(bumpOldMf) > 0 || len(bumpRefusedOldMf) > 0 {
 				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldMf))
 				egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
 				// Doc (review round 11, requested alongside N3): precedence and
@@ -1172,6 +1207,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				// enforces. "Visible" is the actual mitigation here, not
 				// "bounded".
 				for id, m := range mergedManifests {
+					// P3: a refused-and-untouched bump renders OLD ONLY — m
+					// (the new, refused manifest) is deliberately never
+					// appended here at all, unlike the union case below.
+					if oldMf, isRefused := bumpRefusedOldMf[id]; isRefused {
+						identityManifests = append(identityManifests, oldMf)
+						egressManifestsSlice = append(egressManifestsSlice, oldMf)
+						continue
+					}
 					identityManifests = append(identityManifests, m)
 					if oldMf, isBump := bumpOldMf[id]; isBump {
 						identityManifests = append(identityManifests, oldMf)

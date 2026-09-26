@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -3355,5 +3356,68 @@ func TestUpgradeModule_LaterCommitStopsAnEarlierAbandonedTargetsIntroducedUnit(t
 	}
 	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
 		t.Errorf("expected PendingDigest cleared after the commit, got %q", pd)
+	}
+}
+
+// upgradeModuleFixturePrivilegedWithSudoer builds a fixture that declares a
+// sudoers grant and, when privileged is true, requests security.privileged
+// with no operator approval — decideModuleSecurityPolicy refuses that
+// deterministically at step 2, every tick, with no need to stub systemctl
+// at all (P3's own test, review round 13).
+func upgradeModuleFixturePrivilegedWithSudoer(digest string, privileged bool, sudoerID string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false, "privileged": %v}},
+			"sudoers": [{"id":%q,"user":"pnadmin","runas_user":"root","commands":["/bin/true"]}],
+			"services": [%s]
+		}
+	}`, digest, privileged, sudoerID, upgradeAppService)
+}
+
+// TestReconcile_RefusedBumpNeverRendersItsOwnSudoersGrant is P3's own test
+// (review round 13, MEDIUM, security): the identity/sudoers old∪new union
+// previously applied to ANY bump unconditionally, so a digest refused at
+// step 2 (an unapproved security.privileged request, here) still widened
+// sudoers with a grant NOTHING approved — and kept doing so on EVERY tick
+// it stayed refused, since a step-2 refusal alone never clears
+// PendingDigest. Runs the SAME refused d2 for three ticks and asserts its
+// sudoers grant is never once rendered.
+func TestReconcile_RefusedBumpNeverRendersItsOwnSudoersGrant(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, no sudoers): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixturePrivilegedWithSudoer("d2", true, "d2-only-grant")
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	var renderedGrantIDs []string
+	origSudoers := applySudoers
+	applySudoers = func(grants []etcsudoers.Grant) error {
+		for _, g := range grants {
+			renderedGrantIDs = append(renderedGrantIDs, g.Grant.ID)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applySudoers = origSudoers })
+
+	for tick := 1; tick <= 3; tick++ {
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce tick %d (d2 refused at step 2): %v", tick, err)
+		}
+	}
+
+	for _, id := range renderedGrantIDs {
+		if id == "d2-only-grant" {
+			t.Fatalf("P3 REGRESSION: d2's own sudoers grant was rendered even though d2 was refused at step 2 on every tick: %v", renderedGrantIDs)
+		}
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("precondition drifted: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
 	}
 }
