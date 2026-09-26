@@ -1666,23 +1666,101 @@ func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.Mo
 // what was dropped; emitting a warning about it is the caller's job (an
 // OnError call is a diagnostic side effect, never a host mutation, but it
 // does need a receiver this function deliberately doesn't have).
-func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privilegedAllow []string) (policy *security.Policy, unitAllow map[string][]string, droppedCaps []string, err error) {
+// PolicyDecisionReason classifies WHY decideModuleSecurityPolicy refused a
+// module (round 9, point 7): the live reconcile path and the pivot
+// boot-compose path each report their own operator-facing stage tag
+// (reconciler:* vs compose:policy_invalid / compose:privileged_unapproved /
+// compose:capabilities_invalid) for the SAME underlying decision, and losing
+// that distinction when the two paths started sharing one function would be
+// a real regression in pivot's existing diagnostics — see renderPivotUnits'
+// own call site for how it recovers the tag via errors.As.
+type PolicyDecisionReason int
+
+const (
+	// PolicyDecisionPrivilegedUnapproved: security.privileged=true without an
+	// operator grant in privileged_module_ids.
+	PolicyDecisionPrivilegedUnapproved PolicyDecisionReason = iota + 1
+	// PolicyDecisionInvalid: policy.Validate() rejected the module-wide policy.
+	PolicyDecisionInvalid
+	// PolicyDecisionCapabilitiesInvalid: a service's declared capabilities
+	// exceed the module's own ceiling.
+	PolicyDecisionCapabilitiesInvalid
+)
+
+// PolicyDecisionError wraps decideModuleSecurityPolicy's refusal with a
+// machine-readable Reason, while Error() renders identically to the bare
+// error it wraps — so the live path (which only ever consumed err.Error()
+// via SecurityFailClosedError.Reason before this type existed) sees
+// byte-identical text and needs no changes.
+type PolicyDecisionError struct {
+	Reason PolicyDecisionReason
+	Err    error
+}
+
+func (e *PolicyDecisionError) Error() string { return e.Err.Error() }
+func (e *PolicyDecisionError) Unwrap() error { return e.Err }
+
+// decideModuleSecurityPolicy is the PURE half of a module's security-policy
+// decision — no I/O, no host mutation, safe to call any number of times for
+// the same manifest with no side effects whatsoever (K1, review round 6,
+// CRITICAL, splitting what used to be applyModuleSecurityPolicy). Builds
+// mod's Policy, gates an unapproved privileged request, validates the
+// policy, and resolves per-service capability writes — every check that
+// depends only on mf + policy + the operator's privileged allowlist, never
+// on the filesystem or the running system.
+//
+// Shared by BOTH the live reconcile path (applyModuleSecurityPolicy, via
+// attachCapabilityWrites) and the pivot boot-compose path (renderPivotUnits,
+// via composeCapabilityWrites) as of round 9 point 7 — previously
+// renderPivotUnits carried its own inline copy of this exact decision, which
+// could silently drift from this one. Two parameters exist SPECIFICALLY to
+// let each caller keep its own pre-existing behaviour unchanged:
+//
+//   - enforcePrivileged: the live path enforces unconditionally (pass true);
+//     the pivot path enforces only when the boot breadcrumb's allowlist is
+//     frozen (bc.PrivilegedAllowlistFrozen) — see renderPivotUnits' own doc
+//     for why an unfrozen (pre-field) set must skip the gate.
+//   - capabilityWriter: the live path names units from the manifest's own ID
+//     (attachCapabilityWrites, i.e. mf.ID); the pivot path names them from
+//     the stack entry's module ID (composeCapabilityWrites, i.e. mod.ID).
+//     These happen to agree in every case observed to date, but nothing
+//     upstream of this function currently PROVES it (see FetchAndCache's
+//     own outstanding ID-mismatch gap, round 9 point 10) — so this function
+//     takes the writer as a parameter rather than picking one ID field
+//     itself, preserving each caller's exact prior behaviour rather than
+//     introducing a new assumption about when the two IDs must agree.
+//
+// droppedCaps (K5b, review round 6) names any capability the manifest
+// declared that THIS agent binary does not recognize — see
+// Policy.DropUnknownCapabilities's own doc for why dropping (narrower,
+// never wider) rather than refusing the whole module is the correct
+// response to a version-skew name. Still pure: this function only reports
+// what was dropped; emitting a warning about it is the caller's job (an
+// OnError call is a diagnostic side effect, never a host mutation, but it
+// does need a receiver this function deliberately doesn't have).
+func decideModuleSecurityPolicy(
+	mod mount.Module,
+	mf *manifest.Manifest,
+	privilegedAllow []string,
+	enforcePrivileged bool,
+	capabilityWriter func(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error),
+) (policy *security.Policy, unitAllow map[string][]string, droppedCaps []string, err error) {
 	policy = buildPolicy(mf)
 	droppedCaps = policy.DropUnknownCapabilities()
-	if policy.Privileged && !privilegedApproved(mod.ID, privilegedAllow) {
+	if enforcePrivileged && policy.Privileged && !privilegedApproved(mod.ID, privilegedAllow) {
 		// The module REQUESTS privileged (all confinement off) but the operator
 		// has not GRANTED it via privileged_module_ids. Refuse the attach
 		// outright — running it unconfined on an unapproved request is exactly
 		// the hole IMP-01a02f70-20b1 named. Fatal + loud: the attach loop marks
 		// the pass unconverged, so the platform sees a convergence failure
 		// rather than a module silently running with no confinement.
-		return nil, nil, droppedCaps, fmt.Errorf(
+		return nil, nil, droppedCaps, &PolicyDecisionError{Reason: PolicyDecisionPrivilegedUnapproved, Err: fmt.Errorf(
 			"module %s requests security.privileged=true (disables all on-node confinement) "+
 				"but is not in the operator-approved privileged allowlist (privileged_module_ids); "+
-				"refusing to attach it unconfined", mod.ID)
+				"refusing to attach it unconfined", mod.ID)}
 	}
 	if errs := policy.Validate(); len(errs) > 0 {
-		return nil, nil, droppedCaps, fmt.Errorf("policy invalid: %v", errs)
+		return nil, nil, droppedCaps, &PolicyDecisionError{Reason: PolicyDecisionInvalid, Err: fmt.Errorf("policy invalid: %v", errs)}
 	}
 	// Per-service capabilities (IMP-caef5c00d63f), resolved BEFORE anything is
 	// applied: a service asking for more than the module ceiling refuses the
@@ -1692,7 +1770,7 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 	var unitCaps []security.UnitCapabilities
 	if !policy.Privileged {
 		var svcDropped []string
-		unitCaps, svcDropped, err = attachCapabilityWrites(mf, policy)
+		unitCaps, svcDropped, err = capabilityWriter(mf, policy)
 		// L4 (review round 7, MEDIUM): merged into the SAME droppedCaps this
 		// function already returns for the module-wide ceiling (K5b) — one
 		// OnError call site (applyModuleSecurityPolicy, below) covers both,
@@ -1704,7 +1782,7 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 		// also refuses the module.
 		droppedCaps = append(droppedCaps, svcDropped...)
 		if err != nil {
-			return nil, nil, droppedCaps, fmt.Errorf("policy invalid: %w", err)
+			return nil, nil, droppedCaps, &PolicyDecisionError{Reason: PolicyDecisionCapabilitiesInvalid, Err: fmt.Errorf("policy invalid: %w", err)}
 		}
 	}
 	unitAllow = make(map[string][]string, len(unitCaps))
@@ -1724,7 +1802,10 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 //
 // Called ONLY from attachModule — the real (re)attach path.
 func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
-	policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow)
+	// enforcePrivileged: true — the live path enforces the privileged-approval
+	// gate unconditionally, unlike the pivot path's frozen-allowlist
+	// conditional (see decideModuleSecurityPolicy's own doc).
+	policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow, true, attachCapabilityWrites)
 	if len(droppedCaps) > 0 {
 		// K5b (review round 6): a real warning, not silence — dropping is the
 		// SAFE response to a version-skew capability name (narrower, never

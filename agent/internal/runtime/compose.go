@@ -245,58 +245,52 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 		if mf == nil {
 			continue
 		}
-		policy := buildPolicy(mf)
-		// K5b (review round 6): drop, don't refuse, a capability name this
-		// agent binary doesn't recognize (see Policy.DropUnknownCapabilities's
-		// doc — narrower, never wider; a version-skew mirror of the exemption
-		// this same loop's fail-closed comment already documents). Must run
-		// BEFORE Validate, which no longer treats an unknown name as an error.
-		if dropped := policy.DropUnknownCapabilities(); len(dropped) > 0 {
+		// Round 9 (point 7): the policy DECISION — build, drop unrecognized
+		// capability names, the privileged-approval gate, Validate, and
+		// per-service capability resolution — now runs through the SAME
+		// decideModuleSecurityPolicy the live reconcile path uses
+		// (reconcile.go), instead of an inline copy that could silently
+		// drift from it. enforcePrivileged carries this loop's own
+		// frozen-allowlist conditional (computed above); composeCapabilityWrites
+		// preserves this path's own unit-naming (mod.ID, not mf.ID — see
+		// decideModuleSecurityPolicy's doc on why that distinction is kept
+		// rather than unified).
+		policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow, enforcePrivileged,
+			func(mf *manifest.Manifest, policy *security.Policy) ([]security.UnitCapabilities, []string, error) {
+				return composeCapabilityWrites(mod.ID, mf, policy)
+			})
+		if len(droppedCaps) > 0 {
+			// K5b (review round 6) + L4 (review round 7): decideModuleSecurityPolicy
+			// merges the module-wide ceiling drop and every per-service drop into
+			// ONE droppedCaps slice — one OnError call covers both, matching the
+			// live path's own reporting shape exactly (reconciler:unknown_capability_dropped).
 			r.cfg.OnError("compose:unknown_capability_dropped",
-				fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from its declared ceiling (this agent version does not know them) — narrowing, never widening, what the module is confined to", mod.ID, dropped))
+				fmt.Errorf("module %s: dropped unrecognized capability name(s) %v (this agent version does not know them) — narrowing, never widening, what the module/service is confined to", mod.ID, droppedCaps))
 		}
-
-		// Loud refusals BEFORE the unit is enabled — a module whose security
-		// block is invalid, or which requests privileged without an operator
-		// grant, must not boot its services unconfined. Skipping enablement is
-		// the pivot-path equivalent of attachModule returning an error; the
-		// module's files are in the union but its services stay disabled, and
-		// the refusal is surfaced via OnError.
-		if errs := policy.Validate(); len(errs) > 0 {
-			r.cfg.OnError("compose:policy_invalid",
-				fmt.Errorf("module %s: %v — services NOT enabled post-pivot", mod.ID, errs))
+		if err != nil {
+			// Loud refusals BEFORE the unit is enabled — a module whose security
+			// block is invalid, which requests privileged without an operator
+			// grant, or whose per-service capabilities exceed the ceiling, must
+			// not boot its services unconfined. Skipping enablement is the
+			// pivot-path equivalent of attachModule returning an error; the
+			// module's files are in the union but its services stay disabled.
+			//
+			// Stage tag recovered via errors.As rather than collapsed to one
+			// generic tag: pivot's three refusal classes stayed independently
+			// observable through this shared decision (see PolicyDecisionError's
+			// own doc on why losing that would be a real regression here).
+			stage := "compose:policy_invalid"
+			var pde *PolicyDecisionError
+			if errors.As(err, &pde) {
+				switch pde.Reason {
+				case PolicyDecisionPrivilegedUnapproved:
+					stage = "compose:privileged_unapproved"
+				case PolicyDecisionCapabilitiesInvalid:
+					stage = "compose:capabilities_invalid"
+				}
+			}
+			r.cfg.OnError(stage, fmt.Errorf("module %s: %w — services NOT enabled post-pivot", mod.ID, err))
 			continue
-		}
-		if policy.Privileged && enforcePrivileged && !privilegedApproved(mod.ID, r.privilegedAllow) {
-			r.cfg.OnError("compose:privileged_unapproved",
-				fmt.Errorf("module %s requests security.privileged=true but is not in the operator-approved "+
-					"privileged allowlist (privileged_module_ids); services NOT enabled post-pivot", mod.ID))
-			continue
-		}
-		// Per-service capabilities, through the SAME resolver attachModule
-		// uses (IMP-caef5c00d63f) — a service asking for more than the module
-		// ceiling is refused here exactly as it is there.
-		unitAllow := map[string][]string{}
-		if !policy.Privileged {
-			unitCaps, capDropped, err := composeCapabilityWrites(mod.ID, mf, policy)
-			// L4 (review round 7, MEDIUM): the per-service extension of the
-			// SAME K5b drop this loop already applies to the module-wide
-			// ceiling above — reported through the SAME stage name, since
-			// it is the identical narrower-never-wider response to the
-			// identical version-skew cause, just discovered at a different
-			// scope.
-			if len(capDropped) > 0 {
-				r.cfg.OnError("compose:unknown_capability_dropped",
-					fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from a service's declared set (this agent version does not know them) — narrowing, never widening, what the service is confined to", mod.ID, capDropped))
-			}
-			if err != nil {
-				r.cfg.OnError("compose:capabilities_invalid",
-					fmt.Errorf("module %s: %w — services NOT enabled post-pivot", mod.ID, err))
-				continue
-			}
-			for _, uc := range unitCaps {
-				unitAllow[uc.Unit] = uc.Allow
-			}
 		}
 
 		// Pre-write EVERY unit's security drop-ins BEFORE enabling ANY of
