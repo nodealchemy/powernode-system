@@ -792,8 +792,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// mid-upgrade); everything else is a resolved past attempt with no
 	// remaining reader. A module leaving the composition entirely is
 	// cleaned up in detachModule instead, once it actually detaches.
+	// Q1 (review round 14): ALSO keep every digest in PendingTouchedDigests —
+	// the identity/sudoers/egress render unions each touched digest's own
+	// snapshot back in for as long as the episode stays open, so GC'ing one
+	// out from under it would silently narrow that render mid-episode.
 	for _, mod := range current.AttachedModules {
-		if perr := manifest.PruneAttachedSnapshots(r.cfg.ManifestRoot, mod.ID, mod.Digest, mod.PendingDigest); perr != nil {
+		keep := append([]string{mod.Digest, mod.PendingDigest}, mod.PendingTouchedDigests...)
+		if perr := manifest.PruneAttachedSnapshots(r.cfg.ManifestRoot, mod.ID, keep...); perr != nil {
 			r.cfg.OnError("reconciler:upgrade_snapshot_gc", fmt.Errorf("module %s: %w", mod.ID, perr))
 		}
 	}
@@ -1127,56 +1132,72 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		identityManifests := mergedManifestsSlice
 		egressManifestsSlice := mergedManifestsSlice
 		if len(bumps) > 0 {
-			bumpOldMf := make(map[string]*manifest.Manifest, len(bumps))
-			// P3 (review round 13, MEDIUM, security): bumpRefusedOldMf names a
-			// bump whose new digest's policy this tick's own step 2 would
-			// REFUSE (predicted via decideModuleSecurityPolicy — the PURE
-			// half applyModuleSecurityPolicy itself calls later this same
-			// tick, no I/O, safe to call here before upgradeModule has
-			// actually run), UNLESS units have already been touched this
-			// episode (PendingDigestUnitsTouched — the union is already
-			// necessary regardless, some unit really is running a mix of
-			// old/new). Before this, mergedManifests[id] unconditionally
-			// carried the NEW (fetched, possibly refused) manifest into the
-			// render — union or not, the new digest's OWN sudoers/identity
-			// content still rendered every tick it stayed refused, since a
-			// step-2 refusal alone never clears PendingDigest. A refused-and-
+			bumpOldMf := make(map[string][]*manifest.Manifest, len(bumps))
+			// P3 (review round 13, MEDIUM, security) / Q1 (review round 14,
+			// MEDIUM, security): bumpRefusedOldMf names a bump whose new
+			// digest's policy this tick's own step 2 would REFUSE (predicted
+			// via decideModuleSecurityPolicy — the PURE half
+			// applyModuleSecurityPolicy itself calls later this same tick, no
+			// I/O, safe to call here before upgradeModule has actually run).
+			// Q1: the prediction now runs UNCONDITIONALLY — P3's own
+			// "UNLESS units have already been touched this episode" guard
+			// was itself a bug once PendingDigestUnitsTouched became sticky
+			// across a re-target (P2): d2 touching units and then being
+			// abandoned for a refused d3 left that flag true, so d3's own
+			// prediction was skipped entirely and its refused content still
+			// unioned in unconditionally on every tick it stayed refused. A
+			// re-target's own new target is refused or not independent of
+			// what an EARLIER, abandoned target already did. A refused-and-
 			// untouched bump now renders OLD ONLY: the new manifest is
 			// excluded from the render entirely, not merely left un-unioned.
-			bumpRefusedOldMf := make(map[string]*manifest.Manifest, len(bumps))
+			bumpRefusedOldMf := make(map[string][]*manifest.Manifest, len(bumps))
 			for _, b := range bumps {
 				newMfForBump, ok := mergedManifests[b.new.ID]
 				if !ok {
 					continue
 				}
 				refused := false
-				if !b.old.PendingDigestUnitsTouched {
-					if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
-						refused = true
-					}
+				if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
+					refused = true
 				}
 				// N3 (review round 11): the digest-keyed attached snapshot is
 				// the AUTHORITATIVE old side — unlike previousManifests
 				// (RunOnce's own ID-keyed pre-fetch disk snapshot, captured
-				// fresh every tick), it is written ONLY at the moment b.old's
-				// OWN digest was actually attached/committed, so a later
-				// tick's fetch of a DIFFERENT (attempted upgrade) digest can
-				// never overwrite it. previousManifests remains the fallback
-				// for an entry attached by a pre-N3 build, which has no
-				// snapshot on disk at all yet.
-				var oldMf *manifest.Manifest
+				// fresh every tick), it is written ONLY at the moment a
+				// digest was actually attached/committed, so a later tick's
+				// fetch of a DIFFERENT (attempted upgrade) digest can never
+				// overwrite it. previousManifests remains the fallback for
+				// an entry attached by a pre-N3 build, which has no snapshot
+				// on disk at all yet.
+				var oldSide []*manifest.Manifest
 				if bmf, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, b.old.ID, b.old.Digest); err == nil && bmf != nil {
-					oldMf = bmf
+					oldSide = append(oldSide, bmf)
 				} else if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
-					oldMf = bmf
+					oldSide = append(oldSide, bmf)
 				}
-				if oldMf == nil {
-					continue
+				// Q1 (review round 14, MEDIUM, security): ALSO union in
+				// every digest this episode already TOUCHED (b.old.
+				// PendingTouchedDigests — an EARLIER, now-abandoned target
+				// that reached step 4), not just the stable digest. Before
+				// this, d2 touching units and then being abandoned for a
+				// refused d3 rendered stable∪d3 — d2's own content, which
+				// may still genuinely be running on some unit, was silently
+				// omitted from the render entirely.
+				for _, digest := range b.old.PendingTouchedDigests {
+					if digest == b.old.Digest || digest == b.new.Digest {
+						continue // already covered by oldSide or mergedManifests itself
+					}
+					if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, b.old.ID, digest); err == nil && snap != nil {
+						oldSide = append(oldSide, snap)
+					}
+				}
+				if len(oldSide) == 0 {
+					continue // nothing to substitute or union — falls back to a plain new-only render
 				}
 				if refused {
-					bumpRefusedOldMf[b.new.ID] = oldMf
+					bumpRefusedOldMf[b.new.ID] = oldSide
 				} else {
-					bumpOldMf[b.new.ID] = oldMf
+					bumpOldMf[b.new.ID] = oldSide
 				}
 			}
 			if len(bumpOldMf) > 0 || len(bumpRefusedOldMf) > 0 {
@@ -1223,18 +1244,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				// enforces. "Visible" is the actual mitigation here, not
 				// "bounded".
 				for id, m := range mergedManifests {
-					// P3: a refused-and-untouched bump renders OLD ONLY — m
-					// (the new, refused manifest) is deliberately never
-					// appended here at all, unlike the union case below.
-					if oldMf, isRefused := bumpRefusedOldMf[id]; isRefused {
-						identityManifests = append(identityManifests, oldMf)
-						egressManifestsSlice = append(egressManifestsSlice, oldMf)
+					// P3: a refused-and-untouched bump renders OLD (+ every
+					// touched digest, Q1) ONLY — m (the new, refused
+					// manifest) is deliberately never appended here at all,
+					// unlike the union case below.
+					if oldSide, isRefused := bumpRefusedOldMf[id]; isRefused {
+						identityManifests = append(identityManifests, oldSide...)
+						egressManifestsSlice = append(egressManifestsSlice, oldSide...)
 						continue
 					}
 					identityManifests = append(identityManifests, m)
-					if oldMf, isBump := bumpOldMf[id]; isBump {
-						identityManifests = append(identityManifests, oldMf)
-						egressManifestsSlice = append(egressManifestsSlice, oldMf)
+					if oldSide, isBump := bumpOldMf[id]; isBump {
+						identityManifests = append(identityManifests, oldSide...)
+						egressManifestsSlice = append(egressManifestsSlice, oldSide...)
 						continue
 					}
 					egressManifestsSlice = append(egressManifestsSlice, m)
@@ -1559,6 +1581,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 						current.AttachedModules[i].PendingUndoUnits = nil
 						current.AttachedModules[i].PendingIntroducedUnits = nil
+						current.AttachedModules[i].PendingTouchedDigests = nil
 					}
 				}
 				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
@@ -1664,6 +1687,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						// identity union immediately, before that new episode's
 						// own step 2 has run at all.
 						current.AttachedModules[i].PendingDigestUnitsTouched = false
+						// Q1 (review round 14): PendingIntroducedUnits' own
+						// sibling — cleared for the same reason, same place.
+						current.AttachedModules[i].PendingTouchedDigests = nil
 					}
 				}
 				// N7 (review round 11): the abandoned target's persisted drop-in

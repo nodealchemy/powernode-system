@@ -500,6 +500,9 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
 			current.AttachedModules[i].PendingIntroducedUnits = unionStrings(current.AttachedModules[i].PendingIntroducedUnits, newlyIntroduced)
+			// Q1 (review round 14, MEDIUM): accumulate THIS target's own
+			// digest into PendingTouchedDigests — see that field's own doc.
+			current.AttachedModules[i].PendingTouchedDigests = unionStrings(current.AttachedModules[i].PendingTouchedDigests, []string{newMod.Digest})
 			break
 		}
 	}

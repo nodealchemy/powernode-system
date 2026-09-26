@@ -265,6 +265,24 @@ type Module struct {
 	// commit or a revert is what actually answers "what happens to every
 	// unit this episode ever introduced", not a mere re-target.
 	PendingIntroducedUnits []string `json:"PendingIntroducedUnits,omitempty"`
+	// PendingTouchedDigests (Q1, review round 14) is the set of every digest
+	// this stuck-upgrade episode actually touched (reached upgradeModule's
+	// step 4), accumulated across every re-target — PendingIntroducedUnits'
+	// own sibling, same accumulation reasoning. Needed because the sticky
+	// PendingDigestUnitsTouched flag (P2, review round 13) means a LATER
+	// target's own step-2 prediction can no longer be skipped just because
+	// an EARLIER target already touched units, but the identity/sudoers/
+	// egress render (reconcile.go) still needs the UNION of every genuinely-
+	// running content, not just the stable digest's — an abandoned middle
+	// target (d2) may still have units running its own content even after
+	// the episode moves on to a refused d3. Each entry names a digest whose
+	// own N3 attached-snapshot (manifest.SaveAttachedSnapshot, taken at the
+	// same step-4 point this list is appended to) is safe to load and union
+	// into that render. Kept out of O7's GC alongside Digest/PendingDigest.
+	// Cleared alongside PendingDigestUnitsTouched/PendingIntroducedUnits,
+	// same reasoning: a commit or a revert is what actually resolves the
+	// whole episode, not a mere re-target.
+	PendingTouchedDigests []string `json:"PendingTouchedDigests,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

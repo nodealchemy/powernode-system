@@ -3809,6 +3809,105 @@ func TestReconcile_RefusedBumpNeverRendersItsOwnSudoersGrant(t *testing.T) {
 	}
 }
 
+// upgradeModuleFixtureWithUser is like upgradeModuleFixture but also
+// declares a single, distinguishing fleet-managed user — Q1's own test uses
+// it to prove a touched-but-abandoned digest's identity content is still
+// unioned into the render.
+func upgradeModuleFixtureWithUser(digest string, services, userName string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"users": [{"name":%q,"uid":5001,"primary_gid":5001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
+			"groups": [{"name":%q,"gid":5001}],
+			"services": [%s]
+		}
+	}`, digest, userName, userName, userName, userName, services)
+}
+
+// TestReconcile_RefusedRetargetStillUnionsAnEarlierTouchedDigestsIdentity is
+// Q1 (review round 14, MEDIUM, security): P3's own refused-bump prediction
+// (decideModuleSecurityPolicy) was skipped whenever PendingDigestUnitsTouched
+// was already true — which, since P2 made that flag STICKY across a
+// re-target, meant a re-target's OWN new prediction never ran at all once an
+// EARLIER, abandoned target had already touched units. d2 touches (app
+// force-restarts, new-worker never settles) and declares its own user,
+// "d2user". Re-targeting to d3 (unapproved-privileged, refused at step 2
+// deterministically, every tick) must still: (a) never render d3's own
+// sudoers grant, and (b) still render d2's own identity — the stable
+// digest's snapshot alone knows nothing about d2user, so PendingTouchedDigests
+// is what keeps it visible.
+func TestReconcile_RefusedRetargetStillUnionsAnEarlierTouchedDigestsIdentity(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	// d2 TOUCHES: app force-restarts, new-worker never becomes active (a
+	// permanent settle failure, no departing unit to blame) —
+	// PendingDigest=d2, UnitsTouched=true, PendingTouchedDigests=[d2].
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser(
+		"d2", upgradeAppService+","+upgradeNewWorkerService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Re-target to d3 — unapproved-privileged, refused at step 2
+	// deterministically, no systemctl stubbing needed. d3 declares its own,
+	// distinguishing sudoers grant.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixturePrivilegedWithSudoer("d3", true, "d3-only-grant")
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	var renderedGrantIDs []string
+	origSudoers := applySudoers
+	applySudoers = func(grants []etcsudoers.Grant) error {
+		renderedGrantIDs = nil // this tick's own render only
+		for _, g := range grants {
+			renderedGrantIDs = append(renderedGrantIDs, g.Grant.ID)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applySudoers = origSudoers })
+
+	var renderedUserNames []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		renderedUserNames = nil // this tick's own render only
+		for _, u := range set.Users {
+			renderedUserNames = append(renderedUserNames, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	for tick := 1; tick <= 3; tick++ {
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce tick %d (d3 refused at step 2): %v", tick, err)
+		}
+		for _, id := range renderedGrantIDs {
+			if id == "d3-only-grant" {
+				t.Fatalf("Q1 REGRESSION: d3's own sudoers grant was rendered on tick %d even though d3 was refused at step 2 — the sticky UnitsTouched flag from d2 must not skip d3's OWN prediction: %v", tick, renderedGrantIDs)
+			}
+		}
+		if !containsArg(renderedUserNames, "d2user") {
+			t.Errorf("Q1 REGRESSION: tick %d must still render d2user — d2 touched units and its own content (PendingTouchedDigests) must stay unioned into the render even while the episode has moved on to a refused d3, got users=%v", tick, renderedUserNames)
+		}
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("precondition drifted: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop is P4's own test
 // (review round 13, MEDIUM): a departing unit N8's own undo could not
 // restart, even after its in-attempt retry (O6, review round 12) — a
