@@ -780,7 +780,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// last-successful one closes the gap: only a cached manifest that
 		// genuinely matches what was last successfully applied is trusted
 		// as "what's actually attached right now".
-		if r.attachStamp(mod.ID, pm) != current.LastAttachedManifestHashes[mod.ID] {
+		//
+		// Q2 (review round 14, MEDIUM): compare CONTENT only
+		// (attachStampContent / stampContentOnly), never the full,
+		// version-qualified attachStamp — the full stamp ends in
+		// "|"+AgentVersion, so on the first tick after an agent binary
+		// upgrade EVERY stored LastAttachedManifestHashes entry (computed
+		// under the OLD version) would disagree with a freshly computed one
+		// even when the manifest's own content is byte-identical, wrongly
+		// treating an unrelated agent upgrade as "this isn't really what's
+		// attached" — and once the next tick's fetch overwrites the ID-keyed
+		// cache with the new manifest, the miss becomes permanent.
+		if r.attachStampContent(mod.ID, pm) != stampContentOnly(current.LastAttachedManifestHashes[mod.ID]) {
 			continue // cached content is a refused edit, not what's actually attached
 		}
 		if serr := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, pm); serr != nil {
@@ -2614,6 +2625,27 @@ func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string 
 	if mf == nil {
 		return ""
 	}
+	return r.attachStampContent(moduleID, mf) + "|" + r.cfg.AgentVersion
+}
+
+// attachStampContent is attachStamp's own content-only half — services hash
+// + policy hash, WITHOUT the trailing "|"+AgentVersion segment attachStamp
+// itself appends. Q2 (review round 14, MEDIUM): O7's bootstrap guard (P6,
+// review round 13) must compare manifest CONTENT, not a version-qualified
+// stamp — on the very first tick after an agent binary upgrade, EVERY
+// stored LastAttachedManifestHashes entry was computed under the OLD
+// version string, so comparing full stamps disagrees with a freshly
+// computed one even when the manifest's own content is byte-identical. A
+// module bumped on that same tick never gets its bootstrap snapshot; from
+// the NEXT tick the ID-keyed cache already reflects the new manifest, so
+// the miss becomes permanent (the new∪new identity / 217-USER class P6
+// itself exists to prevent). Exists as its own method, not merely inlined
+// into attachStamp, so attachStamp's own semantics (and every OTHER caller
+// of it) are unchanged.
+func (r *Reconciler) attachStampContent(moduleID string, mf *manifest.Manifest) string {
+	if mf == nil {
+		return ""
+	}
 	policy := buildPolicy(mf)
 	// L4 (review round 7, MEDIUM): drop unrecognized ceiling capability names
 	// BEFORE resolving per-unit sets, exactly as decideModuleSecurityPolicy
@@ -2634,8 +2666,21 @@ func (r *Reconciler) attachStamp(moduleID string, mf *manifest.Manifest) string 
 	// stamp and retries the attach.
 	unitCaps, _, _ := attachCapabilityWrites(mf, policy)
 	return lifecycle.RenderedServicesHash(moduleID, mf.Services, pivotAwareRootMode()) +
-		"|" + security.RenderedPolicyHashForUnits(policy, unitCaps) +
-		"|" + r.cfg.AgentVersion
+		"|" + security.RenderedPolicyHashForUnits(policy, unitCaps)
+}
+
+// stampContentOnly drops a full attachStamp's trailing "|"+AgentVersion
+// segment, leaving just its content half (services hash + policy hash) — Q2
+// (review round 14): lets a STORED stamp (computed under whatever agent
+// version was running at attach time, which this function does not need to
+// know) be compared against a freshly computed attachStampContent without
+// caring what that old version string was.
+func stampContentOnly(fullStamp string) string {
+	idx := strings.LastIndex(fullStamp, "|")
+	if idx < 0 {
+		return fullStamp
+	}
+	return fullStamp[:idx]
 }
 
 func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest) {

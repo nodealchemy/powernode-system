@@ -2691,6 +2691,74 @@ func TestRunOnce_BootstrapDoesNotAdoptARefusedManifestOnlyEditAtTheSameDigest(t 
 	}
 }
 
+// TestRunOnce_BootstrapSurvivesAnAgentVersionChangeAlongsideABump is Q2
+// (review round 14, MEDIUM): P6's bootstrap guard compared the FULL,
+// version-qualified attachStamp — which ends in "|"+AgentVersion — against
+// the stored LastAttachedManifestHashes entry. On the first tick after an
+// agent binary upgrade, every stored entry was computed under the OLD
+// version string, so it disagrees with a freshly computed stamp even when
+// the manifest's own content is byte-identical — a module needing its
+// pre-N3 snapshot bootstrapped on that exact tick never gets it, and once
+// the next tick's fetch overwrites the ID-keyed cache, the miss is
+// permanent. Simulated by hand-corrupting the stored stamp's version
+// segment the same way TestUpgradeModule_AgentVersionBumpTickDoesNotDoubleRestartViaReattach
+// simulates a real AgentVersion change (a real agent upgrade is out of scope
+// for this package's tests) — content-only, everything else unchanged.
+// Exercised alongside a genuine module version bump (d1->d2) landing on the
+// SAME tick, matching the realistic trigger (a platform deploy that ships
+// the agent together with module bumps): the bump must still commit
+// normally, and d1's OWN (pre-N3, missing) snapshot must still be
+// bootstrapped despite the version mismatch.
+func TestRunOnce_BootstrapSurvivesAnAgentVersionChangeAlongsideABump(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	snapPath := filepath.Join(manifestRoot, "m1", "attached", "d1.json")
+	if _, err := os.Stat(snapPath); err != nil {
+		t.Fatalf("precondition: expected %s after pass 1: %v", snapPath, err)
+	}
+
+	// Corrupt the stored stamp's VERSION segment only — content-only stays
+	// byte-identical, simulating an agent upgrade between pass 1 and pass 2
+	// with nothing about d1's own manifest having changed at all.
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	content := stampContentOnly(st.LastAttachedManifestHashes["m1"])
+	st.LastAttachedManifestHashes["m1"] = content + "|old-agent-version-1.0.0"
+	if err := mount.SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	r.cfg.AgentVersion = "new-agent-version-2.0.0"
+
+	// Simulate the pre-N3 gap: d1's own snapshot is lost, same technique as
+	// TestRunOnce_BootstrapsAttachedSnapshotForPreN3Attach.
+	if err := os.Remove(snapPath); err != nil {
+		t.Fatalf("simulating pre-N3 loss of the d1 snapshot: %v", err)
+	}
+
+	// A genuine module version bump lands on the SAME tick as the agent
+	// version change — the realistic trigger review named.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (agent version change + bump): %v", err)
+	}
+
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err != nil {
+		t.Errorf("Q2 REGRESSION: expected pass 2 to bootstrap d1's snapshot despite the agent version change (content-only comparison), got: %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("expected the SAME tick's bump to still commit to d2, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestRunOnce_PrunesAttachedSnapshotsForDigestsNeitherAttachedNorPending is
 // O7's GC case (review round 12): manifest.SaveAttachedSnapshot writes a new
 // file per digest a module ID is ever attached under and nothing previously
