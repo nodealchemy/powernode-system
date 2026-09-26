@@ -3853,6 +3853,93 @@ func TestUpgradeModule_RevertAfterReTargetStillForcesRestartAndStopsIntroducedUn
 	}
 }
 
+// TestUpgradeModule_RevertStopsUnitsIntroducedByTwoSuccessiveTouchedTargets
+// is Q6 (review round 14, tests): pins PendingIntroducedUnits'
+// accumulate-don't-overwrite behavior (upgrade.go, alongside
+// PendingDigestUnitsTouched/PendingDigestAttempts) against a mutant that
+// survived review's own mutation testing — replacing the union with a plain
+// overwrite of THIS target's own newly-introduced units left the suite
+// green. Unlike TestUpgradeModule_RevertAfterReTargetStillForcesRestartAndStopsIntroducedUnit
+// (where d3 is refused at step 1 and never touches anything), BOTH d2 and
+// d3 here reach step 4 and each introduces its OWN, DIFFERENT unit — an
+// overwriting mutant would lose d2's new-worker the moment d3's own
+// zworker replaces it in PendingIntroducedUnits. The revert to d1 must stop
+// BOTH.
+func TestUpgradeModule_RevertStopsUnitsIntroducedByTwoSuccessiveTouchedTargets(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+	zworkerUnit := lifecycle.UnitName("m1", "zworker")
+	appIsActiveKey := "systemctl is-active " + appUnit
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	// d2 TOUCHES: app force-restarts, new-worker never becomes active — a
+	// permanent settle failure. PendingIntroducedUnits=[new-worker].
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Re-target to d3 — ALSO touches: app force-restarts again, zworker
+	// (a DIFFERENT unit than new-worker) never becomes active either — its
+	// own permanent settle failure. PendingIntroducedUnits must now hold
+	// BOTH new-worker (from d2) and zworker (from d3), not just the latest.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d3", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeZWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput[appIsActiveKey] = []byte("active\n")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (d3 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d3" {
+		t.Fatalf("precondition: expected PendingDigest=d3 after pass 3, got %q ok=%v", pd, ok)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	var introduced []string
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			introduced = m.PendingIntroducedUnits
+		}
+	}
+	if !containsArg(introduced, newWorkerUnit) || !containsArg(introduced, zworkerUnit) {
+		t.Fatalf("Q6 REGRESSION: expected PendingIntroducedUnits to accumulate BOTH %s and %s, got %v", newWorkerUnit, zworkerUnit, introduced)
+	}
+
+	// Revert to d1 (stable). app stays active; the revert must stop BOTH
+	// abandoned targets' own introduced units.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput[appIsActiveKey] = []byte("active\n")
+
+	pass4Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (revert): %v", err)
+	}
+	pass4 := runner.Invocations[pass4Start:]
+
+	if !hasSystemctlOp(pass4, "stop", newWorkerUnit) {
+		t.Errorf("Q6 REGRESSION: the revert must STOP %s — d2 introduced it, and an overwriting mutant would have lost track of it once d3 also touched: %v", newWorkerUnit, pass4)
+	}
+	if !hasSystemctlOp(pass4, "stop", zworkerUnit) {
+		t.Errorf("Q6 REGRESSION: the revert must ALSO stop %s — d3's own introduced unit: %v", zworkerUnit, pass4)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("expected m1 at d1 after the revert, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestUpgradeModule_LaterCommitStopsAnEarlierAbandonedTargetsIntroducedUnit
 // is P2's own second test (review round 13): d2 is TOUCHED and introduces
 // new-worker (same setup as above), but instead of reverting, d3 is
@@ -4382,6 +4469,67 @@ func TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit(t *testing.T) {
 	}
 	if !containsArg(got, stuckUnit) {
 		t.Errorf("expected %s (still inactive) to remain in the list, got %v", stuckUnit, got)
+	}
+}
+
+// TestRecoverFromDepartingUnitConflict_ClearsPendingUndoUnitsOnRecovery is
+// Q6's own "optionally pin" mutant-kill test (review round 14, tests):
+// mutation testing showed the post-recovery cleanup inside
+// recoverFromDepartingUnitConflict's own `recovered` branch (P8, review
+// round 13 — retracting the pre-stop candidate list once every departing
+// unit is confirmed deliberately down) is UNREACHABLE by any existing
+// full-RunOnce test: recovery succeeding always lets the SAME tick's commit
+// proceed, which REPLACES the whole AttachedModules entry with a fresh
+// struct (step 7) — masking whether the mid-function cleanup itself ran at
+// all, the same masking shape TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit
+// (P5) already had to work around for retryPendingUndoUnits. A direct,
+// isolated call — bypassing the commit entirely — is the only way to
+// observe it.
+func TestRecoverFromDepartingUnitConflict_ClearsPendingUndoUnitsOnRecovery(t *testing.T) {
+	r, _, runner, _, _, _, _ := upgradeTestReconciler(t)
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	oldUnits := []string{oldWorkerUnit}
+	newMf := &manifest.Manifest{
+		ID: "m1",
+		Services: []manifest.Service{
+			{Name: "new-worker", StartCommand: "/bin/true", RestartPolicy: "always"},
+		},
+	}
+	failedUnits := []string{newWorkerUnit}
+	svcByUnit := map[string]manifest.Service{newWorkerUnit: newMf.Services[0]}
+	old := mount.Module{ID: "m1", Digest: "d1", Units: oldUnits}
+	current := &mount.State{
+		AttachedModules:            []mount.Module{old},
+		LastAttachedManifestHashes: map[string]string{},
+	}
+
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"), // simulated bind conflict
+	}
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "stop") && containsArg(args, oldWorkerUnit) {
+			// The port is now free — new-worker can bind on the retry.
+			runner.StubOutput["systemctl is-active "+newWorkerUnit] = []byte("active\n")
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	recovered := r.recoverFromDepartingUnitConflict(context.Background(), current, old, oldUnits, newMf, failedUnits, svcByUnit)
+	if !recovered {
+		t.Fatalf("precondition: expected recovery to succeed (new-worker comes up once old-worker is stopped)")
+	}
+
+	var got []string
+	for _, m := range current.AttachedModules {
+		if m.ID == "m1" {
+			got = m.PendingUndoUnits
+		}
+	}
+	if len(got) > 0 {
+		t.Errorf("Q6 REGRESSION: PendingUndoUnits must be cleared once recovery succeeds — every departing unit is DELIBERATELY down, not stuck — got %v", got)
 	}
 }
 
