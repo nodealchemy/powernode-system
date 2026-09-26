@@ -3233,3 +3233,127 @@ func TestUpgradeModule_LiveSystemdTypeQueryOverridesUnitBodyOneshotGuess(t *test
 		t.Errorf("P1 REGRESSION: a unit whose LIVE systemd Type= reports oneshot must settle on Result=success even with no unit_body and no restart_policy:\"never\" declared — expected m1 at d2, got digest=%q ok=%v", digest, ok)
 	}
 }
+
+// TestUpgradeModule_RevertAfterReTargetStillForcesRestartAndStopsIntroducedUnit
+// is P2's own test (review round 13, HIGH — a regression O8(d), round 12,
+// introduced): d2 is TOUCHED (step 4 actually restarts app and starts the
+// new-only new-worker) but never commits (new-worker never settles). The
+// platform then re-targets to d3, which is refused at step 1 — never
+// touching a single unit itself. A later revert to the stable digest d1
+// must still (a) FORCE-RESTART app, because d2's own step 4 already put it
+// on a different binary, and (b) STOP new-worker, because d2 introduced it
+// and nothing else ever will. Before this fix, re-targeting to d3 reset
+// PendingDigestUnitsTouched to false, so the revert read "nothing touched"
+// and did neither.
+func TestUpgradeModule_RevertAfterReTargetStillForcesRestartAndStopsIntroducedUnit(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	// d2 TOUCHES: app force-restarts (active going in), new-worker is
+	// started but never becomes active — a permanent settle failure (no
+	// departing unit exists to blame, so N8 conflict-recovery declines and
+	// this stays refused). PendingDigest=d2, UnitsTouched=true,
+	// IntroducedUnits=[new-worker] from here on.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Re-target to d3 — refused at step 1, before touching anything.
+	r.cfg.Puller = &failingPuller{PullerAPI: r.cfg.Puller, failDigest: "d3"}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d3", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (d3 refused at step 1): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d3" {
+		t.Fatalf("precondition: expected the re-target to set PendingDigest=d3, got %q ok=%v", pd, ok)
+	}
+
+	// Revert to d1 (stable). app stays active (d2's own restart put it
+	// there); the revert must force-restart it back onto d1's binary.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	pass4Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (revert): %v", err)
+	}
+	pass4 := runner.Invocations[pass4Start:]
+
+	if !hasSystemctlOp(pass4, "restart", appUnit) {
+		t.Errorf("P2 REGRESSION: the revert must FORCE-RESTART %s — d2's own step 4 already put it on a different binary, and a re-target to d3 must not have erased that fact: %v", appUnit, pass4)
+	}
+	if !hasSystemctlOp(pass4, "stop", newWorkerUnit) {
+		t.Errorf("P2 REGRESSION: the revert must STOP %s — d2 introduced it and nothing else ever will once d2 is abandoned: %v", newWorkerUnit, pass4)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("expected m1 at d1 after the revert, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("expected PendingDigest cleared after the revert, got %q", pd)
+	}
+}
+
+// TestUpgradeModule_LaterCommitStopsAnEarlierAbandonedTargetsIntroducedUnit
+// is P2's own second test (review round 13): d2 is TOUCHED and introduces
+// new-worker (same setup as above), but instead of reverting, d3 is
+// re-targeted AND COMMITS. d3's own manifest never names new-worker either
+// (it matches d1's shape) — step 5's delta-stop must still stop it, using
+// old.PendingIntroducedUnits unioned into oldUnits, since new-worker is
+// absent from BOTH the stable digest's own units AND the committing
+// target's manifest.
+func TestUpgradeModule_LaterCommitStopsAnEarlierAbandonedTargetsIntroducedUnit(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Re-target to d3 — app only, same shape as d1, and this time it
+	// SETTLES (app stays active throughout).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d3", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (d3 commits): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+
+	if !hasSystemctlOp(pass3, "stop", newWorkerUnit) {
+		t.Errorf("P2 REGRESSION: d3's commit must STOP %s — d2 introduced it, d3's own manifest never names it, and the stable digest never owned it either: %v", newWorkerUnit, pass3)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d3" {
+		t.Errorf("expected m1 committed to d3, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("expected PendingDigest cleared after the commit, got %q", pd)
+	}
+}

@@ -917,13 +917,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// still-in-flight retry (a retry's target differs from the stable
 	// digest, so mount.Reconcile already routed it into `bumps`).
 	pendingRevertIDs := make(map[string]bool, len(current.AttachedModules))
-	pendingDigestByID := make(map[string]string, len(current.AttachedModules))
 	pendingAttemptsByID := make(map[string]int, len(current.AttachedModules))
 	pendingLastAttemptByID := make(map[string]int64, len(current.AttachedModules))
 	for _, m := range current.AttachedModules {
 		if m.PendingDigest != "" {
 			pendingRevertIDs[m.ID] = true
-			pendingDigestByID[m.ID] = m.PendingDigest
 			pendingAttemptsByID[m.ID] = m.PendingDigestAttempts
 			pendingLastAttemptByID[m.ID] = m.PendingDigestLastAttemptUnix
 		}
@@ -1439,9 +1437,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// only flips true once upgradeModule is actually about to issue
 			// step 4's restart.
 			unitsTouched := false
+			var introducedUnits []string
 			for _, m := range current.AttachedModules {
 				if m.ID == mod.ID {
 					unitsTouched = m.PendingDigestUnitsTouched
+					introducedUnits = m.PendingIntroducedUnits
 					break
 				}
 			}
@@ -1459,6 +1459,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
 						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 						current.AttachedModules[i].PendingUndoUnits = nil
+						current.AttachedModules[i].PendingIntroducedUnits = nil
 					}
 				}
 				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
@@ -1505,21 +1506,32 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
 					continue
 				}
-				// O4 (review round 12, MEDIUM): a unit that exists ONLY in the
-				// abandoned PENDING digest (started during the failed upgrade
-				// attempt's own step 4, e.g. a renamed service's new-only unit)
-				// is never named by the stable digest's own manifest (mf here)
-				// and so is never touched by the force-restart above — it would
-				// otherwise stay running forever, orphaned, once PendingDigest is
-				// cleared below and nothing ever asks about it again. The
-				// pending digest's own manifest comes from the N3 store (O4:
-				// upgradeModule now saves it there the moment PendingDigest is
-				// first set, not only at commit, specifically so a revert that
-				// never reaches commit can still look it up here). Stopping and
-				// cleaning these up IS rule-(2) — a genuine reversion away from
-				// the abandoned version — not a refusal side effect.
-				if pendingMf, lerr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, pendingDigestByID[mod.ID]); lerr == nil && pendingMf != nil {
-					r.stopDepartingUnits(ctx, mod.ID, pendingMf.UnitNames(), mf.UnitNames())
+				// O4 (review round 12, MEDIUM) / P2 (review round 13, HIGH): a
+				// unit that exists ONLY in an abandoned PENDING digest (started
+				// during a failed upgrade attempt's own step 4, e.g. a renamed
+				// service's new-only unit) is never named by the stable
+				// digest's own manifest (mf here) and so is never touched by
+				// the force-restart above — it would otherwise stay running
+				// forever, orphaned, once PendingDigest is cleared below and
+				// nothing ever asks about it again.
+				//
+				// P2's own fix: read introducedUnits (mount.Module.
+				// PendingIntroducedUnits, captured above BEFORE this loop
+				// clears it) rather than loading ONE digest's manifest snapshot
+				// from the N3 store. O4's original design looked up
+				// pendingDigestByID[mod.ID] — the CURRENT PendingDigest only —
+				// which silently lost track of an EARLIER, now-abandoned
+				// target's own introduced units the moment a re-target moved
+				// PendingDigest on to a third digest (d2 touched -> d3 refused
+				// -> revert: d2's own new-only unit was invisible here, since
+				// pendingDigestByID[mod.ID] pointed at d3's snapshot, which
+				// never mentions it). PendingIntroducedUnits is the ACCUMULATED
+				// union across every touched target this whole episode, so it
+				// has no such blind spot. Stopping and cleaning these up IS
+				// rule-(2) — a genuine reversion away from the abandoned
+				// version(s) — not a refusal side effect.
+				if len(introducedUnits) > 0 {
+					r.stopDepartingUnits(ctx, mod.ID, introducedUnits, mf.UnitNames())
 				}
 				// O8(a) (review round 12, RULE-1 EDGE): clear EVERY entry with this
 				// ID, not just the first match — no `break`. The M4 duplicate-
@@ -1539,6 +1551,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
 						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 						current.AttachedModules[i].PendingUndoUnits = nil
+						current.AttachedModules[i].PendingIntroducedUnits = nil
 					}
 				}
 				// N7 (review round 11): the abandoned target's persisted drop-in

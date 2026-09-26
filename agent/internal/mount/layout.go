@@ -218,23 +218,53 @@ type Module struct {
 	// cadence. Cleared (a unit removed from the list) once a later tick
 	// confirms it is active again.
 	PendingUndoUnits []string `json:"PendingUndoUnits,omitempty"`
-	// PendingDigestUnitsTouched (O8(d), review round 12) records that
-	// upgradeModule has reached step 4 for THIS PendingDigest — i.e. it is
-	// ABOUT to issue (or already issued) a restart, as opposed to merely
-	// having PendingDigest set. PendingDigest itself is now set the moment
-	// an attempt begins (before step 1's artifact pull even runs), so N4
-	// (the server-side stuck-pending-digest sensor) can see a mount/policy/
-	// hot-reconcile refusal that never gets anywhere near a unit — but that
-	// same early-set PendingDigest must never, on its own, make the revert
-	// path (reconcile.go) force-restart a unit nothing has touched. This
-	// field is the narrower fact the revert path actually needs: false
-	// means every one of this attempt's units is exactly as it was before
-	// the attempt started, and an ordinary unforced reattach is correct;
-	// true means a partial restart may have happened and recovery needs a
-	// forced one. Reset to false alongside PendingDigestAttempts: a
-	// re-target or a revert is a new attempt that has not touched anything
-	// yet either.
+	// PendingDigestUnitsTouched (O8(d), review round 12; STICKY as of P2,
+	// review round 13) records that upgradeModule has reached step 4 for
+	// SOME digest during this stuck-upgrade episode — i.e. a restart was
+	// issued, as opposed to PendingDigest merely being set. PendingDigest
+	// itself is set the moment an attempt begins (before step 1's artifact
+	// pull even runs), so N4 (the server-side stuck-pending-digest sensor)
+	// can see a mount/policy/hot-reconcile refusal that never gets anywhere
+	// near a unit — but that same early-set PendingDigest must never, on
+	// its own, make the revert path (reconcile.go) force-restart a unit
+	// nothing has touched. This field is the narrower fact the revert path
+	// actually needs: false means every unit is exactly as it was before
+	// this whole episode started, and an ordinary unforced reattach is
+	// correct; true means a partial restart may have happened and recovery
+	// needs a forced one.
+	//
+	// P2 (review round 13, HIGH — a regression this field's own original
+	// round-12 doc introduced): NEVER reset false on a re-target. A
+	// re-target (d2 touched -> d3 attempted) does not undo whatever d2's
+	// own step 4 already did to a running unit — d3 being refused before
+	// ever reaching step 4 does not make d2's restart un-happen. Resetting
+	// this to false on the d2->d3 re-target left a SUBSEQUENT revert (to
+	// the stable digest) reading "nothing touched" and skipping the forced
+	// restart d2's own partial restart actually requires, while also losing
+	// track of any unit d2 introduced (see PendingIntroducedUnits). Cleared
+	// only at commit (the replacing entry has no residual Pending* fields)
+	// or at revert (reconcile.go's clearing loop) — both are the point the
+	// whole stuck episode, across every digest it ever touched, is actually
+	// resolved one way or the other.
 	PendingDigestUnitsTouched bool `json:"PendingDigestUnitsTouched,omitempty"`
+	// PendingIntroducedUnits (P2, review round 13) is the UNION of unit
+	// names introduced by EVERY digest touched during this stuck-upgrade
+	// episode — a unit the stable (still-attached) digest's own manifest
+	// does not name but SOME touched target's manifest did, accumulated
+	// across every re-target, not just the latest one. Needed because a
+	// unit only d2 introduces (say, a renamed service's new-only unit,
+	// started by d2's own step 4) is invisible to any single target's own
+	// manifest once the episode moves on to d3 — d3's manifest may not
+	// mention that unit at all, and neither does the stable digest's. Read
+	// by: (a) the revert path (reconcile.go), to stop and clean up every
+	// unit any touched target ever introduced, not just whatever the
+	// CURRENT PendingDigest happens to be; (b) upgradeModule's own step-5
+	// delta-stop on a LATER commit — if d3 eventually commits, d2-only
+	// units it never names are still departing and must still be stopped.
+	// Cleared alongside PendingDigestUnitsTouched, same reasoning: a
+	// commit or a revert is what actually answers "what happens to every
+	// unit this episode ever introduced", not a mere re-target.
+	PendingIntroducedUnits []string `json:"PendingIntroducedUnits,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

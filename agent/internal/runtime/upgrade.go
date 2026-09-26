@@ -306,7 +306,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		}
 		// O8(d) (review round 12): set PendingDigest the MOMENT a fresh
 		// attempt begins — before step 1 even runs — not only once step 4
-		// is about to restart a unit (that later point now only sets
+		// is about to restart a unit (that later point sets
 		// PendingDigestUnitsTouched, below). A refusal at step 1 (artifact
 		// pull/mount), step 2 (security policy) or step 3 (hot-reconcile
 		// materialization) never touches a single running unit, but
@@ -321,17 +321,28 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// or a different digest was) BECAUSE the revert path in
 		// reconcile.go no longer treats bare PendingDigest presence as
 		// "force-restart me" — it consults PendingDigestUnitsTouched
-		// instead, which stays false until step 4 below actually runs. This
-		// is also where the attempt counter/conflict-recovery flag reset on
-		// a re-target (formerly done at the step-4 point, moved up here
-		// since PendingDigest is now already settled by the time step 4
-		// runs).
+		// instead. This is also where the attempt counter/conflict-recovery
+		// flag reset on a re-target (formerly done at the step-4 point,
+		// moved up here since PendingDigest is now already settled by the
+		// time step 4 runs) lives — Attempts and the N8-attempted flag ARE
+		// per-target questions, reset on every re-target.
+		//
+		// P2 (review round 13, HIGH): PendingDigestUnitsTouched and
+		// PendingIntroducedUnits are DELIBERATELY NOT reset here — see their
+		// own doc on mount.Module. A re-target does not undo whatever the
+		// ABANDONED target's own step 4 already did; resetting either field
+		// here lost that fact the moment a THIRD digest was attempted,
+		// which is exactly the shape (d2 touched -> d3 refused -> revert)
+		// review found: the revert read "nothing touched" and skipped the
+		// forced restart d2's own partial restart needed, while d2's
+		// own introduced units (e.g. a renamed service's new-only unit)
+		// were never cleaned up because nothing remembered d2 introduced
+		// them once the episode moved on to d3.
 		for i, m := range current.AttachedModules {
 			if m.ID == newMod.ID {
 				current.AttachedModules[i].PendingDigest = newMod.Digest
 				current.AttachedModules[i].PendingDigestAttempts = 0
 				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
-				current.AttachedModules[i].PendingDigestUnitsTouched = false
 				break
 			}
 		}
@@ -434,12 +445,29 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// doc) — so a partial multi-unit restart is a real, reachable outcome:
 	// one unit already running the NEW binary while a later one in the
 	// SAME module fails. Cleared at step 7 on commit (newMod, replacing
-	// this entry, carries no PendingDigest fields of its own).
+	// this entry, carries no PendingDigest fields of its own) or on revert.
+	//
+	// P2 (review round 13): ALSO union THIS target's own introduced units
+	// (named by newMf but not by the stable digest's oldUnits) into
+	// PendingIntroducedUnits — accumulated across every touched target this
+	// episode, not overwritten per-target, so a LATER re-target or revert
+	// still knows about a unit an EARLIER, now-abandoned target introduced.
+	oldUnitSetForIntroduced := make(map[string]bool, len(oldUnits))
+	for _, u := range oldUnits {
+		oldUnitSetForIntroduced[u] = true
+	}
+	var newlyIntroduced []string
+	for _, u := range newMf.UnitNames() {
+		if !oldUnitSetForIntroduced[u] {
+			newlyIntroduced = append(newlyIntroduced, u)
+		}
+	}
 	for i, m := range current.AttachedModules {
 		if m.ID == newMod.ID {
 			current.AttachedModules[i].PendingDigestUnitsTouched = true
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+			current.AttachedModules[i].PendingIntroducedUnits = unionStrings(current.AttachedModules[i].PendingIntroducedUnits, newlyIntroduced)
 			break
 		}
 	}
@@ -447,11 +475,18 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before restarting: %w", newMod.ID, newMod.Digest, err))
 	}
 	// O4 (review round 12): save the PENDING digest's own manifest snapshot
-	// NOW, not only at step 7's commit — a revert (N2) that abandons this
-	// digest before it ever commits still needs to know what UNITS this
-	// attempt introduced, to stop and clean up any that exist ONLY in the
-	// abandoned digest (O4's own fix, reconcile.go's revert path). Step 7
-	// re-saves the same content at commit time (idempotent, harmless).
+	// NOW, not only at step 7's commit. P2 (review round 13) NOTE: the
+	// revert path no longer needs THIS specific snapshot to find what units
+	// to clean up — PendingIntroducedUnits (above) now answers that
+	// directly, and unlike a single-digest snapshot lookup it stays correct
+	// across a re-target (see that field's own doc for why a snapshot keyed
+	// to only the LATEST pending digest was the bug). Kept anyway: other
+	// consumers still want "what did THIS specific digest's manifest say" —
+	// the identity/sudoers/egress union (reconcile.go) and a LATER,
+	// completely separate upgrade of this same module ID both resolve an
+	// old side from the N3 store, independent of this revert-cleanup
+	// concern. Step 7 re-saves the same content at commit time (idempotent,
+	// harmless).
 	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, newMod.ID, newMod.Digest, newMf); err != nil {
 		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
 	}
@@ -606,8 +641,13 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// settled — proceed to the IRREVERSIBLE cutover.
 
 	// Step 5: delta-stop units the old digest owned that the new manifest
-	// no longer names (a renamed or removed service).
-	r.stopDepartingUnits(ctx, old.ID, oldUnits, newMf.UnitNames())
+	// no longer names (a renamed or removed service). P2 (review round 13):
+	// unioned with old.PendingIntroducedUnits — a unit an EARLIER, now-
+	// abandoned target introduced (e.g. d2's own new-only unit, if THIS
+	// commit is actually d3) is owned by neither oldUnits (the stable
+	// digest never named it) nor newMf (the committing target may not name
+	// it either) and would otherwise never be stopped at all.
+	r.stopDepartingUnits(ctx, old.ID, unionStrings(oldUnits, old.PendingIntroducedUnits), newMf.UnitNames())
 
 	// Step 6: unmount the OLD erofs blob.
 	if skip, why := r.unmountWouldStripLiveRoot(old); skip {
