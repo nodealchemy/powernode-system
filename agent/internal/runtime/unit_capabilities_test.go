@@ -695,6 +695,22 @@ func TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite
 	if !containsArg(bc.SecurityFailClosedUnits, failingUnit) {
 		t.Errorf("breadcrumb SecurityFailClosedUnits must name %s, got %v", failingUnit, bc.SecurityFailClosedUnits)
 	}
+	// DEDUPED (review F6): blocking the whole <unit>.d directory trips BOTH
+	// the userns AND the capability write for rails-setup (they share the
+	// directory; hubBackendLike declares no user_namespace, so it defaults to
+	// the non-exempt true) — applyModuleSecurityDropIns must still name the
+	// unit exactly ONCE, not once per failing write, or a consumer that sums
+	// or counts this list would double-count a single affected unit.
+	occurrences := 0
+	for _, u := range bc.SecurityFailClosedUnits {
+		if u == failingUnit {
+			occurrences++
+		}
+	}
+	if occurrences != 1 {
+		t.Errorf("breadcrumb must name %s exactly ONCE (userns AND capability both failed on it), got %d occurrences in %v",
+			failingUnit, occurrences, bc.SecurityFailClosedUnits)
+	}
 }
 
 // FULL-SET EXEMPTION (review MEDIUM-1). A unit resolved to EXACTLY
@@ -759,6 +775,161 @@ func TestRenderPivotUnits_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 	}
 	if !unitEnabled(t, sysroot, rec, mf.ID) {
 		t.Error("the module must still be enabled — the exemption exists precisely so a write failure here costs nothing")
+	}
+}
+
+// ISOLATED FAILURES (review round 3: both reviewers proved by mutation that
+// blocking the WHOLE <unit>.d directory — as
+// TestRenderPivotUnits_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite
+// and the exemption test above both do — trips userns.conf AND
+// capabilities.conf together, since they share one directory. A mutant that
+// deletes the capability branch's fail-closed entirely, or the userns
+// branch's, still passes those two tests because the OTHER branch's failure
+// alone is enough to trip the module-level refusal. These three isolate ONE
+// write failure at a time by making only the SPECIFIC TARGET FILE (not its
+// parent .d directory) a pre-existing directory — MkdirAll on the .d dir
+// still succeeds, but the writer's own os.Rename(tmp, dropInPath) fails
+// because dropInPath is a directory, and the other files in the same .d
+// directory are untouched.
+
+// F3(a): capability-only failure, narrow (non-exempt) ceiling, with
+// user_namespace already false — isolates the capability branch. Must still
+// refuse the module.
+func TestRenderPivotUnits_CapabilityOnlyFailureFailsClosed(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "narrow-cap-mod",
+		Name:                        "narrow-cap-mod",
+		ServiceCapabilitiesPresence: true,
+		Config: map[string]any{"security": map[string]any{
+			"capabilities":   []any{"CAP_CHOWN", "CAP_FOWNER", "CAP_DAC_OVERRIDE"}, // hub-backend rails-setup shape
+			"user_namespace": false,                                                // exempt on its own — isolates THIS failure to capabilities
+		}},
+		Services: []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ONLY capabilities.conf is blocked — a pre-existing DIRECTORY at that
+	// exact path, not its parent .d dir.
+	if err := os.MkdirAll(filepath.Join(dropInDir, "capabilities.conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+
+	if _, err := os.ReadFile(filepath.Join(dropInDir, "userns.conf")); err != nil {
+		t.Fatalf("test setup problem: userns.conf must have written fine (isolating the capability failure); read err=%v", err)
+	}
+	if !containsArg(onErrors, "compose:capability_dropin") {
+		t.Errorf("expected an OnError(\"compose:capability_dropin\", ...) report, got stages: %v", onErrors)
+	}
+	if !containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Errorf("a non-exempt capability write failure must fail closed the module, got stages: %v", onErrors)
+	}
+	if unitEnabled(t, sysroot, rec, mf.ID) {
+		t.Error("the module must NOT be enabled after a non-exempt capability drop-in failure")
+	}
+}
+
+// F3(b): userns-only failure, with the capability write succeeding —
+// isolates the userns branch. Must still refuse the module.
+func TestRenderPivotUnits_UserNamespaceOnlyFailureFailsClosed(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "userns-fail-mod",
+		Name:                        "userns-fail-mod",
+		ServiceCapabilitiesPresence: true,
+		// No security block at all: policy.UserNamespace defaults to TRUE
+		// (buildPolicy's documented default) — NON-exempt, isolating this
+		// failure to the userns branch. Capability ceiling is absent/empty,
+		// which the capability writer accepts and writes fine.
+		Services: []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ONLY userns.conf is blocked.
+	if err := os.MkdirAll(filepath.Join(dropInDir, "userns.conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+
+	if _, err := os.ReadFile(filepath.Join(dropInDir, "capabilities.conf")); err != nil {
+		t.Fatalf("test setup problem: capabilities.conf must have written fine (isolating the userns failure); read err=%v", err)
+	}
+	if !containsArg(onErrors, "compose:userns_dropin") {
+		t.Errorf("expected an OnError(\"compose:userns_dropin\", ...) report, got stages: %v", onErrors)
+	}
+	if !containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Errorf("a non-exempt (default-true) user-namespace write failure must fail closed the module, got stages: %v", onErrors)
+	}
+	if unitEnabled(t, sysroot, rec, mf.ID) {
+		t.Error("the module must NOT be enabled after a non-exempt user-namespace drop-in failure")
+	}
+}
+
+// F3(c): seccomp write failure — no exemption exists for this branch at all,
+// so this also proves the "no exemption" half of applyModuleSecurityDropIns'
+// doc comment, not just that the branch fails closed like the other two.
+func TestRenderPivotUnits_SeccompFailureFailsClosed(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := &manifest.Manifest{
+		ID:                          "seccomp-fail-mod",
+		Name:                        "seccomp-fail-mod",
+		ServiceCapabilitiesPresence: true,
+		Config: map[string]any{"security": map[string]any{
+			"seccomp_profile": "system-service",
+			"user_namespace":  false, // exempt on its own — isolates THIS failure to seccomp
+		}},
+		Services: []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+	}
+	unit := lifecycle.UnitName(mf.ID, "app")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ONLY seccomp.conf is blocked.
+	if err := os.MkdirAll(filepath.Join(dropInDir, "seccomp.conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+
+	if _, err := os.ReadFile(filepath.Join(dropInDir, "capabilities.conf")); err != nil {
+		t.Fatalf("test setup problem: capabilities.conf must have written fine (isolating the seccomp failure); read err=%v", err)
+	}
+	if !containsArg(onErrors, "compose:seccomp_dropin") {
+		t.Errorf("expected an OnError(\"compose:seccomp_dropin\", ...) report, got stages: %v", onErrors)
+	}
+	if !containsArg(onErrors, "compose:security_dropin_fail_closed") {
+		t.Errorf("a seccomp write failure must ALWAYS fail closed the module (no exemption exists), got stages: %v", onErrors)
+	}
+	if unitEnabled(t, sysroot, rec, mf.ID) {
+		t.Error("the module must NOT be enabled after a seccomp drop-in failure")
 	}
 }
 

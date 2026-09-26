@@ -48,6 +48,15 @@ func unitEnabled(t *testing.T, sysroot string, rec *mount.RecorderRunner, modID 
 		if inv.Name != "systemctl" {
 			continue
 		}
+		// MUTANT KILLER (review F6): must be an `enable` call naming the
+		// unit, not merely ANY systemctl call that mentions it — a `disable`
+		// (or `stop`, `status`, ...) invocation names the unit too, and
+		// counting that as "enabled" would make this helper agree with its
+		// own bug: a unit that was enabled and then disabled again would
+		// still read as enabled here.
+		if !containsArg(inv.Args, "enable") {
+			continue
+		}
 		for _, a := range inv.Args {
 			if a == unit {
 				enableRan = true
