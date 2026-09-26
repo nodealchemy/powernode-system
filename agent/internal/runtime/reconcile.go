@@ -1469,6 +1469,31 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if pendingRevertIDs[mod.ID] {
+			// P4 (review round 13, MEDIUM): a departing unit N8's own undo
+			// could not restart is a genuine OUTAGE, same reasoning as
+			// upgradeModule's OWN top-of-function priority retry (O6, review
+			// round 12) — try it again BEFORE ANYTHING ELSE in this branch
+			// too, not only on the bump path. Before this, a module that had
+			// re-targeted or reverted away from the digest N8 fired for
+			// never reached upgradeModule again at all (it comes through
+			// THIS branch instead), so its own PendingUndoUnits sat
+			// unattended — the revert's own force-restart below might
+			// coincidentally restart the same unit as part of the stable
+			// digest's own manifest, but never CONFIRMS it or clears the
+			// list, leaving a unit that recovered stay marked down.
+			// retryPendingUndoUnits itself already clears an entry ONLY once
+			// confirmed active and leaves a still-failing one both in the
+			// list and visible (its own doc, O6).
+			var pendingUndo []string
+			for _, m := range current.AttachedModules {
+				if m.ID == mod.ID {
+					pendingUndo = m.PendingUndoUnits
+					break
+				}
+			}
+			if len(pendingUndo) > 0 {
+				r.retryPendingUndoUnits(ctx, current, mod.ID, pendingUndo)
+			}
 			// O8(d) (review round 12): PendingDigest is now set the MOMENT an
 			// upgrade attempt begins (upgrade.go, before step 1), for N4
 			// visibility of a mount/policy/hot-reconcile refusal that never

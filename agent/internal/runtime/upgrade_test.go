@@ -3421,3 +3421,102 @@ func TestReconcile_RefusedBumpNeverRendersItsOwnSudoersGrant(t *testing.T) {
 		t.Errorf("precondition drifted: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
 	}
 }
+
+// TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop is P4's own test
+// (review round 13, MEDIUM): a departing unit N8's own undo could not
+// restart, even after its in-attempt retry (O6, review round 12) — a
+// genuine outage, persisted onto PendingUndoUnits. Before this fix, a
+// module that re-targeted or reverted away from THAT digest never reached
+// upgradeModule again at all (it goes through reconcile.go's own revert
+// branch instead), so PendingUndoUnits sat unattended: the revert's own
+// force-restart might coincidentally restart the same unit as part of the
+// stable digest's manifest, but nothing ever CONFIRMED it or cleared the
+// list — a unit that recovered stayed marked down forever.
+func TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump to d2: new-worker never comes up (N8 fires, stops old-worker to
+	// free whatever it held), and old-worker's own undo restart fails on
+	// BOTH attempts within N8's own call — a genuine, still-unresolved
+	// outage, persisted onto PendingUndoUnits.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	oldWorkerStartKey := "systemctl start " + oldWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"), // never comes up
+	}
+	runner.StubErr = map[string]error{oldWorkerStartKey: errors.New("undo failed (both attempts)")}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (N8 fires, undo fails twice): %v", err)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	found := false
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			found = containsArg(m.PendingUndoUnits, oldWorkerUnit)
+		}
+	}
+	if !found {
+		t.Fatalf("precondition: expected PendingUndoUnits to contain %s after pass 2, got state: %+v", oldWorkerUnit, st.AttachedModules)
+	}
+
+	// Revert to d1 (stable). Whatever was blocking old-worker's restart is
+	// now fixed — old-worker starts INACTIVE this tick (still down from N8's
+	// failed undo) and flips active the moment ANY `start` call succeeds
+	// against it, whichever code path issues it. This is the discriminator
+	// that actually distinguishes P4's fix from its absence: if the
+	// priority retry runs FIRST (at the top of the revert branch, per the
+	// fix) and reactivates old-worker, the ORDINARY force-restart section
+	// later in the SAME tick sees it already active and issues `restart`;
+	// without the fix, old-worker is still inactive when the ordinary
+	// section's own is-active check runs, and it issues a plain `start`
+	// instead — asserting "some start happened" cannot tell the two apart,
+	// since both paths eventually issue a successful start somewhere.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	delete(runner.StubErr, oldWorkerStartKey)
+	runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("inactive\n")
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "start") && containsArg(args, oldWorkerUnit) {
+			runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("active\n")
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+
+	if !hasSystemctlOp(pass3, "restart", oldWorkerUnit) {
+		t.Errorf("P4 REGRESSION: expected the priority retry to reactivate %s BEFORE the ordinary revert force-restart runs (which would then see it active and RESTART it, not start it): %v", oldWorkerUnit, pass3)
+	}
+	st, err = mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after revert: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && len(m.PendingUndoUnits) > 0 {
+			t.Errorf("P4 REGRESSION: PendingUndoUnits must be cleared once %s is confirmed active, got %v", oldWorkerUnit, m.PendingUndoUnits)
+		}
+	}
+}
