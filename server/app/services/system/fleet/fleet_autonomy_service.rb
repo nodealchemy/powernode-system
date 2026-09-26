@@ -476,6 +476,20 @@ module System
         # applier exists — the repair is whatever made the write fail, or a
         # manifest correction, both operator actions).
         ::System::Fleet::Sensors::SecurityFailClosedSensor,
+        # N4 (review round 11, IMP-caef5c00d63f) — the pending-upgrade-digest
+        # oracle. System::PendingModuleDigestsWriter has persisted the
+        # agent's PendingModuleDigests heartbeat lane (M9, round 9) since
+        # this task's own round 11 and nothing consumed it: a module stuck
+        # retrying/backing-off the SAME upgrade digest for an extended
+        # stretch (N2's own auto-recovery not resolving it) is real,
+        # node-visible state an operator cannot currently see anywhere.
+        # Emits system.node_pending_digest_stuck ->
+        # system.node_pending_digest_stuck_investigate (notify-only; no
+        # applier exists — N2's retry/backoff/revert IS the automatic
+        # remediation, already running on every reconcile tick; a module
+        # still stuck past this sensor's threshold means that has not
+        # worked, which is an operator diagnosis, not a dispatchable skill).
+        ::System::Fleet::Sensors::PendingDigestStuckSensor,
         # IMP-5b38cd356010 (APO-6b) — the replication-lag SAMPLER for the
         # postgres cluster_member lane. PromoteReplicaExecutor's data-loss
         # gate reads cluster_pg.replication_lag_bytes / lag_sampled_at off the

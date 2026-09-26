@@ -698,6 +698,19 @@ module System
           skill: nil,
           action_category: "system.node_security_fail_closed_investigate"
         },
+        # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
+        # A module has held the same in-place-upgrade PendingDigest past the
+        # sensor's threshold. skill: nil, and there is no safe applier to
+        # name: N2's own retry/backoff/revert machinery is already the
+        # agent's automatic remediation, running on every reconcile tick
+        # without server involvement — a module still stuck past this
+        # threshold means that has not resolved it, which needs an operator
+        # diagnosis (a manifest problem, a genuinely crash-looping binary, a
+        # resource conflict N8's own minimal recovery could not resolve).
+        "system.node_pending_digest_stuck" => {
+          skill: nil,
+          action_category: "system.node_pending_digest_stuck_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

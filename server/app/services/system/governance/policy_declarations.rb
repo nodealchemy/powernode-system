@@ -633,6 +633,17 @@ module System
         # fingerprint stands until a person acts.
         "system.node_security_fail_closed_investigate" => "notify_and_proceed",
 
+        # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
+        # A module has held the same in-place-upgrade PendingDigest past the
+        # sensor's threshold.
+        # notify_and_proceed, never auto_approve: N2's own retry/backoff/
+        # revert IS the automatic remediation, already running on every
+        # reconcile tick — no applier exists on the server side, no
+        # applier is possible once that has already failed to resolve it.
+        # Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES,
+        # because the fingerprint stands until a person acts.
+        "system.node_pending_digest_stuck_investigate" => "notify_and_proceed",
+
         # IMP-ff6d46f2c3e1 — TerminatedGuestPresentSensor (gap (1) of
         # IMP-8225624f46b1). notify_and_proceed, never auto_approve: there is
         # no applier and can be none — only a person can confirm with the

@@ -79,7 +79,8 @@ module Api
           #   module_signing_audit (see System::ModuleSigningAuditWriter),
           #   booted_from_lkg / lkg_age_seconds / lkg_present /
           #   lkg_confirmed_at / lkg_module_count / boot_incomplete /
-          #   pivot_confinement_omitted (see System::BootLkgStateWriter)
+          #   pivot_confinement_omitted (see System::BootLkgStateWriter),
+          #   pending_module_digests (see System::PendingModuleDigestsWriter)
           #
           # Persists into the NodeInstance's M0.M runtime telemetry columns
           # (last_heartbeat_at, agent_version, boot_id, running_module_digests,
@@ -222,6 +223,24 @@ module Api
               )
             rescue StandardError => e
               Rails.logger.warn("[StatusController] boot LKG state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # N4 (review round 11, IMP-caef5c00d63f) — the agent's
+            # PendingModuleDigests lane (mount.Module.PendingDigest, M9 round
+            # 9): a module id whose in-place upgrade is currently mid-way
+            # toward a digest, surfaced here so PendingDigestStuckSensor can
+            # alert when one has been stuck for an extended stretch instead
+            # of this being visible only via a single node's own heartbeat.
+            # Wrapped like the blocks above so an ingest bug cannot bounce
+            # telemetry.
+            begin
+              pending_obs = hb.slice(*::System::PendingModuleDigestsWriter::WIRE_KEYS)
+              ::System::PendingModuleDigestsWriter.write!(
+                instance: current_instance,
+                payload:  pending_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] pending module digests ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
             # Runtime metrics (IMP-938ee27f4921): mount_state / load_average /

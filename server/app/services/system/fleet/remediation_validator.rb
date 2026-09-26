@@ -152,6 +152,24 @@ module System
       #                                            a manifest correction —
       #                                            both operator actions far
       #                                            beyond SETTLE_WINDOW.
+      #   system.node_pending_digest_stuck_investigate — N4, review round
+      #                                            11 (IMP-caef5c00d63f). A
+      #                                            module has held the same
+      #                                            in-place-upgrade
+      #                                            PendingDigest past the
+      #                                            sensor's threshold.
+      #                                            There is no applier:
+      #                                            N2's own retry/backoff/
+      #                                            revert IS the automatic
+      #                                            remediation, already
+      #                                            running on every
+      #                                            reconcile tick — a
+      #                                            module still stuck past
+      #                                            this threshold means
+      #                                            that has not resolved
+      #                                            it, an operator
+      #                                            diagnosis far beyond
+      #                                            SETTLE_WINDOW.
       #
       # system.instance_replace WAS LISTED HERE and is not any more
       # (IMP-555db48d41f1, APO-4). The exemption was correct while the lane had
@@ -175,6 +193,7 @@ module System
         system.task_backlog_investigate
         system.node_lkg_investigate
         system.node_security_fail_closed_investigate
+        system.node_pending_digest_stuck_investigate
         system.module_promotion_investigate
         project.target_unmeasurable_investigate
         system.cloud_sync_terminated_guest_investigate

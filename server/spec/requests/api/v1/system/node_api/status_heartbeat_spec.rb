@@ -719,6 +719,60 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
     end
   end
 
+  # N4 (review round 11, IMP-caef5c00d63f) — the agent's PendingModuleDigests
+  # lane (mount.Module.PendingDigest, M9 round 9) has shipped on every
+  # heartbeat carrying an in-flight in-place upgrade since round 9, and
+  # nothing on the server read it — this is the WIRE half of that gap; see
+  # pending_module_digests_writer_spec.rb for the normalization half.
+  describe "pending module digests ingest" do
+    def post_heartbeat(extra = {})
+      post "/api/v1/system/node_api/status/heartbeat",
+           params: body.merge(extra), headers: headers, as: :json
+    end
+
+    def recorded
+      instance.reload.config["pending_module_digests"]
+    end
+
+    it "lands the document under the writer's CONFIG_KEY" do
+      post_heartbeat(pending_module_digests: { "system-base" => "sha256:bbbb" })
+
+      expect(instance.reload.config[::System::PendingModuleDigestsWriter::CONFIG_KEY])
+        .to eq(recorded)
+      expect(recorded["modules"]["system-base"]["digest"]).to eq("sha256:bbbb")
+      expect(recorded["modules"]["system-base"]["first_seen_at"]).to be_present
+    end
+
+    it "writes nothing when the heartbeat carries no pending_module_digests at all, on a fresh instance" do
+      post_heartbeat
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded).to be_nil
+    end
+
+    it "tolerates a missing pending_module_digests body field (an agent predating M9)" do
+      post_heartbeat
+
+      expect(response).to have_http_status(:ok)
+    end
+
+    it "drops a module id once a later heartbeat no longer reports it (resolved)" do
+      post_heartbeat(pending_module_digests: { "system-base" => "sha256:bbbb" })
+      expect(recorded["modules"]).to have_key("system-base")
+
+      post_heartbeat(pending_module_digests: {})
+
+      expect(recorded["modules"]).to eq({})
+    end
+
+    it "does not bounce the heartbeat when the field is malformed" do
+      post_heartbeat(pending_module_digests: "not-a-hash")
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "acknowledged")).to be(true)
+    end
+  end
+
   # IMP-938ee27f4921 — the four scalar heartbeat fields status_heartbeat's own
   # doc comment already lists as accepted (mount_state, load_average,
   # memory_free_kb, uptime_seconds) but that nothing on the server actually
