@@ -871,9 +871,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// still-in-flight retry (a retry's target differs from the stable
 	// digest, so mount.Reconcile already routed it into `bumps`).
 	pendingRevertIDs := make(map[string]bool, len(current.AttachedModules))
+	pendingDigestByID := make(map[string]string, len(current.AttachedModules))
 	for _, m := range current.AttachedModules {
 		if m.PendingDigest != "" {
 			pendingRevertIDs[m.ID] = true
+			pendingDigestByID[m.ID] = m.PendingDigest
 		}
 	}
 	toReattach := make(mount.ModuleStack, 0)
@@ -1392,6 +1394,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 					break
 				}
 			}
+			// N7 (review round 11): the abandoned target's persisted drop-in
+			// snapshot is no longer needed — clear it under the digest that
+			// was PENDING (the attempted, now-abandoned target), not the
+			// stable digest this entry reverted back to.
+			clearDropInSnapshotStore(r.cfg.StatePath, mod.ID, pendingDigestByID[mod.ID])
 			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 				r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest after reverting: %w", mod.ID, err))
 			}

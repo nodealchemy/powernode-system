@@ -1707,6 +1707,87 @@ func TestUpgradeModule_RestoreRemovesADropInFileTheNewPolicyCreated(t *testing.T
 	}
 }
 
+// TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts is N7's own
+// test (review round 11, MEDIUM), exercising loadOrTakeDropInSnapshot
+// directly rather than through a full RunOnce tick: a fresh snapshot taken
+// on EVERY attempt (R3b's original design) is itself wrong across attempts
+// of the SAME (ID, new digest) target if attempt 1 ever writes new content
+// and never reaches its own restore — the only realistic way is the agent
+// process itself dying mid-attempt, which cannot be reproduced by driving
+// RunOnce through a normal, reachable failure branch (every one of those
+// already calls restoreDropInSnapshot before returning). Simulated directly
+// here: write TRUE old content, take+persist attempt 1's snapshot, then
+// write NEW content onto disk WITHOUT going through any restore (standing
+// in for "attempt 1 wrote it and then the process died before reverting"),
+// and confirm attempt 2 reuses the PERSISTED (true old) snapshot rather
+// than re-reading the now-corrupted current disk state.
+func TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts(t *testing.T) {
+	dropInRoot := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(dropInRoot))
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	unit := lifecycle.UnitName("m1", "app")
+	dropDir := filepath.Join(dropInRoot, unit+".d")
+	if err := os.MkdirAll(dropDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(dropDir, "capabilities.conf")
+	if err := os.WriteFile(capPath, []byte("OLD-POLICY"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit}); err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+
+	// Simulate step 2 writing new content, then the process dying before
+	// reaching its own restore — the on-disk content is now "corrupted"
+	// (new, never reverted) independent of the persisted snapshot.
+	if err := os.WriteFile(capPath, []byte("NEW-POLICY-NEVER-RESTORED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snap2, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit})
+	if err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	var got string
+	found := false
+	for _, s := range snap2 {
+		if s.filename == "capabilities.conf" {
+			got = s.body
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("attempt 2 snapshot has no capabilities.conf entry: %+v", snap2)
+	}
+	if got != "OLD-POLICY" {
+		t.Errorf("N7 REGRESSION: attempt 2 must reuse the PERSISTED baseline (%q), got %q — a fresh re-snapshot wrongly captures attempt 1's own uncommitted write as if it were the true pre-attempt content", "OLD-POLICY", got)
+	}
+
+	// clearDropInSnapshotStore ends the (ID, digest) pair's lifetime — a
+	// LATER, genuinely fresh attempt at the SAME digest string (a re-bump
+	// after commit, in practice never the same digest twice, but the store
+	// must not accidentally pin one forever) must re-snapshot from disk.
+	clearDropInSnapshotStore(statePath, "m1", "d2")
+	if err := os.WriteFile(capPath, []byte("YET-ANOTHER-POLICY"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap3, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit})
+	if err != nil {
+		t.Fatalf("attempt 3 (after clear): %v", err)
+	}
+	got = ""
+	for _, s := range snap3 {
+		if s.filename == "capabilities.conf" {
+			got = s.body
+		}
+	}
+	if got != "YET-ANOTHER-POLICY" {
+		t.Errorf("N7: after clearDropInSnapshotStore, the NEXT attempt must re-snapshot fresh from disk, got %q", got)
+	}
+}
+
 // TestUpgradeModule_AgentVersionBumpTickDoesNotDoubleRestartViaReattach
 // covers point 5e: a tick that ALSO carries a pending module version bump
 // must not additionally restart that same unit through the ordinary

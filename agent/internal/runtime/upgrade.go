@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -182,10 +184,28 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// drop-in file this attempt could touch — old's own units union the new
 	// manifest's units (a renamed service's new-only unit correctly has no
 	// snapshot entry with existed=true: it never existed before this
-	// attempt, so "restoring" it means removing it) — taken fresh THIS
-	// attempt, before step 2 writes anything. See restoreDropInSnapshot's
-	// own doc for why this replaces the old manifest-re-render approach.
-	dropInSnap := snapshotUnitDropIns(unionStrings(oldUnits, newMf.UnitNames()))
+	// attempt, so "restoring" it means removing it).
+	//
+	// N7 (review round 11): taken fresh EVERY attempt, as R3b originally
+	// specified, is itself a bug across attempts of the SAME (ID, new
+	// digest) target — if attempt 1 wrote step 2's new content and then
+	// never reached its own restore (the only realistic way: the agent
+	// process itself dying between step 2 and whichever failure branch
+	// would have called restoreDropInSnapshot — every REACHABLE Go-level
+	// failure branch already restores before returning), attempt 2's "fresh"
+	// snapshot would capture attempt 1's own already-new, never-reverted
+	// content and mislabel it as the pre-attempt baseline — permanently
+	// losing the TRUE old content for anything not protected by N6's
+	// alreadyRestarted skip. Fixed by persisting the snapshot to disk once,
+	// the FIRST time this (ID, new digest) pair is ever attempted, and
+	// reusing the persisted copy on every later attempt at the SAME target
+	// — surviving exactly the process-restart case a fresh in-memory-only
+	// snapshot cannot. Cleared once the target digest changes (a revert or a
+	// re-bump) or the upgrade commits, via clearDropInSnapshotStore.
+	dropInSnap, err := loadOrTakeDropInSnapshot(r.cfg.StatePath, newMod.ID, newMod.Digest, unionStrings(oldUnits, newMf.UnitNames()))
+	if err != nil {
+		r.cfg.OnError("reconciler:upgrade_snapshot_persist", fmt.Errorf("module %s digest %s: %w (falling back to an in-memory-only snapshot for this attempt)", newMod.ID, newMod.Digest, err))
+	}
 
 	// Step 2: apply the NEW digest's security policy for real.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, newMf.UnitNames()...)
@@ -393,6 +413,10 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, newMod.ID, newMod.Digest, newMf); err != nil {
 		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
 	}
+	// N7 (review round 11): the drop-in snapshot's job ends at commit — clear
+	// it so a FUTURE upgrade attempt of this same module ID never mistakes a
+	// stale persisted file for its own fresh baseline.
+	clearDropInSnapshotStore(r.cfg.StatePath, newMod.ID, newMod.Digest)
 }
 
 // oldUnitNames resolves the unit names the OLD digest owned: old.Units
@@ -490,11 +514,14 @@ type dropInSnapshot struct {
 // consecutive failed attempt: the first attempt's own manifest fetch had
 // already overwritten previousManifests' on-disk cache with the NEW
 // digest's content by the time the second attempt ran, so "restoring the
-// old policy" silently re-wrote the already-wrong new one instead. A byte
-// snapshot taken fresh on EVERY attempt, immediately before that attempt's
-// own step 2 writes anything, has no such dependency — attempt N's
-// snapshot is attempt N's actual pre-write state, full stop, independent
-// of what any earlier attempt fetched, wrote, or left behind.
+// old policy" silently re-wrote the already-wrong new one instead.
+//
+// N7 (review round 11) CORRECTION to this doc's original claim: a snapshot
+// taken fresh on EVERY attempt is NOT independent of what an earlier
+// attempt wrote after all — see loadOrTakeDropInSnapshot, which now takes
+// this exactly ONCE per (ID, new digest) and persists it, for the reason
+// explained there. This function itself is unchanged; it is simply no
+// longer called on every attempt.
 func snapshotUnitDropIns(units []string) []dropInSnapshot {
 	root := security.SystemdDropInRoot()
 	snaps := make([]dropInSnapshot, 0, len(units)*len(dropInFileNames))
@@ -523,6 +550,98 @@ func snapshotUnitDropIns(units []string) []dropInSnapshot {
 		}
 	}
 	return snaps
+}
+
+// persistedDropInSnapshot mirrors dropInSnapshot for JSON persistence (N7,
+// review round 11). dropInSnapshot's own fields are deliberately unexported
+// (nothing outside upgrade.go constructs one) — this is a separate,
+// exported-field DTO used only for the on-disk round-trip; `dir` is not
+// persisted since it is always re-derivable from `unit` alone via
+// security.SystemdDropInRoot(), and a persisted root recorded at save time
+// would go stale if that root is ever reconfigured before the matching load.
+type persistedDropInSnapshot struct {
+	Unit       string
+	Filename   string
+	Existed    bool
+	Body       string
+	Unreadable bool
+}
+
+// dropInSnapshotStorePath returns stateDir/upgrade-snapshots/<moduleID>_
+// <digest>.json — one file per (moduleID, digest) pair, sanitized the same
+// way mount.Layout sanitizes a digest for a path component (':' is not a
+// safe filename character on every filesystem this agent targets).
+func dropInSnapshotStorePath(stateDir, moduleID, digest string) string {
+	san := make([]byte, 0, len(digest))
+	for _, c := range []byte(digest) {
+		switch {
+		case c == ':' || c == '/' || c == ' ':
+			san = append(san, '_')
+		default:
+			san = append(san, c)
+		}
+	}
+	return filepath.Join(stateDir, "upgrade-snapshots", moduleID+"_"+string(san)+".json")
+}
+
+// loadOrTakeDropInSnapshot is N7's own fix (review round 11): the FIRST
+// time (moduleID, digest) is attempted, it takes a fresh snapshot exactly
+// as before and persists it to statePath's directory (the same durable,
+// survives-a-reboot location state.json itself lives in — see manifest.
+// DefaultRoot's own doc for the parallel /persist reasoning). Every LATER
+// attempt at the SAME target reads the persisted copy back instead of
+// re-snapshotting the CURRENT (possibly already-corrupted-by-a-prior-
+// attempt) on-disk content. A read/decode/write error degrades to an
+// in-memory-only fresh snapshot (the caller surfaces it via OnError) rather
+// than aborting the upgrade attempt entirely — persistence is a durability
+// improvement, not a hard prerequisite for a single attempt to proceed.
+func loadOrTakeDropInSnapshot(statePath, moduleID, digest string, units []string) ([]dropInSnapshot, error) {
+	path := dropInSnapshotStorePath(filepath.Dir(statePath), moduleID, digest)
+	if body, err := os.ReadFile(path); err == nil {
+		var persisted []persistedDropInSnapshot
+		if err := json.Unmarshal(body, &persisted); err != nil {
+			return snapshotUnitDropIns(units), fmt.Errorf("decode persisted drop-in snapshot %s: %w", path, err)
+		}
+		root := security.SystemdDropInRoot()
+		snaps := make([]dropInSnapshot, 0, len(persisted))
+		for _, p := range persisted {
+			snaps = append(snaps, dropInSnapshot{
+				unit: p.Unit, dir: filepath.Join(root, p.Unit+".d"), filename: p.Filename,
+				existed: p.Existed, body: p.Body, unreadable: p.Unreadable,
+			})
+		}
+		return snaps, nil
+	}
+	fresh := snapshotUnitDropIns(units)
+	persisted := make([]persistedDropInSnapshot, 0, len(fresh))
+	for _, s := range fresh {
+		persisted = append(persisted, persistedDropInSnapshot{
+			Unit: s.unit, Filename: s.filename, Existed: s.existed, Body: s.body, Unreadable: s.unreadable,
+		})
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fresh, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if err := fsutil.AtomicWriteJSON(path, persisted, 0o644); err != nil {
+		return fresh, fmt.Errorf("persist drop-in snapshot %s: %w", path, err)
+	}
+	return fresh, nil
+}
+
+// clearDropInSnapshotStore removes the persisted snapshot for (moduleID,
+// digest), once it is no longer needed: the upgrade committed (step 7), the
+// entry reverted (N2's revert path clears PendingDigest the same tick), or
+// a later tick re-targets a DIFFERENT digest entirely (the M9/N2 PendingDigest
+// bookkeeping already treats that as a fresh attempt with its own counter —
+// this store must not let a stale snapshot from an abandoned target leak
+// into an unrelated later one). Best-effort: a leftover file wastes a
+// little disk and nothing more — the (moduleID, digest) filename can never
+// collide with a DIFFERENT still-in-flight attempt's own file.
+func clearDropInSnapshotStore(statePath, moduleID, digest string) {
+	if digest == "" {
+		return
+	}
+	_ = os.Remove(dropInSnapshotStorePath(filepath.Dir(statePath), moduleID, digest))
 }
 
 // restoreDropInSnapshot restores EXACTLY what snapshotUnitDropIns captured:
