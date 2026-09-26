@@ -9,23 +9,24 @@ import (
 )
 
 // TestWriteCapabilityDropIn_SkipsTheWriteWhenContentIsAlreadyIdentical is
-// L3(c)'s red-first test (review round 7, HIGH). The scenario it exists for:
-// a version-bump rollback (rollbackVersionBumpDetach, runtime/reconcile.go)
-// re-attaches the OLD digest, which re-renders content that is ALREADY
-// sitting on disk unchanged. Before this fix, that re-render still went
-// through the full tmp-write-then-rename path, which needs to allocate NEW
-// blocks even though the bytes never change — so a disk-full condition that
-// caused the original (new-digest) attach to fail would ALSO fail the
-// rollback's own re-write of unchanged old content, defeating the very
-// guarantee rollback exists to provide. Skipping the write when nothing
-// would change needs no new blocks at all.
+// L3(c)'s red-first test (review round 7, HIGH). The scenario it exists
+// for: the round-9 in-place-upgrade's partial-failure recovery
+// (upgradeModule, runtime/reconcile.go) re-applies the OLD digest's policy
+// on a failure after the new digest's has already been written — content
+// that is ALREADY sitting on disk unchanged, since the old process never
+// stopped. Before this fix, that re-render still went through the full
+// tmp-write-then-rename path, which needs to allocate NEW blocks even
+// though the bytes never change — so a disk-full condition that caused the
+// original (new-digest) write to fail would ALSO fail the recovery's own
+// re-write of unchanged old content, defeating the guarantee it exists to
+// provide. Skipping the write when nothing would change needs no new
+// blocks at all.
 //
-// Proven here the same way the disk-full probe test does — RLIMIT_FSIZE,
-// with SIGXFSZ ignored, standing in for a real (root-only) size-limited
-// filesystem: a write that ACTUALLY changes content still correctly fails
-// under the same tiny limit (proving this isn't "writes never fail
-// anymore"), while re-writing byte-identical content succeeds because it
-// is never attempted at all.
+// Proven here via RLIMIT_FSIZE, with SIGXFSZ ignored, standing in for a
+// real (root-only) size-limited filesystem: a write that ACTUALLY changes
+// content still correctly fails under the same tiny limit (proving this
+// isn't "writes never fail anymore"), while re-writing byte-identical
+// content succeeds because it is never attempted at all.
 func TestWriteCapabilityDropIn_SkipsTheWriteWhenContentIsAlreadyIdentical(t *testing.T) {
 	dropIns := t.TempDir()
 	t.Cleanup(SetSystemdDropInRootForTest(dropIns))

@@ -337,79 +337,6 @@ func (r *Reconciler) resetConvergence() {
 	r.convergeMu.Unlock()
 }
 
-// rollbackVersionBumpDetach re-attaches a version bump's OLD digest after
-// its new digest's real attach failed for a reason neither pre-check caught
-// (K2b, review round 6, CRITICAL). oldMod is the pre-detach mount.Module
-// entry (bumpedOldModules, captured before the detach loop ran); oldMf is
-// its manifest, snapshotted from disk before this tick's fetch overwrote the
-// cache (previousManifests, captured at the very top of RunOnce) — without
-// that snapshot there is nothing to roll back TO, since manifest.LoadOrFetch
-// keys its cache by module ID alone, not by digest.
-//
-// A missing oldMf (no cache existed for this module before this tick — only
-// possible if this is somehow the module's first-ever attach on this node,
-// which contradicts being a version bump in the first place) or a failure
-// of the rollback attach itself is loud, not silent: the module ends up
-// down either way, but an operator reading OnError must be able to tell
-// "went down and came back" from "went down and stayed down".
-func (r *Reconciler) rollbackVersionBumpDetach(ctx context.Context, current *mount.State, oldMod mount.Module, oldMf *manifest.Manifest, newAttachErr error) (rolledBack bool) {
-	if oldMf == nil {
-		r.cfg.OnError("reconciler:version_bump_rollback_no_manifest",
-			fmt.Errorf("module %s: new digest failed to attach (%v) after the old digest %s was detached, and no cached manifest for the old digest survived to roll back to — module is down", oldMod.ID, newAttachErr, oldMod.Digest))
-		return false
-	}
-	r.cfg.OnError("reconciler:version_bump_attach_failed_rolling_back",
-		fmt.Errorf("module %s: new digest failed to attach (%v) after the old digest %s was detached; re-attaching the old digest", oldMod.ID, newAttachErr, oldMod.Digest))
-
-	if err := r.attachModule(ctx, oldMod, oldMf); err != nil {
-		r.cfg.OnError("reconciler:version_bump_rollback_failed",
-			fmt.Errorf("module %s: rollback re-attach of the old digest %s ALSO failed: %w — module is down", oldMod.ID, oldMod.Digest, err))
-		return false
-	}
-	// Deliberately NOT appending oldMod to current.AttachedModules: the
-	// detach loop (which ran before the attach loop that discovered this
-	// failure) never removes an entry from that slice itself — the ONLY
-	// place that happens is the later retainedAfterDetach call, keyed off
-	// toDetach. oldMod's entry is therefore STILL sitting in
-	// current.AttachedModules right now, untouched; appending it again here
-	// would duplicate it. The caller's job (RunOnce's attach loop, right
-	// after this call returns true) is to strip oldMod's digest out of
-	// toDetach so that later retainedAfterDetach pass leaves the
-	// still-present entry alone instead of removing it.
-	current.LastAttachedManifestHashes[oldMod.ID] = r.attachStamp(oldMod.ID, oldMf)
-	r.attachModuleServices(ctx, oldMod, oldMf)
-	return true
-}
-
-// applyVersionBumpDeferrals wraps filterUnsafeVersionBumpDetaches
-// (selfhost.go) with the bookkeeping K3 (review round 6) requires but that
-// function deliberately leaves to its caller: every deferred module must be
-// marked unconverged, and — ONLY for a deferral actually caused by a
-// drop-in-probe refusal (versionBumpDeferral.failedUnits non-empty) — its
-// units must be marked ATTEMPTED and recorded fail-closed HERE, because K3
-// also means the real attach loop will never run for this module this tick
-// (RunOnce filters it out of toAttach right after this call), so nothing
-// else will ever call attachModule/recordSecurityFailClosed for it this
-// pass. A privileged-unapproved / invalid-policy / artifact-not-ready
-// deferral gets ONLY noteUnconverged — exactly mirroring attachModule's own
-// gating, where those refusals never touch SecurityFailClosedUnits() either.
-//
-// Returns the (further-filtered) safe-to-detach set and the plain module-ID
-// list RunOnce needs to also strip from toAttach.
-func (r *Reconciler) applyVersionBumpDeferrals(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest, artifactReady map[string]bool, failedBumps map[string]string) (safe mount.ModuleStack, deferredIDs []string) {
-	safe, deferrals := r.filterUnsafeVersionBumpDetaches(toDetach, toAttach, manifests, artifactReady, failedBumps)
-	for _, d := range deferrals {
-		deferredIDs = append(deferredIDs, d.moduleID)
-		r.noteUnconverged("reconciler:version_bump_deferred", d.moduleID,
-			fmt.Errorf("module %s: version bump's new digest would refuse to (re)attach; old digest kept running", d.moduleID))
-		if len(d.failedUnits) > 0 {
-			r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, d.failedUnits...)
-			r.recordSecurityFailClosed(d.failedUnits)
-		}
-	}
-	return safe, deferredIDs
-}
-
 // ConvergenceFailures returns the failures observed by the last completed pass.
 // Satisfies tasks.ConvergenceReporter.
 func (r *Reconciler) ConvergenceFailures() []string {
@@ -604,14 +531,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	// IMP-f1c1e6d61104 — this pass's convergence verdict starts empty.
 	r.resetConvergence()
-	// Moved here from just above the attach loop (K3, review round 6): a
-	// version-bump deferral (applyVersionBumpDeferrals, below, runs during
-	// detach-side filtering — well before the attach loop) can now itself
-	// call recordSecurityFailClosed directly, for a module whose real
-	// attachModule call this pass will never make (K3 skips it). Resetting
-	// AFTER that point would wipe out exactly the recording this pass needs
-	// to publish — reset must happen before ANYTHING in this pass records,
-	// which is here, at the very top.
+	// Reset before ANYTHING in this pass can record a fail-closed refusal —
+	// kept at the very top of RunOnce rather than just above the attach
+	// loop so a future recorder (this pass had one during round 6/7's
+	// detach-before-attach mitigation, since removed — round 9) can never
+	// land between a later reset point and its own recording call.
 	r.resetSecurityFailClosed()
 
 	// E8: realize the durable-storage binding before module attaches,
@@ -637,17 +561,15 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// decide whether to honour it (IMP-01a02f70-20b1).
 	r.privilegedAllow = assignmentMeta.PrivilegedModuleIDs
 
-	// K2b (review round 6, CRITICAL): snapshot whatever manifest is CURRENTLY
-	// cached on disk for every assigned module, BEFORE the fetch loop below
-	// overwrites that cache with this tick's fresh content. manifest.LoadOrFetch
-	// keys its on-disk cache by module ID alone (not by digest), so a version
-	// bump's OLD manifest is otherwise unrecoverable the moment the new one is
-	// fetched — and a rollback that needs to re-attach the old digest after the
-	// new one fails needs exactly that old content (Services, security block)
-	// to rebuild the old units. A module with no cache yet (never attached, or
-	// its cache write previously failed) simply has no entry here — harmless,
-	// since a rollback is only ever attempted for a module that WAS a version
-	// bump, i.e. was already attached under some digest this tick.
+	// Snapshot whatever manifest is CURRENTLY cached on disk for every
+	// assigned module, BEFORE the fetch loop below overwrites that cache
+	// with this tick's fresh content. manifest.LoadOrFetch keys its on-disk
+	// cache by module ID alone (not by digest), so a module's OLD manifest
+	// is otherwise unrecoverable the moment a new one is fetched. Used as a
+	// fallback source for K4's relevantUnits bound (below) when a module's
+	// fetch fails THIS tick and there is no fresher manifest to consult. A
+	// module with no cache yet (never attached, or its cache write
+	// previously failed) simply has no entry here.
 	previousManifests := make(map[string]*manifest.Manifest, len(desiredModules))
 	for _, mod := range desiredModules {
 		if pm, perr := manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID); perr == nil && pm != nil {
@@ -828,8 +750,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	// Pull + verify + mount every new module's erofs blob BEFORE detaching
 	// anything (see prefetchNewArtifacts doc). Must run before the detach
-	// loop below — that ordering is the entire point of this call.
-	artifactReady := r.prefetchNewArtifacts(ctx, toAttach)
+	// loop below — that ordering is the entire point of this call. The
+	// returned readiness map is currently unused pending the round-9
+	// in-place-upgrade work (a subsequent commit consumes it); the PULL
+	// itself, run unconditionally here, is the part that must stay ordered
+	// ahead of any detach.
+	_ = r.prefetchNewArtifacts(ctx, toAttach)
 
 	// Defer detaches for modules this tick could not get a manifest for at
 	// all — see filterUnverifiedDetaches. Applied BEFORE filterUnsafeDetaches
@@ -838,72 +764,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// removal on ANY node, self-hosted or not.
 	toDetach = r.filterUnverifiedDetaches(toDetach, manifestFetchFailed)
 
-	// Defer a version bump's detach when the NEW digest would refuse to
-	// (re)attach — see filterUnsafeVersionBumpDetaches (selfhost.go), J1
-	// review round 5, extended K1/K2a round 6. UNCONDITIONAL like
-	// filterUnverifiedDetaches above (not gated on selfHosted()): detaching
-	// the old, working digest before learning the new one cannot attach is a
-	// real outage on ANY node, only WORSE — unrecoverable — on one that hosts
-	// its own control plane. Applied BEFORE filterUnsafeDetaches: that
-	// function's own version-bump branch answers a different question ("is
-	// this a bump or a removal") and would otherwise let a doomed bump's
-	// detach through on the strength of it being a bump at all.
-	var versionBumpDeferredIDs []string
-	toDetach, versionBumpDeferredIDs = r.applyVersionBumpDeferrals(toDetach, toAttach, manifests, artifactReady, current.FailedVersionBumps)
-
-	// K3 (review round 6, MEDIUM-HIGH): a deferred bump's NEW digest must
-	// never be attempted for real this tick either — applyVersionBumpDeferrals
-	// above already recorded (noteUnconverged, and recordSecurityFailClosed
-	// where the pre-check actually found failing units) every deferred
-	// module; letting the attach loop below ALSO try it risks the exact
-	// "transient pre-check fail, later attach succeeds anyway" race the
-	// review reproduced — which would leave BOTH digests in
-	// current.AttachedModules (the old one never detached, the new one now
-	// attached too), and a LATER tick's detach of the stale old entry would
-	// call lifecycle.DetachServices using THIS tick's (new) manifest's
-	// service names — which, since unit names never depend on digest, means
-	// stopping the CURRENTLY RUNNING (new) units under the guise of removing
-	// a stale duplicate. toDetach already excludes these IDs (the function
-	// above deferred them); toAttach is filtered here, once, to match.
-	if len(versionBumpDeferredIDs) > 0 {
-		deferredIDSet := make(map[string]bool, len(versionBumpDeferredIDs))
-		for _, id := range versionBumpDeferredIDs {
-			deferredIDSet[id] = true
-		}
-		filteredAttach := make(mount.ModuleStack, 0, len(toAttach))
-		for _, m := range toAttach {
-			if !deferredIDSet[m.ID] {
-				filteredAttach = append(filteredAttach, m)
-			}
-		}
-		toAttach = filteredAttach
-
-		// L2 part 1 red-first finding (review round 7, HIGH): toReattach
-		// (computed above, BEFORE any version-bump deferral decision existed)
-		// is built from `desired` keyed on module ID alone — attachedNow[id]
-		// says nothing about DIGEST, so a version-bump module whose old
-		// (still-attached) digest and new (freshly-fetched) digest render
-		// different attachStamp content is ALWAYS a toReattach candidate too,
-		// entirely independent of toDetach/toAttach's own bump handling. On a
-		// DEFERRED bump this meant the new digest still got a real
-		// attachModule attempt — Policy.Apply, drop-in writes, a real
-		// semodule/apparmor invocation — through THIS loop even on a tick the
-		// deferral logic just decided to touch nothing at all, discovered by
-		// TestVersionBumpDetach_PersistentUnpredictableApplyFailureFlapsOnceThenIsRemembered
-		// (a known-failed digest kept re-invoking semodule on every later
-		// tick despite never being re-detached). No stop/start flap resulted
-		// (toReattach never detaches), but a fully deferred module must mean
-		// fully untouched, not merely "not detached" — filtered here for the
-		// same deferredIDSet, at the same site, as toAttach just above.
-		filteredReattach := make(mount.ModuleStack, 0, len(toReattach))
-		for _, m := range toReattach {
-			if !deferredIDSet[m.ID] {
-				filteredReattach = append(filteredReattach, m)
-			}
-		}
-		toReattach = filteredReattach
-	}
-
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the
 	// state bookkeeping below, so a refused module stays in
@@ -911,45 +771,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// on later ticks, rather than being recorded as detached while it is
 	// still running.
 	toDetach = r.filterUnsafeDetaches(toDetach, toAttach, manifests)
-
-	// K2b (review round 6, CRITICAL): every version-bump module whose OLD
-	// digest is ACTUALLY about to be detached this tick (survived every
-	// filter above) is a candidate for ROLLBACK if the real attach of its
-	// NEW digest fails for some OTHER reason neither pre-check catches (a
-	// pull/verify/fsverity failure, an Apply() error, ENOSPC that appears
-	// between the pre-check and the real write). Captured BEFORE the detach
-	// loop runs — current.AttachedModules still holds the pre-detach entry
-	// (digest, priority, fsverity root) the rollback would need to restore.
-	// L1 (review round 7, CRITICAL): the manifest a rollback needs is looked
-	// up here, per (moduleID, oldMod.Digest), from the digest-keyed attached-
-	// snapshot store (manifest.LoadAttachedSnapshot) — NOT from
-	// previousManifests above, which is keyed by module ID alone and is
-	// therefore the LAST FETCHED manifest, not the last one that actually
-	// attached under oldMod's digest. previousManifests is still the right
-	// (and only necessary) source for K4's relevantUnits bound further below —
-	// this is a NARROWER, separate lookup used only for rollback. Falls back
-	// to previousManifests[m.ID] when no snapshot exists yet (a module last
-	// attached by an agent build that predates this store, or one whose very
-	// first-ever attach on this node is itself the bump being evaluated —
-	// contradictory in practice, but harmless to guard): degraded exactly the
-	// way the OLD, single-source behaviour always was, self-healing the next
-	// time this digest attaches successfully and writes its own snapshot.
-	bumpedOldModules := make(map[string]mount.Module)
-	bumpedOldManifests := make(map[string]*manifest.Manifest)
-	newIDsThisTick := make(map[string]bool, len(toAttach))
-	for _, m := range toAttach {
-		newIDsThisTick[m.ID] = true
-	}
-	for _, m := range toDetach {
-		if newIDsThisTick[m.ID] {
-			bumpedOldModules[m.ID] = m
-			if snap, serr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, m.ID, m.Digest); serr == nil && snap != nil {
-				bumpedOldManifests[m.ID] = snap
-			} else {
-				bumpedOldManifests[m.ID] = previousManifests[m.ID]
-			}
-		}
-	}
 
 	// Inventory the outgoing versions BEFORE the detach loop unmounts them.
 	// This is the only window in which the old trees are still readable, and
@@ -1169,65 +990,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if err := r.attachModule(ctx, mod, mf); err != nil {
 			r.noteUnconverged("reconciler:attach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			r.composeFailed.Store(true)
-			// K2b (review round 6, CRITICAL): this module's OLD digest was
-			// ALREADY detached this tick (bumpedOldModules only contains
-			// entries that survived every deferral filter above) and the new
-			// digest's real attach just failed for a reason neither pre-check
-			// caught (pull/verify/fsverity, Apply(), ENOSPC that appeared
-			// between the pre-check and now). Without rolling back, the
-			// module is simply down until some later tick's attach succeeds.
-			if oldMod, wasBump := bumpedOldModules[mod.ID]; wasBump {
-				// L2 part 1 (review round 7, HIGH): remember that THIS EXACT
-				// digest's real attach failed after a detach, regardless of
-				// whether the rollback below succeeds — the rollback's job is
-				// only to restore the old digest's units; it says nothing
-				// about whether retrying mod.Digest again next tick has any
-				// better chance (it does not, for the predictable-once-you-
-				// know class of failure this guards: the underlying cause,
-				// e.g. a corrupt profile file or a persistent exec failure,
-				// does not change tick to tick). Recorded here rather than
-				// only in the version-bump guard's own pre-check because THIS
-				// is a REAL attach failure the pre-check, by definition,
-				// already failed to predict. See mount.State.FailedVersionBumps
-				// and filterUnsafeVersionBumpDetaches's consumption of it.
-				if current.FailedVersionBumps == nil {
-					current.FailedVersionBumps = map[string]string{}
-				}
-				current.FailedVersionBumps[mod.ID] = mod.Digest
-				r.cfg.OnError("reconciler:version_bump_real_attach_failed_recorded",
-					fmt.Errorf("module %s: digest %s's real attach failed after its old digest was detached (%v); recording this digest as a known-bad bump target — further reconcile ticks will defer it without re-detaching until a new digest is proposed or an operator forces a retry", mod.ID, mod.Digest, err))
-				if r.rollbackVersionBumpDetach(ctx, current, oldMod, bumpedOldManifests[oldMod.ID], err) {
-					// The rollback just put oldMod BACK into
-					// current.AttachedModules — but toDetach (computed before
-					// the detach loop ran, still listing oldMod's digest) is
-					// read again below (retainedAfterDetach, keyed by
-					// DIGEST) to filter current.AttachedModules one more
-					// time. Without removing oldMod's entry here, that later
-					// filter would see oldMod's digest in toDetach and
-					// immediately undo the rollback it doesn't know just
-					// happened.
-					filtered := make(mount.ModuleStack, 0, len(toDetach))
-					for _, d := range toDetach {
-						if d.Digest != oldMod.Digest {
-							filtered = append(filtered, d)
-						}
-					}
-					toDetach = filtered
-				}
-			}
+			// NOTE (round 9): for a version bump specifically, this module's
+			// OLD digest was already detached earlier in this same tick's
+			// detach loop, and this failure leaves it down until some later
+			// tick's attach succeeds — the detach-before-attach mitigation
+			// stack that used to roll back from here (J1/K1-K3/L1-L6, rounds
+			// 5-7) has been removed pending the in-place-upgrade redesign
+			// (round 9) that replaces this whole attach/detach shape.
 			continue
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
-		// L2 part 1: a successful real attach clears any stale
-		// FailedVersionBumps record for this module — whether this is the
-		// exact digest an earlier tick recorded as failing (the "operator
-		// clears it" / self-healing path: whatever was wrong got fixed) or a
-		// newer one entirely (the record's premise no longer applies to
-		// anything this node would ever propose again). Left unbounded
-		// otherwise, the map would carry a module's very first failed bump
-		// forever even after ten subsequent successful ones.
-		delete(current.FailedVersionBumps, mod.ID)
 		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desiredForLayers) {
 			// The stamp above is what the reattach gate compares, so leaving
 			// it in place after a refused materialization tells the next tick
@@ -1241,33 +1014,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			unmaterialized[mod.ID] = true
 			// AND DO NOT START THE UNITS. Starting them here would run the new
 			// unit definitions against content that was never written — the
-			// deploy-4 shape. For an ORDINARY first attach (not a version
-			// bump), declining leaves whatever is already running untouched
-			// — nothing was stopped to reach this point, so "the node was
-			// already in this state" holds.
+			// deploy-4 shape. Declining leaves whatever is already running
+			// untouched.
 			//
-			// L6(a) (review round 7, LOW, documented rather than fixed this
-			// round): that is FALSE for a version bump specifically. This
-			// module's OLD digest was already detached — its units stopped —
-			// by the detach loop earlier in THIS SAME tick
-			// (bumpedOldModules[mod.ID] names it), before attachModule (just
-			// above) mounted the new digest and applied its security policy.
-			// A materialization refusal here neither starts the new units
-			// (this continue) nor restores the old ones (no rollback is
-			// attempted for a refusal reached this late) — the module ends
-			// up with ZERO running units, a real outage, not "untouched".
-			// Two fixes were considered and deliberately NOT attempted this
-			// round: (a) route this case through rollbackVersionBumpDetach
-			// (K2b) — tractable in principle (bumpedOldModules/
-			// bumpedOldManifests are already in scope here), but `mod` was
-			// already appended to current.AttachedModules a few lines above
-			// this block, so a correct rollback must also undo that append,
-			// not just call the same helper the attachModule-error branch
-			// above uses; (b) run hotReconcileIfNeeded's refusal DECISION
-			// before the detach loop, mirroring K1's own pure/effectful
-			// split for the security pre-check — more principled but a
-			// materially larger change to a function this task has not
-			// otherwise touched. Reported to the driver rather than rushed.
+			// NOTE (round 9): under the detach-before-attach shape this loop
+			// used to implement, that claim was FALSE for a version bump
+			// specifically — its old units were already stopped by the
+			// detach loop earlier in the same tick, so a refusal here left
+			// the module with zero running units (round 7's L6(a) finding).
+			// The in-place-upgrade redesign (round 9) removes that failure
+			// mode structurally: a bump's old units are never stopped until
+			// AFTER its new attempt, including this materialization step,
+			// has fully succeeded — see the upgrade path this loop no longer
+			// handles bumps through.
 			continue
 		}
 		r.attachModuleServices(ctx, mod, mf)
@@ -1762,12 +1521,10 @@ func (e *SecurityFailClosedError) Error() string {
 	return fmt.Sprintf("module %s: refusing to (re)attach/start unit(s) %v (fail closed): %s", e.ModuleID, e.Units, e.Reason)
 }
 
-// Returns, per module ID, whether its artifact prefetch succeeded (K2a,
-// review round 6): filterUnsafeVersionBumpDetaches uses this to defer a
-// version bump's old-digest detach when the NEW digest's own artifact was
-// never even pulled/verified/mounted this tick — a failure the security-
-// policy pre-check (K1) has no way to see, since it never touches the
-// module's mounted content at all.
+// Returns, per module ID, whether its artifact prefetch succeeded. Pulled
+// BEFORE either the detach or attach loop runs (see the RunOnce call site)
+// so an artifact pull/verify/mount failure is known before anything about
+// the module's existing attachment is touched.
 func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.ModuleStack) map[string]bool {
 	ready := make(map[string]bool, len(toAttach))
 	for _, mod := range toAttach {
@@ -1816,21 +1573,6 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 	if errs := policy.Validate(); len(errs) > 0 {
 		return nil, nil, droppedCaps, fmt.Errorf("policy invalid: %v", errs)
 	}
-	// L2 part 2 (review round 7, HIGH): predict the RESOLVABLE-ahead-of-time
-	// subset of a Policy.Apply MAC-load failure (an unresolvable profile
-	// name, or the declared LSM not being available on this host) using only
-	// pure reads — see Policy.PredictMACProfileFailure's own doc. Sharing
-	// this with the real attach path (via applyModuleSecurityPolicy, which
-	// calls this same function) means a bad profile name now refuses BEFORE
-	// Policy.Apply ever runs, and — the actual point of putting it HERE
-	// rather than only in Apply's own caller — the version-bump pre-check
-	// (wouldModuleSecurityPolicyRefuse, which also calls this same function)
-	// now sees it too, deferring the bump instead of detaching the
-	// currently-running old digest ahead of a new one already known,
-	// side-effect-free, to be doomed.
-	if err := policy.PredictMACProfileFailure(); err != nil {
-		return nil, nil, droppedCaps, fmt.Errorf("policy would fail to apply: %w", err)
-	}
 	// Per-service capabilities (IMP-caef5c00d63f), resolved BEFORE anything is
 	// applied: a service asking for more than the module ceiling refuses the
 	// whole attach, the same way an invalid policy does, rather than guessing
@@ -1869,18 +1611,7 @@ func decideModuleSecurityPolicy(mod mount.Module, mf *manifest.Manifest, privile
 // unit's LIVE drop-in files on disk. Returns the units (if any) whose
 // drop-in write failed non-exempt.
 //
-// Called ONLY from attachModule — the real (re)attach path. K1 (review
-// round 6, CRITICAL) split this out of what used to be a single function
-// also used by filterUnsafeVersionBumpDetaches's pre-check: on a version
-// bump, the new and old digest of a module share the EXACT SAME unit name,
-// so running the real writers from a pre-check — before deciding whether to
-// detach the old digest at all — was silently rewriting the STILL-RUNNING
-// old digest's live drop-ins with the new digest's content, every tick a
-// bump stayed deferred: the old binary kept running, but under the NEW
-// confinement, repeating the mutation every tick. The pre-check now uses
-// wouldModuleSecurityPolicyRefuse instead, which shares
-// decideModuleSecurityPolicy's pure decision but probes writability
-// (security.ProbeDropInWritable) rather than writing real content.
+// Called ONLY from attachModule — the real (re)attach path.
 func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
 	policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow)
 	if len(droppedCaps) > 0 {
@@ -1920,90 +1651,6 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 	return failedUnits, nil
 }
 
-// wouldModuleSecurityPolicyRefuse is the SIDE-EFFECT-FREE counterpart to
-// applyModuleSecurityPolicy (K1, review round 6, CRITICAL): answers "would
-// attachModule refuse this manifest right now" without ever calling
-// Policy.Apply (no semodule/apparmor_parser invocation, which acts on the
-// RUNNING system) or a real drop-in writer (no overwrite of a unit's live
-// confinement files). Used ONLY by filterUnsafeVersionBumpDetaches
-// (selfhost.go) to decide whether a version bump's OLD digest is safe to
-// detach, BEFORE that decision is allowed to touch anything the currently-
-// running old digest depends on.
-//
-// Shares decideModuleSecurityPolicy's exact pure decision (privileged gate,
-// policy.Validate, capability resolution) with the real attach path, so an
-// invalid-policy or unapproved-privileged refusal is identical on both.
-// Where it diverges is exactly the point: instead of the real per-unit
-// writers, it runs security.ProbeDropInWritable through the SAME
-// applyModuleSecurityDropIns exemption/dedup logic the real path uses — a
-// unit's directory either accepts a throwaway, uniquely-named temp file
-// right now or it doesn't. As of L3 (review round 7, HIGH) that throwaway
-// file is written with the REAL rendered body's exact bytes (not merely
-// created empty), because an empty-file probe needs no DATA blocks at all
-// and so passes on a disk that is full of data but still has free
-// inodes/metadata space — exactly the ordinary shape of "disk full", and
-// exactly the case an earlier version of this doc comment overclaimed as
-// covered by ENOSPC alone. The probe still never writes to the unit's REAL
-// drop-in path (target or its fixed .tmp staging name — both are checked,
-// never touched) — only its own throwaway, uniquely-named file.
-func (r *Reconciler) wouldModuleSecurityPolicyRefuse(mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
-	// droppedCaps ignored here deliberately — same reasoning as the missing
-	// OnError below: the real attach's own call to decideModuleSecurityPolicy
-	// (via applyModuleSecurityPolicy), moments later in the SAME tick for a
-	// module this pre-check does not defer, already warns about it once;
-	// warning here too would just be a duplicate of that single message.
-	policy, unitAllow, _, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow)
-	if err != nil {
-		return nil, err
-	}
-	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
-		securityDropInFuncs{
-			// L3(a) (review round 7, HIGH): probe with the REAL rendered
-			// body's exact bytes, not an empty throwaway — see
-			// security.ProbeDropInWritable's own doc for why an empty-file
-			// probe passes on a disk that is full of DATA but still has free
-			// inode/metadata space, where the real (non-empty) write would
-			// fail. Rendered through the SAME exported functions the real
-			// writers use (security.RenderUserNamespaceDropInBody /
-			// RenderSeccompDropInBody / RenderCapabilityDropInBody), so a
-			// future change to any of the three renders is automatically
-			// reflected in what this probes, never a second, driftable copy.
-			userNamespace: func(unit string, enabled bool) error {
-				return security.ProbeDropInWritable(unit, "userns.conf", security.RenderUserNamespaceDropInBody(enabled))
-			},
-			seccomp: func(unit, profilePath string) error {
-				body, rerr := security.RenderSeccompDropInBody(profilePath)
-				if rerr != nil {
-					// decideModuleSecurityPolicy already validated this
-					// profile name (Policy.Validate, via SeccompFilterName)
-					// before this pre-check ever runs, so reaching a render
-					// error here would mean the two have drifted apart —
-					// treat it as a refusal rather than probe with an empty
-					// body that would understate the real write's size.
-					return fmt.Errorf("render seccomp drop-in for probe: %w", rerr)
-				}
-				return security.ProbeDropInWritable(unit, "seccomp.conf", body)
-			},
-			capability: func(unit string, allow []string) error {
-				body, rerr := security.RenderCapabilityDropInBody(allow)
-				if rerr != nil {
-					// Same reasoning as seccomp above: decideModuleSecurityPolicy
-					// already resolved this exact allow list successfully.
-					return fmt.Errorf("render capability drop-in for probe: %w", rerr)
-				}
-				return security.ProbeDropInWritable(unit, "capabilities.conf", body)
-			},
-		},
-		// No OnError here — this is a PRE-check, not a real failure; the
-		// caller (filterUnsafeVersionBumpDetaches) emits its own single,
-		// clear "detach deferred" diagnostic naming the module. Surfacing
-		// per-writer stage errors here too would read as a second, separate
-		// live failure for something that never actually happened.
-		func(stage string, err error) {},
-	)
-	return failedUnits, nil
-}
-
 // attachModule pulls + verifies + mounts a single module and applies its
 // security policy. It deliberately does NOT start the module's units — that is
 // attachModuleServices, which every caller must invoke separately once the
@@ -2022,11 +1669,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// manifest fetch failure upstream kept it out of this loop entirely)
 	// must never be marked attempted — but one whose decision WAS reached
 	// here, even a REFUSAL, is a fresh, current-tick answer and must
-	// replace, not preserve, whatever was published before. Marked ONLY
-	// here (the real attach), never by wouldModuleSecurityPolicyRefuse's
-	// pre-check (K1, review round 6) — a pre-check that merely ASKED the
-	// question is not this pass's answer for SecurityFailClosedUnits(); the
-	// real attach loop's own call, moments later, is.
+	// replace, not preserve, whatever was published before.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, mf.UnitNames()...)
 
 	failedUnits, err := r.applyModuleSecurityPolicy(ctx, mod, mf)
@@ -2109,28 +1752,6 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// breadcrumb never named, and exactly the signal buildHeartbeat needs
 	// for one that was.
 	r.recordSecurityFailClosedRecovered(mf.UnitNames())
-
-	// L1 (review round 7, CRITICAL): record the EXACT manifest content this
-	// successful attach used, keyed by (moduleID, digest) — see
-	// manifest.SaveAttachedSnapshot's own doc for why the plain per-ID
-	// manifest cache cannot serve this purpose (it is overwritten by any
-	// later fetch regardless of that fetch's own attach outcome). Best-effort
-	// and non-fatal: a write failure here degrades a FUTURE rollback attempt
-	// for this exact digest, not this attach, which already fully succeeded.
-	//
-	// Guarded on a non-empty ManifestRoot: NewReconciler defaults it to
-	// manifest.DefaultRoot, but many tests build a *Reconciler literal
-	// directly (bypassing that default) specifically because they don't care
-	// where the manifest cache lives — an empty root would otherwise make
-	// this a RELATIVE path write (filepath.Join("", ...)), landing under
-	// whatever the test binary's CWD happens to be instead of a discarded
-	// t.TempDir(), the same class of hazard TestMain's applyIdentity/
-	// applySudoers no-op defaults exist to prevent (review finding N5).
-	if r.cfg.ManifestRoot != "" {
-		if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, mf); err != nil {
-			r.cfg.OnError("reconciler:attached_snapshot_write_failed", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, err))
-		}
-	}
 
 	return nil
 }
@@ -2632,30 +2253,23 @@ func (r *Reconciler) captureOutgoingPaths(toDetach, toAttach mount.ModuleStack, 
 
 // detachModule stops the module's units and unmounts it.
 func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod mount.Module, manifests map[string]*manifest.Manifest) error {
-	// L6(b) (review round 7, LOW): resolve the manifest THIS EXACT DIGEST
-	// (mod.Digest) was attached with — L1's digest-keyed attached-snapshot
-	// store — rather than the fresh per-ID `manifests` map. For an ordinary
-	// removal that map is fine (mod.ID is leaving entirely, no fresher
-	// manifest exists to disagree with it), but for a VERSION BUMP's old
-	// digest it is actively wrong: `manifests[mod.ID]` holds THIS TICK'S
-	// manifest for the NEW digest, not the one mod.Digest was actually
-	// running under. A service renamed between the two (old
-	// "worker-v1" -> new "worker-v2") made DetachServices stop a unit that
-	// was never started (the new name) while the OLD digest's real,
-	// running unit (the old name) was never named at all — a permanent
-	// leak, since nothing else ever revisits an already-"detached" module.
-	mf, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest)
-	if err != nil || mf == nil {
-		// Fallback chain unchanged from every round before L1 existed: the
-		// fresh per-tick map, then the mutable per-ID disk cache. Reachable
-		// only for a digest attached by a pre-L1 agent build, or one whose
-		// snapshot write itself failed — a real (if narrowing) degradation,
-		// not a new one this fix introduces.
-		var ok bool
-		mf, ok = manifests[mod.ID]
-		if !ok {
-			mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
-		}
+	// Look up the manifest for unit names — it may already be on disk
+	// even though the platform no longer assigns the module.
+	//
+	// NOTE (round 9): round 7 (L6b) found that this is actively wrong for a
+	// version bump's OLD digest specifically — `manifests[mod.ID]` holds
+	// THIS TICK'S manifest for the NEW digest, not the one mod.Digest was
+	// actually running under, so a renamed service's old unit was never
+	// stopped. That fix (a digest-keyed attached-snapshot lookup) is
+	// removed here as part of the round-9 in-place-upgrade redesign:
+	// detachModule now only ever runs for a genuine REMOVAL (no same-ID
+	// successor), where this ambiguity cannot arise. The upgrade path
+	// (which replaces detach-then-attach for a bump) resolves old unit
+	// names from its own persisted Units list instead of going through
+	// detachModule at all.
+	mf, ok := manifests[mod.ID]
+	if !ok {
+		mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
 	}
 	// P8.1 — Service detach via lifecycle.DetachServices: reverse
 	// topological stop + unit-file removal + daemon-reload. Content-only
@@ -3024,16 +2638,6 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	r.attachModuleServices(ctx, mod, mf)
 
 	current.AttachedModules = append(current.AttachedModules, mod)
-	// L2 part 1: the operator-forced retry path — a manual `attach` that
-	// succeeds is exactly "an operator clears it" (filterUnsafeVersionBumpDetaches's
-	// own diagnostic names this as the way past an indefinitely-deferred
-	// digest). AttachOne never goes through that guard at all (it is a
-	// direct single-module attach, not a detach-then-attach reconcile pass),
-	// so this succeeding says nothing about whether the guard would ALSO
-	// have let it through — it is the operator's explicit override, and
-	// clearing here is what makes the NEXT automatic reconcile tick stop
-	// deferring a digest that just proved it can attach.
-	delete(current.FailedVersionBumps, moduleID)
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		return "", fmt.Errorf("save state: %w", err)
 	}

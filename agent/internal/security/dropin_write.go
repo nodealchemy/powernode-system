@@ -18,24 +18,20 @@ import (
 //
 // L3 part (c) (review round 7, HIGH): skips the write ENTIRELY when the
 // on-disk file already holds byte-identical content. This is not merely an
-// optimization — it is what makes a version-bump ROLLBACK
-// (rollbackVersionBumpDetach, runtime/reconcile.go) succeed on a genuinely
-// full disk: rollback re-attaches the OLD digest, which re-renders the
-// SAME content that is already sitting at dropInPath. Before this, that
-// re-render still went through the full tmp-write-then-rename path — which
-// needs to allocate new blocks for the tmp file even though the content
-// never changes — so a disk-full condition that caused the ORIGINAL
-// (new-digest) attach to fail would ALSO fail the rollback's own re-write
-// of unchanged old content, defeating the very thing rollback exists to
-// guarantee. Skipping the write when nothing would change needs no new
-// blocks at all, so the rollback path succeeds precisely when the old
-// files are — as review round 7 put it — "intact": already on disk, in the
-// state a no-op write would have left them in anyway.
+// optimization — it is what makes the round-9 in-place-upgrade's own
+// partial-failure recovery succeed on a genuinely full disk: on a failure
+// after the new digest's policy has already been applied, upgradeModule
+// re-applies the OLD digest's policy to restore the still-running old
+// process's on-disk confinement — best-effort, and it must never itself
+// fail for lack of disk space when the content it is "writing" is already
+// exactly what's there. Before this property existed (round 7), a fresh
+// tmp-write-then-rename needed to allocate new blocks for the tmp file
+// even when the content never changes, so a disk-full condition could
+// defeat exactly the re-apply this exists to guarantee. Skipping the write
+// when nothing would change needs no new blocks at all.
 //
 // L3 part (b) (review round 7, HIGH): the FIXED ".tmp" staging name this
-// function still uses (unlike ProbeDropInWritable's uniquely-generated
-// probe name — see that function's own doc for why the two must never
-// share a name) is Lstat-checked here as the SAME failure mode the final
+// function uses is Lstat-checked here for the SAME failure mode the final
 // target already gets: if something non-regular already occupies the tmp
 // path (most commonly a stray directory, review's own repro shape), the
 // write is refused up front with a clear diagnosis instead of failing

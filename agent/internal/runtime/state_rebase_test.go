@@ -1042,17 +1042,14 @@ func TestSelfHostFence_UnchangedByRebase(t *testing.T) {
 			}
 		})
 	}
-	t.Run("version bump passes", func(t *testing.T) {
-		m := rebaseModule{id: "leaving", digest: "sha256:1eave", services: true, unitFile: true, mounted: true}
-		h := newRebaseHarness(t, []rebaseModule{m}, rebaseOpts{selfHosted: true})
-		out := h.r.filterUnsafeDetaches(
-			mount.ModuleStack{{ID: "leaving", Digest: "sha256:1eave"}},
-			mount.ModuleStack{{ID: "leaving", Digest: "sha256:ne4"}},
-			map[string]*manifest.Manifest{})
-		if len(out) != 1 {
-			t.Errorf("a version bump was refused: %v", *h.signals)
-		}
-	})
+	// NOTE (round 9): the "version bump passes" subtest that used to live
+	// here called filterUnsafeDetaches directly with a same-ID old/new pair
+	// to prove the self-host fence let a bump through. As of the round-9
+	// in-place-upgrade redesign, RunOnce itself partitions a bump's
+	// old/new pair OUT of toDetach/toAttach before either ever reaches
+	// filterUnsafeDetaches (see that function's own updated doc) — the
+	// invariant this subtest pinned now belongs at the partition, not
+	// here, and is covered there instead.
 }
 
 // defaultRebaseKey is the key of the breadcrumb every fixture writes unless it

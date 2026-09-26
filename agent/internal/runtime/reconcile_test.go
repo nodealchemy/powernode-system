@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -38,6 +40,41 @@ var (
 	osMkdirAll  = os.MkdirAll
 	osWriteFile = os.WriteFile
 )
+
+// versionBumpFixture is a stubModulesClient response body for a single
+// module "m1" at the given digest — relocated here (round 9) from the
+// now-deleted detach-before-attach test files so the surviving
+// security_fail_closed_* fixtures that still use it keep working
+// unchanged.
+func versionBumpFixture(digest string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"services": [
+				{"name":"app", "start_command":"/bin/true", "restart_policy":"always"}
+			]
+		}
+	}`, digest)
+}
+
+// backdateManifestCache pushes the on-disk manifest cache's mtime into the
+// past so NewReconciler's default ManifestTTL treats it as stale on the
+// next pass, WITHOUT deleting the file — relocated here (round 9) from the
+// now-deleted version-bump rollback test file. Still needed by the
+// security_fail_closed_partial_view fixtures, which rely on a STALE (not
+// absent) cache entry to exercise the partial-view fallback path.
+func backdateManifestCache(t *testing.T, manifestRoot, moduleID string) {
+	t.Helper()
+	path := filepath.Join(manifestRoot, moduleID, "manifest.json")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("backdateManifestCache: %v", err)
+	}
+}
 
 // stubModulesClient implements ModulesClient + manifest.Client. Returns
 // canned responses based on the request path.

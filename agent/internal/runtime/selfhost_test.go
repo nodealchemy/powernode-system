@@ -171,18 +171,13 @@ func TestFilterDetaches_EmptyInputIsANoop(t *testing.T) {
 	}
 }
 
-// The guard must not block upgrades. A version bump puts the OLD digest in
-// toDetach and the NEW one in toAttach; refusing that detach would leave two
-// versions of the same module attached simultaneously and would stop
-// ops-hub — the node that most needs fixes — from ever receiving one.
-func TestFilterDetaches_VersionBumpIsNotTreatedAsRemoval(t *testing.T) {
-	r := detachFixture(t, true)
-	oldRails := mount.Module{ID: "rails", Digest: "sha256:old"}
-	newRails := mount.Module{ID: "rails", Digest: "sha256:new"}
-
-	kept := r.filterUnsafeDetaches(mount.ModuleStack{oldRails}, mount.ModuleStack{newRails}, fixtureMfs)
-
-	if len(kept) != 1 || kept[0].Digest != "sha256:old" {
-		t.Errorf("a service-bearing module WITH a successor must still detach, got %v", kept)
-	}
-}
+// NOTE (round 9): TestFilterDetaches_VersionBumpIsNotTreatedAsRemoval used
+// to live here, proving filterUnsafeDetaches let a same-ID old/new pair
+// through unconditionally so an upgrade could never be misread as a
+// removal on a self-hosted node. As of the round-9 in-place-upgrade
+// redesign, RunOnce itself partitions a version bump's old/new pair OUT of
+// toDetach/toAttach before either ever reaches filterUnsafeDetaches (see
+// that function's own updated doc) — every module it sees in toDetach is
+// now a genuine removal, so the question this test asked no longer
+// applies to it. The underlying invariant (a bump is never treated as a
+// removal) is covered at the partition itself instead.
