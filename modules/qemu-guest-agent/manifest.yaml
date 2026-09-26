@@ -54,7 +54,9 @@ reboot_required: false
 
 # qga runs as root by design — the PVE convention is that the
 # hypervisor can `qm guest exec` against the agent, which requires
-# root privileges inside the guest. No platform user allocation.
+# root privileges inside the guest. No platform user allocation. See
+# security.privileged below for why that is expressed as `privileged: true`
+# rather than a fixed capabilities list.
 
 services:
   - name: qga
@@ -93,9 +95,42 @@ dependencies:
     - hypervisor.guest-agent.qemu
 
 security:
+  # privileged: true — DECIDED (operator, IMP-caef5c00d63f phase 2), not a
+  # placeholder. qga's job is hypervisor-ISSUED, ARBITRARY root exec inside
+  # the guest (`qm guest exec`) — the target command, its working directory,
+  # and any files it touches are chosen by the caller on the PVE side at
+  # call time, not by anything fixed in this manifest or in qga's own
+  # source. That is structurally different from every other module this
+  # phase audited (postgres/redis/vault/hub-backend/hub-worker): each of
+  # those runs a FIXED, read-in-full startup script whose capability need
+  # could be established once, line by line, and expressed as a finite
+  # list. qga has no such script to read — "whatever the hypervisor asks
+  # for" is not a finite capability list, and a plausible-looking finite
+  # list here would silently refuse guest-exec calls the operator issues
+  # later, which is worse than no restriction at all for the one channel
+  # this module exists to provide.
+  #
+  # On ops-hub specifically qga is also the documented root-level recovery
+  # channel for the self-hosted control plane when the platform itself is
+  # down (see docs/operations — `qm guest exec` reaches the guest when
+  # SSH/the platform cannot). Under-provisioning this module's capabilities
+  # risks disabling that channel, which is a worse failure mode than the
+  # unconfined-root posture privileged: true already accepts for it.
+  #
+  # This is the SAME documented contingency module-forge (CAP_SYS_ADMIN/
+  # CAP_SYS_CHROOT/CAP_MKNOD's own header) and gitea-act-runner already use
+  # for "this unit's job cannot be expressed as a fixed capability list,
+  # flip privileged: true instead of guessing one" — same rationale, same
+  # remedy, applied here because a per-service capability resolver
+  # (IMP-caef5c00d63f) now RESETS CapabilityBoundingSet on every boot path
+  # (previously the pivot-compose path only granted ambient capabilities
+  # and left root's full bounding set alone, so this manifest's blanket
+  # `capabilities: []` was inert there). Once that reset applies uniformly,
+  # an unaudited `[]` on a root-running, hypervisor-exec service would zero
+  # its bounding set on next reboot — confirmed by survey, not guessed.
   capabilities: []
   egress_allow: []
-  privileged: false
+  privileged: true
   user_namespace: true
 
 build:

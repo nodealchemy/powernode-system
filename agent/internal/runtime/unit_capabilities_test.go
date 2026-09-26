@@ -397,6 +397,53 @@ func TestAttachModule_WritesEachUnitsResolvedCapabilityDropIn(t *testing.T) {
 	}
 }
 
+// PRIVILEGED MODULES OPT OUT ENTIRELY (operator decision, IMP-caef5c00d63f
+// phase 2 follow-up — qemu-guest-agent flipped to privileged: true because its
+// hypervisor-issued, arbitrary-exec job cannot be expressed as a fixed
+// capability list). Confirms neither path writes ANY capabilities.conf for a
+// privileged module's unit — not an empty/strictest one, none at all — so a
+// privileged module genuinely keeps systemd's full default bounding set on
+// BOTH the reconcile and the pivot-compose path, exactly like it did before
+// IMP-caef5c00d63f phase 2 ever touched non-privileged units.
+func TestPrivilegedModule_GetsNoCapabilityDropInOnEitherPath(t *testing.T) {
+	mod, mf := privModule("qga")
+
+	t.Run("attach", func(t *testing.T) {
+		dropIns := t.TempDir()
+		t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+		layout := mount.DefaultLayout()
+		layout.Root = t.TempDir()
+		layout = layout.Resolve()
+		r := &Reconciler{cfg: ReconcilerConfig{
+			Puller:      &stubPuller{cacheDir: layout.ModulesCacheRoot},
+			Verifier:    verify.AlwaysOK{},
+			MountRunner: &mount.RecorderRunner{},
+			Layout:      layout,
+			OnError:     func(string, error) {},
+		}}
+		r.privilegedAllow = []string{mf.ID} // operator-approved: attachModule enforces this allowlist unconditionally
+		if err := r.attachModule(context.Background(), mod, mf); err != nil {
+			t.Fatalf("attachModule: %v", err)
+		}
+		unit := lifecycle.UnitName(mf.ID, "app")
+		if _, err := os.Stat(filepath.Join(dropIns, unit+".d", "capabilities.conf")); !os.IsNotExist(err) {
+			t.Errorf("privileged module must get NO capabilities.conf on the attach path; stat err=%v", err)
+		}
+	})
+
+	t.Run("compose", func(t *testing.T) {
+		sysroot := t.TempDir()
+		r := newPivotReconciler(&mount.RecorderRunner{})
+		stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+		r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+		unit := lifecycle.UnitName(mf.ID, "app")
+		path := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d", "capabilities.conf")
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("privileged module must get NO capabilities.conf on the compose path; stat err=%v", err)
+		}
+	})
+}
+
 // UPGRADE SAFETY (review finding P3). A manifest cache or boot-LKG snapshot
 // written by the PREVIOUS agent re-marshalled Service.Capabilities as an
 // omitempty []string, so a declared [] is simply gone from those bytes, and
