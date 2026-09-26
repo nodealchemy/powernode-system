@@ -25,8 +25,12 @@ module System
   # reported pending, reset to "now" the moment the pending digest CHANGES
   # (a revert, or a re-target to a third digest — see N2), and DROPPED the
   # moment a module stops being reported pending at all (resolved, one way
-  # or another). PendingDigestStuckSensor reads first_seen_at to decide
-  # whether a module has been stuck long enough to alert on.
+  # or another). A SECOND clock, first_pending_at (N4 addendum, review round
+  # 12), tracks the same "still pending" fact WITHOUT resetting on a mere
+  # digest change — see merge's own doc for why first_seen_at alone cannot
+  # answer "has this module been stuck through a d2->d3->d2 bounce".
+  # PendingDigestStuckSensor reads first_pending_at to decide whether a
+  # module has been stuck long enough to alert on.
   #
   # ACCEPTED SIMPLIFICATION: the merge base is `instance.config` as loaded
   # at the top of this request, not a fresh read at write time. Heartbeats
@@ -97,18 +101,42 @@ module System
       # is UNCHANGED from the previous document; stamps "now" for a module
       # id that is new, or whose reported digest CHANGED (a revert or a
       # re-target — N2 — starts the clock over, since it is a different
-      # stuck-ness question). A module id the fresh report no longer names
-      # is dropped entirely — resolved, not stuck.
+      # per-DIGEST stuck-ness question). A module id the fresh report no
+      # longer names is dropped entirely — resolved, not stuck.
+      #
+      # first_pending_at (N4 addendum, review round 12): a SEPARATE clock
+      # that answers a different question — "how long has this module id
+      # been continuously mid-upgrade, at ANY digest" — and so does NOT
+      # reset on a mere digest change, only when the module id itself was
+      # not previously pending at all. Without this, a module re-targeting
+      # d2 -> d3 -> d2 (never resolving, never staying still long enough
+      # for first_seen_at's own per-digest clock to cross the threshold)
+      # never alerts at all: every re-target looks like a brand-new,
+      # freshly-not-stuck episode. PendingDigestStuckSensor alerts on THIS
+      # field. Falls back to a prior first_seen_at (not "now") when absent
+      # — a document written by a pre-round-12 agent-server pair carries no
+      # first_pending_at yet; treating that as "just started" would
+      # silently reset an ALREADY-stuck module's clock the first time this
+      # runs post-deploy, exactly the failure mode this field exists to
+      # avoid.
       def merge(reported, previous)
         now = Time.current.utc.iso8601
         reported.each_with_object({}) do |(module_id, digest), out|
           prior = previous[module_id]
-          first_seen = if prior.is_a?(Hash) && prior["digest"] == digest
-            prior["first_seen_at"].presence || now
+          prior_hash = prior if prior.is_a?(Hash)
+
+          first_seen = if prior_hash && prior_hash["digest"] == digest
+            prior_hash["first_seen_at"].presence || now
           else
             now
           end
-          out[module_id] = { "digest" => digest, "first_seen_at" => first_seen }
+          first_pending = if prior_hash
+            prior_hash["first_pending_at"].presence || prior_hash["first_seen_at"].presence || now
+          else
+            now
+          end
+
+          out[module_id] = { "digest" => digest, "first_seen_at" => first_seen, "first_pending_at" => first_pending }
         end
       end
 

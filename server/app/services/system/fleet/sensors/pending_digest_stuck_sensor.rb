@@ -27,12 +27,13 @@ module System
         # a different sensor's alarm.
         DEFAULT_LIVE_HEARTBEAT_SECONDS = 600 # 10 minutes
 
-        # How long a module may hold the SAME pending digest (per
-        # PendingModuleDigestsWriter's own first_seen_at, reset on a revert
-        # or re-target) before this alerts. Comfortably past N2's own backoff
-        # ceiling (10s, 20s, 40s... capped at 5 minutes) — several backed-off
-        # retries are expected and not yet alarming; this fires only once the
-        # agent's own automatic recovery has plainly not resolved it.
+        # How long a module may stay continuously pending — at ANY digest,
+        # per PendingModuleDigestsWriter's own first_pending_at (N4 addendum,
+        # review round 12), which does NOT reset on a revert or re-target —
+        # before this alerts. Comfortably past N2's own backoff ceiling (10s,
+        # 20s, 40s... capped at 5 minutes) — several backed-off retries are
+        # expected and not yet alarming; this fires only once the agent's own
+        # automatic recovery has plainly not resolved it.
         DEFAULT_STUCK_AFTER_SECONDS = 900 # 15 minutes
 
         MAX_NAMED_INSTANCES  = 20
@@ -67,10 +68,19 @@ module System
         end
 
         # { module_id => { "digest" => ..., "first_seen_at" => ... } } for
-        # every module whose first_seen_at is at or before the cutoff. A
-        # missing/unparseable first_seen_at is NOT treated as stuck — an
-        # unmeasured duration is not evidence of one past the threshold,
-        # the same declining-over-guessing stance the agent side takes.
+        # every module whose first_pending_at is at or before the cutoff.
+        # first_pending_at (N4 addendum, review round 12) is read in
+        # preference to first_seen_at specifically because it survives a
+        # digest re-target — a module bouncing d2->d3->d2 without ever
+        # committing or reverting must still alert, which first_seen_at
+        # alone cannot do (it resets on every digest change). Falls back to
+        # first_seen_at for a document a pre-round-12 writer produced (no
+        # first_pending_at key at all yet) or a spec seeding the raw shape
+        # directly — for a module that has never been re-targeted the two
+        # are identical anyway. A missing/unparseable value on BOTH is NOT
+        # treated as stuck — an unmeasured duration is not evidence of one
+        # past the threshold, the same declining-over-guessing stance the
+        # agent side takes.
         def stuck_modules(instance)
           document = instance.config.is_a?(Hash) ? instance.config[::System::PendingModuleDigestsWriter::CONFIG_KEY] : nil
           modules = document.is_a?(Hash) ? document["modules"] : nil
@@ -80,8 +90,8 @@ module System
           modules.select do |_module_id, entry|
             next false unless entry.is_a?(Hash)
 
-            first_seen = parse_time(entry["first_seen_at"])
-            !first_seen.nil? && first_seen <= cutoff
+            first_pending = parse_time(entry["first_pending_at"] || entry["first_seen_at"])
+            !first_pending.nil? && first_pending <= cutoff
           end
         end
 
@@ -123,7 +133,7 @@ module System
               "agent_version"     => instance.agent_version,
               "last_heartbeat_at" => instance.last_heartbeat_at&.utc&.iso8601,
               "modules"           => entry[:modules].transform_values do |v|
-                { "digest" => v["digest"], "first_seen_at" => v["first_seen_at"] }
+                { "digest" => v["digest"], "first_seen_at" => v["first_seen_at"], "first_pending_at" => v["first_pending_at"] }
               end
             }
           end

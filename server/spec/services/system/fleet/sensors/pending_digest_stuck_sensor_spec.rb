@@ -133,13 +133,28 @@ RSpec.describe System::Fleet::Sensors::PendingDigestStuckSensor do
       expect(sense.call).to eq([])
     end
 
-    it "resets first_seen_at when the pending digest CHANGES (a revert or re-target, N2)" do
+    it "resets first_seen_at (the per-digest clock) when the pending digest CHANGES, but does NOT clear the alarm — first_pending_at (N4 addendum, round 12) survives the re-target" do
       changed = instance!
       record!(changed, "m1" => { "digest" => "d2", "first_seen_at" => 20.minutes.ago.utc.iso8601 })
 
-      # Reverted to d1 — a DIFFERENT digest than what was pending; must not
-      # inherit d2's stale first_seen_at.
+      # Reverted to d1 — a DIFFERENT digest than what was pending. Before
+      # the round-12 addendum, this reset the ENTIRE stuck clock
+      # (first_seen_at was the only one), so a module bouncing
+      # d2 -> d3 -> d2 forever without ever committing or reverting would
+      # never alert — every re-target looked like a brand-new, freshly-not-
+      # stuck episode. first_pending_at tracks "continuously pending at ANY
+      # digest" instead and must survive the re-target; the sensor alerts
+      # on THAT field now.
       System::PendingModuleDigestsWriter.write!(instance: changed, payload: { "pending_module_digests" => { "m1" => "d1" } })
+
+      expect(signal).not_to be_nil
+      expect(signal.dig(:payload, "instances", 0, "modules", "m1", "digest")).to eq("d1")
+    end
+
+    it "does NOT alarm when a re-target is ALSO a genuinely fresh episode (module not previously pending)" do
+      fresh = instance!
+
+      System::PendingModuleDigestsWriter.write!(instance: fresh, payload: { "pending_module_digests" => { "m1" => "d1" } })
 
       expect(signals).to eq([])
     end
