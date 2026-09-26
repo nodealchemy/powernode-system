@@ -1167,9 +1167,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				if !ok {
 					continue
 				}
-				refused := false
-				if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
-					refused = true
+				// Q3 (review round 14, LOW): a target ALREADY recorded as
+				// genuinely refused at steps 1-3 on a prior tick
+				// (PendingDigestActuallyRefused) stays refused without
+				// re-running the prediction — the prediction is pure (no
+				// I/O) and therefore blind to exactly the failure modes that
+				// set this flag (an effectful drop-in write error, an
+				// artifact pull failure, a hot-reconcile refusal); without
+				// this, such a target's policy PREDICTION could keep saying
+				// "would succeed" every tick while the REAL attempt keeps
+				// genuinely failing for an unrelated reason, rendering
+				// old∪new forever instead of old-only.
+				refused := b.old.PendingDigestActuallyRefused
+				if !refused {
+					if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
+						refused = true
+					}
 				}
 				// N3 (review round 11): the digest-keyed attached snapshot is
 				// the AUTHORITATIVE old side — unlike previousManifests

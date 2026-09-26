@@ -3976,6 +3976,79 @@ func TestReconcile_RefusedRetargetStillUnionsAnEarlierTouchedDigestsIdentity(t *
 	}
 }
 
+// TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick is Q3
+// (review round 14, LOW): decideModuleSecurityPolicy's own PREDICTION
+// (P3/Q1) is pure — no I/O — so it is blind to an EFFECTFUL refusal: an
+// artifact pull failure (step 1), an actual drop-in write error (step 2),
+// or a hot-reconcile materialization refusal (step 3). A target the
+// prediction says would succeed, but whose real attempt keeps genuinely
+// failing at step 1 for an unrelated reason (here: a stubbed pull failure,
+// unprivileged so the prediction itself always passes), rendered old∪new
+// every tick forever. d2's own sudoers grant may still render on the FIRST
+// tick (nothing has recorded the refusal yet at the START of that tick's own
+// render), but from the SECOND tick on — once PendingDigestActuallyRefused
+// is set by the first tick's own real failure — the render must go old-only.
+func TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, no sudoers): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixturePrivilegedWithSudoer("d2", false, "d2-only-grant")
+	backdateManifestCache(t, manifestRoot, "m1")
+	r.cfg.Puller = &failingPuller{PullerAPI: r.cfg.Puller, failDigest: "d2"}
+
+	var renderedGrantIDs []string
+	origSudoers := applySudoers
+	applySudoers = func(grants []etcsudoers.Grant) error {
+		renderedGrantIDs = nil // this tick's own render only
+		for _, g := range grants {
+			renderedGrantIDs = append(renderedGrantIDs, g.Grant.ID)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applySudoers = origSudoers })
+
+	grantRendered := func() bool {
+		for _, id := range renderedGrantIDs {
+			if id == "d2-only-grant" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Tick 2 (first attempt): nothing has recorded a refusal yet at the
+	// START of this tick, so the (passing) prediction alone governs — the
+	// union renders, same as any ordinary in-flight bump.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (d2's first step-1 refusal): %v", err)
+	}
+	if !grantRendered() {
+		t.Fatalf("precondition: expected d2-only-grant to render on tick 2 (nothing recorded yet), got %v", renderedGrantIDs)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after tick 2, got %q ok=%v", pd, ok)
+	}
+
+	// Ticks 3-4: the SAME step-1 failure persists. The prediction alone
+	// would keep saying "fine" every tick (unprivileged, no policy issue at
+	// all) — PendingDigestActuallyRefused (recorded by tick 2's own real
+	// failure) is what must now suppress the grant.
+	for tick := 3; tick <= 4; tick++ {
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce tick %d (step 1 still refusing): %v", tick, err)
+		}
+		if grantRendered() {
+			t.Errorf("Q3 REGRESSION: tick %d rendered d2-only-grant even though step 1 has been genuinely, persistently refusing it — the pure prediction cannot see an effectful pull failure, and PendingDigestActuallyRefused must suppress the union once recorded: %v", tick, renderedGrantIDs)
+		}
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("precondition drifted: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop is P4's own test
 // (review round 13, MEDIUM): a departing unit N8's own undo could not
 // restart, even after its in-attempt retry (O6, review round 12) — a

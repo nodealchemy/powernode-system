@@ -98,6 +98,12 @@ func (r *Reconciler) recordPendingDigestAttempt(current *mount.State, moduleID s
 		if m.ID == moduleID {
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+			// Q3 (review round 14, LOW): ALSO record that steps 1-3 genuinely
+			// refused this target — see PendingDigestActuallyRefused's own
+			// doc. Every call site of this function IS one of steps 1-3's
+			// own refusal points, so this belongs here rather than
+			// duplicated at each call site.
+			current.AttachedModules[i].PendingDigestActuallyRefused = true
 			break
 		}
 	}
@@ -371,6 +377,10 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 				current.AttachedModules[i].PendingDigest = newMod.Digest
 				current.AttachedModules[i].PendingDigestAttempts = 0
 				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
+				// Q3 (review round 14): a fresh target's own steps 1-3 have
+				// not run yet — any refusal recorded belonged to whatever
+				// was PREVIOUSLY pending, not this one.
+				current.AttachedModules[i].PendingDigestActuallyRefused = false
 				break
 			}
 		}
@@ -499,6 +509,10 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 			current.AttachedModules[i].PendingDigestUnitsTouched = true
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+			// Q3 (review round 14): this target just reached step 4 — it is
+			// touched now, not merely "refused"; PendingTouchedDigests/
+			// PendingIntroducedUnits take over the render from here.
+			current.AttachedModules[i].PendingDigestActuallyRefused = false
 			current.AttachedModules[i].PendingIntroducedUnits = unionStrings(current.AttachedModules[i].PendingIntroducedUnits, newlyIntroduced)
 			// Q1 (review round 14, MEDIUM): accumulate THIS target's own
 			// digest into PendingTouchedDigests — see that field's own doc.

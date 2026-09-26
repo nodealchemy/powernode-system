@@ -283,6 +283,23 @@ type Module struct {
 	// same reasoning: a commit or a revert is what actually resolves the
 	// whole episode, not a mere re-target.
 	PendingTouchedDigests []string `json:"PendingTouchedDigests,omitempty"`
+	// PendingDigestActuallyRefused (Q3, review round 14) records that steps
+	// 1-3 (artifact pull/mount, security policy, hot-reconcile
+	// materialization) genuinely refused the CURRENT PendingDigest on a
+	// PRIOR tick — as opposed to reconcile.go's own decideModuleSecurityPolicy
+	// PREDICTION (P3/Q1), which is pure (no I/O) and therefore blind to an
+	// effectful failure: a real drop-in WRITE error, an artifact pull
+	// failure, or a hot-reconcile materialization refusal. Without this, a
+	// target the prediction says would succeed but which keeps genuinely
+	// failing for one of those reasons rendered old∪new every tick forever
+	// — the same "refused content stays unioned in" bug P3/Q1 fix for a
+	// PREDICTED refusal, just via a failure mode the prediction cannot see.
+	// Set at each of steps 1-3's own refusal points (recordPendingDigestAttempt,
+	// its own sibling signal). Reset false on a fresh re-target and once
+	// step 4 is actually reached (this target is no longer merely
+	// "refused", it is touched — PendingTouchedDigests/PendingIntroducedUnits
+	// take over from there).
+	PendingDigestActuallyRefused bool `json:"PendingDigestActuallyRefused,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result
