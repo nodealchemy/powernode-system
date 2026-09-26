@@ -2932,3 +2932,60 @@ func TestUpgradeModule_RevertActuallyRestartsAnActiveUnit(t *testing.T) {
 		t.Errorf("O9 REGRESSION (forceRestartActive=false): the revert must RESTART an active unit left over from the failed attempt, got: %v", tick3)
 	}
 }
+
+// TestUpgradeModule_SettleCheckRejectsOnFailureUnitReportingSuccess is O5's
+// own hardening test (review round 12, Review B's DO-NOT-SHIP blocker):
+// TestUpgradeModule_SettleCheckRejectsPersistentUnitReportingSuccess only
+// ever exercised restart_policy:"always". restart_policy:"on-failure" — the
+// manifest DEFAULT (lifecycle.restartDirective maps both "on-failure" and
+// an OMITTED restart_policy to systemd's Restart=on-failure) — is a
+// DIFFERENT, and more common, shape: systemd does NOT restart an
+// on-failure unit that exits 0, so a broken new binary that starts and
+// immediately exits cleanly just stays dead, forever, with Result=success
+// and no restart loop at all — no crash-loop signature to notice by eye,
+// unlike the "always" case. unitSettled's runsOnce gate (true only for
+// restart_policy:"never") must refuse this exactly like the "always" case:
+// runsOnceByUnit keys ONLY off "never", so "on-failure" and "always" are
+// already handled identically by construction — this test exists to prove
+// that with a fixture no future refactor can quietly special-case around.
+func TestUpgradeModule_SettleCheckRejectsOnFailureUnitReportingSuccess(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	onFailureService := `{"name":"app", "start_command":"/bin/true", "restart_policy":"on-failure"}`
+	unit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, onFailureService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, onFailureService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// app is active going in; the new binary starts and immediately exits
+	// cleanly — Result=success, no ConditionResult opinion, exactly what a
+	// broken-but-not-crashing on-failure unit reports. systemd's own
+	// Restart=on-failure semantics mean this unit will NEVER restart on its
+	// own from here — it just stays dead.
+	appIsActiveKey := "systemctl is-active " + unit
+	runner.StubOutput = map[string][]byte{
+		appIsActiveKey: []byte("active\n"),
+		"systemctl show " + unit + " --property=Result --value": []byte("success\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("O5 REGRESSION (Review B blocker): an on-failure unit reporting Result=success while inactive must NOT settle — a broken binary that exits 0 once and never restarts stays dead forever with no alert otherwise. Expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("expected PendingDigest=d2 to remain set (visible, not silently dropped) after the refusal, got %q ok=%v", pd, ok)
+	}
+}
