@@ -83,6 +83,13 @@ func versionBumpReconciler(t *testing.T, tmpRoot, statePath string, client *stub
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
 	}
+	// M6 (review round 9): NewReconciler defaults UpgradeSettleWindow to a
+	// real multi-second wait; every bump-exercising test in this package
+	// (and its shared fixtures, e.g. security_fail_closed_*) goes through
+	// this constructor, so a real wait here would slow the whole suite for
+	// no benefit — the settle CHECK itself still always runs regardless of
+	// this value (see UpgradeSettleWindow's own doc).
+	r.cfg.UpgradeSettleWindow = 0
 	return r
 }
 
@@ -599,6 +606,11 @@ func TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService(t *testing
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
 	}
+	// M6 (review round 9): no real settle wait in tests, and the settled
+	// unit must read `active` for the upgrade to actually commit — a bare
+	// RecorderRunner defaults every is-active query to "not active".
+	r.cfg.UpgradeSettleWindow = 0
+	runner.StubOutput = map[string][]byte{"systemctl is-active powernode-hub-rails.service": []byte("active\n")}
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -919,6 +931,10 @@ func TestReconcilerHotReconcileCopiesChangedModuleOnPivotNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
 	}
+	// M6 (review round 9): no real settle wait — this fixture's manifest
+	// declares no services, so the settle CHECK has nothing to iterate,
+	// but the WAIT itself still runs for whatever NewReconciler defaults to.
+	r.cfg.UpgradeSettleWindow = 0
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -996,6 +1012,9 @@ func TestReconcilerHotReconcileSkipsAndWarnsWhenRebootRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
 	}
+	// M6 (review round 9): no real settle wait — see the sibling test's own
+	// comment for why (empty services block, only the wait itself matters).
+	r.cfg.UpgradeSettleWindow = 0
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}

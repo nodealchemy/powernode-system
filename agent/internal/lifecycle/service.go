@@ -81,6 +81,29 @@ type AttachOptions struct {
 	// new body lands on disk and takes effect at the next recompose, which is
 	// the documented behaviour for composition changes anyway.
 	RestartChanged bool
+
+	// ForceRestartActive (round 9, M1): the in-place upgrade path's own mode,
+	// distinct from RestartChanged. A digest bump changes the module's
+	// MOUNTED CONTENT and its security drop-ins, neither of which is
+	// reflected in the rendered unit BODY at all (RenderUnitModeGraph takes
+	// no digest) — so an upgrade whose services: block is byte-identical
+	// across old and new (the common case: most bumps change application
+	// code, not the systemd unit shape) left RestartChanged's own
+	// !results[i].Skipped gate permanently false, and the unit was merely
+	// `start`-ed (a no-op on an already-active unit) instead of restarted.
+	// The result: the OLD binary kept running under a state.json that
+	// claimed the NEW digest had committed (M1, review round 9).
+	//
+	// When true: daemon-reload runs UNCONDITIONALLY (M5) — a body-unchanged
+	// unit can still have CHANGED drop-ins (step 2 writes those separately,
+	// before this ever runs), and restarting against a systemd manager that
+	// has not reloaded risks the restart picking up stale cached drop-in
+	// state. Every unit of the new manifest that is CURRENTLY ACTIVE is
+	// restarted regardless of whether its own body changed; an inactive one
+	// is started. This must be evaluated on EVERY upgrade attempt (M2) —
+	// never gated on whether THIS pass's own write changed anything, which
+	// is not a durable signal a retry can rely on.
+	ForceRestartActive bool
 }
 
 // AttachServices renders each unit in the cloud_init chroot mode
@@ -154,7 +177,13 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 		results = append(results, AttachResult{Unit: unitName, Skipped: !written})
 	}
 
-	if anyWritten {
+	// ForceRestartActive (M5, review round 9): daemon-reload runs
+	// UNCONDITIONALLY, not just when anyWritten — an upgrade's own step 2
+	// (security drop-ins) writes BEFORE this ever runs, and those writes are
+	// invisible to anyWritten (which only tracks THIS function's own unit
+	// BODY writes). A new binary must never restart against a systemd
+	// manager that has not reloaded the drop-ins step 2 just wrote.
+	if anyWritten || opts.ForceRestartActive {
 		if err := runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 			return results, fmt.Errorf("daemon-reload: %w", err)
 		}
@@ -208,8 +237,18 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 		// An is-active probe that ERRORS is treated as "not active": the
 		// fallback is the previous behaviour (a plain start), never an
 		// unasked-for restart of something whose state we could not read.
+		//
+		// ForceRestartActive (M1, review round 9) drops the `!results[i].
+		// Skipped` condition entirely: an upgrade's own drop-in changes
+		// (step 2, before this ever runs) are invisible to this function's
+		// Skipped tracking (which only sees THIS unit's BODY write), so
+		// gating the restart on body-changed left a digest bump with an
+		// unchanged services: block never restarting at all (M1's own
+		// finding). ForceRestartActive restarts every unit of the CURRENT
+		// (new) manifest that is active, regardless of whether its body
+		// happened to change on this pass.
 		verb := systemd.Start
-		if opts.RestartChanged && !results[i].Skipped {
+		if opts.ForceRestartActive || (opts.RestartChanged && !results[i].Skipped) {
 			if active, err := systemd.IsActive(ctx, runner, unitName); err == nil && active {
 				verb = systemd.Restart
 			}

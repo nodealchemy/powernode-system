@@ -9,6 +9,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 )
 
@@ -34,16 +35,23 @@ type moduleUpgrade struct {
 //     capability/seccomp/userns drop-ins for the NEW digest's policy.
 //  3. hotReconcileIfNeeded(new) — materialize the new digest's files onto
 //     the live root.
-//  4. attachModuleServicesOpts(new, restartChanged: true) — write-if-
-//     changed unit files, daemon-reload, restart-if-active.
-//     UNCONDITIONAL restartChanged (A2, review round 9): unlike an
-//     ordinary manifest-only reattach (attachModuleServices, which fences
-//     a restart on a self-hosted node — see that function's own doc), a
+//  4. attachModuleServicesOpts(new, forceRestartActive: true) — write-if-
+//     changed unit files, UNCONDITIONAL daemon-reload, and a FORCED
+//     restart of every unit of the new manifest that is currently active
+//     — regardless of whether its own rendered body happened to change
+//     this pass (M1, review round 9: a digest bump whose services: block
+//     is byte-identical to the old one — the common case, most bumps
+//     change application code, not the unit shape — was previously only
+//     `start`-ed, a no-op on an already-active unit, leaving the OLD
+//     binary running under a state.json that claimed the NEW digest had
+//     committed). Also (A2, review round 9) the ONLY call site that
+//     bypasses the self-host restart fence: unlike an ordinary
+//     manifest-only reattach (attachModuleServices, which fences a
+//     restart on a self-hosted node — see that function's own doc), a
 //     version bump genuinely needs the new binary running, and the
 //     detach-before-attach path this replaces ALSO restarted a
 //     self-hosted node's own rails/postgres via its own stop+start cycle.
-//     This is the ONLY call site that bypasses the self-host restart
-//     fence; every other caller of attachModuleServices is unchanged.
+//     Every other caller of attachModuleServices is unchanged.
 //
 // Steps 2-4 write onto unit names and paths SHARED with the old digest
 // (a bump never renames its own unit names by ID+service — only a
@@ -51,8 +59,9 @@ type moduleUpgrade struct {
 // process keeps running. A failure at step 3 or 4, after step 2 already
 // wrote the new digest's drop-ins, leaves the OLD process running under
 // the NEW digest's confinement files (A1, review round 9) —
-// reapplyOldPolicyBestEffort restores them; see its own doc for exactly
-// what is and is not guaranteed.
+// restoreDropInSnapshot restores them from a byte-exact snapshot taken
+// before step 2 (R3b); see its own doc for exactly what is and is not
+// guaranteed.
 //
 // Only once ALL FOUR steps succeed does anything IRREVERSIBLE happen:
 //
@@ -80,11 +89,42 @@ type moduleUpgrade struct {
 func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u moduleUpgrade, newMf, oldMf *manifest.Manifest, outgoingPaths map[string]bool, desiredForLayers mount.ModuleStack, stateWasEmpty bool) {
 	old, newMod := u.old, u.new
 
+	// M7 (review round 9): resolve the old digest's unit list up front, and
+	// if this entry predates round 9 (old.Units empty — an entry attached
+	// before mount.Module carried the field), PERSIST the resolved
+	// fallback onto the CURRENT state entry immediately, before step 1 even
+	// runs. Without this, a first attempt that fails leaves the SECOND
+	// attempt re-deriving the same fallback from oldMf all over again — and
+	// oldMf (previousManifests) is exactly the piece R3b's snapshot below
+	// no longer depends on for POLICY CONTENT, but the unit NAME list is a
+	// separate, smaller fact this still resolves from the manifest cache
+	// when Units is empty, so making it durable on the first attempt avoids
+	// re-rolling that same dice on every later one.
+	oldUnits := oldUnitNames(old, oldMf)
+	if len(old.Units) == 0 && len(oldUnits) > 0 {
+		old.Units = oldUnits
+		for i, m := range current.AttachedModules {
+			if m.ID == old.ID {
+				current.AttachedModules[i].Units = oldUnits
+				break
+			}
+		}
+	}
+
 	// Step 1: pull/verify/mount the new digest's artifact.
 	if err := r.mountModuleArtifact(ctx, newMod); err != nil {
 		r.noteUnconverged("reconciler:upgrade_artifact", newMod.ID, fmt.Errorf("module %s: %w", newMod.ID, err))
 		return // nothing written yet — old fully untouched.
 	}
+
+	// R3b (review round 9): snapshot the ACTUAL on-disk bytes of every
+	// drop-in file this attempt could touch — old's own units union the new
+	// manifest's units (a renamed service's new-only unit correctly has no
+	// snapshot entry with existed=true: it never existed before this
+	// attempt, so "restoring" it means removing it) — taken fresh THIS
+	// attempt, before step 2 writes anything. See restoreDropInSnapshot's
+	// own doc for why this replaces the old manifest-re-render approach.
+	dropInSnap := snapshotUnitDropIns(unionStrings(oldUnits, newMf.UnitNames()))
 
 	// Step 2: apply the NEW digest's security policy for real.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, newMf.UnitNames()...)
@@ -104,8 +144,8 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// applyModuleSecurityDropIns tries EVERY unit even after one
 		// fails, so some of the new digest's drop-ins may already be on
 		// disk for units that share a name with the old digest's — restore
-		// them.
-		r.reapplyOldPolicyBestEffort(ctx, old, oldMf, newMod.ID)
+		// them from the pre-step-2 snapshot.
+		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
 		return
 	}
 
@@ -119,13 +159,16 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// the new tree; its own files are untouched) but UNSAFE for the
 		// drop-ins, which now describe confinement for a module whose
 		// running process is still the OLD binary. Restore them.
-		r.reapplyOldPolicyBestEffort(ctx, old, oldMf, newMod.ID)
+		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
 		return
 	}
 
-	// Step 4: write the new digest's unit files and restart if the body
-	// changed — UNCONDITIONAL restartChanged, see this function's own doc.
-	if err := r.attachModuleServicesOpts(ctx, newMod, newMf, true); err != nil {
+	// Step 4: write the new digest's unit files and FORCE-restart every unit
+	// that is currently active, regardless of whether its own body changed
+	// this pass (M1, review round 9 — see lifecycle.AttachOptions.
+	// ForceRestartActive's own doc for why the ordinary RestartChanged
+	// decision is wrong for a digest bump specifically).
+	if err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true); err != nil {
 		r.noteUnconverged("reconciler:upgrade_attach_services", newMod.ID, fmt.Errorf("module %s: %w", newMod.ID, err))
 		// ON DISK RIGHT NOW: the new digest's security drop-ins AND file
 		// content (step 3 succeeded) — but the unit body write and/or the
@@ -135,17 +178,47 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// (drop-ins) is still correct and best-effort regardless: it
 		// cannot undo a process that already stopped, but it also cannot
 		// make anything worse.
-		r.reapplyOldPolicyBestEffort(ctx, old, oldMf, newMod.ID)
+		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
 		return
 	}
 	r.recordSecurityFailClosedRecovered(newMf.UnitNames())
 
-	// Every step through the new digest's own attach has now succeeded —
-	// proceed to the IRREVERSIBLE cutover.
+	// M6 (review round 9, MEDIUM): `systemctl start`/`restart` succeeding
+	// proves only that ExecStart was launched — every unit this codebase
+	// renders is Type=simple (lifecycle.RenderUnitModeGraph), so systemd
+	// considers the unit "active" the instant the process exists, with no
+	// health signal of its own. A binary that crashes immediately after
+	// exec (a bad migration, a config the new digest ships that the
+	// process rejects on boot) would otherwise sail through step 4 as a
+	// reported success. Settle briefly, then confirm every unit the NEW
+	// manifest declares is STILL active before anything irreversible runs.
+	//
+	// A3 RESIDUAL, restated here rather than silently left implicit: if a
+	// unit that failed here declares a start_before/requires_health
+	// dependency edge (recoveryDependents, lifecycle/service.go), its
+	// dependents render Requires= and may ALREADY have been stopped by
+	// systemd's own propagation before this check even runs — this
+	// function does not attempt to restart them; they surface as their own
+	// modules' next reconcile tick finds them inactive, same as any other
+	// A3 case.
+	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
+	for _, unit := range newMf.UnitNames() {
+		active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
+		if aerr != nil || !active {
+			r.noteUnconverged("reconciler:upgrade_settle_check", newMod.ID, fmt.Errorf(
+				"module %s: unit %s did not stay active through the %s settle window after restart (is-active err=%v) — refusing to delta-stop, unmount, or commit; a dependent unit may already have stopped as a propagation of this failure (documented A3 residual)",
+				newMod.ID, unit, r.cfg.UpgradeSettleWindow, aerr))
+			restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
+			return
+		}
+	}
+
+	// Every step through the new digest's own attach has now succeeded and
+	// settled — proceed to the IRREVERSIBLE cutover.
 
 	// Step 5: delta-stop units the old digest owned that the new manifest
 	// no longer names (a renamed or removed service).
-	r.stopDepartingUnits(ctx, old.ID, oldUnitNames(old, oldMf), newMf.UnitNames())
+	r.stopDepartingUnits(ctx, old.ID, oldUnits, newMf.UnitNames())
 
 	// Step 6: unmount the OLD erofs blob.
 	if skip, why := r.unmountWouldStripLiveRoot(old); skip {
@@ -226,42 +299,127 @@ func (r *Reconciler) stopDepartingUnits(ctx context.Context, moduleID string, ol
 	}
 }
 
-// reapplyOldPolicyBestEffort restores the OLD digest's security drop-ins
-// after a failure partway through upgradeModule has already written the
-// NEW digest's (A1, review round 9). Best-effort and NEVER stops or
-// restarts anything — the old process is still running throughout this
-// function's entire body, and touching it here would turn a confinement-
-// content bug into an availability one. Relies on writeDropInFile's own
-// skip-if-identical property (L3(c), review round 7) to succeed even on a
-// disk that is out of space for a NEW write: re-applying content that is
-// already correct needs no new blocks.
+// dropInFileNames is the fixed set of per-unit drop-in files any writer in
+// this codebase creates (security/capabilities.go WriteCapabilityDropIn(At),
+// mac.go writeSeccompDropInAt, userns_dropin.go writeUserNamespaceDropInAt).
+// snapshotUnitDropIns/restoreDropInSnapshot only ever touch these three
+// names, under a unit this upgrade's own old-or-new unit set names — never
+// an arbitrary path.
+var dropInFileNames = []string{"capabilities.conf", "seccomp.conf", "userns.conf"}
+
+// dropInSnapshot captures one drop-in file's on-disk content at a point in
+// time, byte-exact.
+type dropInSnapshot struct {
+	dir      string // <unit>.d directory
+	filename string
+	existed  bool
+	body     string
+	// unreadable is true when the pre-attempt read failed for a reason OTHER
+	// than the path genuinely not existing (permission denied, the path is a
+	// directory rather than a regular file, etc). restoreDropInSnapshot
+	// leaves such an entry alone entirely — treating "could not read" as
+	// "did not exist" would let a restore's own cleanup step (os.Remove for
+	// an existed=false entry) delete something that was NOT, in fact,
+	// absent; os.Remove succeeds on an empty directory just as readily as on
+	// a stray file, so an ambiguous read must never be resolved to "removable"
+	// (same declining-over-guessing stance oldUnitNames' own doc takes).
+	unreadable bool
+}
+
+// snapshotUnitDropIns records the CURRENT on-disk content (or absence) of
+// every known drop-in file for every unit in units, read from
+// security.SystemdDropInRoot() — the SAME root every real drop-in writer in
+// this codebase targets.
 //
-// KNOWN LIMITATION, documented rather than silently accepted (per A1's own
-// instruction): oldMf comes from the caller's previousManifests snapshot —
-// the mutable per-module-ID manifest cache, captured at the top of THIS
-// tick before this tick's own fetch loop overwrote it. On the FIRST
-// upgrade attempt for a given old/new digest pair this is correct (the
-// cache reflects whatever was last successfully fetched, and — since the
-// old digest is what's actually attached — that fetch is the old
-// digest's own). On a SECOND OR LATER consecutive failed attempt for the
-// SAME pair, the PREVIOUS tick's own fetch of the new digest already
-// overwrote that cache entry — previousManifests would then hold the NEW
-// digest's content, not the old, and this re-apply degrades to a no-op
-// (re-writing the new policy again) rather than a genuine restore. This is
-// the SAME class of defect L1 (review round 7) fixed for the removed
-// rollback path via a digest-keyed snapshot store; round 9 removed that
-// store in favour of the lighter Units[] name list (point 3), which can
-// answer "what were old's unit NAMES" but not "what was old's policy
-// CONTENT" on a second attempt. Flagged to the driver as an open question
-// rather than silently resolved.
-func (r *Reconciler) reapplyOldPolicyBestEffort(ctx context.Context, old mount.Module, oldMf *manifest.Manifest, moduleIDForLog string) {
-	if oldMf == nil {
-		r.cfg.OnError("reconciler:upgrade_reapply_no_manifest",
-			fmt.Errorf("module %s: no cached manifest for the old digest %s survived to re-apply its policy — the old process may be running under the NEW digest's confinement", moduleIDForLog, old.Digest))
-		return
+// R3b (review round 9): replaces the removed reapplyOldPolicyBestEffort,
+// which re-rendered the old digest's policy from oldMf (RunOnce's
+// previousManifests snapshot) rather than restoring an actual byte
+// snapshot. That re-render was correct on the FIRST upgrade attempt for a
+// given old/new digest pair, but degraded to a no-op on a SECOND OR LATER
+// consecutive failed attempt: the first attempt's own manifest fetch had
+// already overwritten previousManifests' on-disk cache with the NEW
+// digest's content by the time the second attempt ran, so "restoring the
+// old policy" silently re-wrote the already-wrong new one instead. A byte
+// snapshot taken fresh on EVERY attempt, immediately before that attempt's
+// own step 2 writes anything, has no such dependency — attempt N's
+// snapshot is attempt N's actual pre-write state, full stop, independent
+// of what any earlier attempt fetched, wrote, or left behind.
+func snapshotUnitDropIns(units []string) []dropInSnapshot {
+	root := security.SystemdDropInRoot()
+	snaps := make([]dropInSnapshot, 0, len(units)*len(dropInFileNames))
+	for _, unit := range units {
+		dir := filepath.Join(root, unit+".d")
+		for _, name := range dropInFileNames {
+			s := dropInSnapshot{dir: dir, filename: name}
+			body, err := os.ReadFile(filepath.Join(dir, name))
+			switch {
+			case err == nil:
+				s.existed = true
+				s.body = string(body)
+			case os.IsNotExist(err):
+				// Genuinely absent — existed stays false, which is what
+				// lets restoreDropInSnapshot remove a file the upgrade
+				// itself creates.
+			default:
+				// Some OTHER read error (permission denied, the path is a
+				// directory rather than a regular file, ...): we cannot
+				// characterize the pre-attempt state at all. Marking this
+				// unreadable rather than existed=false is load-bearing —
+				// see dropInSnapshot's own doc.
+				s.unreadable = true
+			}
+			snaps = append(snaps, s)
+		}
 	}
-	if _, err := r.applyModuleSecurityPolicy(ctx, old, oldMf); err != nil {
-		r.cfg.OnError("reconciler:upgrade_reapply_failed",
-			fmt.Errorf("module %s: re-applying the old digest %s's policy ALSO failed: %w", moduleIDForLog, old.Digest, err))
+	return snaps
+}
+
+// restoreDropInSnapshot restores EXACTLY what snapshotUnitDropIns captured:
+// a file that existed is rewritten to its snapshot bytes via
+// security.WriteRawDropInFileForRestore — the SAME skip-if-identical,
+// atomic tmp-write-then-rename path every real drop-in writer uses (L3(c),
+// review round 7), so restoring content that is already correct on disk
+// needs no new blocks even on a disk that is out of space for a genuinely
+// NEW write. A file that did NOT exist before this attempt (the new
+// policy's own step 2 created it — e.g. a seccomp.conf the old policy never
+// wrote) is removed.
+//
+// NEVER stops or restarts anything — the old process is still running
+// throughout this function's entire body, and touching it here would turn
+// a confinement-content bug into an availability one.
+func restoreDropInSnapshot(snaps []dropInSnapshot, onError func(stage string, err error)) {
+	for _, s := range snaps {
+		if s.unreadable {
+			continue
+		}
+		path := filepath.Join(s.dir, s.filename)
+		if s.existed {
+			if err := security.WriteRawDropInFileForRestore(s.dir, s.filename, s.body); err != nil {
+				onError("reconciler:upgrade_reapply_failed", fmt.Errorf("restore %s: %w", path, err))
+			}
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			onError("reconciler:upgrade_reapply_failed", fmt.Errorf("remove %s: %w", path, err))
+		}
 	}
+}
+
+// unionStrings returns the set union of a and b, preserving first-seen
+// order and de-duplicating — used to build the full set of unit names
+// snapshotUnitDropIns must cover (both the old digest's units and the new
+// manifest's, since either side alone could miss a renamed service's
+// drop-ins on one end or the other).
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, s := range list {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }

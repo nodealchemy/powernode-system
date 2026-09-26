@@ -88,6 +88,26 @@ func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profile strin
 // overrides from. Variable so tests can redirect.
 var systemdDropInRoot = "/etc/systemd/system"
 
+// SystemdDropInRoot returns the CURRENT drop-in root — production's fixed
+// "/etc/systemd/system", or whatever a test redirected it to via
+// SetSystemdDropInRootForTest. Exported (round 9, R3b) so
+// internal/runtime's upgrade path can snapshot and restore the exact
+// on-disk bytes under the SAME root every drop-in writer in this package
+// targets, without runtime hard-coding (or independently tracking) that
+// path itself.
+func SystemdDropInRoot() string { return systemdDropInRoot }
+
+// WriteRawDropInFileForRestore writes body to dropInDir/filename through the
+// SAME skip-if-identical, atomic tmp-write-then-rename path every typed
+// drop-in writer uses (writeDropInFile) — exported for round 9's R3b
+// upgrade-restore path, which restores an exact byte SNAPSHOT taken before
+// the upgrade began rather than rendering fresh content from a policy, and
+// so cannot go through any of the typed Write*DropIn(At) wrappers (those
+// take a capability/profile list or a bool, never raw bytes).
+func WriteRawDropInFileForRestore(dropInDir, filename, body string) error {
+	return writeDropInFile(dropInDir, filename, body)
+}
+
 // SetSystemdDropInRootForTest redirects every per-unit drop-in writer in this
 // package to dir and returns a restore func. For tests in OTHER packages that
 // drive a real attach path (runtime's attachModule) and must read back what

@@ -131,7 +131,41 @@ type ReconcilerConfig struct {
 	// only by the soft-recompose prepare path — see the write site in
 	// compose.go for why the on-disk write must wait for execute time.
 	BreadcrumbSink func(*BootComposedBreadcrumb)
+	// UpgradeSettleWindow (M6, review round 9) is how long upgradeModule
+	// waits after step 4 (write units + force-restart) before checking that
+	// every unit the new manifest declares is still `active` — a
+	// Type=simple unit's `systemctl start`/`restart` succeeding proves only
+	// that ExecStart was launched, never that the process stayed up; a
+	// binary that crashes immediately after exec (a bad migration, a config
+	// the new digest ships that the process rejects on boot) would
+	// otherwise sail through step 4 as a reported success. Zero means "no
+	// WAIT" (sleepForUpgradeSettle(0) returns immediately) — the CHECK
+	// itself always still runs regardless of the window's value, which is
+	// what lets a test simulate "the unit was already dead by the time we
+	// looked" via the runner's stubbed is-active response without a real
+	// sleep. upgradeTestReconciler/versionBumpReconciler explicitly zero
+	// this, since a real multi-second sleep in dozens of fast unit tests
+	// would be its own defect. Left at its Go zero value here (not
+	// defaulted in this struct); NewReconciler applies
+	// DefaultUpgradeSettleWindow when unset, exactly like
+	// ManifestTTL/ScratchMinFreeBytes above.
+	UpgradeSettleWindow time.Duration
 }
+
+// DefaultUpgradeSettleWindow is the production default for
+// UpgradeSettleWindow: long enough for an immediately-crashing Type=simple
+// process to have already exited by the time upgradeModule checks, short
+// enough not to meaningfully delay a healthy upgrade's commit.
+const DefaultUpgradeSettleWindow = 3 * time.Second
+
+// sleepForUpgradeSettle is upgradeModule's settle-window wait, indirected
+// (like pivotAwareRootMode above) so a test can swap in a fake clock rather
+// than actually blocking — though in practice every test using this package
+// sets UpgradeSettleWindow to 0, which makes even the real time.Sleep return
+// immediately, so this indirection exists for a future test that wants to
+// assert something about the window's DURATION specifically without a real
+// wait either way.
+var sleepForUpgradeSettle = time.Sleep
 
 // DefaultScratchMinFreeBytes is the default budget-guard floor: a live
 // materialization never takes the scratch tmpfs below this much free.
@@ -481,6 +515,9 @@ func NewReconciler(cfg ReconcilerConfig) (*Reconciler, error) {
 	if cfg.ManifestTTL == 0 {
 		cfg.ManifestTTL = 90 * time.Second
 	}
+	if cfg.UpgradeSettleWindow == 0 {
+		cfg.UpgradeSettleWindow = DefaultUpgradeSettleWindow
+	}
 	if cfg.OnError == nil {
 		cfg.OnError = func(string, error) {}
 	}
@@ -716,11 +753,40 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	for _, m := range toAttach {
 		newByID[m.ID] = m
 	}
+	// M4 fix (b) (review round 9, MEDIUM, hard invariant): a DUPLICATE
+	// state.json entry for one module ID at two different digests (the
+	// pre-fix AttachOne bug — fix (a), below — or any future source of the
+	// same shape) makes mount.Reconcile's have/want-by-digest diff treat
+	// the STALE digest as toDetach with NOTHING in toAttach for the same ID
+	// (the OTHER entry already satisfies `desired`, so toAttach has nothing
+	// to add) — which the bump partition above cannot recognize as a bump
+	// (newByID has no entry for it) and would otherwise route straight into
+	// `removals`, stopping units a DIFFERENT, still-live entry for the SAME
+	// ID is currently serving. desiredIDs catches this: any toDetach
+	// candidate whose ID is STILL in `desired` at all (not just matched by
+	// digest) is a stale duplicate, never a genuine removal — drop the
+	// specific stale (ID, digest) entry from state directly, WITHOUT
+	// touching any unit.
+	desiredIDs := make(map[string]bool, len(desired))
+	for _, m := range desired {
+		desiredIDs[m.ID] = true
+	}
 	var bumps []moduleUpgrade
 	removals := make(mount.ModuleStack, 0, len(toDetach))
 	for _, m := range toDetach {
 		if newMod, isBump := newByID[m.ID]; isBump {
 			bumps = append(bumps, moduleUpgrade{old: m, new: newMod})
+			continue
+		}
+		if desiredIDs[m.ID] {
+			for i, am := range current.AttachedModules {
+				if am.ID == m.ID && am.Digest == m.Digest {
+					current.AttachedModules = append(current.AttachedModules[:i], current.AttachedModules[i+1:]...)
+					r.cfg.OnError("reconciler:drop_duplicate_state_entry", fmt.Errorf(
+						"module %s: dropping a stale state entry at digest %s — the module is still desired and already satisfied by a different attached digest; its units are NOT being stopped", m.ID, m.Digest))
+					break
+				}
+			}
 			continue
 		}
 		removals = append(removals, m)
@@ -806,12 +872,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	// Pull + verify + mount every new module's erofs blob BEFORE detaching
 	// anything (see prefetchNewArtifacts doc). Must run before the detach
-	// loop below — that ordering is the entire point of this call. The
-	// returned readiness map is currently unused pending the round-9
-	// in-place-upgrade work (a subsequent commit consumes it); the PULL
-	// itself, run unconditionally here, is the part that must stay ordered
-	// ahead of any detach.
-	_ = r.prefetchNewArtifacts(ctx, toAttach)
+	// loop below — that ordering is the entire point of this call (M8,
+	// review round 9: prefetchNewArtifacts no longer returns a value at
+	// all, so there is nothing left here to discard).
+	r.prefetchNewArtifacts(ctx, toAttach)
 
 	// Defer detaches for modules this tick could not get a manifest for at
 	// all — see filterUnverifiedDetaches. Applied BEFORE filterUnsafeDetaches
@@ -927,6 +991,57 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			mergedManifestsSlice = append(mergedManifestsSlice, m)
 		}
 
+		// M3 (review round 9, HARD INVARIANT): mergedManifests already holds
+		// THIS tick's fresh (NEW) manifest for a module being upgraded
+		// (populated by the fetch loop above, unconditionally, regardless of
+		// the bump partition) — but the OLD process is still the one
+		// running until upgradeModule's step 7 actually commits. Rendering
+		// identity/sudoers/egress from the new manifest alone describes a
+		// process that isn't running yet: if the new manifest drops a user
+		// the OLD unit's systemd definition still names via User=, that
+		// unit's next crash-restart fails 217/USER — the 2026-09-22 outage
+		// class, self-inflicted by the render instead of by an actual
+		// detach. Until commit: identity/sudoers render the UNION of old
+		// and new (etcidentity.Collect/etcsudoers.CollectFromManifests
+		// already union by name across their WHOLE input slice, so simply
+		// including old's manifest alongside new's IS the union — no
+		// synthetic manifest type needed); egress keeps the OLD declaration
+		// ONLY — a bump must not narrow or widen the enforced egress ahead
+		// of the binary that will actually apply it. Both switch to the
+		// new-only view automatically the tick AFTER a successful commit,
+		// once the module is no longer in `bumps` at all (mount.Reconcile
+		// then sees matching digests on both sides and stops pairing it).
+		//
+		// oldMf comes from previousManifests (RunOnce's own pre-fetch disk
+		// snapshot, the same source upgradeModule's oldUnitNames fallback
+		// uses) — a render-only advisory read, not the R3b security-content
+		// restore path, so its own known limitation (stale past the first
+		// attempt) only ever costs a one-tick delay in dropping an old-only
+		// user or switching egress, not a confinement gap.
+		identityManifests := mergedManifestsSlice
+		egressManifestsSlice := mergedManifestsSlice
+		if len(bumps) > 0 {
+			bumpOldMf := make(map[string]*manifest.Manifest, len(bumps))
+			for _, b := range bumps {
+				if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
+					bumpOldMf[b.new.ID] = bmf
+				}
+			}
+			if len(bumpOldMf) > 0 {
+				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldMf))
+				egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
+				for id, m := range mergedManifests {
+					identityManifests = append(identityManifests, m)
+					if oldMf, isBump := bumpOldMf[id]; isBump {
+						identityManifests = append(identityManifests, oldMf)
+						egressManifestsSlice = append(egressManifestsSlice, oldMf)
+						continue
+					}
+					egressManifestsSlice = append(egressManifestsSlice, m)
+				}
+			}
+		}
+
 		// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from the
 		// merged (fresh + cached/breadcrumb-fallback) manifest set BEFORE any
 		// attach kicks off systemd units that reference platform-managed
@@ -934,7 +1049,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// just-rendered users is in place before service start. Both
 		// renderers are idempotent and run every reconcile tick — atomic
 		// writes are no-ops if contents match.
-		identitySet, conflicts := etcidentity.Collect(mergedManifestsSlice)
+		identitySet, conflicts := etcidentity.Collect(identityManifests)
 		for _, c := range conflicts {
 			r.cfg.OnError("reconciler:identity_conflict",
 				fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
@@ -948,7 +1063,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// platform source of truth) and /home must stay traversable, else sshd
 		// and any unprivileged service with HOME there break. Idempotent.
 		reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
-		if err := applySudoers(etcsudoers.CollectFromManifests(mergedManifestsSlice)); err != nil {
+		if err := applySudoers(etcsudoers.CollectFromManifests(identityManifests)); err != nil {
 			r.cfg.OnError("reconciler:sudoers_write", err)
 		}
 
@@ -956,7 +1071,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// above: one shared nftables OUTPUT chain governs the WHOLE node, so
 		// it must reflect the UNION of every currently-desired module's
 		// declared policy, recomputed fresh from the same
-		// mergedManifestsSlice every tick — never a single module's own
+		// egressManifestsSlice every tick — never a single module's own
 		// Policy.Apply, which would let whichever module happens to
 		// reconcile last silently clobber every sibling's intent (see
 		// security.UnionEgressPolicy's doc comment for the full history of
@@ -967,8 +1082,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// candidate resolved, so there is no separate "unresolved but
 		// enforcement looked off" case left to guard here — that case IS
 		// mustSkipRender, handled by skipping this whole block.
-		egressPolicies := make([]*security.Policy, 0, len(mergedManifestsSlice))
-		for _, m := range mergedManifestsSlice {
+		egressPolicies := make([]*security.Policy, 0, len(egressManifestsSlice))
+		for _, m := range egressManifestsSlice {
 			egressPolicies = append(egressPolicies, buildPolicy(m))
 		}
 		egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
@@ -1071,13 +1186,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if err := r.attachModule(ctx, mod, mf); err != nil {
 			r.noteUnconverged("reconciler:attach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			r.composeFailed.Store(true)
-			// NOTE (round 9): for a version bump specifically, this module's
-			// OLD digest was already detached earlier in this same tick's
-			// detach loop, and this failure leaves it down until some later
-			// tick's attach succeeds — the detach-before-attach mitigation
-			// stack that used to roll back from here (J1/K1-K3/L1-L6, rounds
-			// 5-7) has been removed pending the in-place-upgrade redesign
-			// (round 9) that replaces this whole attach/detach shape.
+			// M8 (review round 9, cleanup): this loop never handles a version
+			// bump (RunOnce's own partition, right after mount.Reconcile,
+			// keeps every bump out of toAttach/toDetach entirely) — a mod
+			// reaching this branch is always a genuine fresh attach, so a
+			// failure here leaves it simply unattached until a later tick's
+			// attach succeeds, with no OLD digest anywhere to have left down.
 			continue
 		}
 		mod.Units = mf.UnitNames()
@@ -1097,18 +1211,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// AND DO NOT START THE UNITS. Starting them here would run the new
 			// unit definitions against content that was never written — the
 			// deploy-4 shape. Declining leaves whatever is already running
-			// untouched.
-			//
-			// NOTE (round 9): under the detach-before-attach shape this loop
-			// used to implement, that claim was FALSE for a version bump
-			// specifically — its old units were already stopped by the
-			// detach loop earlier in the same tick, so a refusal here left
-			// the module with zero running units (round 7's L6(a) finding).
-			// The in-place-upgrade redesign (round 9) removes that failure
-			// mode structurally: a bump's old units are never stopped until
-			// AFTER its new attempt, including this materialization step,
-			// has fully succeeded — see the upgrade path this loop no longer
-			// handles bumps through.
+			// untouched — always accurate here (M8, review round 9, cleanup):
+			// this loop never handles a version bump (see the earlier NOTE in
+			// this same loop), so "whatever is already running" is either
+			// nothing (a genuine fresh attach) or an unrelated module, never
+			// an old digest this same attempt already stopped.
 			continue
 		}
 		r.attachModuleServices(ctx, mod, mf)
@@ -1632,21 +1739,25 @@ func (e *SecurityFailClosedError) Error() string {
 	return fmt.Sprintf("module %s: refusing to (re)attach/start unit(s) %v (fail closed): %s", e.ModuleID, e.Units, e.Reason)
 }
 
-// Returns, per module ID, whether its artifact prefetch succeeded. Pulled
-// BEFORE either the detach or attach loop runs (see the RunOnce call site)
-// so an artifact pull/verify/mount failure is known before anything about
-// the module's existing attachment is touched.
-func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.ModuleStack) map[string]bool {
-	ready := make(map[string]bool, len(toAttach))
+// Pulled BEFORE either the detach or attach loop runs (see the RunOnce call
+// site) so an artifact pull/verify/mount failure is known before anything
+// about the module's existing attachment is touched. Best-effort: a
+// prefetch failure surfaces via OnError here, and the normal attachModule()
+// call later in this same tick attempts (and fails again, now correctly
+// attributed) the same module rather than silently skipping it — so there
+// is nothing for a caller to act on beyond that OnError, and this
+// deliberately returns nothing (M8, review round 9: a readiness map
+// returned here and never consumed by any caller — round 9's own
+// in-place-upgrade work does not read it either, a stale claim the
+// previous doc made — is exactly the kind of half-finished plumbing that
+// invites a FUTURE caller to trust it without checking whether anything
+// actually populates or honours it).
+func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.ModuleStack) {
 	for _, mod := range toAttach {
 		if err := r.mountModuleArtifact(ctx, mod); err != nil {
 			r.cfg.OnError("reconciler:prefetch", fmt.Errorf("module %s: %w", mod.ID, err))
-			ready[mod.ID] = false
-			continue
 		}
-		ready[mod.ID] = true
 	}
-	return ready
 }
 
 // decideModuleSecurityPolicy is the PURE half of a module's security-policy
@@ -2090,7 +2201,7 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 	// node's own rails/postgres via its own stop+start cycle. Every OTHER
 	// caller — an ordinary manifest-only reattach, a fresh attach — still
 	// goes through this fenced path unchanged.
-	_ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted())
+	_ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false)
 }
 
 // attachModuleServicesOpts is attachModuleServices' parameterized core
@@ -2098,7 +2209,12 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 // decision taken as an explicit argument instead of always deriving it
 // from selfHosted(). See attachModuleServices' own doc for why the fence
 // exists and upgradeModule's own doc for why it bypasses it.
-func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged bool) error {
+//
+// forceRestartActive (M1, review round 9): upgradeModule's OWN restart
+// mode, distinct from restartChanged — see lifecycle.AttachOptions.
+// ForceRestartActive's doc for why a digest bump needs this rather than
+// the ordinary RestartChanged decision. Every other caller passes false.
+func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged, forceRestartActive bool) error {
 	if len(mf.Services) == 0 {
 		return nil
 	}
@@ -2116,7 +2232,7 @@ func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Mod
 	// service kept running the old definition until something else restarted
 	// it. AttachServicesModeOpts restarts a unit only when its body actually
 	// changed on this pass AND it is currently active.
-	opts := lifecycle.AttachOptions{RestartChanged: restartChanged}
+	opts := lifecycle.AttachOptions{RestartChanged: restartChanged, ForceRestartActive: forceRestartActive}
 	if _, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts); err != nil {
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
@@ -2797,6 +2913,16 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// M4 fix (a) (review round 9, MEDIUM, hard invariant): snapshot whatever
+	// manifest is CURRENTLY cached on disk for this module BEFORE the
+	// LoadOrFetch call below can overwrite that cache with fresh content —
+	// the SAME ordering RunOnce's own previousManifests capture uses, and
+	// for the same reason: if this call turns out to be a digest CHANGE
+	// (below), the upgradeModule path this routes through needs a manifest
+	// describing the OLD digest, and this is the only remaining source of
+	// one after the fetch below runs.
+	oldMfSnapshot, _ := manifest.LoadFromDisk(r.cfg.ManifestRoot, moduleID)
+
 	mf, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, moduleID, r.cfg.ManifestTTL)
 	if err != nil {
 		return "", fmt.Errorf("fetch manifest: %w", err)
@@ -2816,13 +2942,46 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 		return "", fmt.Errorf("load state: %w", err)
 	}
 
-	for _, m := range current.AttachedModules {
-		if m.ID == moduleID && m.Digest == mf.Digest {
-			return "already_attached", nil
+	if current.LastAttachedManifestHashes == nil {
+		current.LastAttachedManifestHashes = map[string]string{}
+	}
+
+	var existing *mount.Module
+	for i, m := range current.AttachedModules {
+		if m.ID == moduleID {
+			if m.Digest == mf.Digest {
+				return "already_attached", nil
+			}
+			existing = &current.AttachedModules[i]
+			break
 		}
 	}
 
 	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash, CosignBundleB64: mf.CosignBundleB64}
+
+	// M4 fix (a): a module already attached at a DIFFERENT digest is a
+	// version bump, not a fresh attach — route it through upgradeModule
+	// (mount new, apply new policy, force-restart, delta-stop departing
+	// units, unmount old, REPLACE the state entry) exactly as RunOnce's own
+	// bump handling does. The bug this replaces: appending a second
+	// state.json entry for the SAME ID at a different digest, which the
+	// NEXT ordinary RunOnce tick's have/want-by-digest diff reads as the
+	// stale entry being a genuine REMOVAL (see M4 fix (b) in RunOnce for
+	// the partition-level backstop) — stopping the very unit this call just
+	// started.
+	if existing != nil {
+		u := moduleUpgrade{old: *existing, new: mod}
+		r.upgradeModule(ctx, current, u, mf, oldMfSnapshot, nil, mount.ModuleStack{}, false)
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			return "", fmt.Errorf("save state: %w", err)
+		}
+		for _, m := range current.AttachedModules {
+			if m.ID == moduleID && m.Digest == mf.Digest {
+				return "attached", nil
+			}
+		}
+		return "", fmt.Errorf("module %s: upgrade to digest %s did not commit — see the reconciler's own error log for the refusal", moduleID, mf.Digest)
+	}
 	// H1 (review round 5) bracketed this call with resetSecurityFailClosed +
 	// publishSecurityFailClosedForModule, reasoning that a refusal here
 	// needed to reach SecurityFailClosedUnits(). REVERTED (J2, the

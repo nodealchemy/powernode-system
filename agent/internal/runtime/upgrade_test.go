@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
@@ -47,6 +48,33 @@ func upgradeModuleFixture(digest string, capabilities []string, services string)
 	}`, digest, capJSON, services)
 }
 
+// upgradeModuleFixtureWithUserNS is upgradeModuleFixture with an explicit
+// user_namespace value — needed only where a test must observe a drop-in
+// file OTHER than capabilities.conf change (e.g. capabilities.conf itself
+// is deliberately blocked), since userns.conf is written unconditionally
+// (applyModuleSecurityDropIns) and so is a legible witness whenever
+// capabilities.conf can't be.
+func upgradeModuleFixtureWithUserNS(digest string, capabilities []string, userNS bool, services string) string {
+	capJSON := "["
+	for i, c := range capabilities {
+		if i > 0 {
+			capJSON += ","
+		}
+		capJSON += fmt.Sprintf("%q", c)
+	}
+	capJSON += "]"
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": %s, "user_namespace": %v}},
+			"services": [%s]
+		}
+	}`, digest, capJSON, userNS, services)
+}
+
 const upgradeAppService = `{"name":"app", "start_command":"/bin/true", "restart_policy":"always"}`
 const upgradeWorkerService = `{"name":"old-worker", "start_command":"/bin/true", "restart_policy":"always"}`
 
@@ -61,9 +89,16 @@ func upgradeTestReconciler(t *testing.T) (r *Reconciler, client *stubModulesClie
 	tmpRoot := t.TempDir()
 	statePath = filepath.Join(t.TempDir(), "state.json")
 	manifestRoot = filepath.Join(tmpRoot, "manifests")
+	// security.SystemdDropInRoot and lifecycle.UnitDir() are two
+	// INDEPENDENTLY overridable roots that both default to the SAME real
+	// path (/etc/systemd/system) in production — stopDepartingUnits's own
+	// cleanup (unit file under UnitDir(), drop-in ".d" dir under the
+	// drop-in root) only ever removes the right ".d" directory when both
+	// test overrides point at the SAME directory, exactly mirroring that
+	// production identity.
 	dropInRoot = t.TempDir()
 	t.Cleanup(security.SetSystemdDropInRootForTest(dropInRoot))
-	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", dropInRoot)
 
 	client = &stubModulesClient{responses: map[string]string{
 		"/api/v1/system/node_api/modules":    upgradeModulesListFixture,
@@ -104,6 +139,12 @@ func TestUpgradeModule_DeltaStopHappensOnlyAfterNewUnitStarts(t *testing.T) {
 	// service), keeping only app under the same unit name.
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
 	backdateManifestCache(t, manifestRoot, "m1")
+	// M1 (review round 9): mark app ACTIVE so ForceRestartActive's decision
+	// is actually observable — a "start" is a no-op systemd wouldn't even
+	// need to distinguish from "restart" for an inactive unit, so this test
+	// must not accept a plain start as proof (that was M1's own bug: an
+	// unchanged services: block silently degraded to a no-op start).
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
 
 	pass2Start := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {
@@ -116,8 +157,14 @@ func TestUpgradeModule_DeltaStopHappensOnlyAfterNewUnitStarts(t *testing.T) {
 		if inv.Name != "systemctl" || inv.Op != "Run" {
 			continue
 		}
-		if containsArg(inv.Args, appUnit) && (containsArg(inv.Args, "start") || containsArg(inv.Args, "restart")) && appStartIdx == -1 {
+		if containsArg(inv.Args, appUnit) && containsArg(inv.Args, "restart") && appStartIdx == -1 {
 			appStartIdx = i
+		}
+		// M1 REGRESSION check: a plain `start` of the surviving, ACTIVE unit
+		// is the exact bug — it means ForceRestartActive did not fire and
+		// the old binary kept running.
+		if containsArg(inv.Args, appUnit) && containsArg(inv.Args, "start") {
+			t.Errorf("M1 REGRESSION: %s was `start`-ed instead of `restart`-ed while active — the old binary is still running: %v", appUnit, pass2)
 		}
 		if containsArg(inv.Args, workerUnit) && containsArg(inv.Args, "stop") && workerStopIdx == -1 {
 			workerStopIdx = i
@@ -128,7 +175,23 @@ func TestUpgradeModule_DeltaStopHappensOnlyAfterNewUnitStarts(t *testing.T) {
 		}
 	}
 	if appStartIdx == -1 {
-		t.Fatalf("pass 2: expected %s to be (re)started, invocations: %v", appUnit, pass2)
+		t.Fatalf("pass 2: expected %s to be restarted, invocations: %v", appUnit, pass2)
+	}
+	// M5 (review round 9): daemon-reload must run BEFORE the restart —
+	// step 2 wrote new drop-ins for a body-unchanged unit, invisible to
+	// anyWritten, so a manager that hasn't reloaded risks restarting
+	// against stale cached drop-in state.
+	reloadIdx := -1
+	for i, inv := range pass2 {
+		if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, "daemon-reload") {
+			reloadIdx = i
+			break
+		}
+	}
+	if reloadIdx == -1 {
+		t.Errorf("M5 REGRESSION: expected a daemon-reload in pass 2 even though app's unit BODY did not change, invocations: %v", pass2)
+	} else if reloadIdx > appStartIdx {
+		t.Errorf("M5 REGRESSION: daemon-reload (index %d) ran AFTER the restart (index %d): %v", reloadIdx, appStartIdx, pass2)
 	}
 	if workerStopIdx == -1 {
 		t.Fatalf("pass 2: expected the departing unit %s to be stopped, invocations: %v", workerUnit, pass2)
@@ -139,6 +202,583 @@ func TestUpgradeModule_DeltaStopHappensOnlyAfterNewUnitStarts(t *testing.T) {
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
 		t.Errorf("pass 2: expected m1 attached at d2, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// upgradeModuleFixtureWithOldUser is a one-off raw fixture body (not built
+// via upgradeModuleFixture, which has no users: support) for M3's own test:
+// the OLD digest declares a platform-managed user the NEW digest drops.
+func upgradeModuleFixtureWithOldUser(digest string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"users": [{"name":"olduser","uid":5001,"primary_gid":5001,"primary_group":"olduser","shell":"/bin/false","home":"/home/olduser"}],
+			"services": [%s]
+		}
+	}`, digest, upgradeAppService)
+}
+
+// TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule is M4 fix (b)'s
+// own test (review round 9, hard invariant): a pre-existing DUPLICATE
+// state.json entry for one module ID at two digests — d1 (stale) and d2
+// (the one `desired` actually names) — must never make the next RunOnce
+// tick treat d1 as a genuine removal and stop the unit both entries share
+// the same name for. The stale entry is silently dropped from state
+// instead.
+func TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule(t *testing.T) {
+	r, client, runner, _, statePath, _, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	// desired names ONLY d2 (upgradeModuleFixture default in upgradeTestReconciler
+	// is d1 — override to d2 so the pre-seeded state below is the duplicate).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+
+	if err := mount.SaveState(statePath, &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "m1", Digest: "d1", Priority: 100, Units: []string{unit}},
+			{ID: "m1", Digest: "d2", Priority: 100, Units: []string{unit}},
+		},
+		LastAttachedManifestHashes: map[string]string{},
+	}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if hasSystemctlOp(runner.Invocations, "stop", unit) {
+		t.Errorf("M4 REGRESSION: a duplicate state entry for a still-desired module must never stop %s, invocations: %v", unit, runner.Invocations)
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	count := 0
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			count++
+			if m.Digest != "d2" {
+				t.Errorf("M4 REGRESSION: expected the surviving m1 entry to be at d2, got %s", m.Digest)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("M4 REGRESSION: expected exactly one m1 entry after the tick (the stale d1 duplicate dropped), got %d: %+v", count, st.AttachedModules)
+	}
+}
+
+// TestAttachOne_DigestChangeRoutesThroughUpgradeNeverAppendsDuplicate is M4
+// fix (a)'s own test: calling AttachOne for a module already attached at a
+// DIFFERENT digest must REPLACE the state entry (via upgradeModule), never
+// append a second one for the same ID — the shape that produced M4's bug in
+// the first place.
+func TestAttachOne_DigestChangeRoutesThroughUpgradeNeverAppendsDuplicate(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	status, err := r.AttachOne(context.Background(), "m1")
+	if err != nil {
+		t.Fatalf("AttachOne (fresh): %v", err)
+	}
+	if status != "attached" {
+		t.Fatalf("AttachOne (fresh): expected status=attached, got %q", status)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// M6: the settled unit must read active for the upgrade to commit.
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+
+	status, err = r.AttachOne(context.Background(), "m1")
+	if err != nil {
+		t.Fatalf("AttachOne (digest change): %v", err)
+	}
+	if status != "attached" {
+		t.Fatalf("AttachOne (digest change): expected status=attached, got %q", status)
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	count := 0
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			count++
+			if m.Digest != "d2" {
+				t.Errorf("expected the surviving m1 entry to be at d2, got %s", m.Digest)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("M4 REGRESSION: AttachOne appended a DUPLICATE state entry for m1 instead of replacing it, got %d entries: %+v", count, st.AttachedModules)
+	}
+	if !hasSystemctlOp(runner.Invocations, "restart", unit) && !hasSystemctlOp(runner.Invocations, "start", unit) {
+		t.Errorf("expected %s to have been started at least once across both AttachOne calls, invocations: %v", unit, runner.Invocations)
+	}
+}
+
+// TestUpgradeModule_PendingUpgradeStillRendersOldUser is M3's own test (the
+// HARD INVARIANT: never leave a previously running module unable to
+// restart). The OLD digest declares olduser; the NEW digest drops it; step
+// 2 (the security drop-in write) is blocked. Before the RunOnce this tick
+// completes, the identity render must STILL include olduser — dropping it
+// the moment the new manifest is merely FETCHED (not yet committed) would
+// mean the still-running old unit's next crash-restart fails 217/USER, the
+// 2026-09-22 outage class.
+func TestUpgradeModule_PendingUpgradeStillRendersOldUser(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	manifestRoot := filepath.Join(tmpRoot, "manifests")
+	dropInRoot := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(dropInRoot))
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+
+	client := &stubModulesClient{responses: map[string]string{
+		"/api/v1/system/node_api/modules":    upgradeModulesListFixture,
+		"/api/v1/system/node_api/modules/m1": upgradeModuleFixtureWithOldUser("d1"),
+	}}
+	runner := &mount.RecorderRunner{}
+	r := versionBumpReconciler(t, tmpRoot, statePath, client, runner)
+
+	var captured *etcidentity.Set
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error { captured = set; return nil }
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	if captured == nil || !hasUser(captured, "olduser") {
+		t.Fatalf("precondition: pass 1 must render olduser, got %+v", captured)
+	}
+
+	// Bump to a digest that DROPS olduser entirely, and block step 2's
+	// drop-in write so the upgrade never commits.
+	unit := lifecycle.UnitName("m1", "app")
+	blocked := filepath.Join(dropInRoot, unit+".d", "capabilities.conf")
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	captured = nil
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("pass 2: expected the blocked upgrade to leave m1 at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if captured == nil || !hasUser(captured, "olduser") {
+		t.Errorf("M3 REGRESSION: a pending (blocked) upgrade must still render olduser — the OLD unit is still running and may crash-restart against a passwd that no longer has it, got %+v", captured)
+	}
+}
+
+func hasUser(set *etcidentity.Set, name string) bool {
+	for _, u := range set.Users {
+		if u.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestUpgradeModule_PreRound9EntryPersistsUnitsAcrossAFailedFirstAttempt is
+// M7's own test (review round 9, LOW): a pre-round-9 state entry (no
+// persisted Units — the field didn't exist yet) upgrading a RENAMED
+// service. The first attempt fails (before the fallback-derived Units list
+// would ever be used for anything irreversible); the second attempt
+// succeeds. The renamed-away old unit must still be stopped on the second
+// attempt — proving the fallback resolved on attempt 1 was PERSISTED, not
+// silently lost the moment that attempt failed.
+func TestUpgradeModule_PreRound9EntryPersistsUnitsAcrossAFailedFirstAttempt(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeWorkerService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Simulate a PRE-ROUND-9 entry: strip the Units the real attach just
+	// persisted, so upgradeModule's own fallback (oldMf.UnitNames()) is the
+	// ONLY source until M7's persist-once logic writes it back.
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for i := range st.AttachedModules {
+		if st.AttachedModules[i].ID == "m1" {
+			st.AttachedModules[i].Units = nil
+		}
+	}
+	if err := mount.SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	// Bump to a RENAMED service (old-worker -> app) — old-worker must be
+	// stopped once the upgrade eventually succeeds.
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	appUnit := lifecycle.UnitName("m1", "app")
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// Force the FIRST attempt to fail (blocked drop-in write) — the fallback
+	// unit list must survive this failure.
+	blocked := filepath.Join(dropInRoot, appUnit+".d", "capabilities.conf")
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce attempt 1 (blocked): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("attempt 1: expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+
+	// M7's own assertion, mid-test: the fallback must already be PERSISTED
+	// onto the state entry after attempt 1, even though attempt 1 failed.
+	st2, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after attempt 1: %v", err)
+	}
+	found := false
+	for _, m := range st2.AttachedModules {
+		if m.ID == "m1" {
+			found = containsArg(m.Units, oldWorkerUnit)
+		}
+	}
+	if !found {
+		t.Fatalf("M7 REGRESSION: after a failed first attempt, the state entry's Units must already contain the fallback-derived %s, got %+v", oldWorkerUnit, st2.AttachedModules)
+	}
+
+	// Unblock and mark app active (M6) — attempt 2 succeeds.
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce attempt 2: %v", err)
+	}
+
+	if !hasSystemctlOp(runner.Invocations, "stop", oldWorkerUnit) {
+		t.Errorf("M7 REGRESSION: the renamed-away %s must be stopped once the upgrade succeeds, invocations: %v", oldWorkerUnit, runner.Invocations)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("attempt 2: expected m1 attached at d2, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestReconcile_FreshAttachPersistsUnits pins the FIRST of three sites the
+// review A mutation script found no test caught: a fresh (non-bump) attach
+// must persist mount.Module.Units (point 3, review round 9) on the state
+// entry directly, not just as a side effect some LATER behavior happens to
+// still work through a fallback.
+func TestReconcile_FreshAttachPersistsUnits(t *testing.T) {
+	r, _, _, _, statePath, _, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			if !containsArg(m.Units, unit) {
+				t.Errorf("REGRESSION: a fresh attach must persist Units on the state entry, got %+v", m.Units)
+			}
+			return
+		}
+	}
+	t.Fatalf("m1 not found in state: %+v", st.AttachedModules)
+}
+
+// TestReconcile_ManifestOnlyReattachRefreshesUnits pins the SECOND site: a
+// manifest-only edit (same digest, a service RENAMED) must refresh the
+// existing entry's Units — a LATER bump's delta-stop reads this list, and a
+// stale one (from before the rename) would misjudge which units are
+// genuinely departing on that later bump.
+func TestReconcile_ManifestOnlyReattachRefreshesUnits(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	renamedUnit := lifecycle.UnitName("m1", "renamed-app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// SAME digest, renamed service — a manifest-only edit, not a bump.
+	renamedService := `{"name":"renamed-app", "start_command":"/bin/true", "restart_policy":"always"}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, renamedService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			if !containsArg(m.Units, renamedUnit) {
+				t.Errorf("REGRESSION: a manifest-only reattach must refresh the state entry's Units to the renamed unit, got %+v", m.Units)
+			}
+			return
+		}
+	}
+	t.Fatalf("m1 not found in state: %+v", st.AttachedModules)
+}
+
+// TestUpgradeModule_CommitReplacesUnitsUnmountsOldErofsAndRemovesDropInDir
+// pins the remaining THREE mutant sites review A's script found no test
+// caught: step 7 must persist the NEW manifest's Units (not the old ones,
+// and not leave the field stale), the old erofs blob must actually be
+// unmounted on a successful commit, and a departing unit's drop-in ".d"
+// directory must actually be REMOVED from disk, not merely stopped.
+func TestUpgradeModule_CommitReplacesUnitsUnmountsOldErofsAndRemovesDropInDir(t *testing.T) {
+	r, client, runner, layout, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	// unmountWouldStripLiveRoot only even attempts the real check on a
+	// NATIVE root (pivotAwareRootMode() == RootModeNative); forcing Chroot
+	// here takes its early "not native, nothing to strip" return, so the
+	// unmount actually runs rather than failing closed on
+	// PathInLiveUnion's own unreadable-probe fence — which is what a fake
+	// test root (this sandbox may itself read as native) would otherwise
+	// hit, masking the very call this test exists to observe.
+	origMode := pivotAwareRootMode
+	pivotAwareRootMode = func() lifecycle.RootMode { return lifecycle.RootModeChroot }
+	t.Cleanup(func() { pivotAwareRootMode = origMode })
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	workerUnit := lifecycle.UnitName("m1", "old-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	workerDropInDir := filepath.Join(dropInRoot, workerUnit+".d")
+	if _, err := os.Stat(workerDropInDir); err != nil {
+		t.Fatalf("precondition: expected %s to exist after pass 1: %v", workerDropInDir, err)
+	}
+
+	// Bump drops old-worker; mark app active (M6) and the OLD digest's
+	// erofs blob as currently mounted (M8/mutation: a successful commit
+	// must actually unmount it).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	oldMountPath := layout.ModuleMountPath("d1")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"findmnt --noheadings " + oldMountPath: []byte(oldMountPath + " erofs\n"),
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if !hasSystemctlOp(runner.Invocations, "stop", workerUnit) {
+		t.Fatalf("expected %s to be stopped, invocations: %v", workerUnit, runner.Invocations)
+	}
+	if _, err := os.Stat(workerDropInDir); !os.IsNotExist(err) {
+		t.Errorf("REGRESSION: departing unit %s's drop-in directory %s must be REMOVED, stat err=%v", workerUnit, workerDropInDir, err)
+	}
+
+	foundUmount := false
+	for _, inv := range runner.Invocations {
+		if inv.Name == "umount" && len(inv.Args) == 1 && inv.Args[0] == oldMountPath {
+			foundUmount = true
+		}
+	}
+	if !foundUmount {
+		t.Errorf("REGRESSION: a successful commit must unmount the OLD erofs blob at %s, invocations: %v", oldMountPath, runner.Invocations)
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			if m.Digest != "d2" {
+				t.Errorf("expected m1 at d2, got %s", m.Digest)
+			}
+			if !containsArg(m.Units, appUnit) || containsArg(m.Units, workerUnit) {
+				t.Errorf("REGRESSION: step 7 must persist the NEW manifest's Units (just %s), got %+v", appUnit, m.Units)
+			}
+			return
+		}
+	}
+	t.Fatalf("m1 not found in state: %+v", st.AttachedModules)
+}
+
+// TestUpgradeModule_UnmountFenceSkipsWhenOldDigestStillInLiveUnion pins the
+// LAST review-A mutant: unmountWouldStripLiveRoot's own live-union check
+// (mount.PathInLiveUnion, the same fence detachModule itself uses — see
+// detach_guard_test.go's own fixture, mirrored here) must actually be
+// consulted, not merely bypassed to "always safe to unmount". A pivot
+// node's OLD digest still listed as a lowerdir of the live root's overlay
+// (mount.LiveUnionLowerDirs) must be left mounted, and the commit must
+// still go through (the fence only ever skips the unmount step, never the
+// cutover itself).
+func TestUpgradeModule_UnmountFenceSkipsWhenOldDigestStillInLiveUnion(t *testing.T) {
+	r, client, runner, layout, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	forcePivotNative(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	oldMountPath := layout.ModuleMountPath("d1")
+	liveRoot := filepath.Join(layout.Root, "/")
+	mountInfo := fmt.Sprintf("27 1 0:24 / %s rw,relatime shared:1 - overlay overlay rw,"+
+		"lowerdir=%s,upperdir=%s/upper,workdir=%s/work\n", liveRoot, oldMountPath, liveRoot, liveRoot)
+	mountInfoPath := filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mount.SetMountInfoPathForTest(mountInfoPath))
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"findmnt --noheadings " + oldMountPath: []byte(oldMountPath + " erofs\n"),
+	}
+
+	var signals []string
+	r.cfg.OnError = func(kind string, _ error) { signals = append(signals, kind) }
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	for _, inv := range runner.Invocations {
+		if inv.Name == "umount" {
+			t.Errorf("REGRESSION: the OLD digest is still a live-union lowerdir — it must NOT be unmounted, invocations: %v", runner.Invocations)
+		}
+	}
+	sawSkip := false
+	for _, s := range signals {
+		if s == "reconciler:unmount_skipped" {
+			sawSkip = true
+		}
+	}
+	if !sawSkip {
+		t.Errorf("expected a reconciler:unmount_skipped signal, got signals=%v", signals)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("the fence must only skip the unmount, not the cutover — expected m1 committed to d2, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning is M6's
+// own test (review round 9, MEDIUM): a Type=simple unit's restart job
+// reporting success proves only that the process was launched, not that it
+// stayed up. Simulated here by a runner that reports the unit as active for
+// step 4's restart decision (so ForceRestartActive actually restarts it) but
+// then reports NOT active for the settle check immediately after — modeling
+// a binary that crashed right after exec. The upgrade must refuse to
+// delta-stop/unmount/commit, and old-worker (a departing unit that would
+// otherwise be stopped at step 5) must stay running.
+func TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	workerUnit := lifecycle.UnitName("m1", "old-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump drops old-worker; app's body is unchanged. app's `systemctl
+	// start`/`restart` call (step 4) succeeds — no error stubbed — exactly
+	// as it would for a process that launched and then immediately died.
+	// is-active is left at RecorderRunner's default ("not active"), which
+	// is what upgradeModule's settle check (a SEPARATE query, run right
+	// after step 4 returns) reads: a systemd job reporting success is not,
+	// by itself, proof the unit stayed up.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	pass2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	pass2 := runner.Invocations[pass2Start:]
+
+	if hasSystemctlOp(pass2, "stop", appUnit) || hasSystemctlOp(pass2, "stop", workerUnit) {
+		t.Errorf("M6 REGRESSION: pass 2 stopped a unit even though the settled unit crashed after restart — nothing should be stopped or unmounted: %v", pass2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("M6 REGRESSION: pass 2 must leave m1 attached at the OLD digest d1 (the settle check refused the commit), got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting is
+// M2's own test (review round 9): a retry after a failed restart attempt
+// must still RESTART (not silently degrade to `start`) on the next attempt,
+// and must only commit the new digest once that restart actually succeeds.
+// Before M1's fix this could fail because the restart decision derived from
+// writeIfChanged's per-PASS "did the body change" result — not durable
+// across attempts, since the body stops looking "changed" after the very
+// first write. ForceRestartActive is evaluated fresh on every attempt
+// (never cached), so this must keep restarting until it succeeds.
+func TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump with an UNCHANGED services block — M1's exact trigger condition —
+	// and mark the unit active so restart-vs-start is observable.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+	runner.StubErr = map[string]error{"systemctl restart " + unit: errors.New("restart refused (test)")}
+
+	tick2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+	tick2 := runner.Invocations[tick2Start:]
+	if !hasSystemctlOp(tick2, "restart", unit) {
+		t.Fatalf("tick 2: expected a restart attempt (that then fails), invocations: %v", tick2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("tick 2: a failed restart must not commit — expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+
+	// Clear the stub error — the retry succeeds.
+	delete(runner.StubErr, "systemctl restart "+unit)
+	tick3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3: %v", err)
+	}
+	tick3 := runner.Invocations[tick3Start:]
+	if !hasSystemctlOp(tick3, "restart", unit) {
+		t.Errorf("M2 REGRESSION: tick 3 must STILL attempt a restart (not silently degrade to start because the body no longer looks 'changed'), invocations: %v", tick3)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("tick 3: expected the upgrade to commit to d2 now that the restart succeeds, got digest=%q ok=%v", digest, ok)
 	}
 }
 
@@ -170,8 +810,13 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 	if err := os.MkdirAll(blocked, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
+	// user_namespace flips true (old is false, via upgradeTestReconciler's
+	// default fixture) so userns.conf — written unconditionally by step 2,
+	// unlike capabilities.conf which is blocked below — is an observable
+	// witness for whether restoreDropInSnapshot actually ran (A1).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUserNS("d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, true, upgradeAppService)
 	backdateManifestCache(t, manifestRoot, "m1")
+	wantUserNSBody := security.RenderUserNamespaceDropInBody(false) // old value
 
 	// Three consecutive blocked ticks — point 5d: zero stops across ALL of
 	// them, not just the first.
@@ -191,12 +836,21 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 		if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 			t.Errorf("round 9 REGRESSION: blocked tick %d must leave m1 attached at the OLD digest d1, got digest=%q ok=%v", attempt, digest, ok)
 		}
+		gotUserNSBody, err := os.ReadFile(filepath.Join(dropInRoot, unit+".d", "userns.conf"))
+		if err != nil {
+			t.Fatalf("blocked tick %d: read userns.conf: %v", attempt, err)
+		}
+		if string(gotUserNSBody) != wantUserNSBody {
+			t.Errorf("A1 REGRESSION: blocked tick %d must restore userns.conf to the OLD value, got %q want %q", attempt, gotUserNSBody, wantUserNSBody)
+		}
 	}
 
 	// Unblock — the bump should now go through normally.
 	if err := os.RemoveAll(blocked); err != nil {
 		t.Fatal(err)
 	}
+	// M6: the settled unit must read active for the upgrade to commit.
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce recovery tick: %v", err)
 	}
@@ -215,7 +869,7 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 // state.json still reporting the old digest — the same guarantee as the
 // policy-refusal case, for a different step.
 func TestUpgradeModule_HotReconcileRefusalLeavesOldRunningStateUnchanged(t *testing.T) {
-	r, client, runner, layout, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	r, client, runner, layout, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 	forcePivotNative(t)
 
@@ -223,7 +877,10 @@ func TestUpgradeModule_HotReconcileRefusalLeavesOldRunningStateUnchanged(t *test
 		t.Fatalf("RunOnce pass 1: %v", err)
 	}
 
-	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	// Old and new capability sets deliberately differ so capabilities.conf
+	// is an observable witness for A1's restore, mirroring
+	// TestUpgradeModule_AttachRefusalRestoresOldPolicyOnDisk's own pattern.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
 	backdateManifestCache(t, manifestRoot, "m1")
 	// Stand-in for what the erofs loop-mount of d2 would expose — without
 	// real bytes here, PlanScratchBudget sees a zero-byte diff and the
@@ -263,6 +920,17 @@ func TestUpgradeModule_HotReconcileRefusalLeavesOldRunningStateUnchanged(t *test
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Errorf("round 9 REGRESSION: pass 2 must leave m1 attached at the OLD digest d1, got digest=%q ok=%v", digest, ok)
+	}
+	wantCapsBody, err := security.RenderCapabilityDropInBody([]string{"CAP_CHOWN"})
+	if err != nil {
+		t.Fatalf("RenderCapabilityDropInBody(old): %v", err)
+	}
+	gotCapsBody, err := os.ReadFile(filepath.Join(dropInRoot, unit+".d", "capabilities.conf"))
+	if err != nil {
+		t.Fatalf("read capabilities.conf after the hotReconcile refusal: %v", err)
+	}
+	if string(gotCapsBody) != wantCapsBody {
+		t.Errorf("A1 REGRESSION: after step 3's refusal, capabilities.conf must be restored to the OLD policy (%q), got %q", wantCapsBody, gotCapsBody)
 	}
 }
 
@@ -317,6 +985,116 @@ func TestUpgradeModule_AttachRefusalRestoresOldPolicyOnDisk(t *testing.T) {
 	}
 }
 
+// upgradeModuleFixtureWithSeccomp is upgradeModuleFixture plus an optional
+// seccomp_profile — needed only by the R3b "new-only drop-in file" test
+// below, which requires a manifest transition where the NEW policy creates
+// a drop-in file (seccomp.conf) the OLD one never wrote at all.
+func upgradeModuleFixtureWithSeccomp(digest string, capabilities []string, seccompProfile, services string) string {
+	capJSON := "["
+	for i, c := range capabilities {
+		if i > 0 {
+			capJSON += ","
+		}
+		capJSON += fmt.Sprintf("%q", c)
+	}
+	capJSON += "]"
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"capabilities": %s, "user_namespace": false, "seccomp_profile": %q}},
+			"services": [%s]
+		}
+	}`, digest, capJSON, seccompProfile, services)
+}
+
+// TestUpgradeModule_RepeatedAttachRefusalsStayByteIdenticalToPreAttemptState
+// is R3b's own red-first case: TWO CONSECUTIVE failed upgrade attempts for
+// the SAME old/new digest pair. Before R3b, reapplyOldPolicyBestEffort
+// re-rendered the old policy from oldMf (RunOnce's previousManifests
+// snapshot) — correct on the FIRST attempt (the cache still held the old
+// digest's manifest), but WRONG on the second: attempt 1's own manifest
+// fetch had already overwritten the on-disk cache with the NEW digest's
+// content, so attempt 2's "restore" silently re-rendered the NEW (already
+// wrong) policy instead of genuinely restoring the old one. This test
+// fails on that code (verified) and passes once restoreDropInSnapshot
+// (byte-exact, independent of previousManifests) replaces it.
+func TestUpgradeModule_RepeatedAttachRefusalsStayByteIdenticalToPreAttemptState(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	capPath := filepath.Join(dropInRoot, unit+".d", "capabilities.conf")
+	preAttemptState, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities.conf after pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubErr = map[string]error{
+		"systemctl start " + unit: errors.New("start refused (test)"),
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce attempt %d: %v", attempt, err)
+		}
+		if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+			t.Fatalf("attempt %d: expected m1 to remain attached at d1, got digest=%q ok=%v", attempt, digest, ok)
+		}
+		got, err := os.ReadFile(capPath)
+		if err != nil {
+			t.Fatalf("attempt %d: read capabilities.conf: %v", attempt, err)
+		}
+		if string(got) != string(preAttemptState) {
+			t.Errorf("R3b REGRESSION: after attempt %d, capabilities.conf must be byte-identical to the pre-upgrade (OLD digest's) state %q, got %q",
+				attempt, preAttemptState, got)
+		}
+	}
+}
+
+// TestUpgradeModule_RestoreRemovesADropInFileTheNewPolicyCreated is R3b's
+// second required test: the NEW manifest declares a seccomp_profile the OLD
+// one never had, so step 2 creates seccomp.conf where nothing existed
+// before. On a step-4 failure, restoreDropInSnapshot must REMOVE that file
+// (not merely leave it, and not try to overwrite it with empty content —
+// its snapshot correctly records existed=false).
+func TestUpgradeModule_RestoreRemovesADropInFileTheNewPolicyCreated(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	seccompPath := filepath.Join(dropInRoot, unit+".d", "seccomp.conf")
+	if _, err := os.Stat(seccompPath); !os.IsNotExist(err) {
+		t.Fatalf("precondition: seccomp.conf must not exist after pass 1 (old policy declares no seccomp_profile), stat err=%v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithSeccomp(
+		"d2", []string{"CAP_CHOWN"}, "default", upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubErr = map[string]error{
+		"systemctl start " + unit: errors.New("start refused (test)"),
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("pass 2: expected m1 to remain attached at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if _, err := os.Stat(seccompPath); !os.IsNotExist(err) {
+		t.Errorf("R3b REGRESSION: seccomp.conf, created by the NEW (refused) policy's step 2, must be REMOVED once the upgrade fails and restores — stat err=%v", err)
+	}
+}
+
 // TestUpgradeModule_AgentVersionBumpTickDoesNotDoubleRestartViaReattach
 // covers point 5e: a tick that ALSO carries a pending module version bump
 // must not additionally restart that same unit through the ordinary
@@ -349,6 +1127,8 @@ func TestUpgradeModule_AgentVersionBumpTickDoesNotDoubleRestartViaReattach(t *te
 
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
 	backdateManifestCache(t, manifestRoot, "m1")
+	// M6: the settled unit must read active for the upgrade to commit.
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
 
 	pass2Start := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {

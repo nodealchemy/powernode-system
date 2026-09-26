@@ -96,6 +96,11 @@ func budgetReportingFixture(t *testing.T) (*Reconciler, string) {
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)
 	}
+	// M6 (review round 9): no real settle wait in tests — this fixture's
+	// manifest declares no services, so upgradeModule's settle check has
+	// nothing to iterate over regardless, but the WAIT itself still runs
+	// for however many seconds NewReconciler defaults to.
+	r.cfg.UpgradeSettleWindow = 0
 	return r, statePath
 }
 

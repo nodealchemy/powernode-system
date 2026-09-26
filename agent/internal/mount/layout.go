@@ -160,13 +160,14 @@ type Module struct {
 	// rest of the entry so a LATER upgrade of this same module ID can
 	// compute exactly which units are leaving (Units minus the new
 	// manifest's own UnitNames()) without needing the OLD manifest's full
-	// content — the digest-keyed attached-snapshot store this replaced
-	// (manifest.SaveAttachedSnapshot/LoadAttachedSnapshot, round 7) existed
-	// only to answer this same question, at a heavier cost (a full manifest
+	// content — round 7's digest-keyed attached-snapshot store (deleted in
+	// round 9, its symbols no longer exist in this codebase) existed only
+	// to answer this same question, at a heavier cost (a full manifest
 	// round-trip through disk) for what is really just a name list. Empty
 	// (omitted from state.json) for an entry attached by a pre-round-9
-	// agent build; upgradeModule falls back to previousManifests for that
-	// one case.
+	// agent build; upgradeModule resolves and PERSISTS the fallback onto
+	// this field the first time it needs to (M7, review round 9), rather
+	// than re-deriving it from a manifest cache on every attempt.
 	Units []string `json:"Units,omitempty"`
 }
 
