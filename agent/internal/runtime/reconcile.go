@@ -186,9 +186,11 @@ type Reconciler struct {
 	// SecurityFailClosedSensor and clear a real, still-open alarm, then
 	// re-raise it once the pass finishes. securityFailClosedPending
 	// accumulates the units THIS pass has found so far in an ordinary
-	// (non-atomic) field — safe because only the single RunOnce goroutine
-	// ever touches it — and publishFailClosed swaps the atomic pointer over
-	// to it in ONE Store call after the attach/reattach loops finish, so a
+	// (non-atomic) field — safe because every attachModule caller (RunOnce's
+	// two loops, and AttachOne — H1, review round 5) holds r.mu for its
+	// ENTIRE body, so only one of them ever touches it at a time — and
+	// publishSecurityFailClosed(ForModule) swaps the atomic pointer over to
+	// it in ONE Store call once its caller's own pass finishes, so a
 	// concurrent reader only ever sees the previous pass's complete result or
 	// this pass's complete result, never a value from mid-pass.
 	securityFailClosedUnits   atomic.Pointer[[]string]
@@ -2180,9 +2182,10 @@ func (r *Reconciler) SecurityFailClosedUnits() []string {
 }
 
 // recordSecurityFailClosed merges units into securityFailClosedPending,
-// deduped. Called only from attachModule, which only ever runs from the
-// single RunOnce goroutine, so this plain (non-atomic) field needs no lock —
-// it is never read from any other goroutine. See securityFailClosedUnits'
+// deduped. Called only from attachModule, whose every caller (RunOnce,
+// AttachOne) holds r.mu for its entire body, so only one of them ever runs
+// at a time and this plain (non-atomic) field needs no lock of its own — it
+// is never read from any other goroutine. See securityFailClosedUnits'
 // own doc for why the PUBLISHED value is atomic and updated separately
 // (publishSecurityFailClosed), not here.
 func (r *Reconciler) recordSecurityFailClosed(units []string) {
@@ -2217,18 +2220,64 @@ func (r *Reconciler) resetSecurityFailClosed() {
 }
 
 // publishSecurityFailClosed swaps the PUBLISHED atomic value over to
-// whatever this pass accumulated, in ONE Store call. Called once, after the
-// attach/reattach loops finish (the only place recordSecurityFailClosed is
-// called from), so a concurrent buildHeartbeat call reading
-// SecurityFailClosedUnits mid-pass sees the PREVIOUS pass's complete result
-// right up until this pass's own complete result replaces it — never an
-// empty value manufactured by resetting before this pass has finished
+// whatever this pass accumulated, in ONE Store call. Called once, after
+// RunOnce's attach/reattach loops finish, so a concurrent buildHeartbeat call
+// reading SecurityFailClosedUnits mid-pass sees the PREVIOUS pass's complete
+// result right up until this pass's own complete result replaces it — never
+// an empty value manufactured by resetting before this pass has finished
 // finding its own failures (G4: that gap would read as "recovered" to
 // SecurityFailClosedSensor, clearing a real alarm, then re-raise it once the
 // pass finishes).
+//
+// RunOnce OWNS THE WHOLE SET, so this is a full replace, safe because RunOnce
+// is the only caller that reasons about every desired module in one pass.
+// AttachOne (a single hot-add outside any RunOnce pass) must NOT use this —
+// see publishSecurityFailClosedForModule, its own merge-scoped counterpart
+// (H1, review round 5).
 func (r *Reconciler) publishSecurityFailClosed() {
 	published := r.securityFailClosedPending
 	r.securityFailClosedUnits.Store(&published)
+}
+
+// publishSecurityFailClosedForModule merges the result of attaching ONE
+// module (moduleUnits: every unit name that module owns, regardless of
+// whether it just failed) into the published set, touching only entries that
+// belong to THIS module. Used by AttachOne (H1, review round 5): before this,
+// AttachOne called attachModule directly with no reset/publish bracket at
+// all, so a fail-closed refusal it produced accumulated into
+// securityFailClosedPending and then sat there forever, invisible to
+// SecurityFailClosedUnits()/buildHeartbeat/the sensor until some LATER
+// RunOnce pass happened to touch the same module and publish over it — and
+// combined with G5 (a recovered unit is published immediately, independent
+// of RunOnce), a unit that had previously recovered and then failed again
+// via AttachOne read as fully clean on both the pivot and the runtime lists.
+//
+// Every direct attachModule caller in this package is audited: RunOnce (two
+// loops, both already covered by publishSecurityFailClosed) and AttachOne
+// (this one). Both hold r.mu for their ENTIRE body, so they can never
+// interleave with each other or with themselves — the read-modify-write here
+// needs no additional lock beyond what atomic.Pointer already gives
+// concurrent buildHeartbeat readers.
+func (r *Reconciler) publishSecurityFailClosedForModule(moduleUnits []string) {
+	inModule := make(map[string]bool, len(moduleUnits))
+	for _, u := range moduleUnits {
+		inModule[u] = true
+	}
+	merged := make([]string, 0, len(r.securityFailClosedPending))
+	for _, u := range r.SecurityFailClosedUnits() {
+		if !inModule[u] {
+			// Not this module's unit — a full RunOnce pass (or a previous
+			// AttachOne) published it; leave it exactly as it is.
+			merged = append(merged, u)
+		}
+		// Was this module's unit: DROPPED here unconditionally. If it is
+		// still failing, it is re-added below from this call's own pending
+		// result; if it just recovered, dropping it (and not re-adding it)
+		// is precisely the correction this call is reporting.
+	}
+	merged = append(merged, r.securityFailClosedPending...)
+	r.securityFailClosedUnits.Store(&merged)
+	r.securityFailClosedPending = nil
 }
 
 // SecurityFailClosedRecovered returns the units whose live security drop-in
@@ -2243,10 +2292,10 @@ func (r *Reconciler) SecurityFailClosedRecovered() map[string]bool {
 
 // recordSecurityFailClosedRecovered merges units into the atomically-
 // published recovered set. Called only from attachModule on a FULLY
-// successful attach (every one of the module's security drop-ins wrote), so
-// only the single RunOnce goroutine ever writes it — the load-merge-store
-// needs no lock of its own beyond what atomic.Pointer already gives
-// concurrent readers.
+// successful attach (every one of the module's security drop-ins wrote); its
+// callers (RunOnce, AttachOne) hold r.mu for their entire body, so only one
+// ever writes it at a time — the load-merge-store needs no lock of its own
+// beyond what atomic.Pointer already gives concurrent readers.
 func (r *Reconciler) recordSecurityFailClosedRecovered(units []string) {
 	if len(units) == 0 {
 		return
@@ -2297,8 +2346,22 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	}
 
 	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash, CosignBundleB64: mf.CosignBundleB64}
-	if err := r.attachModule(ctx, mod, mf); err != nil {
-		return "", err
+	// Bracket this single-module attach with its OWN pending/publish cycle
+	// (H1, review round 5) — attachModule only ACCUMULATES into
+	// securityFailClosedPending; without an explicit publish here, a refusal
+	// AttachOne produces would sit unpublished until some LATER RunOnce pass
+	// happened to touch the same module. publishSecurityFailClosedForModule,
+	// not publishSecurityFailClosed: this call reasons about ONE module, not
+	// the whole desired set RunOnce owns, so it must merge into (never
+	// replace) whatever a full RunOnce pass has published for every OTHER
+	// module. Runs whether attachModule succeeds or fails, so a module that
+	// was PREVIOUSLY published as failing and now succeeds via AttachOne is
+	// correctly cleared too.
+	r.resetSecurityFailClosed()
+	attachErr := r.attachModule(ctx, mod, mf)
+	r.publishSecurityFailClosedForModule(mf.UnitNames())
+	if attachErr != nil {
+		return "", attachErr
 	}
 	// Unconditional, unlike the two reconcile loops: this path never runs
 	// hotReconcileIfNeeded, so there is no materialization verdict to honour
