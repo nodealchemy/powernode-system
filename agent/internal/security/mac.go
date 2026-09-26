@@ -157,14 +157,13 @@ func renderSeccompDropInBody(profilePath string) (string, error) {
 }
 
 func writeSeccompDropInAt(base, unit, profilePath string) error {
-	if unit == "" {
-		return errors.New("WriteSeccompDropIn: empty unit")
-	}
-	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
-		return errors.New("WriteSeccompDropIn: invalid unit name (path traversal)")
-	}
-	if strings.HasPrefix(unit, "-") {
-		return errors.New("WriteSeccompDropIn: invalid unit name (leading dash)")
+	// Shared with WriteCapabilityDropIn/WriteCapabilityDropInAt/
+	// WriteUserNamespaceDropIn (capabilities.go / userns_dropin.go) — one
+	// unit-name guard for all four drop-in writers, not a fourth independent
+	// copy of the same three checks (empty / path-traversal / leading-dash)
+	// that could silently refuse a different set of names than its siblings.
+	if err := validateDropInUnitName("WriteSeccompDropIn", unit); err != nil {
+		return err
 	}
 	body, err := renderSeccompDropInBody(profilePath)
 	if err != nil {

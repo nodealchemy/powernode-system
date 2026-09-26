@@ -106,12 +106,13 @@ func TestWriteCapabilityDropInAt_IsIdempotentAndSorted(t *testing.T) {
 	}
 }
 
-// SHARED VALIDATION (R5, extended IMP-caef5c00d63f phase 3 to
-// WriteUserNamespaceDropIn once it stopped carrying its own copy of the same
-// three checks — userns_dropin.go). All THREE drop-in writers must refuse the
-// SAME invalid unit names, via the one shared validateDropInUnitName helper,
-// not independently-maintained copies of the same checks (empty /
-// path-traversal / leading-dash) that could silently drift apart.
+// SHARED VALIDATION (R5, extended IMP-caef5c00d63f phase 3/4 to
+// WriteUserNamespaceDropIn and WriteSeccompDropIn once they stopped carrying
+// their own copies of the same three checks — userns_dropin.go, mac.go). All
+// FOUR drop-in writers must refuse the SAME invalid unit names, via the one
+// shared validateDropInUnitName helper, not independently-maintained copies
+// of the same checks (empty / path-traversal / leading-dash) that could
+// silently drift apart.
 func TestCapabilityDropInWriters_ShareUnitNameValidation(t *testing.T) {
 	badNames := []string{"", "../escape", "foo/bar", "foo\x00null", "-leading-dash", "escape..d", "foo\\bar"}
 	for _, bad := range badNames {
@@ -128,11 +129,20 @@ func TestCapabilityDropInWriters_ShareUnitNameValidation(t *testing.T) {
 			defer func() { systemdDropInRoot = original }()
 			return WriteUserNamespaceDropIn(bad, true)
 		}()
+		seccompErr := func() error {
+			original := systemdDropInRoot
+			systemdDropInRoot = t.TempDir()
+			defer func() { systemdDropInRoot = original }()
+			return WriteSeccompDropIn(bad, "")
+		}()
 		if (atErr == nil) != (liveErr == nil) {
 			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteCapabilityDropIn err=%v — the two writers disagree", bad, atErr, liveErr)
 		}
 		if (atErr == nil) != (usernsErr == nil) {
 			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteUserNamespaceDropIn err=%v — the writers disagree", bad, atErr, usernsErr)
+		}
+		if (atErr == nil) != (seccompErr == nil) {
+			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteSeccompDropIn err=%v — the writers disagree", bad, atErr, seccompErr)
 		}
 	}
 }
