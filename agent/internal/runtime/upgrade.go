@@ -1008,10 +1008,15 @@ func (r *Reconciler) retryPendingUndoUnits(ctx context.Context, current *mount.S
 			stillDown = append(stillDown, unit)
 		}
 	}
+	// Q7 (review round 14, LOW, rule-1 edge): write to EVERY matching row
+	// for this ID, not just the first — the M4 duplicate-state-entry case
+	// (see O8(a)'s own doc, reconcile.go) means a second row could
+	// independently carry its own view of PendingUndoUnits; leaving it
+	// unwritten would strand a unit's retry result on a row nothing else
+	// reads while the visible (first) row silently disagrees.
 	for i, m := range current.AttachedModules {
 		if m.ID == moduleID {
 			current.AttachedModules[i].PendingUndoUnits = stillDown
-			break
 		}
 	}
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {

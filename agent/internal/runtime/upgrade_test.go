@@ -4472,6 +4472,55 @@ func TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit(t *testing.T) {
 	}
 }
 
+// TestRetryPendingUndoUnits_WritesResultToEveryDuplicateStateEntry is Q7
+// (review round 14, LOW, rule-1 edge): the write-back loop stopped at the
+// FIRST matching row for a module ID (`break`) — the M4 duplicate-state-
+// entry case (two AttachedModules rows for the same ID) means a second row
+// could independently carry its own, possibly disagreeing, view of
+// PendingUndoUnits; leaving it unwritten strands a stale value on a row
+// nothing else reads while the visible (first) row's result silently
+// disagrees. Two duplicate rows for "m1", each listing the SAME two units —
+// after the retry, BOTH rows must reflect the same, correct result.
+func TestRetryPendingUndoUnits_WritesResultToEveryDuplicateStateEntry(t *testing.T) {
+	r, _, runner, _, statePath, _, _ := upgradeTestReconciler(t)
+	okUnit := lifecycle.UnitName("m1", "ok-unit")
+	stuckUnit := lifecycle.UnitName("m1", "stuck-unit")
+
+	current := &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "m1", Digest: "d1", PendingUndoUnits: []string{okUnit, stuckUnit}},
+			{ID: "m1", Digest: "d1", PendingUndoUnits: []string{okUnit, stuckUnit}},
+		},
+		LastAttachedManifestHashes: map[string]string{},
+	}
+	if err := mount.SaveState(statePath, current); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + okUnit: []byte("active\n"),
+		// stuckUnit stays at RecorderRunner's default ("not active").
+	}
+
+	r.retryPendingUndoUnits(context.Background(), current, "m1", []string{okUnit, stuckUnit})
+
+	count := 0
+	for _, m := range current.AttachedModules {
+		if m.ID != "m1" {
+			continue
+		}
+		count++
+		if containsArg(m.PendingUndoUnits, okUnit) {
+			t.Errorf("Q7 REGRESSION: entry %d still lists %s (confirmed active), got %v", count, okUnit, m.PendingUndoUnits)
+		}
+		if !containsArg(m.PendingUndoUnits, stuckUnit) {
+			t.Errorf("Q7 REGRESSION: entry %d dropped %s (still inactive), got %v", count, stuckUnit, m.PendingUndoUnits)
+		}
+	}
+	if count != 2 {
+		t.Fatalf("precondition drifted: expected both duplicate m1 rows to survive, got %d", count)
+	}
+}
+
 // TestRecoverFromDepartingUnitConflict_ClearsPendingUndoUnitsOnRecovery is
 // Q6's own "optionally pin" mutant-kill test (review round 14, tests):
 // mutation testing showed the post-recovery cleanup inside
