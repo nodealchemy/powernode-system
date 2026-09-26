@@ -184,16 +184,27 @@ security:
     - CAP_WAKE_ALARM
   egress_allow: []
   privileged: false
-  # user_namespace: true is the manifest's LONG-STANDING declared value
-  # (predates this phase). Live ops-hub shows the qga unit actually running
-  # with PrivateUsers=no — see R2 investigation (reported separately, this
-  # phase deliberately does NOT change this value pending that finding: if
-  # PrivateUsers=yes ever DID apply here it would remap qga's root out of
-  # the host's real UID/GID space, which is a materially different question
-  # from the capability bounding set this commit fixes, and changing it
-  # silently on a guess would be exactly the kind of unaudited change this
-  # whole phase exists to stop making).
-  user_namespace: true
+  # user_namespace: false (operator decision, review round, IMP-caef5c00d63f
+  # phase 2, R2 follow-up). qga is this self-hosted control plane's
+  # HOST-ROOT RECOVERY CHANNEL: `qm guest exec` reaches it from the
+  # hypervisor to run arbitrary root commands on the guest when the
+  # control-plane-driven paths are unavailable — break-glass used it on
+  # ops-hub to write /etc/sudoers.d directly. PrivateUsers=yes would remap
+  # qga's root to an unprivileged host UID/GID inside a private user
+  # namespace, silently defeating that exact channel the first time it was
+  # actually enforced — the same category of risk as the full-capability
+  # ceiling above (qga's purpose is unconstrained hypervisor-issued exec, not
+  # a fixed, auditable sequence a narrower policy could be sized against).
+  # An earlier version of this manifest left `user_namespace: true` in place
+  # pending the R2 investigation into why live ops-hub showed PrivateUsers=no
+  # despite that declared value; the investigation found the mismatch was
+  # simply because it had never yet been enforced there (attachModule only
+  # rewrites a module's drop-ins when its manifest hash changes), which meant
+  # the very next reconcile that touched this manifest would have silently
+  # turned enforcement on for the first time and broken host-root recovery.
+  # Set to false explicitly instead of leaving the stale value to eventually
+  # apply by accident.
+  user_namespace: false
 
 build:
   apt_snapshot: "20260415T000000Z"

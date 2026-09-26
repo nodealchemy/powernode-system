@@ -510,6 +510,78 @@ func TestUnitCapabilities_QgaShapedManifestGrantsTheFullKnownSet(t *testing.T) {
 	}
 }
 
+// qga KEEPS THE HOST USER NAMESPACE ON BOTH PATHS (review round,
+// IMP-caef5c00d63f phase 2, R2 follow-up / operator decision). qga is this
+// self-hosted control plane's host-root recovery channel (`qm guest exec`
+// from the hypervisor); PrivateUsers=yes would remap its root to an
+// unprivileged host UID/GID inside a private user namespace, defeating that
+// channel. WriteUserNamespaceDropIn/At write a drop-in for EVERY unit
+// unconditionally (there is no "skip when disabled" arm, unlike the
+// capabilities writers) — so "gets no userns drop-in" here means the WRITTEN
+// drop-in explicitly disables isolation (PrivateUsers=no), on both the
+// cloud-init attach path and the pivot compose path, and the two are
+// byte-identical. This is the resolver-parity pin: a manifest declaring
+// `user_namespace: false` must reach PrivateUsers=no on BOTH paths, exactly
+// like the capability ceiling parity tests above pin agreement for
+// capabilities.
+func TestUnitCapabilities_QgaShapedManifestDisablesUserNamespaceOnBothPaths(t *testing.T) {
+	var mf manifest.Manifest
+	body := `{
+	  "id": "qemu-guest-agent",
+	  "config": {"security": {"user_namespace": false}},
+	  "services": [{"name": "qga", "start_command": "/usr/sbin/qemu-ga -t /run", "user": "root"}]
+	}`
+	if err := json.Unmarshal([]byte(body), &mf); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	policy := buildPolicy(&mf)
+	if policy.UserNamespace {
+		t.Fatalf("qga-shaped manifest with user_namespace:false must resolve UserNamespace=false, got true")
+	}
+	unit := lifecycle.UnitName(mf.ID, "qga")
+
+	// attachModule's view: systemdDropInRoot redirected to a temp dir.
+	attachRoot := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(attachRoot))
+	layout := mount.DefaultLayout()
+	layout.Root = t.TempDir()
+	layout = layout.Resolve()
+	ar := &Reconciler{cfg: ReconcilerConfig{
+		Puller:      &stubPuller{cacheDir: layout.ModulesCacheRoot},
+		Verifier:    verify.AlwaysOK{},
+		MountRunner: &mount.RecorderRunner{},
+		Layout:      layout,
+		OnError:     func(string, error) {},
+	}}
+	if err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, &mf); err != nil {
+		t.Fatalf("attachModule: %v", err)
+	}
+	attached, err := os.ReadFile(filepath.Join(attachRoot, unit+".d", "userns.conf"))
+	if err != nil {
+		t.Fatalf("read attach userns drop-in: %v", err)
+	}
+	if !strings.Contains(string(attached), "PrivateUsers=no") {
+		t.Errorf("attach path: qga must resolve to PrivateUsers=no (host recovery channel); got %q", attached)
+	}
+
+	// ComposeForPivot's view: an explicit sysroot.
+	sysroot := t.TempDir()
+	cr := newPivotReconciler(&mount.RecorderRunner{})
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	cr.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: &mf}, &BootComposedBreadcrumb{})
+	composed, err := os.ReadFile(filepath.Join(sysroot, "etc", "systemd", "system", unit+".d", "userns.conf"))
+	if err != nil {
+		t.Fatalf("read compose userns drop-in: %v", err)
+	}
+	if !strings.Contains(string(composed), "PrivateUsers=no") {
+		t.Errorf("compose path: qga must resolve to PrivateUsers=no (host recovery channel); got %q", composed)
+	}
+
+	if string(attached) != string(composed) {
+		t.Errorf("attach and compose userns drop-ins are NOT byte-identical:\nattach=%q\ncompose=%q", attached, composed)
+	}
+}
+
 // FAIL CLOSED ON A DROP-IN WRITE FAILURE (review round, IMP-caef5c00d63f
 // phase 2). AttachServicesNative enables a module's units BEFORE the
 // capability-drop-in loop runs, so a write failure with no further action
