@@ -736,6 +736,52 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	}
 	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
 
+	// O7 (review round 12): bootstrap the N3 attached-snapshot store for any
+	// module whose CURRENTLY attached digest has no snapshot of its own yet —
+	// a node that attached before N3 (round 11) existed, or one that has not
+	// gone through a fresh attach/reattach tick since. Without this, the
+	// FIRST upgrade attempt against such a module falls through to
+	// previousManifests (the ID-keyed "latest fetch" cache) for "what was the
+	// old digest's content", which is fine for that one attempt — but a
+	// SECOND attempt (a retry, or a revert) runs AFTER this tick's fetch loop
+	// above has already overwritten previousManifests' own on-disk source
+	// with the ATTEMPTED (new) digest's content, so the second attempt would
+	// silently read the new digest back as "the old one". That is exactly
+	// the second-failed-tick bug N3 exists to prevent; this closes the one
+	// gap where it can still happen — the window before a node's first
+	// attach/reattach since N3 shipped. Uses previousManifests as captured
+	// BEFORE this tick's own fetch loop, per its own doc comment above. The
+	// digest must match exactly what mount.Module actually has attached
+	// right now — a stale or unrelated cache entry describes different
+	// content and must never be mistaken for the running digest's own. Run
+	// after rebaseStateAgainstBoot so a module the boot dropped is never
+	// bootstrapped or GC'd for nothing.
+	for _, mod := range current.AttachedModules {
+		if mod.Digest == "" {
+			continue
+		}
+		if _, aerr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest); aerr == nil {
+			continue // already bootstrapped (or genuinely attached/reattached under N3)
+		}
+		pm, ok := previousManifests[mod.ID]
+		if !ok || pm == nil || pm.Digest != mod.Digest {
+			continue // no cached content matching the currently-attached digest
+		}
+		if serr := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, pm); serr != nil {
+			r.cfg.OnError("reconciler:upgrade_snapshot_bootstrap", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, serr))
+		}
+	}
+	// O7 (review round 12): GC the N3 store — every module still attached
+	// keeps only its currently-attached digest and its PendingDigest (if
+	// mid-upgrade); everything else is a resolved past attempt with no
+	// remaining reader. A module leaving the composition entirely is
+	// cleaned up in detachModule instead, once it actually detaches.
+	for _, mod := range current.AttachedModules {
+		if perr := manifest.PruneAttachedSnapshots(r.cfg.ManifestRoot, mod.ID, mod.Digest, mod.PendingDigest); perr != nil {
+			r.cfg.OnError("reconciler:upgrade_snapshot_gc", fmt.Errorf("module %s: %w", mod.ID, perr))
+		}
+	}
+
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
 	// Partition version bumps OUT of toDetach/toAttach entirely (round 9,
@@ -2842,6 +2888,14 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 	} else if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
 		r.cfg.OnError("reconciler:unmount_module",
 			fmt.Errorf("module %s: %w", mod.ID, err))
+	}
+	// O7 (review round 12): this is a genuine removal (no same-ID
+	// successor reaches this function — an upgrade or a revert never calls
+	// detachModule at all), so the N3 store has nothing left to answer for
+	// ANY digest of this module ID. Best-effort: a failure here leaves a
+	// harmless orphaned file, not a correctness problem.
+	if err := manifest.RemoveModuleSnapshots(r.cfg.ManifestRoot, mod.ID); err != nil {
+		r.cfg.OnError("reconciler:upgrade_snapshot_gc", fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	_ = current // current state held by caller; best-effort detach
 	return nil

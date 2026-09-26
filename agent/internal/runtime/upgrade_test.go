@@ -11,6 +11,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
 )
@@ -2442,5 +2443,102 @@ func TestAttachModuleServices_SelfHostFenceAppliesToManifestOnlyReattachNotBump(
 	pass3 := runner.Invocations[pass3Start:]
 	if !hasSystemctlOp(pass3, "restart", unit) {
 		t.Errorf("A2 REGRESSION: a version bump on a self-hosted node must bypass the restart fence via upgradeModule, invocations: %v", pass3)
+	}
+}
+
+// TestRunOnce_BootstrapsAttachedSnapshotForPreN3Attach is O7's bootstrap
+// case (review round 12): a module attached before the N3 attached-snapshot
+// store existed (round 11) — or one whose snapshot write previously failed
+// and was never retried — has no attached/<digest>.json for its currently
+// running digest. Without a bootstrap, the FIRST upgrade attempt against
+// such a module falls back to previousManifests (fine for one attempt), but
+// a SECOND attempt reads the wrong "old" content back — the exact
+// second-failed-tick bug N3 exists to prevent. Simulated here by deleting
+// the snapshot file a normal attach already wrote, leaving only the
+// ID-keyed manifest cache (exactly what a pre-N3 build's on-disk state
+// looks like) — then asserting an otherwise-no-op reconcile tick recreates
+// it from that cache, matching the currently-attached digest exactly.
+func TestRunOnce_BootstrapsAttachedSnapshotForPreN3Attach(t *testing.T) {
+	r, _, _, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err != nil {
+		t.Fatalf("precondition: expected pass 1's own attach to have saved a d1 snapshot: %v", err)
+	}
+	snapPath := filepath.Join(manifestRoot, "m1", "attached", "d1.json")
+	if err := os.Remove(snapPath); err != nil {
+		t.Fatalf("precondition: removing %s to simulate a pre-N3 attach: %v", snapPath, err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err == nil {
+		t.Fatalf("precondition: expected no snapshot after removing %s", snapPath)
+	}
+
+	// PASS 2: nothing changed — same digest, same manifest body. Nothing in
+	// the ordinary attach/reattach path has any reason to run, so ONLY the
+	// O7 bootstrap can be what recreates the snapshot.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	got, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1")
+	if err != nil {
+		t.Fatalf("O7 REGRESSION: expected pass 2 to bootstrap the missing d1 snapshot, got: %v", err)
+	}
+	if got.ID != "m1" || got.Digest != "d1" {
+		t.Errorf("O7 REGRESSION: bootstrapped snapshot content mismatch, got id=%q digest=%q", got.ID, got.Digest)
+	}
+}
+
+// TestRunOnce_PrunesAttachedSnapshotsForDigestsNeitherAttachedNorPending is
+// O7's GC case (review round 12): manifest.SaveAttachedSnapshot writes a new
+// file per digest a module ID is ever attached under and nothing previously
+// deleted one — every version bump over a module's life leaves its old
+// digest's snapshot behind forever. After a bump from d1 to d2 commits
+// (PendingDigest cleared, Digest now d2), a LATER no-op tick's GC pass must
+// remove d1's now-orphaned snapshot while keeping d2's (still the
+// currently-attached digest).
+func TestRunOnce_PrunesAttachedSnapshotsForDigestsNeitherAttachedNorPending(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+	d1Path := filepath.Join(manifestRoot, "m1", "attached", "d1.json")
+	d2Path := filepath.Join(manifestRoot, "m1", "attached", "d2.json")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	if _, err := os.Stat(d1Path); err != nil {
+		t.Fatalf("precondition: expected %s after pass 1: %v", d1Path, err)
+	}
+
+	// PASS 2: version bump d1 -> d2, settling immediately (app reads active).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	if _, err := os.Stat(d2Path); err != nil {
+		t.Fatalf("precondition: expected %s after pass 2's commit: %v", d2Path, err)
+	}
+	// d1's snapshot must survive pass 2 itself — this tick's own GC runs
+	// against the PRE-bump state (Digest still d1, PendingDigest still
+	// empty at the top of the tick), so d1 is exactly what it keeps; the
+	// bump that abandons d1 happens later in this SAME tick.
+	if _, err := os.Stat(d1Path); err != nil {
+		t.Fatalf("precondition: expected %s to still exist immediately after pass 2 (GC ran before the bump): %v", d1Path, err)
+	}
+
+	// PASS 3: a genuine no-op tick — nothing changed since the commit. GC
+	// now sees Digest=d2, PendingDigest="" from the START of this tick, so
+	// d1's file has no reader left and must be removed.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3: %v", err)
+	}
+	if _, err := os.Stat(d1Path); !os.IsNotExist(err) {
+		t.Errorf("O7 REGRESSION: expected orphaned snapshot %s to be pruned by pass 3, stat err=%v", d1Path, err)
+	}
+	if _, err := os.Stat(d2Path); err != nil {
+		t.Errorf("O7 REGRESSION: pass 3's GC must not touch the currently-attached digest's own snapshot %s: %v", d2Path, err)
 	}
 }

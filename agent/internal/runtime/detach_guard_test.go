@@ -148,3 +148,32 @@ func TestDetachModule_ChrootModeStillUnmounts(t *testing.T) {
 		t.Error("chroot mode recomposes the union, so the superseded layer must still be unmounted")
 	}
 }
+
+// TestDetachModule_RemovesAttachedSnapshotStore is O7's GC-on-removal case
+// (review round 12): a genuine removal (no same-ID successor reaches
+// detachModule at all — an upgrade or a revert never calls it) means
+// nothing will ever again ask "what did this module ID attach as" for ANY
+// digest. Leaving attached/<digest>.json files behind would let a later
+// module that happens to reuse the same platform-issued ID inherit a
+// predecessor's snapshot content.
+func TestDetachModule_RemovesAttachedSnapshotStore(t *testing.T) {
+	pinDetachMode(t, lifecycle.RootModeNative)
+	r, _, _ := detachGuardFixture(t, liveUnionInfo)
+	manifestRoot := t.TempDir()
+	r.cfg.ManifestRoot = manifestRoot
+
+	mod := mount.Module{ID: "gone", Digest: "sha256:unreferenced"}
+	if err := manifest.SaveAttachedSnapshot(manifestRoot, mod.ID, mod.Digest, &manifest.Manifest{ID: mod.ID, Digest: mod.Digest}); err != nil {
+		t.Fatalf("precondition: SaveAttachedSnapshot: %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, mod.ID, mod.Digest); err != nil {
+		t.Fatalf("precondition: expected a snapshot to exist before detach: %v", err)
+	}
+
+	if err := r.detachModule(context.Background(), &mount.State{}, mod, map[string]*manifest.Manifest{}); err != nil {
+		t.Fatalf("detachModule: %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, mod.ID, mod.Digest); err == nil {
+		t.Error("O7 REGRESSION: expected a genuine removal to delete the module's ENTIRE attached-snapshot store")
+	}
+}

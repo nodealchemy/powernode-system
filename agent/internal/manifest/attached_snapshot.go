@@ -101,3 +101,65 @@ func LoadAttachedSnapshot(root, moduleID, digest string) (*Manifest, error) {
 	}
 	return &m, nil
 }
+
+// PruneAttachedSnapshots removes every attached/<digest>.json file for
+// moduleID except those named in keep (pass the module's currently
+// ATTACHED digest and its PendingDigest, if any — both are digests this
+// module might still legitimately need "what was this digest's content"
+// answered for; anything else is a fully resolved past attempt or a
+// digest this module has moved on from entirely).
+//
+// O7 (review round 12): SaveAttachedSnapshot writes a new file for every
+// distinct digest a module ID is EVER attached under across its whole
+// lifetime and nothing previously deleted one — a module that goes through
+// N version bumps over its life accumulates N stale snapshot files
+// forever. Called once per reconcile tick for every currently attached
+// module; a no-op (nil error) when the module has no attached/ dir yet.
+func PruneAttachedSnapshots(root, moduleID string, keep ...string) error {
+	if moduleID == "" {
+		return nil
+	}
+	dir := filepath.Join(root, moduleID, "attached")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("readdir %s: %w", dir, err)
+	}
+	keepNames := make(map[string]bool, len(keep))
+	for _, d := range keep {
+		if d == "" {
+			continue
+		}
+		keepNames[sanitizeDigestForPath(d)+".json"] = true
+	}
+	var errs []error
+	for _, e := range entries {
+		if e.IsDir() || keepNames[e.Name()] {
+			continue
+		}
+		if rerr := os.Remove(filepath.Join(dir, e.Name())); rerr != nil && !os.IsNotExist(rerr) {
+			errs = append(errs, fmt.Errorf("remove %s: %w", e.Name(), rerr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RemoveModuleSnapshots deletes the ENTIRE attached-snapshot store for
+// moduleID, every digest at once — not a keep-set prune. Called when a
+// module is detached with no same-ID successor: a genuine removal, not an
+// upgrade or a revert, so nothing will ever again ask "what did this
+// module ID attach as" for ANY digest of it. Leaving the files behind
+// would let a later module that happens to reuse the same platform-issued
+// ID inherit a predecessor's snapshot content.
+func RemoveModuleSnapshots(root, moduleID string) error {
+	if moduleID == "" {
+		return nil
+	}
+	dir := filepath.Join(root, moduleID, "attached")
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove %s: %w", dir, err)
+	}
+	return nil
+}
