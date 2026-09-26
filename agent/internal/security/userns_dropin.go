@@ -1,7 +1,6 @@
 package security
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,14 +74,14 @@ func renderUserNamespaceDropInBody(enabled bool) string {
 }
 
 func writeUserNamespaceDropInAt(base, unit string, enabled bool) error {
-	if unit == "" {
-		return errors.New("WriteUserNamespaceDropIn: empty unit")
-	}
-	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
-		return errors.New("WriteUserNamespaceDropIn: invalid unit name (path traversal)")
-	}
-	if strings.HasPrefix(unit, "-") {
-		return errors.New("WriteUserNamespaceDropIn: invalid unit name (leading dash)")
+	// Shared with WriteCapabilityDropIn/WriteCapabilityDropInAt
+	// (capabilities.go) — this used to carry its own copy of the same three
+	// checks (empty / path-traversal / leading-dash), which had already
+	// drifted apart once (R5, IMP-caef5c00d63f phase 2) before being
+	// restored on the capability writers alone. One helper, so the three
+	// drop-in writers can never again refuse different unit names.
+	if err := validateDropInUnitName("WriteUserNamespaceDropIn", unit); err != nil {
+		return err
 	}
 
 	body := renderUserNamespaceDropInBody(enabled)
