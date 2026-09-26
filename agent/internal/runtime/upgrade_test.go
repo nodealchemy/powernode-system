@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
@@ -83,6 +84,16 @@ const upgradeWorkerService = `{"name":"old-worker", "start_command":"/bin/true",
 // M9's own test, which requires app's own restart to succeed BEFORE
 // zworker's fails, to exercise a genuine partial multi-unit restart.
 const upgradeZWorkerService = `{"name":"zworker", "start_command":"/bin/true", "restart_policy":"always"}`
+
+// upgradeCredService models a run-once credential-fetch/provisioning unit
+// (N1, review round 11): this codebase renders every unit Type=simple
+// (lifecycle.RenderUnitModeGraph) — there is no manifest-level oneshot/
+// RemainAfterExit support — so "ran once and exited cleanly" is
+// indistinguishable, at the manifest level, from any other simple unit; what
+// makes it oneshot-shaped in these tests is that it is NEVER stubbed active,
+// before or after a restart, exactly like claude-tmux's credential unit,
+// grok-cli, or dev-cell's own credential/provision units in production.
+const upgradeCredService = `{"name":"cred", "start_command":"/bin/true", "restart_policy":"never"}`
 
 // upgradeTestReconciler wires a Reconciler + client + RecorderRunner for a
 // single-module round-9 in-place-upgrade scenario, with the systemd unit
@@ -693,14 +704,21 @@ func TestUpgradeModule_UnmountFenceSkipsWhenOldDigestStillInLiveUnion(t *testing
 }
 
 // TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning is M6's
-// own test (review round 9, MEDIUM): a Type=simple unit's restart job
-// reporting success proves only that the process was launched, not that it
-// stayed up. Simulated here by a runner that reports the unit as active for
-// step 4's restart decision (so ForceRestartActive actually restarts it) but
-// then reports NOT active for the settle check immediately after — modeling
-// a binary that crashed right after exec. The upgrade must refuse to
-// delta-stop/unmount/commit, and old-worker (a departing unit that would
-// otherwise be stopped at step 5) must stay running.
+// own test (review round 9, MEDIUM), corrected for N1 (review round 11,
+// review B's test-fidelity gap): a Type=simple unit's restart job reporting
+// success proves only that the process was launched, not that it stayed up.
+// N1 makes the settle check apply ONLY to units that were ACTIVE BEFORE step
+// 4 — a unit RecorderRunner defaults to "not active" (the previous version
+// of this test never stubbed is-active at all) is now, correctly,
+// indistinguishable from a oneshot unit that never ran and gets SKIPPED, not
+// exercising the crash path this test exists to pin. app is stubbed ACTIVE
+// before the bump, so ForceRestartActive actually issues `restart` (not
+// `start`) and N1's preActive snapshot marks it settle-checkable; the
+// overridden settle-window sleep then flips app back to inactive with no
+// Result/ConditionResult opinion, modeling a binary that crashed right after
+// exec. The upgrade must refuse to delta-stop/unmount/commit, and old-worker
+// (a departing unit that would otherwise be stopped at step 5) must stay
+// running.
 func TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning(t *testing.T) {
 	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
 
@@ -713,14 +731,76 @@ func TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning(t *test
 		t.Fatalf("RunOnce pass 1: %v", err)
 	}
 
-	// Bump drops old-worker; app's body is unchanged. app's `systemctl
-	// start`/`restart` call (step 4) succeeds — no error stubbed — exactly
-	// as it would for a process that launched and then immediately died.
-	// is-active is left at RecorderRunner's default ("not active"), which
-	// is what upgradeModule's settle check (a SEPARATE query, run right
-	// after step 4 returns) reads: a systemd job reporting success is not,
-	// by itself, proof the unit stayed up.
+	// Bump drops old-worker; app's body is unchanged. app is ACTIVE before
+	// the bump — this is what makes N1's settle check apply to it at all —
+	// so step 4's `systemctl restart` (not `start`) is what actually runs,
+	// and it succeeds (no error stubbed), exactly as it would for a process
+	// that launched and then immediately died. The settle-window sleep is
+	// overridden to flip app to NOT active (with no Result/ConditionResult
+	// opinion, i.e. a genuine crash rather than a clean exit) at the moment
+	// upgradeModule would otherwise just wait — modeling the crash landing
+	// inside the settle window, after step 4's own is-active read already
+	// saw it come up.
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	pass2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	pass2 := runner.Invocations[pass2Start:]
+
+	if !hasSystemctlOp(pass2, "restart", appUnit) {
+		t.Fatalf("pass 2: expected app to be RESTARTED (it was active before the bump), not just started — got: %v", pass2)
+	}
+
+	if hasSystemctlOp(pass2, "stop", appUnit) || hasSystemctlOp(pass2, "stop", workerUnit) {
+		t.Errorf("M6 REGRESSION: pass 2 stopped a unit even though the settled unit crashed after restart — nothing should be stopped or unmounted: %v", pass2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("M6 REGRESSION: pass 2 must leave m1 attached at the OLD digest d1 (the settle check refused the commit), got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_SettleCheckSkipsUnitNeverActiveBeforeUpgrade is N1's own
+// test (review round 11, HIGH): a module with a long-running unit (app) and
+// a run-once unit (cred, e.g. a credential-fetch or provisioning script)
+// that is NEVER active — before or after the bump — must still commit the
+// bump in a SINGLE tick, with app restarted exactly once and cred never
+// touched by the settle check at all. Before N1, the settle check refused
+// to commit on ANY unit reading inactive after the settle window regardless
+// of whether it was ever meant to stay running, which meant a module
+// carrying a oneshot-shaped unit could never converge — the settle check
+// looped forever, reporting the same "crash" every tick.
+func TestUpgradeModule_SettleCheckSkipsUnitNeverActiveBeforeUpgrade(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeCredService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credUnit := lifecycle.UnitName("m1", "cred")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// app is active going into the bump (a real long-running process);
+	// cred is left at RecorderRunner's default ("not active") throughout —
+	// it ran once at pass 1 and already exited, exactly like a real
+	// oneshot-shaped unit would.
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeCredService)
 	backdateManifestCache(t, manifestRoot, "m1")
 
 	pass2Start := len(runner.Invocations)
@@ -729,11 +809,138 @@ func TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning(t *test
 	}
 	pass2 := runner.Invocations[pass2Start:]
 
-	if hasSystemctlOp(pass2, "stop", appUnit) || hasSystemctlOp(pass2, "stop", workerUnit) {
-		t.Errorf("M6 REGRESSION: pass 2 stopped a unit even though the settled unit crashed after restart — nothing should be stopped or unmounted: %v", pass2)
+	if !hasSystemctlOp(pass2, "restart", appUnit) {
+		t.Errorf("N1 REGRESSION: expected app (active before the bump) to be restarted exactly once: %v", pass2)
+	}
+	if hasSystemctlOp(pass2, "restart", credUnit) {
+		t.Errorf("N1 REGRESSION: cred was never active before the bump and must not be restarted: %v", pass2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("N1 REGRESSION: expected the bump to commit to d2 in a SINGLE tick (cred's own inactivity must never block the settle check), got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_SettleCheckAcceptsCleanExitAndConditionSkip is N1's
+// second test (review round 11, HIGH): a unit that WAS active before the
+// bump but reads inactive after the settle window is settled, not crashed,
+// when systemd's own bookkeeping says the termination was clean
+// (Result=success) or that a Condition*= directive skipped the start
+// (ConditionResult=no) — is-active alone cannot distinguish either from a
+// genuine crash. Two units cover both: "app" (Result=success) and "gated"
+// (ConditionResult=no). Neither must block the commit.
+func TestUpgradeModule_SettleCheckAcceptsCleanExitAndConditionSkip(t *testing.T) {
+	gatedService := `{"name":"gated", "start_command":"/bin/true", "restart_policy":"always"}`
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+gatedService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	gatedUnit := lifecycle.UnitName("m1", "gated")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Both units are active going into the bump, so N1's preActive snapshot
+	// marks both settle-checkable. Post-restart, both read inactive (no
+	// is-active stub for either at this point) — but app's Result is
+	// "success" (it exited cleanly on its own after the restart) and
+	// gated's ConditionResult is "no" (its Condition*= directive was not
+	// met on this restart attempt, so systemd skipped starting it). Neither
+	// is a crash.
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:                                      []byte("active\n"),
+		"systemctl is-active " + gatedUnit:                                    []byte("active\n"),
+		"systemctl show " + appUnit + " --property=Result --value":            []byte("success\n"),
+		"systemctl show " + gatedUnit + " --property=ConditionResult --value": []byte("no\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, "systemctl is-active "+appUnit)
+		delete(runner.StubOutput, "systemctl is-active "+gatedUnit)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+gatedService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("N1 REGRESSION: a clean exit (Result=success) or a condition skip (ConditionResult=no) must not refuse the commit, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_DropInRestoreSkipsUnitAlreadyRestartedOntoNewBinary is
+// N6's own test (review round 11, MEDIUM; also N10's first mutant-kill
+// target): a module with two units where old-worker's restart succeeds
+// (so it is ALREADY running the new binary by the time app's own restart
+// fails and step 4 returns an error) must restore capabilities.conf to the
+// OLD policy for app (never restarted — the old process, if it is even
+// still alive, is confined by whatever is on disk) but leave old-worker's
+// capabilities.conf at the NEW policy: reverting it would describe stale
+// confinement for a process that is no longer the one running under it.
+func TestUpgradeModule_DropInRestoreSkipsUnitAlreadyRestartedOntoNewBinary(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	workerUnit := lifecycle.UnitName("m1", "old-worker")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// old-worker SURVIVES the bump (same name in both manifests); its
+	// capability set changes so its drop-in content is an observable
+	// witness for whether N6's skip actually fired.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService+","+upgradeWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// app's own restart fails; old-worker's succeeds (no error stubbed) —
+	// a genuine PARTIAL step-4 failure.
+	runner.StubErr = map[string]error{
+		"systemctl start " + appUnit: errors.New("start refused (test)"),
+	}
+
+	pass2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	pass2 := runner.Invocations[pass2Start:]
+
+	if hasSystemctlOp(pass2, "stop", workerUnit) {
+		t.Errorf("N6 REGRESSION: old-worker already restarted onto the new binary must never be stopped by app's own failure: %v", pass2)
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
-		t.Errorf("M6 REGRESSION: pass 2 must leave m1 attached at the OLD digest d1 (the settle check refused the commit), got digest=%q ok=%v", digest, ok)
+		t.Errorf("N6: pass 2 must leave m1 attached at the OLD digest d1 (step 4 failed), got digest=%q ok=%v", digest, ok)
+	}
+
+	wantOldBody, err := security.RenderCapabilityDropInBody([]string{"CAP_CHOWN"})
+	if err != nil {
+		t.Fatalf("RenderCapabilityDropInBody(old): %v", err)
+	}
+	wantNewBody, err := security.RenderCapabilityDropInBody([]string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"})
+	if err != nil {
+		t.Fatalf("RenderCapabilityDropInBody(new): %v", err)
+	}
+	gotAppBody, err := os.ReadFile(filepath.Join(dropInRoot, appUnit+".d", "capabilities.conf"))
+	if err != nil {
+		t.Fatalf("read app's capabilities.conf: %v", err)
+	}
+	if string(gotAppBody) != wantOldBody {
+		t.Errorf("N6 REGRESSION: app (never restarted) must have its drop-in reverted to the OLD policy (%q), got %q", wantOldBody, gotAppBody)
+	}
+	gotWorkerBody, err := os.ReadFile(filepath.Join(dropInRoot, workerUnit+".d", "capabilities.conf"))
+	if err != nil {
+		t.Fatalf("read old-worker's capabilities.conf: %v", err)
+	}
+	if string(gotWorkerBody) != wantNewBody {
+		t.Errorf("N6 REGRESSION: old-worker (already restarted onto the new binary) must KEEP the NEW policy (%q), got %q — reverting it describes stale confinement for a process no longer running under it", wantNewBody, gotWorkerBody)
 	}
 }
 

@@ -84,6 +84,33 @@ func IsActive(ctx context.Context, runner mount.Runner, unit string) (bool, erro
 	return strings.TrimSpace(string(out)) == "active", nil
 }
 
+// ShowProperty returns one systemd unit property's value via
+// `systemctl show <unit> --property=<name> --value`, trimmed. Used by
+// upgradeModule's settle check (N1, review round 11) to distinguish a
+// genuine crash from a clean, expected self-termination: a unit that ran
+// once and exited 0 (Result=success) or was skipped by an unmet
+// Condition*= directive (ConditionResult=no) is settled, not crashed, even
+// though `is-active` reads "inactive" for both. Returns ("", nil) rather
+// than an error for an empty result (an unset/inapplicable property, e.g.
+// ConditionResult on a unit with no Condition*= directive at all) — the
+// caller treats an empty string as "no opinion", never as "success".
+func ShowProperty(ctx context.Context, runner mount.Runner, unit, property string) (string, error) {
+	if runner == nil {
+		return "", errors.New("systemd.ShowProperty: nil runner")
+	}
+	if err := unitNameValid(unit); err != nil {
+		return "", err
+	}
+	if property == "" {
+		return "", errors.New("systemd.ShowProperty: empty property")
+	}
+	out, err := runner.Output(ctx, "systemctl", "show", unit, "--property="+property, "--value")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // DaemonReload runs `systemctl daemon-reload`. Used by callers after
 // dropping new unit files into /etc/systemd/system.
 func DaemonReload(ctx context.Context, runner mount.Runner) error {

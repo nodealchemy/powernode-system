@@ -25,10 +25,21 @@ type moduleUpgrade struct {
 }
 
 // upgradeModule performs an IN-PLACE upgrade of a single module from
-// old.Digest to new.Digest. THE HARD INVARIANT this exists to uphold:
-// never leave a previously-running module stopped. Steps run STRICTLY in
-// order; any failure through step 4 returns immediately, leaving the old
-// digest's process fully in charge and current.AttachedModules untouched:
+// old.Digest to new.Digest.
+//
+// THE INVARIANT (operator-redefined, round 11, replacing round 9's
+// original "never stop a unit" absolute): refusals and bookkeeping — a
+// policy refusal, the identity/sudoers/egress render, a duplicate state
+// entry, a stale cache, or a reporting/heartbeat path — must NEVER stop or
+// restart a running unit; but a VERSION UPGRADE MAY restart units, because
+// that is the only way a bump ever takes effect. If a restart fails, the
+// module must auto-recover (retry, revert, or re-bump — see N2/PendingDigest
+// below) and the failure must be VISIBLE to the operator (PendingDigest +
+// PendingModuleDigests in the heartbeat, a persisted server-side alert —
+// never silently swallowed). Steps run STRICTLY in order; any failure
+// through step 4 leaves the old digest's process running (possibly
+// mid-restart — see PendingDigest) and reports the failure rather than
+// silently retrying forever with no visible signal:
 //
 //  1. mountModuleArtifact(new) — pull/verify/mount the new digest's blob.
 //  2. applyModuleSecurityPolicy(new), the REAL writers — MAC load +
@@ -144,8 +155,9 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// applyModuleSecurityDropIns tries EVERY unit even after one
 		// fails, so some of the new digest's drop-ins may already be on
 		// disk for units that share a name with the old digest's — restore
-		// them from the pre-step-2 snapshot.
-		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
+		// them from the pre-step-2 snapshot. Nothing has been restarted yet
+		// (step 4 hasn't run), so every snapshot entry is eligible.
+		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
 		return
 	}
 
@@ -158,8 +170,9 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// This is SAFE for the still-running OLD process (it never reads
 		// the new tree; its own files are untouched) but UNSAFE for the
 		// drop-ins, which now describe confinement for a module whose
-		// running process is still the OLD binary. Restore them.
-		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
+		// running process is still the OLD binary. Restore them — again,
+		// nothing has restarted yet.
+		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
 		return
 	}
 
@@ -184,36 +197,75 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before restarting: %w", newMod.ID, newMod.Digest, err))
 	}
 
+	// N1 (review round 11): snapshot which of the NEW manifest's units were
+	// active BEFORE step 4 touches anything. A unit that was never active to
+	// begin with (a credential-fetch/provisioning script that runs once and
+	// exits — claude-tmux's credential unit, grok-cli, dev-cell's own
+	// credential/provision units) reads "inactive" after a clean, successful
+	// run exactly as it would after a crash; the settle check below only
+	// ever applies to a unit this snapshot says WAS running, so a run-once
+	// unit's own exit is never mistaken for a crash.
+	preActive := make(map[string]bool, len(newMf.UnitNames()))
+	for _, unit := range newMf.UnitNames() {
+		if active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit); aerr == nil && active {
+			preActive[unit] = true
+		}
+	}
+
 	// Step 4: write the new digest's unit files and FORCE-restart every unit
 	// that is currently active, regardless of whether its own body changed
 	// this pass (M1, review round 9 — see lifecycle.AttachOptions.
 	// ForceRestartActive's own doc for why the ordinary RestartChanged
 	// decision is wrong for a digest bump specifically).
-	if err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true); err != nil {
+	results, err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true)
+	// N6 (review round 11): every unit step 4 actually bounced onto the new
+	// binary, regardless of whether the OVERALL call returned an error —
+	// AttachServicesModeOpts keeps attempting units after one fails (its own
+	// "soft failure" continuation), so results names each unit's own
+	// outcome independently. A unit in this set must never have its
+	// drop-ins reverted to the old policy by a LATER failure in this same
+	// attempt: it is already running the new process.
+	restartedUnits := make(map[string]bool, len(results))
+	for _, res := range results {
+		if res.Restarted || res.Started {
+			restartedUnits[res.Unit] = true
+		}
+	}
+	if err != nil {
 		r.noteUnconverged("reconciler:upgrade_attach_services", newMod.ID, fmt.Errorf(
 			"module %s: %w (PendingDigest %s left set — some units of this module may already be running the new binary; see PendingModuleDigests in the next heartbeat)", newMod.ID, err, newMod.Digest))
 		// ON DISK RIGHT NOW: the new digest's security drop-ins AND file
 		// content (step 3 succeeded) — but the unit body write and/or the
-		// restart itself failed. Per A3 this may mean the old process is
-		// ALREADY GONE (a documented residual risk this function does not
-		// recover from — see the doc above). Re-applying the OLD policy
-		// (drop-ins) is still correct and best-effort regardless: it
-		// cannot undo a process that already stopped, but it also cannot
-		// make anything worse.
-		restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
+		// restart itself failed for AT LEAST one unit. Per A3 this may mean
+		// that unit's old process is ALREADY GONE (a documented residual
+		// risk this function does not recover from — see the doc above).
+		// Re-applying the OLD policy (drop-ins) is still correct and
+		// best-effort for every unit NOT already restarted onto the new
+		// binary: it cannot undo a process that already stopped, but it
+		// also cannot make anything worse — and per N6, a unit that DID
+		// restart keeps the new policy it is actually running under.
+		restoreDropInSnapshot(dropInSnap, restartedUnits, r.cfg.OnError)
 		return
 	}
 	r.recordSecurityFailClosedRecovered(newMf.UnitNames())
 
-	// M6 (review round 9, MEDIUM): `systemctl start`/`restart` succeeding
-	// proves only that ExecStart was launched — every unit this codebase
-	// renders is Type=simple (lifecycle.RenderUnitModeGraph), so systemd
-	// considers the unit "active" the instant the process exists, with no
-	// health signal of its own. A binary that crashes immediately after
-	// exec (a bad migration, a config the new digest ships that the
-	// process rejects on boot) would otherwise sail through step 4 as a
-	// reported success. Settle briefly, then confirm every unit the NEW
-	// manifest declares is STILL active before anything irreversible runs.
+	// N1 (review round 11), M6 (review round 9, MEDIUM): `systemctl start`/
+	// `restart` succeeding proves only that ExecStart was launched — every
+	// unit this codebase renders is Type=simple (lifecycle.
+	// RenderUnitModeGraph), so systemd considers the unit "active" the
+	// instant the process exists, with no health signal of its own. A
+	// binary that crashes immediately after exec (a bad migration, a
+	// config the new digest ships that the process rejects on boot) would
+	// otherwise sail through step 4 as a reported success. Settle briefly,
+	// then confirm every unit that WAS ACTIVE BEFORE (preActive) is STILL
+	// active before anything irreversible runs.
+	//
+	// A unit that was NEVER active before this attempt is skipped entirely
+	// — its own inactivity now is not new information (N1). For a unit
+	// that WAS active and now reads inactive, a clean, expected
+	// termination (Result=success — it ran its course and stopped on its
+	// own) or a condition-gate skip (ConditionResult=no) is ALSO settled,
+	// not a crash; only anything else refuses.
 	//
 	// A3 RESIDUAL, restated here rather than silently left implicit: if a
 	// unit that failed here declares a start_before/requires_health
@@ -225,14 +277,23 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// A3 case.
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
 	for _, unit := range newMf.UnitNames() {
-		active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
-		if aerr != nil || !active {
-			r.noteUnconverged("reconciler:upgrade_settle_check", newMod.ID, fmt.Errorf(
-				"module %s: unit %s did not stay active through the %s settle window after restart (is-active err=%v) — refusing to delta-stop, unmount, or commit; a dependent unit may already have stopped as a propagation of this failure (documented A3 residual)",
-				newMod.ID, unit, r.cfg.UpgradeSettleWindow, aerr))
-			restoreDropInSnapshot(dropInSnap, r.cfg.OnError)
-			return
+		if !preActive[unit] {
+			continue
 		}
+		active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
+		if aerr == nil && active {
+			continue
+		}
+		result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
+		condResult, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "ConditionResult")
+		if result == "success" || condResult == "no" {
+			continue
+		}
+		r.noteUnconverged("reconciler:upgrade_settle_check", newMod.ID, fmt.Errorf(
+			"module %s: unit %s did not stay active through the %s settle window after restart (is-active err=%v, Result=%q, ConditionResult=%q) — refusing to delta-stop, unmount, or commit; a dependent unit may already have stopped as a propagation of this failure (documented A3 residual)",
+			newMod.ID, unit, r.cfg.UpgradeSettleWindow, aerr, result, condResult))
+		restoreDropInSnapshot(dropInSnap, restartedUnits, r.cfg.OnError)
+		return
 	}
 
 	// Every step through the new digest's own attach has now succeeded and
@@ -332,6 +393,7 @@ var dropInFileNames = []string{"capabilities.conf", "seccomp.conf", "userns.conf
 // dropInSnapshot captures one drop-in file's on-disk content at a point in
 // time, byte-exact.
 type dropInSnapshot struct {
+	unit     string // the unit name this drop-in belongs to (N6, review round 11)
 	dir      string // <unit>.d directory
 	filename string
 	existed  bool
@@ -372,7 +434,7 @@ func snapshotUnitDropIns(units []string) []dropInSnapshot {
 	for _, unit := range units {
 		dir := filepath.Join(root, unit+".d")
 		for _, name := range dropInFileNames {
-			s := dropInSnapshot{dir: dir, filename: name}
+			s := dropInSnapshot{unit: unit, dir: dir, filename: name}
 			body, err := os.ReadFile(filepath.Join(dir, name))
 			switch {
 			case err == nil:
@@ -409,9 +471,19 @@ func snapshotUnitDropIns(units []string) []dropInSnapshot {
 // NEVER stops or restarts anything — the old process is still running
 // throughout this function's entire body, and touching it here would turn
 // a confinement-content bug into an availability one.
-func restoreDropInSnapshot(snaps []dropInSnapshot, onError func(stage string, err error)) {
+//
+// alreadyRestarted (N6, review round 11) names every unit step 4 already
+// bounced onto the NEW binary before the failure this restore is reacting
+// to — a partial multi-unit restart's earlier, successful units. Restoring
+// THEIR drop-ins to the old policy would describe confinement for a
+// process that is no longer the one running under it; entries for such a
+// unit are skipped entirely, left exactly as step 2/4 last wrote them.
+func restoreDropInSnapshot(snaps []dropInSnapshot, alreadyRestarted map[string]bool, onError func(stage string, err error)) {
 	for _, s := range snaps {
 		if s.unreadable {
+			continue
+		}
+		if alreadyRestarted[s.unit] {
 			continue
 		}
 		path := filepath.Join(s.dir, s.filename)

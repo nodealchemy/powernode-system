@@ -745,10 +745,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// 5-7, removed) those flowed through the ordinary detach/attach loops,
 	// which is exactly the outage shape that stack existed to mitigate. As
 	// of round 9, a bump never enters either loop: it is handled entirely
-	// by upgradeModule, which never stops the old digest's units until the
-	// new digest has fully succeeded. A module with no same-ID entry on
-	// the other side is a genuine removal or a genuine fresh attach and is
-	// untouched by this partition.
+	// by upgradeModule, which — per the round-11 redefined invariant, see
+	// upgradeModule's own doc — MAY restart the old digest's units as part
+	// of a genuine version upgrade (that's the only way a bump ever takes
+	// effect), but never as a side effect of a refusal or bookkeeping path.
+	// A module with no same-ID entry on the other side is a genuine removal
+	// or a genuine fresh attach and is untouched by this partition.
 	newByID := make(map[string]mount.Module, len(toAttach))
 	for _, m := range toAttach {
 		newByID[m.ID] = m
@@ -772,9 +774,26 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		desiredIDs[m.ID] = true
 	}
 	var bumps []moduleUpgrade
+	// N9 (review round 11): dedupe bumps by ID — a duplicate toDetach entry
+	// for the SAME module ID (any future source of the M4 duplicate-state
+	// shape this partition doesn't already special-case above) must never
+	// produce two moduleUpgrade entries for one ID, which would run
+	// upgradeModule TWICE in the same tick for the same module: the second
+	// run's own step 1 (mountModuleArtifact) is idempotent, but its step 4
+	// force-restart is NOT idempotent-free of side effects (a second
+	// `restart` mid-settle-window of the first run's own attempt), and its
+	// step 7 would try to replace an entry the first run's own step 7
+	// already replaced.
+	bumpedIDs := make(map[string]bool, len(toDetach))
 	removals := make(mount.ModuleStack, 0, len(toDetach))
 	for _, m := range toDetach {
 		if newMod, isBump := newByID[m.ID]; isBump {
+			if bumpedIDs[m.ID] {
+				r.cfg.OnError("reconciler:duplicate_bump_dropped", fmt.Errorf(
+					"module %s: a second toDetach entry at digest %s named the same upgrade target — dropping the duplicate, not running upgradeModule twice in one tick", m.ID, m.Digest))
+				continue
+			}
+			bumpedIDs[m.ID] = true
 			bumps = append(bumps, moduleUpgrade{old: m, new: newMod})
 			continue
 		}
@@ -2215,7 +2234,7 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 	// node's own rails/postgres via its own stop+start cycle. Every OTHER
 	// caller — an ordinary manifest-only reattach, a fresh attach — still
 	// goes through this fenced path unchanged.
-	_ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false)
+	_, _ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false)
 }
 
 // attachModuleServicesOpts is attachModuleServices' parameterized core
@@ -2228,9 +2247,16 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 // mode, distinct from restartChanged — see lifecycle.AttachOptions.
 // ForceRestartActive's doc for why a digest bump needs this rather than
 // the ordinary RestartChanged decision. Every other caller passes false.
-func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged, forceRestartActive bool) error {
+//
+// Returns the per-unit []lifecycle.AttachResult alongside the error (N6,
+// review round 11): upgradeModule needs to know EXACTLY which units were
+// actually restarted onto the new binary — even on a partial failure, the
+// units attempted before the failing one are still named here — so its own
+// failure-path drop-in restore never re-applies the OLD policy under a unit
+// that is already running the NEW process. Every other caller discards it.
+func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged, forceRestartActive bool) ([]lifecycle.AttachResult, error) {
 	if len(mf.Services) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Boot-model-aware: the reconcile loop runs post-pivot on a hub
 	// (module union IS /, render native) AND on cloud_init hosts (guest
@@ -2247,12 +2273,13 @@ func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Mod
 	// it. AttachServicesModeOpts restarts a unit only when its body actually
 	// changed on this pass AND it is currently active.
 	opts := lifecycle.AttachOptions{RestartChanged: restartChanged, ForceRestartActive: forceRestartActive}
-	if _, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts); err != nil {
+	results, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts)
+	if err != nil {
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
-		return err
+		return results, err
 	}
-	return nil
+	return results, nil
 }
 
 // hotReconcileIfNeeded is called after a successful attachModule for BOTH
