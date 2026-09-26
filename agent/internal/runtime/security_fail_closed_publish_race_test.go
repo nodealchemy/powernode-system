@@ -17,7 +17,7 @@ func TestSecurityFailClosed_ResetDoesNotClearThePublishedValueUntilPublish(t *te
 
 	// Pass 1: records and publishes.
 	r.recordSecurityFailClosed([]string{"unit-a.service"})
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(nil)
 	if got := r.SecurityFailClosedUnits(); !containsArg(got, "unit-a.service") {
 		t.Fatalf("test setup: expected unit-a.service published after pass 1, got %v", got)
 	}
@@ -45,8 +45,41 @@ func TestSecurityFailClosed_ResetDoesNotClearThePublishedValueUntilPublish(t *te
 	// unit forward rather than clear it — a materially different scenario
 	// from the one this test means to cover.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, "unit-a.service")
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(nil)
 	if got := r.SecurityFailClosedUnits(); len(got) != 0 {
 		t.Errorf("expected the published value to clear once pass 2 published its empty result, got %v", got)
+	}
+}
+
+// K6 (review round 6): a mutant that appended pending onto the carry-forward
+// set WITHOUT deduping would pass every other test in this file, because
+// none of them ever have the SAME unit in both the carried-forward set and
+// this pass's own pending at once. Constructed directly here: unit-a is
+// published from a PRIOR pass, NOT marked attempted this pass (so J3 would
+// carry it forward) — but this pass's OWN recordSecurityFailClosed ALSO
+// names it (as if two different code paths both concluded it failed this
+// tick). The published result must name unit-a exactly ONCE.
+func TestSecurityFailClosed_PublishDedupesAUnitPresentInBothCarryForwardAndPending(t *testing.T) {
+	r := &Reconciler{}
+
+	r.recordSecurityFailClosed([]string{"unit-a.service"})
+	r.publishSecurityFailClosed(nil)
+
+	r.resetSecurityFailClosed()
+	// unit-a.service is NOT marked attempted, and IS in relevantUnits — so
+	// K4's gate alone would carry it forward — but this pass ALSO
+	// independently records it as failing again via pending.
+	r.recordSecurityFailClosed([]string{"unit-a.service"})
+	r.publishSecurityFailClosed(map[string]bool{"unit-a.service": true})
+
+	got := r.SecurityFailClosedUnits()
+	count := 0
+	for _, u := range got {
+		if u == "unit-a.service" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("K6 REGRESSION: expected unit-a.service exactly ONCE in the published result, got %d occurrences in %v", count, got)
 	}
 }

@@ -86,14 +86,16 @@ func TestSecurityFailClosed_SurvivesAPartialViewTickThatCannotReachTheModule(t *
 	// exercises elsewhere). RunOnce never reaches attachModule for m1 at all
 	// this tick — the security-policy decision was NOT attempted.
 	//
-	// ManifestTTL is 0 (never stale) on this Reconciler, so LoadOrFetch would
+	// NewReconciler defaults ManifestTTL to 90s, so LoadOrFetch would
 	// otherwise serve tick 1's cached manifest straight off disk and never
-	// even attempt the network call this test means to fail — evict the
-	// on-disk cache first, exactly as bumpModuleDigest does for the same
-	// reason in version_bump_detach_test.go.
-	if err := os.RemoveAll(filepath.Join(tmpRoot, "manifests", "m1")); err != nil {
-		t.Fatal(err)
-	}
+	// even attempt the network call this test means to fail — BACKDATE the
+	// on-disk cache's mtime (not delete it: K4, review round 6, needs
+	// previousManifests' early-RunOnce snapshot to still find this module's
+	// LAST GOOD manifest on disk, to decide it is still "relevant" for
+	// carry-forward — deleting it here would starve that snapshot exactly
+	// the way it would starve K2b's rollback, see backdateManifestCache's
+	// own doc in version_bump_artifact_rollback_test.go).
+	backdateManifestCache(t, filepath.Join(tmpRoot, "manifests"), "m1")
 	client.responses["/api/v1/system/node_api/modules/m1"] = `{"success":false,"error":"boom"}`
 	client.statuses = map[string]int{"/api/v1/system/node_api/modules/m1": 502}
 
@@ -183,10 +185,9 @@ func TestSecurityFailClosed_PartialViewPreservesAnotherModulesPublishedRefusal(t
 	}
 
 	// TICK 2: m1 becomes an unreachable partial view (fetch fails); m2 is
-	// newly assigned and attaches CLEANLY.
-	if err := os.RemoveAll(filepath.Join(tmpRoot, "manifests", "m1")); err != nil {
-		t.Fatal(err)
-	}
+	// newly assigned and attaches CLEANLY. Backdate (not delete) m1's cache —
+	// see the sibling test above for why K4 needs it to survive on disk.
+	backdateManifestCache(t, filepath.Join(tmpRoot, "manifests"), "m1")
 	client.responses["/api/v1/system/node_api/modules"] = `{
 		"success": true,
 		"data": {"modules": [

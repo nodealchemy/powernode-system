@@ -61,7 +61,7 @@ func TestBuildHeartbeat_RuntimeSecurityFailClosedUnitsFromReconciler(t *testing.
 	// G4: recordSecurityFailClosed only accumulates into the PENDING set —
 	// publishSecurityFailClosed is the one call that moves the atomically-
 	// published value a heartbeat reads.
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(nil)
 
 	svc := &Service{
 		cfg: Config{
@@ -125,7 +125,7 @@ func TestBuildHeartbeat_RecoveredUnitStillVisibleIfRuntimeFailsAgain(t *testing.
 	r := &Reconciler{}
 	r.recordSecurityFailClosedRecovered([]string{"powernode-hub-backend-rails-setup.service"})
 	r.recordSecurityFailClosed([]string{"powernode-hub-backend-rails-setup.service"})
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(nil)
 
 	svc := &Service{
 		cfg: Config{

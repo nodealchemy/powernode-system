@@ -1203,12 +1203,50 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.attachModuleServices(ctx, mod, mf)
 	}
 
+	// K4 (review round 6): bound J3's carry-forward to units belonging to a
+	// module THIS TICK STILL CONSIDERS RELEVANT — desired (still assigned),
+	// manifestFetchFailed (assigned, but this tick's fetch failed — the
+	// partial-view case J3 exists for), or retained (currently attached,
+	// might resolve through a stale-manifest fallback). Without this bound,
+	// a module that is GENUINELY UNASSIGNED (removed from the platform's
+	// list entirely, a clean fetch that simply excludes it) can never become
+	// "attempted" again — nothing will ever call applyModuleSecurityPolicy
+	// for it — so its previously-published refusal would carry forward
+	// FOREVER under J3's original unbounded rule, a permanent stale alarm
+	// with no path to clearing. previousManifests (K2b's snapshot, captured
+	// before this tick's fetch loop) is the fallback source for a module
+	// whose fetch just failed and therefore has no fresh entry in
+	// `manifests`.
+	relevantUnits := make(map[string]bool)
+	addRelevantUnits := func(moduleID string) {
+		if mf, ok := manifests[moduleID]; ok && mf != nil {
+			for _, u := range mf.UnitNames() {
+				relevantUnits[u] = true
+			}
+			return
+		}
+		if mf, ok := previousManifests[moduleID]; ok && mf != nil {
+			for _, u := range mf.UnitNames() {
+				relevantUnits[u] = true
+			}
+		}
+	}
+	for _, m := range desired {
+		addRelevantUnits(m.ID)
+	}
+	for id := range manifestFetchFailed {
+		addRelevantUnits(id)
+	}
+	for _, m := range retained {
+		addRelevantUnits(m.ID)
+	}
+
 	// Publish this pass's complete security-fail-closed result in ONE Store
 	// (G4) — attachModule (called from both loops above) only ACCUMULATES
 	// into the pending, non-atomic field; this is the one place the
 	// atomically-published value a concurrent heartbeat reads actually moves,
 	// so no reader can observe a mid-pass partial result.
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(relevantUnits)
 
 	// Deferred leaver prunes — after both attach loops so every desired
 	// module's tree is mounted before any surviving-layer resolution.
@@ -2636,18 +2674,45 @@ func (r *Reconciler) resetSecurityFailClosed() {
 // applyModuleSecurityPolicy regardless of outcome) always uses THIS pass's
 // fresh answer, never a stale one — carry-forward applies ONLY to units this
 // pass could not even attempt.
-func (r *Reconciler) publishSecurityFailClosed() {
+//
+// relevantUnits (K4, review round 6) bounds that carry-forward further: a
+// unit is only EVER carried forward if it also belongs to a module this
+// tick still considers relevant (desired, manifestFetchFailed, or retained —
+// see RunOnce's own construction of this set). Without this bound, a module
+// that is GENUINELY UNASSIGNED (removed from the platform's list entirely —
+// a clean fetch that simply excludes it, never a fetch failure) can NEVER
+// become "attempted" again — nothing will ever call
+// applyModuleSecurityPolicy for a module RunOnce no longer even iterates —
+// so J3's original unbounded carry-forward would republish that stale
+// refusal FOREVER, with no tick ever able to clear it. A unit whose module
+// vanished (not in relevantUnits) is dropped here, same as one that was
+// actively attempted and found clean.
+func (r *Reconciler) publishSecurityFailClosed(relevantUnits map[string]bool) {
 	attempted := make(map[string]bool, len(r.securityPolicyAttemptedUnits))
 	for _, u := range r.securityPolicyAttemptedUnits {
 		attempted[u] = true
 	}
+	// K6 (review round 6): deduped defensively, not just by construction —
+	// every current caller pairs recordSecurityFailClosed with marking the
+	// same units attempted (so a unit named in carry-forward and pending at
+	// once should never actually happen today), but the PUBLISHED result
+	// naming a unit twice is a real defect regardless of whether today's
+	// callers happen to avoid it, and `seen` costs nothing to keep it true
+	// unconditionally.
+	seen := make(map[string]bool, len(r.securityFailClosedPending))
 	merged := make([]string, 0, len(r.securityFailClosedPending))
 	for _, u := range r.SecurityFailClosedUnits() {
-		if !attempted[u] {
-			merged = append(merged, u) // not reached this pass — carry forward
+		if !attempted[u] && relevantUnits[u] && !seen[u] {
+			seen[u] = true
+			merged = append(merged, u) // not reached this pass, but still relevant — carry forward
 		}
 	}
-	merged = append(merged, r.securityFailClosedPending...)
+	for _, u := range r.securityFailClosedPending {
+		if !seen[u] {
+			seen[u] = true
+			merged = append(merged, u)
+		}
+	}
 	r.securityFailClosedUnits.Store(&merged)
 }
 

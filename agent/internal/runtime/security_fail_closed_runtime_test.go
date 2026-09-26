@@ -82,7 +82,7 @@ func TestAttachModule_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite(t *
 	// publishes it once, after the attach/reattach loops finish. Called
 	// directly here (this test calls attachModule, not the full RunOnce
 	// pass) to observe what a real pass would publish.
-	r.publishSecurityFailClosed()
+	r.publishSecurityFailClosed(nil)
 	got := r.SecurityFailClosedUnits()
 	if !containsArg(got, failingUnit) {
 		t.Errorf("Reconciler.SecurityFailClosedUnits() must name %s, got %v", failingUnit, got)
