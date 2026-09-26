@@ -45,6 +45,85 @@ func upgradeBackoffFor(attempts int) time.Duration {
 	return wait
 }
 
+// backoffAllows is N2's shared backoff GATE (review round 11, extended to
+// the revert path in O3, review round 12): whether an attempt against the
+// SAME pending target may proceed now, given it has already been attempted
+// `attempts` times, most recently at `lastAttemptUnix`. The very first
+// attempt and its first retry (attempts < 2) always proceed — matching M2's
+// own retry-after-failure test, which expects an immediate next-tick retry
+// with no elapsed time; from the second retry on, upgradeBackoffFor's
+// geometric wait must have elapsed. O3: this was previously inlined ONLY
+// in upgradeModule's own top-of-function gate — the N2 revert path
+// (reconcile.go) called its own force-restart with NO backoff at all,
+// retrying a failing forced restart on EVERY tick forever.
+//
+// O8(b), review round 12: a NEGATIVE elapsed (the wall clock moved
+// backwards since lastAttemptUnix — an NTP correction, a suspended VM
+// resuming, a clock the operator set back) is treated as ELIGIBLE, not as
+// "no time has passed yet". The alternative — comparing a negative elapsed
+// against a positive wait and reading it as "not enough time has passed" —
+// would let a single backwards clock jump wedge a retry indefinitely
+// (elapsed never legitimately "catches up" past a wait computed from a
+// LastAttemptUnix now in the apparent future), which is a worse failure
+// mode than retrying slightly early.
+func backoffAllows(attempts int, lastAttemptUnix int64) (allowed bool, wait, elapsed time.Duration) {
+	if attempts < 2 {
+		return true, 0, 0
+	}
+	wait = upgradeBackoffFor(attempts)
+	elapsed = nowForUpgradeBackoff().Sub(time.Unix(lastAttemptUnix, 0))
+	if elapsed < 0 {
+		return true, wait, elapsed
+	}
+	return elapsed >= wait, wait, elapsed
+}
+
+// settleFailure records why a unit was judged NOT settled after step 4's
+// restart — carried through to both the noteUnconverged report and (when
+// N8's recovery does not apply or does not resolve it) restoreDropInSnapshot.
+type settleFailure struct {
+	unit               string
+	aerr               error
+	result, condResult string
+}
+
+// unitSettled is the shared "is this unit settled" predicate (O5, review
+// round 12, correcting round 11's own N1 predicate in BOTH directions it
+// had wrong):
+//
+//   - PERSISTENT units (runsOnce == false, i.e. restart_policy empty/
+//     "always"/"on-failure"): settled iff ACTIVE, or ConditionResult=="no"
+//     (a start genuinely skipped by an unmet Condition*=). Result=="success"
+//     is NOT accepted here — a Restart=always unit that exits 0 and
+//     immediately relaunches (a crash loop with a clean exit code each
+//     time) reports Result=success while genuinely down; round 11's
+//     predicate wrongly read that as settled.
+//   - RUN-ONCE units (runsOnce == true, restart_policy:"never"): settled
+//     iff ACTIVE, or ConditionResult=="no", or Result=="success" (it ran
+//     its course and exited cleanly, exactly as declared). Round 11's
+//     predicate SKIPPED these entirely — a genuinely crashed credential/
+//     provisioning unit (Result=="exit-code" or similar) never blocked the
+//     commit at all.
+//
+// Shared by upgradeModule's own settle-check loop and
+// recoverFromDepartingUnitConflict's post-recovery check (O1), so the two
+// call sites can never silently disagree about what "settled" means.
+func unitSettled(ctx context.Context, runner mount.Runner, unit string, runsOnce bool) (settled bool, aerr error, result, condResult string) {
+	active, aerr := systemd.IsActive(ctx, runner, unit)
+	if aerr == nil && active {
+		return true, aerr, "", ""
+	}
+	result, _ = systemd.ShowProperty(ctx, runner, unit, "Result")
+	condResult, _ = systemd.ShowProperty(ctx, runner, unit, "ConditionResult")
+	if condResult == "no" {
+		return true, aerr, result, condResult
+	}
+	if runsOnce && result == "success" {
+		return true, aerr, result, condResult
+	}
+	return false, aerr, result, condResult
+}
+
 // moduleUpgrade pairs a version bump's OLD (currently-attached) and NEW
 // (freshly-desired) mount.Module entries for the SAME module ID — see
 // RunOnce's own partition, built right after mount.Reconcile, which keeps
@@ -132,6 +211,15 @@ type moduleUpgrade struct {
 func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u moduleUpgrade, newMf, oldMf *manifest.Manifest, outgoingPaths map[string]bool, desiredForLayers mount.ModuleStack, stateWasEmpty bool) {
 	old, newMod := u.old, u.new
 
+	// O6 (review round 12): a departing unit N8's own undo could not
+	// restart, even after its own in-attempt retry, is a genuine OUTAGE —
+	// try it again BEFORE ANYTHING ELSE this tick, ahead of even the
+	// backoff gate below (a down unit is more urgent than the digest retry
+	// cadence).
+	if len(old.PendingUndoUnits) > 0 {
+		r.retryPendingUndoUnits(ctx, current, old.ID, old.PendingUndoUnits)
+	}
+
 	// M7 (review round 9): resolve the old digest's unit list up front, and
 	// if this entry predates round 9 (old.Units empty — an entry attached
 	// before mount.Module carried the field), PERSIST the resolved
@@ -153,15 +241,22 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// skipped attempt is surfaced via noteUnconverged rather than silently
 	// dropped — PendingDigest/PendingModuleDigests stay set throughout, so
 	// the heartbeat keeps reporting the stuck upgrade the whole time.
-	if old.PendingDigest == newMod.Digest && old.PendingDigestAttempts >= 2 {
-		wait := upgradeBackoffFor(old.PendingDigestAttempts)
-		lastAttempt := time.Unix(old.PendingDigestLastAttemptUnix, 0)
-		if elapsed := nowForUpgradeBackoff().Sub(lastAttempt); elapsed < wait {
+	if old.PendingDigest == newMod.Digest {
+		if allowed, wait, elapsed := backoffAllows(old.PendingDigestAttempts, old.PendingDigestLastAttemptUnix); !allowed {
 			r.noteUnconverged("reconciler:upgrade_backoff", newMod.ID, fmt.Errorf(
 				"module %s: retry of pending digest %s backed off after %d attempts (%s since the last, %s remaining before the next) — not abandoned, a later reconcile tick retries",
 				newMod.ID, newMod.Digest, old.PendingDigestAttempts, elapsed.Round(time.Second), (wait-elapsed).Round(time.Second)))
 			return
 		}
+	} else if old.PendingDigest != "" {
+		// O2 (review round 12): re-targeting to a THIRD digest (was pending
+		// old.PendingDigest, this attempt is a DIFFERENT one — a revert to
+		// the stable Digest never reaches upgradeModule at all, that is
+		// reconcile.go's own toReattach path) abandons whatever the old
+		// target's own snapshot captured. Prune it now, before taking a
+		// fresh snapshot for the new target below, so an abandoned attempt's
+		// file can never be mistaken for anything later.
+		pruneDropInSnapshotsForModule(r.cfg.StatePath, newMod.ID, newMod.Digest)
 	}
 
 	oldUnits := oldUnitNames(old, oldMf)
@@ -203,7 +298,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// — surviving exactly the process-restart case a fresh in-memory-only
 	// snapshot cannot. Cleared once the target digest changes (a revert or a
 	// re-bump) or the upgrade commits, via clearDropInSnapshotStore.
-	dropInSnap, err := loadOrTakeDropInSnapshot(r.cfg.StatePath, newMod.ID, newMod.Digest, unionStrings(oldUnits, newMf.UnitNames()))
+	dropInSnap, err := loadOrTakeDropInSnapshot(r.cfg.StatePath, newMod.ID, newMod.Digest, old.Digest, current.LastAttachedManifestHashes[old.ID], unionStrings(oldUnits, newMf.UnitNames()))
 	if err != nil {
 		r.cfg.OnError("reconciler:upgrade_snapshot_persist", fmt.Errorf("module %s digest %s: %w (falling back to an in-memory-only snapshot for this attempt)", newMod.ID, newMod.Digest, err))
 	}
@@ -266,6 +361,9 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 			// ordinary case of nothing pending yet) starts it over.
 			if current.AttachedModules[i].PendingDigest != newMod.Digest {
 				current.AttachedModules[i].PendingDigestAttempts = 0
+				// O6 (review round 12): a re-target is a NEW conflict question;
+				// N8 has not answered it yet for this specific target.
+				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 			}
 			current.AttachedModules[i].PendingDigest = newMod.Digest
 			current.AttachedModules[i].PendingDigestAttempts++
@@ -275,6 +373,15 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	}
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before restarting: %w", newMod.ID, newMod.Digest, err))
+	}
+	// O4 (review round 12): save the PENDING digest's own manifest snapshot
+	// NOW, not only at step 7's commit — a revert (N2) that abandons this
+	// digest before it ever commits still needs to know what UNITS this
+	// attempt introduced, to stop and clean up any that exist ONLY in the
+	// abandoned digest (O4's own fix, reconcile.go's revert path). Step 7
+	// re-saves the same content at commit time (idempotent, harmless).
+	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, newMod.ID, newMod.Digest, newMf); err != nil {
+		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
 	}
 
 	// N1 (review round 11): index each NEW-manifest unit's DECLARED
@@ -366,41 +473,49 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// modules' next reconcile tick finds them inactive, same as any other
 	// A3 case.
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
-	type settleFailure struct {
-		unit               string
-		aerr               error
-		result, condResult string
-	}
 	var failures []settleFailure
 	for _, unit := range newMf.UnitNames() {
-		if runsOnceByUnit[unit] {
-			continue
+		if settled, aerr, result, condResult := unitSettled(ctx, r.cfg.MountRunner, unit, runsOnceByUnit[unit]); !settled {
+			failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
 		}
-		active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
-		if aerr == nil && active {
-			continue
-		}
-		result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
-		condResult, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "ConditionResult")
-		if result == "success" || condResult == "no" {
-			continue
-		}
-		failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
 	}
 
 	failedUnitNames := make([]string, len(failures))
 	for i, f := range failures {
 		failedUnitNames[i] = f.unit
 	}
-	if len(failures) > 0 && r.recoverFromDepartingUnitConflict(ctx, old, oldUnits, newMf, failedUnitNames) {
-		// N8 (review round 11, MEDIUM): every failing unit was NEW-THIS-
-		// UPGRADE (never existed under the old digest) and a departing unit
-		// was still active — stopping it freed whatever it held (most
-		// plausibly a port) and the new unit(s) came up once retried. This
-		// IS a version-upgrade restart (rule 2), not a refusal side effect —
-		// see recoverFromDepartingUnitConflict's own doc. Fall through to
-		// the commit exactly as if the settle check had passed outright.
-		failures = nil
+	if len(failures) > 0 {
+		if old.PendingConflictRecoveryAttempted {
+			// O6 (review round 12): fire N8 at most ONCE per (ID, digest) —
+			// a retry that keeps hitting the same settle failure must not
+			// re-run the stop/start dance against the same departing unit
+			// on every backoff cycle, including one the undo step already
+			// restored. Decline silently into the ordinary refusal path.
+			r.noteUnconverged("reconciler:upgrade_port_conflict_skipped", newMod.ID, fmt.Errorf(
+				"module %s: N8 conflict recovery already attempted once for digest %s on an earlier tick — declining to repeat it so a departing unit already restored is not churned again",
+				newMod.ID, newMod.Digest))
+		} else {
+			for i, m := range current.AttachedModules {
+				if m.ID == newMod.ID {
+					current.AttachedModules[i].PendingConflictRecoveryAttempted = true
+					break
+				}
+			}
+			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+				r.cfg.OnError("reconciler:upgrade_port_conflict_flag_save", fmt.Errorf("module %s: could not persist the N8-attempted flag: %w", newMod.ID, err))
+			}
+			if r.recoverFromDepartingUnitConflict(ctx, current, old, oldUnits, newMf, failedUnitNames, runsOnceByUnit) {
+				// N8 (review round 11, MEDIUM): every failing unit was NEW-THIS-
+				// UPGRADE (never existed under the old digest) and a departing
+				// unit was still active — stopping it freed whatever it held
+				// (most plausibly a port) and the new unit(s) came up once
+				// retried. This IS a version-upgrade restart (rule 2), not a
+				// refusal side effect — see recoverFromDepartingUnitConflict's
+				// own doc. Fall through to the commit exactly as if the settle
+				// check had passed outright.
+				failures = nil
+			}
+		}
 	}
 
 	for _, f := range failures {
@@ -451,10 +566,13 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, newMod.ID, newMod.Digest, newMf); err != nil {
 		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", newMod.ID, newMod.Digest, err))
 	}
-	// N7 (review round 11): the drop-in snapshot's job ends at commit — clear
-	// it so a FUTURE upgrade attempt of this same module ID never mistakes a
-	// stale persisted file for its own fresh baseline.
-	clearDropInSnapshotStore(r.cfg.StatePath, newMod.ID, newMod.Digest)
+	// N7 (review round 11): the drop-in snapshot's job ends at commit —
+	// clear it so a FUTURE upgrade attempt of this same module ID never
+	// mistakes a stale persisted file for its own fresh baseline. O2
+	// (review round 12): prune EVERY leftover snapshot file for this module
+	// ID, not just the one just committed — nothing should still be
+	// pending, so nothing should be kept.
+	pruneDropInSnapshotsForModule(r.cfg.StatePath, newMod.ID, "")
 }
 
 // oldUnitNames resolves the unit names the OLD digest owned: old.Units
@@ -530,11 +648,18 @@ func (r *Reconciler) stopDepartingUnits(ctx context.Context, moduleID string, ol
 // small per the review's own instruction: stop the departing unit(s) (a
 // rule-(2) restart — the invariant's own carve-out for a genuine version
 // upgrade, not a refusal side effect), retry `start` on the failed new
-// unit(s) once, and check is-active once more. Recovered: the caller
-// treats the settle check as having passed. Not recovered: the departing
-// unit is started again (never leave the module with NEITHER side
-// running) and the ordinary refusal path still fires.
-func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, old mount.Module, oldUnits []string, newMf *manifest.Manifest, failedUnits []string) bool {
+// unit(s) once, settle, and re-check with the SAME settled predicate the
+// main check uses (O1, review round 12 — an immediate is-active read is
+// worthless for a Type=simple unit that crashes inside the settle window,
+// exactly the bug this recovery exists to avoid committing on top of).
+// Recovered: the caller treats the settle check as having passed. Not
+// recovered: the departing unit is started again — retried once if the
+// first restart fails (O6) — and the ordinary refusal path still fires. A
+// departing unit the retried undo STILL cannot restart is persisted onto
+// PendingUndoUnits so a LATER tick tries it again before anything else
+// (retryPendingUndoUnits), since a stopped-and-not-restored departing unit
+// is a genuine outage, not merely a stuck upgrade.
+func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, current *mount.State, old mount.Module, oldUnits []string, newMf *manifest.Manifest, failedUnits []string, runsOnceByUnit map[string]bool) bool {
 	oldUnitSet := make(map[string]bool, len(oldUnits))
 	for _, u := range oldUnits {
 		oldUnitSet[u] = true
@@ -568,13 +693,23 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, old m
 		}
 	}
 
-	recovered := true
 	for _, unit := range failedUnits {
 		if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Start); err != nil {
-			recovered = false
-			continue
+			r.cfg.OnError("reconciler:upgrade_port_conflict_start", fmt.Errorf("module %s unit %s: %w", old.ID, unit, err))
 		}
-		if active, err := systemd.IsActive(ctx, r.cfg.MountRunner, unit); err != nil || !active {
+	}
+
+	// O1 (review round 12): settle exactly like the main check does — an
+	// immediate is-active read after `start` proves only that ExecStart was
+	// launched, not that the new unit stayed up past whatever the departing
+	// unit's own release of the resource exposed (a crash-on-bind, a
+	// migration that only now runs against a real port). Uses the SAME
+	// predicate (unitSettled) so the two call sites can never silently
+	// disagree about "settled".
+	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
+	recovered := true
+	for _, unit := range failedUnits {
+		if settled, _, _, _ := unitSettled(ctx, r.cfg.MountRunner, unit, runsOnceByUnit[unit]); !settled {
 			recovered = false
 		}
 	}
@@ -586,14 +721,65 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, old m
 	}
 
 	// Undo: bring the departing unit back rather than leave the module with
-	// neither side running.
+	// neither side running. O6 (review round 12): retry ONCE within this
+	// same attempt before giving up — a transient failure (the same class
+	// step 4's own restart can hit) must not be treated as permanent on the
+	// first try.
+	var stillDown []string
 	for _, d := range departing {
 		if err := systemd.Action(ctx, r.cfg.MountRunner, d, systemd.Start); err != nil {
-			r.cfg.OnError("reconciler:upgrade_port_conflict_undo_failed", fmt.Errorf(
-				"module %s: restarting departing unit %s after a failed conflict-recovery attempt also failed — module may now be fully down: %w", old.ID, d, err))
+			if err2 := systemd.Action(ctx, r.cfg.MountRunner, d, systemd.Start); err2 != nil {
+				stillDown = append(stillDown, d)
+				r.cfg.OnError("reconciler:upgrade_port_conflict_undo_failed", fmt.Errorf(
+					"module %s: restarting departing unit %s after a failed conflict-recovery attempt also failed TWICE — module may now be fully down; a later tick keeps retrying this unit before anything else: %w",
+					old.ID, d, err2))
+			}
+		}
+	}
+	if len(stillDown) > 0 && current != nil {
+		for i, m := range current.AttachedModules {
+			if m.ID == old.ID {
+				current.AttachedModules[i].PendingUndoUnits = unionStrings(current.AttachedModules[i].PendingUndoUnits, stillDown)
+				break
+			}
+		}
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:upgrade_port_conflict_undo_save", fmt.Errorf("module %s: could not persist the stuck departing unit(s) %v: %w", old.ID, stillDown, err))
 		}
 	}
 	return false
+}
+
+// retryPendingUndoUnits is O6's own priority recovery (review round 12): a
+// departing unit N8's undo could not restart even after its own in-attempt
+// retry is a genuine OUTAGE, not merely a stuck upgrade — this runs before
+// anything else in upgradeModule (even before the backoff gate, since a
+// down unit is more urgent than the digest retry cadence) and tries once
+// more, every tick, until it is confirmed active again. Cleared as soon as
+// a unit is confirmed up; a unit that is still down stays on the list for
+// the NEXT tick to try again.
+func (r *Reconciler) retryPendingUndoUnits(ctx context.Context, current *mount.State, moduleID string, units []string) {
+	if len(units) == 0 {
+		return
+	}
+	stillDown := make([]string, 0, len(units))
+	for _, unit := range units {
+		if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Start); err != nil {
+			r.cfg.OnError("reconciler:upgrade_port_conflict_undo_retry", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+		}
+		if active, err := systemd.IsActive(ctx, r.cfg.MountRunner, unit); err != nil || !active {
+			stillDown = append(stillDown, unit)
+		}
+	}
+	for i, m := range current.AttachedModules {
+		if m.ID == moduleID {
+			current.AttachedModules[i].PendingUndoUnits = stillDown
+			break
+		}
+	}
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		r.cfg.OnError("reconciler:upgrade_port_conflict_undo_retry_save", fmt.Errorf("module %s: could not persist the retried departing unit(s) state: %w", moduleID, err))
+	}
 }
 
 // dropInFileNames is the fixed set of per-unit drop-in files any writer in
@@ -690,13 +876,33 @@ type persistedDropInSnapshot struct {
 	Unreadable bool
 }
 
+// persistedDropInSnapshotFile is the on-disk envelope (O2, review round 12):
+// wraps the snapshot entries with the identity of the STATE they were taken
+// against — the old digest's own Digest and its attach-stamp
+// (LastAttachedManifestHashes[old.ID]) at the moment this snapshot was
+// captured. loadOrTakeDropInSnapshot refuses to reuse a persisted file
+// whose recorded identity no longer matches the CURRENT entry: if either
+// changed since the snapshot was taken, whatever it captured is no longer
+// "the true old policy" and reusing it would restore a STALE, possibly
+// LOOSER policy over a manifest edit that tightened it in between (O2's own
+// finding — see loadOrTakeDropInSnapshot's doc for the exact sequence).
+type persistedDropInSnapshotFile struct {
+	OldDigest      string
+	OldAttachStamp string
+	Snapshots      []persistedDropInSnapshot
+}
+
 // dropInSnapshotStorePath returns stateDir/upgrade-snapshots/<moduleID>_
 // <digest>.json — one file per (moduleID, digest) pair, sanitized the same
 // way mount.Layout sanitizes a digest for a path component (':' is not a
 // safe filename character on every filesystem this agent targets).
 func dropInSnapshotStorePath(stateDir, moduleID, digest string) string {
-	san := make([]byte, 0, len(digest))
-	for _, c := range []byte(digest) {
+	return filepath.Join(stateDir, "upgrade-snapshots", moduleID+"_"+sanitizeForFilename(digest)+".json")
+}
+
+func sanitizeForFilename(s string) string {
+	san := make([]byte, 0, len(s))
+	for _, c := range []byte(s) {
 		switch {
 		case c == ':' || c == '/' || c == ' ':
 			san = append(san, '_')
@@ -704,36 +910,50 @@ func dropInSnapshotStorePath(stateDir, moduleID, digest string) string {
 			san = append(san, c)
 		}
 	}
-	return filepath.Join(stateDir, "upgrade-snapshots", moduleID+"_"+string(san)+".json")
+	return string(san)
 }
 
-// loadOrTakeDropInSnapshot is N7's own fix (review round 11): the FIRST
-// time (moduleID, digest) is attempted, it takes a fresh snapshot exactly
-// as before and persists it to statePath's directory (the same durable,
-// survives-a-reboot location state.json itself lives in — see manifest.
-// DefaultRoot's own doc for the parallel /persist reasoning). Every LATER
-// attempt at the SAME target reads the persisted copy back instead of
-// re-snapshotting the CURRENT (possibly already-corrupted-by-a-prior-
-// attempt) on-disk content. A read/decode/write error degrades to an
-// in-memory-only fresh snapshot (the caller surfaces it via OnError) rather
-// than aborting the upgrade attempt entirely — persistence is a durability
-// improvement, not a hard prerequisite for a single attempt to proceed.
-func loadOrTakeDropInSnapshot(statePath, moduleID, digest string, units []string) ([]dropInSnapshot, error) {
+// loadOrTakeDropInSnapshot is N7's own fix (review round 11), corrected by
+// O2 (review round 12, SECURITY): the FIRST time (moduleID, digest) is
+// attempted, it takes a fresh snapshot and persists it — alongside
+// oldDigest and oldAttachStamp, the identity of the state it was taken
+// against — to statePath's directory (the same durable, survives-a-reboot
+// location state.json itself lives in). Every LATER attempt at the SAME
+// target reads the persisted copy back ONLY IF oldDigest/oldAttachStamp
+// still match the CURRENT call's own values; a mismatch means something
+// changed the old digest's actual content since the snapshot was taken
+// (the exact O2 sequence: d2 refused — snapshot captures d1's ORIGINAL
+// policy; revert to d1 with d1's manifest EDITED to tighten a policy field
+// — the ordinary reattach path correctly writes the tightened content and
+// bumps d1's attach-stamp; d2 refused AGAIN — the STALE persisted snapshot,
+// keyed only by digest, would restore the ORIGINAL, untightened content
+// over the currently-correct tightened one) — discarded, and a fresh
+// snapshot is taken and persisted with the CURRENT identity instead. A
+// read/decode/write error also degrades to an in-memory-only fresh
+// snapshot (the caller surfaces it via OnError) rather than aborting the
+// upgrade attempt entirely — persistence is a durability improvement, not
+// a hard prerequisite for a single attempt to proceed.
+func loadOrTakeDropInSnapshot(statePath, moduleID, digest, oldDigest, oldAttachStamp string, units []string) ([]dropInSnapshot, error) {
 	path := dropInSnapshotStorePath(filepath.Dir(statePath), moduleID, digest)
 	if body, err := os.ReadFile(path); err == nil {
-		var persisted []persistedDropInSnapshot
-		if err := json.Unmarshal(body, &persisted); err != nil {
+		var file persistedDropInSnapshotFile
+		if err := json.Unmarshal(body, &file); err != nil {
 			return snapshotUnitDropIns(units), fmt.Errorf("decode persisted drop-in snapshot %s: %w", path, err)
 		}
-		root := security.SystemdDropInRoot()
-		snaps := make([]dropInSnapshot, 0, len(persisted))
-		for _, p := range persisted {
-			snaps = append(snaps, dropInSnapshot{
-				unit: p.Unit, dir: filepath.Join(root, p.Unit+".d"), filename: p.Filename,
-				existed: p.Existed, body: p.Body, unreadable: p.Unreadable,
-			})
+		if file.OldDigest == oldDigest && file.OldAttachStamp == oldAttachStamp {
+			root := security.SystemdDropInRoot()
+			snaps := make([]dropInSnapshot, 0, len(file.Snapshots))
+			for _, p := range file.Snapshots {
+				snaps = append(snaps, dropInSnapshot{
+					unit: p.Unit, dir: filepath.Join(root, p.Unit+".d"), filename: p.Filename,
+					existed: p.Existed, body: p.Body, unreadable: p.Unreadable,
+				})
+			}
+			return snaps, nil
 		}
-		return snaps, nil
+		// O2: STALE — the old digest's identity moved since this file was
+		// written. Fall through to take (and persist) a fresh one below,
+		// exactly as if no file existed at all.
 	}
 	fresh := snapshotUnitDropIns(units)
 	persisted := make([]persistedDropInSnapshot, 0, len(fresh))
@@ -742,10 +962,11 @@ func loadOrTakeDropInSnapshot(statePath, moduleID, digest string, units []string
 			Unit: s.unit, Filename: s.filename, Existed: s.existed, Body: s.body, Unreadable: s.unreadable,
 		})
 	}
+	file := persistedDropInSnapshotFile{OldDigest: oldDigest, OldAttachStamp: oldAttachStamp, Snapshots: persisted}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fresh, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	if err := fsutil.AtomicWriteJSON(path, persisted, 0o644); err != nil {
+	if err := fsutil.AtomicWriteJSON(path, file, 0o644); err != nil {
 		return fresh, fmt.Errorf("persist drop-in snapshot %s: %w", path, err)
 	}
 	return fresh, nil
@@ -765,6 +986,38 @@ func clearDropInSnapshotStore(statePath, moduleID, digest string) {
 		return
 	}
 	_ = os.Remove(dropInSnapshotStorePath(filepath.Dir(statePath), moduleID, digest))
+}
+
+// pruneDropInSnapshotsForModule is O2's own GC half (review round 12): on
+// commit, on a revert, or when re-targeting to a THIRD digest, remove EVERY
+// <moduleID>_*.json snapshot file for this module except (optionally)
+// keepDigest's own — a defense-in-depth companion to the identity check
+// above, not a substitute for it: this bounds how many abandoned attempts'
+// files can accumulate per module, independent of whether any one of them
+// would have been judged stale on its own. Best-effort; a leftover file
+// wastes disk, nothing more (a LATER load still validates identity before
+// ever trusting one).
+func pruneDropInSnapshotsForModule(statePath, moduleID, keepDigest string) {
+	dir := filepath.Join(filepath.Dir(statePath), "upgrade-snapshots")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // nothing to prune, or the dir doesn't exist yet — both fine.
+	}
+	prefix := moduleID + "_"
+	var keepName string
+	if keepDigest != "" {
+		keepName = moduleID + "_" + sanitizeForFilename(keepDigest) + ".json"
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if keepName != "" && name == keepName {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 // restoreDropInSnapshot restores EXACTLY what snapshotUnitDropIns captured:

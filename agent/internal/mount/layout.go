@@ -198,6 +198,26 @@ type Module struct {
 	// time.Time) to keep state.json's encoding for this struct uniform with
 	// its other plain scalar fields.
 	PendingDigestLastAttemptUnix int64 `json:"PendingDigestLastAttemptUnix,omitempty"`
+	// PendingConflictRecoveryAttempted (O6, review round 12) records that
+	// recoverFromDepartingUnitConflict (N8) has already been INVOKED once
+	// for THIS PendingDigest, regardless of outcome. Without this, every
+	// backoff retry of a target whose settle check keeps failing on a
+	// new-this-upgrade unit would re-run N8's stop/start dance against the
+	// SAME departing unit — including one the undo step already restored —
+	// churning an otherwise healthy unit on every retry instead of just
+	// once. Reset to false alongside PendingDigestAttempts: a re-target to
+	// a different digest, or a revert back to Digest itself, is a new
+	// question N8 has not yet answered for THAT target.
+	PendingConflictRecoveryAttempted bool `json:"PendingConflictRecoveryAttempted,omitempty"`
+	// PendingUndoUnits (O6, review round 12) names departing unit(s) N8's
+	// own conflict-recovery undo failed to restart even after its own
+	// in-attempt retry, persisted so a LATER tick keeps trying them BEFORE
+	// anything else in upgradeModule (retryPendingUndoUnits) — a stopped-
+	// and-not-restored departing unit is a genuine outage, not merely a
+	// stuck upgrade, and deserves priority over the ordinary retry/backoff
+	// cadence. Cleared (a unit removed from the list) once a later tick
+	// confirms it is active again.
+	PendingUndoUnits []string `json:"PendingUndoUnits,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

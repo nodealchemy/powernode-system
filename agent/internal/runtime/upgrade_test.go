@@ -822,11 +822,16 @@ func TestUpgradeModule_SettleCheckSkipsUnitNeverActiveBeforeUpgrade(t *testing.T
 		t.Fatalf("RunOnce pass 1: %v", err)
 	}
 
-	// app is active going into the bump (a real long-running process);
-	// cred is left at RecorderRunner's default ("not active") throughout —
-	// it ran once at pass 1 and already exited, exactly like a real
-	// oneshot-shaped unit would.
-	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	// app is active going into the bump (a real long-running process); cred
+	// reads inactive (RecorderRunner's default) but reports Result=success
+	// (O5, review round 12: a run-once unit is now actually CHECKED, not
+	// skipped outright — settled requires active, ConditionResult=no, or
+	// Result=success; a genuinely crashed run-once unit would report
+	// something else and correctly block the commit).
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:                            []byte("active\n"),
+		"systemctl show " + credUnit + " --property=Result --value": []byte("success\n"),
+	}
 
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
 		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeCredService)
@@ -858,41 +863,53 @@ func TestUpgradeModule_SettleCheckSkipsUnitNeverActiveBeforeUpgrade(t *testing.T
 // genuine crash. Two units cover both: "app" (Result=success) and "gated"
 // (ConditionResult=no). Neither must block the commit.
 func TestUpgradeModule_SettleCheckAcceptsCleanExitAndConditionSkip(t *testing.T) {
+	// O5 (review round 12) CORRECTED this fixture: round 11's version used
+	// an `always` (persistent) unit for the Result=success case, which O5
+	// found was ITSELF wrong — Result=success does not settle a persistent
+	// unit (a Restart=always unit that exits 0 and immediately relaunches
+	// reports success while genuinely crash-looping). Result=success only
+	// settles a run-once unit (restart_policy:"never"), which is what
+	// "onceunit" declares here. See
+	// TestUpgradeModule_SettleCheckRejectsPersistentUnitReportingSuccess for
+	// the negative case this fixture used to get wrong.
+	onceService := `{"name":"onceunit", "start_command":"/bin/true", "restart_policy":"never"}`
 	gatedService := `{"name":"gated", "start_command":"/bin/true", "restart_policy":"always"}`
 	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
 
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
-		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+gatedService)
-	appUnit := lifecycle.UnitName("m1", "app")
+		"d1", []string{"CAP_CHOWN"}, onceService+","+gatedService)
+	onceUnit := lifecycle.UnitName("m1", "onceunit")
 	gatedUnit := lifecycle.UnitName("m1", "gated")
 
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce pass 1: %v", err)
 	}
 
-	// Both units are active going into the bump, so N1's preActive snapshot
-	// marks both settle-checkable. Post-restart, both read inactive (no
-	// is-active stub for either at this point) — but app's Result is
-	// "success" (it exited cleanly on its own after the restart) and
-	// gated's ConditionResult is "no" (its Condition*= directive was not
-	// met on this restart attempt, so systemd skipped starting it). Neither
-	// is a crash.
+	// Both units are active going into the bump, so both are settle-checked
+	// (O5: onceunit's own restart_policy:"never" ALSO makes it checked now,
+	// not skipped — this fixture exercises it via the active-before path,
+	// same as gated). Post-restart, both read inactive (no is-active stub
+	// for either at this point) — but onceunit's Result is "success" (it
+	// ran once and exited cleanly, exactly as declared) and gated's
+	// ConditionResult is "no" (its Condition*= directive was not met on
+	// this restart attempt, so systemd skipped starting it). Neither is a
+	// crash.
 	runner.StubOutput = map[string][]byte{
-		"systemctl is-active " + appUnit:                                      []byte("active\n"),
+		"systemctl is-active " + onceUnit:                                     []byte("active\n"),
 		"systemctl is-active " + gatedUnit:                                    []byte("active\n"),
-		"systemctl show " + appUnit + " --property=Result --value":            []byte("success\n"),
+		"systemctl show " + onceUnit + " --property=Result --value":           []byte("success\n"),
 		"systemctl show " + gatedUnit + " --property=ConditionResult --value": []byte("no\n"),
 	}
 	origSleep := sleepForUpgradeSettle
 	sleepForUpgradeSettle = func(d time.Duration) {
-		delete(runner.StubOutput, "systemctl is-active "+appUnit)
+		delete(runner.StubOutput, "systemctl is-active "+onceUnit)
 		delete(runner.StubOutput, "systemctl is-active "+gatedUnit)
 		origSleep(d)
 	}
 	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
 
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
-		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+gatedService)
+		"d2", []string{"CAP_CHOWN"}, onceService+","+gatedService)
 	backdateManifestCache(t, manifestRoot, "m1")
 
 	if err := r.RunOnce(context.Background()); err != nil {
@@ -900,7 +917,50 @@ func TestUpgradeModule_SettleCheckAcceptsCleanExitAndConditionSkip(t *testing.T)
 	}
 
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
-		t.Errorf("N1 REGRESSION: a clean exit (Result=success) or a condition skip (ConditionResult=no) must not refuse the commit, got digest=%q ok=%v", digest, ok)
+		t.Errorf("N1/O5 REGRESSION: a run-once unit's clean exit (Result=success) or a condition skip (ConditionResult=no) must not refuse the commit, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_SettleCheckRejectsPersistentUnitReportingSuccess is O5's
+// own negative test (review round 12, MEDIUM): round 11's settled predicate
+// accepted Result=success for ANY unit, persistent or not. That is wrong
+// for a persistent one — a Restart=always unit that crashes and exits 0
+// each time (a bad migration that runs, "succeeds" at nothing, and exits
+// cleanly, over and over) reports Result=success while genuinely down.
+// Only ConditionResult=no or a currently-active read may settle a
+// persistent unit; Result=success must NOT.
+func TestUpgradeModule_SettleCheckRejectsPersistentUnitReportingSuccess(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// app (restart_policy:"always") is active going in; the settle window
+	// then finds it inactive but reporting Result=success — a clean exit
+	// each crash-loop iteration reports, never a genuine "this is fine".
+	appIsActiveKey := "systemctl is-active " + unit
+	runner.StubOutput = map[string][]byte{
+		appIsActiveKey: []byte("active\n"),
+		"systemctl show " + unit + " --property=Result --value": []byte("success\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("O5 REGRESSION: a PERSISTENT unit reporting Result=success while inactive must NOT settle (a crash loop reports success on every clean-exit iteration) — expected m1 still at d1, got digest=%q ok=%v", digest, ok)
 	}
 }
 
@@ -1250,6 +1310,74 @@ func TestUpgradeModule_DepartingUnitStoppedToUnblockPortConflict(t *testing.T) {
 	}
 }
 
+// TestUpgradeModule_N8RecoveryRefusesOnCrashInsideSettleWindow is O1's own
+// test (review round 12, HIGH): N8's conflict recovery checked is-active
+// IMMEDIATELY after stopping the departing unit and retrying `start`, with
+// no settle wait at all — for a Type=simple unit that reads "active" the
+// instant the process exists, a crash landing inside what SHOULD be the
+// settle window would sail through as recovered and commit d2 while the
+// module goes down silently. new-worker comes up right after old-worker
+// stops (as in the ordinary N8 test) but then crashes during N8's OWN
+// settle window (simulated via the second sleepForUpgradeSettle call,
+// mirroring how the main check's own crash tests intercept the sleep) —
+// the commit must be refused, not accepted.
+func TestUpgradeModule_N8RecoveryRefusesOnCrashInsideSettleWindow(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	newWorkerIsActiveKey := "systemctl is-active " + newWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		newWorkerIsActiveKey:                   []byte("inactive\n"),
+	}
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "stop") && containsArg(args, oldWorkerUnit) {
+			runner.StubOutput[newWorkerIsActiveKey] = []byte("active\n")
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	// The main settle check's own sleep is call #1 (nothing to do — the
+	// bind conflict is still live at that point). N8 recovery's own sleep
+	// is call #2 — simulate the crash landing there, exactly inside the
+	// window this fix adds.
+	sleepCalls := 0
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		sleepCalls++
+		if sleepCalls == 2 {
+			runner.StubOutput[newWorkerIsActiveKey] = []byte("inactive\n")
+		}
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+
+	if sleepCalls < 2 {
+		t.Fatalf("fixture did not reach N8's own settle sleep at all (sleepCalls=%d) — precondition not met", sleepCalls)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("O1 REGRESSION: a crash inside N8's OWN settle window must refuse the commit, expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting is
 // M2's own test (review round 9): a retry after a failed restart attempt
 // must still RESTART (not silently degrade to `start`) on the next attempt,
@@ -1464,6 +1592,259 @@ func TestUpgradeModule_RevertAfterSettleFailureRestartsAndClearsPending(t *testi
 	}
 }
 
+// TestUpgradeModule_RevertBackoffBoundsRepeatedFailures is O3's own test
+// (review round 12, MEDIUM): the revert path's force-restart previously had
+// NO backoff at all — a persistently failing revert retried on EVERY tick
+// forever (the reviewer's own "4 in 4 ticks"). Gated by the SAME
+// backoffAllows the ordinary retry path uses.
+func TestUpgradeModule_RevertBackoffBoundsRepeatedFailures(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (crash inside settle window): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 2: expected PendingDigest=d2, got %q ok=%v", pd, ok)
+	}
+
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
+	// Revert to d1 — but the revert's own force-restart keeps FAILING.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubErr = map[string]error{"systemctl start " + appUnit: errors.New("start refused (test)")}
+
+	// Tick 3: this is the revert's FIRST attempt (attempts was 1 from tick
+	// 2's own failed upgrade — see backoffAllows: attempts<2 always
+	// proceeds) — fails, attempts becomes 2.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (revert attempt 1, fails): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 3: expected PendingDigest to remain d2 (revert failed), got %q ok=%v", pd, ok)
+	}
+
+	// Tick 4: attempts=2 now — the SECOND retry is subject to backoff, and
+	// no time has passed. No start attempt must be issued at all.
+	tick4Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 4 (backed off): %v", err)
+	}
+	tick4 := runner.Invocations[tick4Start:]
+	if hasSystemctlOp(tick4, "start", appUnit) || hasSystemctlOp(tick4, "restart", appUnit) {
+		t.Errorf("O3 REGRESSION: a backed-off revert tick must issue no start/restart at all: %v", tick4)
+	}
+
+	// Advance the clock past the backoff window (attempts=2 -> 20s), clear
+	// the stub error — the next tick must retry and succeed.
+	fakeNow = fakeNow.Add(30 * time.Second)
+	delete(runner.StubErr, "systemctl start "+appUnit)
+	tick5Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 5 (backoff elapsed): %v", err)
+	}
+	tick5 := runner.Invocations[tick5Start:]
+	if !hasSystemctlOp(tick5, "start", appUnit) && !hasSystemctlOp(tick5, "restart", appUnit) {
+		t.Errorf("O3 REGRESSION: once the backoff window elapses, the revert must retry, invocations: %v", tick5)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("O3 REGRESSION: PendingDigest must be cleared once the delayed revert retry succeeds, got %q", pd)
+	}
+}
+
+// TestUpgradeModule_RevertStopsUnitsThatExistOnlyInTheAbandonedDigest is
+// O4's own test (review round 12, MEDIUM): a unit new-worker exists ONLY in
+// the abandoned PENDING digest (d2), started during its own step 4 before
+// the settle check refused the commit. The stable digest's manifest (d1)
+// never named new-worker at all, so the revert's own force-restart (which
+// only touches units the STABLE manifest names) never touches it — before
+// O4, it stayed running (or at least its unit file stayed on disk) forever
+// once PendingDigest cleared, orphaned. The revert must stop it and remove
+// its unit file/drop-in dir, exactly like an ordinary delta-stop.
+func TestUpgradeModule_RevertStopsUnitsThatExistOnlyInTheAbandonedDigest(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump to d2 (app + new-worker): app settles fine; new-worker never
+	// becomes active (simulated bind failure / crash — no departing unit is
+	// active here, so N8 does not apply, and the settle check simply
+	// refuses).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (new-worker never settles): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 2: expected PendingDigest=d2, got %q ok=%v", pd, ok)
+	}
+
+	// Revert to d1 (app only) — new-worker exists ONLY in the abandoned d2.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput["systemctl is-active "+appUnit] = []byte("active\n")
+
+	tick3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (revert): %v", err)
+	}
+	tick3 := runner.Invocations[tick3Start:]
+
+	if !hasSystemctlOp(tick3, "stop", newWorkerUnit) {
+		t.Errorf("O4 REGRESSION: the revert must stop new-worker (it exists ONLY in the abandoned d2 digest), invocations: %v", tick3)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("O4: PendingDigest must still be cleared once the revert succeeds, got %q", pd)
+	}
+}
+
+// TestUpgradeModule_N8RecoveryFiresAtMostOncePerDigest is O6's own test
+// (review round 12, MEDIUM): a settle failure that N8's recovery could not
+// actually resolve (new-worker never comes up even after old-worker is
+// stopped) must not re-run the stop/start dance against old-worker on
+// EVERY retry of the same digest — only the FIRST attempt tries it; a
+// SUBSEQUENT retry declines and leaves old-worker alone (already restored
+// by the first attempt's own undo).
+func TestUpgradeModule_N8RecoveryFiresAtMostOncePerDigest(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// new-worker NEVER comes up, no matter what — old-worker being stopped
+	// doesn't actually fix its problem (a bad binary, not a real conflict).
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"),
+	}
+
+	tick2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (N8 attempts and fails): %v", err)
+	}
+	tick2 := runner.Invocations[tick2Start:]
+	if !hasSystemctlOp(tick2, "stop", oldWorkerUnit) {
+		t.Fatalf("tick 2: expected N8 to attempt stopping old-worker at least once, invocations: %v", tick2)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 2: expected PendingDigest to remain d2 (recovery did not resolve it), got %q ok=%v", pd, ok)
+	}
+
+	// Tick 3: SAME digest retried (attempts=1, still free per backoffAllows).
+	// N8 must NOT fire again — old-worker (already restored by tick 2's own
+	// undo) must not be touched a second time.
+	tick3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (retry, N8 must not re-fire): %v", err)
+	}
+	tick3 := runner.Invocations[tick3Start:]
+	if hasSystemctlOp(tick3, "stop", oldWorkerUnit) {
+		t.Errorf("O6 REGRESSION: N8 recovery must fire at most ONCE per digest — old-worker was stopped again on a retry: %v", tick3)
+	}
+}
+
+// TestUpgradeModule_N8UndoRetriesOnceBeforeGivingUp is O6's own second test
+// (review round 12, MEDIUM; also N10-style mutant-kill target: "N8 undo
+// restart removed"): the undo restart of a departing unit, after N8's own
+// recovery attempt fails, is retried ONCE within the SAME attempt before
+// being treated as a genuine failure — a transient error (the same class
+// step 4's own restart can hit) must not strand the departing unit down on
+// the very first try.
+func TestUpgradeModule_N8UndoRetriesOnceBeforeGivingUp(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"), // never comes up
+	}
+	runner.StubErr = map[string]error{}
+	startCalls := 0
+	oldWorkerStartKey := "systemctl start " + oldWorkerUnit
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name != "systemctl" || !containsArg(args, "start") || !containsArg(args, oldWorkerUnit) {
+			return
+		}
+		startCalls++
+		if startCalls == 1 {
+			runner.StubErr[oldWorkerStartKey] = errors.New("undo failed once (transient)")
+		} else {
+			delete(runner.StubErr, oldWorkerStartKey)
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+
+	if startCalls < 2 {
+		t.Fatalf("O6 REGRESSION: expected the undo to be retried at least once (2+ start calls on old-worker), got %d", startCalls)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && len(m.PendingUndoUnits) > 0 {
+			t.Errorf("O6 REGRESSION: the undo's own retry succeeded — PendingUndoUnits must be empty, got %v", m.PendingUndoUnits)
+		}
+	}
+}
+
 // TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged covers the
 // FIRST refusal class (point 5c) plus point 5d (persistent failure across
 // several ticks stops nothing): a blocked security drop-in write for the
@@ -1541,6 +1922,105 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
 		t.Errorf("recovery tick: expected m1 attached at the NEW digest d2 once its policy write stops refusing, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_StaleSnapshotNeverRestoresALooserPolicy is O2's own
+// test (review round 12, HIGH, SECURITY): the reviewer's exact sequence.
+// d2 is refused (capabilities.conf blocked) — the snapshot for (m1, d2)
+// captures d1's ORIGINAL (user_namespace:false) content. d1's OWN manifest
+// is then edited to TIGHTEN user_namespace to true — an ordinary
+// manifest-only reattach, unrelated to the blocked d2 attempt, which
+// correctly writes userns.conf=true and bumps d1's attach-stamp. d2 is
+// refused AGAIN. Before O2, the snapshot for (m1, d2) was keyed ONLY by
+// digest, so this second refusal's restore would reuse the STALE snapshot
+// from the FIRST refusal — reverting userns.conf back to the ORIGINAL,
+// untightened (false) value and silently weakening the running unit's
+// confinement below what its current, correct manifest declares.
+func TestUpgradeModule_StaleSnapshotNeverRestoresALooserPolicy(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	unitDropInDir := filepath.Join(dropInRoot, unit+".d")
+	blocked := filepath.Join(unitDropInDir, "capabilities.conf")
+	block := func() {
+		if err := os.RemoveAll(blocked); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(blocked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unblock := func() {
+		if err := os.RemoveAll(blocked); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Attempt 1: d2 refused. Snapshot captures d1's ORIGINAL content
+	// (user_namespace:false, upgradeTestReconciler's own default).
+	block()
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUserNS("d2", []string{"CAP_CHOWN"}, true, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce attempt 1 (d2 refused): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("attempt 1: expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+	originalBody, err := os.ReadFile(filepath.Join(dropInRoot, unit+".d", "userns.conf"))
+	if err != nil {
+		t.Fatalf("read userns.conf after attempt 1: %v", err)
+	}
+	if string(originalBody) != security.RenderUserNamespaceDropInBody(false) {
+		t.Fatalf("precondition: expected userns.conf still false after attempt 1, got %q", originalBody)
+	}
+
+	// Revert/edit: d1's OWN manifest tightens user_namespace to true — an
+	// ordinary manifest-only reattach, unrelated to the blocked d2 attempt.
+	// capabilities.conf must be UNBLOCKED for this tick — it is d1's own
+	// reattach, not the d2 attempt this test is about — otherwise this
+	// reattach would ALSO refuse (attachModule fails as a whole even though
+	// userns.conf, written unconditionally, still lands on disk as a side
+	// effect of the same refused call) and never actually commit the
+	// tightened attach-stamp this test's own precondition depends on.
+	unblock()
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUserNS("d1", []string{"CAP_CHOWN"}, true, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce d1 tightening tick: %v", err)
+	}
+	tightenedBody, err := os.ReadFile(filepath.Join(dropInRoot, unit+".d", "userns.conf"))
+	if err != nil {
+		t.Fatalf("read userns.conf after tightening: %v", err)
+	}
+	if string(tightenedBody) != security.RenderUserNamespaceDropInBody(true) {
+		t.Fatalf("precondition: expected userns.conf tightened to true, got %q", tightenedBody)
+	}
+
+	// Attempt 2: d2 refused AGAIN (re-block capabilities.conf). The restore
+	// must NOT revert userns.conf back to the ORIGINAL (false) value from
+	// attempt 1's now-stale snapshot.
+	block()
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUserNS("d2", []string{"CAP_CHOWN"}, true, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce attempt 2 (d2 refused again): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("attempt 2: expected m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+	finalBody, err := os.ReadFile(filepath.Join(dropInRoot, unit+".d", "userns.conf"))
+	if err != nil {
+		t.Fatalf("read userns.conf after attempt 2: %v", err)
+	}
+	if string(finalBody) != security.RenderUserNamespaceDropInBody(true) {
+		t.Errorf("O2 REGRESSION (SECURITY): attempt 2's restore reverted userns.conf to a STALE, LOOSER policy — got %q, want the currently-tightened %q",
+			finalBody, security.RenderUserNamespaceDropInBody(true))
 	}
 }
 
@@ -1805,7 +2285,7 @@ func TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit}); err != nil {
+	if _, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", "d1", "stamp-a", []string{unit}); err != nil {
 		t.Fatalf("attempt 1: %v", err)
 	}
 
@@ -1816,7 +2296,9 @@ func TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	snap2, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit})
+	// Attempt 2: the OLD digest's own identity (d1, stamp-a) is UNCHANGED,
+	// so the persisted snapshot from attempt 1 is still valid and reused.
+	snap2, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", "d1", "stamp-a", []string{unit})
 	if err != nil {
 		t.Fatalf("attempt 2: %v", err)
 	}
@@ -1843,7 +2325,7 @@ func TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts(t *testing.T) 
 	if err := os.WriteFile(capPath, []byte("YET-ANOTHER-POLICY"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snap3, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", []string{unit})
+	snap3, err := loadOrTakeDropInSnapshot(statePath, "m1", "d2", "d1", "stamp-a", []string{unit})
 	if err != nil {
 		t.Fatalf("attempt 3 (after clear): %v", err)
 	}
