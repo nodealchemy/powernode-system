@@ -455,16 +455,81 @@ func TestUnitCapabilities_ClaudeTmuxShapedManifestGrantsOnlyCredential(t *testin
 	}
 }
 
-// PRIVILEGED MODULES OPT OUT ENTIRELY (operator decision, IMP-caef5c00d63f
-// phase 2 follow-up — qemu-guest-agent flipped to privileged: true because its
-// hypervisor-issued, arbitrary-exec job cannot be expressed as a fixed
-// capability list). Confirms neither path writes ANY capabilities.conf for a
-// privileged module's unit — not an empty/strictest one, none at all — so a
-// privileged module genuinely keeps systemd's full default bounding set on
-// BOTH the reconcile and the pivot-compose path, exactly like it did before
+// QGA FULL-CEILING FIX (operator decision, IMP-caef5c00d63f phase 2 review
+// round — REPLACES the reverted `privileged: true`; see that manifest's own
+// security block comment for why). Mirrors qemu-guest-agent's real manifest
+// shape post-fix: ceiling = every capability security.KnownCapabilities
+// recognizes (41 entries — confirmed equal to the "ALL 41" bounding set
+// already observed live on ops-hub before this whole phase touched
+// anything), `qga` (the module's only service) left WITHOUT a per-service
+// key so it inherits the whole thing on BOTH paths. This is deliberately
+// NOT gated behind privileged: true, so it carries no allowlist dependency.
+func TestUnitCapabilities_QgaShapedManifestGrantsTheFullKnownSet(t *testing.T) {
+	fullSet := make([]string, 0, len(security.KnownCapabilities))
+	for name := range security.KnownCapabilities {
+		fullSet = append(fullSet, name)
+	}
+	sort.Strings(fullSet)
+	if len(fullSet) != 41 {
+		t.Fatalf("security.KnownCapabilities has %d entries, expected 41 (the live-observed full bounding set) — "+
+			"qga's manifest was written assuming this count; update both together if it ever changes", len(fullSet))
+	}
+
+	ceilingJSON, err := json.Marshal(fullSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mf manifest.Manifest
+	body := `{
+	  "id": "qemu-guest-agent", "service_capabilities_presence": true,
+	  "config": {"security": {"capabilities": ` + string(ceilingJSON) + `}},
+	  "services": [{"name": "qga", "start_command": "/usr/sbin/qemu-ga -t /run", "user": "root"}]
+	}`
+	if err := json.Unmarshal([]byte(body), &mf); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	policy := buildPolicy(&mf)
+
+	for _, resolve := range []struct {
+		name string
+		fn   func() ([]security.UnitCapabilities, error)
+	}{
+		{"attach", func() ([]security.UnitCapabilities, error) { return attachCapabilityWrites(&mf, policy) }},
+		{"compose", func() ([]security.UnitCapabilities, error) { return composeCapabilityWrites(mf.ID, &mf, policy) }},
+	} {
+		t.Run(resolve.name, func(t *testing.T) {
+			writes, err := resolve.fn()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := capsByUnit(t, writes)["powernode-qemu-guest-agent-qga.service"]
+			if !reflect.DeepEqual(got, fullSet) {
+				t.Fatalf("qga must resolve to the FULL known capability set (no per-service key -> inherits the ceiling):\n got  %v\n want %v", got, fullSet)
+			}
+		})
+	}
+}
+
+// PRIVILEGED MODULES OPT OUT ENTIRELY (IMP-caef5c00d63f phase 2 follow-up).
+// Confirms neither path writes ANY capabilities.conf for a privileged
+// module's unit — not an empty/strictest one, none at all — so a privileged
+// module genuinely keeps systemd's full default bounding set on BOTH the
+// reconcile and the pivot-compose path, exactly like it did before
 // IMP-caef5c00d63f phase 2 ever touched non-privileged units.
+//
+// Uses a SYNTHETIC privileged module ("priv-mod"), not qemu-guest-agent:
+// qga was reverted to non-privileged (see that manifest's own comment) after
+// a live reviewer check found `privileged: true` refused on ops-hub, whose
+// account allowlist (privileged_module_ids) does not name it — dev-cell is
+// the only module actually privileged on this tree today, and it IS on that
+// allowlist. Both subtests here APPROVE the synthetic module on its
+// respective path's real gate (a frozen, approving breadcrumb for compose;
+// a populated privilegedAllow for attach) rather than relying on either
+// gate's "not yet armed" leniency arm — see
+// TestPrivilegedModuleNotOnAllowlist_RefusedOnBothPaths for the refusal
+// half, which is what actually would have caught the qga regression.
 func TestPrivilegedModule_GetsNoCapabilityDropInOnEitherPath(t *testing.T) {
-	mod, mf := privModule("qga")
+	mod, mf := privModule("priv-mod")
 
 	t.Run("attach", func(t *testing.T) {
 		dropIns := t.TempDir()
@@ -491,13 +556,82 @@ func TestPrivilegedModule_GetsNoCapabilityDropInOnEitherPath(t *testing.T) {
 
 	t.Run("compose", func(t *testing.T) {
 		sysroot := t.TempDir()
-		r := newPivotReconciler(&mount.RecorderRunner{})
+		rec := &mount.RecorderRunner{}
+		r := newPivotReconciler(rec)
 		stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
-		r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+		// FROZEN + approving breadcrumb (real production shape once the
+		// allowlist field is armed), not an empty/unfrozen one — an
+		// unfrozen breadcrumb enables the module via the gate's OWN
+		// leniency arm regardless of approval, which cannot distinguish
+		// "approved" from "not yet checked" (the exact gap that hid the
+		// qga regression).
+		bc := &BootComposedBreadcrumb{PrivilegedAllowlistFrozen: true, PrivilegedModuleIDs: []string{mf.ID}}
+		r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, bc)
+		if !unitEnabled(t, sysroot, rec, mf.ID) {
+			t.Fatal("the approved module must actually be enabled — otherwise the drop-in absence below is vacuous")
+		}
 		unit := lifecycle.UnitName(mf.ID, "app")
 		path := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d", "capabilities.conf")
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("privileged module must get NO capabilities.conf on the compose path; stat err=%v", err)
+		}
+	})
+}
+
+// THE WIRING TEST THAT WOULD HAVE CAUGHT THE qga REGRESSION (review round,
+// IMP-caef5c00d63f phase 2). A privileged module NOT on the operator's
+// allowlist must be refused on BOTH paths, using each path's REAL
+// production gate shape:
+//   - compose: a FROZEN breadcrumb whose PrivilegedModuleIDs excludes the
+//     module (mirrors TestRenderPivotUnits_FrozenAllowlistRefusesUnapproved,
+//     restated here for the parity story: both paths must agree).
+//   - attach: r.privilegedAllow populated but NOT containing the module
+//     (attachModule's own gate has no "unfrozen skips" leniency arm at all —
+//     it enforces unconditionally — so this only needs a non-empty,
+//     non-matching allowlist, not an "unarmed" state).
+//
+// Both must refuse WITHOUT enabling the unit and WITHOUT writing any
+// capabilities.conf — a half-refusal (unit disabled but a drop-in written
+// anyway, or vice versa) would be its own inconsistency bug.
+func TestPrivilegedModuleNotOnAllowlist_RefusedOnBothPaths(t *testing.T) {
+	mod, mf := privModule("priv-unapproved")
+
+	t.Run("attach", func(t *testing.T) {
+		dropIns := t.TempDir()
+		t.Cleanup(security.SetSystemdDropInRootForTest(dropIns))
+		layout := mount.DefaultLayout()
+		layout.Root = t.TempDir()
+		layout = layout.Resolve()
+		r := &Reconciler{cfg: ReconcilerConfig{
+			Puller:      &stubPuller{cacheDir: layout.ModulesCacheRoot},
+			Verifier:    verify.AlwaysOK{},
+			MountRunner: &mount.RecorderRunner{},
+			Layout:      layout,
+			OnError:     func(string, error) {},
+		}}
+		r.privilegedAllow = []string{"some-other-module"} // populated, but does NOT approve this module
+		if err := r.attachModule(context.Background(), mod, mf); err == nil {
+			t.Fatal("attachModule must refuse a privileged module absent from the allowlist")
+		}
+		unit := lifecycle.UnitName(mf.ID, "app")
+		if _, err := os.Stat(filepath.Join(dropIns, unit+".d", "capabilities.conf")); !os.IsNotExist(err) {
+			t.Errorf("a refused module must get NO capabilities.conf either; stat err=%v", err)
+		}
+	})
+
+	t.Run("compose", func(t *testing.T) {
+		sysroot := t.TempDir()
+		rec := &mount.RecorderRunner{}
+		r := newPivotReconciler(rec)
+		stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+		bc := &BootComposedBreadcrumb{PrivilegedAllowlistFrozen: true, PrivilegedModuleIDs: []string{"some-other-module"}}
+		r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, bc)
+		if unitEnabled(t, sysroot, rec, mf.ID) {
+			t.Error("renderPivotUnits must refuse a privileged module absent from the allowlist")
+		}
+		unit := lifecycle.UnitName(mf.ID, "app")
+		if _, err := os.Stat(filepath.Join(sysroot, "etc", "systemd", "system", unit+".d", "capabilities.conf")); !os.IsNotExist(err) {
+			t.Errorf("a refused module must get NO capabilities.conf either; stat err=%v", err)
 		}
 	})
 }

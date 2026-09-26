@@ -55,8 +55,9 @@ reboot_required: false
 # qga runs as root by design — the PVE convention is that the
 # hypervisor can `qm guest exec` against the agent, which requires
 # root privileges inside the guest. No platform user allocation. See
-# security.privileged below for why that is expressed as `privileged: true`
-# rather than a fixed capabilities list.
+# security.capabilities below for why that is expressed as the full known
+# capability list rather than `privileged: true` (which needs an operator
+# allowlist grant this module does not have on every account).
 
 services:
   - name: qga
@@ -95,42 +96,103 @@ dependencies:
     - hypervisor.guest-agent.qemu
 
 security:
-  # privileged: true — DECIDED (operator, IMP-caef5c00d63f phase 2), not a
-  # placeholder. qga's job is hypervisor-ISSUED, ARBITRARY root exec inside
-  # the guest (`qm guest exec`) — the target command, its working directory,
-  # and any files it touches are chosen by the caller on the PVE side at
-  # call time, not by anything fixed in this manifest or in qga's own
-  # source. That is structurally different from every other module this
-  # phase audited (postgres/redis/vault/hub-backend/hub-worker): each of
-  # those runs a FIXED, read-in-full startup script whose capability need
-  # could be established once, line by line, and expressed as a finite
-  # list. qga has no such script to read — "whatever the hypervisor asks
-  # for" is not a finite capability list, and a plausible-looking finite
-  # list here would silently refuse guest-exec calls the operator issues
-  # later, which is worse than no restriction at all for the one channel
-  # this module exists to provide.
+  # NOT privileged: true — REVERTED (operator, IMP-caef5c00d63f phase 2
+  # review round). `privileged: true` is gated by the account's
+  # `privileged_module_ids` allowlist (agent's privilegedApproved /
+  # compose.go's enforcePrivileged), an operator-controlled list qga was
+  # never added to. Live on ops-hub that allowlist names only dev-cell —
+  # marking qga privileged made the pivot-compose path refuse to enable it
+  # at all (compose:privileged_unapproved), which is WORSE than the bug this
+  # phase set out to fix: qga would never start, and it is the documented
+  # root-level recovery channel (`qm guest exec`) for this self-hosted
+  # control plane. Caught by a live reviewer check on ops-hub, not by this
+  # repo's own tests — the wiring test this task added for "a privileged
+  # module gets no capability drop-in" used an EMPTY (unfrozen) breadcrumb,
+  # which skips the allowlist gate entirely (compose.go's
+  # `enforcePrivileged := bc != nil && bc.PrivilegedAllowlistFrozen`), so it
+  # could not have caught this — see
+  # TestPrivilegedModuleNotOnAllowlist_RefusedOnBothPaths for the test that
+  # now does, with a FROZEN breadcrumb that excludes the module.
   #
-  # On ops-hub specifically qga is also the documented root-level recovery
-  # channel for the self-hosted control plane when the platform itself is
-  # down (see docs/operations — `qm guest exec` reaches the guest when
-  # SSH/the platform cannot). Under-provisioning this module's capabilities
-  # risks disabling that channel, which is a worse failure mode than the
-  # unconfined-root posture privileged: true already accepts for it.
+  # Correction of a wrong precedent claim this manifest carried in the
+  # reverted version above: module-forge and gitea-act-runner are BOTH
+  # `privileged: false` today — each documents privileged: true only as a
+  # FUTURE contingency ("if X is ever needed, flip this"), never exercised.
+  # dev-cell is the only module in this tree that is actually privileged:
+  # true today, and it is explicitly on the account's allowlist by design
+  # (it is the module the allowlist exists FOR). Citing the other two as
+  # "already using" the privileged escape hatch was wrong; corrected here so
+  # a future reader does not repeat the same allowlist mistake this
+  # correction fixes.
   #
-  # This is the SAME documented contingency module-forge (CAP_SYS_ADMIN/
-  # CAP_SYS_CHROOT/CAP_MKNOD's own header) and gitea-act-runner already use
-  # for "this unit's job cannot be expressed as a fixed capability list,
-  # flip privileged: true instead of guessing one" — same rationale, same
-  # remedy, applied here because a per-service capability resolver
-  # (IMP-caef5c00d63f) now RESETS CapabilityBoundingSet on every boot path
-  # (previously the pivot-compose path only granted ambient capabilities
-  # and left root's full bounding set alone, so this manifest's blanket
-  # `capabilities: []` was inert there). Once that reset applies uniformly,
-  # an unaudited `[]` on a root-running, hypervisor-exec service would zero
-  # its bounding set on next reboot — confirmed by survey, not guessed.
-  capabilities: []
+  # THE ACTUAL FIX: qga's real requirement — hypervisor-ISSUED, ARBITRARY
+  # root exec inside the guest, chosen by the PVE-side caller at call time,
+  # not by anything fixed in this manifest — genuinely cannot be expressed
+  # as a small, audited list the way postgres/redis/vault/hub-backend/
+  # hub-worker's fixed startup scripts could. So declare the FULL set this
+  # platform's agent recognizes (security.KnownCapabilities, 41 entries,
+  # confirmed to equal the "ALL 41" bounding set already observed live on
+  # ops-hub pre-fix) as the module ceiling, with `qga` (the only service)
+  # left WITHOUT a per-service key so it inherits the whole thing. This
+  # preserves today's actual effective behavior EXACTLY — before this whole
+  # phase, no drop-in restricted qga at all — while making that posture an
+  # explicit, auditable manifest declaration instead of an accident of the
+  # pivot-compose path never having reset the bounding set. It does not
+  # trigger the privileged-allowlist gate (privileged stays false), so it
+  # does not depend on any account's operator-maintained list.
+  capabilities:
+    - CAP_AUDIT_CONTROL
+    - CAP_AUDIT_READ
+    - CAP_AUDIT_WRITE
+    - CAP_BLOCK_SUSPEND
+    - CAP_BPF
+    - CAP_CHECKPOINT_RESTORE
+    - CAP_CHOWN
+    - CAP_DAC_OVERRIDE
+    - CAP_DAC_READ_SEARCH
+    - CAP_FOWNER
+    - CAP_FSETID
+    - CAP_IPC_LOCK
+    - CAP_IPC_OWNER
+    - CAP_KILL
+    - CAP_LEASE
+    - CAP_LINUX_IMMUTABLE
+    - CAP_MAC_ADMIN
+    - CAP_MAC_OVERRIDE
+    - CAP_MKNOD
+    - CAP_NET_ADMIN
+    - CAP_NET_BIND_SERVICE
+    - CAP_NET_BROADCAST
+    - CAP_NET_RAW
+    - CAP_PERFMON
+    - CAP_SETFCAP
+    - CAP_SETGID
+    - CAP_SETPCAP
+    - CAP_SETUID
+    - CAP_SYSLOG
+    - CAP_SYS_ADMIN
+    - CAP_SYS_BOOT
+    - CAP_SYS_CHROOT
+    - CAP_SYS_MODULE
+    - CAP_SYS_NICE
+    - CAP_SYS_PACCT
+    - CAP_SYS_PTRACE
+    - CAP_SYS_RAWIO
+    - CAP_SYS_RESOURCE
+    - CAP_SYS_TIME
+    - CAP_SYS_TTY_CONFIG
+    - CAP_WAKE_ALARM
   egress_allow: []
-  privileged: true
+  privileged: false
+  # user_namespace: true is the manifest's LONG-STANDING declared value
+  # (predates this phase). Live ops-hub shows the qga unit actually running
+  # with PrivateUsers=no — see R2 investigation (reported separately, this
+  # phase deliberately does NOT change this value pending that finding: if
+  # PrivateUsers=yes ever DID apply here it would remap qga's root out of
+  # the host's real UID/GID space, which is a materially different question
+  # from the capability bounding set this commit fixes, and changing it
+  # silently on a guess would be exactly the kind of unaudited change this
+  # whole phase exists to stop making).
   user_namespace: true
 
 build:
