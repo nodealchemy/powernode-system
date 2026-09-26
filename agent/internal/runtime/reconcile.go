@@ -1161,10 +1161,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				// old∪new — a grant either manifest declares is honoured for
 				// as long as the bump is pending, WIDER than either digest
 				// alone would grant on its own. Also accepted: sudoers scope
-				// creep for the (bounded, visible-via-PendingDigest) duration
-				// of an in-flight upgrade is a smaller risk than a
-				// crash-restarting unit finding a sudo rule it needs
-				// missing.
+				// creep for the duration of an in-flight upgrade is a smaller
+				// risk than a crash-restarting unit finding a sudo rule it
+				// needs missing. O8(c) (review round 12): correcting this
+				// comment's own earlier claim — that duration is VISIBLE
+				// (PendingDigest + the heartbeat's PendingModuleDigests stay
+				// set the entire time) but is NOT bounded. A crash-looping
+				// settle failure retries under backoffAllows' growing wait, and
+				// a revert that itself keeps failing retries under the same
+				// backoff — either can hold this union open for as long as the
+				// underlying failure persists, with no upper bound this code
+				// enforces. "Visible" is the actual mitigation here, not
+				// "bounded".
 				for id, m := range mergedManifests {
 					identityManifests = append(identityManifests, m)
 					if oldMf, isBump := bumpOldMf[id]; isBump {
