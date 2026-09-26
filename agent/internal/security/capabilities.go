@@ -2,7 +2,6 @@ package security
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,6 +111,26 @@ func DropCapabilitiesExcept(ctx context.Context, runner mount.Runner, allow []st
 	return nil
 }
 
+// validateDropInUnitName is the ONE unit-name guard shared by every
+// capability drop-in writer (WriteCapabilityDropIn and its explicit-root
+// counterpart WriteCapabilityDropInAt) — restored as a shared helper (review
+// round, IMP-caef5c00d63f phase 2) after the two had drifted into duplicate
+// copies of the same three checks. caller names the function in the returned
+// error, matching each writer's own prior error-message prefix exactly so no
+// caller (or test) observing the message text sees a behavior change.
+func validateDropInUnitName(caller, unit string) error {
+	if unit == "" {
+		return fmt.Errorf("%s: empty unit", caller)
+	}
+	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
+		return fmt.Errorf("%s: invalid unit name (path traversal)", caller)
+	}
+	if strings.HasPrefix(unit, "-") {
+		return fmt.Errorf("%s: invalid unit name (leading dash)", caller)
+	}
+	return nil
+}
+
 // WriteCapabilityDropIn renders a systemd drop-in that constrains the
 // unit's capability bounding set + ambient capabilities to the supplied
 // allowlist. Mirrors WriteSeccompDropIn (mac.go) — same drop-in dir
@@ -135,14 +154,8 @@ func DropCapabilitiesExcept(ctx context.Context, runner mount.Runner, allow []st
 //
 // Caller must invoke systemctl daemon-reload after writing drop-ins.
 func WriteCapabilityDropIn(unit string, allow []string) error {
-	if unit == "" {
-		return errors.New("WriteCapabilityDropIn: empty unit")
-	}
-	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
-		return errors.New("WriteCapabilityDropIn: invalid unit name (path traversal)")
-	}
-	if strings.HasPrefix(unit, "-") {
-		return errors.New("WriteCapabilityDropIn: invalid unit name (leading dash)")
+	if err := validateDropInUnitName("WriteCapabilityDropIn", unit); err != nil {
+		return err
 	}
 
 	body, err := renderCapabilityDropInBody(allow)
@@ -227,19 +240,18 @@ func renderCapabilityDropInBody(allow []string) (string, error) {
 // IMP-caef5c00d63f phase 2 — this REPLACES the former
 // WriteAmbientCapabilityDropInAt, which deliberately did NOT reset
 // CapabilityBoundingSet ("the bounding-set restriction requires a per-module
-// runtime-capability audit before it's safe on the pivot path"). That audit is
-// this task's own deliverable 3 (survey of every modules/*/manifest.yaml); its
-// finding is that the module manifests already declare the ceiling each
-// service actually needs (postgres-primary/redis/vault/hub-backend/hub-worker
-// all carry rationale comments establishing this), with ONE unresolved
-// exception flagged in that survey — qemu-guest-agent, whose blanket
-// `capabilities: []` + `user: root` cannot be established as safe here (its
-// purpose is hypervisor-issued exec of ARBITRARY commands, not a fixed,
-// auditable startup sequence) and needs an explicit operator decision (most
-// likely `privileged: true`, mirroring gitea-act-runner/module-forge/dev-cell's
-// documented contingency) BEFORE this binary reaches a fleet whose nodes are
-// pivot-boot-only, self-hosted, and cannot be recovered by the control plane
-// they run if guest-exec stops working.
+// runtime-capability audit before it's safe on the pivot path"). That audit
+// was this task's own deliverable 3 (survey of every modules/*/manifest.yaml).
+// Its finding: the module manifests already declare the ceiling each service
+// actually needs (postgres-primary/redis/vault/hub-backend/hub-worker all
+// carry rationale comments establishing this), EXCEPT qemu-guest-agent and
+// (found independently, in review) claude-tmux/grok-cli's credential units —
+// all three corrected on their own manifests (qemu-guest-agent: the full
+// known capability set, non-privileged, since privileged: true is refused by
+// an account's privileged_module_ids allowlist it may not be on; claude-tmux/
+// grok-cli: the exact CAP_CHOWN/CAP_DAC_OVERRIDE/CAP_FOWNER their credential
+// scripts use, established by reading each line by line and confirmed by
+// reproduction). See each manifest's own security block for the specifics.
 //
 // Empty allow list -> bounding + ambient sets both explicitly empty (the
 // strictest posture), exactly like WriteCapabilityDropIn — an absent drop-in
@@ -248,14 +260,8 @@ func renderCapabilityDropInBody(allow []string) (string, error) {
 // (mirrors reconcile.go's attachModule loop; see that loop's own comment for
 // why "empty means skip" is the wrong default here).
 func WriteCapabilityDropInAt(root, unit string, allow []string) error {
-	if unit == "" {
-		return errors.New("WriteCapabilityDropInAt: empty unit")
-	}
-	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
-		return errors.New("WriteCapabilityDropInAt: invalid unit name (path traversal)")
-	}
-	if strings.HasPrefix(unit, "-") {
-		return errors.New("WriteCapabilityDropInAt: invalid unit name (leading dash)")
+	if err := validateDropInUnitName("WriteCapabilityDropInAt", unit); err != nil {
+		return err
 	}
 
 	body, err := renderCapabilityDropInBody(allow)
