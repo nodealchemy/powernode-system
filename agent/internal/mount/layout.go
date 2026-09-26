@@ -218,6 +218,23 @@ type Module struct {
 	// cadence. Cleared (a unit removed from the list) once a later tick
 	// confirms it is active again.
 	PendingUndoUnits []string `json:"PendingUndoUnits,omitempty"`
+	// PendingDigestUnitsTouched (O8(d), review round 12) records that
+	// upgradeModule has reached step 4 for THIS PendingDigest — i.e. it is
+	// ABOUT to issue (or already issued) a restart, as opposed to merely
+	// having PendingDigest set. PendingDigest itself is now set the moment
+	// an attempt begins (before step 1's artifact pull even runs), so N4
+	// (the server-side stuck-pending-digest sensor) can see a mount/policy/
+	// hot-reconcile refusal that never gets anywhere near a unit — but that
+	// same early-set PendingDigest must never, on its own, make the revert
+	// path (reconcile.go) force-restart a unit nothing has touched. This
+	// field is the narrower fact the revert path actually needs: false
+	// means every one of this attempt's units is exactly as it was before
+	// the attempt started, and an ordinary unforced reattach is correct;
+	// true means a partial restart may have happened and recovery needs a
+	// forced one. Reset to false alongside PendingDigestAttempts: a
+	// re-target or a revert is a new attempt that has not touched anything
+	// yet either.
+	PendingDigestUnitsTouched bool `json:"PendingDigestUnitsTouched,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

@@ -1428,88 +1428,128 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if pendingRevertIDs[mod.ID] {
-			// N2 (review round 11): this entry is a REVERT of a
-			// failed/incomplete upgrade attempt, not an ordinary manifest
-			// edit — the body on disk is UNCHANGED (same stable digest, same
-			// manifest content as before the failed attempt), so the
-			// ordinary attachModuleServices call below would see every unit
-			// as Skipped and, without ForceRestartActive, never actually
-			// restart one that the failed attempt left running the OLD
-			// binary in a bad state — only `start` a genuinely inactive one.
-			// Force it, exactly like upgradeModule's own step 4, then clear
-			// PendingDigest now that the stable digest is reconfirmed as the
-			// converged target.
-			//
-			// O3 (review round 12, MEDIUM): this force-restart had NO backoff
-			// at all — a persistently failing revert retried on EVERY tick
-			// forever, the exact bug N2's own backoff exists to prevent for
-			// the ordinary retry path. Gated by the SAME backoffAllows the
-			// upgradeModule side uses.
-			if allowed, wait, elapsed := backoffAllows(pendingAttemptsByID[mod.ID], pendingLastAttemptByID[mod.ID]); !allowed {
-				r.noteUnconverged("reconciler:revert_pending_backoff", mod.ID, fmt.Errorf(
-					"module %s: revert force-restart backed off after %d attempts (%s since the last, %s remaining before the next) — not abandoned, a later reconcile tick retries",
-					mod.ID, pendingAttemptsByID[mod.ID], elapsed.Round(time.Second), (wait-elapsed).Round(time.Second)))
-				continue
-			}
-			for i, m := range current.AttachedModules {
+			// O8(d) (review round 12): PendingDigest is now set the MOMENT an
+			// upgrade attempt begins (upgrade.go, before step 1), for N4
+			// visibility of a mount/policy/hot-reconcile refusal that never
+			// gets far enough to touch a unit at all. Consulting bare
+			// PendingDigest presence here (as this revert path always used to)
+			// would therefore force-restart a unit NOTHING ever touched —
+			// exactly the class of Rule-1 violation O8(a) fixed elsewhere in
+			// this round. PendingDigestUnitsTouched is the narrower fact: it
+			// only flips true once upgradeModule is actually about to issue
+			// step 4's restart.
+			unitsTouched := false
+			for _, m := range current.AttachedModules {
 				if m.ID == mod.ID {
-					current.AttachedModules[i].PendingDigestAttempts++
-					current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+					unitsTouched = m.PendingDigestUnitsTouched
 					break
 				}
 			}
-			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
-				r.cfg.OnError("reconciler:revert_pending_attempt_save", fmt.Errorf("module %s: could not persist the revert attempt counter: %w", mod.ID, err))
-			}
-			if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true); err != nil {
-				r.noteUnconverged("reconciler:revert_pending_digest", mod.ID, fmt.Errorf(
-					"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
-				continue
-			}
-			// O4 (review round 12, MEDIUM): a unit that exists ONLY in the
-			// abandoned PENDING digest (started during the failed upgrade
-			// attempt's own step 4, e.g. a renamed service's new-only unit)
-			// is never named by the stable digest's own manifest (mf here)
-			// and so is never touched by the force-restart above — it would
-			// otherwise stay running forever, orphaned, once PendingDigest is
-			// cleared below and nothing ever asks about it again. The
-			// pending digest's own manifest comes from the N3 store (O4:
-			// upgradeModule now saves it there the moment PendingDigest is
-			// first set, not only at commit, specifically so a revert that
-			// never reaches commit can still look it up here). Stopping and
-			// cleaning these up IS rule-(2) — a genuine reversion away from
-			// the abandoned version — not a refusal side effect.
-			if pendingMf, lerr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, pendingDigestByID[mod.ID]); lerr == nil && pendingMf != nil {
-				r.stopDepartingUnits(ctx, mod.ID, pendingMf.UnitNames(), mf.UnitNames())
-			}
-			// O8(a) (review round 12, RULE-1 EDGE): clear EVERY entry with this
-			// ID, not just the first match — no `break`. The M4 duplicate-
-			// state-entry case (two AttachedModules rows for the same module
-			// ID; see TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule)
-			// means a second entry could independently carry its own
-			// PendingDigest. Stopping at the first match left that second
-			// entry's PendingDigest stuck forever: pendingRevertIDs is built
-			// from this SAME slice keyed by ID, so a module the revert just
-			// SUCCEEDED on would still read as pending-a-revert on the very
-			// next tick and force-restart it again — an unforced, invisible
-			// restart of an already-healthy unit, forever.
-			for i, m := range current.AttachedModules {
-				if m.ID == mod.ID {
-					current.AttachedModules[i].PendingDigest = ""
-					current.AttachedModules[i].PendingDigestAttempts = 0
-					current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
-					current.AttachedModules[i].PendingConflictRecoveryAttempted = false
-					current.AttachedModules[i].PendingUndoUnits = nil
+			if !unitsTouched {
+				// Nothing was ever touched by the abandoned attempt (it never
+				// got past step 1-3) — an ordinary, UNFORCED reattach is
+				// correct: the stable digest's units were never disturbed, so
+				// there is nothing to recover. Just clear the bookkeeping and
+				// let the ordinary attachModuleServices path below run (a
+				// no-op unless the manifest itself genuinely changed).
+				for i, m := range current.AttachedModules {
+					if m.ID == mod.ID {
+						current.AttachedModules[i].PendingDigest = ""
+						current.AttachedModules[i].PendingDigestAttempts = 0
+						current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
+						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
+						current.AttachedModules[i].PendingUndoUnits = nil
+					}
 				}
-			}
-			// N7 (review round 11): the abandoned target's persisted drop-in
-			// snapshot is no longer needed. O2 (review round 12): prune EVERY
-			// leftover snapshot file for this module ID, not just the one
-			// abandoned target — nothing is pending after a revert, so
-			// nothing should be kept.
-			pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
-			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
-				r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest after reverting: %w", mod.ID, err))
+				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
+				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+					r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest for a never-touched attempt: %w", mod.ID, err))
+				}
+				r.attachModuleServices(ctx, mod, mf)
+			} else {
+				// N2 (review round 11): this entry is a REVERT of a
+				// failed/incomplete upgrade attempt, not an ordinary manifest
+				// edit — the body on disk is UNCHANGED (same stable digest, same
+				// manifest content as before the failed attempt), so the
+				// ordinary attachModuleServices call below would see every unit
+				// as Skipped and, without ForceRestartActive, never actually
+				// restart one that the failed attempt left running the OLD
+				// binary in a bad state — only `start` a genuinely inactive one.
+				// Force it, exactly like upgradeModule's own step 4, then clear
+				// PendingDigest now that the stable digest is reconfirmed as the
+				// converged target.
+				//
+				// O3 (review round 12, MEDIUM): this force-restart had NO backoff
+				// at all — a persistently failing revert retried on EVERY tick
+				// forever, the exact bug N2's own backoff exists to prevent for
+				// the ordinary retry path. Gated by the SAME backoffAllows the
+				// upgradeModule side uses.
+				if allowed, wait, elapsed := backoffAllows(pendingAttemptsByID[mod.ID], pendingLastAttemptByID[mod.ID]); !allowed {
+					r.noteUnconverged("reconciler:revert_pending_backoff", mod.ID, fmt.Errorf(
+						"module %s: revert force-restart backed off after %d attempts (%s since the last, %s remaining before the next) — not abandoned, a later reconcile tick retries",
+						mod.ID, pendingAttemptsByID[mod.ID], elapsed.Round(time.Second), (wait-elapsed).Round(time.Second)))
+					continue
+				}
+				for i, m := range current.AttachedModules {
+					if m.ID == mod.ID {
+						current.AttachedModules[i].PendingDigestAttempts++
+						current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+						break
+					}
+				}
+				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+					r.cfg.OnError("reconciler:revert_pending_attempt_save", fmt.Errorf("module %s: could not persist the revert attempt counter: %w", mod.ID, err))
+				}
+				if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true); err != nil {
+					r.noteUnconverged("reconciler:revert_pending_digest", mod.ID, fmt.Errorf(
+						"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
+					continue
+				}
+				// O4 (review round 12, MEDIUM): a unit that exists ONLY in the
+				// abandoned PENDING digest (started during the failed upgrade
+				// attempt's own step 4, e.g. a renamed service's new-only unit)
+				// is never named by the stable digest's own manifest (mf here)
+				// and so is never touched by the force-restart above — it would
+				// otherwise stay running forever, orphaned, once PendingDigest is
+				// cleared below and nothing ever asks about it again. The
+				// pending digest's own manifest comes from the N3 store (O4:
+				// upgradeModule now saves it there the moment PendingDigest is
+				// first set, not only at commit, specifically so a revert that
+				// never reaches commit can still look it up here). Stopping and
+				// cleaning these up IS rule-(2) — a genuine reversion away from
+				// the abandoned version — not a refusal side effect.
+				if pendingMf, lerr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, pendingDigestByID[mod.ID]); lerr == nil && pendingMf != nil {
+					r.stopDepartingUnits(ctx, mod.ID, pendingMf.UnitNames(), mf.UnitNames())
+				}
+				// O8(a) (review round 12, RULE-1 EDGE): clear EVERY entry with this
+				// ID, not just the first match — no `break`. The M4 duplicate-
+				// state-entry case (two AttachedModules rows for the same module
+				// ID; see TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule)
+				// means a second entry could independently carry its own
+				// PendingDigest. Stopping at the first match left that second
+				// entry's PendingDigest stuck forever: pendingRevertIDs is built
+				// from this SAME slice keyed by ID, so a module the revert just
+				// SUCCEEDED on would still read as pending-a-revert on the very
+				// next tick and force-restart it again — an unforced, invisible
+				// restart of an already-healthy unit, forever.
+				for i, m := range current.AttachedModules {
+					if m.ID == mod.ID {
+						current.AttachedModules[i].PendingDigest = ""
+						current.AttachedModules[i].PendingDigestAttempts = 0
+						current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
+						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
+						current.AttachedModules[i].PendingUndoUnits = nil
+					}
+				}
+				// N7 (review round 11): the abandoned target's persisted drop-in
+				// snapshot is no longer needed. O2 (review round 12): prune EVERY
+				// leftover snapshot file for this module ID, not just the one
+				// abandoned target — nothing is pending after a revert, so
+				// nothing should be kept.
+				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
+				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+					r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest after reverting: %w", mod.ID, err))
+				}
 			}
 		} else {
 			r.attachModuleServices(ctx, mod, mf)

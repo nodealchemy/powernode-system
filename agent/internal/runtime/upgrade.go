@@ -248,15 +248,51 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 				newMod.ID, newMod.Digest, old.PendingDigestAttempts, elapsed.Round(time.Second), (wait-elapsed).Round(time.Second)))
 			return
 		}
-	} else if old.PendingDigest != "" {
-		// O2 (review round 12): re-targeting to a THIRD digest (was pending
-		// old.PendingDigest, this attempt is a DIFFERENT one — a revert to
-		// the stable Digest never reaches upgradeModule at all, that is
-		// reconcile.go's own toReattach path) abandons whatever the old
-		// target's own snapshot captured. Prune it now, before taking a
-		// fresh snapshot for the new target below, so an abandoned attempt's
-		// file can never be mistaken for anything later.
-		pruneDropInSnapshotsForModule(r.cfg.StatePath, newMod.ID, newMod.Digest)
+	} else {
+		if old.PendingDigest != "" {
+			// O2 (review round 12): re-targeting to a THIRD digest (was pending
+			// old.PendingDigest, this attempt is a DIFFERENT one — a revert to
+			// the stable Digest never reaches upgradeModule at all, that is
+			// reconcile.go's own toReattach path) abandons whatever the old
+			// target's own snapshot captured. Prune it now, before taking a
+			// fresh snapshot for the new target below, so an abandoned attempt's
+			// file can never be mistaken for anything later.
+			pruneDropInSnapshotsForModule(r.cfg.StatePath, newMod.ID, newMod.Digest)
+		}
+		// O8(d) (review round 12): set PendingDigest the MOMENT a fresh
+		// attempt begins — before step 1 even runs — not only once step 4
+		// is about to restart a unit (that later point now only sets
+		// PendingDigestUnitsTouched, below). A refusal at step 1 (artifact
+		// pull/mount), step 2 (security policy) or step 3 (hot-reconcile
+		// materialization) never touches a single running unit, but
+		// previously left NOTHING recorded — N4 (the server-side stuck-
+		// pending-digest sensor) watches PendingDigest/the heartbeat's
+		// PendingModuleDigests, so a node stuck failing to even PULL a new
+		// digest's artifact, forever, was entirely invisible to it. Chosen
+		// over inventing a second, parallel visibility channel: reusing the
+		// field N4 already understands needs no new heartbeat shape and no
+		// new server-side consumer. This is safe to do unconditionally here
+		// (this branch is "fresh target", whether nothing was pending before
+		// or a different digest was) BECAUSE the revert path in
+		// reconcile.go no longer treats bare PendingDigest presence as
+		// "force-restart me" — it consults PendingDigestUnitsTouched
+		// instead, which stays false until step 4 below actually runs. This
+		// is also where the attempt counter/conflict-recovery flag reset on
+		// a re-target (formerly done at the step-4 point, moved up here
+		// since PendingDigest is now already settled by the time step 4
+		// runs).
+		for i, m := range current.AttachedModules {
+			if m.ID == newMod.ID {
+				current.AttachedModules[i].PendingDigest = newMod.Digest
+				current.AttachedModules[i].PendingDigestAttempts = 0
+				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
+				current.AttachedModules[i].PendingDigestUnitsTouched = false
+				break
+			}
+		}
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before attempting it: %w", newMod.ID, newMod.Digest, err))
+		}
 	}
 
 	oldUnits := oldUnitNames(old, oldMf)
@@ -342,30 +378,21 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		return
 	}
 
-	// M9 (review round 9, HIGH): persist PendingDigest onto the EXISTING
-	// (still old-digest) state entry and save to disk IMMEDIATELY, before
-	// step 4 issues a single restart. A module can own several units, and
+	// M9 (review round 9, HIGH) / O8(d) (review round 12): PendingDigest
+	// itself is already set (moved to the top of this function, above — see
+	// that block's own doc). What happens HERE, immediately before step 4
+	// issues a single restart, is marking PendingDigestUnitsTouched true:
+	// the fact reconcile.go's revert path actually needs to decide whether
+	// a forced restart is warranted. A module can own several units, and
 	// AttachServicesModeOpts keeps attempting the REST of them even after
 	// one fails (its own "soft failure" continuation — see that function's
 	// doc) — so a partial multi-unit restart is a real, reachable outcome:
 	// one unit already running the NEW binary while a later one in the
-	// SAME module fails. Without this, state.json and the heartbeat both
-	// still claim old.Digest alone at that point, which by then describes
-	// NEITHER unit's actual running binary. Cleared at step 7 on commit
-	// (newMod, replacing this entry, carries no PendingDigest of its own).
+	// SAME module fails. Cleared at step 7 on commit (newMod, replacing
+	// this entry, carries no PendingDigest fields of its own).
 	for i, m := range current.AttachedModules {
 		if m.ID == newMod.ID {
-			// N2 (review round 11): the attempt counter describes attempts
-			// against ONE specific target digest — a re-target (this attempt's
-			// digest differs from whatever was pending before, including the
-			// ordinary case of nothing pending yet) starts it over.
-			if current.AttachedModules[i].PendingDigest != newMod.Digest {
-				current.AttachedModules[i].PendingDigestAttempts = 0
-				// O6 (review round 12): a re-target is a NEW conflict question;
-				// N8 has not answered it yet for this specific target.
-				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
-			}
-			current.AttachedModules[i].PendingDigest = newMod.Digest
+			current.AttachedModules[i].PendingDigestUnitsTouched = true
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
 			break

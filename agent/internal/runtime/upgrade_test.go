@@ -13,6 +13,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
 )
 
@@ -2632,5 +2633,115 @@ func TestUpgradeModule_RevertClearsPendingDigestOnEveryDuplicateStateEntry(t *te
 	}
 	if count != 2 {
 		t.Fatalf("precondition drifted: expected both injected m1 rows to survive the tick, got %d: %+v", count, final.AttachedModules)
+	}
+}
+
+// failingPuller wraps a PullerAPI, forcing an error for one specific
+// digest — O8(d)'s own test uses it to simulate a pure step-1 (artifact
+// pull/mount) refusal that never gets anywhere near step 2, 3 or 4.
+type failingPuller struct {
+	PullerAPI
+	failDigest string
+}
+
+func (f *failingPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, error) {
+	if ref.Digest == f.failDigest {
+		return "", "", fmt.Errorf("stub pull failure for digest %s (test)", ref.Digest)
+	}
+	return f.PullerAPI.Pull(ref)
+}
+
+// TestUpgradeModule_Step1RefusalSetsPendingDigestForN4Visibility is O8(d)'s
+// own test (review round 12): a refusal at step 1 (artifact pull/mount)
+// never touches a single unit — but before this fix, it also never set
+// PendingDigest, so N4 (the server-side stuck-pending-digest sensor, which
+// watches PendingDigest/the heartbeat's PendingModuleDigests) had no way to
+// see a node stuck failing to even PULL a new digest's artifact, forever.
+func TestUpgradeModule_Step1RefusalSetsPendingDigestForN4Visibility(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	r.cfg.Puller = &failingPuller{PullerAPI: r.cfg.Puller, failDigest: "d2"}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (step 1 refused): %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("pass 2: expected the step-1 refusal to leave m1 at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("O8(d) REGRESSION: expected a step-1 refusal to still set PendingDigest=d2 (for N4 visibility), got %q ok=%v", pd, ok)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && m.PendingDigestUnitsTouched {
+			t.Errorf("O8(d) REGRESSION: a step-1-only refusal must never reach step 4 — PendingDigestUnitsTouched must stay false, got true")
+		}
+	}
+}
+
+// TestUpgradeModule_RevertAfterStep1RefusalNeverRestartsTheUntouchedUnit is
+// O8(d)'s own safety test: setting PendingDigest as early as step 1 (the
+// fix above) must NOT make the revert path force-restart a unit that was
+// NEVER TOUCHED by the abandoned attempt — that would be exactly the class
+// of Rule-1 violation O8(a) fixed elsewhere in this round, just triggered a
+// different way. After a step-1-only refusal, a revert to the stable digest
+// must issue no restart of the (perfectly healthy, never-disturbed) unit at
+// all, and must still clear PendingDigest.
+func TestUpgradeModule_RevertAfterStep1RefusalNeverRestartsTheUntouchedUnit(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	r.cfg.Puller = &failingPuller{PullerAPI: r.cfg.Puller, failDigest: "d2"}
+	// app is ACTIVE throughout (never disturbed by the abandoned d2 attempt,
+	// which never got past the pull). This is the shape that actually fires
+	// the guard: AttachServicesModeOpts only ever issues `restart` (as
+	// opposed to the always-idempotent `start`) when the unit reads active
+	// AND (ForceRestartActive or a body change) — an inactive unit would
+	// read `start` on EITHER the buggy forced path or the correct unforced
+	// one, silently passing this test either way. See
+	// TestUpgradeModule_DeltaStopHappensOnlyAfterNewUnitStarts's own M1
+	// doc for the same reasoning.
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (step 1 refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after the step-1 refusal, got %q ok=%v", pd, ok)
+	}
+
+	// Revert: point back at d1. The unit was NEVER touched by the abandoned
+	// d2 attempt (it never got past the pull), so this must be a plain,
+	// unforced no-op — a forced RESTART of the still-active, still-healthy
+	// unit is the exact Rule-1 violation this test exists to catch.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+	if hasSystemctlOp(pass3, "restart", appUnit) {
+		t.Errorf("O8(d) REGRESSION: reverting an attempt that never touched %s must never RESTART it, invocations: %v", appUnit, pass3)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("pass 3: expected m1 at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("O8(d) REGRESSION: the revert must still clear PendingDigest, got %q", pd)
 	}
 }
