@@ -1850,6 +1850,102 @@ func TestUpgradeModule_N8UndoRetriesOnceBeforeGivingUp(t *testing.T) {
 	}
 }
 
+// TestUpgradeModule_PendingUndoUnitsPersistedBeforeDepartingUnitIsStopped is
+// P8's own crash-boundary test (review round 13, MEDIUM): before this fix,
+// PendingConflictRecoveryAttempted=true was the only thing persisted before
+// recoverFromDepartingUnitConflict stopped a departing unit — the
+// PendingUndoUnits/stillDown save only happened AFTER the stop-then-start-
+// then-settle sequence completed. A crash landing anywhere in that window
+// (here: the instant old-worker is stopped) left state.json with the
+// attempted flag set but no record of which unit this attempt had just
+// stopped, so nothing would ever retry it. hookRunner reads state.json
+// SYNCHRONOUSLY inside the stop command itself, mid-RunOnce, before
+// anything past that point (including the function's own eventual
+// stillDown save) has any chance to run — proving PendingUndoUnits already
+// names old-worker on disk at the moment it is stopped, not only once the
+// attempt later concludes.
+func TestUpgradeModule_PendingUndoUnitsPersistedBeforeDepartingUnitIsStopped(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	newWorkerIsActiveKey := "systemctl is-active " + newWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		newWorkerIsActiveKey:                   []byte("inactive\n"), // simulated bind conflict
+	}
+	var sawStopCall bool
+	var pendingUndoAtStopTime []string
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name != "systemctl" || !containsArg(args, "stop") || !containsArg(args, oldWorkerUnit) {
+			return
+		}
+		if sawStopCall {
+			// Once recovery succeeds this same tick, the upgrade commits
+			// and step 5's own delta-stop issues a SECOND, entirely
+			// legitimate stop of this now-genuinely-departed unit — by
+			// then PendingUndoUnits has already been correctly cleared
+			// (recovery's own success path, below). Only the FIRST stop —
+			// recoverFromDepartingUnitConflict's own — is what this test
+			// is about.
+			return
+		}
+		sawStopCall = true
+		st, err := mount.LoadState(statePath)
+		if err != nil {
+			t.Fatalf("LoadState mid-stop: %v", err)
+		}
+		for _, m := range st.AttachedModules {
+			if m.ID == "m1" {
+				pendingUndoAtStopTime = append([]string(nil), m.PendingUndoUnits...)
+			}
+		}
+		// The port is now free — new-worker can bind on the retry, same
+		// fixture shape as the ordinary N8 test.
+		runner.StubOutput[newWorkerIsActiveKey] = []byte("active\n")
+	}}
+	r.cfg.MountRunner = hooked
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+	if !sawStopCall {
+		t.Fatalf("fixture did not reach the stop call at all")
+	}
+	if !containsArg(pendingUndoAtStopTime, oldWorkerUnit) {
+		t.Errorf("P8 REGRESSION: state.json must already list %s in PendingUndoUnits ON DISK at the moment it is stopped (not only after the attempt later concludes), got %v", oldWorkerUnit, pendingUndoAtStopTime)
+	}
+
+	// The recovery succeeds this same tick (new-worker comes up) — the
+	// pre-stop candidate list must be retracted, not left dangling now that
+	// old-worker's departure was deliberate.
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && len(m.PendingUndoUnits) > 0 {
+			t.Errorf("P8 REGRESSION: PendingUndoUnits must be cleared once recovery succeeds, got %v", m.PendingUndoUnits)
+		}
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("expected the upgrade to commit to d2 once the conflict was recovered from, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged covers the
 // FIRST refusal class (point 5c) plus point 5d (persistent failure across
 // several ticks stops nothing): a blocked security drop-in write for the

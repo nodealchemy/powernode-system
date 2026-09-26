@@ -833,6 +833,32 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 		return false // nothing departing is even holding anything.
 	}
 
+	// P8 (review round 13, MEDIUM): persist PendingUndoUnits = departing
+	// BEFORE stopping a single one of them. Before this fix,
+	// PendingConflictRecoveryAttempted=true was persisted by the CALLER,
+	// well before departing was even known, and the stillDown/
+	// PendingUndoUnits save only ever happened AFTER the stop-then-start-
+	// then-settle sequence below. A crash anywhere in that window (after
+	// stopping a departing unit, before this function returns) left
+	// PendingConflictRecoveryAttempted=true on disk with no record of
+	// which unit this attempt had just stopped — the caller's own O6
+	// dedupe declines to retry a (ID, digest) it believes already ran
+	// once, so the stopped unit was never retried by anything. Recording
+	// the full candidate list up front means a crash at ANY point below
+	// leaves retryPendingUndoUnits (O6/P4) something concrete to act on
+	// next tick, regardless of how far this attempt got.
+	if current != nil {
+		for i, m := range current.AttachedModules {
+			if m.ID == old.ID {
+				current.AttachedModules[i].PendingUndoUnits = unionStrings(current.AttachedModules[i].PendingUndoUnits, departing)
+				break
+			}
+		}
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:upgrade_port_conflict_undo_save", fmt.Errorf("module %s: could not persist departing unit(s) %v before stopping them: %w", old.ID, departing, err))
+		}
+	}
+
 	for _, d := range departing {
 		if err := systemd.Action(ctx, r.cfg.MountRunner, d, systemd.Stop); err != nil {
 			r.cfg.OnError("reconciler:upgrade_port_conflict_stop", fmt.Errorf("module %s unit %s: %w", old.ID, d, err))
@@ -863,6 +889,15 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 	if recovered {
 		r.cfg.OnError("reconciler:upgrade_port_conflict_recovered", fmt.Errorf(
 			"module %s: stopped departing unit(s) %v to let new unit(s) %v bind — this is a version-upgrade restart, not a refusal", old.ID, departing, failedUnits))
+		// P8: every departing unit is DELIBERATELY down (replaced by the new
+		// unit it was blocking), not stuck — retract the pre-stop candidate
+		// list above so nothing later retries "restarting" it.
+		if current != nil {
+			removeFromPendingUndoUnits(current, old.ID, departing)
+			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+				r.cfg.OnError("reconciler:upgrade_port_conflict_undo_save", fmt.Errorf("module %s: could not clear the recovered departing unit(s) %v: %w", old.ID, departing, err))
+			}
+		}
 		return true
 	}
 
@@ -882,11 +917,18 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 			}
 		}
 	}
-	if len(stillDown) > 0 && current != nil {
-		for i, m := range current.AttachedModules {
-			if m.ID == old.ID {
-				current.AttachedModules[i].PendingUndoUnits = unionStrings(current.AttachedModules[i].PendingUndoUnits, stillDown)
-				break
+	// P8: replace the pre-stop candidate list with exactly what remains
+	// down — a unit the undo successfully restarted must not linger in
+	// PendingUndoUnits forever just because it was in the original,
+	// pre-stop candidate list persisted above.
+	if current != nil {
+		removeFromPendingUndoUnits(current, old.ID, departing)
+		if len(stillDown) > 0 {
+			for i, m := range current.AttachedModules {
+				if m.ID == old.ID {
+					current.AttachedModules[i].PendingUndoUnits = unionStrings(current.AttachedModules[i].PendingUndoUnits, stillDown)
+					break
+				}
 			}
 		}
 		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
@@ -894,6 +936,34 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 		}
 	}
 	return false
+}
+
+// removeFromPendingUndoUnits removes each of removed from moduleID's
+// PendingUndoUnits in current (in place, not yet persisted — callers save
+// afterward, typically alongside another field they are updating in the
+// same transaction). Used by recoverFromDepartingUnitConflict (P8, review
+// round 13) to retract its own pre-stop candidate list once each unit's
+// fate is known (recovered, or replaced by the post-undo stillDown set),
+// without disturbing an unrelated, still-pending entry for the same module
+// left by some OTHER attempt.
+func removeFromPendingUndoUnits(current *mount.State, moduleID string, removed []string) {
+	removeSet := make(map[string]bool, len(removed))
+	for _, u := range removed {
+		removeSet[u] = true
+	}
+	for i, m := range current.AttachedModules {
+		if m.ID != moduleID {
+			continue
+		}
+		kept := make([]string, 0, len(m.PendingUndoUnits))
+		for _, u := range m.PendingUndoUnits {
+			if !removeSet[u] {
+				kept = append(kept, u)
+			}
+		}
+		current.AttachedModules[i].PendingUndoUnits = kept
+		break
+	}
 }
 
 // retryPendingUndoUnits is O6's own priority recovery (review round 12): a
