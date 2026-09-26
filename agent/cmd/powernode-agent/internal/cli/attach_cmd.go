@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
 // AttachOptions drives `powernode-agent attach <module-id>`. Single-
@@ -37,8 +40,7 @@ func RunAttach(ctx context.Context, opts AttachOptions) (Result, error) {
 	}
 	status, err := r.AttachOne(ctx, opts.ModuleID)
 	if err != nil {
-		return errResult("attach", ExitMountFailed, "attach", err),
-			Errorf(ExitMountFailed, "attach", "%w", err)
+		return attachErrorResult(opts.ModuleID, err)
 	}
 	return Result{
 		Command: "attach",
@@ -48,4 +50,32 @@ func RunAttach(ctx context.Context, opts AttachOptions) (Result, error) {
 			"attach_status": status,
 		},
 	}, nil
+}
+
+// attachErrorResult maps an AttachOne error to the CLI's Result/exit-code
+// shape. Extracted from RunAttach so this mapping is testable without
+// BuildReconciler's real platform context (J2, review round 5).
+//
+// J2: AttachOne runs in THIS process, which exits right after RunAttach
+// returns — there is no daemon-side SecurityFailClosedUnits()/heartbeat/
+// sensor reader to fall back on for this refusal (H1's attempt to publish it
+// there was reverted as dead code once that was established). This CLI's own
+// exit code and printed unit list are the only durable signal it gets, so a
+// security-policy refusal (*runtime.SecurityFailClosedError) is
+// distinguished from an ordinary mount/pull failure (ExitMountFailed) rather
+// than folded into it.
+func attachErrorResult(moduleID string, err error) (Result, error) {
+	var secErr *runtime.SecurityFailClosedError
+	if errors.As(err, &secErr) {
+		res := errResult("attach", ExitSecurityFailClosed, "security_fail_closed", err)
+		res.Details = map[string]any{
+			"module_id":     moduleID,
+			"refused_units": secErr.Units,
+		}
+		return res, Errorf(ExitSecurityFailClosed, "attach",
+			"module %s: refusing to (re)attach/start — security drop-in write failed and was not exempt for unit(s) %s",
+			moduleID, strings.Join(secErr.Units, ", "))
+	}
+	return errResult("attach", ExitMountFailed, "attach", err),
+		Errorf(ExitMountFailed, "attach", "%w", err)
 }

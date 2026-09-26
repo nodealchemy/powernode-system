@@ -38,4 +38,19 @@ const (
 	// gate never ran — was never surfaced, sending the operator after the wrong
 	// fix. Still non-zero: no caller may soft-reboot on an unknown verdict.
 	ExitDryRunGateUnavailable = 12
+	// ExitSecurityFailClosed is returned by `attach` when the module's
+	// security policy refused to (re)attach it — a non-exempt drop-in write
+	// failure, an unapproved privileged request, or an invalid policy block
+	// (runtime.SecurityFailClosedError specifically; the other two share
+	// this code too since they are the SAME refusal family attachModule
+	// returns from, just without a typed error naming units). Distinct from
+	// ExitMountFailed (a pull/verify/mount problem — the module's own
+	// content) and from ExitRefused (an operator-facing "did you mean it"
+	// refusal like reboot_required): this is neither — it is the agent's
+	// OWN confinement policy declining to run the module unconfined (J2,
+	// review round 5). AttachOne runs inside this CLI's own process and has
+	// no daemon-side SecurityFailClosedUnits() reader to fall back on, so
+	// this exit code plus RunAttach's printed unit list is the only durable
+	// signal an operator or wrapper script gets for this specific refusal.
+	ExitSecurityFailClosed = 13
 )

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,15 +14,23 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
-// H1 (review round 5, HIGH): AttachOne (the `powernode-agent attach <id>` CLI
-// hot-add path) calls attachModule but, before this fix, never bracketed it
-// with a reset/publish cycle — so a fail-closed refusal it produced
-// accumulated into securityFailClosedPending and sat there, invisible to
-// SecurityFailClosedUnits()/buildHeartbeat/SecurityFailClosedSensor, until
-// some LATER RunOnce pass happened to touch the same module and publish over
-// it. Every direct attachModule caller is audited in this package: RunOnce
-// (two loops, already covered) and AttachOne (this file). DetachOne never
-// calls attachModule at all.
+// H1 (review round 5, HIGH) bracketed AttachOne's attachModule call with a
+// reset/publish cycle so a fail-closed refusal would reach
+// SecurityFailClosedUnits(). J2 (the REPLACEMENT review) found that dead in
+// production: AttachOne (the `powernode-agent attach <id>` CLI hot-add path)
+// runs inside that CLI's own short-lived process — BuildReconciler
+// (attach_cmd.go) constructs a Reconciler fresh for the call and the process
+// exits right after — so publishing into ITS atomic pointer has no reader.
+// The long-running daemon that actually serves buildHeartbeat/
+// SecurityFailClosedSensor is a SEPARATE process with its OWN Reconciler.
+// The two tests below originally asserted on SecurityFailClosedUnits() after
+// calling AttachOne on the SAME in-process Reconciler — a shape that can
+// only happen in a test, never in production, and is exactly why they kept
+// passing after H1 shipped a change with no real effect. Rewritten here to
+// assert on what AttachOne ACTUALLY gives its caller: a typed
+// *SecurityFailClosedError naming the refused units (see
+// SecurityFailClosedError, reconcile.go, and RunAttach's use of it,
+// attach_cmd.go) — the real, durable signal for this CLI-process caller.
 
 func attachOneFixtureReconciler(t *testing.T, tmpRoot, statePath string, client *stubModulesClient, runner *mount.RecorderRunner) *Reconciler {
 	t.Helper()
@@ -59,7 +68,7 @@ func narrowCapModuleResponse(digest string) string {
 	}`
 }
 
-func TestAttachOne_FailClosedRefusalVisibleOnSecurityFailClosedUnits(t *testing.T) {
+func TestAttachOne_FailClosedRefusalReturnsTypedError(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
@@ -81,22 +90,36 @@ func TestAttachOne_FailClosedRefusalVisibleOnSecurityFailClosedUnits(t *testing.
 		t.Fatal(err)
 	}
 
-	if _, err := r.AttachOne(context.Background(), "m1"); err == nil {
+	_, err := r.AttachOne(context.Background(), "m1")
+	if err == nil {
 		t.Fatal("AttachOne must return an error when the security drop-in fails to write (fail closed)")
 	}
 
-	if got := r.SecurityFailClosedUnits(); !containsArg(got, unit) {
-		t.Errorf("H1 REGRESSION: AttachOne's fail-closed refusal never reached SecurityFailClosedUnits(), got %v", got)
+	var secErr *SecurityFailClosedError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("J2: AttachOne's fail-closed refusal must be a *SecurityFailClosedError so the CLI caller (attach_cmd.go) can name the refused units and choose a distinct exit code; got %T: %v", err, err)
+	}
+	if !containsArg(secErr.Units, unit) {
+		t.Errorf("expected %s in SecurityFailClosedError.Units, got %v", unit, secErr.Units)
+	}
+
+	// J2: this Reconciler instance is exactly what AttachOne runs against
+	// inside the CLI process — and that process has no reader for this.
+	// Asserting it stays EMPTY documents the fix, not a gap: publishing here
+	// was H1's dead-in-production behavior, reverted.
+	if got := r.SecurityFailClosedUnits(); len(got) != 0 {
+		t.Errorf("J2: AttachOne must NOT publish into SecurityFailClosedUnits() (no daemon-side reader ever sees this process's Reconciler) — got %v", got)
 	}
 }
 
-// The other half of H1: a unit that RECOVERED once (a prior successful
-// attach marked it in SecurityFailClosedRecovered, which G5 uses to suppress
-// a STALE boot-time pivot entry) must still show as a CURRENT failure via
-// SecurityFailClosedUnits() if AttachOne later fails on it again — recovered
-// is a historical fact about the past, not a standing exemption from a new
-// failure.
-func TestAttachOne_PreviouslyRecoveredUnitFailingAgainIsVisible(t *testing.T) {
+// The other half: a unit that RECOVERED once (a prior successful attach
+// marked it in SecurityFailClosedRecovered, which G5 uses to suppress a
+// STALE boot-time pivot entry) must still REFUSE via a typed error if
+// AttachOne fails on it again — recovered is a historical fact about the
+// past, never a standing exemption from a new failure. Unlike the pre-J2
+// version of this test, this does NOT go through SecurityFailClosedUnits()
+// (see the file doc comment above for why that channel is not AttachOne's).
+func TestAttachOne_PreviouslyRecoveredUnitFailingAgainStillRefuses(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
@@ -146,14 +169,19 @@ func TestAttachOne_PreviouslyRecoveredUnitFailingAgainIsVisible(t *testing.T) {
 	}
 	client.responses["/api/v1/system/node_api/modules/m1"] = narrowCapModuleResponse("def456")
 
-	if _, err := r.AttachOne(context.Background(), "m1"); err == nil {
+	_, err := r.AttachOne(context.Background(), "m1")
+	if err == nil {
 		t.Fatal("AttachOne must fail closed on the second attempt")
 	}
 
+	var secErr *SecurityFailClosedError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("expected a *SecurityFailClosedError on the second, refused attempt; got %T: %v", err, err)
+	}
+	if !containsArg(secErr.Units, unit) {
+		t.Errorf("H1/G5: a unit marked recovered must still be named in a NEW SecurityFailClosedError when it fails again, got %v", secErr.Units)
+	}
 	if recovered := r.SecurityFailClosedRecovered(); !recovered[unit] {
 		t.Fatalf("recovered marker must still be set (it is a historical fact, not cleared by a later failure), got %v", recovered)
-	}
-	if got := r.SecurityFailClosedUnits(); !containsArg(got, unit) {
-		t.Errorf("H1/G5 REGRESSION: a unit marked recovered must still show as a CURRENT failure when it fails again, got %v", got)
 	}
 }

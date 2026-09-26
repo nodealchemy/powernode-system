@@ -1404,6 +1404,26 @@ func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) 
 // fatal to the tick — detach still proceeds, and the normal attachModule()
 // call later will attempt (and fail again, now correctly attributed)
 // rather than silently skipping the module.
+// SecurityFailClosedError is attachModule's error for a non-exempt security
+// drop-in write failure — distinct from a bare fmt.Errorf so a caller can
+// `errors.As` it to learn WHICH units refused, rather than parsing the
+// message text. Added for J2 (review round 5): AttachOne runs inside the
+// `powernode-agent attach` CLI's own short-lived process (see AttachOne's
+// doc comment), which exits immediately after this error propagates back to
+// it — there is no daemon Reconciler instance left running to read
+// SecurityFailClosedUnits() from, so the CLI's own output/exit code is the
+// only durable signal this refusal ever gets there. The long-running
+// daemon's RunOnce path keeps using SecurityFailClosedUnits() /
+// buildHeartbeat as before; this type exists for the OTHER caller.
+type SecurityFailClosedError struct {
+	ModuleID string
+	Units    []string
+}
+
+func (e *SecurityFailClosedError) Error() string {
+	return fmt.Sprintf("module %s: security drop-in write failed for unit(s) %v (fail closed)", e.ModuleID, e.Units)
+}
+
 func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.ModuleStack) {
 	for _, mod := range toAttach {
 		if err := r.mountModuleArtifact(ctx, mod); err != nil {
@@ -1559,7 +1579,15 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// first attach never starts the module's units at all, and a
 		// re-attach's stamp stays stale — which re-queues the module into
 		// toReattach on every later tick until the write succeeds.
-		return fmt.Errorf("module %s: security drop-in write failed for unit(s) %v (fail closed)", mod.ID, failedUnits)
+		//
+		// A typed *SecurityFailClosedError, not a bare fmt.Errorf (J2, review
+		// round 5): AttachOne's caller (the `powernode-agent attach` CLI,
+		// its own short-lived process — see AttachOne's doc comment) has no
+		// other way to learn WHICH units refused and choose a distinct exit
+		// code for it, once this function stops publishing into
+		// SecurityFailClosedUnits() from that process (H1 was reverted
+		// because that publish had no reader there).
+		return &SecurityFailClosedError{ModuleID: mod.ID, Units: failedUnits}
 	}
 
 	// Every one of this module's security drop-ins just wrote successfully —
@@ -2273,55 +2301,19 @@ func (r *Reconciler) resetSecurityFailClosed() {
 // SecurityFailClosedSensor, clearing a real alarm, then re-raise it once the
 // pass finishes).
 //
-// RunOnce OWNS THE WHOLE SET, so this is a full replace, safe because RunOnce
-// is the only caller that reasons about every desired module in one pass.
-// AttachOne (a single hot-add outside any RunOnce pass) must NOT use this —
-// see publishSecurityFailClosedForModule, its own merge-scoped counterpart
-// (H1, review round 5).
+// RunOnce OWNS THE WHOLE SET and is the ONLY caller — a full replace is safe
+// because it reasons about every desired module in one pass. AttachOne (a
+// single hot-add) does NOT publish at all: it runs inside the
+// `powernode-agent attach` CLI's own short-lived process (see AttachOne's
+// doc comment), which has no daemon-side reader for this Reconciler
+// instance's atomic pointer to reach. An H1 (review round 5) draft published
+// here from AttachOne too, reasoning by analogy with RunOnce; J2 (the
+// replacement review) reverted it as dead code in production — see
+// SecurityFailClosedError, which is AttachOne's actual signal to its CLI
+// caller.
 func (r *Reconciler) publishSecurityFailClosed() {
 	published := r.securityFailClosedPending
 	r.securityFailClosedUnits.Store(&published)
-}
-
-// publishSecurityFailClosedForModule merges the result of attaching ONE
-// module (moduleUnits: every unit name that module owns, regardless of
-// whether it just failed) into the published set, touching only entries that
-// belong to THIS module. Used by AttachOne (H1, review round 5): before this,
-// AttachOne called attachModule directly with no reset/publish bracket at
-// all, so a fail-closed refusal it produced accumulated into
-// securityFailClosedPending and then sat there forever, invisible to
-// SecurityFailClosedUnits()/buildHeartbeat/the sensor until some LATER
-// RunOnce pass happened to touch the same module and publish over it — and
-// combined with G5 (a recovered unit is published immediately, independent
-// of RunOnce), a unit that had previously recovered and then failed again
-// via AttachOne read as fully clean on both the pivot and the runtime lists.
-//
-// Every direct attachModule caller in this package is audited: RunOnce (two
-// loops, both already covered by publishSecurityFailClosed) and AttachOne
-// (this one). Both hold r.mu for their ENTIRE body, so they can never
-// interleave with each other or with themselves — the read-modify-write here
-// needs no additional lock beyond what atomic.Pointer already gives
-// concurrent buildHeartbeat readers.
-func (r *Reconciler) publishSecurityFailClosedForModule(moduleUnits []string) {
-	inModule := make(map[string]bool, len(moduleUnits))
-	for _, u := range moduleUnits {
-		inModule[u] = true
-	}
-	merged := make([]string, 0, len(r.securityFailClosedPending))
-	for _, u := range r.SecurityFailClosedUnits() {
-		if !inModule[u] {
-			// Not this module's unit — a full RunOnce pass (or a previous
-			// AttachOne) published it; leave it exactly as it is.
-			merged = append(merged, u)
-		}
-		// Was this module's unit: DROPPED here unconditionally. If it is
-		// still failing, it is re-added below from this call's own pending
-		// result; if it just recovered, dropping it (and not re-adding it)
-		// is precisely the correction this call is reporting.
-	}
-	merged = append(merged, r.securityFailClosedPending...)
-	r.securityFailClosedUnits.Store(&merged)
-	r.securityFailClosedPending = nil
 }
 
 // SecurityFailClosedRecovered returns the units whose live security drop-in
@@ -2390,21 +2382,22 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	}
 
 	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash, CosignBundleB64: mf.CosignBundleB64}
-	// Bracket this single-module attach with its OWN pending/publish cycle
-	// (H1, review round 5) — attachModule only ACCUMULATES into
-	// securityFailClosedPending; without an explicit publish here, a refusal
-	// AttachOne produces would sit unpublished until some LATER RunOnce pass
-	// happened to touch the same module. publishSecurityFailClosedForModule,
-	// not publishSecurityFailClosed: this call reasons about ONE module, not
-	// the whole desired set RunOnce owns, so it must merge into (never
-	// replace) whatever a full RunOnce pass has published for every OTHER
-	// module. Runs whether attachModule succeeds or fails, so a module that
-	// was PREVIOUSLY published as failing and now succeeds via AttachOne is
-	// correctly cleared too.
-	r.resetSecurityFailClosed()
-	attachErr := r.attachModule(ctx, mod, mf)
-	r.publishSecurityFailClosedForModule(mf.UnitNames())
-	if attachErr != nil {
+	// H1 (review round 5) bracketed this call with resetSecurityFailClosed +
+	// publishSecurityFailClosedForModule, reasoning that a refusal here
+	// needed to reach SecurityFailClosedUnits(). REVERTED (J2, the
+	// replacement review): AttachOne runs inside the `powernode-agent
+	// attach` CLI's own process (see this function's doc comment) — a
+	// short-lived process that BuildReconciler constructs fresh and that
+	// exits right after this call returns. Publishing into THIS
+	// Reconciler's in-memory atomic pointer has no reader: the long-running
+	// daemon that actually serves buildHeartbeat/SecurityFailClosedSensor is
+	// a SEPARATE process with its OWN Reconciler and its OWN atomic pointer.
+	// H1's publish call was therefore dead code in production — real only
+	// inside a test that (like production never does) shares one Reconciler
+	// instance across the CLI-shaped call and the read. The durable signal
+	// for an operator running this CLI command is its own output and exit
+	// code — see SecurityFailClosedError and RunAttach (attach_cmd.go).
+	if attachErr := r.attachModule(ctx, mod, mf); attachErr != nil {
 		return "", attachErr
 	}
 	// Unconditional, unlike the two reconcile loops: this path never runs
