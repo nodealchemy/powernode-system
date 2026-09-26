@@ -33,8 +33,18 @@ func TestSecurityFailClosed_ResetDoesNotClearThePublishedValueUntilPublish(t *te
 		t.Errorf("G4 REGRESSION: reset cleared the published value before pass 2 published its own result; a mid-pass heartbeat would read this as recovered, got %v", got)
 	}
 
-	// Pass 2 finds nothing (the write now succeeds) and publishes its own
-	// (empty) result — only NOW may the published value actually clear.
+	// Pass 2 REACHES unit-a.service's security-policy decision (J3, review
+	// round 5 REPLACEMENT review: applyModuleSecurityPolicy records this
+	// unconditionally, success or failure — simulated directly here the same
+	// way this test already drives recordSecurityFailClosed/
+	// publishSecurityFailClosed directly rather than through attachModule)
+	// and finds nothing (the write now succeeds) — only THEN, on publish, may
+	// the published value actually clear for this unit. Omitting this
+	// attempted-marking would make pass 2 look like a PARTIAL-VIEW tick that
+	// never reached unit-a.service at all, which J3 requires to carry the
+	// unit forward rather than clear it — a materially different scenario
+	// from the one this test means to cover.
+	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, "unit-a.service")
 	r.publishSecurityFailClosed()
 	if got := r.SecurityFailClosedUnits(); len(got) != 0 {
 		t.Errorf("expected the published value to clear once pass 2 published its empty result, got %v", got)

@@ -190,14 +190,29 @@ type Reconciler struct {
 	// re-raise it once the pass finishes. securityFailClosedPending
 	// accumulates the units THIS pass has found so far in an ordinary
 	// (non-atomic) field — safe because every attachModule caller (RunOnce's
-	// two loops, and AttachOne — H1, review round 5) holds r.mu for its
+	// two loops, and AttachOne, which never publishes — see
+	// SecurityFailClosedError and J2, review round 5) holds r.mu for its
 	// ENTIRE body, so only one of them ever touches it at a time — and
-	// publishSecurityFailClosed(ForModule) swaps the atomic pointer over to
-	// it in ONE Store call once its caller's own pass finishes, so a
-	// concurrent reader only ever sees the previous pass's complete result or
-	// this pass's complete result, never a value from mid-pass.
-	securityFailClosedUnits   atomic.Pointer[[]string]
-	securityFailClosedPending []string
+	// publishSecurityFailClosed swaps the atomic pointer over to it in ONE
+	// Store call once RunOnce's own pass finishes, so a concurrent reader
+	// only ever sees the previous pass's complete result or this pass's
+	// complete result, never a value from mid-pass.
+	//
+	// securityPolicyAttemptedUnits (J3, review round 5 REPLACEMENT review)
+	// tracks which units this pass actually RAN the security-policy decision
+	// for (applyModuleSecurityPolicy records into it unconditionally at
+	// entry) — publishSecurityFailClosed is a FULL REPLACE keyed on pending
+	// alone, so a module this pass could not even REACH the decision for
+	// (a manifest fetch failure, a no-digest module, or a blob pull failure
+	// ahead of the security step) would otherwise silently drop out of a
+	// PREVIOUSLY published refusal, reading as "recovered" to
+	// SecurityFailClosedSensor for a module whose confinement status this
+	// pass never actually learned anything new about. Same lifecycle as
+	// securityFailClosedPending: reset alongside it, read alongside it in
+	// publishSecurityFailClosed, never itself published.
+	securityFailClosedUnits      atomic.Pointer[[]string]
+	securityFailClosedPending    []string
+	securityPolicyAttemptedUnits []string
 
 	// securityFailClosedRecovered names units whose LIVE (attachModule)
 	// security drop-in write has SUCCEEDED at least once since this boot —
@@ -1459,6 +1474,18 @@ func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.Mo
 // this case (see attachStamp's doc comment on that being otherwise
 // unverified on a real LSM host; unchanged by this refactor).
 func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
+	// J3 (review round 5 REPLACEMENT review): record these units as
+	// ATTEMPTED this pass regardless of which branch below returns —
+	// publishSecurityFailClosed carries forward a PREVIOUSLY published
+	// refusal for any unit NOT in this set, so a module whose decision this
+	// pass genuinely could not reach (mountModuleArtifact never got called at
+	// all, e.g. a manifest fetch failure upstream) must never be marked
+	// attempted — but one whose decision WAS reached, even a REFUSAL for a
+	// different reason (invalid policy, unapproved privileged request), is a
+	// fresh, current-tick answer and must replace, not preserve, whatever was
+	// published before.
+	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, mf.UnitNames()...)
+
 	policy := buildPolicy(mf)
 	if policy.Privileged && !privilegedApproved(mod.ID, r.privilegedAllow) {
 		// The module REQUESTS privileged (all confinement off) but the operator
@@ -2281,14 +2308,16 @@ func (r *Reconciler) recordSecurityFailClosed(units []string) {
 	r.securityFailClosedPending = merged
 }
 
-// resetSecurityFailClosed clears the PENDING (not yet published) set at the
-// top of a fresh RunOnce pass — same reasoning as composeFailed.Store(false):
-// the set must describe the pass that just ran, never an older one, so a
-// module that fixed its drop-in this tick drops off rather than staying
-// flagged forever. Deliberately does NOT touch the published atomic value —
-// see publishSecurityFailClosed and securityFailClosedUnits' own doc (G4).
+// resetSecurityFailClosed clears the PENDING (not yet published) set, and
+// the ATTEMPTED set (J3) alongside it, at the top of a fresh RunOnce pass —
+// same reasoning as composeFailed.Store(false): both must describe the pass
+// that just ran, never an older one, so a module that fixed its drop-in this
+// tick drops off rather than staying flagged forever. Deliberately does NOT
+// touch the published atomic value — see publishSecurityFailClosed and
+// securityFailClosedUnits' own doc (G4).
 func (r *Reconciler) resetSecurityFailClosed() {
 	r.securityFailClosedPending = nil
+	r.securityPolicyAttemptedUnits = nil
 }
 
 // publishSecurityFailClosed swaps the PUBLISHED atomic value over to
@@ -2301,19 +2330,43 @@ func (r *Reconciler) resetSecurityFailClosed() {
 // SecurityFailClosedSensor, clearing a real alarm, then re-raise it once the
 // pass finishes).
 //
-// RunOnce OWNS THE WHOLE SET and is the ONLY caller — a full replace is safe
-// because it reasons about every desired module in one pass. AttachOne (a
-// single hot-add) does NOT publish at all: it runs inside the
-// `powernode-agent attach` CLI's own short-lived process (see AttachOne's
-// doc comment), which has no daemon-side reader for this Reconciler
-// instance's atomic pointer to reach. An H1 (review round 5) draft published
-// here from AttachOne too, reasoning by analogy with RunOnce; J2 (the
-// replacement review) reverted it as dead code in production — see
-// SecurityFailClosedError, which is AttachOne's actual signal to its CLI
-// caller.
+// RunOnce OWNS THE WHOLE SET and is the ONLY caller. AttachOne (a single
+// hot-add) does NOT publish at all: it runs inside the `powernode-agent
+// attach` CLI's own short-lived process (see AttachOne's doc comment), which
+// has no daemon-side reader for this Reconciler instance's atomic pointer to
+// reach. An H1 (review round 5) draft published here from AttachOne too,
+// reasoning by analogy with RunOnce; J2 (the replacement review) reverted it
+// as dead code in production — see SecurityFailClosedError, which is
+// AttachOne's actual signal to its CLI caller.
+//
+// NOT a bare full replace (J3, review round 5 REPLACEMENT review): a
+// PREVIOUSLY published unit whose module this pass never reached the
+// security-policy decision for — a manifest fetch failure, a no-digest
+// module, a blob pull failure ahead of the drop-in step, any of the
+// partial-view cases RunOnce's own manifest-fetch loop already names — is
+// carried forward rather than dropped. Before this, a partial-view tick
+// silently cleared that module's refusal (it never appeared in
+// securityFailClosedPending, which only the units THIS pass actually decided
+// go into), reading as "recovered" to SecurityFailClosedSensor for a module
+// whose confinement status this pass learned NOTHING new about — then the
+// alarm re-raised on the next tick that could reach it, flapping. A unit
+// this pass DID reach the decision for (securityPolicyAttemptedUnits, set by
+// applyModuleSecurityPolicy regardless of outcome) always uses THIS pass's
+// fresh answer, never a stale one — carry-forward applies ONLY to units this
+// pass could not even attempt.
 func (r *Reconciler) publishSecurityFailClosed() {
-	published := r.securityFailClosedPending
-	r.securityFailClosedUnits.Store(&published)
+	attempted := make(map[string]bool, len(r.securityPolicyAttemptedUnits))
+	for _, u := range r.securityPolicyAttemptedUnits {
+		attempted[u] = true
+	}
+	merged := make([]string, 0, len(r.securityFailClosedPending))
+	for _, u := range r.SecurityFailClosedUnits() {
+		if !attempted[u] {
+			merged = append(merged, u) // not reached this pass — carry forward
+		}
+	}
+	merged = append(merged, r.securityFailClosedPending...)
+	r.securityFailClosedUnits.Store(&merged)
 }
 
 // SecurityFailClosedRecovered returns the units whose live security drop-in
