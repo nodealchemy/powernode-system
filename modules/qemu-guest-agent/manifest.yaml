@@ -140,6 +140,30 @@ security:
   # pivot-compose path never having reset the bounding set. It does not
   # trigger the privileged-allowlist gate (privileged stays false), so it
   # does not depend on any account's operator-maintained list.
+  #
+  # VERSION-SKEW CONSTRAINT (J5, review round 5 REPLACEMENT review):
+  # security.IsFullCapabilitySet requires an EXACT match against the
+  # agent BINARY's own KnownCapabilities map, not "close enough" — so this
+  # list must equal that map on whatever agent version is CURRENTLY
+  # RUNNING on a node, not the version that authored this manifest. A
+  # future PR that adds a capability to KnownCapabilities is already
+  # forced (by TestRealQgaManifest_ResolvesToFullCapabilitySetAndNoUserNamespace)
+  # to update this list in the SAME commit, so the source tree can never
+  # drift on its own. The remaining gap is purely a FLEET DEPLOYMENT
+  # ORDERING one: if a node's agent BINARY is upgraded to the version that
+  # grew KnownCapabilities before that SAME release's updated qga
+  # manifest.yaml is actually served to it (agent-binary and module-
+  # manifest delivery are separate channels — see
+  # docs/contributing/release-process.md), that node briefly sees this
+  # list as one entry short of the new count and qga stops being exempt
+  # — refusable on the very host-root recovery channel this whole design
+  # protects, for however long that skew window lasts. There is no code
+  # fix for this within IsFullCapabilitySet's own exactness guarantee
+  # (loosening it to "close enough" reopens the narrow-ceiling
+  # false-exemption risk its own doc comment guards against): release
+  # discipline is the mitigation — publish an updated qga manifest.yaml
+  # BEFORE or IN THE SAME rollout wave as any agent binary that changes
+  # KnownCapabilities, never after.
   capabilities:
     - CAP_AUDIT_CONTROL
     - CAP_AUDIT_READ
