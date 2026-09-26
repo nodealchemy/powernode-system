@@ -2494,6 +2494,88 @@ func TestRunOnce_BootstrapsAttachedSnapshotForPreN3Attach(t *testing.T) {
 	}
 }
 
+// TestRunOnce_BootstrapDoesNotAdoptARefusedManifestOnlyEditAtTheSameDigest is
+// P6 (review round 13, LOW): the digest-only guard in O7's bootstrap loop
+// trusted previousManifests[mod.ID] as "what's genuinely attached right now"
+// once its digest matched mod.Digest. previousManifests is the ID-keyed
+// "latest fetch" cache, and a REFUSED reattach never rolls it back — the
+// fetch that populates it runs before the reattach attempt, so the cache is
+// left holding the new, never-applied content regardless of whether the
+// reattach that follows succeeds. A manifest-only edit at the SAME digest
+// (capabilities widen, no digest change — the toReattach path, not
+// upgradeModule) that fetches successfully and is then refused at reattach
+// (here: a blocked capabilities.conf write) leaves
+// LastAttachedManifestHashes["m1"] pointing at the OLD, still-genuinely-
+// attached content's stamp. If the module's own attached-snapshot is ALSO
+// missing at exactly this tick (the pre-N3 gap O7's bootstrap exists to
+// close), the digest-only guard wrongly bootstraps the snapshot with the
+// refused content; the stamp comparison this fix adds must refuse instead.
+func TestRunOnce_BootstrapDoesNotAdoptARefusedManifestOnlyEditAtTheSameDigest(t *testing.T) {
+	r, client, _, _, _, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	snapPath := filepath.Join(manifestRoot, "m1", "attached", "d1.json")
+	if _, err := os.Stat(snapPath); err != nil {
+		t.Fatalf("precondition: expected %s after pass 1: %v", snapPath, err)
+	}
+
+	// Manifest-only edit at the SAME digest (d1): capability set widens, no
+	// digest change, so this goes through the toReattach path (reconcile.go),
+	// never upgradeModule.
+	unitDropInDir := filepath.Join(dropInRoot, unit+".d")
+	blocked := filepath.Join(unitDropInDir, "capabilities.conf")
+	block := func() {
+		if err := os.RemoveAll(blocked); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(blocked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block()
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	// Pass 2: the reattach is attempted and refused (capabilities.conf write
+	// blocked). attachModule's error return short-circuits before either
+	// LastAttachedManifestHashes["m1"] or d1's attach-snapshot is touched —
+	// both must still describe the ORIGINAL, narrower-capability content.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (refused reattach): %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err != nil {
+		t.Fatalf("precondition: expected d1's snapshot to survive the refused reattach untouched: %v", err)
+	}
+
+	// Simulate the pre-N3 gap: the snapshot the original attach wrote is
+	// lost. previousManifests["m1"] on disk was overwritten by pass 2's own
+	// fetch loop and now holds the REFUSED, widened-capability content — the
+	// exact mismatch P6 exists to catch.
+	if err := os.Remove(snapPath); err != nil {
+		t.Fatalf("simulating pre-N3 loss of the d1 snapshot: %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err == nil {
+		t.Fatalf("precondition: expected no snapshot after removing %s", snapPath)
+	}
+
+	// Pass 3: nothing about the fixture changes. The bootstrap loop runs
+	// against previousManifests as captured at the START of this tick (pass
+	// 2's refused-and-cached widened content) — the digest-only guard would
+	// reconstruct d1's snapshot from that REFUSED content; the P6 fix must
+	// refuse, since attachStamp(refused content) != LastAttachedManifestHashes["m1"].
+	// capabilities.conf stays blocked so this tick's OWN reattach attempt is
+	// refused too, keeping the assertion isolated to the bootstrap loop alone.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3: %v", err)
+	}
+	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, "m1", "d1"); err == nil {
+		t.Fatalf("P6 REGRESSION (SECURITY): bootstrap wrongly adopted a refused manifest-only edit as d1's attached snapshot")
+	}
+}
+
 // TestRunOnce_PrunesAttachedSnapshotsForDigestsNeitherAttachedNorPending is
 // O7's GC case (review round 12): manifest.SaveAttachedSnapshot writes a new
 // file per digest a module ID is ever attached under and nothing previously

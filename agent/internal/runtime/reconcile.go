@@ -767,6 +767,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if !ok || pm == nil || pm.Digest != mod.Digest {
 			continue // no cached content matching the currently-attached digest
 		}
+		// P6 (review round 13, LOW): the digest match above is not enough
+		// on its own. previousManifests is the ID-keyed "latest fetch"
+		// cache — a manifest-only edit (same digest, changed services:/
+		// capabilities/etc.) that FETCHED successfully but was then
+		// REFUSED at reattach (a hot-reconcile or policy refusal) leaves
+		// this cache holding the NEW, never-successfully-applied content,
+		// while the actually-attached content on disk is still the OLD
+		// version — current.LastAttachedManifestHashes[mod.ID] was never
+		// updated to the new stamp precisely because the reattach failed.
+		// Comparing the cached manifest's OWN stamp against that
+		// last-successful one closes the gap: only a cached manifest that
+		// genuinely matches what was last successfully applied is trusted
+		// as "what's actually attached right now".
+		if r.attachStamp(mod.ID, pm) != current.LastAttachedManifestHashes[mod.ID] {
+			continue // cached content is a refused edit, not what's actually attached
+		}
 		if serr := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, pm); serr != nil {
 			r.cfg.OnError("reconciler:upgrade_snapshot_bootstrap", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, serr))
 		}
