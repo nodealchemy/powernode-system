@@ -280,7 +280,22 @@ services:
     # Explicit [], not absence: this is the tmux session itself (User=pnadmin,
     # a non-root, already-owning process for everything it touches) — it must
     # NOT silently inherit the ceiling raised above for `credential`'s sake.
+    # INTENDED HARDENING, worth stating plainly rather than leaving implicit:
+    # an empty bounding+ambient set here means `sudo` (and anything else
+    # requiring a capability sudo would otherwise grant back, e.g. setuid
+    # re-exec) does NOT work inside this managed tmux session on a pivot
+    # node once IMP-caef5c00d63f phase 2 lands — the session is confined to
+    # exactly what pnadmin's own DAC permissions allow, nothing sudo could
+    # elevate. This is the intended posture for an unattended, hypervisor-
+    # facing CLI session, not a regression to route around.
     capabilities: []
+    # user_namespace is MODULE-WIDE (security.user_namespace above), so this
+    # unit inherits `false` from `credential`'s real requirement (see that
+    # block's comment) even though `claude` itself never needed PrivateUsers
+    # disabled for its own sake — it already runs as the real pnadmin uid,
+    # never root, so losing the namespace remap is a minor defense-in-depth
+    # reduction (one fewer boundary around an already-unprivileged process),
+    # not a privilege change.
     dependencies:
       - { service: credential, kind: start_before }
     unit_body: |
@@ -377,7 +392,35 @@ security:
   egress_allow:
     - api.anthropic.com
   privileged: false
-  user_namespace: true
+  # user_namespace: false — CORRECTED (review round, IMP-caef5c00d63f phase
+  # 2). `true` (PrivateUsers=yes) makes CAP_CHOWN/CAP_DAC_OVERRIDE/CAP_FOWNER
+  # above INERT for everything `credential` actually needs them for: a
+  # private user namespace only maps the unit's own uid (0, root) into
+  # itself — the session user pnadmin (a REAL host uid) is UNMAPPED from
+  # inside it, so any file real-pnadmin owns (or that credential is trying
+  # to hand to pnadmin) looks like it belongs to the overflow/nobody uid,
+  # and no capability held INSIDE the namespace reaches across that boundary.
+  # CONFIRMED LIVE on this dev-cell, unprompted, before any manifest edit:
+  # `systemctl show -p PrivateUsers` on the running credential unit already
+  # reports `yes`, and its journal shows the SAME symptom on every run —
+  # "rm: cannot remove '/home/pnadmin/.claude/.credentials.json.tmp':
+  # Permission denied" from the script's own EXIT trap — which, because bash
+  # lets a failing command inside an EXIT trap override the script's already-
+  # decided exit code, silently turns the intended `exit 78` (no credential
+  # configured, a designed steady state) into `exit 1` (treated as a fault,
+  # endlessly retried). CONFIRMED BY REPRODUCTION (systemd-run
+  # -p PrivateUsers=yes plus the exact capability set above): mkdir/chown
+  # into a 1000:1000-owned directory EPERMs, and chown to uid 1000 itself
+  # returns EINVAL (not EPERM) — the precise signature of chown(2) targeting
+  # a uid absent from the caller's namespace mapping. Re-run with
+  # -p PrivateUsers=no and the identical capability set: every step succeeds.
+  # So this module's credential staging is BROKEN TODAY on any node running
+  # a recent-enough agent to reach PrivateUsers=yes on the pivot path, quite
+  # apart from anything IMP-caef5c00d63f changed — this fixes it, at the
+  # cost (see the `claude` session unit's own comment) of one line of
+  # defense-in-depth for that unit, which runs as pnadmin (never root)
+  # regardless.
+  user_namespace: false
 
 skills: []
 

@@ -257,7 +257,20 @@ security:
   egress_allow:
     - api.x.ai
   privileged: false
-  user_namespace: true
+  # user_namespace: false — CORRECTED (review round, IMP-caef5c00d63f phase
+  # 2), same defect and same fix as claude-tmux's identical correction (see
+  # that manifest's comment for the full mechanism). This module's own
+  # `credential` unit chowns its RuntimeDirectory and its staged key to
+  # $CRED_USER (pnadmin, a real host uid) — under PrivateUsers=yes that uid
+  # is unmapped inside the unit's private namespace, so both chown(2) calls
+  # return EINVAL regardless of CAP_CHOWN. CONFIRMED BY REPRODUCTION
+  # (systemd-run -p PrivateUsers=yes plus the capability set above,
+  # replicating this exact script's operation sequence): both chowns fail
+  # EINVAL; re-run with -p PrivateUsers=no and the identical set, every step
+  # succeeds. Unlike claude-tmux there is no second (non-root) service in
+  # this module to weigh a defense-in-depth tradeoff for — grok-cli has only
+  # `credential`, which needs this to function at all.
+  user_namespace: false
 
 skills: []
 
