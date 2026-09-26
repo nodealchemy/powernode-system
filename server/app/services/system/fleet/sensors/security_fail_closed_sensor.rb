@@ -3,10 +3,13 @@
 # IMP-caef5c00d63f phase 4 — F2 (round-3 review). System::BootLkgStateWriter
 # has persisted pivot_security_fail_closed_units / runtime_security_fail_closed_units
 # onto System::NodeInstance#config on every heartbeat since this task's own
-# round 3, and nothing asked. A module the agent refused to enable (or stopped
-# mid-tick) because a security drop-in write failed non-exempt is a REAL
-# confinement gap on a real node, and the same "answerable but never asked"
-# shape BootLkgArmSensor closed for the LKG-armed question applies here.
+# round 3, and nothing asked. A unit the agent REFUSED to (re)attach or start
+# because a security drop-in write failed non-exempt is a real confinement
+# gap on a real node — the agent never weakens a unit's confinement and
+# starts it anyway (round 5 removed an earlier draft that stopped a running
+# unit here, which was itself unrecoverable on a self-hosted node whose own
+# rails/postgres it could stop). Same "answerable but never asked" shape
+# BootLkgArmSensor closed for the LKG-armed question.
 #
 # ONE kind, both fields, because they share one disposition (reach an
 # operator) and one root cause (a security drop-in write failed on this
@@ -89,9 +92,17 @@ module System
               "count_is_floor"      => capped,
               "instances"           => named(affected),
               "truncated"           => affected.size > MAX_NAMED_INSTANCES,
-              "summary"             => "#{capped ? 'at least ' : ''}#{affected.size} live node(s) report a unit refused or " \
-                                        "stopped because a security drop-in write failed and was not exempt — those " \
-                                        "units are NOT running with the confinement their manifest declares",
+              # NOT "running without confinement" (review G6): the agent
+              # never weakens a unit's confinement and starts it anyway — a
+              # non-exempt drop-in write failure makes it REFUSE to
+              # (re)attach/start the unit at all. A first attach's unit is
+              # genuinely NOT RUNNING; a re-attach's unit, if already
+              # running, keeps running under whatever confinement it already
+              # had (never a weaker one the agent just failed to apply).
+              # "Refused" is the one word true in both cases.
+              "summary"             => "#{capped ? 'at least ' : ''}#{affected.size} live node(s) report a unit the agent " \
+                                        "REFUSED to (re)attach/start because a security drop-in write failed and was " \
+                                        "not exempt — those units are NOT RUNNING with the agent's involvement",
               "remediation_action"  => nil
             },
             fingerprint: "node_security_fail_closed:#{account.id}"

@@ -97,6 +97,52 @@ RSpec.describe System::Fleet::Sensors::SecurityFailClosedSensor do
 
       expect(signals).to eq([])
     end
+
+    it "uses a per-account fingerprint, not per-instance or per-unit" do
+      record!(instance!, "pivot_security_fail_closed_units" => %w[unit-a.service])
+
+      expect(signal[:fingerprint]).to eq("node_security_fail_closed:#{account.id}")
+    end
+
+    # review G6: a node's own document is never cross-account visible.
+    it "does NOT include another account's instance" do
+      record!(instance!, "pivot_security_fail_closed_units" => %w[own-account-unit.service])
+
+      other_account = create(:account)
+      other_node = create(:system_node, account: other_account)
+      other_instance = create(:system_node_instance, node: other_node, status: "running", last_heartbeat_at: 1.minute.ago)
+      other_instance.update!(config: other_instance.config.merge(
+        System::BootLkgStateWriter::CONFIG_KEY => { "pivot_security_fail_closed_units" => %w[other-account-unit.service] }
+      ))
+
+      expect(signal.dig(:payload, "instance_count")).to eq(1)
+      names = signal.dig(:payload, "instances").flat_map { |i| i["units"].values }.flatten
+      expect(names).to eq(%w[own-account-unit.service])
+    end
+
+    # review G6: a live heartbeat that stops reporting the field (the unit
+    # recovered, or the agent's rollout replaced the field with an absence)
+    # must clear the alarm — proven through the REAL writer, not the raw
+    # record! helper, so this also pins BootLkgStateWriter's own "rewrite on
+    # every heartbeat" rule as the mechanism that makes recovery visible here.
+    it "clears once a later heartbeat no longer reports the field" do
+      # `signals`/`signal` are memoized `subject`s (one query per example) —
+      # this test needs to observe the sensor's output at TWO different
+      # points, so it calls the sensor fresh each time rather than through
+      # the memoized helpers.
+      sense = -> { described_class.new(account: account).sense }
+
+      failing = instance!
+      System::BootLkgStateWriter.write!(
+        instance: failing,
+        payload: { "pivot_security_fail_closed_units" => %w[unit-a.service] }
+      )
+      expect(sense.call.find { |s| s[:kind] == "system.node_security_fail_closed" }).not_to be_nil
+
+      System::BootLkgStateWriter.write!(instance: failing, payload: { "lkg_present" => true })
+
+      expect(sense.call).to eq([])
+    end
   end
 
   describe "the wiring" do

@@ -465,9 +465,12 @@ module System
         # IMP-caef5c00d63f phase 4 — the security-fail-closed oracle.
         # BootLkgStateWriter has persisted pivot_security_fail_closed_units /
         # runtime_security_fail_closed_units since this task's own round 3 and
-        # nothing consumed them: a unit the agent refused to enable (or
-        # stopped mid-tick) because a security drop-in write failed is a real
-        # confinement gap on a real node. Emits
+        # nothing consumed them: a unit the agent REFUSED to (re)attach/start
+        # because a security drop-in write failed is a real confinement gap
+        # on a real node (the agent never weakens confinement and starts a
+        # unit anyway — it refuses instead; round 5 removed an earlier draft
+        # that stopped a running unit on this path, which was itself
+        # unrecoverable on a self-hosted node). Emits
         # system.node_security_fail_closed ->
         # system.node_security_fail_closed_investigate (notify-only; no
         # applier exists — the repair is whatever made the write fail, or a

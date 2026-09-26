@@ -140,10 +140,10 @@ module System
       #                                            SETTLE_WINDOW.
       #   system.node_security_fail_closed_investigate — IMP-caef5c00d63f
       #                                            phase 4. A unit the agent
-      #                                            refused to enable (or
-      #                                            stopped mid-tick) because a
-      #                                            security drop-in write
-      #                                            failed and was not exempt.
+      #                                            REFUSED to (re)attach or
+      #                                            start because a security
+      #                                            drop-in write failed and
+      #                                            was not exempt.
       #                                            There is no applier: the
       #                                            repair is whatever made
       #                                            the write fail in the

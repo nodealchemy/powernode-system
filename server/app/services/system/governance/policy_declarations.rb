@@ -623,8 +623,9 @@ module System
         # pre-boot/LKG agents it stands indefinitely.
         "system.node_lkg_investigate" => "notify_and_proceed",
 
-        # IMP-caef5c00d63f phase 4 — SecurityFailClosedSensor. A unit refused
-        # or stopped because a security drop-in write failed non-exempt.
+        # IMP-caef5c00d63f phase 4 — SecurityFailClosedSensor. A unit the
+        # agent refused to (re)attach or start because a security drop-in
+        # write failed non-exempt.
         # notify_and_proceed, never auto_approve: the repair is whatever made
         # the write fail (usually node-wide ENOSPC/EROFS) or a manifest
         # correction — both operator actions, no applier exists. Also in
