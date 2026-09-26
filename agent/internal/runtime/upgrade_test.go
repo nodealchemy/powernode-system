@@ -2989,3 +2989,92 @@ func TestUpgradeModule_SettleCheckRejectsOnFailureUnitReportingSuccess(t *testin
 		t.Errorf("expected PendingDigest=d2 to remain set (visible, not silently dropped) after the refusal, got %q ok=%v", pd, ok)
 	}
 }
+
+// TestReconcile_DuplicateBumpEntryRunsUpgradeExactlyOnce is O10's own test
+// (review round 12, review B): N9's dedupe-by-ID guard (reconcile.go's
+// bumpedIDs check) has never been directly tested — deleting that whole
+// block leaves the suite green. Constructs the exact shape N9 exists for:
+// state.json somehow carries TWO entries for module id "m1" at two
+// DIFFERENT stale digests (d1, d2), while the platform now assigns a THIRD
+// digest (d3) — mount.Reconcile diffs by DIGEST, so both stale entries land
+// in toDetach and BOTH match d3 in the bump partition's newByID lookup.
+// Without the dedupe, upgradeModule would run TWICE for "m1" in the same
+// tick: a second `start`/`restart` of the SAME unit mid an already-running
+// attempt, and a second step-7 replace of an entry the first run already
+// replaced.
+func TestReconcile_DuplicateBumpEntryRunsUpgradeExactlyOnce(t *testing.T) {
+	r, client, runner, _, statePath, _, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := mount.SaveState(statePath, &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "m1", Digest: "d1", Priority: 100, Units: []string{appUnit}},
+			{ID: "m1", Digest: "d2", Priority: 100, Units: []string{appUnit}},
+		},
+		LastAttachedManifestHashes: map[string]string{},
+	}); err != nil {
+		t.Fatalf("SaveState (seed duplicate stale entries): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d3", []string{"CAP_CHOWN"}, upgradeAppService)
+	// app must actually settle for the surviving bump to COMMIT — otherwise
+	// this test can't tell "N9 dedupe worked" apart from "the settle check
+	// simply refused both attempts", which would trivially satisfy
+	// starts==1 for the wrong reason (only the first attempt would even
+	// reach step 4 before the dedupe drops the second's whole invocation
+	// either way, but without this the commit-count assertion below is
+	// meaningless).
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	starts := 0
+	for _, inv := range runner.Invocations {
+		if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, appUnit) &&
+			(containsArg(inv.Args, "start") || containsArg(inv.Args, "restart")) {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("O10 REGRESSION (N9 dedupe removed): expected exactly ONE start/restart of %s, got %d: %v", appUnit, starts, runner.Invocations)
+	}
+
+	// The dropped duplicate's OWN state row (d1 or d2, whichever the
+	// surviving bump did not use as `old`) is left untouched by N9's dedupe
+	// on THIS tick — N9's own scope is only "don't run upgradeModule twice",
+	// not state cleanup. That is not a dangling bug: it is exactly the
+	// shape the PRE-EXISTING M4 fix (b) path (reconcile.go's desiredIDs
+	// check) exists to clean up — "the module is still desired and already
+	// satisfied by a different attached digest" — just deferred to the
+	// FIRST tick where the orphan no longer also matches newByID (i.e. the
+	// very next tick, once d3 already satisfies desired and is no longer a
+	// bump target). Confirmed here rather than assumed: one more no-op tick
+	// must leave exactly one m1 entry, at d3, with NO unit touched during
+	// that cleanup.
+	orphanTick := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce (orphan cleanup tick): %v", err)
+	}
+	if hasSystemctlOp(runner.Invocations[orphanTick:], "stop", appUnit) || hasSystemctlOp(runner.Invocations[orphanTick:], "start", appUnit) || hasSystemctlOp(runner.Invocations[orphanTick:], "restart", appUnit) {
+		t.Errorf("M4 fix (b) REGRESSION: cleaning up the orphaned duplicate must never touch %s, invocations: %v", appUnit, runner.Invocations[orphanTick:])
+	}
+
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	count := 0
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			count++
+			if m.Digest != "d3" {
+				t.Errorf("expected the surviving m1 entry at d3, got %s", m.Digest)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("O10 REGRESSION: expected exactly ONE m1 entry once the orphaned duplicate is cleaned up, got %d: %+v", count, st.AttachedModules)
+	}
+}
