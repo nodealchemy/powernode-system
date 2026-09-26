@@ -1280,17 +1280,36 @@ module System
     # gitea_repo_full_name falls through to the platform module source repo
     # (ci_build_source_repo), which is exactly where module-forge-build.sh read
     # the manifest from when it built this artifact. Pinning to the batch's
-    # head_sha therefore makes this fallback STRICTER than the on-disk read,
-    # which is deliberately unpinned ("the CURRENT on-disk source-tree
+    # OWN build sha therefore makes this fallback STRICTER than the on-disk
+    # read, which is deliberately unpinned ("the CURRENT on-disk source-tree
     # manifest") and can drift from the sha actually built.
+    #
+    # #module_source_build_sha, NOT @batch.head_sha directly: for a CORE-
+    # sourced batch (hub-backend/hub-worker/hub-frontend triggered by a
+    # powernode-platform push), head_sha is a core commit that does not exist
+    # in the manifest repo — ManifestFetchService always resolves the MANIFEST
+    # repo (#resolve_source ignores which repo the ref came from), so fetching
+    # it at a core sha 404s every time. On a fleet-hosted box with no on-disk
+    # modules/ tree (this fallback's whole reason to exist) that made this
+    # method a guaranteed miss for every platform module in every core-sourced
+    # batch — confirmed live on ops-hub: manifest_apply_skipped fired for
+    # hub-backend, hub-worker and hub-frontend on every core-triggered rebuild,
+    # so their ModuleService rows (ambient capability grants included) were
+    # never resynced. #module_source_build_sha already resolves the ONE
+    # correct ref for this — the manifest repo's own tip for a core-sourced
+    # batch, head_sha unchanged otherwise — because the ci.module_build Task's
+    # BUILD_SHA needed exactly the same fix (see that method's doc). Reusing it
+    # keeps the two from ever disagreeing about which commit's manifest.yaml a
+    # build actually used.
     #
     # Best-effort by the same rationale as the caller: a fetch failure must not
     # fail a build whose artifact already published.
     def fetch_module_manifest(node_module, slug)
-      ::System::ManifestFetchService.fetch(node_module: node_module, ref: @batch.head_sha)
+      ref = module_source_build_sha
+      ::System::ManifestFetchService.fetch(node_module: node_module, ref: ref)
     rescue StandardError => e
       Rails.logger.warn("[NativeModuleBuildOrchestrator] manifest fetch fallback failed for #{slug} " \
-                        "at #{@batch.head_sha}: #{e.class}: #{e.message}")
+                        "at #{ref}: #{e.class}: #{e.message}")
       nil
     end
 

@@ -1163,6 +1163,112 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
     end
   end
 
+  # IMP-caef5c00d63f phase 2 deliverable 1. A CORE-sourced batch's head_sha is a
+  # powernode-platform sha — it does not exist in the manifest repo
+  # (ci_build_source_repo), so the fetch fallback above (pinned to head_sha)
+  # always 404s for hub-backend/hub-worker/hub-frontend on a fleet-hosted box
+  # with no on-disk modules/ tree (module content is composed from a layer that
+  # excludes it). Every core-source build batch therefore emitted
+  # system.module_build.manifest_apply_skipped for every platform module it
+  # carried — confirmed live on ops-hub. #module_source_build_sha already
+  # solves exactly this for the ci.module_build Task's BUILD_SHA (see "BUILD_SHA
+  # for a core-sourced batch" above); the manifest fetch fallback must use the
+  # SAME resolved ref, not @batch.head_sha directly, so the two never disagree
+  # about which commit's manifest.yaml is being applied.
+  describe "manifest apply for a core-sourced batch with no on-disk source tree" do
+    let(:mod) { create_module("powernode-hub-backend") }
+    let(:yaml) do
+      <<~YAML
+        schema_version: 1
+        name: powernode-hub-backend
+        services:
+          - name: rails
+            start_command: "/usr/local/bin/rails-start.sh"
+      YAML
+    end
+
+    def core_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      plan = [ { module: mod.name, oci_ref: head_sha[0, 7] } ]
+      System::ModuleBuildBatch.create_for(
+        account: account, plan: plan, trigger: "manual",
+        base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+        source_repo: "powernode/powernode-platform"
+      )
+    end
+
+    # Mirrors "BUILD_SHA for a core-sourced batch"#stub_module_source_tip above
+    # (a real credential fixture, not a stubbed resolver — CiRunnerLeaseService
+    # shares the same resolver).
+    def stub_module_source_tip(sha)
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:get_repository).and_return({ "default_branch" => "develop" })
+      allow(fake).to receive(:list_branches)
+        .and_return([ { "name" => "develop", "commit" => { "id" => sha } } ])
+      fake
+    end
+
+    before do
+      # Simulate the fleet-hosted box: no manifest on disk.
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(/modules\/powernode-hub-backend\/manifest\.yaml/).and_return(false)
+    end
+
+    it "fetches the manifest at the module source repo's own tip, not the core head_sha" do
+      module_source_tip = "e8f31a9d1111111111111111111111111111aaaa"
+      stub_module_source_tip(module_source_tip)
+      batch = core_batch
+
+      expect(::System::ManifestFetchService).to receive(:fetch)
+        .with(hash_including(node_module: mod, ref: module_source_tip)).and_return(yaml)
+      expect(::System::ManifestImportService).to receive(:import!)
+        .with(hash_including(node_module: mod, yaml: yaml))
+        .and_return(double(ok?: true, error: nil, validation_errors: []))
+
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+    end
+
+    it "does not emit manifest_apply_skipped when the module source tip resolves and carries a manifest" do
+      module_source_tip = "e8f31a9d1111111111111111111111111111aaaa"
+      stub_module_source_tip(module_source_tip)
+      batch = core_batch
+      allow(::System::ManifestFetchService).to receive(:fetch).and_return(yaml)
+      allow(::System::ManifestImportService).to receive(:import!)
+        .and_return(double(ok?: true, error: nil, validation_errors: []))
+
+      orchestrator = described_class.new(batch: batch)
+      expect(orchestrator).not_to receive(:emit_event)
+        .with("system.module_build.manifest_apply_skipped", anything)
+
+      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+    end
+
+    # The genuine-miss case must stay armed: a module source tip that itself
+    # cannot be resolved (network down) falls back to head_sha (no worse than
+    # before #module_source_build_sha existed), which is still the wrong repo's
+    # sha for a core-sourced batch — so the fetch still fails and the high-
+    # severity skip event still fires. This is not a regression this fix should
+    # paper over; it is the pre-existing "no worse than before" fallback that
+    # #resolve_module_source_tip documents for the BUILD_SHA case.
+    it "still emits manifest_apply_skipped when the module source tip cannot be resolved either" do
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:get_repository).and_raise(StandardError, "gitea down")
+      batch = core_batch
+      allow(::System::ManifestFetchService).to receive(:fetch).and_return(nil)
+
+      orchestrator = described_class.new(batch: batch)
+      expect(orchestrator).to receive(:emit_event)
+        .with("system.module_build.manifest_apply_skipped", hash_including(severity: :high))
+
+      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+    end
+  end
+
   # A batch had no kill switch: aborting a member Task only freed a builder,
   # and the next #advance! immediately leased another and dispatched the next
   # queued module (observed 2026-08-07 — a fresh builder ~2min after an
