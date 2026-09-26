@@ -125,14 +125,13 @@ type HeartbeatPayload struct {
 	// boot path does NOT enforce, so an operator reading a module's security
 	// block can tell what is actually in force on a pivoted (hub) node rather
 	// than inferring it from the manifest (IMP-01a02f70-9bfb, F3). Seccomp,
-	// PrivateUsers and the privileged gate are now applied on the pivot path;
-	// still omitted there: the capability BOUNDING set (granted additively via
-	// ambient, not reset — pending a per-module runtime-capability audit) and
-	// mandatory access control (SELinux/AppArmor profiles are never loaded on
-	// the pivot path). Populated only on pivot (native root-mode) nodes;
-	// nil/omitted on cloud_init nodes, where attachModule enforces the full set.
-	// Absence therefore means "full set enforced (or not a pivot node)", never
-	// "unknown".
+	// PrivateUsers, the privileged gate, and (IMP-caef5c00d63f phase 2) the
+	// capability bounding set are now all applied on the pivot path; still
+	// omitted there: mandatory access control (SELinux/AppArmor profiles are
+	// never loaded on the pivot path). Populated only on pivot (native
+	// root-mode) nodes; nil/omitted on cloud_init nodes, where attachModule
+	// enforces the full set. Absence therefore means "full set enforced (or
+	// not a pivot node)", never "unknown".
 	PivotConfinementOmitted []string `json:"pivot_confinement_omitted,omitempty"`
 }
 

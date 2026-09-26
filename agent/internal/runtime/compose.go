@@ -182,11 +182,19 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 	// the union starts them on boot after switch_root), applying the SAME
 	// confinements the cloud_init attachModule path applies (IMP-01a02f70-9bfb):
 	// per-module Policy.Validate, seccomp SystemCallFilter, PrivateUsers, and
-	// the privileged-approval gate. The one deliberate difference remains the
-	// capability set: this path writes an ADDITIVE ambient grant and does NOT
-	// reset CapabilityBoundingSet (see WriteAmbientCapabilityDropInAt and the
-	// reported-state note in buildHeartbeat) — that restriction needs a
-	// per-module runtime-capability audit before it is safe post-pivot.
+	// the privileged-approval gate. IMP-caef5c00d63f phase 2 closes the one
+	// deliberate difference that remained: this path now writes the SAME
+	// capabilities.conf drop-in attachModule writes (WriteCapabilityDropInAt,
+	// resetting CapabilityBoundingSet AND AmbientCapabilities to the resolved
+	// per-service set — see reconcile.go's attachModule for why "always write,
+	// even when empty" is the safe default), not merely an additive ambient
+	// grant. See that function's doc for the one open risk this closing
+	// surfaced: qemu-guest-agent's manifest declares a blanket `capabilities:
+	// []` for a root-running, hypervisor-driven-exec service whose real
+	// requirement could not be established from a fixed startup sequence the
+	// way postgres/redis/vault/hub-backend/hub-worker's could — deploy this
+	// change to a pivot-boot fleet only after that manifest is corrected or
+	// the risk is explicitly accepted.
 	for _, mod := range stack {
 		mf := manifests[mod.ID]
 		if mf == nil {
@@ -245,7 +253,7 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 			}
 			// Privileged modules opt out of MAC/seccomp/cap confinement by
-			// design; for everyone else, write the same seccomp + ambient-cap
+			// design; for everyone else, write the same seccomp + capability
 			// drop-ins attachModule writes, into the union at sysroot.
 			if policy.Privileged {
 				continue
@@ -259,15 +267,15 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 				}
 			}
-			// Ambient capability grant of this unit's RESOLVED set (additive;
-			// does NOT reset the bounding set — see the loop-header note). No-op
-			// for an empty set, which is how a service declaring [] ends up with
-			// no ambient grant here.
-			if allow := unitAllow[unit]; len(allow) > 0 {
-				if err := security.WriteAmbientCapabilityDropInAt(sysroot, unit, allow); err != nil {
-					r.cfg.OnError("compose:ambient_cap_dropin",
-						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-				}
+			// Capability bounding + ambient sets, reset to this unit's RESOLVED
+			// set — mirrors reconcile.go's attachModule exactly, including
+			// writing the drop-in for an EMPTY allow list: an empty
+			// CapabilityBoundingSet= is the strictest (and safest default)
+			// posture, and skipping the write here would silently leave the
+			// unit at systemd's full default bounding set instead.
+			if err := security.WriteCapabilityDropInAt(sysroot, unit, unitAllow[unit]); err != nil {
+				r.cfg.OnError("compose:capability_dropin",
+					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 			}
 		}
 	}

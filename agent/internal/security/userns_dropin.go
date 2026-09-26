@@ -45,7 +45,7 @@ func WriteUserNamespaceDropIn(unit string, enabled bool) error {
 // WriteUserNamespaceDropInAt is the explicit-root form for the pivot/compose
 // path — the PrivateUsers= drop-in lands in the union at `root` (= sysroot),
 // read by systemd-in-the-union after switch_root. Mirrors
-// WriteAmbientCapabilityDropInAt / WriteSeccompDropInAt. Without this the
+// WriteCapabilityDropInAt / WriteSeccompDropInAt. Without this the
 // documented user_namespace default (true) was silently unenforced on the
 // pivot boot path (IMP-01a02f70-9bfb).
 func WriteUserNamespaceDropInAt(root, unit string, enabled bool) error {

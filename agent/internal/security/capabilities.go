@@ -215,80 +215,67 @@ func renderCapabilityDropInBody(allow []string) (string, error) {
 	return body.String(), nil
 }
 
-// WriteAmbientCapabilityDropInAt writes an ADDITIVE capability drop-in under an
-// explicit systemd root — root/etc/systemd/system/<unit>.d/ambient-capabilities.conf
-// — that raises the module's declared capabilities into the unit's AMBIENT set
-// WITHOUT resetting CapabilityBoundingSet. It is the pivot-compose counterpart
-// to WriteCapabilityDropIn, and differs deliberately on two axes:
+// WriteCapabilityDropInAt is WriteCapabilityDropIn's pivot-compose
+// counterpart: it renders the SAME drop-in body (renderCapabilityDropInBody —
+// CapabilityBoundingSet AND AmbientCapabilities both reset then re-asserted to
+// the resolved allow list) under an EXPLICIT root instead of the
+// systemdDropInRoot package var, because on the direct_kernel / pivot_root
+// boot path the module union becomes the OS: the drop-in must land in the
+// union at `root` (= sysroot) where systemd-in-the-union reads it after
+// switch_root, not the live initramfs /etc/systemd/system.
 //
-//  1. Explicit root. On the direct_kernel / pivot_root boot path the module
-//     union becomes the OS, so the drop-in must land in the union at `root`
-//     (= sysroot) where systemd-in-the-union reads it after switch_root — NOT
-//     the live initramfs /etc/systemd/system (the systemdDropInRoot package
-//     var WriteCapabilityDropIn targets on the cloud_init path).
-//  2. Grant-only, never restrict. A non-root User= service (e.g. traefik) needs
-//     the capability in its AMBIENT set to actually exercise it —
-//     CapabilityBoundingSet only *permits*, it does not grant, so an empty
-//     ambient set is why traefik hit "listen tcp :80: bind: permission denied"
-//     post-pivot. We intentionally do NOT reset CapabilityBoundingSet here (as
-//     WriteCapabilityDropIn does): the bounding-set restriction requires a
-//     per-module runtime-capability audit before it's safe on the pivot path —
-//     root-running services (rails/sidekiq first-boot chown, qemu-guest-agent
-//     exec-as-user) rely on caps they don't declare, and stripping the bounding
-//     set would break them. Restriction is a follow-on hardening; the ambient
-//     grant is the functional fix.
+// IMP-caef5c00d63f phase 2 — this REPLACES the former
+// WriteAmbientCapabilityDropInAt, which deliberately did NOT reset
+// CapabilityBoundingSet ("the bounding-set restriction requires a per-module
+// runtime-capability audit before it's safe on the pivot path"). That audit is
+// this task's own deliverable 3 (survey of every modules/*/manifest.yaml); its
+// finding is that the module manifests already declare the ceiling each
+// service actually needs (postgres-primary/redis/vault/hub-backend/hub-worker
+// all carry rationale comments establishing this), with ONE unresolved
+// exception flagged in that survey — qemu-guest-agent, whose blanket
+// `capabilities: []` + `user: root` cannot be established as safe here (its
+// purpose is hypervisor-issued exec of ARBITRARY commands, not a fixed,
+// auditable startup sequence) and needs an explicit operator decision (most
+// likely `privileged: true`, mirroring gitea-act-runner/module-forge/dev-cell's
+// documented contingency) BEFORE this binary reaches a fleet whose nodes are
+// pivot-boot-only, self-hosted, and cannot be recovered by the control plane
+// they run if guest-exec stops working.
 //
-// Empty allow list is a no-op (ambient is empty by default) — the drop-in is
-// skipped so the unit keeps systemd's defaults. Mirrors WriteCapabilityDropIn's
-// name validation + normalization + atomic-write semantics.
-func WriteAmbientCapabilityDropInAt(root, unit string, allow []string) error {
+// Empty allow list -> bounding + ambient sets both explicitly empty (the
+// strictest posture), exactly like WriteCapabilityDropIn — an absent drop-in
+// would leave the unit at systemd's full default bounding set, so this is
+// ALWAYS written for a non-privileged unit, never skipped for an empty list
+// (mirrors reconcile.go's attachModule loop; see that loop's own comment for
+// why "empty means skip" is the wrong default here).
+func WriteCapabilityDropInAt(root, unit string, allow []string) error {
 	if unit == "" {
-		return errors.New("WriteAmbientCapabilityDropInAt: empty unit")
+		return errors.New("WriteCapabilityDropInAt: empty unit")
 	}
 	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
-		return errors.New("WriteAmbientCapabilityDropInAt: invalid unit name (path traversal)")
+		return errors.New("WriteCapabilityDropInAt: invalid unit name (path traversal)")
 	}
 	if strings.HasPrefix(unit, "-") {
-		return errors.New("WriteAmbientCapabilityDropInAt: invalid unit name (leading dash)")
+		return errors.New("WriteCapabilityDropInAt: invalid unit name (leading dash)")
 	}
 
-	canonical := make([]string, 0, len(allow))
-	for _, cap := range allow {
-		name, ok := normalizeCapName(cap)
-		if !ok {
-			return fmt.Errorf("WriteAmbientCapabilityDropInAt: unknown capability %q", cap)
-		}
-		canonical = append(canonical, name)
+	body, err := renderCapabilityDropInBody(allow)
+	if err != nil {
+		return fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
-	if len(canonical) == 0 {
-		return nil // nothing to grant — leave systemd defaults
-	}
-	sort.Strings(canonical) // stable output -> idempotent file content
 
 	dropInDir := filepath.Join(root, "etc", "systemd", "system", unit+".d")
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return fmt.Errorf("WriteAmbientCapabilityDropInAt: mkdir %s: %w", dropInDir, err)
+		return fmt.Errorf("WriteCapabilityDropInAt: mkdir %s: %w", dropInDir, err)
 	}
 
-	var body strings.Builder
-	body.WriteString("# Auto-generated by powernode-agent (pivot compose). Raises the module's\n")
-	body.WriteString("# manifest-declared capabilities into the AMBIENT set so non-root User=\n")
-	body.WriteString("# services can exercise them (e.g. traefik binding :80). Additive only —\n")
-	body.WriteString("# does NOT reset CapabilityBoundingSet. DO NOT EDIT BY HAND.\n")
-	body.WriteString("\n[Service]\n")
-	body.WriteString("AmbientCapabilities=\n") // reset, then set explicitly below
-	body.WriteString("AmbientCapabilities=")
-	body.WriteString(strings.Join(canonical, " "))
-	body.WriteString("\n")
-
-	dropInPath := filepath.Join(dropInDir, "ambient-capabilities.conf")
+	dropInPath := filepath.Join(dropInDir, "capabilities.conf")
 	tmp := dropInPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body.String()), 0o644); err != nil {
-		return fmt.Errorf("WriteAmbientCapabilityDropInAt: write tmp: %w", err)
+	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("WriteCapabilityDropInAt: write tmp: %w", err)
 	}
 	if err := os.Rename(tmp, dropInPath); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("WriteAmbientCapabilityDropInAt: rename: %w", err)
+		return fmt.Errorf("WriteCapabilityDropInAt: rename: %w", err)
 	}
 	return nil
 }

@@ -760,22 +760,20 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		}
 		payload.LKGModuleCount = len(lkg.Modules)
 	}
-	// On a pivot (native root-mode) node the compose path grants capabilities
-	// additively and does NOT reset the bounding set (see ComposeForPivot and
-	// WriteAmbientCapabilityDropInAt). Report that omission so it is visible in
-	// reported state, not just in a code comment (IMP-01a02f70-9bfb). Seccomp
-	// and PrivateUsers ARE enforced on this path as of that fix, so they are not
-	// listed. On cloud_init nodes attachModule enforces the full set — the field
-	// stays nil/omitted.
+	// On a pivot (native root-mode) node the compose path now resets the
+	// capability bounding set exactly as attachModule does (IMP-caef5c00d63f
+	// phase 2 — see ComposeForPivot and WriteCapabilityDropInAt), so
+	// capability_bounding_set is no longer reported as omitted. Seccomp and
+	// PrivateUsers were already enforced on this path (IMP-01a02f70-9bfb).
+	// On cloud_init nodes attachModule enforces the full set — the field stays
+	// nil/omitted there too.
 	if pivotAwareRootMode() == lifecycle.RootModeNative {
-		// capability_bounding_set: granted additively (ambient), never reset —
-		//   pending a per-module runtime-capability audit.
 		// mandatory_access_control: the pivot/compose path does not load
 		//   SELinux/AppArmor profiles at all (LoadSELinuxProfile/LoadAppArmorProfile
 		//   run only on the cloud_init Apply path), so a module's selinux_profile/
 		//   apparmor_profile is inert post-pivot — report it rather than let the
 		//   heartbeat overstate confinement (review finding F3).
-		payload.PivotConfinementOmitted = []string{"capability_bounding_set", "mandatory_access_control"}
+		payload.PivotConfinementOmitted = []string{"mandatory_access_control"}
 	}
 	return payload
 }

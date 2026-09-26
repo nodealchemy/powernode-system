@@ -134,7 +134,7 @@ func WriteSeccompDropIn(unit, profilePath string) error {
 // pivot/compose path: the drop-in must land in the module union at `root`
 // (= sysroot), where systemd-in-the-union reads it after switch_root, NOT the
 // live initramfs /etc/systemd/system (the systemdDropInRoot the cloud_init path
-// targets). Mirrors WriteAmbientCapabilityDropInAt. The profile value is run
+// targets). Mirrors WriteCapabilityDropInAt. The profile value is run
 // through SeccompFilterName here — the derivation is inside the writer so no
 // signature carries an unvalidated name to the file, and a refusal writes NO
 // drop-in (IMP-ce76b93d79fe house rule).

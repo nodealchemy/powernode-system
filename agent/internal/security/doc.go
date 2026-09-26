@@ -9,7 +9,7 @@
 // # Files
 //
 //   - capabilities.go  capability drop-ins (WriteCapabilityDropIn,
-//     WriteAmbientCapabilityDropInAt) and the KnownCapabilities set
+//     WriteCapabilityDropInAt) and the KnownCapabilities set
 //   - mac.go           AppArmor / SELinux profile loading; returns
 //     ErrAppArmorNotAvailable / ErrSELinuxNotAvailable when
 //     the host lacks the LSM

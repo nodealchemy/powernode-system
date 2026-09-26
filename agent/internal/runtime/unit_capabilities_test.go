@@ -75,16 +75,14 @@ func TestUnitCapabilities_ResolvesPerService(t *testing.T) {
 
 // PARITY. Both paths must hand every unit the same RESOLVED set.
 //
-// They still write it differently, deliberately and outside this task:
-// attachModule's WriteCapabilityDropIn resets CapabilityBoundingSet and sets
-// bounding + ambient to the resolved set, while the pivot path's
-// WriteAmbientCapabilityDropInAt only ADDS the resolved set to the ambient set,
-// never resets the bounding set, and writes nothing for an empty set (see the
-// ComposeForPivot loop header and the heartbeat's PivotConfinementOmitted).
-// So a unit that resolves to zero gets an empty bounding set on a cloud-init
-// node and simply no ambient grant on a pivot node. The drop-in BYTES are
-// therefore not comparable; the resolved per-unit set is, and that is what
-// this pins.
+// IMP-caef5c00d63f phase 2: they now WRITE it identically too — attachModule's
+// WriteCapabilityDropIn and ComposeForPivot's WriteCapabilityDropInAt render
+// the SAME drop-in body (renderCapabilityDropInBody), resetting
+// CapabilityBoundingSet AND AmbientCapabilities to the resolved set, always
+// (including an explicitly-empty allow list). See
+// TestRenderPivotUnits_WritesEachUnitsResolvedCapabilityDropIn and
+// TestComposeAndAttach_WriteByteIdenticalCapabilityDropIns for the drop-in-bytes
+// half of this parity; this test pins the resolver half.
 func TestUnitCapabilities_ReconcileAndComposeResolveIdentically(t *testing.T) {
 	mf := hubBackendLike(t)
 	policy := buildPolicy(mf)
@@ -139,9 +137,12 @@ func TestAttachStamp_MovesWhenOnlyAServiceCapabilitySetChanges(t *testing.T) {
 // WIRING, pivot path: the parity test above compares resolver outputs; this
 // proves ComposeForPivot's unit loop actually WRITES each unit's resolved set,
 // not the module-wide one. Observable: sysroot/etc/systemd/system/<unit>.d/
-// ambient-capabilities.conf (WriteAmbientCapabilityDropInAt), which is
-// written only for a non-empty set.
-func TestRenderPivotUnits_WritesEachUnitsResolvedAmbientSet(t *testing.T) {
+// capabilities.conf (WriteCapabilityDropInAt), written for EVERY unit
+// including one that resolves to empty (IMP-caef5c00d63f phase 2 — the drop-in
+// is no longer skipped for an empty allow list; an absent drop-in would leave
+// the unit at systemd's full default bounding set instead of the strictest
+// posture).
+func TestRenderPivotUnits_WritesEachUnitsResolvedCapabilityDropIn(t *testing.T) {
 	sysroot := t.TempDir()
 	rec := &mount.RecorderRunner{}
 	r := newPivotReconciler(rec)
@@ -150,20 +151,70 @@ func TestRenderPivotUnits_WritesEachUnitsResolvedAmbientSet(t *testing.T) {
 	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
 	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
 
-	ambient := func(svc string) (string, bool) {
+	capConf := func(svc string) (string, bool) {
 		b, err := os.ReadFile(filepath.Join(sysroot, "etc", "systemd", "system",
-			lifecycle.UnitName(mf.ID, svc)+".d", "ambient-capabilities.conf"))
+			lifecycle.UnitName(mf.ID, svc)+".d", "capabilities.conf"))
 		return string(b), err == nil
 	}
-	if body, ok := ambient("rails-setup"); !ok ||
-		!strings.Contains(body, "CAP_CHOWN") || !strings.Contains(body, "CAP_FOWNER") || !strings.Contains(body, "CAP_DAC_OVERRIDE") {
-		t.Errorf("rails-setup (no key) must be granted the whole ceiling, got ok=%v body=%q", ok, body)
+	if body, ok := capConf("rails-setup"); !ok ||
+		!strings.Contains(body, "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER") ||
+		!strings.Contains(body, "AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER") {
+		t.Errorf("rails-setup (no key) must be granted the whole ceiling in BOTH sets, got ok=%v body=%q", ok, body)
 	}
-	if body, ok := ambient("rails"); ok {
-		t.Errorf("rails declares [] and must get NO ambient grant, got %q", body)
+	if body, ok := capConf("rails"); !ok || strings.Contains(body, "CAP_") {
+		t.Errorf("rails declares [] and must get an EXPLICITLY EMPTY bounding+ambient drop-in (not a missing one), got ok=%v body=%q", ok, body)
 	}
-	if body, ok := ambient("chowner"); !ok || !strings.Contains(body, "CAP_CHOWN") || strings.Contains(body, "CAP_FOWNER") {
-		t.Errorf("chowner declares [CAP_CHOWN] and must get exactly that, got ok=%v body=%q", ok, body)
+	if body, ok := capConf("chowner"); !ok ||
+		!strings.Contains(body, "CapabilityBoundingSet=CAP_CHOWN\n") || strings.Contains(body, "CAP_FOWNER") {
+		t.Errorf("chowner declares [CAP_CHOWN] and must get exactly that in both sets, got ok=%v body=%q", ok, body)
+	}
+}
+
+// BYTE PARITY (IMP-caef5c00d63f phase 2). The two tests above each drive one
+// path; this drives BOTH against the SAME manifest and asserts the rendered
+// capabilities.conf bytes are IDENTICAL per unit — the strongest form of "the
+// pivot-compose path produces the same per-unit capability policy as the
+// running reconciler", stronger than comparing resolver output (which could
+// pass while the two writers still rendered different bytes).
+func TestComposeAndAttach_WriteByteIdenticalCapabilityDropIns(t *testing.T) {
+	mf := hubBackendLike(t)
+
+	// attachModule's view: systemdDropInRoot redirected to a temp dir.
+	attachRoot := t.TempDir()
+	t.Cleanup(security.SetSystemdDropInRootForTest(attachRoot))
+	layout := mount.DefaultLayout()
+	layout.Root = t.TempDir()
+	layout = layout.Resolve()
+	ar := &Reconciler{cfg: ReconcilerConfig{
+		Puller:      &stubPuller{cacheDir: layout.ModulesCacheRoot},
+		Verifier:    verify.AlwaysOK{},
+		MountRunner: &mount.RecorderRunner{},
+		Layout:      layout,
+		OnError:     func(string, error) {},
+	}}
+	if err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+		t.Fatalf("attachModule: %v", err)
+	}
+
+	// ComposeForPivot's view: an explicit sysroot.
+	sysroot := t.TempDir()
+	cr := newPivotReconciler(&mount.RecorderRunner{})
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	cr.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+
+	for _, svc := range []string{"rails-setup", "rails", "chowner"} {
+		unit := lifecycle.UnitName(mf.ID, svc)
+		attached, err := os.ReadFile(filepath.Join(attachRoot, unit+".d", "capabilities.conf"))
+		if err != nil {
+			t.Fatalf("%s: read attach drop-in: %v", svc, err)
+		}
+		composed, err := os.ReadFile(filepath.Join(sysroot, "etc", "systemd", "system", unit+".d", "capabilities.conf"))
+		if err != nil {
+			t.Fatalf("%s: read compose drop-in: %v", svc, err)
+		}
+		if string(attached) != string(composed) {
+			t.Errorf("%s: attach and compose drop-ins are NOT byte-identical:\nattach=%q\ncompose=%q", svc, attached, composed)
+		}
 	}
 }
 
