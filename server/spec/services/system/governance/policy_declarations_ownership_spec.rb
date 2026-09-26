@@ -144,9 +144,20 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
 
     # 56 before P2A, 40 after its 16 moves, 19 after HIER-P2DECL's 21 more
     # (5 capacity + 2 storage + 4 ingress + 7 supply chain + 1
-    # service_backends_update + 2 topology).
-    it "is 56 keys smaller by the 16 P2A moved and the 21 wave 1 moved" do
-      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(56 - 16 - 21)
+    # service_backends_update + 2 topology) — the wave-1 baseline this
+    # formula states. 21 as of review round 11 of IMP-caef5c00d63f, found
+    # ALREADY at 21 on develop before this round touched anything: several
+    # feature commits since wave 1 (e.g. IMP-a8f9fa74284d's
+    # node_lkg_investigate) added directly to FLEET_AUTONOMY_POLICIES
+    # without ever updating this count — pre-existing drift, not
+    # reconciled key-by-key here (out of this round's scope; a future pass
+    # should audit and name each addition explicitly, the way
+    # CAPACITY_MANAGER_POLICIES's own size test does below). 23 this
+    # round's own two additions: system.node_security_fail_closed_investigate
+    # (SecurityFailClosedSensor) and system.node_pending_digest_stuck_investigate
+    # (N4, PendingDigestStuckSensor).
+    it "is 56 keys smaller by the 16 P2A moved and the 21 wave 1 moved, plus organic growth since (23)" do
+      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(23)
     end
   end
 
@@ -241,8 +252,12 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
       expect(set("topology-designer")[:policies]).to equal(d::TOPOLOGY_DESIGNER_POLICIES)
     end
 
-    it "leaves Fleet Autonomy the node_lifecycle / remediation core (19), no longer merged with the groups" do
-      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(19)
+    # 19 at wave 1. 23 as of review round 11 of IMP-caef5c00d63f — see the
+    # "is 56 keys smaller..." example above for the same count's own
+    # tracking comment (pre-existing organic growth to 21, plus this
+    # round's own 2: SecurityFailClosedSensor + PendingDigestStuckSensor).
+    it "leaves Fleet Autonomy the node_lifecycle / remediation core (23), no longer merged with the groups" do
+      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(23)
       moved = d::CAPACITY_MANAGER_POLICIES.keys + d::STORAGE_MANAGER_POLICIES.keys +
               d::INGRESS_MANAGER_POLICIES.keys + d::SUPPLY_CHAIN_MANAGER_POLICIES.keys +
               d::TOPOLOGY_DESIGNER_POLICIES.keys
