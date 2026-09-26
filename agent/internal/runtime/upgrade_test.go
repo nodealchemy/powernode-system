@@ -2836,6 +2836,98 @@ func TestUpgradeModule_RevertClearsPendingDigestOnEveryDuplicateStateEntry(t *te
 	}
 }
 
+// TestReconcile_RevertUnionsUnitsTouchedAcrossDuplicateStateEntries is P9
+// (review round 13, LOW, rule-1 edge): the revert path read
+// PendingDigestUnitsTouched, PendingIntroducedUnits and PendingUndoUnits
+// from the FIRST matching duplicate row only (see the M4 duplicate-state-
+// entry case, TestUpgradeModule_RevertClearsPendingDigestOnEveryDuplicateStateEntry,
+// for how such a shape arises). Two DISAGREEING rows for the same module ID
+// — one saying "nothing touched", the other saying "app was touched,
+// unit-a introduced, unit-b stuck" — must still force-restart app and stop
+// AND retry both units: touched units are touched, and stuck units are
+// stuck, regardless of which row recorded them.
+func TestReconcile_RevertUnionsUnitsTouchedAcrossDuplicateStateEntries(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	unitA := lifecycle.UnitName("m1", "unit-a")
+	unitB := lifecycle.UnitName("m1", "unit-b")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	// Get a genuine PendingDigest=d2 row on disk (irrelevant to the
+	// disagreement itself — only its presence matters, so the revert path
+	// below is reached at all).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	r.cfg.Puller = &failingPuller{PullerAPI: r.cfg.Puller, failDigest: "d2"}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 refused at step 1): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Inject the M4 duplicate, deliberately DISAGREEING on every field P9
+	// touches. Row 1 (the one an unfixed reader would see FIRST) claims
+	// nothing was ever touched and has no introduced/undo units at all —
+	// if the revert only ever consulted this row, it would run the
+	// UNFORCED, no-restart path entirely. Row 2 carries the real facts.
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	var original mount.Module
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			original = m
+			break
+		}
+	}
+	if original.ID == "" {
+		t.Fatalf("precondition: expected an m1 entry after pass 2, got %+v", st.AttachedModules)
+	}
+	row1 := original
+	row1.PendingDigestUnitsTouched = false
+	row1.PendingIntroducedUnits = nil
+	row1.PendingUndoUnits = nil
+	row2 := original
+	row2.PendingDigestUnitsTouched = true
+	row2.PendingIntroducedUnits = []string{unitA}
+	row2.PendingUndoUnits = []string{unitB}
+	st.AttachedModules = []mount.Module{row1, row2}
+	if err := mount.SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState (inject disagreeing duplicates): %v", err)
+	}
+
+	// Revert to d1 (stable). app stays active; the revert must force-
+	// restart it back onto d1's binary, because ROW 2 (not row 1) says it
+	// was touched.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+
+	if !hasSystemctlOp(pass3, "restart", appUnit) {
+		t.Errorf("P9 REGRESSION: the revert must force-restart %s — row 2 says it was touched, and touched units are touched regardless of which duplicate row recorded them: %v", appUnit, pass3)
+	}
+	if !hasSystemctlOp(pass3, "stop", unitA) {
+		t.Errorf("P9 REGRESSION: the revert must stop %s — row 2's own PendingIntroducedUnits names it, and reading only row 1 (empty) must not hide it: %v", unitA, pass3)
+	}
+	if !hasSystemctlOp(pass3, "start", unitB) {
+		t.Errorf("P9 REGRESSION: the revert must retry %s via retryPendingUndoUnits — row 2's own PendingUndoUnits names it, and reading only row 1 (empty) must not hide it: %v", unitB, pass3)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("expected m1 at d1 after the revert, got digest=%q ok=%v", digest, ok)
+	}
+}
+
 // failingPuller wraps a PullerAPI, forcing an error for one specific
 // digest — O8(d)'s own test uses it to simulate a pure step-1 (artifact
 // pull/mount) refusal that never gets anywhere near step 2, 3 or 4.

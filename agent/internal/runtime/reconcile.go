@@ -1500,11 +1500,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// retryPendingUndoUnits itself already clears an entry ONLY once
 			// confirmed active and leaves a still-failing one both in the
 			// list and visible (its own doc, O6).
+			// P9 (review round 13, LOW, rule-1 edge): union PendingUndoUnits
+			// across EVERY matching row for this ID, not just the first — the
+			// M4 duplicate-state-entry case (see O8(a)'s own doc, below) means
+			// a second row could independently carry its own stuck departing
+			// unit(s) that the first row's own value never mentions. Reading
+			// only the first left that second row's stuck unit unattended by
+			// this priority retry forever.
 			var pendingUndo []string
 			for _, m := range current.AttachedModules {
 				if m.ID == mod.ID {
-					pendingUndo = m.PendingUndoUnits
-					break
+					pendingUndo = unionStrings(pendingUndo, m.PendingUndoUnits)
 				}
 			}
 			if len(pendingUndo) > 0 {
@@ -1520,13 +1526,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// this round. PendingDigestUnitsTouched is the narrower fact: it
 			// only flips true once upgradeModule is actually about to issue
 			// step 4's restart.
+			// P9 (review round 13, LOW, rule-1 edge): OR PendingDigestUnitsTouched
+			// and union PendingIntroducedUnits across EVERY matching row for
+			// this ID, not just the first — same M4 duplicate-state-entry
+			// reasoning as O8(a) (below) and the PendingUndoUnits read above.
+			// A second row's own attempt could have touched units the first
+			// row's own value says nothing about; force a restart if ANY row's
+			// attempt did, since touched units are touched regardless of which
+			// row recorded them.
 			unitsTouched := false
 			var introducedUnits []string
 			for _, m := range current.AttachedModules {
 				if m.ID == mod.ID {
-					unitsTouched = m.PendingDigestUnitsTouched
-					introducedUnits = m.PendingIntroducedUnits
-					break
+					if m.PendingDigestUnitsTouched {
+						unitsTouched = true
+					}
+					introducedUnits = unionStrings(introducedUnits, m.PendingIntroducedUnits)
 				}
 			}
 			if !unitsTouched {
