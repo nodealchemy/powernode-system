@@ -3520,3 +3520,215 @@ func TestReconcile_RevertRetriesPendingUndoUnitsAtTheTop(t *testing.T) {
 		}
 	}
 }
+
+// TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit is P5's own
+// mutant-kill test (review round 13, MEDIUM — "never clear it after
+// success"): a direct, isolated call to retryPendingUndoUnits, bypassing
+// the higher-level RunOnce plumbing entirely. TestReconcile_
+// RevertRetriesPendingUndoUnitsAtTheTop (P4) also asserts PendingUndoUnits
+// ends up cleared, but that assertion is MASKED by a LATER, unconditional
+// clear in reconcile.go's own revert-success path (O8(a)'s clear loop),
+// which runs regardless of what retryPendingUndoUnits itself decided — a
+// mutant that made retryPendingUndoUnits never clear anything still passes
+// that test. This test calls the function directly so nothing downstream
+// can hide the bug: one unit confirmed active must be cleared, one that
+// stays inactive must remain, in the SAME call.
+func TestRetryPendingUndoUnits_ClearsOnlyTheConfirmedActiveUnit(t *testing.T) {
+	r, _, runner, _, statePath, _, _ := upgradeTestReconciler(t)
+	okUnit := lifecycle.UnitName("m1", "ok-unit")
+	stuckUnit := lifecycle.UnitName("m1", "stuck-unit")
+
+	current := &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "m1", Digest: "d1", PendingUndoUnits: []string{okUnit, stuckUnit}},
+		},
+		LastAttachedManifestHashes: map[string]string{},
+	}
+	if err := mount.SaveState(statePath, current); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + okUnit: []byte("active\n"),
+		// stuckUnit stays at RecorderRunner's default ("not active").
+	}
+
+	r.retryPendingUndoUnits(context.Background(), current, "m1", []string{okUnit, stuckUnit})
+
+	var got []string
+	for _, m := range current.AttachedModules {
+		if m.ID == "m1" {
+			got = m.PendingUndoUnits
+		}
+	}
+	if containsArg(got, okUnit) {
+		t.Errorf("P5 REGRESSION (never clear after success): %s is confirmed active and must be cleared, got %v", okUnit, got)
+	}
+	if !containsArg(got, stuckUnit) {
+		t.Errorf("expected %s (still inactive) to remain in the list, got %v", stuckUnit, got)
+	}
+}
+
+// TestUpgradeModule_RetryOfTheSameBumpRetriesPendingUndoUnitsFirst is P5's
+// own mutant-kill test (review round 13, MEDIUM — "remove the
+// retryPendingUndoUnits call"): the TOP-of-upgradeModule priority retry
+// (O6, review round 12 — "try it again BEFORE ANYTHING ELSE this tick")
+// has no dedicated test of its own; every existing O6/P4 test exercises
+// EITHER the in-attempt undo retry inside recoverFromDepartingUnitConflict
+// OR reconcile.go's separate revert-branch call (P4) — neither reaches
+// this call site. Retries the SAME bump digest on the next tick (not a
+// re-target or a revert) and asserts old-worker is retried and cleared.
+func TestUpgradeModule_RetryOfTheSameBumpRetriesPendingUndoUnitsFirst(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump to d2: new-worker never comes up, N8 fires, and old-worker's
+	// undo restart fails on BOTH attempts — PendingUndoUnits=[old-worker].
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	oldWorkerStartKey := "systemctl start " + oldWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),   // active+departing, so N8 stops it
+		"systemctl is-active " + newWorkerUnit: []byte("inactive\n"), // never comes up
+	}
+	runner.StubErr = map[string]error{oldWorkerStartKey: errors.New("undo failed (both attempts)")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (N8 fires, undo fails twice): %v", err)
+	}
+	// N8's own stop already flips old-worker to inactive on THIS runner
+	// (RecorderRunner does not model state transitions on its own); make
+	// that explicit for pass 3's own is-active reads below.
+	runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("inactive\n")
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	found := false
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			found = containsArg(m.PendingUndoUnits, oldWorkerUnit)
+		}
+	}
+	if !found {
+		t.Fatalf("precondition: expected PendingUndoUnits to contain %s after pass 2, got state: %+v", oldWorkerUnit, st.AttachedModules)
+	}
+
+	// Tick 3: SAME digest d2 still assigned — a retry of the SAME bump
+	// (attempts=1 after pass 2, so M2's own immediate-retry rule applies —
+	// no backoff wait needed). Whatever was blocking old-worker's restart
+	// is now fixed; new-worker still never comes up, so this attempt is
+	// refused again too — irrelevant to what this test checks.
+	delete(runner.StubErr, oldWorkerStartKey)
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "start") && containsArg(args, oldWorkerUnit) {
+			runner.StubOutput["systemctl is-active "+oldWorkerUnit] = []byte("active\n")
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	pass3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (same-digest retry): %v", err)
+	}
+	pass3 := runner.Invocations[pass3Start:]
+
+	if !hasSystemctlOp(pass3, "start", oldWorkerUnit) {
+		t.Errorf("P5 REGRESSION (retryPendingUndoUnits call removed): expected the top-of-upgradeModule priority retry to attempt %s, got: %v", oldWorkerUnit, pass3)
+	}
+	st, err = mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after pass 3: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && containsArg(m.PendingUndoUnits, oldWorkerUnit) {
+			t.Errorf("P5 REGRESSION: %s was confirmed active but stayed in PendingUndoUnits: %v", oldWorkerUnit, m.PendingUndoUnits)
+		}
+	}
+}
+
+// TestReconcile_RevertClearsUnitsTouchedSoALaterUnrelatedBumpStartsFresh is
+// P5's own mutant-kill test (review round 13, MEDIUM — "pin P2's sticky
+// flag, since the re-target-keeps-touched mutant currently survives both
+// ways"): P2 (round 13) correctly made PendingDigestUnitsTouched SURVIVE a
+// re-target, but a successful REVERT — unlike a commit, which replaces the
+// whole state entry with a fresh struct — mutates fields in place and had
+// no line resetting this one at all. Left true forever after a revert, a
+// LATER, completely unrelated bump of the SAME module ID would start its
+// very first tick already reading "touched" — bypassing P3's own
+// predicted-refusal check (round 13) and rendering that new episode's
+// sudoers grant immediately, even though its step 2 refuses it.
+func TestReconcile_RevertClearsUnitsTouchedSoALaterUnrelatedBumpStartsFresh(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app only): %v", err)
+	}
+
+	// d2 touches: app force-restarts, new-worker never settles — refused.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched, refused): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Revert to d1 — succeeds cleanly.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Fatalf("precondition: expected PendingDigest cleared after the revert, got %q", pd)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && m.PendingDigestUnitsTouched {
+			t.Fatalf("P5 REGRESSION: expected PendingDigestUnitsTouched cleared after a successful revert, got true")
+		}
+	}
+
+	// A LATER, completely UNRELATED bump: d1 -> d3, refused at step 2
+	// (unapproved privileged, same deterministic shape P3's own test uses).
+	// This is a brand-new episode that has touched nothing yet.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixturePrivilegedWithSudoer("d3", true, "d3-only-grant")
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	var renderedGrantIDs []string
+	origSudoers := applySudoers
+	applySudoers = func(grants []etcsudoers.Grant) error {
+		for _, g := range grants {
+			renderedGrantIDs = append(renderedGrantIDs, g.Grant.ID)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applySudoers = origSudoers })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (d3 refused at step 2, unrelated episode): %v", err)
+	}
+	for _, id := range renderedGrantIDs {
+		if id == "d3-only-grant" {
+			t.Fatalf("P5 REGRESSION (stale PendingDigestUnitsTouched leaked into a later episode): d3's own sudoers grant was rendered on its VERY FIRST tick despite being refused at step 2: %v", renderedGrantIDs)
+		}
+	}
+}

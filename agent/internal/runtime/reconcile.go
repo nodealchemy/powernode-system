@@ -1620,6 +1620,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 						current.AttachedModules[i].PendingUndoUnits = nil
 						current.AttachedModules[i].PendingIntroducedUnits = nil
+						// P5 (review round 13): PendingDigestUnitsTouched itself
+						// was never explicitly reset here — P2's own sticky fix
+						// (round 13) made it correctly SURVIVE a re-target, but
+						// a successful REVERT (unlike a commit, which replaces
+						// the whole entry with a fresh struct) mutates fields in
+						// place and had no line clearing this one at all. Left
+						// as true forever, a LATER, completely unrelated bump of
+						// this same module ID would start its very first tick
+						// already reading "touched" — skipping P3's own
+						// predicted-refusal check and applying the sudoers/
+						// identity union immediately, before that new episode's
+						// own step 2 has run at all.
+						current.AttachedModules[i].PendingDigestUnitsTouched = false
 					}
 				}
 				// N7 (review round 11): the abandoned target's persisted drop-in
