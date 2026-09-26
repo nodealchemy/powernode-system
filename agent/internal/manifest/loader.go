@@ -146,3 +146,82 @@ func writeCache(root string, m *Manifest) error {
 func manifestPath(root, moduleID string) string {
 	return filepath.Join(root, moduleID, "manifest.json")
 }
+
+// SaveAttachedSnapshot persists m, keyed by (moduleID, digest) rather than
+// moduleID alone (L1, review round 7, CRITICAL). The plain manifest.json
+// cache (writeCache/manifestPath above) is keyed by module ID ONLY and is
+// overwritten on every fetch REGARDLESS of whether that fetch's digest ever
+// successfully attached — its contract is "last fetched", not "last
+// attached". A version-bump rollback (agent/internal/runtime's
+// rollbackVersionBumpDetach) needs "the manifest content that was actually
+// used the last time THIS EXACT DIGEST attached successfully", which a
+// fetch that happens in between (even one whose own attach then fails) can
+// silently clobber if the two are conflated — see rollbackVersionBumpDetach's
+// own doc comment for the exact multi-tick sequence this caused (a rollback
+// re-attaching the OLD digest using the NEW manifest's content, which then
+// fails Apply/Validate identically and drops the module from state.json
+// entirely).
+//
+// The caller (attachModule, on a fully successful attach only) is the sole
+// writer. Best-effort: a write failure here must never fail the attach it
+// is recording — the caller logs it via OnError and the module still comes
+// up; only a LATER rollback attempt is degraded (falls back to the
+// mutable per-ID cache, same limitation this store exists to remove).
+func SaveAttachedSnapshot(root, moduleID, digest string, m *Manifest) error {
+	if m == nil {
+		return errors.New("manifest.SaveAttachedSnapshot: nil manifest")
+	}
+	if moduleID == "" || digest == "" {
+		return fmt.Errorf("manifest.SaveAttachedSnapshot: empty moduleID/digest (moduleID=%q digest=%q)", moduleID, digest)
+	}
+	dir := filepath.Join(root, moduleID, "attached")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	return fsutil.AtomicWriteJSON(attachedSnapshotPath(root, moduleID, digest), m, 0o644)
+}
+
+// LoadAttachedSnapshot reads back what SaveAttachedSnapshot wrote for the
+// exact (moduleID, digest) pair. Returns os.ErrNotExist (wrapped, so
+// os.IsNotExist still matches) when no snapshot was ever recorded for this
+// digest — expected for a module attached by an agent build that predates
+// this store, or one that has never yet attached successfully at all; the
+// caller falls back to its own next-best source in that case.
+func LoadAttachedSnapshot(root, moduleID, digest string) (*Manifest, error) {
+	path := attachedSnapshotPath(root, moduleID, digest)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("decode attached-snapshot manifest %s: %w", path, err)
+	}
+	return &m, nil
+}
+
+func attachedSnapshotPath(root, moduleID, digest string) string {
+	return filepath.Join(root, moduleID, "attached", sanitizeDigestForFilename(digest)+".json")
+}
+
+// sanitizeDigestForFilename substitutes characters that are unsafe (or just
+// awkward when unquoted) in a filesystem path component. Digests are
+// typically "sha256:abc...": the colon is legal on Linux but is replaced
+// here anyway for consistency with the same substitution the oci/mount
+// packages already apply to digest-derived filenames elsewhere in this
+// codebase (oci.sanitizeDigest / mount.Layout's identically-named
+// function) — this is a SEPARATE, independent copy (this package imports
+// neither), not required to match theirs byte-for-byte, since it only
+// needs to be a stable, collision-free key into ITS OWN store.
+func sanitizeDigestForFilename(d string) string {
+	out := make([]byte, 0, len(d))
+	for _, c := range []byte(d) {
+		switch {
+		case c == ':' || c == '/' || c == ' ':
+			out = append(out, '_')
+		default:
+			out = append(out, c)
+		}
+	}
+	return string(out)
+}

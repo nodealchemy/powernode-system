@@ -75,6 +75,28 @@ type State struct {
 	// skipped or only reported the rebase never sets it, so the rebase is
 	// retried rather than silently marked done.
 	RebasedAgainst string `json:"rebased_against,omitempty"`
+
+	// FailedVersionBumps records, per module ID, the digest of a version
+	// bump whose REAL attach (not the side-effect-free pre-check) failed
+	// after the old digest was already detached (L2, review round 7, HIGH).
+	// Some Policy.Apply failures — a malformed compiled SELinux/AppArmor
+	// module semodule/apparmor_parser itself rejects, a transient ENOSPC or
+	// exec failure — are NOT predictable ahead of time by the pre-check
+	// (runtime.wouldModuleSecurityPolicyRefuse / Policy.PredictMACProfileFailure
+	// catch the PREDICTABLE subset: an unresolvable profile name or a missing
+	// LSM). Without this record, a persistent, pre-check-invisible failure of
+	// that kind repeats the SAME detach → real-attach-fails → rollback
+	// sequence on every single reconcile tick forever — stopping and
+	// restarting the still-good OLD digest's units each time, a live
+	// availability cost with no corresponding chance of success (the
+	// underlying cause, e.g. a corrupt profile file, does not change tick to
+	// tick). Once recorded here, runtime's version-bump guard defers ALL
+	// further bump attempts to this EXACT digest without touching the
+	// running old digest at all — until either a genuinely NEW digest is
+	// proposed (the map is keyed and compared by digest, so a change bypasses
+	// it automatically) or that new digest's real attach eventually succeeds
+	// (which clears its own entry).
+	FailedVersionBumps map[string]string `json:"failed_version_bumps,omitempty"`
 }
 
 // LoadState reads State from `path`. Returns a zero-value State and

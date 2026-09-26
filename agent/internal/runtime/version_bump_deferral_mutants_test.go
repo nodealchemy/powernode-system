@@ -46,7 +46,7 @@ func TestApplyVersionBumpDeferrals_UnapprovedPrivilegedDefersDetach(t *testing.T
 	manifests := map[string]*manifest.Manifest{"m1": newMf}
 	artifactReady := map[string]bool{"m1": true}
 
-	safe, deferredIDs := r.applyVersionBumpDeferrals(mount.ModuleStack{oldMod}, mount.ModuleStack{newMod}, manifests, artifactReady)
+	safe, deferredIDs := r.applyVersionBumpDeferrals(mount.ModuleStack{oldMod}, mount.ModuleStack{newMod}, manifests, artifactReady, nil)
 
 	if len(safe) != 0 {
 		t.Errorf("K6 REGRESSION: an unapproved privileged request on the new manifest must defer the detach, got safe=%v", safe)
@@ -84,7 +84,7 @@ func TestApplyVersionBumpDeferrals_InvalidPolicyDefersDetach(t *testing.T) {
 	manifests := map[string]*manifest.Manifest{"m1": newMf}
 	artifactReady := map[string]bool{"m1": true}
 
-	safe, deferredIDs := r.applyVersionBumpDeferrals(mount.ModuleStack{oldMod}, mount.ModuleStack{newMod}, manifests, artifactReady)
+	safe, deferredIDs := r.applyVersionBumpDeferrals(mount.ModuleStack{oldMod}, mount.ModuleStack{newMod}, manifests, artifactReady, nil)
 
 	if len(safe) != 0 {
 		t.Errorf("K6 REGRESSION: an invalid policy (a malformed seccomp_profile name) on the new manifest must defer the detach, got safe=%v", safe)

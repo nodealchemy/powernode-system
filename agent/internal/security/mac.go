@@ -190,6 +190,54 @@ func writeSeccompDropInAt(base, unit, profilePath string) error {
 	return nil
 }
 
+// PredictMACProfileFailure reports, WITHOUT touching the running LSM state
+// (no semodule/apparmor_parser invocation — genuinely side-effect-free, so
+// safe to call from the version-bump pre-check against the currently-running
+// old digest, same contract as ProbeDropInWritable), whether Policy.Apply's
+// MAC-load step would refuse this policy for a PREDICTABLE reason (L2 part
+// 2, review round 7, HIGH): the declared profile NAME does not resolve
+// inside the agent-owned directory, or the required LSM is not available on
+// this host. Both are already pure reads inside LoadSELinuxProfile /
+// LoadAppArmorProfile (resolveAgentOwnedProfile, then
+// selinuxAvailable/apparmorAvailable) — this function runs exactly those
+// same reads, in the same order, and returns before the point either loader
+// would call runner.Run.
+//
+// A profile that resolves and whose LSM is available can still fail Apply
+// for a reason this CANNOT predict ahead of time (a malformed compiled
+// policy module semodule/apparmor_parser itself rejects at parse time,
+// ENOSPC, a transient exec failure) — see runtime's FailedVersionBumps (L2
+// part 1) for how that residual class is instead caught AFTER the fact, on
+// its first real occurrence, and remembered so it does not repeat every
+// tick.
+func (p *Policy) PredictMACProfileFailure() error {
+	if p == nil || p.Privileged {
+		// A privileged policy skips MAC entirely (Policy.Apply's own first
+		// check) and Validate already refuses privileged=true combined with
+		// any MAC/seccomp/capability field, so a privileged policy reaching
+		// here is guaranteed to have both profile fields empty anyway — this
+		// early return is belt-and-braces, not load-bearing.
+		return nil
+	}
+	if p.SELinuxProfile != "" {
+		if _, err := resolveAgentOwnedProfile(SELinuxProfileDir, p.SELinuxProfile); err != nil {
+			return fmt.Errorf("selinux_profile: %w", err)
+		}
+		if !selinuxAvailable() {
+			return ErrSELinuxNotAvailable
+		}
+	}
+	if p.AppArmorProfile != "" {
+		if _, err := resolveAgentOwnedProfile(AppArmorProfileDir, p.AppArmorProfile); err != nil {
+			return fmt.Errorf("apparmor_profile: %w", err)
+		}
+		if !apparmorAvailable() {
+			return ErrAppArmorNotAvailable
+		}
+	}
+	return nil
+}
+
 // ErrSELinuxNotAvailable signals the host doesn't have SELinux enabled.
 var ErrSELinuxNotAvailable = errors.New("security: SELinux not available on this host")
 
@@ -222,6 +270,23 @@ var selinuxAvailable = func() bool {
 var apparmorAvailable = func() bool {
 	_, err := os.Stat("/sys/kernel/security/apparmor")
 	return err == nil
+}
+
+// SetSELinuxAvailableForTest forces selinuxAvailable()'s result for tests
+// that need to exercise the semodule invocation path (LoadSELinuxProfile /
+// Policy.Apply) on a host — like this project's own CI and dev-cell
+// sandboxes — that has no real SELinux LSM loaded. Without this seam,
+// EVERY test asserting behaviour on/after a successful profile resolution
+// would be unreachable here, always short-circuiting on ErrSELinuxNotAvailable
+// before ever reaching runner.Run — same problem SetSystemdDropInRootForTest
+// solves for the drop-in root, and the same testing.Testing() guard.
+func SetSELinuxAvailableForTest(available bool) (restore func()) {
+	if !testing.Testing() {
+		panic("security.SetSELinuxAvailableForTest called outside a test binary")
+	}
+	prev := selinuxAvailable
+	selinuxAvailable = func() bool { return available }
+	return func() { selinuxAvailable = prev }
 }
 
 // Agent-owned MAC profile directories. security.selinux_profile /

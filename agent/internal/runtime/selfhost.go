@@ -292,7 +292,7 @@ type versionBumpDeferral struct {
 	failedUnits []string // non-nil only for an actual drop-in-probe refusal — nil for privileged-unapproved/invalid-policy/artifact-not-ready, exactly mirroring attachModule's own recordSecurityFailClosed gating
 }
 
-func (r *Reconciler) filterUnsafeVersionBumpDetaches(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest, artifactReady map[string]bool) (safe mount.ModuleStack, deferrals []versionBumpDeferral) {
+func (r *Reconciler) filterUnsafeVersionBumpDetaches(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest, artifactReady map[string]bool, failedBumps map[string]string) (safe mount.ModuleStack, deferrals []versionBumpDeferral) {
 	if len(toDetach) == 0 {
 		return toDetach, nil
 	}
@@ -304,10 +304,33 @@ func (r *Reconciler) filterUnsafeVersionBumpDetaches(toDetach, toAttach mount.Mo
 
 	safe = make(mount.ModuleStack, 0, len(toDetach))
 	deferredIDs := make([]string, 0)
+	persistentlyFailedIDs := make([]string, 0)
 	for _, mod := range toDetach {
 		newMod, isBump := newByID[mod.ID]
 		if !isBump {
 			safe = append(safe, mod) // not a version bump — nothing for this guard to say
+			continue
+		}
+		// L2 part 1 (review round 7, HIGH): this EXACT digest already failed
+		// its real attach after a detach on some earlier tick — a failure
+		// mode the pre-check below could not predict (see
+		// versionBumpDeferral's own doc and reconcile.go's FailedVersionBumps
+		// write site for the full story). Deferred here, BEFORE even the
+		// artifact-readiness check, without touching artifactReady or
+		// running the pre-check again: repeating either would cost real work
+		// (a pull/mount or a drop-in probe) for a digest already known, from
+		// this node's own history, not to attach — and neither check is what
+		// found THIS failure in the first place, so re-running them teaches
+		// nothing new. A genuinely NEW third digest for the same module
+		// naturally bypasses this: the map compares by digest, not by
+		// module ID alone.
+		if failedDigest, known := failedBumps[mod.ID]; known && failedDigest == newMod.Digest {
+			persistentlyFailedIDs = append(persistentlyFailedIDs, mod.ID)
+			var failedUnits []string
+			if mf, ok := manifests[mod.ID]; ok && mf != nil {
+				failedUnits = mf.UnitNames()
+			}
+			deferrals = append(deferrals, versionBumpDeferral{moduleID: mod.ID, failedUnits: failedUnits})
 			continue
 		}
 		if !artifactReady[mod.ID] {
@@ -339,6 +362,17 @@ func (r *Reconciler) filterUnsafeVersionBumpDetaches(toDetach, toAttach mount.Mo
 		r.cfg.OnError("reconciler:version_bump_detach_deferred_would_fail_closed",
 			fmt.Errorf("this tick's version bump for %d module(s) [%s] would refuse to (re)attach its new digest (artifact not ready, invalid policy, or a security drop-in write); keeping the currently-running (old digest) units in place instead of detaching them first — they will be re-evaluated next tick",
 				len(deferredIDs), strings.Join(deferredIDs, ", ")))
+	}
+	// L2 part 1: a separate, distinct diagnostic from the one above — this
+	// case was NOT decided by anything this tick observed at all, but by a
+	// PAST tick's real attach failure remembered in FailedVersionBumps.
+	// Worth its own message: an operator reading only the generic message
+	// above would look for what THIS tick's pre-check found and find
+	// nothing, since nothing here ran.
+	if len(persistentlyFailedIDs) > 0 {
+		r.cfg.OnError("reconciler:version_bump_detach_deferred_previously_failed",
+			fmt.Errorf("this tick's version bump for %d module(s) [%s] targets a digest that ALREADY failed its real attach after a detach on an earlier tick (see reconciler:version_bump_real_attach_failed_recorded); deferring indefinitely without re-detaching — will retry automatically only if a NEW digest is proposed, or an operator can force a retry via a manual attach",
+				len(persistentlyFailedIDs), strings.Join(persistentlyFailedIDs, ", ")))
 	}
 	return safe, deferrals
 }
