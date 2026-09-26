@@ -175,6 +175,10 @@ func TestAttachModule_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 
 	rec := &mount.RecorderRunner{}
 	r := liveReconciler(t, rec)
+	// R5 (review round 14): the full-capability-set exemption is now
+	// identity-gated — put this module on the privileged allowlist so this
+	// test keeps isolating the SHAPE (full set) from that identity check.
+	r.privilegedAllow = []string{mf.ID}
 
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
@@ -275,6 +279,12 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 		// refusal on a narrow ceiling either way).
 		blockFile   string
 		wantRefused bool
+		// R5 (review round 14): the full-capability-set exemption is now
+		// identity-gated (qualifiesForFullSetExemption) — a case relying on
+		// it must put its own module ID on the privileged allowlist to keep
+		// isolating the SHAPE (full set) from the identity check, which has
+		// its own dedicated tests.
+		privilegedAllow []string
 	}{
 		{
 			name: "narrow capability ceiling refuses on both paths",
@@ -299,6 +309,44 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 				return &manifest.Manifest{
 					ID:                          "parity-full",
 					Name:                        "parity-full",
+					ServiceCapabilitiesPresence: true,
+					Config:                      map[string]any{"security": map[string]any{"capabilities": full, "user_namespace": false}},
+					Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+				}
+			},
+			blockFile:       "capabilities.conf",
+			wantRefused:     false,
+			privilegedAllow: []string{"parity-full"},
+		},
+		{
+			// R5 (review round 14, SECURITY): the SAME full-capability-set
+			// shape, but this module is NEITHER on the privileged allowlist
+			// NOR named qga — before R5, ANY module resolving to the full
+			// set got the identical free pass regardless of identity. Must
+			// now fail closed like an ordinary narrow-ceiling module.
+			name: "full capability ceiling without a qualifying identity refuses on both paths",
+			mf: func() *manifest.Manifest {
+				return &manifest.Manifest{
+					ID:                          "parity-full-unqualified",
+					Name:                        "parity-full-unqualified",
+					ServiceCapabilitiesPresence: true,
+					Config:                      map[string]any{"security": map[string]any{"capabilities": full, "user_namespace": false}},
+					Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
+				}
+			},
+			blockFile:   "capabilities.conf",
+			wantRefused: true,
+		},
+		{
+			// R5: the SAME shape and NO privileged-allowlist entry, but
+			// named exactly qgaModuleName — the pinned recovery-channel
+			// identity path qualifies on its own, independent of the
+			// allowlist.
+			name: "full capability ceiling named qemu-guest-agent is exempt on both paths",
+			mf: func() *manifest.Manifest {
+				return &manifest.Manifest{
+					ID:                          "parity-qga",
+					Name:                        qgaModuleName,
 					ServiceCapabilitiesPresence: true,
 					Config:                      map[string]any{"security": map[string]any{"capabilities": full, "user_namespace": false}},
 					Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
@@ -361,6 +409,7 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 			}
 			liveRec := &mount.RecorderRunner{}
 			liveR := liveReconciler(t, liveRec)
+			liveR.privilegedAllow = tc.privilegedAllow
 			liveErr := liveR.attachModule(context.Background(), mount.Module{ID: liveMf.ID, Digest: "d1", Priority: 1}, liveMf)
 			liveRefused := liveErr != nil
 
@@ -377,7 +426,11 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 				t.Fatal(err)
 			}
 			stack := mount.ModuleStack{{ID: pivotMf.ID, Priority: 1}}
-			pivotR.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{pivotMf.ID: pivotMf}, &BootComposedBreadcrumb{})
+			// R5 (review round 14): renderPivotUnits sources r.privilegedAllow
+			// from the breadcrumb's own PrivilegedModuleIDs (overwriting
+			// anything set directly on r), so tc.privilegedAllow must travel
+			// through there, not a direct field assignment.
+			pivotR.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{pivotMf.ID: pivotMf}, &BootComposedBreadcrumb{PrivilegedModuleIDs: tc.privilegedAllow})
 			pivotRefused := !unitEnabledNamed(t, sysroot, pivotRec, pivotMf.ID, "app")
 
 			if liveRefused != tc.wantRefused {

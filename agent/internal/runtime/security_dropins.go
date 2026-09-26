@@ -20,6 +20,43 @@ type securityDropInFuncs struct {
 	capability    func(unit string, allow []string) error
 }
 
+// qgaModuleName is R5's own pinned recovery-channel identity check (review
+// round 14): this self-hosted control plane's host-root recovery path
+// (qemu-guest-agent) is INTENTIONALLY declared non-privileged — its own
+// manifest's rationale (see security.WriteCapabilityDropInAt's doc): a
+// `privileged: true` request is refused by an account's own
+// privileged_module_ids allowlist it may not be on, so qga instead
+// declares the full known capability set directly. It therefore cannot
+// rely on privilegedApproved alone to qualify for the full-capability-set
+// exemption below. Pinned by NAME because the agent has no other reliable
+// per-module identity signal today — publishing a signed module under this
+// exact name to the shared catalog is itself a privileged, server-gated
+// action, so an arbitrary untrusted manifest cannot simply declare its way
+// into this name.
+//
+// TODO(server): deliver a proper allowlist/exemption field from the
+// platform instead of pinning by name — this is the interim fix.
+const qgaModuleName = "qemu-guest-agent"
+
+// qualifiesForFullSetExemption reports whether a module may receive the
+// full-capability-set drop-in-write-failure exemption below (R5, review
+// round 14, SECURITY): that exemption's whole justification is "this
+// module's resolved posture is ALREADY the maximal/unconfined one, so a
+// write failure changes nothing" — which is only true for a module an
+// operator (the privileged allowlist) or this node itself (qga, its own
+// recovery channel) actually TRUSTS to run unconfined. Before this, ANY
+// module whose manifest happened to resolve to the full capability set —
+// via an explicit `capabilities: [...]` list, which needs no operator
+// approval at all, unlike `privileged: true` — got the IDENTICAL "never
+// fail closed" treatment, regardless of whether anything ever approved it
+// for that posture.
+func qualifiesForFullSetExemption(moduleID string, mf *manifest.Manifest, privilegedAllow []string) bool {
+	if privilegedApproved(moduleID, privilegedAllow) {
+		return true
+	}
+	return mf != nil && mf.Name == qgaModuleName
+}
+
 // applyModuleSecurityDropIns writes every one of mf's services' security
 // drop-ins (PrivateUsers=, SystemCallFilter=, CapabilityBoundingSet=/
 // AmbientCapabilities=) through funcs, and returns the DEDUPED set of units
@@ -28,13 +65,18 @@ type securityDropInFuncs struct {
 // briefly here since attachModule shares it):
 //
 //   - a capability write failure fails closed UNLESS the resolved allow set
-//     already equals security.KnownCapabilities in full (a write failure
-//     changes nothing security-wise for a unit already at the ceiling —
-//     e.g. qemu-guest-agent, this control plane's host-root recovery
-//     channel);
+//     already equals security.KnownCapabilities in full AND the module
+//     qualifies for that exemption (R5, review round 14 — qualifiesForFullSetExemption:
+//     the privileged allowlist, or this node's own qga recovery channel —
+//     a write failure changes nothing security-wise for a unit already at
+//     the ceiling, e.g. qemu-guest-agent, but only a TRUSTED module may
+//     rely on that reasoning rather than merely resolving to the same
+//     shape);
 //   - a user-namespace write failure fails closed UNLESS policy.UserNamespace
 //     is already false (PrivateUsers=no is systemd's own default absent the
-//     directive, so a false-policy write failure leaves the SAME posture);
+//     directive, so a false-policy write failure leaves the SAME posture —
+//     true for ANY module regardless of identity, since it never grants
+//     anything beyond what systemd already defaults to);
 //   - a seccomp write failure ALWAYS fails closed — an absent filter is
 //     "every syscall allowed", never equivalent to a declared profile.
 //
@@ -58,7 +100,7 @@ type securityDropInFuncs struct {
 // caller wraps it with its own path's existing prefix ("compose:" /
 // "reconciler:") so neither path's OnError stage names change shape from
 // before this helper existed.
-func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string, funcs securityDropInFuncs, onError func(stage string, err error)) []string {
+func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string, privilegedAllow []string, funcs securityDropInFuncs, onError func(stage string, err error)) []string {
 	seen := make(map[string]bool)
 	var failedUnits []string
 	fail := func(unit string) {
@@ -92,9 +134,14 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 
 		allow := unitAllow[unit]
 		if err := funcs.capability(unit, allow); err != nil {
-			if security.IsFullCapabilitySet(allow) {
+			// R5 (review round 14, SECURITY): the full-set exemption requires
+			// BOTH the resolved shape (full capability set) AND a trusted
+			// identity (qualifiesForFullSetExemption) — a module merely
+			// shaped like the trusted case, with no operator approval and no
+			// pinned recovery-channel name, fails closed like anything else.
+			if security.IsFullCapabilitySet(allow) && qualifiesForFullSetExemption(moduleID, mf, privilegedAllow) {
 				onError("capability_dropin_exempt",
-					fmt.Errorf("module %s unit %s: %w — resolved set is the full known-capability ceiling, not failing closed", moduleID, unit, err))
+					fmt.Errorf("module %s unit %s: %w — resolved set is the full known-capability ceiling for a trusted module, not failing closed", moduleID, unit, err))
 			} else {
 				onError("capability_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 				fail(unit)

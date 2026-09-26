@@ -769,7 +769,12 @@ func TestRenderPivotUnits_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
 	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
-	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+	// R5 (review round 14): the full-capability-set exemption is now
+	// identity-gated — renderPivotUnits sources r.privilegedAllow from the
+	// breadcrumb's own PrivilegedModuleIDs (overwriting anything set
+	// directly on r), so this test's allowlist must travel through there to
+	// keep isolating the SHAPE (full set) from that identity check.
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{PrivilegedModuleIDs: []string{mf.ID}})
 
 	if !containsArg(onErrors, "compose:capability_dropin_exempt") {
 		t.Errorf("expected the full-set exemption signal, got stages: %v", onErrors)

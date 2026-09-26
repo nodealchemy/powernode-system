@@ -2456,7 +2456,7 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 	// attachModuleServices, which WRITES the unit and STARTS it — unconfined,
 	// because the drop-in never landed — while nothing distinguished that
 	// attach from an ordinary successful one.
-	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow,
+	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
 		securityDropInFuncs{
 			userNamespace: security.WriteUserNamespaceDropIn,
 			seccomp:       security.WriteSeccompDropIn,

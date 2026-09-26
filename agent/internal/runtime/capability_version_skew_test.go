@@ -39,6 +39,12 @@ func TestAttachModule_UnknownCapabilityFromNewerManifestIsDroppedNotRefused(t *t
 		Services:                    []manifest.Service{{Name: "qga", StartCommand: "/bin/true"}},
 	}
 
+	// R5 (review round 14): the full-capability-set exemption is now
+	// identity-gated — put this module on the privileged allowlist so this
+	// test keeps isolating the version-skew capability-dropping behavior
+	// (K5b) from that identity check.
+	r.privilegedAllow = []string{mf.ID}
+
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
 
