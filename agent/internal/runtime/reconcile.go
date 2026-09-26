@@ -1474,6 +1474,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			if pendingMf, lerr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, pendingDigestByID[mod.ID]); lerr == nil && pendingMf != nil {
 				r.stopDepartingUnits(ctx, mod.ID, pendingMf.UnitNames(), mf.UnitNames())
 			}
+			// O8(a) (review round 12, RULE-1 EDGE): clear EVERY entry with this
+			// ID, not just the first match — no `break`. The M4 duplicate-
+			// state-entry case (two AttachedModules rows for the same module
+			// ID; see TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule)
+			// means a second entry could independently carry its own
+			// PendingDigest. Stopping at the first match left that second
+			// entry's PendingDigest stuck forever: pendingRevertIDs is built
+			// from this SAME slice keyed by ID, so a module the revert just
+			// SUCCEEDED on would still read as pending-a-revert on the very
+			// next tick and force-restart it again — an unforced, invisible
+			// restart of an already-healthy unit, forever.
 			for i, m := range current.AttachedModules {
 				if m.ID == mod.ID {
 					current.AttachedModules[i].PendingDigest = ""
@@ -1481,7 +1492,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 					current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
 					current.AttachedModules[i].PendingConflictRecoveryAttempted = false
 					current.AttachedModules[i].PendingUndoUnits = nil
-					break
 				}
 			}
 			// N7 (review round 11): the abandoned target's persisted drop-in

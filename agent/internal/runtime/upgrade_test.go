@@ -2542,3 +2542,95 @@ func TestRunOnce_PrunesAttachedSnapshotsForDigestsNeitherAttachedNorPending(t *t
 		t.Errorf("O7 REGRESSION: pass 3's GC must not touch the currently-attached digest's own snapshot %s: %v", d2Path, err)
 	}
 }
+
+// TestUpgradeModule_RevertClearsPendingDigestOnEveryDuplicateStateEntry is
+// O8(a)'s own test (review round 12, the one item review A flagged as an
+// actual RULE-1 violation among the O8 items): the M4 duplicate-state-entry
+// case (see TestReconcile_DuplicateStateEntryNeverStopsTheLiveModule) means
+// current.AttachedModules can hold TWO rows for the same module ID. Before
+// this fix, the revert path's PendingDigest-clearing loop stopped at the
+// FIRST matching entry (`break`) — a second duplicate row that also carried
+// PendingDigest stayed stuck forever, so a module the revert just recovered
+// would still read as pending-a-revert on the very next tick and get
+// force-restarted again: an unforced, invisible restart of an
+// already-healthy unit, forever.
+func TestUpgradeModule_RevertClearsPendingDigestOnEveryDuplicateStateEntry(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Drive the SAME genuine crash-inside-settle-window refusal
+	// TestUpgradeModule_RevertAfterSettleFailureRestartsAndClearsPending
+	// uses, so PendingDigest=d2 is set the same way production would set it.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (crash inside settle window): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 2: expected PendingDigest=d2, got %q ok=%v", pd, ok)
+	}
+
+	// Inject the M4 duplicate: a SECOND row for the same module ID, also
+	// mid-revert of its own — a state.json shape this reconciler should
+	// never itself produce, but the code must not silently mishandle if it
+	// occurs (see the M4 fix's own test for the analogous attach-side case).
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	var original mount.Module
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			original = m
+			break
+		}
+	}
+	if original.ID == "" {
+		t.Fatalf("precondition: expected an m1 entry after tick 2, got %+v", st.AttachedModules)
+	}
+	duplicate := original
+	st.AttachedModules = append(st.AttachedModules, duplicate)
+	if err := mount.SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState (inject duplicate): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected both m1 rows to read PendingDigest=d2 after injection, got %q ok=%v", pd, ok)
+	}
+
+	// Revert to d1 — recovers cleanly (app comes back active).
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (revert): %v", err)
+	}
+
+	final, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState after revert: %v", err)
+	}
+	count := 0
+	for _, m := range final.AttachedModules {
+		if m.ID != "m1" {
+			continue
+		}
+		count++
+		if m.PendingDigest != "" {
+			t.Errorf("O8(a) REGRESSION: expected EVERY m1 entry to have PendingDigest cleared after a successful revert, entry %d still has %q: %+v", count, m.PendingDigest, m)
+		}
+	}
+	if count != 2 {
+		t.Fatalf("precondition drifted: expected both injected m1 rows to survive the tick, got %d: %+v", count, final.AttachedModules)
+	}
+}
