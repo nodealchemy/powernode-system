@@ -78,6 +78,34 @@ func backoffAllows(attempts int, lastAttemptUnix int64) (allowed bool, wait, ela
 	return elapsed >= wait, wait, elapsed
 }
 
+// recordPendingDigestAttempt bumps moduleID's PendingDigestAttempts and
+// PendingDigestLastAttemptUnix for its CURRENT pending target and persists
+// the change. P7 (review round 13, LOW): steps 1-3's own refusals (artifact
+// pull/mount, security policy, hot-reconcile materialization) never counted
+// as an attempt against backoffAllows's gate — only step 4's own restart
+// attempt did (the PendingDigestAttempts++ a little further down, right
+// before the restart it precedes). With Attempts staying 0 forever across
+// repeated step 1-3 refusals, backoffAllows(0, ...) is always immediately
+// eligible (attempts < 2 always proceeds) — a persistently failing artifact
+// pull, an unapproved-privileged policy refusal, or a materialization that
+// never fits the scratch budget was re-attempted on EVERY single reconcile
+// tick, forever, instead of backing off like a step-4 failure does. Called
+// from each of steps 1-3's own refusal branches, immediately before their
+// early return — never touches PendingDigestUnitsTouched or
+// PendingIntroducedUnits, since a step 1-3 refusal never reaches a unit.
+func (r *Reconciler) recordPendingDigestAttempt(current *mount.State, moduleID string) {
+	for i, m := range current.AttachedModules {
+		if m.ID == moduleID {
+			current.AttachedModules[i].PendingDigestAttempts++
+			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
+			break
+		}
+	}
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the refused attempt's backoff count: %w", moduleID, err))
+	}
+}
+
 // settleFailure records why a unit was judged NOT settled after step 4's
 // restart — carried through to both the noteUnconverged report and (when
 // N8's recovery does not apply or does not resolve it) restoreDropInSnapshot.
@@ -365,7 +393,8 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// Step 1: pull/verify/mount the new digest's artifact.
 	if err := r.mountModuleArtifact(ctx, newMod); err != nil {
 		r.noteUnconverged("reconciler:upgrade_artifact", newMod.ID, fmt.Errorf("module %s: %w", newMod.ID, err))
-		return // nothing written yet — old fully untouched.
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
+		return                                           // nothing written yet — old fully untouched.
 	}
 
 	// R3b (review round 9): snapshot the ACTUAL on-disk bytes of every
@@ -404,6 +433,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// invalid policy, an Apply failure) never reach a per-unit drop-in
 		// write in that case — nothing was written onto the old digest's
 		// shared paths, so there is nothing to recover here.
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}
 	if len(failedUnits) > 0 {
@@ -416,6 +446,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// them from the pre-step-2 snapshot. Nothing has been restarted yet
 		// (step 4 hasn't run), so every snapshot entry is eligible.
 		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}
 
@@ -431,6 +462,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// running process is still the OLD binary. Restore them — again,
 		// nothing has restarted yet.
 		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}
 

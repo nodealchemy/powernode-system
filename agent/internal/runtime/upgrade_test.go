@@ -1886,9 +1886,25 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 	backdateManifestCache(t, manifestRoot, "m1")
 	wantUserNSBody := security.RenderUserNamespaceDropInBody(false) // old value
 
+	// P7 (review round 13): step 2's own refusal now counts against
+	// backoffAllows just like a step-4 failure does (see
+	// recordPendingDigestAttempt) — from the second retry on, a genuine
+	// re-attempt needs the backoff window to have elapsed, or the tick is a
+	// silent backoff-skip rather than a real policy-refusal retry. Control
+	// the clock and advance it past the (capped) 5-minute max window before
+	// every tick from the second on, so all three blocked ticks below are
+	// genuine re-attempts, matching this test's original intent.
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
 	// Three consecutive blocked ticks — point 5d: zero stops across ALL of
 	// them, not just the first.
 	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			fakeNow = fakeNow.Add(6 * time.Minute)
+		}
 		tickStart := len(runner.Invocations)
 		if err := r.RunOnce(context.Background()); err != nil {
 			t.Fatalf("RunOnce blocked tick %d: %v", attempt, err)
@@ -1919,6 +1935,9 @@ func TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged(t *testing.T)
 	}
 	// M6: the settled unit must read active for the upgrade to commit.
 	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+	// P7: advance past the backoff window one more time so the recovery
+	// tick is itself a genuine attempt, not another silent backoff-skip.
+	fakeNow = fakeNow.Add(6 * time.Minute)
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce recovery tick: %v", err)
 	}
@@ -2770,6 +2789,104 @@ func TestUpgradeModule_Step1RefusalSetsPendingDigestForN4Visibility(t *testing.T
 		if m.ID == "m1" && m.PendingDigestUnitsTouched {
 			t.Errorf("O8(d) REGRESSION: a step-1-only refusal must never reach step 4 — PendingDigestUnitsTouched must stay false, got true")
 		}
+	}
+}
+
+// countingFailingPuller is failingPuller plus a call counter for failDigest —
+// P7's own test uses the counter to prove a backed-off tick issues NO pull
+// attempt at all, not merely another refused one.
+type countingFailingPuller struct {
+	PullerAPI
+	failDigest string
+	calls      int
+}
+
+func (f *countingFailingPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, error) {
+	if ref.Digest == f.failDigest {
+		f.calls++
+		return "", "", fmt.Errorf("stub pull failure for digest %s (test)", ref.Digest)
+	}
+	return f.PullerAPI.Pull(ref)
+}
+
+func pendingDigestAttempts(t *testing.T, statePath, moduleID string) int {
+	t.Helper()
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == moduleID {
+			return m.PendingDigestAttempts
+		}
+	}
+	return 0
+}
+
+// TestUpgradeModule_Step1RefusalBacksOffLikeAStep4Failure is P7 (review
+// round 13, LOW): before this fix, steps 1-3's own refusals never counted
+// against backoffAllows — only step 4's own restart attempt did. A
+// persistently failing artifact pull was therefore re-attempted on EVERY
+// single reconcile tick forever, unlike an equally persistent step-4
+// (restart) failure, which already backed off (see
+// TestUpgradeModule_BackoffBoundsRepeatedRetries). The very first attempt
+// and its first retry (attempts < 2) still proceed immediately, matching
+// that same test's own tolerance — only the SECOND retry on is gated.
+func TestUpgradeModule_Step1RefusalBacksOffLikeAStep4Failure(t *testing.T) {
+	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+	puller := &countingFailingPuller{PullerAPI: r.cfg.Puller, failDigest: "d2"}
+	r.cfg.Puller = puller
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
+	// Attempt 1 (tick 2) and its free retry, attempt 2 (tick 3) — both
+	// proceed immediately, no time advanced. Each is a genuine pull attempt.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (attempt 1): %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (attempt 2): %v", err)
+	}
+	if got, want := puller.calls, 2; got != want {
+		t.Fatalf("after attempt 2: expected %d genuine pull attempts, got %d", want, got)
+	}
+	if got, want := pendingDigestAttempts(t, statePath, "m1"), 2; got != want {
+		t.Fatalf("after attempt 2: expected PendingDigestAttempts=%d, got %d", want, got)
+	}
+
+	// Tick 4: attempt 3 would be the SECOND retry — backed off, since no
+	// time has passed. No pull attempt must be issued at all.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 4 (backed off): %v", err)
+	}
+	if got, want := puller.calls, 2; got != want {
+		t.Errorf("P7 REGRESSION: a backed-off tick must issue no pull attempt at all, got %d calls (want still %d)", got, want)
+	}
+	if got, want := pendingDigestAttempts(t, statePath, "m1"), 2; got != want {
+		t.Errorf("P7 REGRESSION: a backed-off tick must leave PendingDigestAttempts unchanged, got %d want %d", got, want)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("P7 REGRESSION: a backed-off tick must leave PendingDigest visible (still d2, for N4), got %q ok=%v", pd, ok)
+	}
+
+	// Advance the clock past the backoff window (attempts=2 → 20s) — the
+	// next tick must retry (and, still blocked, count as attempt 3).
+	fakeNow = fakeNow.Add(30 * time.Second)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 5 (backoff elapsed): %v", err)
+	}
+	if got, want := puller.calls, 3; got != want {
+		t.Errorf("P7 REGRESSION: once the backoff window elapses, the next tick must retry the pull, got %d calls want %d", got, want)
 	}
 }
 
