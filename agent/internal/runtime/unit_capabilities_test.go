@@ -397,6 +397,64 @@ func TestAttachModule_WritesEachUnitsResolvedCapabilityDropIn(t *testing.T) {
 	}
 }
 
+// CLAUDE-TMUX / GROK-CLI CEILING FIX (operator decision, IMP-caef5c00d63f
+// phase 2 follow-up). Both modules' `credential` unit chowns/chmods root-
+// created files to the session user and (claude-tmux only) writes into the
+// session user's own home directory — established by reading each script
+// line by line and verified empirically (systemd-run
+// --property=CapabilityBoundingSet=) to need exactly CAP_CHOWN,
+// CAP_DAC_OVERRIDE and CAP_FOWNER, no more and no less. This fixture mirrors
+// claude-tmux's real manifest shape post-fix: ceiling raised to that set,
+// `credential` declared with that exact set (not by inheritance), and the
+// OTHER service in the module (`claude`, the tmux session, a non-root
+// already-owning process) explicitly declared [] so it can never silently
+// inherit CHOWN/DAC_OVERRIDE/FOWNER by omission. grok-cli has the identical
+// ceiling and a single service (no second unit to leak to), so it is not
+// separately fixtured here — the resolver logic under test is unchanged
+// between the one-service and two-service case; this is the one worth
+// pinning because a service silently inheriting the ceiling by omission is
+// exactly the defect class IMP-caef5c00d63f phase 1 was built to close.
+func TestUnitCapabilities_ClaudeTmuxShapedManifestGrantsOnlyCredential(t *testing.T) {
+	var mf manifest.Manifest
+	body := `{
+	  "id": "claude-tmux", "service_capabilities_presence": true,
+	  "config": {"security": {"capabilities": ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"]}},
+	  "services": [
+	    {"name": "credential", "start_command": "/usr/local/bin/claude-tmux-fetch-credential.sh",
+	     "capabilities": ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"]},
+	    {"name": "claude", "start_command": "/usr/local/bin/claude-tmux-start.sh", "user": "pnadmin",
+	     "capabilities": []}
+	  ]
+	}`
+	if err := json.Unmarshal([]byte(body), &mf); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	policy := buildPolicy(&mf)
+
+	for _, resolve := range []struct {
+		name string
+		fn   func() ([]security.UnitCapabilities, error)
+	}{
+		{"attach", func() ([]security.UnitCapabilities, error) { return attachCapabilityWrites(&mf, policy) }},
+		{"compose", func() ([]security.UnitCapabilities, error) { return composeCapabilityWrites(mf.ID, &mf, policy) }},
+	} {
+		t.Run(resolve.name, func(t *testing.T) {
+			writes, err := resolve.fn()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := capsByUnit(t, writes)
+			want := map[string][]string{
+				"powernode-claude-tmux-credential.service": {"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"},
+				"powernode-claude-tmux-claude.service":     {},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("resolved per-unit sets:\n got  %v\n want %v — the session unit must get EMPTY ambient+bounding, never the credential-only ceiling", got, want)
+			}
+		})
+	}
+}
+
 // PRIVILEGED MODULES OPT OUT ENTIRELY (operator decision, IMP-caef5c00d63f
 // phase 2 follow-up — qemu-guest-agent flipped to privileged: true because its
 // hypervisor-issued, arbitrary-exec job cannot be expressed as a fixed

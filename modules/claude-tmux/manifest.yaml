@@ -245,8 +245,42 @@ services:
 
       [Install]
       WantedBy=multi-user.target
+    # Established by reading claude-tmux-fetch-credential.sh line by line and
+    # verifying empirically (systemd-run --property=CapabilityBoundingSet=,
+    # IMP-caef5c00d63f phase 2) — NOT the module's whole ceiling by
+    # inheritance; declared explicitly so this list is provably this
+    # service's own requirement, not a default:
+    #   CAP_DAC_OVERRIDE — every write under $CRED_HOME (a real, non-root
+    #     home directory this unit does not own) needs it: mkdir "$CLAUDE_DIR"
+    #     when absent, the jq write of "$CRED_JSON.tmp" INTO $CLAUDE_DIR, and
+    #     the same-directory rename onto "$CRED_JSON". Root is not a member of
+    #     the session user's group, so none of these pass a plain permission
+    #     check — confirmed: with only CAP_CHOWN+CAP_FOWNER granted, the mkdir/
+    #     write/rename into a 0700-or-0770 $CLAUDE_DIR EPERMs even though the
+    #     process is root.
+    #   CAP_CHOWN — every `chown $CRED_USER:$CRED_USER` (OAUTH_MARKER,
+    #     CLAUDE_DIR, CRED_JSON, OUT) reassigns ownership away from root.
+    #   CAP_FOWNER — every `chmod` that runs AFTER its own chown (all four:
+    #     OAUTH_MARKER, CLAUDE_DIR, CRED_JSON, OUT) needs it: chmod's owner
+    #     check runs unconditionally, even when the requested mode already
+    #     matches umask 077's default — confirmed: with only CAP_CHOWN+
+    #     CAP_DAC_OVERRIDE granted, chown succeeds and the VERY NEXT chmod on
+    #     that same (now non-root-owned) path EPERMs.
+    # Script exits 1 (or the pre-fetch guards exit before touching the
+    # PKI/platform network at all) the first time any of these EPERMs — this
+    # is `set -eu` throughout — so under-provisioning any one of the three
+    # breaks credential staging outright, not merely a defense-in-depth
+    # narrowing.
+    capabilities:
+      - CAP_CHOWN
+      - CAP_DAC_OVERRIDE
+      - CAP_FOWNER
 
   - name: claude
+    # Explicit [], not absence: this is the tmux session itself (User=pnadmin,
+    # a non-root, already-owning process for everything it touches) — it must
+    # NOT silently inherit the ceiling raised above for `credential`'s sake.
+    capabilities: []
     dependencies:
       - { service: credential, kind: start_before }
     unit_body: |
@@ -316,7 +350,15 @@ services:
 reboot_required: false
 
 security:
-  capabilities: []
+  # Ceiling raised to exactly what the `credential` service declares below —
+  # see that service's own comment for the line-by-line + empirical
+  # establishment (IMP-caef5c00d63f phase 2). `claude` (the tmux session)
+  # explicitly declares [] so it never inherits this by omission; only
+  # `credential` actually uses it.
+  capabilities:
+    - CAP_CHOWN
+    - CAP_DAC_OVERRIDE
+    - CAP_FOWNER
   # The module ships the Claude Code CLI and must therefore permit the one
   # host that CLI exists to talk to. An empty list here is not "no policy" —
   # the agent unions every desired module's egress_allow into one node-wide
