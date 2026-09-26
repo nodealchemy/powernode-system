@@ -95,6 +95,13 @@ const upgradeZWorkerService = `{"name":"zworker", "start_command":"/bin/true", "
 // grok-cli, or dev-cell's own credential/provision units in production.
 const upgradeCredService = `{"name":"cred", "start_command":"/bin/true", "restart_policy":"never"}`
 
+// upgradeNewWorkerService names a unit that never existed under any OLD
+// digest in these tests — N8's own fixture needs a genuinely NEW-THIS-
+// UPGRADE unit, distinct from upgradeWorkerService's "old-worker" (which
+// exists on the OLD side and departs) and upgradeZWorkerService (which
+// exists on BOTH sides).
+const upgradeNewWorkerService = `{"name":"new-worker", "start_command":"/bin/true", "restart_policy":"always"}`
+
 // upgradeTestReconciler wires a Reconciler + client + RecorderRunner for a
 // single-module round-9 in-place-upgrade scenario, with the systemd unit
 // dir and drop-in root both redirected to fresh temp dirs — see the round-9
@@ -1177,6 +1184,69 @@ func TestUpgradeModule_PendingDigestPersistedBeforeRestartIsIssued(t *testing.T)
 	}
 	if sawPendingAtRestartTime != "d2" {
 		t.Errorf("N10 REGRESSION: state.json must already show PendingDigest=d2 ON DISK at the moment the restart is issued (not only after RunOnce's own end-of-cycle save), got %q", sawPendingAtRestartTime)
+	}
+}
+
+// TestUpgradeModule_DepartingUnitStoppedToUnblockPortConflict is N8's own
+// test (review round 11, MEDIUM): a renamed service (old-worker departs,
+// new-worker replaces it) that shares a port with the unit it replaces
+// deadlocks under the ordinary design — the departing unit is never
+// stopped until the new one is confirmed settled, but the new one can never
+// bind the port while the old one still holds it. new-worker is stubbed to
+// fail is-active until old-worker is actually stopped (simulating exactly
+// that bind conflict, not a real crash); once recoverFromDepartingUnitConflict
+// stops old-worker and retries, new-worker comes up and the whole upgrade
+// commits in the SAME tick.
+func TestUpgradeModule_DepartingUnitStoppedToUnblockPortConflict(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	appUnit := lifecycle.UnitName("m1", "app")
+	oldWorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	newWorkerUnit := lifecycle.UnitName("m1", "new-worker")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	newWorkerIsActiveKey := "systemctl is-active " + newWorkerUnit
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:       []byte("active\n"),
+		"systemctl is-active " + oldWorkerUnit: []byte("active\n"),
+		newWorkerIsActiveKey:                   []byte("inactive\n"), // simulated bind conflict
+	}
+	var sawStopBeforeRecoveredStart bool
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if name == "systemctl" && containsArg(args, "stop") && containsArg(args, oldWorkerUnit) {
+			// The port is now free — new-worker can bind on the retry.
+			runner.StubOutput[newWorkerIsActiveKey] = []byte("active\n")
+			sawStopBeforeRecoveredStart = true
+		}
+	}}
+	r.cfg.MountRunner = hooked
+
+	tick2Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2: %v", err)
+	}
+	tick2 := runner.Invocations[tick2Start:]
+
+	if !sawStopBeforeRecoveredStart {
+		t.Fatalf("N8 REGRESSION: expected old-worker to be stopped to unblock new-worker, invocations: %v", tick2)
+	}
+	if !hasSystemctlOp(tick2, "start", newWorkerUnit) {
+		t.Errorf("N8 REGRESSION: expected new-worker to be (re)started after old-worker was stopped: %v", tick2)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("N8 REGRESSION: expected the upgrade to commit to d2 once the conflict was recovered from, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("N8 REGRESSION: PendingDigest must be cleared once the upgrade commits, got %q", pd)
 	}
 }
 

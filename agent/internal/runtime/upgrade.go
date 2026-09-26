@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
@@ -276,18 +277,28 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pending digest %s before restarting: %w", newMod.ID, newMod.Digest, err))
 	}
 
-	// N1 (review round 11): snapshot which of the NEW manifest's units were
-	// active BEFORE step 4 touches anything. A unit that was never active to
-	// begin with (a credential-fetch/provisioning script that runs once and
-	// exits — claude-tmux's credential unit, grok-cli, dev-cell's own
-	// credential/provision units) reads "inactive" after a clean, successful
-	// run exactly as it would after a crash; the settle check below only
-	// ever applies to a unit this snapshot says WAS running, so a run-once
-	// unit's own exit is never mistaken for a crash.
-	preActive := make(map[string]bool, len(newMf.UnitNames()))
-	for _, unit := range newMf.UnitNames() {
-		if active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit); aerr == nil && active {
-			preActive[unit] = true
+	// N1 (review round 11): index each NEW-manifest unit's DECLARED
+	// restart_policy — this codebase renders every unit Type=simple
+	// (lifecycle.RenderUnitModeGraph) with no manifest-level oneshot/
+	// RemainAfterExit concept, but restart_policy:"never" (→ systemd's own
+	// Restart=no) IS the manifest's existing, authoritative way to declare
+	// "this unit runs once and exits on its own" — a credential-fetch or
+	// provisioning script (claude-tmux's credential unit, grok-cli,
+	// dev-cell's own credential/provision units) declares exactly this. The
+	// settle check below skips such a unit entirely; every other unit
+	// (restart_policy empty/"always"/"on-failure" — lifecycle.
+	// restartDirective's own default is "on-failure", i.e. persistent
+	// unless declared otherwise) is settle-checked regardless of whether it
+	// happened to be active before this call, since a BRAND-NEW persistent
+	// unit this very upgrade introduces was NEVER active before by
+	// definition and still needs its first start verified (N8's own
+	// departing-unit-conflict recovery below depends on this: a brand-new
+	// unit that fails to bind a port must be DETECTED as a failure, not
+	// silently skipped as if it were a legitimate run-once exit).
+	runsOnceByUnit := make(map[string]bool, len(newMf.Services))
+	for _, svc := range newMf.Services {
+		if strings.EqualFold(strings.TrimSpace(svc.RestartPolicy), "never") {
+			runsOnceByUnit[lifecycle.UnitName(newMod.ID, svc.Name)] = true
 		}
 	}
 
@@ -336,12 +347,12 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// binary that crashes immediately after exec (a bad migration, a
 	// config the new digest ships that the process rejects on boot) would
 	// otherwise sail through step 4 as a reported success. Settle briefly,
-	// then confirm every unit that WAS ACTIVE BEFORE (preActive) is STILL
+	// then confirm every unit NOT declared restart_policy:"never" is STILL
 	// active before anything irreversible runs.
 	//
-	// A unit that was NEVER active before this attempt is skipped entirely
-	// — its own inactivity now is not new information (N1). For a unit
-	// that WAS active and now reads inactive, a clean, expected
+	// A unit DECLARED run-once (runsOnceByUnit) is skipped entirely — its
+	// own inactivity after settling is not new information (N1). For any
+	// OTHER unit that reads inactive after settling, a clean, expected
 	// termination (Result=success — it ran its course and stopped on its
 	// own) or a condition-gate skip (ConditionResult=no) is ALSO settled,
 	// not a crash; only anything else refuses.
@@ -355,8 +366,14 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// modules' next reconcile tick finds them inactive, same as any other
 	// A3 case.
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
+	type settleFailure struct {
+		unit               string
+		aerr               error
+		result, condResult string
+	}
+	var failures []settleFailure
 	for _, unit := range newMf.UnitNames() {
-		if !preActive[unit] {
+		if runsOnceByUnit[unit] {
 			continue
 		}
 		active, aerr := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
@@ -368,9 +385,30 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		if result == "success" || condResult == "no" {
 			continue
 		}
+		failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
+	}
+
+	failedUnitNames := make([]string, len(failures))
+	for i, f := range failures {
+		failedUnitNames[i] = f.unit
+	}
+	if len(failures) > 0 && r.recoverFromDepartingUnitConflict(ctx, old, oldUnits, newMf, failedUnitNames) {
+		// N8 (review round 11, MEDIUM): every failing unit was NEW-THIS-
+		// UPGRADE (never existed under the old digest) and a departing unit
+		// was still active — stopping it freed whatever it held (most
+		// plausibly a port) and the new unit(s) came up once retried. This
+		// IS a version-upgrade restart (rule 2), not a refusal side effect —
+		// see recoverFromDepartingUnitConflict's own doc. Fall through to
+		// the commit exactly as if the settle check had passed outright.
+		failures = nil
+	}
+
+	for _, f := range failures {
 		r.noteUnconverged("reconciler:upgrade_settle_check", newMod.ID, fmt.Errorf(
 			"module %s: unit %s did not stay active through the %s settle window after restart (is-active err=%v, Result=%q, ConditionResult=%q) — refusing to delta-stop, unmount, or commit; a dependent unit may already have stopped as a propagation of this failure (documented A3 residual)",
-			newMod.ID, unit, r.cfg.UpgradeSettleWindow, aerr, result, condResult))
+			newMod.ID, f.unit, r.cfg.UpgradeSettleWindow, f.aerr, f.result, f.condResult))
+	}
+	if len(failures) > 0 {
 		restoreDropInSnapshot(dropInSnap, restartedUnits, r.cfg.OnError)
 		return
 	}
@@ -471,6 +509,91 @@ func (r *Reconciler) stopDepartingUnits(ctx context.Context, moduleID string, ol
 	if err := r.cfg.MountRunner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 		r.cfg.OnError("reconciler:upgrade_delta_stop_daemon_reload", fmt.Errorf("module %s: %w", moduleID, err))
 	}
+}
+
+// recoverFromDepartingUnitConflict is N8's minimal fix (review round 11,
+// MEDIUM): a renamed service sharing a port (or any other exclusive
+// resource) with the unit it replaces deadlocks under the round-9 in-place
+// design, because a departing unit is never stopped (step 5) until the new
+// unit is already confirmed settled (step 4's own settle check) — but the
+// new unit can never bind the resource while the old one still holds it.
+// Detected narrowly, not generally: EVERY failing unit must be NEW-THIS-
+// UPGRADE (absent from oldUnits — a unit the old digest never owned at all
+// cannot be "the same process, just crashed", so its failure is never a
+// genuine settle-check crash, only ever a bind conflict or a bad config),
+// AND at least one departing unit (one oldUnits names that newMf no longer
+// does) must still be ACTIVE. Any other shape — a SHARED unit failing, or
+// no departing unit actually holding anything — is a real crash and this
+// declines to act at all, leaving the ordinary refusal path in charge.
+//
+// Recovery itself is a single, non-looping attempt, kept deliberately
+// small per the review's own instruction: stop the departing unit(s) (a
+// rule-(2) restart — the invariant's own carve-out for a genuine version
+// upgrade, not a refusal side effect), retry `start` on the failed new
+// unit(s) once, and check is-active once more. Recovered: the caller
+// treats the settle check as having passed. Not recovered: the departing
+// unit is started again (never leave the module with NEITHER side
+// running) and the ordinary refusal path still fires.
+func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, old mount.Module, oldUnits []string, newMf *manifest.Manifest, failedUnits []string) bool {
+	oldUnitSet := make(map[string]bool, len(oldUnits))
+	for _, u := range oldUnits {
+		oldUnitSet[u] = true
+	}
+	for _, u := range failedUnits {
+		if oldUnitSet[u] {
+			return false // a SHARED unit failed — a real crash, not this class.
+		}
+	}
+
+	newUnitSet := make(map[string]bool, len(newMf.UnitNames()))
+	for _, u := range newMf.UnitNames() {
+		newUnitSet[u] = true
+	}
+	var departing []string
+	for _, u := range oldUnits {
+		if newUnitSet[u] {
+			continue
+		}
+		if active, err := systemd.IsActive(ctx, r.cfg.MountRunner, u); err == nil && active {
+			departing = append(departing, u)
+		}
+	}
+	if len(departing) == 0 {
+		return false // nothing departing is even holding anything.
+	}
+
+	for _, d := range departing {
+		if err := systemd.Action(ctx, r.cfg.MountRunner, d, systemd.Stop); err != nil {
+			r.cfg.OnError("reconciler:upgrade_port_conflict_stop", fmt.Errorf("module %s unit %s: %w", old.ID, d, err))
+		}
+	}
+
+	recovered := true
+	for _, unit := range failedUnits {
+		if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Start); err != nil {
+			recovered = false
+			continue
+		}
+		if active, err := systemd.IsActive(ctx, r.cfg.MountRunner, unit); err != nil || !active {
+			recovered = false
+		}
+	}
+
+	if recovered {
+		r.cfg.OnError("reconciler:upgrade_port_conflict_recovered", fmt.Errorf(
+			"module %s: stopped departing unit(s) %v to let new unit(s) %v bind — this is a version-upgrade restart, not a refusal", old.ID, departing, failedUnits))
+		return true
+	}
+
+	// Undo: bring the departing unit back rather than leave the module with
+	// neither side running.
+	for _, d := range departing {
+		if err := systemd.Action(ctx, r.cfg.MountRunner, d, systemd.Start); err != nil {
+			r.cfg.OnError("reconciler:upgrade_port_conflict_undo_failed", fmt.Errorf(
+				"module %s: restarting departing unit %s after a failed conflict-recovery attempt also failed — module may now be fully down: %w", old.ID, d, err))
+		}
+	}
+	return false
 }
 
 // dropInFileNames is the fixed set of per-unit drop-in files any writer in
