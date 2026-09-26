@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -12,6 +13,34 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 )
+
+// nowForUpgradeBackoff is N2's per-digest backoff clock (review round 11),
+// indirected like sleepForUpgradeSettle so tests can control it without a
+// real wait.
+var nowForUpgradeBackoff = time.Now
+
+// upgradeBackoffFor returns how long a retry of the SAME pending digest
+// must wait, given it has already been attempted `attempts` times. A
+// crash-looping binary must never be force-restarted on every single
+// reconcile tick forever, but must also never be abandoned outright — this
+// grows the wait geometrically and caps it, rather than giving up.
+func upgradeBackoffFor(attempts int) time.Duration {
+	if attempts <= 0 {
+		return 0
+	}
+	const (
+		base    = 10 * time.Second
+		maxWait = 5 * time.Minute
+	)
+	if attempts > 6 { // 10s * 2^5 = 320s already exceeds maxWait
+		attempts = 6
+	}
+	wait := base * time.Duration(uint64(1)<<uint(attempts-1))
+	if wait > maxWait {
+		wait = maxWait
+	}
+	return wait
+}
 
 // moduleUpgrade pairs a version bump's OLD (currently-attached) and NEW
 // (freshly-desired) mount.Module entries for the SAME module ID — see
@@ -111,6 +140,27 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// separate, smaller fact this still resolves from the manifest cache
 	// when Units is empty, so making it durable on the first attempt avoids
 	// re-rolling that same dice on every later one.
+	// N2 (review round 11): bound repeated retries of a crash-looping
+	// binary. old.PendingDigest/Attempts/LastAttemptUnix describe attempts
+	// already made against THIS SAME target digest before this call — the
+	// very first attempt (PendingDigest not yet set) and its first retry
+	// (Attempts==1, matching M2's own retry-after-failure test, which
+	// expects an immediate next-tick retry with no elapsed time) always
+	// proceed; only the SECOND retry onward is subject to backoff. Every
+	// skipped attempt is surfaced via noteUnconverged rather than silently
+	// dropped — PendingDigest/PendingModuleDigests stay set throughout, so
+	// the heartbeat keeps reporting the stuck upgrade the whole time.
+	if old.PendingDigest == newMod.Digest && old.PendingDigestAttempts >= 2 {
+		wait := upgradeBackoffFor(old.PendingDigestAttempts)
+		lastAttempt := time.Unix(old.PendingDigestLastAttemptUnix, 0)
+		if elapsed := nowForUpgradeBackoff().Sub(lastAttempt); elapsed < wait {
+			r.noteUnconverged("reconciler:upgrade_backoff", newMod.ID, fmt.Errorf(
+				"module %s: retry of pending digest %s backed off after %d attempts (%s since the last, %s remaining before the next) — not abandoned, a later reconcile tick retries",
+				newMod.ID, newMod.Digest, old.PendingDigestAttempts, elapsed.Round(time.Second), (wait-elapsed).Round(time.Second)))
+			return
+		}
+	}
+
 	oldUnits := oldUnitNames(old, oldMf)
 	if len(old.Units) == 0 && len(oldUnits) > 0 {
 		old.Units = oldUnits
@@ -189,7 +239,16 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// (newMod, replacing this entry, carries no PendingDigest of its own).
 	for i, m := range current.AttachedModules {
 		if m.ID == newMod.ID {
+			// N2 (review round 11): the attempt counter describes attempts
+			// against ONE specific target digest — a re-target (this attempt's
+			// digest differs from whatever was pending before, including the
+			// ordinary case of nothing pending yet) starts it over.
+			if current.AttachedModules[i].PendingDigest != newMod.Digest {
+				current.AttachedModules[i].PendingDigestAttempts = 0
+			}
 			current.AttachedModules[i].PendingDigest = newMod.Digest
+			current.AttachedModules[i].PendingDigestAttempts++
+			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
 			break
 		}
 	}

@@ -182,6 +182,22 @@ type Module struct {
 	// otherwise replaced/removed. See buildHeartbeat's own
 	// PendingModuleDigests for how this surfaces to the platform.
 	PendingDigest string `json:"PendingDigest,omitempty"`
+	// PendingDigestAttempts (N2, review round 11) counts how many times
+	// upgradeModule has actually attempted THIS SPECIFIC PendingDigest
+	// (reached the point of issuing step 4's restart), success or failure.
+	// Reset to 0 whenever PendingDigest changes — a re-target to a
+	// different digest, or a revert back to Digest itself — since the count
+	// describes attempts against one specific target only. Read by the
+	// per-digest backoff at the top of upgradeModule so a binary that
+	// crashes on every restart is not force-restarted every single
+	// reconcile tick forever.
+	PendingDigestAttempts int `json:"PendingDigestAttempts,omitempty"`
+	// PendingDigestLastAttemptUnix (N2, review round 11) is the unix-seconds
+	// timestamp of the attempt PendingDigestAttempts above counts most
+	// recently — the backoff clock's reference point. Unix seconds (not
+	// time.Time) to keep state.json's encoding for this struct uniform with
+	// its other plain scalar fields.
+	PendingDigestLastAttemptUnix int64 `json:"PendingDigestLastAttemptUnix,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

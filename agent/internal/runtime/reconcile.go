@@ -855,6 +855,27 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	for _, b := range bumps {
 		bumpIDsThisTick[b.new.ID] = true
 	}
+	// N2 (review round 11): an entry left with a PendingDigest from a
+	// failed/incomplete upgrade attempt, whose desired digest has since
+	// REVERTED back to this entry's own stable Digest, looks like NOTHING
+	// happened by either measure this function otherwise uses — Digest
+	// itself never changed (mount.Reconcile's own diff sees no bump) and
+	// the manifest content at that stable digest hasn't changed either (the
+	// stamp below still matches). Both would silently leave whatever the
+	// failed attempt broke (a crashed or half-restarted unit) exactly as it
+	// was, forever, since nothing else in this tick will ever touch this
+	// module again. Any entry reaching this reattach loop at all already
+	// has mod.Digest == its own current stable Digest (the digest-diff
+	// bump partition above claims every OTHER case), so a nonzero
+	// PendingDigest here can only mean a revert-to-stable, never a
+	// still-in-flight retry (a retry's target differs from the stable
+	// digest, so mount.Reconcile already routed it into `bumps`).
+	pendingRevertIDs := make(map[string]bool, len(current.AttachedModules))
+	for _, m := range current.AttachedModules {
+		if m.PendingDigest != "" {
+			pendingRevertIDs[m.ID] = true
+		}
+	}
 	toReattach := make(mount.ModuleStack, 0)
 	for _, mod := range desired {
 		if !attachedNow[mod.ID] {
@@ -878,7 +899,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		fresh := r.attachStamp(mod.ID, mf)
-		if current.LastAttachedManifestHashes[mod.ID] != fresh {
+		if pendingRevertIDs[mod.ID] || current.LastAttachedManifestHashes[mod.ID] != fresh {
 			toReattach = append(toReattach, mod)
 		}
 	}
@@ -1282,7 +1303,37 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			unmaterialized[mod.ID] = true
 			continue
 		}
-		r.attachModuleServices(ctx, mod, mf)
+		if pendingRevertIDs[mod.ID] {
+			// N2 (review round 11): this entry is a REVERT of a
+			// failed/incomplete upgrade attempt, not an ordinary manifest
+			// edit — the body on disk is UNCHANGED (same stable digest, same
+			// manifest content as before the failed attempt), so the
+			// ordinary attachModuleServices call below would see every unit
+			// as Skipped and, without ForceRestartActive, never actually
+			// restart one that the failed attempt left running the OLD
+			// binary in a bad state — only `start` a genuinely inactive one.
+			// Force it, exactly like upgradeModule's own step 4, then clear
+			// PendingDigest now that the stable digest is reconfirmed as the
+			// converged target.
+			if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true); err != nil {
+				r.noteUnconverged("reconciler:revert_pending_digest", mod.ID, fmt.Errorf(
+					"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
+				continue
+			}
+			for i, m := range current.AttachedModules {
+				if m.ID == mod.ID {
+					current.AttachedModules[i].PendingDigest = ""
+					current.AttachedModules[i].PendingDigestAttempts = 0
+					current.AttachedModules[i].PendingDigestLastAttemptUnix = 0
+					break
+				}
+			}
+			if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+				r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest after reverting: %w", mod.ID, err))
+			}
+		} else {
+			r.attachModuleServices(ctx, mod, mf)
+		}
 		// round 9: refresh the STORED entry's Units for a manifest-only
 		// change too (same digest, edited services) — upgradeModule's own
 		// future delta-stop for a LATER version bump of this same module

@@ -1232,6 +1232,146 @@ func TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting(t *t
 	}
 }
 
+// TestUpgradeModule_BackoffBoundsRepeatedRetries is N2's own backoff test
+// (review round 11, HIGH): a unit whose restart keeps failing must not be
+// force-restarted on every single reconcile tick forever. The very first
+// attempt and its first retry (M2's own scenario, pinned by
+// TestUpgradeModule_RetryAfterFailedRestartStillRestartsBeforeCommitting)
+// proceed immediately; from the SECOND retry on, a backed-off tick must
+// issue NO restart at all, must leave PendingDigest/Attempts untouched
+// (still visible, never silently dropped), and must resume once the
+// backoff window elapses.
+func TestUpgradeModule_BackoffBoundsRepeatedRetries(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+	runner.StubErr = map[string]error{"systemctl restart " + unit: errors.New("restart refused (test)")}
+
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
+	// Attempt 1 (tick 2, fails) and its free retry, attempt 2 (tick 3,
+	// fails) — both proceed immediately, no time advanced.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (attempt 1): %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (attempt 2): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("after attempt 2: expected PendingDigest=d2, got %q ok=%v", pd, ok)
+	}
+
+	// Tick 4: attempt 3 would be the SECOND retry — backed off, since no
+	// time has passed. No restart must be issued at all.
+	tick4Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 4 (backed off): %v", err)
+	}
+	tick4 := runner.Invocations[tick4Start:]
+	if hasSystemctlOp(tick4, "restart", unit) || hasSystemctlOp(tick4, "start", unit) {
+		t.Errorf("N2 REGRESSION: a backed-off tick must issue no start/restart at all: %v", tick4)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Errorf("N2 REGRESSION: a backed-off tick must leave PendingDigest visible (still d2), got %q ok=%v", pd, ok)
+	}
+
+	// Advance the clock past the backoff window (attempts=2 → 20s) and
+	// clear the stub error — the next tick must retry and succeed.
+	fakeNow = fakeNow.Add(30 * time.Second)
+	delete(runner.StubErr, "systemctl restart "+unit)
+	tick5Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 5 (backoff elapsed): %v", err)
+	}
+	tick5 := runner.Invocations[tick5Start:]
+	if !hasSystemctlOp(tick5, "restart", unit) {
+		t.Errorf("N2 REGRESSION: once the backoff window elapses, the next tick must retry, invocations: %v", tick5)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Errorf("expected the upgrade to finally commit to d2, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("PendingDigest must be cleared once the delayed retry commits, got %q", pd)
+	}
+}
+
+// TestUpgradeModule_RevertAfterSettleFailureRestartsAndClearsPending is N2's
+// own revert test (review round 11, HIGH; adapted from reviewer A's
+// TestR10A_RollbackAfterSettleFailureIsANoOp): a bump to d2 crashes inside
+// the settle window (a real settle-check refusal, PendingDigest=d2 left
+// set, digest stays d1). The operator then REVERTS the desired digest back
+// to d1 — the entry's own, already-stable Digest. Before N2 this was a
+// total no-op: mount.Reconcile sees no digest diff (d1 already equals d1)
+// and the manifest-only reattach's stamp check ALSO sees no diff (d1's
+// content never changed), so nothing ever restarts the unit the failed
+// attempt left dead, and PendingDigest is never cleared. The revert must
+// force some start/restart of app and must clear PendingDigest.
+func TestUpgradeModule_RevertAfterSettleFailureRestartsAndClearsPending(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// Bump to d2: app is active going in, step 4's restart itself succeeds,
+	// but the overridden settle-window sleep flips it back to inactive (no
+	// Result/ConditionResult opinion) — a genuine crash inside the settle
+	// window, exactly like TestUpgradeModule_CrashAfterRestartRefusesCommitAndLeavesOldRunning.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	appIsActiveKey := "systemctl is-active " + appUnit
+	runner.StubOutput = map[string][]byte{appIsActiveKey: []byte("active\n")}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		delete(runner.StubOutput, appIsActiveKey)
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 2 (crash inside settle window): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("tick 2: expected the settle failure to refuse the commit, m1 still at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("tick 2: expected PendingDigest=d2 after the settle failure, got %q ok=%v", pd, ok)
+	}
+
+	// Revert: the operator points the desired digest back at d1 — the
+	// entry's OWN stable digest. app is left at RecorderRunner's default
+	// ("not active") throughout tick 3, exactly as tick 2's crash left it.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	tick3Start := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 3 (revert): %v", err)
+	}
+	tick3 := runner.Invocations[tick3Start:]
+
+	if !hasSystemctlOp(tick3, "start", appUnit) && !hasSystemctlOp(tick3, "restart", appUnit) {
+		t.Errorf("N2 REGRESSION: the revert must issue SOME start/restart of app to recover it — invocations: %v", tick3)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("tick 3: expected m1 still (or again) at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); ok && pd != "" {
+		t.Errorf("N2 REGRESSION: the revert must clear PendingDigest, got %q", pd)
+	}
+}
+
 // TestUpgradeModule_PolicyRefusalLeavesOldRunningStateUnchanged covers the
 // FIRST refusal class (point 5c) plus point 5d (persistent failure across
 // several ticks stops nothing): a blocked security drop-in write for the
