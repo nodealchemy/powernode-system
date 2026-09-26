@@ -35,9 +35,25 @@ func loadModuleManifestYAML(t *testing.T, moduleDir string) *manifest.Manifest {
 	var doc struct {
 		Name     string `yaml:"name"`
 		Security struct {
-			Capabilities  []string `yaml:"capabilities"`
-			UserNamespace *bool    `yaml:"user_namespace"`
-			Privileged    bool     `yaml:"privileged"`
+			// *[]string, not []string (review F5): a YAML sequence node
+			// (including an EXPLICIT `capabilities: []`) always decodes to a
+			// non-nil pointer here, while an ABSENT key leaves the pointer
+			// nil — the same presence-vs-emptiness distinction
+			// manifest.ServiceCapabilities carries for the per-service key,
+			// now carried for the module-level ceiling too, so this reader
+			// matches what the server's own serializer would emit for either
+			// shape rather than collapsing both to "omit the key".
+			Capabilities  *[]string `yaml:"capabilities"`
+			UserNamespace *bool     `yaml:"user_namespace"`
+			Privileged    bool      `yaml:"privileged"`
+			// SeccompProfile (review F5): "pin qga cannot be refused" needs
+			// to assert qga declares NONE, which requires this reader to
+			// actually carry the field through — seccomp has no full-set-
+			// style exemption (compose.go / security_dropins.go), so a
+			// manifest that ever adds one to qga reintroduces exactly the
+			// fail-closed risk the capability/userns exemptions exist to
+			// keep qga out of.
+			SeccompProfile string `yaml:"seccomp_profile"`
 		} `yaml:"security"`
 		Services []struct {
 			Name         string   `yaml:"name"`
@@ -51,15 +67,18 @@ func loadModuleManifestYAML(t *testing.T, moduleDir string) *manifest.Manifest {
 	secCfg := map[string]any{
 		"privileged": doc.Security.Privileged,
 	}
-	if len(doc.Security.Capabilities) > 0 {
-		caps := make([]any, len(doc.Security.Capabilities))
-		for i, c := range doc.Security.Capabilities {
+	if doc.Security.Capabilities != nil {
+		caps := make([]any, len(*doc.Security.Capabilities))
+		for i, c := range *doc.Security.Capabilities {
 			caps[i] = c
 		}
 		secCfg["capabilities"] = caps
 	}
 	if doc.Security.UserNamespace != nil {
 		secCfg["user_namespace"] = *doc.Security.UserNamespace
+	}
+	if doc.Security.SeccompProfile != "" {
+		secCfg["seccomp_profile"] = doc.Security.SeccompProfile
 	}
 
 	services := make([]manifest.Service, 0, len(doc.Services))
@@ -121,6 +140,17 @@ func TestRealQgaManifest_ResolvesToFullCapabilitySetAndNoUserNamespace(t *testin
 	}
 	if policy.Privileged {
 		t.Error("qga's real manifest must NOT be privileged (see the manifest's own comment: no operator allowlist grant on every account)")
+	}
+	// PIN QGA CANNOT BE REFUSED (review F5): seccomp has NO full-set-style
+	// exemption in applyModuleSecurityDropIns — an absent SystemCallFilter=
+	// is "every syscall allowed", never equivalent to any declared profile,
+	// so a seccomp_profile on qga would make it fail-closeable in a way the
+	// capability/userns exemptions specifically exist to prevent. This
+	// guards the manifest fact the exemptions' safety argument depends on,
+	// so a future edit adding one is caught here rather than only on a live
+	// node the next time its drop-in write happens to fail.
+	if policy.SeccompProfile != "" {
+		t.Errorf("qga's real manifest must declare NO seccomp_profile (seccomp has no fail-closed exemption); got %q", policy.SeccompProfile)
 	}
 
 	writes, err := attachCapabilityWrites(mf, policy)
