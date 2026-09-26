@@ -510,6 +510,88 @@ func TestUnitCapabilities_QgaShapedManifestGrantsTheFullKnownSet(t *testing.T) {
 	}
 }
 
+// FAIL CLOSED ON A DROP-IN WRITE FAILURE (review round, IMP-caef5c00d63f
+// phase 2). AttachServicesNative enables a module's units BEFORE the
+// capability-drop-in loop runs, so a write failure with no further action
+// would leave that unit ENABLED with systemd's full default (unrestricted)
+// bounding set while the heartbeat's PivotConfinementOmitted still reports
+// capability enforcement as fully in force for pivot nodes — silently
+// unconfined, reported as confined. Forces the failure deterministically by
+// pre-creating the unit's OWN capabilities.conf drop-in directory AS A
+// REGULAR FILE, so os.MkdirAll inside WriteCapabilityDropInAt returns "not a
+// directory" — a real, if rare, failure mode (a stray file, a permission
+// issue, a full filesystem), not a synthetic one.
+func TestRenderPivotUnits_DisablesAUnitWhoseCapabilityDropInFailsToWrite(t *testing.T) {
+	sysroot := t.TempDir()
+	rec := &mount.RecorderRunner{}
+	r := newPivotReconciler(rec)
+
+	mf := hubBackendLike(t) // rails-setup, rails, chowner
+	unit := lifecycle.UnitName(mf.ID, "rails-setup")
+	dropInDir := filepath.Join(sysroot, "etc", "systemd", "system", unit+".d")
+	if err := os.MkdirAll(filepath.Dir(dropInDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The .d path exists as a FILE, not a directory — forces MkdirAll to fail.
+	if err := os.WriteFile(dropInDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
+	stack := mount.ModuleStack{{ID: mf.ID, Priority: 1}}
+	r.renderPivotUnits(context.Background(), sysroot, stack, map[string]*manifest.Manifest{mf.ID: mf}, &BootComposedBreadcrumb{})
+
+	if !containsArg(onErrors, "compose:capability_dropin") {
+		t.Errorf("expected an OnError(\"compose:capability_dropin\", ...) report, got stages: %v", onErrors)
+	}
+
+	// Fail closed: a disable call for THIS unit must follow its enable call.
+	var sawEnable, sawDisableAfterEnable bool
+	for _, inv := range rec.Invocations {
+		if inv.Name != "systemctl" {
+			continue
+		}
+		hasUnit := false
+		for _, a := range inv.Args {
+			if a == unit {
+				hasUnit = true
+			}
+		}
+		if !hasUnit {
+			continue
+		}
+		switch {
+		case containsArg(inv.Args, "enable"):
+			sawEnable = true
+		case containsArg(inv.Args, "disable") && sawEnable:
+			sawDisableAfterEnable = true
+		}
+	}
+	if !sawEnable {
+		t.Fatal("test setup problem: rails-setup was never enabled in the first place")
+	}
+	if !sawDisableAfterEnable {
+		t.Error("a unit whose capability drop-in failed to write must be DISABLED afterward (fail closed), not left enabled with the full default bounding set")
+	}
+
+	// The other units in the SAME module, whose drop-ins wrote fine, must be
+	// unaffected — this is a per-unit fail-closed, not per-module.
+	otherUnit := lifecycle.UnitName(mf.ID, "chowner")
+	if _, err := os.Stat(filepath.Join(sysroot, "etc", "systemd", "system", otherUnit+".d", "capabilities.conf")); err != nil {
+		t.Errorf("a sibling unit's own successful capability drop-in must be unaffected by rails-setup's failure: %v", err)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 // PRIVILEGED MODULES OPT OUT ENTIRELY (IMP-caef5c00d63f phase 2 follow-up).
 // Confirms neither path writes ANY capabilities.conf for a privileged
 // module's unit — not an empty/strictest one, none at all — so a privileged

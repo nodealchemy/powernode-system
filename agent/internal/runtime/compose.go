@@ -188,13 +188,9 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 	// resetting CapabilityBoundingSet AND AmbientCapabilities to the resolved
 	// per-service set — see reconcile.go's attachModule for why "always write,
 	// even when empty" is the safe default), not merely an additive ambient
-	// grant. See that function's doc for the one open risk this closing
-	// surfaced: qemu-guest-agent's manifest declares a blanket `capabilities:
-	// []` for a root-running, hypervisor-driven-exec service whose real
-	// requirement could not be established from a fixed startup sequence the
-	// way postgres/redis/vault/hub-backend/hub-worker's could — deploy this
-	// change to a pivot-boot fleet only after that manifest is corrected or
-	// the risk is explicitly accepted.
+	// grant. A drop-in write failure for one unit disables that unit (fail
+	// closed) rather than leaving it enabled with systemd's full default
+	// bounding set — see the write call's own comment below.
 	for _, mod := range stack {
 		mf := manifests[mod.ID]
 		if mf == nil {
@@ -273,9 +269,27 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			// CapabilityBoundingSet= is the strictest (and safest default)
 			// posture, and skipping the write here would silently leave the
 			// unit at systemd's full default bounding set instead.
+			//
+			// FAIL CLOSED on a write failure (review round, IMP-caef5c00d63f
+			// phase 2): AttachServicesNative above already enabled this unit
+			// (systemctl --root enable) before this loop ever runs, so a
+			// drop-in write failure — with no further action — would leave the
+			// unit ENABLED with systemd's full default bounding set while the
+			// heartbeat's PivotConfinementOmitted reports capability
+			// enforcement as fully in force. That combination (silently
+			// unconfined + reported as confined) is worse than simply not
+			// starting the unit, so best-effort DISABLE it instead — the
+			// module's other, successfully-confined units are unaffected
+			// (this is per-unit, not per-module). The disable call's own
+			// failure is reported separately and does not mask the original
+			// write error.
 			if err := security.WriteCapabilityDropInAt(sysroot, unit, unitAllow[unit]); err != nil {
 				r.cfg.OnError("compose:capability_dropin",
-					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+					fmt.Errorf("module %s unit %s: %w — disabling the unit (fail closed, not unconfined)", mod.ID, unit, err))
+				if derr := r.cfg.MountRunner.Run(ctx, "systemctl", "--root="+sysroot, "disable", unit); derr != nil {
+					r.cfg.OnError("compose:capability_dropin_fail_closed",
+						fmt.Errorf("module %s unit %s: could not disable after capability drop-in failure: %w", mod.ID, unit, derr))
+				}
 			}
 		}
 	}
