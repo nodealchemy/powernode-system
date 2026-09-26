@@ -205,6 +205,17 @@ security:
   # Set to false explicitly instead of leaving the stale value to eventually
   # apply by accident.
   user_namespace: false
+  # NO seccomp_profile here — DELIBERATE, not an oversight (review round 5,
+  # G7). Unlike the capability ceiling and user_namespace above, seccomp has
+  # NO fail-closed exemption in the agent's applyModuleSecurityDropIns
+  # (agent/internal/runtime/security_dropins.go): an absent SystemCallFilter=
+  # is "every syscall allowed", never equivalent to any declared profile, so
+  # ANY seccomp_profile added here would make qga — this self-hosted control
+  # plane's host-root recovery channel — refusable the first time its
+  # seccomp.conf drop-in failed to write. Guarded by
+  # TestRealQgaManifest_ResolvesToFullCapabilitySetAndNoUserNamespace
+  # (agent/internal/runtime/qga_manifest_capabilities_test.go), which reads
+  # this real manifest and fails if a seccomp_profile is ever added here.
 
 build:
   apt_snapshot: "20260415T000000Z"
