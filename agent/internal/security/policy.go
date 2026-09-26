@@ -168,18 +168,64 @@ func (p *Policy) dropCapabilities(ctx context.Context, runner mount.Runner) erro
 	return DropCapabilitiesExcept(ctx, runner, p.Capabilities)
 }
 
+// DropUnknownCapabilities removes any capability name p declares that this
+// agent BINARY's own KnownCapabilities map does not recognize, and returns
+// what was dropped (nil if nothing was). Callers MUST call this before
+// Validate — which no longer treats an unknown name as an error, trusting
+// that whatever reaches it has already been through this filter.
+//
+// K5b (review round 6): the version-skew constraint J5 already documented
+// on qga's manifest (a NEWER agent's grown KnownCapabilities served to an
+// OLDER agent) has a mirror-image direction Validate's old behavior made
+// actively hazardous: an OLDER agent receiving a manifest that names a
+// capability from a NEWER agent version it does not yet know rejected the
+// WHOLE module outright (Validate returned an error, refusing qga — this
+// platform's host-root recovery channel — entirely, on the strength of one
+// name it did not recognize). Dropping is NARROWER, never wider — it can
+// only shrink the resulting ceiling below what the manifest declared, so an
+// older agent silently granting something the manifest never asked for is
+// not a possible outcome here. Paired with a second effect this produces
+// for free: when a manifest's declared set is the OLDER agent's own full
+// KnownCapabilities PLUS one newer name it doesn't recognize, dropping that
+// one name collapses the declared set back down to EXACTLY the older
+// agent's KnownCapabilities — which IsFullCapabilitySet's existing EXACT
+// match already treats as full. No change to IsFullCapabilitySet's own
+// exactness guarantee was needed or made: a module declaring 38 of 41 known
+// capabilities is still not exempt, because dropping only ever REMOVES
+// entries that were never valid names in the first place, never any of the
+// 38 real (but insufficient) ones.
+//
+// "With a warning", not silence (review's own wording): the caller is
+// expected to surface `dropped` through its own diagnostic channel
+// (reconcile.go's applyModuleSecurityPolicy uses r.cfg.OnError; compose.go's
+// pivot path uses its own) — a silently narrowed ceiling would hide a real
+// manifest typo as cleanly as it hides a genuine version-skew name.
+func (p *Policy) DropUnknownCapabilities() (dropped []string) {
+	if p == nil || len(p.Capabilities) == 0 {
+		return nil
+	}
+	kept := make([]string, 0, len(p.Capabilities))
+	for _, cap := range p.Capabilities {
+		if isValidCapName(cap) {
+			kept = append(kept, cap)
+		} else {
+			dropped = append(dropped, cap)
+		}
+	}
+	p.Capabilities = kept
+	return dropped
+}
+
 // Validate sanity-checks the policy fields before Apply runs. Returns the
-// list of issues; nil means the policy is OK to apply.
+// list of issues; nil means the policy is OK to apply. Capability names are
+// NOT checked here — see DropUnknownCapabilities, which every caller must
+// run first and which handles an unknown name by dropping it (with its own
+// warning), never by refusing the whole policy.
 func (p *Policy) Validate() []error {
 	if p == nil {
 		return nil
 	}
 	var errs []error
-	for _, cap := range p.Capabilities {
-		if !isValidCapName(cap) {
-			errs = append(errs, fmt.Errorf("unknown capability: %q", cap))
-		}
-	}
 	// SeccompProfile is concatenated into a root-owned systemd drop-in by
 	// WriteSeccompDropIn. Validating it HERE (not only at the writer) is what
 	// makes the refusal loud: the reconciler calls Validate before Apply and

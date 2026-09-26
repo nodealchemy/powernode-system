@@ -246,6 +246,15 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 			continue
 		}
 		policy := buildPolicy(mf)
+		// K5b (review round 6): drop, don't refuse, a capability name this
+		// agent binary doesn't recognize (see Policy.DropUnknownCapabilities's
+		// doc — narrower, never wider; a version-skew mirror of the exemption
+		// this same loop's fail-closed comment already documents). Must run
+		// BEFORE Validate, which no longer treats an unknown name as an error.
+		if dropped := policy.DropUnknownCapabilities(); len(dropped) > 0 {
+			r.cfg.OnError("compose:unknown_capability_dropped",
+				fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from its declared ceiling (this agent version does not know them) — narrowing, never widening, what the module is confined to", mod.ID, dropped))
+		}
 
 		// Loud refusals BEFORE the unit is enabled — a module whose security
 		// block is invalid, or which requests privileged without an operator

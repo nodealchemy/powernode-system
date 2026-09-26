@@ -56,20 +56,38 @@ func TestDropCapabilitiesExcept_RejectsUnknownCap(t *testing.T) {
 	}
 }
 
-func TestPolicy_Validate_RejectsUnknownCap(t *testing.T) {
+// K5b (review round 6): Validate no longer treats an unknown capability
+// name as an error — Policy.DropUnknownCapabilities must run first and
+// silently (from Validate's perspective) narrows the ceiling instead, so an
+// older agent receiving a manifest naming a capability a newer agent
+// version added does not refuse the whole module over one name it doesn't
+// recognize. This test used to assert the OPPOSITE (RejectsUnknownCap);
+// renamed and rewritten to pin the new, deliberate behavior.
+func TestPolicy_DropUnknownCapabilities_NarrowsCeilingWithoutFailingValidate(t *testing.T) {
 	p := &Policy{Capabilities: []string{"CAP_CHOWN", "CAP_FAKE_NONSENSE"}}
-	errs := p.Validate()
-	if len(errs) == 0 {
-		t.Fatal("expected validation error for unknown cap")
+	dropped := p.DropUnknownCapabilities()
+	if len(dropped) != 1 || dropped[0] != "CAP_FAKE_NONSENSE" {
+		t.Fatalf("expected DropUnknownCapabilities to report [CAP_FAKE_NONSENSE], got %v", dropped)
 	}
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e.Error(), "CAP_FAKE_NONSENSE") {
-			found = true
-		}
+	if len(p.Capabilities) != 1 || p.Capabilities[0] != "CAP_CHOWN" {
+		t.Errorf("expected the unknown name removed IN PLACE, leaving only CAP_CHOWN, got %v", p.Capabilities)
 	}
-	if !found {
-		t.Errorf("expected error about CAP_FAKE_NONSENSE; got %v", errs)
+	if errs := p.Validate(); len(errs) != 0 {
+		t.Errorf("Validate must not error on a policy already run through DropUnknownCapabilities, got %v", errs)
+	}
+}
+
+// DropUnknownCapabilities is NARROWER ONLY — it must never widen the
+// declared ceiling, and a policy with no unknown names must be untouched
+// (nil dropped, same slice contents).
+func TestPolicy_DropUnknownCapabilities_NoOpWhenEverythingIsKnown(t *testing.T) {
+	p := &Policy{Capabilities: []string{"CAP_CHOWN", "CAP_NET_ADMIN"}}
+	dropped := p.DropUnknownCapabilities()
+	if dropped != nil {
+		t.Errorf("expected nil dropped when every name is known, got %v", dropped)
+	}
+	if len(p.Capabilities) != 2 {
+		t.Errorf("expected both known capabilities preserved, got %v", p.Capabilities)
 	}
 }
 
