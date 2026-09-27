@@ -5240,3 +5240,134 @@ func TestReconcile_RevokedPrivilegedRefusalWritesRestrictiveCapabilityDropIn(t *
 		t.Errorf("T3: expected an EMPTY CapabilityBoundingSet/AmbientCapabilities (no capability names at all), got: %s", body)
 	}
 }
+
+// TestUpgradeModule_IdentityRenderFailureRefusesBeforeRestart is T4 (final
+// review round 2, MEDIUM): nothing exercised upgrade.go's own S1/T1 pre-
+// step-4 identity refusal branch — mutating it to `_ = r.applyIdentityAndSudoers(...)`
+// left the whole suite green. A genuine write failure there (not a skipped
+// tick-set) must refuse before step 4 exactly like a step-2/step-3 refusal:
+// no restart, the step-2 drop-in snapshot restored, and the attempt counted
+// against backoff.
+func TestUpgradeModule_IdentityRenderFailureRefusesBeforeRestart(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	capPath := filepath.Join(dropInRoot, appUnit+".d", "capabilities.conf")
+	preAttemptState, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities.conf after pass 1: %v", err)
+	}
+
+	// d2 declares a DIFFERENT capability set than d1 — step 2 will actually
+	// WRITE it to disk before the identity render below refuses, so a
+	// byte-identical comparison against preAttemptState after the refusal
+	// proves restoreDropInSnapshot genuinely ran, not merely that step 2
+	// never wrote anything new.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN", "CAP_NET_BIND_SERVICE"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	origIdentity := applyIdentity
+	applyIdentity = func(*etcidentity.Set) error { return errors.New("simulated identity write failure") }
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	preInvocations := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (identity render fails): %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) || hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) {
+		t.Errorf("T4: a failed identity render must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+	gotBody, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities.conf after refusal: %v", err)
+	}
+	if string(gotBody) != string(preAttemptState) {
+		t.Errorf("T4: expected capabilities.conf restored byte-identical to pre-attempt state, got:\n%s\nwant:\n%s", gotBody, preAttemptState)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	found := false
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" {
+			found = true
+			if m.PendingDigestAttempts < 1 {
+				t.Errorf("T4: expected the identity-render refusal to count against backoff (PendingDigestAttempts), got %d", m.PendingDigestAttempts)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("m1 missing from state entirely")
+	}
+}
+
+// TestUpgradeModule_SkippedTickIdentityRefusesBeforeRestart is T4's second
+// cause (final review round 2, MEDIUM): "after T1 lands, this same branch
+// also covers the 'attached manifest unresolvable' refusal" —
+// tickIdentityRenderSkipped, exercised here through RunOnce's OWN bump loop
+// (not AttachOne, which TestAttachOne_UnresolvableAttachedManifestRefusesBeforeRestart
+// already covers) by making a SECOND attached module's manifest genuinely
+// unresolvable this tick — no fresh fetch, no cache, no breadcrumb, no
+// attached snapshot — which is exactly mustSkipRender's own gate, upstream
+// of the field this branch reads.
+func TestUpgradeModule_SkippedTickIdentityRefusesBeforeRestart(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
+		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach m1 + m2): %v", err)
+	}
+
+	// m2's manifest becomes genuinely unresolvable: no fresh fetch (404), no
+	// on-disk cache, no attached snapshot, no breadcrumb.
+	if client.statuses == nil {
+		client.statuses = map[string]int{}
+	}
+	client.statuses["/api/v1/system/node_api/modules/m2"] = 404
+	delete(client.responses, "/api/v1/system/node_api/modules/m2")
+	if err := os.RemoveAll(filepath.Join(manifestRoot, "m2")); err != nil {
+		t.Fatalf("RemoveAll m2 manifest cache: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	preInvocations := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (m2 unresolvable, m1 bumping): %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("expected m1 to stay refused at d1 while m2's manifest is unresolvable, got digest=%q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) || hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) {
+		t.Errorf("T4: a skipped tick-identity render must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == "m1" && m.PendingDigestAttempts < 1 {
+			t.Errorf("T4: expected the skipped-tick-identity refusal to count against backoff (PendingDigestAttempts), got %d", m.PendingDigestAttempts)
+		}
+	}
+}
