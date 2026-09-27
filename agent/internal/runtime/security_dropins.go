@@ -159,22 +159,6 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 	for _, svc := range mf.Services {
 		unit := lifecycle.UnitName(moduleID, svc.Name)
 
-		// X6 (IMP-caef5c00d63f round X, HIGH, B1): run BEFORE and
-		// INDEPENDENTLY of every other write/remove below, for every unit
-		// regardless of posture (privileged or not — the legacy file is
-		// stale cruft either way, same reasoning W3 already applied).
-		// Best-effort like the privileged branch's own removeSeccomp/
-		// removeCapability calls: a failure here is reported but NEVER
-		// fails the unit closed and never discards another call's own
-		// changed=true — merging it into the primary capability write's own
-		// error (the pre-X6 shape) is exactly what let a successful
-		// narrowing write get thrown away by an unrelated cleanup failure.
-		if changed, err := funcs.removeLegacyAmbientCapability(unit); err != nil {
-			onError("legacy_ambient_capability_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
-		} else {
-			markChanged(unit, changed)
-		}
-
 		if changed, err := funcs.userNamespace(unit, policy.UserNamespace); err != nil {
 			onError("userns_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 			if policy.UserNamespace {
@@ -193,6 +177,24 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 			// failure is reported but never fails the unit closed — unlike
 			// a write failure, it cannot leave the unit MORE exposed than
 			// its manifest declares.
+			//
+			// X7 (IMP-caef5c00d63f round X, LOW, A7): deliberately does NOT
+			// run removeLegacyAmbientCapability here, unlike every other
+			// posture (see the non-privileged path below). A NON-ROOT
+			// privileged unit (traefik binding :80 is the canonical case)
+			// can be relying on the LEGACY ambient-capabilities.conf's own
+			// AmbientCapabilities= as its only remaining source of a real
+			// capability grant: removeCapability just above deletes the
+			// CURRENT-format capabilities.conf entirely for a privileged
+			// unit (systemd's bare default bounding set, correct for a
+			// ROOT-run unit but empty ambient for a non-root one) — pulling
+			// the legacy file too, in the SAME pass, would strip both
+			// sources of the grant at once with no remaining drop-in to
+			// fall back on. Removing capabilities.conf but leaving a
+			// pre-existing legacy file in place is the safer posture here;
+			// W3/X6's cleanup still applies once the unit is no longer
+			// privileged (the non-privileged path below runs on every
+			// later tick that finds it so).
 			if changed, err := funcs.removeSeccomp(unit); err != nil {
 				onError("seccomp_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 			} else {
@@ -204,6 +206,22 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 				markChanged(unit, changed)
 			}
 			continue
+		}
+
+		// X6 (IMP-caef5c00d63f round X, HIGH, B1): run BEFORE and
+		// INDEPENDENTLY of the capability write below, for every
+		// NON-privileged unit — see X7's own comment above for why the
+		// privileged branch skips this. Best-effort like the privileged
+		// branch's own removeSeccomp/removeCapability calls: a failure here
+		// is reported but NEVER fails the unit closed and never discards
+		// another call's own changed=true — merging it into the primary
+		// capability write's own error (the pre-X6 shape) is exactly what
+		// let a successful narrowing write get thrown away by an unrelated
+		// cleanup failure.
+		if changed, err := funcs.removeLegacyAmbientCapability(unit); err != nil {
+			onError("legacy_ambient_capability_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+		} else {
+			markChanged(unit, changed)
 		}
 
 		if policy.SeccompProfile != "" {
