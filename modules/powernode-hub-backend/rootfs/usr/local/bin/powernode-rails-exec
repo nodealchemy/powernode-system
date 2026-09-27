@@ -32,7 +32,8 @@
 #      first boot and sources (`set -a`) for everything else
 #      (SECRET_KEY_BASE, the AR encryption keys, JWT_*,
 #      CREDENTIAL_ENCRYPTION_KEY_DEFAULT, POWERNODE_CA_LOCAL_DIR). This
-#      wrapper sources that same file the same way.
+#      wrapper sources that same file the same way — but see the SECURITY
+#      note below for WHEN.
 #
 # RUNS AS $RAILS_USER, never as root (review round, MEDIUM): a bare
 # `bundle exec` run directly as root would leave root-owned tmp/log
@@ -43,6 +44,21 @@
 # rather than trying to sandbox a root bundle invocation the way
 # rails-setup.sh's re-lock section must. A caller that is already
 # $RAILS_USER skips the drop (nothing to drop).
+#
+# SECURITY (second review round, MEDIUM — same escalation class as
+# rails-setup.sh's HIGH finding): an earlier revision of this script
+# sourced $SECRETS_FILE (`set -a; . "$SECRETS_FILE"; set +a`) BEFORE
+# dropping privileges, i.e. AS ROOT. $SECRETS_FILE is rails-owned,
+# rails-writable state — `.` sourcing executes its contents as ARBITRARY
+# SHELL, not just variable assignment, so a compromised/buggy rails
+# process could inject a command there and have root run it the very
+# next time an operator used this wrapper (or, more subtly, override
+# $needs_runuser/$PATH/etc. before the drop even happens). Fixed by
+# deciding identity and validating everything FIRST, using only
+# hardcoded/manifest values as root, and sourcing $SECRETS_FILE only
+# INSIDE the command handed to `runuser` — root itself never reads its
+# contents as executable shell. A caller that is already $RAILS_USER
+# sources it directly (no escalation risk there: same trust level).
 #
 # Usage: powernode-rails-exec <bundle-exec-args...>
 #   e.g. powernode-rails-exec rails console
@@ -60,6 +76,8 @@ else
 fi
 SECRETS_FILE="$STATE_DIR/backend-default.conf"
 
+# Identity decision FIRST, before anything privileged or rails-influenced
+# runs (see the SECURITY note above).
 caller_user="$(id -un)"
 needs_runuser=1
 if [ "$caller_user" = "$RAILS_USER" ]; then
@@ -85,6 +103,8 @@ fi
 # Manifest env (systemd Environment=, not the generated secrets file --
 # see this script's header for why). Kept in sync BY HAND with
 # modules/powernode-hub-backend/manifest.yaml's rails `env:` block.
+# Literal hardcoded values only -- safe to set as root, unlike anything
+# read from $SECRETS_FILE.
 export RAILS_ENV=production
 export RAILS_LOG_TO_STDOUT=1
 export DATABASE_URL="postgres://powernode@localhost:5432/powernode_production"
@@ -94,20 +114,23 @@ export CACHE_STORE=memory_store
 export QUEUE_ADAPTER=async
 export POWERNODE_CA_MODE=local
 
-# Everything backend-default.conf carries (SECRET_KEY_BASE, the AR
-# encryption keys, JWT_*, CREDENTIAL_ENCRYPTION_KEY_DEFAULT,
-# POWERNODE_CA_LOCAL_DIR, ...) -- `set -a` so every assignment in the
-# file is exported, exactly as rails-start.sh's own `. "$SECRETS_FILE"`
-# does.
-set -a
-# shellcheck disable=SC1090
-. "$SECRETS_FILE"
-set +a
-
-# Same vendored-gem resolution rails-start.sh uses at runtime.
+# Same vendored-gem resolution and cache location rails-start.sh uses at
+# runtime.
 export BUNDLE_GEMFILE="$RAILS_DIR/Gemfile"
 export BUNDLE_PATH="$STATE_DIR/vendor/bundle"
 export BUNDLE_APP_CONFIG="$STATE_DIR/.bundle"
+export HOME="$STATE_DIR"
+export BOOTSNAP_CACHE_DIR="$STATE_DIR/bootsnap"
+
+# Sanitize inherited caller env that could otherwise leak into (or
+# silently override) the resolution above (review round) -- unset BEFORE
+# any drop, via `runuser -p`, so the dropped child never sees them
+# either. RUBYOPT/GEM_* can redirect which ruby/gems actually load;
+# leftover BUNDLE_* from the caller's own shell (a different app, a
+# different bundle invocation) could otherwise win over -- or conflict
+# with -- the exports just above.
+unset RUBYOPT GEM_HOME GEM_PATH GEM_ROOT 2>/dev/null || true
+unset BUNDLE_WITHOUT BUNDLE_FROZEN BUNDLE_DEPLOYMENT BUNDLE_BIN 2>/dev/null || true
 
 cd "$RAILS_DIR"
 
@@ -115,8 +138,26 @@ if [ "$needs_runuser" = "1" ]; then
   # `-p`/`--preserve-environment`: without it, runuser resets the
   # environment the same way `su` (without `-`) partially does, which
   # would drop every export above right before the command that needs
-  # them.
-  exec runuser -u "$RAILS_USER" -p -- /usr/local/bin/bundle exec "$@"
+  # them. $SECRETS_FILE is sourced HERE, inside the command runuser
+  # actually executes as $RAILS_USER -- never by this (root) process
+  # itself; see the SECURITY note above. `_` is the placeholder $0 for
+  # the inline script; "$1" is $SECRETS_FILE, and "$@" after the `shift`
+  # is this wrapper's own original arguments.
+  exec runuser -u "$RAILS_USER" -p -- bash -c '
+    set -a
+    # shellcheck disable=SC1090
+    . "$1"
+    set +a
+    shift
+    exec /usr/local/bin/bundle exec "$@"
+  ' _ "$SECRETS_FILE" "$@"
 else
+  # Already $RAILS_USER -- no privilege boundary crossed, so sourcing
+  # $SECRETS_FILE directly in this process carries no escalation risk
+  # (same trust level as the file's own owner).
+  set -a
+  # shellcheck disable=SC1090
+  . "$SECRETS_FILE"
+  set +a
   exec /usr/local/bin/bundle exec "$@"
 fi

@@ -334,6 +334,38 @@ fi
 #     reproduced live (2026-09-27) with this exact isolation, byte-for-
 #     byte identical to the real lockfile.
 #
+#     SECOND REVIEW ROUND — two more HIGH findings in the isolation fix
+#     itself, both against the corrected version below:
+#
+#     HIGH #1 (mode): `mktemp` creates the temp lockfile 0600. `mv -f`
+#     installs it with whatever mode it already had — a 0600 result,
+#     every boot, since the overlay this lockfile lives on resets. rails
+#     reads the REAL Gemfile.lock today only via the CAP_DAC_OVERRIDE it
+#     still inherits (see the NON-FATAL note below), and
+#     powernode-rails-exec (runuser, no elevated capabilities at all)
+#     already cannot read a 0600 root-owned file — a 0600 result here
+#     would have silently broken both the moment CAP_DAC_OVERRIDE stops
+#     covering it. Fixed by `chmod --reference=`/`chown --reference=`
+#     against the CURRENT Gemfile.lock right before the swap, with a
+#     literal `chmod 0644` fallback if the reference form can't read the
+#     original for some reason.
+#
+#     HIGH #2 (resolves from an EMPTY lock): `--lockfile=$tmp_lockfile`
+#     told Bundler to read the LOCKED STATE from that path — and
+#     `mktemp` leaves it EMPTY. Reproduced live: against the isolated,
+#     empty BUNDLE_PATH above, bundler 2.7 either fails outright
+#     ("Could not find gem 'rails (~> 8.1.2)' in locally installed
+#     gems") or, depending on what's in the vendored gem cache, silently
+#     RE-RESOLVES FROM SCRATCH — different gem versions than the real
+#     app is running, CHECKSUMS dropped. Fixed by seeding the temp file
+#     with the CURRENT Gemfile.lock's content (`cp -p`, which also
+#     mostly closes HIGH #1 as a side effect — kept as an explicit step
+#     anyway, see above) BEFORE calling `bundle lock --local`, so
+#     Bundler resolves from the real locked state, offline, exactly as
+#     intended. Verified live: with this seed, an empty BUNDLE_PATH
+#     produces the expected 050220ab, and a second run reports "already
+#     matches" with no temp file left behind either time.
+#
 #     `bundle check` is DROPPED (review round). It hit the identical
 #     gemspec-eval path against the SAME rails-owned BUNDLE_PATH the lock
 #     step used to — the same escalation — and once that path moved to
@@ -472,7 +504,17 @@ relock_gemfile_for_this_node() {
 
   before="$(path_gems_in_lock || true)"
 
-  if ! (cd "$RAILS_DIR" && timeout 120 "$BUNDLE_BIN" lock --local --lockfile="$tmp_lockfile"); then
+  # SEED the temp lockfile from the CURRENT lock before resolving (HIGH
+  # #2, see this section's header) -- `cp -p` preserves mode/ownership
+  # too, which mostly closes HIGH #1 as a side effect (the explicit
+  # chmod/chown --reference below still runs regardless, in case
+  # bundler's own write recreates rather than truncates the file).
+  if ! cp -p "$RAILS_DIR/Gemfile.lock" "$tmp_lockfile"; then
+    echo "[rails-setup] WARNING: could not seed the temp lockfile from the current Gemfile.lock -- skipping the Gemfile.lock re-lock (see this section's header)" >&2
+    return 1
+  fi
+
+  if ! (cd "$RAILS_DIR" && timeout -k 10 120 "$BUNDLE_BIN" lock --local --lockfile="$tmp_lockfile"); then
     echo "[rails-setup] WARNING: bundle lock --local failed or timed out -- Gemfile.lock may still disagree with this node's extension composition. rails currently still holds the module's capability ceiling and can repair this itself on its own Bundler.setup (see this section's header) -- but that stops being a safety net once rails' capabilities are narrowed to []." >&2
     return 1
   fi
@@ -482,12 +524,22 @@ relock_gemfile_for_this_node() {
     return 0
   fi
 
-  mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"
+  # HIGH #1 (see this section's header): match the ORIGINAL lockfile's
+  # mode and owner, not whatever mktemp/bundler left the temp file with.
+  chmod --reference="$RAILS_DIR/Gemfile.lock" "$tmp_lockfile" 2>/dev/null || chmod 0644 "$tmp_lockfile"
+  chown --reference="$RAILS_DIR/Gemfile.lock" "$tmp_lockfile" 2>/dev/null || true
+
+  if ! mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"; then
+    echo "[rails-setup] WARNING: bundle resolved a new Gemfile.lock but could not install it (mv failed) -- Gemfile.lock is unchanged" >&2
+    return 1
+  fi
   after="$(path_gems_in_lock || true)"
   echo "[rails-setup] re-locked Gemfile.lock for this node's extension composition. PATH gems before:"
   echo "${before:-<none>}" | sed 's/^/[rails-setup]   /'
   echo "[rails-setup] PATH gems after:"
   echo "${after:-<none>}" | sed 's/^/[rails-setup]   /'
+  rm -rf "$scratch"
+  trap - RETURN
 }
 
 relock_gemfile_for_this_node || true

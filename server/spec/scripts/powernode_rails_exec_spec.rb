@@ -80,16 +80,59 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
     expect(rails_env_block).to match(/POWERNODE_CA_MODE: "local"/)
   end
 
-  it "sources backend-default.conf with set -a, the same way rails-start.sh does" do
-    expect(script).to match(/^set -a$/)
-    expect(script).to match(/^\. "\$SECRETS_FILE"$/)
-    expect(script).to match(/^set \+a$/)
-  end
-
-  it "resolves BUNDLE_* the same way rails-start.sh does at runtime" do
+  it "resolves BUNDLE_* the same way rails-start.sh does at runtime, plus HOME and BOOTSNAP_CACHE_DIR (review round)" do
     expect(script).to match(/export BUNDLE_GEMFILE="\$RAILS_DIR\/Gemfile"/)
     expect(script).to match(/export BUNDLE_PATH="\$STATE_DIR\/vendor\/bundle"/)
     expect(script).to match(/export BUNDLE_APP_CONFIG="\$STATE_DIR\/\.bundle"/)
+    expect(script).to match(/export HOME="\$STATE_DIR"/)
+    expect(script).to match(/export BOOTSNAP_CACHE_DIR="\$STATE_DIR\/bootsnap"/)
+  end
+
+  it "unsets inherited caller env that could leak into or override the resolution above (review round)" do
+    expect(script).to match(/unset RUBYOPT GEM_HOME GEM_PATH GEM_ROOT/)
+    expect(script).to match(/unset BUNDLE_WITHOUT BUNDLE_FROZEN BUNDLE_DEPLOYMENT BUNDLE_BIN/)
+  end
+
+  describe "sources $SECRETS_FILE only AFTER the privilege drop (second review round, MEDIUM)" do
+    it "sources it directly ONLY in the already-RAILS_USER branch -- exactly once, textually" do
+      # `. "$1"` (inside the runuser payload, sourcing the PLACEHOLDER
+      # argument) is a separate, deliberately different literal from
+      # `. "$SECRETS_FILE"` (sourcing the real path directly) -- this
+      # counts only the latter. More than one occurrence would mean root
+      # is sourcing rails-writable state directly somewhere outside the
+      # already-dropped else branch.
+      direct_source_count = script.scan(/^\s*\. "\$SECRETS_FILE"$/).size
+      expect(direct_source_count).to eq(1),
+        "expected exactly one direct `. \"$SECRETS_FILE\"` (the already-RAILS_USER branch), found #{direct_source_count}"
+    end
+
+    it "the identity decision and every hardcoded/manifest export happen BEFORE either branch touches $SECRETS_FILE" do
+      # Search from AFTER the shebang/header comment block (set -euo
+      # pipefail is the first real line of code) -- the header's own
+      # prose quotes `. "$SECRETS_FILE"` while describing what an
+      # EARLIER revision did wrong, and a plain `.index` would find that
+      # mention first, not the real code.
+      code_start         = script.index("set -euo pipefail")
+      identity_idx       = script.index('caller_user="$(id -un)"', code_start)
+      hardcoded_env_idx  = script.index("export RAILS_ENV=production", code_start)
+      runuser_idx        = script.index("exec runuser", code_start)
+      direct_source_idx  = script.index('. "$SECRETS_FILE"', code_start)
+      expect([ code_start, identity_idx, hardcoded_env_idx, runuser_idx, direct_source_idx ]).to all(be_a(Integer))
+      expect(identity_idx).to be < hardcoded_env_idx
+      expect(hardcoded_env_idx).to be < runuser_idx
+      expect(hardcoded_env_idx).to be < direct_source_idx
+    end
+
+    it "sources it INSIDE the runuser payload via the placeholder arg, not the literal path, when a drop is needed" do
+      expect(script).to match(/exec runuser -u "\$RAILS_USER" -p -- bash -c '/)
+      payload = script[/exec runuser -u "\$RAILS_USER" -p -- bash -c '(.*?)' _ "\$SECRETS_FILE" "\$@"/m, 1]
+      expect(payload).not_to be_nil
+      expect(payload).to match(/set -a/)
+      expect(payload).to match(/\.\s+"\$1"/)
+      expect(payload).to match(/set \+a/)
+      expect(payload).to match(/shift/)
+      expect(payload).to match(/exec \/usr\/local\/bin\/bundle exec "\$@"/)
+    end
   end
 
   it "derives STATE_DIR the same way rails-setup.sh and rails-start.sh do (mountpoint -q /persist)" do
@@ -105,8 +148,8 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
       expect(script).to match(/command -v runuser.*>\/dev\/null 2>&1.*\n.*runuser is not available/)
     end
 
-    it "execs via `runuser -u \"$RAILS_USER\"` with environment preserved, not a bare bundle exec, when a drop is needed" do
-      expect(script).to match(/exec runuser -u "\$RAILS_USER" -p -- \/usr\/local\/bin\/bundle exec "\$@"/)
+    it "execs via `runuser -u \"$RAILS_USER\" -p` (environment preserved) when a drop is needed, not a bare bundle exec" do
+      expect(script).to match(/exec runuser -u "\$RAILS_USER" -p -- bash -c '/)
     end
 
     it "execs bundle directly, without runuser, only when the caller already IS RAILS_USER" do
@@ -166,6 +209,85 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
       out, err, status = Open3.capture3("bash", "-c", snippet)
       expect(status.success?).to be(false), "expected a refusal, got: #{out} / #{err}"
       expect(err).to include("must run as root")
+    end
+  end
+
+  # Genuinely RUNS the real script (with RAILS_DIR/STATE_DIR substituted
+  # to fixtures, and `id`/`runuser`/bundle stubbed via PATH) end-to-end,
+  # proving the second-review-round MEDIUM fix by observing where a
+  # SIDE EFFECT happens, not by reading the source for the right shape.
+  # The fixture SECRETS_FILE is itself executable shell (exactly what
+  # sourcing it means) that writes a DIFFERENT marker depending on
+  # whether a "privilege already dropped" marker exists yet -- the stub
+  # `runuser` writes that marker before running its payload, the same
+  # order a real drop would impose. If root ever sourced the real
+  # secrets file directly, the "sourced as root" marker would appear
+  # instead.
+  describe "does not source $SECRETS_FILE as root (second review round, MEDIUM), actually run" do
+    let(:runnable_body) do
+      script[/SECRETS_FILE="\$STATE_DIR\/backend-default\.conf"\n.*/m]
+    end
+
+    it "the extraction itself found the real runnable body (sanity-checks the extraction, not the script)" do
+      expect(runnable_body).not_to be_nil
+      expect(runnable_body).to include("exec runuser")
+    end
+
+    it "sources the secrets file's shell ONLY after the stub runuser's own drop marker exists" do
+      Dir.mktmpdir do |dir|
+        rails_dir = File.join(dir, "server")
+        stub_dir = File.join(dir, "stub-bin")
+        FileUtils.mkdir_p(rails_dir)
+        FileUtils.mkdir_p(stub_dir)
+
+        dropped_marker         = File.join(dir, "dropped-marker")
+        sourced_as_root_marker = File.join(dir, "sourced-as-root")
+        sourced_dropped_marker = File.join(dir, "sourced-dropped")
+
+        secrets_file = File.join(dir, "backend-default.conf")
+        File.write(secrets_file, <<~CONF)
+          SECRET_KEY_BASE=fake
+          if [ -f #{dropped_marker} ]; then
+            touch #{sourced_dropped_marker}
+          else
+            touch #{sourced_as_root_marker}
+          fi
+        CONF
+
+        File.write(File.join(stub_dir, "id"), <<~STUB)
+          #!/bin/bash
+          if [ "$1" = "-un" ]; then echo "root"; fi
+        STUB
+        # Simulates the drop: touches the marker BEFORE running the real
+        # payload, the same order a genuine privilege drop imposes.
+        File.write(File.join(stub_dir, "runuser"), <<~STUB)
+          #!/bin/bash
+          touch #{dropped_marker}
+          shift 4
+          exec "$@"
+        STUB
+        File.write(File.join(stub_dir, "bundle"), <<~STUB)
+          #!/bin/bash
+          exit 0
+        STUB
+        %w[id runuser bundle].each { |f| FileUtils.chmod(0o755, File.join(stub_dir, f)) }
+
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_USER=powernode-rails
+          RAILS_DIR=#{rails_dir}
+          STATE_DIR=#{dir}
+          #{runnable_body.gsub('/usr/local/bin/bundle', "#{stub_dir}/bundle")}
+        BASH
+        env = { "PATH" => "#{stub_dir}:#{ENV.fetch("PATH", nil)}" }
+        _out, err, status = Open3.capture3(env, "bash", "-c", snippet, "--", "rails", "console")
+
+        expect(status.success?).to be(true), "script aborted: #{err}"
+        expect(File.exist?(sourced_as_root_marker)).to be(false),
+          "the secrets file's shell ran BEFORE the drop marker existed -- root sourced rails-writable state directly"
+        expect(File.exist?(sourced_dropped_marker)).to be(true),
+          "the secrets file's shell never ran at all inside the dropped context"
+      end
     end
   end
 end

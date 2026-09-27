@@ -2100,12 +2100,49 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(relock_code_lines).to match(/mv -f "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"/)
     end
 
-    it "wraps the resolve in `timeout 120` -- a oneshot has no systemd start timeout of its own" do
-      expect(relock_code_lines).to match(/timeout 120 "\$BUNDLE_BIN" lock --local/)
+    it "seeds the temp lockfile from the CURRENT lock (cp -p) BEFORE resolving -- second review round, HIGH #2" do
+      expect(relock_code_lines).to match(/cp -p "\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/),
+        "resolving `--lockfile=` against an EMPTY temp file (mktemp's default) makes bundler fail outright or " \
+        "re-resolve from scratch against the isolated, empty BUNDLE_PATH -- it must be seeded with the CURRENT " \
+        "lock's content first"
+      seed_idx = relock_code_lines.index('cp -p "$RAILS_DIR/Gemfile.lock" "$tmp_lockfile"')
+      lock_idx = relock_code_lines.index("bundle lock --local")
+      expect(seed_idx).not_to be_nil
+      expect(lock_idx).not_to be_nil
+      expect(seed_idx).to be < lock_idx, "must seed the temp lockfile before calling bundle lock, not after"
     end
 
-    it "cleans up its scratch dir and temp lockfile on every return, via a RETURN trap" do
+    it "matches the ORIGINAL lockfile's mode and owner before the swap -- second review round, HIGH #1" do
+      expect(relock_code_lines).to match(/chmod --reference="\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/),
+        "mktemp creates the temp file 0600; mv installs it with whatever mode it already had -- rails reads the " \
+        "real lockfile only via CAP_DAC_OVERRIDE today, and powernode-rails-exec (no elevated capabilities) " \
+        "already cannot read a 0600 root-owned file at all"
+      expect(relock_code_lines).to match(/chmod 0644 "\$tmp_lockfile"/), "a literal fallback if --reference can't read the original"
+      expect(relock_code_lines).to match(/chown --reference="\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/)
+
+      reference_idx = relock_code_lines.index('chmod --reference="$RAILS_DIR/Gemfile.lock" "$tmp_lockfile"')
+      mv_idx        = relock_code_lines.index('mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"')
+      expect(reference_idx).not_to be_nil
+      expect(mv_idx).not_to be_nil
+      expect(reference_idx).to be < mv_idx, "mode/owner must be fixed BEFORE the swap, not after"
+    end
+
+    it "a failed mv does not log \"re-locked\" -- checks mv's own exit status (nit)" do
+      expect(relock_code_lines).to match(/if ! mv -f "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"; then/)
+      mv_check_idx    = relock_code_lines.index('if ! mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"; then')
+      relocked_log_idx = relock_code_lines.index("re-locked Gemfile.lock")
+      expect(mv_check_idx).not_to be_nil
+      expect(relocked_log_idx).not_to be_nil
+      expect(mv_check_idx).to be < relocked_log_idx, "the mv guard must wrap the success log, not follow it unconditionally"
+    end
+
+    it "wraps the resolve in `timeout -k 10 120` -- a oneshot has no systemd start timeout of its own (nit: -k)" do
+      expect(relock_code_lines).to match(/timeout -k 10 120 "\$BUNDLE_BIN" lock --local/)
+    end
+
+    it "cleans up its scratch dir and temp lockfile on every return, via a RETURN trap, and disarms it on the success path (nit)" do
       expect(relock_code_lines).to match(/trap 'rm -rf "\$scratch"; rm -f "\$tmp_lockfile"' RETURN/)
+      expect(relock_code_lines).to match(/trap - RETURN/)
     end
 
     it "is loud but non-fatal: a lock failure warns and continues, never aborts the script" do
@@ -2337,6 +2374,9 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
           # difference that was never really there.
           resolved_fixture = File.join(dir, "resolved.lock")
           File.write(resolved_fixture, lock_contents)
+          # Asserts it received the CURRENT lock's content at --lockfile=
+          # time, not an empty file -- this is exactly what would have
+          # caught HIGH #2 (resolving from an empty temp lockfile).
           stub = <<~STUB
             #!/bin/bash
             for arg in "$@"; do
@@ -2344,6 +2384,14 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
                 --lockfile=*) lockfile="${arg#--lockfile=}" ;;
               esac
             done
+            if [ ! -s "$lockfile" ]; then
+              echo "STUB: --lockfile was EMPTY at invocation time -- not seeded from the current lock" >&2
+              exit 1
+            fi
+            if ! cmp -s "$lockfile" #{File.join(rails_dir, "Gemfile.lock")}; then
+              echo "STUB: --lockfile did not contain the CURRENT lock's content at invocation time" >&2
+              exit 1
+            fi
             cp #{resolved_fixture} "$lockfile"
             exit 0
           STUB
@@ -2383,10 +2431,20 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         Dir.mktmpdir do |dir|
           rails_dir = File.join(dir, "server")
           FileUtils.mkdir_p(rails_dir)
-          File.write(File.join(rails_dir, "Gemfile.lock"), old_contents)
+          gemfile_lock_path = File.join(rails_dir, "Gemfile.lock")
+          File.write(gemfile_lock_path, old_contents)
+          # The ORIGINAL's mode -- deliberately NOT 0600 (what mktemp
+          # would leave the temp file at), so a regression of HIGH #1
+          # would be visible: 0644, matching what root's own umask
+          # normally leaves a plain `File.open(..., "w")`-created file
+          # at, and what rails actually needs to be able to read it via.
+          FileUtils.chmod(0o644, gemfile_lock_path)
+          original_uid = File.stat(gemfile_lock_path).uid
+          original_gid = File.stat(gemfile_lock_path).gid
 
           # `cp` a real fixture file -- see the cmp-equal test above for why
-          # not a nested heredoc.
+          # not a nested heredoc. Also asserts it received the CURRENT
+          # lock's content at --lockfile= time (would have caught HIGH #2).
           resolved_fixture = File.join(dir, "resolved.lock")
           File.write(resolved_fixture, new_contents)
           stub = <<~STUB
@@ -2396,6 +2454,14 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
                 --lockfile=*) lockfile="${arg#--lockfile=}" ;;
               esac
             done
+            if [ ! -s "$lockfile" ]; then
+              echo "STUB: --lockfile was EMPTY at invocation time -- not seeded from the current lock" >&2
+              exit 1
+            fi
+            if ! cmp -s "$lockfile" #{gemfile_lock_path}; then
+              echo "STUB: --lockfile did not contain the CURRENT lock's content at invocation time" >&2
+              exit 1
+            fi
             cp #{resolved_fixture} "$lockfile"
             exit 0
           STUB
@@ -2411,7 +2477,14 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
           expect(out).to include("RELOCK_EXIT=0")
           expect(out).to include("re-locked Gemfile.lock")
           expect(out).to include("../extensions/system/server")
-          expect(File.read(File.join(rails_dir, "Gemfile.lock"))).to eq(new_contents)
+          expect(File.read(gemfile_lock_path)).to eq(new_contents)
+
+          final_stat = File.stat(gemfile_lock_path)
+          expect(final_stat.mode & 0o777).to eq(0o644),
+            "expected the swapped-in lockfile to keep the ORIGINAL's 0644 mode, got #{(final_stat.mode & 0o777).to_s(8)} " \
+            "-- mktemp creates the temp file 0600, and mv installs it with whatever mode it already had (HIGH #1)"
+          expect(final_stat.uid).to eq(original_uid), "owner changed across the swap"
+          expect(final_stat.gid).to eq(original_gid), "group changed across the swap"
 
           leftover = Dir.glob(File.join(rails_dir, "Gemfile.lock.relock.*"))
           expect(leftover).to be_empty, "a temp lockfile was left behind: #{leftover.inspect}"
