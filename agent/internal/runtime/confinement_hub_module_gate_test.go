@@ -18,6 +18,22 @@ import (
 // none of this node's attached modules may resolve to a pinned
 // control-plane name either, fail-safe on an unresolved one.
 
+// pinnedHubModuleNames is round Z's Z9 fix: the Z8 tests below originally
+// iterated `for name := range hubModuleNames` — the very map under test —
+// so a name DELETED from that map dropped out of the test's own coverage
+// along with it, and both subtests for that name simply stopped running
+// rather than failing. Reviewer A confirmed this by deleting
+// powernode-hub-worker and powernode-extension-system from selfhost.go and
+// finding both deletions went undetected. This is a hard-coded, literal
+// copy of the three pinned names — independent of hubModuleNames — so a
+// name missing from the map is a test FAILURE, not a test that quietly
+// never ran.
+var pinnedHubModuleNames = []string{
+	"powernode-hub-backend",
+	"powernode-hub-worker",
+	"powernode-extension-system",
+}
+
 // TestHostsControlPlaneModule_HubModuleNameMatches is the direct unit test
 // for the pin itself: a module named exactly like one of the pinned
 // control-plane identities is a positive match.
@@ -28,9 +44,10 @@ import (
 // hubModuleNames, or dropping one of the other two map entries) would
 // survive, since nothing exercised powernode-hub-worker or
 // powernode-extension-system at all. Table-driven over all three pinned
-// names closes that gap.
+// names closes that gap. Round Z, Z9: iterates the hard-coded
+// pinnedHubModuleNames list, not hubModuleNames itself — see its doc.
 func TestHostsControlPlaneModule_HubModuleNameMatches(t *testing.T) {
-	for name := range hubModuleNames {
+	for _, name := range pinnedHubModuleNames {
 		t.Run(name, func(t *testing.T) {
 			attached := []mount.Module{{ID: "m1"}}
 			manifests := map[string]*manifest.Manifest{"m1": {ID: "m1", Name: name}}
@@ -158,9 +175,11 @@ func hubGateReconciler(t *testing.T, m2Name string) (r *Reconciler, client *stub
 // Round Z, Z8 (reviewer A): subtests over all three pinned names — the
 // original version only ever ran m2 as "powernode-hub-backend", so a
 // mutant narrowing the end-to-end gate to that one name specifically
-// (rather than reading hubModuleNames generically) would survive.
+// (rather than reading hubModuleNames generically) would survive. Round Z,
+// Z9: iterates the hard-coded pinnedHubModuleNames list, not hubModuleNames
+// itself — see its doc.
 func TestConfinementRestart_HubModuleAttachedAnywhereBlocksEveryRestart(t *testing.T) {
-	for name := range hubModuleNames {
+	for _, name := range pinnedHubModuleNames {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			r, client, runner, manifestRoot := hubGateReconciler(t, name)
