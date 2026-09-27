@@ -111,6 +111,44 @@ func ShowProperty(ctx context.Context, runner mount.Runner, unit, property strin
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ShowProperties returns several systemd unit properties in ONE call via
+// `systemctl show <unit> --property=A,B,C` (round Y, IMP-caef5c00d63f) —
+// deliberately WITHOUT `--value`: that flag drops the property names once
+// more than one is requested (systemd prints only the bare values, one per
+// line, in request order but with no key to pair them back up if a caller
+// ever changed the request list) — so this parses each `KEY=VALUE` line
+// into the returned map instead. Used by the confinement staleness probe
+// (confinement_probe.go) to read ActiveState/MainPID/NeedDaemonReload in
+// one shot per unit rather than three separate ShowProperty round trips.
+func ShowProperties(ctx context.Context, runner mount.Runner, unit string, props ...string) (map[string]string, error) {
+	if runner == nil {
+		return nil, errors.New("systemd.ShowProperties: nil runner")
+	}
+	if err := unitNameValid(unit); err != nil {
+		return nil, err
+	}
+	if len(props) == 0 {
+		return nil, errors.New("systemd.ShowProperties: no properties requested")
+	}
+	out, err := runner.Output(ctx, "systemctl", "show", unit, "--property="+strings.Join(props, ","))
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(props))
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
 // DaemonReload runs `systemctl daemon-reload`. Used by callers after
 // dropping new unit files into /etc/systemd/system.
 func DaemonReload(ctx context.Context, runner mount.Runner) error {

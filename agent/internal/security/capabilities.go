@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -92,6 +93,95 @@ func IsFullCapabilitySet(allow []string) bool {
 		seen[name] = struct{}{}
 	}
 	return len(seen) == len(KnownCapabilities)
+}
+
+// capabilityBits maps each KnownCapabilities name to its fixed kernel bit
+// index (linux/capability.h — a stable ABI, never renumbered). Round Y
+// (IMP-caef5c00d63f): CapabilityMask/ParseProcCapMask use this to compare a
+// module's DECLARED capability set against a running process's actual
+// CapBnd/CapAmb bitmask read from /proc/<pid>/status — the acceptance-level
+// staleness signal the design chose over any clock/mtime/reload-ordering
+// proxy (all of which the design doc's own section 1 rejects: mtime isn't
+// refreshed on an identical rewrite but boot compose can predate NTP in the
+// initramfs, ActiveEnterTimestamp has the same clock problem and an
+// ordering false negative, and CapabilityBoundingSet= via `systemctl show`
+// reports the manager's loaded config, not what the process actually
+// holds). A test pins this map's keys identical to KnownCapabilities' own,
+// so the two can never silently drift apart.
+var capabilityBits = map[string]uint{
+	"CAP_CHOWN":              0,
+	"CAP_DAC_OVERRIDE":       1,
+	"CAP_DAC_READ_SEARCH":    2,
+	"CAP_FOWNER":             3,
+	"CAP_FSETID":             4,
+	"CAP_KILL":               5,
+	"CAP_SETGID":             6,
+	"CAP_SETUID":             7,
+	"CAP_SETPCAP":            8,
+	"CAP_LINUX_IMMUTABLE":    9,
+	"CAP_NET_BIND_SERVICE":   10,
+	"CAP_NET_BROADCAST":      11,
+	"CAP_NET_ADMIN":          12,
+	"CAP_NET_RAW":            13,
+	"CAP_IPC_LOCK":           14,
+	"CAP_IPC_OWNER":          15,
+	"CAP_SYS_MODULE":         16,
+	"CAP_SYS_RAWIO":          17,
+	"CAP_SYS_CHROOT":         18,
+	"CAP_SYS_PTRACE":         19,
+	"CAP_SYS_PACCT":          20,
+	"CAP_SYS_ADMIN":          21,
+	"CAP_SYS_BOOT":           22,
+	"CAP_SYS_NICE":           23,
+	"CAP_SYS_RESOURCE":       24,
+	"CAP_SYS_TIME":           25,
+	"CAP_SYS_TTY_CONFIG":     26,
+	"CAP_MKNOD":              27,
+	"CAP_LEASE":              28,
+	"CAP_AUDIT_WRITE":        29,
+	"CAP_AUDIT_CONTROL":      30,
+	"CAP_SETFCAP":            31,
+	"CAP_MAC_OVERRIDE":       32,
+	"CAP_MAC_ADMIN":          33,
+	"CAP_SYSLOG":             34,
+	"CAP_WAKE_ALARM":         35,
+	"CAP_BLOCK_SUSPEND":      36,
+	"CAP_AUDIT_READ":         37,
+	"CAP_PERFMON":            38,
+	"CAP_BPF":                39,
+	"CAP_CHECKPOINT_RESTORE": 40,
+}
+
+// CapabilityMask ORs together the kernel bit for each name in allow (round
+// Y), normalizing the same way every drop-in writer does (normalizeCapName)
+// so the mask describes EXACTLY the resolved list a writer would render —
+// never a superset or subset of it. Errors on any name normalizeCapName
+// rejects, mirroring RenderCapabilityDropInBody's own validation.
+func CapabilityMask(allow []string) (uint64, error) {
+	var mask uint64
+	for _, c := range allow {
+		name, ok := normalizeCapName(c)
+		if !ok {
+			return 0, fmt.Errorf("CapabilityMask: unknown capability %q", c)
+		}
+		bit, ok := capabilityBits[name]
+		if !ok {
+			// Unreachable given normalizeCapName only ever returns a name
+			// present in KnownCapabilities, and TestCapabilityBitsMatchesKnownCapabilities
+			// pins capabilityBits' own keys identical to that set — kept as
+			// a defensive check, not a real path.
+			return 0, fmt.Errorf("CapabilityMask: %s has no bit mapping", name)
+		}
+		mask |= 1 << bit
+	}
+	return mask, nil
+}
+
+// ParseProcCapMask parses one of /proc/<pid>/status' Cap* fields (CapInh,
+// CapPrm, CapEff, CapBnd, CapAmb) — a fixed-width hex string with no "0x"
+// prefix, e.g. "0000000000000000" or "000001ffffffffff" (round Y).
+func ParseProcCapMask(field string) (uint64, error) {
+	return strconv.ParseUint(strings.TrimSpace(field), 16, 64)
 }
 
 func isValidCapName(name string) bool {
