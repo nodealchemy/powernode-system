@@ -1,0 +1,40 @@
+#!/bin/bash
+# powernode-rails-exec — wrapper for an OUT-OF-BAND `bundle exec` against
+# this node's rails app (an operator's manual `console`/`runner`/etc.),
+# so it resolves through the EXACT SAME env the `rails` systemd service
+# does.
+#
+# WHY THIS EXISTS (IMP-01a0e40a-c0ef). extensions_loader_helper.rb's
+# discover_extension_gems_by_visibility only includes an extension as a
+# Gemfile PATH gem when POWERNODE_DEPLOYED=1 is set AND the extension is
+# actually present on disk. Without that env var, discovery falls back to
+# .gitmodules-gated public visibility — but .gitmodules is never shipped
+# to a deployed node, so that mode finds ZERO extension path gems and
+# Bundler.setup rewrites Gemfile.lock down to none the moment any bundler
+# command runs. A bare `bundle exec rails console` run by hand therefore
+# corrupts the lockfile away from what the `rails` service itself needs,
+# and the next boot's rails-setup.sh re-lock (see its own header) has to
+# fix it again. Running everything through this wrapper instead means an
+# out-of-band invocation resolves identically to the service and never
+# has a reason to touch the lockfile at all.
+#
+# Usage: powernode-rails-exec <bundle-exec-args...>
+#   e.g. powernode-rails-exec rails console
+#        powernode-rails-exec rails runner some_script.rb
+#        powernode-rails-exec rails db:migrate:status
+set -euo pipefail
+
+RAILS_DIR=/opt/powernode/server
+
+if mountpoint -q /persist 2>/dev/null; then
+  STATE_DIR=/persist/powernode-rails
+else
+  STATE_DIR=/var/lib/powernode-rails
+fi
+
+export POWERNODE_DEPLOYED=1
+export BUNDLE_GEMFILE="$RAILS_DIR/Gemfile"
+export BUNDLE_APP_CONFIG="$STATE_DIR/.bundle"
+
+cd "$RAILS_DIR"
+exec /usr/local/bin/bundle exec "$@"

@@ -2041,4 +2041,143 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(blocks.values.uniq.length).to eq(1), "TRAEFIK_CERT_DIR derivation drifted: #{blocks.inspect}"
     end
   end
+
+  # IMP-01a0e40a-c0ef — rails-setup re-locks Gemfile.lock for THIS NODE's
+  # actual extension composition before rails starts, so rails's own
+  # first Bundler.setup finds a lock that already matches and never needs
+  # to write it itself (that write needed CAP_DAC_OVERRIDE on the
+  # root-owned lockfile). See rails-setup.sh's own header comment on this
+  # section for the full incident and mechanism.
+  describe "IMP-01a0e40a-c0ef: re-locks Gemfile.lock for this node's extension composition" do
+    let(:relock_section) do
+      script[/# --- Re-lock Gemfile\.lock for THIS NODE.*?\n\n(?=# FATAL: STATE_DIR itself)/m]
+    end
+
+    # The header comment's own prose documents "bundle install", "bundle lock
+    # --local", and (in path_gems_in_lock's docstring) "exit 1" as things it
+    # explains or forbids -- so index/regex assertions about the actual
+    # CODE's behavior must not be fooled by those words appearing first, or
+    # at all, in the comments. Strip comment-only lines before making any
+    # claim about what the code does.
+    let(:relock_code_lines) do
+      relock_section.lines.reject { |line| line.strip.start_with?("#") }.join
+    end
+
+    it "the section exists, between the bundler app config write and the FATAL STATE_DIR block" do
+      expect(relock_section).not_to be_nil
+    end
+
+    it "uses the SAME env rails itself resolves through" do
+      expect(relock_section).to match(/export POWERNODE_DEPLOYED=1/)
+      expect(relock_section).to match(/export BUNDLE_GEMFILE="\$RAILS_DIR\/Gemfile"/)
+      expect(relock_section).to match(/export BUNDLE_APP_CONFIG="\$BUNDLE_CONFIG_DIR"/)
+    end
+
+    it "checks before it locks -- bundle check runs strictly before bundle lock --local" do
+      check_idx = relock_code_lines.index("bundle check")
+      lock_idx  = relock_code_lines.index("bundle lock --local")
+      expect(check_idx).not_to be_nil
+      expect(lock_idx).not_to be_nil
+      expect(check_idx).to be < lock_idx
+    end
+
+    it "locks with --local only -- no network, and never a full bundle install" do
+      expect(relock_code_lines).to match(/bundle lock --local/)
+      expect(relock_code_lines).not_to match(/bundle\s+install/),
+        "a full `bundle install` compiles native extensions and can fill the small root overlay -- only " \
+        "`bundle lock --local` belongs here"
+    end
+
+    it "is loud but non-fatal: a lock failure warns and continues, never aborts the script" do
+      expect(relock_code_lines).to match(/if\s+\(cd "\$RAILS_DIR" && \/usr\/local\/bin\/bundle lock --local\); then/)
+      expect(relock_code_lines).to match(/echo.*WARNING.*bundle lock --local failed/i)
+      expect(relock_code_lines).not_to match(/\bexit\s+[1-9]/), "must degrade, not abort the script"
+    end
+
+    it "documents that non-fatal is only safe while rails still holds the capability ceiling" do
+      expect(relock_section).to match(/rails currently still holds the module's capability ceiling/)
+      expect(relock_section).to match(/stops being a safety net once rails' capabilities are narrowed to \[\]/)
+    end
+
+    it "runs before the STATE_DIR ownership sweep, which cleans up anything it might drop as root" do
+      relock_idx = script.index("Re-lock Gemfile.lock for THIS NODE")
+      sweep_idx  = script.index("# LOUD BUT NON-FATAL: everything else under STATE_DIR")
+      expect(relock_idx).not_to be_nil
+      expect(sweep_idx).not_to be_nil
+      expect(relock_idx).to be < sweep_idx
+    end
+
+    it "logs the before and after PATH-gem list, not just pass/fail" do
+      expect(relock_section).to match(/PATH gems before:/)
+      expect(relock_section).to match(/PATH gems after:/)
+    end
+
+    # Genuinely EXECUTES the extracted path_gems_in_lock function against
+    # real fixture lockfiles -- proving the extraction actually parses the
+    # PATH block shape bundler writes, in both the multi-extension (a
+    # dev/CI build, all public extensions present) and no-extension
+    # (nothing composed yet) shapes. The second case is a real, previously
+    # unfixed defect: a lockfile with NO PATH block makes the first grep
+    # in the pipeline exit 1 with nothing for the rest of the pipe to
+    # match either, and under this script's own `set -euo pipefail` that
+    # propagated straight through `set -e` and aborted the WHOLE SCRIPT --
+    # a logging helper taking rails-setup.service down with it. Fixed by
+    # `|| true` at the call site; this test pins that fix by actually
+    # hitting the failure shape, not just reading the source for the
+    # string `|| true`.
+    it "path_gems_in_lock, actually run, extracts PATH gem remotes and tolerates a lockfile with none" do
+      function_body = script[/path_gems_in_lock\(\) \{\n(.*?)\n\}/m, 1]
+      expect(function_body).not_to be_nil
+
+      Dir.mktmpdir do |dir|
+        rails_dir = File.join(dir, "server")
+        FileUtils.mkdir_p(rails_dir)
+
+        run_against = lambda do |lock_contents|
+          File.write(File.join(rails_dir, "Gemfile.lock"), lock_contents)
+          snippet = <<~BASH
+            set -euo pipefail
+            RAILS_DIR=#{rails_dir}
+            path_gems_in_lock() {
+            #{function_body}
+            }
+            path_gems_in_lock || true
+          BASH
+          Open3.capture3("bash", "-c", snippet)
+        end
+
+        multi_extension_lock = <<~LOCK
+          PATH
+            remote: ../extensions/marketing/server
+            specs:
+              powernode_marketing (0.1.0)
+
+          PATH
+            remote: ../extensions/supply-chain/server
+            specs:
+              powernode_supply_chain (0.1.0)
+
+          PATH
+            remote: ../extensions/system/server
+            specs:
+              powernode_system (0.1.0)
+
+          GEM
+            remote: https://rubygems.org/
+        LOCK
+
+        out, err, status = run_against.call(multi_extension_lock)
+        expect(status.success?).to be(true), "aborted on a real multi-extension lock: #{err}"
+        expect(out.split("\n")).to contain_exactly(
+          "../extensions/marketing/server", "../extensions/supply-chain/server", "../extensions/system/server"
+        )
+
+        no_extension_lock = "GEM\n  remote: https://rubygems.org/\n"
+        out, err, status = run_against.call(no_extension_lock)
+        expect(status.success?).to be(true),
+          "a lockfile with NO PATH block must not abort the script under set -e/pipefail: #{err}"
+        expect(out.strip).to eq("")
+      end
+    end
+  end
 end
