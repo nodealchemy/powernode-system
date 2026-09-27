@@ -5601,3 +5601,131 @@ func TestAttachOne_UnionsAnotherAttachedModulesTouchedDigest(t *testing.T) {
 		t.Fatalf("U4 REGRESSION: AttachOne's own rebuilt tick set dropped m2's touched-digest user e2user (units still running under e2): %v", users)
 	}
 }
+
+// TestUpgradeModule_PreExistingOneshotFailureDoesNotBlockCommit is V1 (live
+// rehearsal on VM 9002, HIGH): on a node with no Claude credential
+// configured, the real claude-tmux credential oneshot fails with
+// Result=exit-code — operator configuration, not a regression from any
+// digest bump. unitSettled has no memory of what this unit's OWN state was
+// BEFORE step 4's restart, so it refused the commit on every attempt,
+// forever, and each backoff retry force-restarted every ACTIVE unit of the
+// module (app, the live tmux session) along with it. Because the unit was
+// ALREADY failed in exactly this way before the upgrade too, this is not a
+// regression the bump introduced — the commit must succeed, in one tick,
+// with each unit restarted exactly once.
+func TestUpgradeModule_PreExistingOneshotFailureDoesNotBlockCommit(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	// credential fails identically on the FIRST attach too — no credential
+	// configured on this node, exactly as the live rehearsal found.
+	runner.StubOutput = map[string][]byte{
+		"systemctl show " + credentialUnit + " --property=Result --value": []byte("exit-code\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, credential already misconfigured): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:                                  []byte("active\n"),
+		"systemctl show " + credentialUnit + " --property=Result --value": []byte("exit-code\n"),
+	}
+
+	preInvocations := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Fatalf("V1 REGRESSION: a pre-existing (not newly regressed) oneshot failure must not block the commit — expected m1 at d2, got digest=%q ok=%v", digest, ok)
+	}
+
+	restarts := func(invocations []mount.Invocation, unit string) int {
+		n := 0
+		for _, inv := range invocations {
+			if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, unit) &&
+				(containsArg(inv.Args, "start") || containsArg(inv.Args, "restart")) {
+				n++
+			}
+		}
+		return n
+	}
+	pass2 := runner.Invocations[preInvocations:]
+	if n := restarts(pass2, appUnit); n != 1 {
+		t.Errorf("V1: expected %s restarted exactly once during the commit tick, got %d: %v", appUnit, n, pass2)
+	}
+	if n := restarts(pass2, credentialUnit); n != 1 {
+		t.Errorf("V1: expected %s restarted exactly once during the commit tick, got %d: %v", credentialUnit, n, pass2)
+	}
+
+	// A later, unrelated tick (nothing changed) must issue NO further
+	// restarts at all — the commit is done, not stuck retrying.
+	preInvocations = len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (steady state): %v", err)
+	}
+	pass3 := runner.Invocations[preInvocations:]
+	if n := restarts(pass3, appUnit); n != 0 {
+		t.Errorf("V1 REGRESSION: expected NO further restart of %s once committed, got %d: %v", appUnit, n, pass3)
+	}
+	if n := restarts(pass3, credentialUnit); n != 0 {
+		t.Errorf("V1 REGRESSION: expected NO further restart of %s once committed, got %d: %v", credentialUnit, n, pass3)
+	}
+}
+
+// TestUpgradeModule_RegressedOneshotFailureStillBlocksCommit is V1's own
+// counterpart: the credential oneshot succeeded BEFORE the bump (a
+// configured node) and starts failing AFTER it — that IS a regression this
+// digest introduced, and must still refuse the commit exactly as before.
+func TestUpgradeModule_RegressedOneshotFailureStillBlocksCommit(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	// credential succeeds on d1 — a properly configured node.
+	runner.StubOutput = map[string][]byte{
+		"systemctl show " + credentialUnit + " --property=Result --value": []byte("success\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, credential configured): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// credential still reads "success" for the PRE-upgrade capture (right
+	// before step 4) and for step 4's own restart — the regression only
+	// shows up in the SETTLE check afterward. sleepForUpgradeSettle runs
+	// between step 4 and the settle check, exactly where the flip belongs.
+	resultKey := "systemctl show " + credentialUnit + " --property=Result --value"
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit: []byte("active\n"),
+		resultKey:                        []byte("success\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		runner.StubOutput[resultKey] = []byte("exit-code\n")
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, credential regresses): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("V1 REGRESSION: a credential unit that SUCCEEDED before the bump and FAILS after it must still refuse the commit — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+}

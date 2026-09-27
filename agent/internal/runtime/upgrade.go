@@ -627,6 +627,37 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		svcByUnit[lifecycle.UnitName(newMod.ID, svc.Name)] = svc
 	}
 
+	// V1 (live rehearsal on VM 9002, HIGH): record each new-manifest unit's
+	// OWN pre-upgrade state — ActiveState (is-active) and Result — right
+	// before step 4 restarts anything. unitSettled's own post-restart check
+	// has no memory of what a unit's state was BEFORE this attempt: a
+	// oneshot that legitimately fails for a reason entirely unrelated to the
+	// digest bump (e.g. claude-tmux's credential unit on a node with no
+	// Claude credential configured — HTTP 404, operator configuration, not a
+	// regression) failed identically before this bump too. Without this,
+	// that unit refused the commit on EVERY attempt forever, and each
+	// backoff retry force-restarted every OTHER active unit of the module
+	// (M1's own ForceRestartActive) right along with it — the live tmux
+	// session bounced roughly every 5 minutes, fleet-wide, on any node with
+	// this same configuration gap. Only used for a unit this OLD digest
+	// already owned (oldUnitSet below) — a unit new-this-upgrade has no
+	// "before" state to compare against and is judged on its own, same as
+	// today.
+	type preUpgradeUnitState struct {
+		active bool
+		result string
+	}
+	preUpgradeStates := make(map[string]preUpgradeUnitState, len(newMf.UnitNames()))
+	for _, unit := range newMf.UnitNames() {
+		active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
+		result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
+		preUpgradeStates[unit] = preUpgradeUnitState{active: active, result: result}
+	}
+	oldUnitSet := make(map[string]bool, len(oldUnits))
+	for _, u := range oldUnits {
+		oldUnitSet[u] = true
+	}
+
 	// Step 4: write the new digest's unit files and FORCE-restart every unit
 	// that is currently active, regardless of whether its own body changed
 	// this pass (M1, review round 9 — see lifecycle.AttachOptions.
@@ -695,6 +726,34 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	for _, unit := range newMf.UnitNames() {
 		if settled, aerr, result, condResult := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
 			failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
+		}
+	}
+
+	// V1: split failures into BLOCKING and pre-existing (non-blocking).
+	// Keep blocking a unit that is new-this-upgrade (oldUnitSet doesn't name
+	// it — it has no "before" state to compare, same as today), or one that
+	// WAS active or Result=="success" before this attempt and fails now —
+	// that IS a regression this digest introduced. A unit this OLD digest
+	// already owned, already inactive with a non-success Result BEFORE step
+	// 4, and still exactly that after it, is not new information: report it
+	// through the unconverged channel as a non-blocking warning and let the
+	// commit proceed.
+	if len(failures) > 0 {
+		var blocking []settleFailure
+		var preExisting []settleFailure
+		for _, f := range failures {
+			pre, wasOld := preUpgradeStates[f.unit]
+			if !oldUnitSet[f.unit] || !wasOld || pre.active || pre.result == "success" {
+				blocking = append(blocking, f)
+				continue
+			}
+			preExisting = append(preExisting, f)
+		}
+		failures = blocking
+		for _, f := range preExisting {
+			r.noteUnconverged("reconciler:upgrade_settle_check_pre_existing", newMod.ID, fmt.Errorf(
+				"module %s: unit %s did not settle after restart, but it was ALREADY inactive with Result=%q before this upgrade attempt too — not a regression this digest introduced (operator configuration, e.g. an unconfigured credential), proceeding with the commit",
+				newMod.ID, f.unit, f.result))
 		}
 	}
 
