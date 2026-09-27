@@ -5435,3 +5435,55 @@ func TestUpgradeModule_SecondBumpInSameTickSeesFirstBumpsNewUser(t *testing.T) {
 		t.Fatalf("U1 REGRESSION: the tick's final render must include BOTH bumps' new users, got %v", final)
 	}
 }
+
+// TestUpgradeModule_UnresolvableAttachedModulePlusBumpRefuses is U3's own
+// test (final delta review, LOW): a SECOND attached module (m2) whose
+// manifest becomes genuinely unresolvable this tick, alongside a bump of m1
+// — RunOnce's own mustSkipRender gate sets tickIdentityRenderSkipped=true
+// AND tickIdentityManifests=nil together (reconcile.go). upgrade.go must
+// refuse on EITHER signal, not only the flag: a mutant that flips the flag
+// back to false while leaving the manifest set empty would otherwise sail
+// through and render newMf alone — reproducing T1's own original bug (a
+// subset silently wiping every other module's identity) in its WORST form.
+// This exact scenario is ALSO covered by TestUpgradeModule_
+// SkippedTickIdentityRefusesBeforeRestart (T4); this test exists
+// independently as U3's own named artifact and is the one verified against
+// the reviewer's own mutant (reconcile.go's tickIdentityRenderSkipped=true
+// line flipped to false) in the accompanying red-first pass.
+func TestUpgradeModule_UnresolvableAttachedModulePlusBumpRefuses(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other-mod", "priority":200, "effective_priority":200, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m2"] = otherModuleFixtureWithUser("e1", "e1user")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach m1 + m2): %v", err)
+	}
+
+	if client.statuses == nil {
+		client.statuses = map[string]int{}
+	}
+	client.statuses["/api/v1/system/node_api/modules/m2"] = 404
+	delete(client.responses, "/api/v1/system/node_api/modules/m2")
+	if err := os.RemoveAll(filepath.Join(manifestRoot, "m2")); err != nil {
+		t.Fatalf("RemoveAll m2 manifest cache: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	preInvocations := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (m2 unresolvable, m1 bumping): %v", err)
+	}
+
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("U3 REGRESSION: expected m1 to stay refused at d1 while m2's manifest is unresolvable, got digest=%q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) || hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) {
+		t.Errorf("U3 REGRESSION: refusing on an unresolvable attached module must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+}

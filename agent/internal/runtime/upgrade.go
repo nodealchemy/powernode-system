@@ -501,8 +501,17 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// exactly like a failed render/apply below, rather than write a partial
 	// view that would silently drop whatever module RunOnce's own pass
 	// couldn't resolve.
-	if r.tickIdentityRenderSkipped {
-		r.noteUnconverged("reconciler:upgrade_identity", newMod.ID, fmt.Errorf("module %s: refusing to render identity/sudoers before step 4 — this tick's own identity render was skipped (see reconciler:identity_render_skipped)", newMod.ID))
+	// U3 (final delta review, LOW): also refuse on an EMPTY tick set, not
+	// only the flag — this module is already attached, so a genuine RunOnce
+	// render always leaves at least ITS OWN old-side entry in
+	// tickIdentityManifests (bumpOldSide's own substitution). A mutant (or
+	// any future bug) that flips tickIdentityRenderSkipped back to false
+	// while leaving tickIdentityManifests nil/empty would otherwise sail
+	// through this gate and render newMf ALONE — reproducing T1's own
+	// original bug (a subset silently wiping every other module's identity)
+	// in its WORST form: not a partial set, an EMPTY one.
+	if r.tickIdentityRenderSkipped || len(r.tickIdentityManifests) == 0 {
+		r.noteUnconverged("reconciler:upgrade_identity", newMod.ID, fmt.Errorf("module %s: refusing to render identity/sudoers before step 4 — this tick's own identity render was skipped or empty (see reconciler:identity_render_skipped)", newMod.ID))
 		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
 		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
