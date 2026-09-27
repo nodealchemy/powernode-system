@@ -65,4 +65,38 @@ RSpec.describe System::ModuleDiffService do
       expect(result.ok?).to be false
     end
   end
+
+  # IMP-7e549d7506cf (Route 2 remediation) — #compare's rescue arms used to
+  # put e.message straight into Result#error, which
+  # ai/tools/system_fleet_tool.rb#module_diff forwards to the model
+  # verbatim. Drives the ACTUAL rescue arms with a controlled exception
+  # carrying a sentinel, rather than trusting the two static
+  # `raise ArgumentError` call sites alone — the ArgumentError rescue is
+  # broad (catches anything raised anywhere in the compare call tree), so
+  # its safety must hold for an exception it did not author too.
+  describe "sanitizes internal exceptions before they reach the caller (IMP-7e549d7506cf)" do
+    let(:sentinel) { "SENTINEL_MODULE_DIFF_#{SecureRandom.hex(8)}" }
+
+    it "does not forward raw StandardError text or the exception class name" do
+      allow(System::RsyncSpecCompiler).to receive(:compile).and_raise(StandardError, sentinel)
+      expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = described_class.compare(version_a: version_a, version_b: version_b)
+
+      expect(result.ok?).to be false
+      expect(result.error).not_to include(sentinel)
+      expect(result.error).not_to include("StandardError")
+    end
+
+    it "does not forward raw ArgumentError text raised deep in the call tree, not just the two literal raises" do
+      allow(System::RsyncSpecCompiler).to receive(:compile).and_raise(ArgumentError, sentinel)
+      expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = described_class.compare(version_a: version_a, version_b: version_b)
+
+      expect(result.ok?).to be false
+      expect(result.error).not_to include(sentinel)
+      expect(result.error).not_to include("ArgumentError")
+    end
+  end
 end

@@ -64,10 +64,19 @@ module System
         fingerprint_b: b.fingerprint
       )
     rescue ArgumentError => e
-      Result.new(ok?: false, error: e.message)
+      # IMP-7e549d7506cf: this rescue is broad (every ArgumentError raised
+      # anywhere in the compare call tree, not just the two explicit
+      # `raise ArgumentError` above), so its raw #message is not
+      # trustworthy caller-facing text on its own — Ruby/stdlib raise bare
+      # ArgumentError too, with messages nobody here authored or reviewed
+      # (see Ai::Tools::BaseTool::CallerFacingError's own class comment).
+      # Log the raw text for debugging; the caller gets a static, safe
+      # description of what was invalid.
+      Rails.logger.error("[ModuleDiffService] #{e.class}: #{e.message}")
+      Result.new(ok?: false, error: "Invalid module version(s) supplied for comparison")
     rescue StandardError => e
       Rails.logger.error("[ModuleDiffService] #{e.class}: #{e.message}")
-      Result.new(ok?: false, error: e.message)
+      Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
     end
 
     private

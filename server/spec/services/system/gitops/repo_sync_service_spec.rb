@@ -208,5 +208,25 @@ RSpec.describe System::Gitops::RepoSyncService do
       expect(described_class.sync!(repository).ok?).to be(true)
       expect(clone_invocation[:env]).to eq({})
     end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — the CATCH-ALL StandardError
+    # rescue used to put "#{e.class}: #{e.message}" straight into
+    # Result#error, which
+    # ai/tools/system_fleet_tool.rb#gitops_get_drift_report forwards to the
+    # model verbatim. NOTE: this is deliberately NOT the same fix as
+    # CredentialShapeError above (that rescue still forwards e.message --
+    # see repo_sync_service.rb's own comment for why that one is safe by
+    # design and this one is not).
+    it "does not forward raw StandardError text or the exception class name from an unclassified failure" do
+      sentinel = "SENTINEL_REPOSYNC_#{SecureRandom.hex(8)}"
+      allow(Open3).to receive(:capture3).and_raise(StandardError, sentinel)
+      expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = described_class.sync!(repository)
+
+      expect(result.ok?).to be false
+      expect(result.error).not_to include(sentinel)
+      expect(result.error).not_to include("StandardError")
+    end
   end
 end

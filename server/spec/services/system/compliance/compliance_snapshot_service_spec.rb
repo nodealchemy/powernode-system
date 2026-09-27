@@ -72,5 +72,44 @@ RSpec.describe System::Compliance::ComplianceSnapshotService do
       expect(result.snapshot[:nodes]).to be_empty
       expect(result.snapshot[:counts][:nodes]).to eq(0)
     end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — #snapshot!'s outer rescue used
+    # to put e.message straight into Result#error, and #collect_rcp_
+    # invariants' own inner rescue used to put e.message into a hash that
+    # ai/tools/system_fleet_tool.rb#compliance_snapshot forwards VERBATIM ON
+    # THE SUCCESS PATH (result.snapshot, ok?: true) — confirmed live while
+    # re-verifying this producer, not left as the derivation doc's own
+    # "flagged UNVERIFIED".
+    describe "sanitizes exceptions before they reach the caller (IMP-7e549d7506cf)" do
+      it "does not forward raw StandardError text or the exception class name (top-level collection)" do
+        sentinel = "SENTINEL_COMPLIANCE_TOP_#{SecureRandom.hex(8)}"
+        allow(System::Node).to receive(:where).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.snapshot!(account: account)
+
+        expect(result.ok?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("StandardError")
+      end
+
+      it "does not forward raw RCP-invariant-scan exception text -- reachable on the SUCCESS path" do
+        sentinel = "SENTINEL_COMPLIANCE_RCP_#{SecureRandom.hex(8)}"
+        allow(System::Compliance::RcpInvariantScanner).to receive(:scan).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.snapshot!(account: account)
+
+        # The OUTER result is still ok?: true -- only the nested
+        # rcp_invariants collector failed. This is exactly what makes the
+        # leak reachable on the success path: the tool forwards
+        # result.snapshot unconditionally when ok?.
+        expect(result.ok?).to be true
+        rcp_error = result.snapshot[:rcp_invariants][:error]
+        expect(rcp_error).not_to be_nil
+        expect(rcp_error).not_to include(sentinel)
+        expect(rcp_error).not_to include("StandardError")
+      end
+    end
   end
 end

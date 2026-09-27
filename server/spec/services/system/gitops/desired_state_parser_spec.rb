@@ -110,5 +110,36 @@ RSpec.describe System::Gitops::DesiredStateParser do
       expect(result.ok?).to be true
       expect(result.desired_state.empty?).to be false
     end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — both the Psych::SyntaxError
+    # and the catch-all StandardError rescue used to put "#{e.class}:
+    # #{e.message}" (or, for YAML, an unprefixed raw parser message) straight
+    # into Result#error, which
+    # ai/tools/system_fleet_tool.rb#gitops_get_drift_report forwards to the
+    # model verbatim. Neither rescue logged at all before this fix.
+    describe "sanitizes exceptions before they reach the caller (IMP-7e549d7506cf)" do
+      it "logs the raw YAML parser text but does not forward it" do
+        File.write(File.join(work_tree, "fleet.yaml"), "templates:\n  - bad\n - indent")
+        expect(Rails.logger).to receive(:error).with(a_string_including("YAML syntax error"))
+
+        result = described_class.parse!(work_tree_path: work_tree)
+
+        expect(result.ok?).to be false
+        expect(result.error).to eq("fleet.yaml has a YAML syntax error")
+      end
+
+      it "does not forward raw StandardError text or the exception class name" do
+        sentinel = "SENTINEL_DESIRED_STATE_#{SecureRandom.hex(8)}"
+        File.write(File.join(work_tree, "fleet.yaml"), "templates: {}")
+        allow(System::Gitops::DesiredStateValidator).to receive(:call).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.parse!(work_tree_path: work_tree)
+
+        expect(result.ok?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("StandardError")
+      end
+    end
   end
 end

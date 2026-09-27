@@ -1561,6 +1561,22 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       # it into a clean envelope — the isolation, not a raw crash.
       expect(r[:error]).to match(/couldn't find|not found/i)
     end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — end-to-end proof that the
+    # producer-side sanitization actually reaches THIS sink
+    # (`return error_result(result.error) unless result.ok?`), not just the
+    # producer's own Result object in isolation.
+    it "does not forward a sanitized-away exception to the MCP caller (IMP-7e549d7506cf)" do
+      sentinel = "SENTINEL_FLEET_TOOL_MODULE_DIFF_#{SecureRandom.hex(8)}"
+      allow(System::RsyncSpecCompiler).to receive(:compile).and_raise(StandardError, sentinel)
+      expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+      r = call("system_module_diff", version_a_id: ver_a.id, version_b_id: ver_b.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).not_to include(sentinel)
+      expect(r[:error]).not_to include("StandardError")
+    end
   end
 
   # IMP-0cea3952202c — AI-first parity: an agent could DELETE a module it had
@@ -2372,6 +2388,38 @@ end
         .to eq("/api/v1/system/node_api/boot_image/download?digest=#{uki_sha256}")
       # Old identity/issuer regexp fields should NOT be present
       expect(task.options).not_to include("cosign_identity_regexp", "cosign_issuer_regexp")
+    end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — end-to-end proof that
+    # UpgradeDispatcher's sanitization reaches this sink
+    # (`return error_result(result.reason) unless result.ok?`) — this
+    # producer's Result field is named `reason`, not `error`, which a grep
+    # for `.error` alone would miss.
+    it "does not forward a sanitized-away RecordInvalid to the MCP caller (IMP-7e549d7506cf)" do
+      sentinel = "SENTINEL_FLEET_TOOL_UPGRADE_#{SecureRandom.hex(8)}"
+      target_sha = "target-sha-sanitize"
+      platform_record.update!(disk_image_git_sha: target_sha, disk_image_oci_ref: "ghcr.io/x/boot:0.1.0")
+      System::DiskImagePublication.create!(
+        account: account, node_platform: platform_record, git_sha: target_sha, arch: "amd64",
+        oci_ref: "ghcr.io/x/boot:0.1.0", sha256: "a" * 64, size_bytes: 1024,
+        uki_oci_ref: "ghcr.io/x/boot-uki:0.1.0", uki_sha256: "e" * 64,
+        uki_cosign_bundle: "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo=",
+        status: "published", published_at: Time.current
+      )
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
+      invalid_task = System::Task.new
+      invalid_task.errors.add(:base, sentinel)
+      allow(System::Task).to receive(:create!).and_raise(ActiveRecord::RecordInvalid, invalid_task)
+      expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).not_to include(sentinel)
+      expect(r[:error]).not_to include("RecordInvalid")
     end
 
     it "returns NO-OP (already_current:true) when booted sha equals target sha and force not set" do

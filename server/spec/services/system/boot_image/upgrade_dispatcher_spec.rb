@@ -573,6 +573,35 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       end
     end
 
+    # IMP-7e549d7506cf (Route 2 remediation) — the ActiveRecord::RecordInvalid
+    # rescue used to put e.message straight into Result#reason (this
+    # producer's error field is named `reason`, not `error` — a grep for
+    # `.error` alone misses it), which
+    # ai/tools/system_fleet_tool.rb#upgrade_boot_image forwards to the model
+    # verbatim.
+    describe "sanitizes exceptions before they reach the caller (IMP-7e549d7506cf)" do
+      it "does not forward raw ActiveRecord::RecordInvalid validation text when Task.create! fails" do
+        sentinel = "SENTINEL_UPGRADE_DISPATCHER_#{SecureRandom.hex(8)}"
+        setup_platform
+        setup_publication
+
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
+        invalid_task = System::Task.new
+        invalid_task.errors.add(:base, sentinel)
+        allow(System::Task).to receive(:create!).and_raise(ActiveRecord::RecordInvalid, invalid_task)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be false
+        expect(result.reason).not_to include(sentinel)
+        expect(result.reason).not_to include("RecordInvalid")
+      end
+    end
+
     describe "#platform_cosign_public_key" do
       it "reads from ENV POWERNODE_COSIGN_PUBLIC_KEY when set" do
         allow(ENV).to receive(:[]).and_call_original

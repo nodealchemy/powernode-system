@@ -240,7 +240,8 @@ module System
         )
         Result.new(upgraded: true, task: task, target_git_sha: target_sha)
       rescue ActiveRecord::RecordInvalid => e
-        err("Failed to queue boot-image upgrade: #{e.message}")
+        ::Rails.logger.error("[BootImage::UpgradeDispatcher] #{e.class}: #{e.message}")
+        err("Failed to queue boot-image upgrade")
       end
 
       private

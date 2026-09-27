@@ -49,9 +49,18 @@ module System
 
         commit_sha = read_commit_sha
         Result.new(ok?: true, work_tree_path: work_tree_path, commit_sha: commit_sha)
-      rescue StandardError => e
+      rescue CredentialShapeError => e
+        # NOT the IMP-7e549d7506cf pattern this rescue block otherwise fixes:
+        # this exception's message is deliberately, reviewably safe BY
+        # DESIGN — see #require_creds!'s own header comment — reporting
+        # presence/shape/key NAMES only, never a credential value. Forwarding
+        # it (including the class name) verbatim is intentional and is
+        # pinned by the "wrong-shaped credential payload" spec examples.
         Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{e.class}: #{e.message}")
         Result.new(ok?: false, error: "#{e.class}: #{e.message}")
+      rescue StandardError => e
+        Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{e.class}: #{e.message}")
+        Result.new(ok?: false, error: "Repository sync failed")
       end
 
       private

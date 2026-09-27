@@ -248,6 +248,23 @@ RSpec.describe System::Gitops::DiffEngine do
         expect(result.ok?).to be false
         expect(result.error).to be_present
       end
+
+      # IMP-7e549d7506cf (Route 2 remediation) — the catch-all StandardError
+      # rescue used to put e.message straight into Result#error, which
+      # ai/tools/system_fleet_tool.rb#gitops_get_drift_report forwards to the
+      # model verbatim.
+      it "does not forward raw StandardError text or the exception class name (IMP-7e549d7506cf)" do
+        sentinel = "SENTINEL_DIFF_ENGINE_#{SecureRandom.hex(8)}"
+        allow(System::NodeTemplate).to receive(:where).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.diff!(account: account, desired_state: build_desired_state)
+
+        expect(result.ok?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("StandardError")
+        expect(result.diffs).to eq([])
+      end
     end
 
     context "per-account isolation" do

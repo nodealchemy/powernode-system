@@ -20,7 +20,13 @@ module System
       end
 
       def snapshot!(account:, scope:)
-        raise ArgumentError, "account required" unless account
+        # A precondition guard, not an exception to rescue-and-sanitize
+        # (IMP-7e549d7506cf): raising ArgumentError here and catching it
+        # below would either hardcode "account required" for every
+        # ArgumentError the collect_* methods might also raise (misleading)
+        # or require yet another broad rescue arm — a plain early return
+        # sidesteps both.
+        return Result.new(ok?: false, error: "account required") unless account
 
         snapshot = {
           metadata: snapshot_metadata(account, scope),
@@ -38,7 +44,7 @@ module System
         Result.new(ok?: true, snapshot: snapshot, generated_at: Time.current)
       rescue StandardError => e
         Rails.logger.error("[ComplianceSnapshotService] #{e.class}: #{e.message}")
-        Result.new(ok?: false, error: e.message)
+        Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
       end
 
       private
@@ -292,8 +298,14 @@ module System
           violation_count: result.violations.size
         }
       rescue StandardError => e
+        # IMP-7e549d7506cf: reachable on the SUCCESS path too — #snapshot!
+        # only rescues around the top-level collection, so a failure here
+        # lands inside `snapshot[:rcp_invariants]` with ok?: true, and
+        # system_fleet_tool.rb#compliance_snapshot forwards `result.snapshot`
+        # verbatim on success. Confirmed live (not left UNVERIFIED): this
+        # hash reaches the MCP caller exactly like the outer error path did.
         Rails.logger.error("[ComplianceSnapshotService] rcp_invariants scan failed: #{e.class}: #{e.message}")
-        { error: e.message }
+        { error: "RCP invariant scan failed" }
       end
 
       def counts(account)

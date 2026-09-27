@@ -73,9 +73,13 @@ module System
           )
         )
       rescue Psych::SyntaxError => e
-        Result.new(ok?: false, error: "YAML syntax error: #{e.message}")
+        # e.message here is the raw YAML parser's own text, which can quote
+        # fragments of the offending file content — not just a location.
+        Rails.logger.error("[Gitops::DesiredStateParser] YAML syntax error: #{e.message}")
+        Result.new(ok?: false, error: "fleet.yaml has a YAML syntax error")
       rescue StandardError => e
-        Result.new(ok?: false, error: "#{e.class}: #{e.message}")
+        Rails.logger.error("[Gitops::DesiredStateParser] #{e.class}: #{e.message}")
+        Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
       end
 
       private

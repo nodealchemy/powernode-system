@@ -238,6 +238,69 @@ RSpec.describe System::InstanceControlService do
       expect(result.success?).to be false
       expect(instance.reload.status).to eq('error')
     end
+
+    # IMP-7e549d7506cf (Route 2 remediation) — the ProviderError/StandardError
+    # rescue arms, the post-success bookkeeping rescue, and the
+    # #execute_cloud_action private UnknownProviderError rescue all used to
+    # put e.message straight into Runtime::Result#error, which
+    # ai/tools/system_fleet_tool.rb#control_instance forwards to the model
+    # verbatim.
+    describe 'sanitizes exceptions before they reach the caller (IMP-7e549d7506cf)' do
+      it 'does not forward raw ProviderError text or the exception class name' do
+        sentinel = "SENTINEL_ICS_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include('ProviderError')
+      end
+
+      it 'does not forward raw StandardError text or the exception class name' do
+        sentinel = "SENTINEL_ICS_STANDARD_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include('StandardError')
+      end
+
+      it 'does not forward raw post-success bookkeeping exception text' do
+        sentinel = "SENTINEL_ICS_BOOKKEEPING_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_return(success: true, private_ip_address: nil, public_ip_address: nil)
+        allow(instance).to receive(:update!).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+      end
+
+      it 'does not forward raw UnknownProviderError text when no provider adapter is registered' do
+        sentinel = "SENTINEL_ICS_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_instance)
+          .and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include('UnknownProviderError')
+      end
+    end
   end
 
   describe '#execute — terminate (physical)' do

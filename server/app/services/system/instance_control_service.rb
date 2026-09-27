@@ -99,7 +99,7 @@ module System
           Rails.logger.error(
             "[InstanceControlService] post-#{action} bookkeeping failed for #{instance.id}: #{e.class}: #{e.message}"
           )
-          return Runtime::Result.err(error: "post-#{action} bookkeeping failed: #{e.message}")
+          return Runtime::Result.err(error: "post-#{action} bookkeeping failed")
         end
         Runtime::Result.ok(data: adapter_result.except(:success))
       else
@@ -116,16 +116,16 @@ module System
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[InstanceControlService] Provider error: #{e.message}")
       revert_status(instance) unless provider_succeeded
-      Runtime::Result.err(error: e.message)
+      Runtime::Result.err(error: "#{action} failed at the provider")
     rescue StandardError => e
       # Revert only when the provider action itself did not succeed. Once it
       # has, the stamped state is the truth (the machine really
       # started/stopped/died) — a raise in post-success bookkeeping must
       # surface in the Result, not rewrite the row to a state known false.
       # For terminate that rewrite would resurrect a destroyed instance.
-      Rails.logger.error("[InstanceControlService] #{action} failed: #{e.message}")
+      Rails.logger.error("[InstanceControlService] #{action} failed: #{e.class}: #{e.message}")
       revert_status(instance) unless provider_succeeded
-      Runtime::Result.err(error: e.message)
+      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
     end
 
     private
@@ -264,7 +264,15 @@ module System
       provider_adapter = begin
         Providers::Registry.for_instance(instance)
       rescue Providers::Registry::UnknownProviderError => e
-        return { success: false, error: e.message }
+        # IMP-7e549d7506cf: this rescue catches the CLASS, not the specific
+        # raise; see VolumeManagementService's own NO_PROVIDER_FOR_VOLUME_
+        # MESSAGE comment for why that is not the same as trusting today's
+        # message text. `return` (kept from before this fix) is load-bearing:
+        # without it this hash becomes `provider_adapter`'s value and the
+        # very next line's `.provider_type` call raises NoMethodError on a
+        # Hash instead of returning the failure.
+        Rails.logger.error("[InstanceControlService] #{e.class}: #{e.message}")
+        return { success: false, error: "No provider adapter is configured for this instance" }
       end
 
       Rails.logger.info("[InstanceControlService] Using #{provider_adapter.provider_type} for #{action}")
