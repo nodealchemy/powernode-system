@@ -1739,6 +1739,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 					r.cfg.OnError("reconciler:revert_pending_attempt_save", fmt.Errorf("module %s: could not persist the revert attempt counter: %w", mod.ID, err))
 				}
 				if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true); err != nil {
+					// F8 (V1 second delta review): a FAILED revert attempt
+					// deliberately does NOT clear PendingPreUpgradeFailed/
+					// PendingDigestUnitsTouched/PendingConflictRecoveryAttempted
+					// here — this episode is still unresolved, a later tick
+					// retries the SAME revert, and it must keep reading the
+					// SAME persisted baseline it already captured rather than
+					// treating a fresh retry as a brand-new episode. Only a
+					// revert that genuinely SUCCEEDS (below) clears them.
 					r.noteUnconverged("reconciler:revert_pending_digest", mod.ID, fmt.Errorf(
 						"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
 					continue
@@ -2024,13 +2032,25 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 // convergeFailures itself is reset every pass (same reason
 // resetSecurityFailClosed is) — nothing in this codebase already re-samples
 // an already-committed, otherwise-unchanged module's own unit health on a
-// steady-state tick. This reuses the EXISTING unconverged channel only; it
-// adds no new server-side lane, wire field, or sensor. A unit observed
-// active (or Result=="success" for the run-once units this exemption is
-// scoped to) is simply removed from state and stops being mentioned — no
-// separate "recovered" event, since silence IS the recovery signal every
-// other unconverged-channel consumer in this codebase already reads that
-// way.
+// steady-state tick.
+//
+// F1 (V1 second delta review, MEDIUM — verified): this must NOT go through
+// noteUnconverged/convergeFailures. tasks/handlers/config.go's SyncHandler
+// FAILS the apply_config task whenever ConvergenceFailures() is non-empty
+// (IMP-f1c1e6d61104) specifically so the server's config_drift_sensor.rb
+// stops suppressing drift on a node that materialized nothing. A pre-
+// existing failure this exemption already proved is NOT a regression would,
+// through that same channel, fail EVERY apply_config task forever — an
+// endless drift → remediate → fail loop across the whole node, for a
+// failure that already existed before this upgrade and that a task
+// succeeding despite it is the entire point of exempting. No existing
+// heartbeat field already carries a per-unit health/degraded signal either
+// (HeartbeatPayload's own *SecurityFailClosedUnits fields are narrowly
+// about security drop-in writes, not general unit health; ModuleVerifyState
+// is the opt-in probe checked above) — reported through r.cfg.OnError
+// directly instead: the log/stderr sink every OnError call already reaches,
+// with no server-side contract change. A dedicated heartbeat field is a
+// follow-up for the platform side, not this commit.
 func (r *Reconciler) reportKnownDegradedUnits(ctx context.Context, current *mount.State) {
 	for i, m := range current.AttachedModules {
 		if len(m.KnownDegradedUnits) == 0 {
@@ -2044,8 +2064,8 @@ func (r *Reconciler) reportKnownDegradedUnits(ctx context.Context, current *moun
 				continue // recovered — drop it, no separate event
 			}
 			stillDegraded = append(stillDegraded, unit)
-			r.noteUnconverged("reconciler:known_degraded_unit", m.ID, fmt.Errorf(
-				"module %s: unit %s remains degraded (Result=%q) since an earlier upgrade committed despite it (V1: it was already failing before that whole episode started) — operator action needed (e.g. configure the missing credential); not blocking any commit, just staying visible until it recovers",
+			r.cfg.OnError("reconciler:known_degraded_unit", fmt.Errorf(
+				"module %s: unit %s remains degraded (Result=%q) since an earlier upgrade committed despite it (V1: it was already failing before that whole episode started) — operator action needed (e.g. configure the missing credential); not blocking any commit, and NOT counted as a convergence failure (F1: an apply_config task must not fail forever over a pre-existing condition), just staying visible until it recovers",
 				m.ID, unit, result))
 		}
 		current.AttachedModules[i].KnownDegradedUnits = stillDegraded

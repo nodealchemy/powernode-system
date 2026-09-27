@@ -135,6 +135,17 @@ func sanitizeDigest(d string) string {
 // by higher entries). The platform's effective_priority drives the order.
 type ModuleStack []Module
 
+// PreUpgradeUnitState (F5, V1 second delta review) is one unit's captured
+// failure signature at the moment an upgrade episode's own baseline is
+// taken — see Module.PendingPreUpgradeFailed's own doc for why both fields
+// are needed: a post-upgrade failure is only exempted as "pre-existing" when
+// it matches THIS EXACT signature, not merely the same coarse Result.
+type PreUpgradeUnitState struct {
+	Unit           string `json:"Unit"`
+	Result         string `json:"Result"`
+	ExecMainStatus string `json:"ExecMainStatus"`
+}
+
 // Module describes one entry in the lower stack.
 type Module struct {
 	ID       string // platform NodeModule.id
@@ -311,16 +322,25 @@ type Module struct {
 	// attempt begins, so a LATER bump's own episode starts with a clean
 	// slate for this tracking too.
 	PendingRevertAttemptsReset bool `json:"PendingRevertAttemptsReset,omitempty"`
-	// PendingPreUpgradeFailed (V1, delta review on 83d056ea, HIGH) is the
-	// EPISODE's own baseline: the names of every unit this OLD digest
-	// already owned that was ALREADY inactive with a non-success Result
-	// BEFORE this stuck-upgrade episode's very FIRST step-4 restart attempt
-	// — captured ONCE and never re-sampled on a retry. Without persisting
-	// this, a live re-sample on every retry attempt reads OUR OWN previous
-	// attempt's own crash as "already failing" the moment step 4 restarts a
-	// unit and it dies — laundering a genuine regression this digest
-	// introduced into looking pre-existing, and letting the commit land on
-	// a crash-looping unit.
+	// PendingPreUpgradeFailed (V1, delta review on 83d056ea, HIGH; F5/F6, V1
+	// second delta review) is the EPISODE's own baseline: one entry per unit
+	// this OLD digest already owned that was ALREADY inactive with a
+	// non-success Result BEFORE this stuck-upgrade episode's very FIRST
+	// step-4 restart attempt — captured ONCE and never re-sampled on a
+	// retry. Without persisting this, a live re-sample on every retry
+	// attempt reads OUR OWN previous attempt's own crash as "already
+	// failing" the moment step 4 restarts a unit and it dies — laundering a
+	// genuine regression this digest introduced into looking pre-existing,
+	// and letting the commit land on a crash-looping unit.
+	//
+	// F5: stores BOTH Result and ExecMainStatus, not just a name — a unit is
+	// only exempted later if its POST-upgrade failure matches this baseline
+	// EXACTLY (same Result AND same ExecMainStatus). A unit that fails
+	// DIFFERENTLY after the bump than it did before (e.g. Result stays
+	// "exit-code" but ExecMainStatus changes from 1 to 139/SIGSEGV) is not
+	// proven to be the SAME pre-existing condition — it may be a genuine
+	// regression this digest introduced that merely happens to share the
+	// coarse Result value, so it still blocks.
 	//
 	// Gated directly on PendingDigestUnitsTouched — no separate "already
 	// captured" flag needed. That field is set true unconditionally, right
@@ -341,11 +361,19 @@ type Module struct {
 	// disproved that (it is set before step 4 even runs), so the extra
 	// field was removed as redundant.
 	//
+	// F6 (V1 second delta review, verified): captured and persisted in the
+	// SAME SaveState call that sets PendingDigestUnitsTouched true, not a
+	// separate later one — upgradeModule's own single "mark this episode's
+	// first attempt" write, so an agent restart can never observe
+	// PendingDigestUnitsTouched=true with no baseline recorded (which would
+	// silently skip capture on the NEXT attempt too, since the gate above
+	// already reads "touched" as "already captured").
+	//
 	// Cleared alongside PendingDigestUnitsTouched/PendingIntroducedUnits/
 	// PendingTouchedDigests: at commit (the replacing entry carries none of
 	// this episode's own Pending* fields) or at revert (reconcile.go's own
 	// clearing loops, both branches).
-	PendingPreUpgradeFailed []string `json:"PendingPreUpgradeFailed,omitempty"`
+	PendingPreUpgradeFailed []PreUpgradeUnitState `json:"PendingPreUpgradeFailed,omitempty"`
 	// KnownDegradedUnits (V1, delta review on 83d056ea) names a run-once
 	// unit whose commit was let through despite a still-failing settle check
 	// because PendingPreUpgradeFailed proved it was already broken before
