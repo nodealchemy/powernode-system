@@ -169,7 +169,24 @@ services:
       POWERNODE_CA_MODE: "local"
     exposed_ports:
       - { port: 3000, protocol: tcp, name: http }
-    capabilities: []
+    # IMP-caef5c00d63f follow-on (2026-09-27, ops-hub outage): this used to
+    # declare an explicit `capabilities: []`, on the belief that a
+    # per-service capabilities key never reached the agent's drop-in (see
+    # the stale version of the comment in the `security:` block below,
+    # corrected alongside this change). It does: the per-service resolver
+    # (agent/internal/runtime/unit_capabilities.go,
+    # security.ResolveServiceCapabilities) honours a declared `[]` as
+    # ZERO capabilities for that one unit. rails' own boot (rails-start.sh
+    # -> Bundler.setup) rewrites the root-owned
+    # /opt/powernode/server/Gemfile.lock on every boot, which needs
+    # CAP_DAC_OVERRIDE — CapEff=0 made that an EPERM/EACCES crash loop.
+    # Absent key = inherit the module's security.capabilities ceiling
+    # (CAP_CHOWN/CAP_FOWNER/CAP_DAC_OVERRIDE), same as before this outage.
+    # The genuine zero-cap target for rails is BLOCKED on removing that
+    # boot-time lockfile rewrite (rails-setup.sh / rails-start.sh are a
+    # separate follow-up, deliberately not touched here) — once rails no
+    # longer writes anywhere it doesn't own, re-declare `capabilities: []`
+    # then, not before.
     health:
       endpoint: "/up"
       method: GET
@@ -241,16 +258,27 @@ security:
   # gone on reboot; ops-hub has been one reboot away from rails-setup
   # dying at :183-184 since that incident.
   #
-  # This MUST stay in the TOP-LEVEL security block, not a per-service
-  # `capabilities:` key: agent buildPolicy reads
-  # config["security"]["capabilities"] and applies ONE module-level policy
-  # to every unit in the module (reconcile.go: `for _, unit := range
-  # mf.UnitNames()`) — a per-service key never reaches the drop-in, so
-  # granting it there is a no-op that reads exactly like a fix. Same
-  # defect shape as hub-worker's CAP_DAC_READ_SEARCH grant in this
-  # manifest's sibling module (see that manifest's own comment for the
-  # parallel incident). Pinned by
-  # spec/integration/system/hub_backend_services_spec.rb.
+  # This MUST stay declared here, at the TOP-LEVEL security block: it is
+  # the module's CEILING, and every service with no capabilities key of
+  # its own (rails-setup, and rails — see the rails service entry above)
+  # INHERITS this exact set.
+  #
+  # CORRECTED (IMP-caef5c00d63f follow-on, 2026-09-27): this comment used
+  # to claim a per-service `capabilities:` key "never reaches the drop-in"
+  # and that declaring one there is a harmless no-op. That was wrong, and
+  # believing it is exactly what caused the 2026-09-27 ops-hub outage —
+  # rails' own per-service `capabilities: []` (removed above) WAS honoured
+  # by the agent's per-service resolver
+  # (agent/internal/runtime/unit_capabilities.go,
+  # security.ResolveServiceCapabilities, IMP-caef5c00d63f), which reads
+  # this ceiling and grants each service either the whole ceiling (no key)
+  # or its own declared subset (key present — `[]` included, as an
+  # explicit zero). A per-service key is very much live; it just was not
+  # yet built when the original comment was written. Same shape as
+  # hub-worker's CAP_DAC_READ_SEARCH grant in this manifest's sibling
+  # module (see that manifest's own comment for the parallel incident).
+  # Pinned by spec/integration/system/hub_backend_services_spec.rb and
+  # spec/schema/service_capability_ceiling_audit_spec.rb.
   #
   # This exact set is EMPIRICAL, not guessed: it is what the operator's
   # restore drop-in grants, and `systemctl show` on the live unit confirms

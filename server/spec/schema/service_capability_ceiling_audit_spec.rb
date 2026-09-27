@@ -134,10 +134,20 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
   end
 
   # powernode-hub-backend splits root prep from the daemon: rails-setup runs
-  # as root and needs the ceiling for its chown/chmod work (27a8b764), while
-  # rails runs as its own non-root user and needs nothing. Under the
-  # per-service resolver that is: rails-setup inherits (no key), rails keeps
-  # an explicit [].
+  # as root and needs the ceiling for its chown/chmod work (27a8b764).
+  #
+  # REVERSED, 2026-09-27 (ops-hub outage): rails previously kept an
+  # explicit `[]`, on the belief that it "runs as its own non-root user
+  # and needs nothing". It needs CAP_DAC_OVERRIDE — rails-start.sh's own
+  # Bundler.setup rewrites the root-owned server/Gemfile.lock on every
+  # boot, and a declared `[]` is honoured as ZERO by the per-service
+  # resolver (IMP-caef5c00d63f), which crash-looped rails with CapEff=0.
+  # Under the per-service resolver that is now: rails-setup AND rails
+  # both inherit (no key) — same shape as postgres-primary/redis/vault
+  # above. The genuine zero-cap target for rails is blocked on removing
+  # that boot-time lockfile rewrite (separate follow-up; rails-setup.sh /
+  # rails-start.sh deliberately not touched here) — re-declare `[]` once
+  # rails no longer writes anywhere it doesn't own, not before.
   describe "powernode-hub-backend" do
     manifest_for = -> { load_manifest.call("powernode-hub-backend") }
 
@@ -147,11 +157,12 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
       expect(rails_setup.key?("capabilities")).to be(false)
     end
 
-    it "rails keeps an explicit [] and runs as a non-root user" do
+    it "rails inherits the module ceiling (no capabilities key) and runs as a non-root user" do
       rails = service_in.call(manifest_for.call, "rails")
       expect(rails).not_to be_nil
-      expect(rails.key?("capabilities")).to be(true)
-      expect(rails["capabilities"]).to eq([])
+      expect(rails.key?("capabilities")).to be(false),
+        "rails declares a service-level capabilities key; an explicit `[]` resolves to ZERO under the " \
+        "per-service resolver and strips the CAP_DAC_OVERRIDE its own boot-time Gemfile.lock rewrite needs"
       expect(rails["user"]).to be_present
       expect(rails["user"]).not_to eq("root")
     end

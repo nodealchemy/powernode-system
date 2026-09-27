@@ -31,6 +31,18 @@ require "rails_helper"
 # CAP_DAC_READ_SEARCH grant (see hub_worker_services_spec.rb and that
 # manifest's own comment for the parallel incident) — mirrored here
 # deliberately rather than invented fresh.
+#
+# RESURFACED AGAIN, 2026-09-27, this time on RAILS itself: the per-service
+# capabilities resolver (IMP-caef5c00d63f, agent/internal/runtime/
+# unit_capabilities.go) shipped between the incidents above and this one.
+# It honours a declared per-service `capabilities: []` as ZERO for that
+# one unit — which this spec previously asserted rails should carry,
+# believing (per this file's OWN earlier, now-corrected comment) that a
+# per-service key "never reaches the drop-in". It does. Rails' own boot
+# (Bundler.setup rewriting the root-owned server/Gemfile.lock) needs
+# CAP_DAC_OVERRIDE, so declaring `[]` there crash-looped rails with
+# CapEff=0. rails now has NO capabilities key at all and inherits the
+# ceiling, same as rails-setup.
 RSpec.describe "powernode-hub-backend module services" do
   let(:manifest_path) do
     Rails.root.join("../extensions/system/modules/powernode-hub-backend/manifest.yaml")
@@ -56,12 +68,15 @@ RSpec.describe "powernode-hub-backend module services" do
   # 2026-09-20/21, ops-hub: rails-setup.service died before rails' own
   # start job ever ran, because the module-level security policy left it
   # with an EMPTY CapabilityBoundingSet= while its whole purpose is
-  # chown/chmod. The grant MUST live in the TOP-LEVEL security block, not
-  # a per-service key — the agent's buildPolicy reads
-  # config["security"]["capabilities"] and applies that ONE module-level
-  # policy to every unit (reconcile.go: `for _, unit := range
-  # mf.UnitNames()`). A per-SERVICE `capabilities:` key never reaches the
-  # drop-in, so granting it there is a no-op that reads exactly like a fix.
+  # chown/chmod. The grant MUST live in the TOP-LEVEL security block —
+  # it's the ceiling every service with no capabilities key of its own
+  # inherits (buildPolicy reads config["security"]["capabilities"] into
+  # that ceiling; reconcile.go applies it per unit).
+  #
+  # A per-SERVICE `capabilities:` key is NOT a no-op, though (corrected
+  # 2026-09-27 — see the file-level comment above): the per-service
+  # resolver honours a declared key, `[]` included, as that unit's exact
+  # set. rails learned this the hard way when its own `[]` zeroed it out.
   describe "the module security policy" do
     let(:rails_setup_script) do
       Rails.root.join(
@@ -98,14 +113,18 @@ RSpec.describe "powernode-hub-backend module services" do
       expect(manifest.dig("security", "privileged")).to be false
     end
 
-    it "does NOT declare the grant on the per-service capabilities key instead (that key never reaches the drop-in)" do
+    it "rails inherits the module ceiling — neither service declares a per-service capabilities key" do
       rails_setup = services.find { |s| s["name"] == "rails-setup" }
       rails_service = services.find { |s| s["name"] == "rails" }
       # rails-setup has no structured `capabilities:` field at all (it's a
-      # raw unit_body); rails's own per-service field must stay empty —
-      # the grant belongs ONLY at the top level.
+      # raw unit_body). rails' own per-service field must be ABSENT, not
+      # an explicit `[]` — a declared `[]` is honoured as ZERO by the
+      # per-service resolver (IMP-caef5c00d63f) and crash-loops rails,
+      # which needs CAP_DAC_OVERRIDE for its own boot-time Gemfile.lock
+      # rewrite. The grant lives ONLY at the top level; both services
+      # inherit it.
       expect(rails_setup["capabilities"]).to be_nil
-      expect(rails_service["capabilities"]).to eq([])
+      expect(rails_service).not_to have_key("capabilities")
     end
   end
 end
