@@ -97,7 +97,11 @@ func (r *Reconciler) selfHostState() selfHostState {
 	if r.cfg.PlatformURL == "" {
 		// No platform configured at all means no self-hosting is even
 		// possible — a definite No, not an Unknown withholding restarts
-		// for no reason.
+		// for no reason. UNCHANGED by round Z: Z2's own empty-PlatformURL
+		// caveat is scoped to restartPermitted's OWN decision only (see
+		// that function's doc) — selfHosted()/filterUnsafeDetaches keep
+		// this exact pre-Z2 reading, so an unconfigured node's detach
+		// behaviour is untouched by Z2.
 		return selfHostNo
 	}
 
@@ -138,15 +142,79 @@ func (r *Reconciler) selfHosted() bool {
 	return r.selfHostState() != selfHostNo
 }
 
+// hubModuleNames (round Z, Z2) is the pinned control-plane identity check —
+// the same approach as qgaModuleName (security_dropins.go's own recovery-
+// channel pin): the agent has no other reliable per-module identity signal
+// today, so this is matched by NAME from the manifest, and publishing a
+// signed module under one of these exact names to the shared catalog is
+// itself a privileged, server-gated action, so an arbitrary untrusted
+// manifest cannot simply declare its way into one.
+//
+// TODO(server): deliver a proper allowlist/exemption field from the
+// platform instead of pinning by name — this is the interim fix, same
+// caveat as qgaModuleName's own TODO.
+var hubModuleNames = map[string]bool{
+	"powernode-hub-backend":      true,
+	"powernode-hub-worker":       true,
+	"powernode-extension-system": true,
+}
+
+// hostsControlPlaneModule reports whether attached names ANY pinned
+// control-plane module (round Z, Z2) — FAIL SAFE: a module this tick could
+// not resolve a manifest for, or one whose manifest carries no Name at all,
+// counts AS a control-plane module. This is a POSITIVE PROOF requirement,
+// not an absence-of-evidence one: restartPermitted (below) must be able to
+// point at a resolved, non-hub name for EVERY attached module before it can
+// conclude this node does not host the control plane — it is not enough
+// that nothing LOOKS like a hub module.
+func hostsControlPlaneModule(attached []mount.Module, manifests map[string]*manifest.Manifest) bool {
+	for _, mod := range attached {
+		mf, ok := manifests[mod.ID]
+		if !ok || mf == nil || mf.Name == "" {
+			return true
+		}
+		if hubModuleNames[mf.Name] {
+			return true
+		}
+	}
+	return false
+}
+
 // restartPermitted reports whether a live restart is safe to issue at all
-// (round Y). Only Unknown->No is unsafe territory this function refuses:
-// Unknown is treated the SAME as Yes here (never permit), closing N2 —
-// see selfHostState's own doc for the outage that treating it like a
-// remote node caused. Every restart site in this package (R1's
-// ConfinementChangedUnits-driven restart, R2's level self-heal) must gate
-// on this, never on `!selfHosted()` directly.
+// (round Y, extended round Z Z2). ALL of the following must hold:
+//
+//  1. cfg.PlatformURL is non-empty. Scoped to THIS function only — an
+//     unconfigured PlatformURL still reads as selfHostState()==No for
+//     every OTHER caller (selfHosted(), filterUnsafeDetaches): widening
+//     that would be scope creep for what this round is about, and every
+//     real production agent has a PlatformURL configured regardless. But
+//     restartPermitted's own bar is stricter by design (Z2's positive-proof
+//     requirement, point 3 below) — an agent that was never TOLD its
+//     platform's address has no basis to positively conclude it is safe to
+//     restart one of its own units, so this one caller alone refuses on
+//     empty rather than falling through to selfHostState's own No default.
+//  2. selfHostState() == No: Unknown is treated the SAME as Yes (never
+//     permit), closing N2 — see selfHostState's own doc for the outage
+//     that treating it like a remote node caused.
+//  3. r.hostsControlPlaneModule is false: a POSITIVE, per-tick proof (set
+//     once per RunOnce pass from hostsControlPlaneModule, above) that NONE
+//     of this node's currently attached modules resolves to a pinned
+//     control-plane name. DNS/interface resolution alone was never a
+//     complete proxy for "this node does not host the control plane" — a
+//     node can host the hub while its own PlatformURL happens to resolve
+//     to a different local address (a load balancer, a second interface),
+//     or before DNS the operator meant to point at itself is even wired
+//     up. This is the independent, local signal that does not depend on
+//     resolving anything over the network at all.
+//
+// Every restart site in this package (R1's ConfinementChangedUnits-driven
+// restart is the only one left — R2's level self-heal was deleted in round
+// Z Z1) must gate on this, never on `!selfHosted()` directly.
 func (r *Reconciler) restartPermitted() bool {
-	return r.selfHostState() == selfHostNo
+	if r.cfg.PlatformURL == "" {
+		return false
+	}
+	return r.selfHostState() == selfHostNo && !r.hostsControlPlaneModule
 }
 
 // filterUnsafeDetaches drops service-bearing modules from a detach set when

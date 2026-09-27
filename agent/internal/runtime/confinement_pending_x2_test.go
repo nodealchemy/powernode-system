@@ -32,6 +32,12 @@ func TestReconcile_FreshAttachRestartsAPreStartedUnitWithStaleConfinement(t *tes
 	t.Cleanup(security.SetSystemdDropInRootForTest(t.TempDir()))
 	unit := lifecycle.UnitName("m1", "qga")
 
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
+
 	svc := manifest.Service{Name: "qga", StartCommand: "/usr/sbin/qemu-ga", RestartPolicy: "always"}
 	body := lifecycle.RenderUnitModeGraph(svc, "m1", lifecycle.RootModeNative, nil)
 	if err := os.MkdirAll(lifecycle.UnitDir(), 0o755); err != nil {
@@ -60,6 +66,12 @@ func TestAttachOne_RestartsAPreStartedUnitWithStaleConfinement(t *testing.T) {
 	r, _, runner, _ := firstAttachRefusalFixture(t)
 	t.Cleanup(security.SetSystemdDropInRootForTest(t.TempDir()))
 	unit := lifecycle.UnitName("m1", "qga")
+
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
 
 	svc := manifest.Service{Name: "qga", StartCommand: "/usr/sbin/qemu-ga", RestartPolicy: "always"}
 	body := lifecycle.RenderUnitModeGraph(svc, "m1", lifecycle.RootModeNative, nil)
@@ -95,6 +107,12 @@ func TestAttachOne_RestartsAPreStartedUnitWithStaleConfinement(t *testing.T) {
 func TestReconcile_NeverTouchedRevertAppliesAConcurrentConfinementChange(t *testing.T) {
 	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
 	appUnit := lifecycle.UnitName("m1", "app")
+
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
 
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce pass 1: %v", err)

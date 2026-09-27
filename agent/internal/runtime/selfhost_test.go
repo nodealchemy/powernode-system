@@ -78,6 +78,33 @@ func TestSelfHosted_FalseWhenPlatformURLIsUnset(t *testing.T) {
 	}
 }
 
+// TestEmptyPlatformURL_RestartRefusedButDetachStillAllowed pins round Z's
+// Z2 split explicitly (operator decision: the narrow option): an empty
+// PlatformURL is unsafe territory ONLY for restartPermitted's own decision
+// — selfHostState()/selfHosted()/filterUnsafeDetaches are UNCHANGED and
+// still read it as a definite No, so an unconfigured node's detaches
+// proceed exactly as before Z2. Widening filterUnsafeDetaches' own
+// behaviour here would have been scope creep this round.
+func TestEmptyPlatformURL_RestartRefusedButDetachStillAllowed(t *testing.T) {
+	withLookups(t, nil, []string{"192.0.2.227"}, nil)
+	r := selfHostReconciler(t, "")
+
+	if r.restartPermitted() {
+		t.Error("Z2 REGRESSION: restartPermitted() must refuse on an empty PlatformURL")
+	}
+	if r.selfHostState() != selfHostNo {
+		t.Errorf("selfHostState() = %v, want selfHostNo — Z2's empty-PlatformURL caveat is scoped to restartPermitted only, not the shared primitive", r.selfHostState())
+	}
+	if r.selfHosted() {
+		t.Error("Z2 REGRESSION: selfHosted() must stay false on an empty PlatformURL — unaffected by Z2's restart-only scope")
+	}
+
+	kept := r.filterUnsafeDetaches(mount.ModuleStack{svcMod, contentMod}, nil, fixtureMfs)
+	if len(kept) != 2 {
+		t.Errorf("Z2 REGRESSION: filterUnsafeDetaches must still detach normally on an empty PlatformURL, got kept=%v (want both svcMod and contentMod)", kept)
+	}
+}
+
 // --- the guard itself ----------------------------------------------------
 
 func detachFixture(t *testing.T, selfHosted bool) *Reconciler {

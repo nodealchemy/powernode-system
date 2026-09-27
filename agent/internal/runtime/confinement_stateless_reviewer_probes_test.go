@@ -429,6 +429,12 @@ func TestConfinementProbe_NonSelfHostedEdgeRestartFailureIsTransient(t *testing.
 	r, client, runner, _, manifestRoot, _ := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
+
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce tick 1: %v", err)
 	}

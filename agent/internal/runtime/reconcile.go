@@ -305,6 +305,16 @@ type Reconciler struct {
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
 
+	// hostsControlPlaneModule (round Z, Z2) is set ONCE per RunOnce pass —
+	// see hostsControlPlaneModule's own doc (selfhost.go) and this pass'
+	// own computation right after state loads — to whether any currently
+	// attached module resolves (by name) to the pinned control-plane list,
+	// fail-safe on an unresolved name. restartPermitted consults this
+	// alongside selfHostState() so a restart requires POSITIVE local proof
+	// on BOTH axes, not resolver-only evidence. Touched only from inside
+	// RunOnce, which holds mu for its own body — no lock of its own.
+	hostsControlPlaneModule bool
+
 	// confinementStaleUnits (round Y, IMP-caef5c00d63f — confinement_probe.go)
 	// is the LAST PUBLISHED set of units whose running capabilities diverge
 	// from their manifest's declared ceiling, mirroring securityFailClosedUnits'
@@ -793,6 +803,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		assignedIDs[mod.ID] = true
 	}
 	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
+
+	// Round Z (Z2): compute THIS tick's own positive-proof signal for
+	// restartPermitted (selfhost.go) — after the rebase has settled
+	// current.AttachedModules, before any attach/reattach loop can restart
+	// anything. See hostsControlPlaneModule's own doc for the fail-safe
+	// (an attached module whose manifest this tick could not resolve, or
+	// whose Name is empty, counts AS control-plane).
+	r.hostsControlPlaneModule = hostsControlPlaneModule(current.AttachedModules, manifests)
 
 	// O7 (review round 12): bootstrap the N3 attached-snapshot store for any
 	// module whose CURRENTLY attached digest has no snapshot of its own yet —

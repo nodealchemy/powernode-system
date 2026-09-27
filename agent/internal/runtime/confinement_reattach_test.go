@@ -69,6 +69,12 @@ func TestReconcile_ConfinementOnlyChangeRestartsActiveUnitOnLiveReattach(t *test
 	r, client, runner, _, manifestRoot, _ := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
+
 	// TICK 1: clean attach.
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce tick 1: %v", err)
@@ -154,6 +160,12 @@ func TestReconcile_ConfinementOnlyChangeSelfHostedWithholdsRestartButStillStamps
 func TestReconcile_NewBootCompositionRewritesADivergentDropInAndW1ThenApplies(t *testing.T) {
 	r, _, runner, statePath, _, dropIns := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
+
+	// Round Z (Z2): restartPermitted() now refuses outright on an empty
+	// PlatformURL — an explicit, clearly-remote platform is required for
+	// this fixture to model the "ordinary node" it always intended to.
+	r.cfg.PlatformURL = "https://ops-hub.example.test"
+	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
 
 	// Pin this test to a NATIVE (pivot) root and a controllable boot
 	// breadcrumb — confinementRecheckKey (confinement_recheck.go) declines
