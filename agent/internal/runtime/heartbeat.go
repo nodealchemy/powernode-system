@@ -176,6 +176,18 @@ type HeartbeatPayload struct {
 	// persist across for a condition that can appear and clear mid-uptime.
 	// Empty/omitted means no live runtime-path refusal right now.
 	RuntimeSecurityFailClosedUnits []string `json:"runtime_security_fail_closed_units,omitempty"`
+	// RuntimeConfinementStaleUnits (round Y, IMP-caef5c00d63f) names units
+	// the most recently completed reconcile pass found running with
+	// capabilities that diverge from their manifest's current declaration —
+	// either direction (wider, a genuine gap the agent may or may not have
+	// been permitted to self-heal via a restart; narrower, a harmless
+	// self-narrowing) — see confinement_probe.go's own doc for the
+	// predicate. Read straight from the Reconciler (ConfinementStaleUnits),
+	// recomputed fresh every tick from /proc, never persisted: a fresh
+	// agent process simply omits this until its own first pass runs.
+	// Empty/omitted means every attached, N4-eligible unit's running
+	// capabilities currently match what its manifest declares.
+	RuntimeConfinementStaleUnits []string `json:"runtime_confinement_stale_units,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

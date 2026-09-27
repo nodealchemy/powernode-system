@@ -809,6 +809,8 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	// Reconciler only in a test/constructor path that never called Run.
 	if s.reconciler != nil {
 		payload.RuntimeSecurityFailClosedUnits = s.reconciler.SecurityFailClosedUnits()
+		// Round Y: stale-confinement visibility, same nil-Reconciler guard.
+		payload.RuntimeConfinementStaleUnits = s.reconciler.ConfinementStaleUnits()
 	}
 	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
 		payload.LKGPresent = true

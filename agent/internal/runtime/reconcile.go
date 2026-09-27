@@ -305,6 +305,28 @@ type Reconciler struct {
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
 
+	// confinementStaleUnits (round Y, IMP-caef5c00d63f — confinement_probe.go)
+	// is the LAST PUBLISHED set of units whose running capabilities diverge
+	// from their manifest's declared ceiling, mirroring securityFailClosedUnits'
+	// own atomic-pointer publish pattern: one Store call at the end of each
+	// reconcileStaleConfinement pass, read by ConfinementStaleUnits() (in
+	// turn by buildHeartbeat) from any goroutine without a lock. Recomputed
+	// from scratch every tick — nothing here is loaded from state.json on
+	// startup, unlike securityFailClosedUnits' own boot-time seed, since a
+	// fresh agent process has no need to CARRY FORWARD a stale-confinement
+	// verdict: the next tick's own /proc probe re-derives it immediately.
+	confinementStaleUnits atomic.Pointer[[]string]
+
+	// levelRestartAt (round Y) is R2's own per-unit backoff — the last time
+	// this process issued (or attempted) a level-triggered restart for a
+	// unit found wider than its declared ceiling, keyed by unit name.
+	// SUPPRESSION-ONLY state: losing it (an agent restart) can only DELAY a
+	// restart R2 would otherwise have skipped, never CAUSE one — the next
+	// tick's probe still has to independently find the unit wider before R2
+	// does anything at all. Touched only from inside RunOnce, which holds mu
+	// for its own body, so this needs no lock of its own.
+	levelRestartAt map[string]time.Time
+
 	// Boot state rebase bookkeeping (see state_rebase.go), guarded by mu —
 	// only RunOnce touches it. stateRebaseActive holds the condition ids the
 	// last evaluation raised (a condition is signalled when it newly appears);
@@ -2031,6 +2053,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// attach loops and every upgrade have settled for this tick, over
 	// current.AttachedModules' own final state.
 	r.reconfirmConfinementIfNeeded(ctx, current, manifests)
+
+	// Round Y (IMP-caef5c00d63f): the stateless confinement-staleness pass —
+	// see confinement_probe.go's own doc. Runs after the recheck above (so a
+	// drop-in it just rewrote is probed against its OWN fresh write, not a
+	// stale one) and before reportKnownDegradedUnits, over every attached,
+	// manifest-resolved, N4-eligible module's own units.
+	r.reconcileStaleConfinement(ctx, current, manifests)
 
 	// V1 (delta review on 83d056ea, point 3 — visibility): re-check every
 	// unit an earlier V1 exemption let commit despite it, on EVERY ordinary
