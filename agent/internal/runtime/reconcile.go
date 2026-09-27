@@ -25,6 +25,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
+	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -1692,6 +1693,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						// re-target branch (upgrade.go) already resets it before
 						// this would otherwise matter.
 						current.AttachedModules[i].PendingRevertAttemptsReset = false
+						// V1 (delta review on 83d056ea): this episode's own
+						// pre-upgrade baseline is resolved along with everything
+						// else it was captured for.
+						current.AttachedModules[i].PendingPreUpgradeFailed = nil
 					}
 				}
 				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
@@ -1805,6 +1810,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						// has genuinely completed — per team-lead's explicit
 						// instruction, in BOTH revert-completion branches.
 						current.AttachedModules[i].PendingRevertAttemptsReset = false
+						// V1 (delta review on 83d056ea): same reasoning, both
+						// revert-completion branches.
+						current.AttachedModules[i].PendingPreUpgradeFailed = nil
 					}
 				}
 				// N7 (review round 11): the abandoned target's persisted drop-in
@@ -1982,6 +1990,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		sort.Strings(current.UnmaterializedModules)
 	}
 
+	// V1 (delta review on 83d056ea, point 3 — visibility): re-check every
+	// unit an earlier V1 exemption let commit despite it, on EVERY ordinary
+	// tick, not just while some OTHER bump is in flight — see this
+	// function's own doc for why nothing lighter already covers this.
+	r.reportKnownDegradedUnits(ctx, current)
+
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		r.lastError = fmt.Errorf("save state: %w", err)
 		return r.lastError
@@ -1997,6 +2011,45 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// ever learns what it is supposed to be running.
 	r.stagePendingCompose(desiredModules, manifests, assignmentMeta)
 	return nil
+}
+
+// reportKnownDegradedUnits (V1, delta review on 83d056ea, point 3 —
+// visibility) re-checks every unit an EARLIER V1 exemption let commit
+// despite a still-failing settle check, on EVERY ordinary reconcile tick —
+// not gated on a bump being in flight — so the module stays visibly
+// degraded rather than reporting once during the commit tick and going
+// quiet. Searched for a lighter existing signal first and found none:
+// ModuleVerifyState is opt-in per manifest (`verify:` probes — claude-tmux's
+// own credential unit, the motivating case, declares none), and
+// convergeFailures itself is reset every pass (same reason
+// resetSecurityFailClosed is) — nothing in this codebase already re-samples
+// an already-committed, otherwise-unchanged module's own unit health on a
+// steady-state tick. This reuses the EXISTING unconverged channel only; it
+// adds no new server-side lane, wire field, or sensor. A unit observed
+// active (or Result=="success" for the run-once units this exemption is
+// scoped to) is simply removed from state and stops being mentioned — no
+// separate "recovered" event, since silence IS the recovery signal every
+// other unconverged-channel consumer in this codebase already reads that
+// way.
+func (r *Reconciler) reportKnownDegradedUnits(ctx context.Context, current *mount.State) {
+	for i, m := range current.AttachedModules {
+		if len(m.KnownDegradedUnits) == 0 {
+			continue
+		}
+		var stillDegraded []string
+		for _, unit := range m.KnownDegradedUnits {
+			active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
+			result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
+			if active || result == "success" {
+				continue // recovered — drop it, no separate event
+			}
+			stillDegraded = append(stillDegraded, unit)
+			r.noteUnconverged("reconciler:known_degraded_unit", m.ID, fmt.Errorf(
+				"module %s: unit %s remains degraded (Result=%q) since an earlier upgrade committed despite it (V1: it was already failing before that whole episode started) — operator action needed (e.g. configure the missing credential); not blocking any commit, just staying visible until it recovers",
+				m.ID, unit, result))
+		}
+		current.AttachedModules[i].KnownDegradedUnits = stillDegraded
+	}
 }
 
 // stagePendingCompose records the currently-desired module set so the next boot

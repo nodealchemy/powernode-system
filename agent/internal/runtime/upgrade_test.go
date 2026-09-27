@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -5727,5 +5728,282 @@ func TestUpgradeModule_RegressedOneshotFailureStillBlocksCommit(t *testing.T) {
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Fatalf("V1 REGRESSION: a credential unit that SUCCEEDED before the bump and FAILS after it must still refuse the commit — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_RetryDoesNotLaunderOwnCrashIntoPreExisting is the delta
+// review's own HIGH repro (verified, DO-NOT-SHIP on 83d056ea's first cut):
+// credential succeeds BEFORE this episode. Its FIRST bump attempt crashes it
+// — a genuine regression, correctly refused. The SAME pending digest is then
+// RETRIED. Before this fix, the baseline capture had no gate at all — it was
+// re-sampled LIVE on every attempt: the retry's own live query for credential
+// reads OUR OWN previous attempt's crash (still Result=exit-code from the
+// first attempt) as "already failing", exempts it, and commits onto a unit
+// that is still genuinely crash-looping. Gating capture on
+// PendingDigestUnitsTouched (set unconditionally the FIRST time step 4 is
+// EVER attempted, before that attempt's own settle check can even run —
+// blocked or not, and sticky across a retry or a re-target) keeps the
+// ORIGINAL (credential-healthy) baseline in force on the retry, so it must
+// still refuse.
+func TestUpgradeModule_RetryDoesNotLaunderOwnCrashIntoPreExisting(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	// credential is HEALTHY before this episode — a properly configured node.
+	runner.StubOutput = map[string][]byte{
+		"systemctl show " + credentialUnit + " --property=Result --value": []byte("success\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, credential healthy): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// credential still reads "success" for the pre-upgrade capture (right
+	// before step 4) — the crash only shows up in the settle check
+	// afterward, flipped by the sleepForUpgradeSettle hook, exactly like
+	// TestUpgradeModule_RegressedOneshotFailureStillBlocksCommit.
+	resultKey := "systemctl show " + credentialUnit + " --property=Result --value"
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit: []byte("active\n"),
+		resultKey:                        []byte("success\n"),
+	}
+	origSleep := sleepForUpgradeSettle
+	sleepForUpgradeSettle = func(d time.Duration) {
+		runner.StubOutput[resultKey] = []byte("exit-code\n")
+		origSleep(d)
+	}
+	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, credential regresses, first attempt refused): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("precondition: expected m1 refused at d1 after the first (blocking) attempt, got digest=%q ok=%v", digest, ok)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 to remain after the blocked first attempt, got %q ok=%v", pd, ok)
+	}
+
+	// RETRY: same pending digest, credential is STILL "exit-code" (left over
+	// from pass 2's own crash — this is real, it genuinely did crash and has
+	// not been fixed). A live re-sample here would read that as "already
+	// failing" and wrongly exempt it.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (retry of the same d2): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("V1 REGRESSION (re-sample-on-retry mutant survives): a credential regression must still refuse the commit on a RETRY of the same digest — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_RetryWithPreExistingOneshotCommitsOnce is the delta
+// review's own required test: a GENUINE retry (multiple ticks, same pending
+// digest) where credential was ALREADY failing before this whole episode
+// started must still let the commit through — and exactly once, not on
+// every retry redundantly — once whatever ELSE was blocking the first
+// attempt (here, app transiently not yet settled) clears up.
+func TestUpgradeModule_RetryWithPreExistingOneshotCommitsOnce(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+	resultKey := "systemctl show " + credentialUnit + " --property=Result --value"
+	appActiveKey := "systemctl is-active " + appUnit
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	// credential is ALREADY misconfigured before this episode even starts.
+	runner.StubOutput = map[string][]byte{resultKey: []byte("exit-code\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, credential already misconfigured): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// First attempt: app itself transiently fails to settle (unrelated to
+	// credential) — genuinely blocking, on its own. credential's own
+	// baseline (already failing) is captured on THIS attempt.
+	runner.StubOutput = map[string][]byte{
+		appActiveKey: []byte("inactive\n"),
+		resultKey:    []byte("exit-code\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, app transiently unsettled): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("precondition: expected m1 refused at d1 after app's own transient failure, got digest=%q ok=%v", digest, ok)
+	}
+
+	// RETRY: app recovers, credential is STILL exit-code (genuinely,
+	// unchanged, exactly as its own persisted baseline already recorded).
+	preInvocations := len(runner.Invocations)
+	runner.StubOutput[appActiveKey] = []byte("active\n")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (retry, app recovers): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Fatalf("V1 REGRESSION: expected the retry to commit once its own genuine blocker (app) cleared, credential's pre-existing failure must not re-block it — got digest=%q ok=%v", digest, ok)
+	}
+	restarts := 0
+	for _, inv := range runner.Invocations[preInvocations:] {
+		if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, appUnit) &&
+			(containsArg(inv.Args, "start") || containsArg(inv.Args, "restart")) {
+			restarts++
+		}
+	}
+	if restarts != 1 {
+		t.Errorf("V1: expected %s restarted exactly once on the commit tick, got %d", appUnit, restarts)
+	}
+
+	// One more, unrelated tick: no further restart — committed once, not
+	// stuck retrying.
+	preInvocations = len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (steady state): %v", err)
+	}
+	for _, inv := range runner.Invocations[preInvocations:] {
+		if inv.Name == "systemctl" && inv.Op == "Run" && containsArg(inv.Args, appUnit) &&
+			(containsArg(inv.Args, "start") || containsArg(inv.Args, "restart")) {
+			t.Errorf("V1 REGRESSION: expected no further restart of %s once committed, got invocation: %v", appUnit, inv)
+		}
+	}
+}
+
+// TestUpgradeModule_PersistentUnitFailedBeforeAndAfterStillBlocks is V1
+// point 2 (delta review): the exemption is scoped to RUN-ONCE units only. A
+// PERSISTENT unit that was already crash-looping before this episode and is
+// still crash-looping after it must still refuse the commit — silently
+// letting a crash-looping daemon's digest commit is worse than refusing
+// forever, even though it technically matches the same "already failing
+// before, still failing after" shape a run-once unit would be exempted for.
+func TestUpgradeModule_PersistentUnitFailedBeforeAndAfterStillBlocks(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	// app is ALREADY crash-looping before this episode even starts — a
+	// PERSISTENT unit (no Type=oneshot signal anywhere: no unit_body, no
+	// live Type stub, no restart_policy:"never").
+	runner.StubOutput = map[string][]byte{
+		"systemctl show " + appUnit + " --property=Result --value": []byte("exit-code\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, app already crash-looping): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// Still crash-looping after the bump too — same shape.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, app still crash-looping): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("V1 REGRESSION: a PERSISTENT unit crash-looping before and after must still refuse the commit regardless of the pre-existing-failure exemption — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// knownDegradedUnits reads moduleID's KnownDegradedUnits (V1, delta review on
+// 83d056ea, point 3) — mirrors attachedDigest/pendingDigest's own shape.
+func knownDegradedUnits(t *testing.T, statePath, moduleID string) []string {
+	t.Helper()
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, m := range st.AttachedModules {
+		if m.ID == moduleID {
+			return m.KnownDegradedUnits
+		}
+	}
+	return nil
+}
+
+func convergenceFailuresContain(failures []string, substr string) bool {
+	for _, f := range failures {
+		if strings.Contains(f, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestUpgradeModule_KnownDegradedUnitStaysVisibleAcrossSteadyStateTicks is V1
+// point 3 (delta review): visibility. An exempted commit must not just log
+// once during the bump tick and fall silent — the minimum bar is that the
+// pre-existing failed unit keeps showing in the unconverged channel on EVERY
+// tick while it stays failed, and stops once it recovers.
+func TestUpgradeModule_KnownDegradedUnitStaysVisibleAcrossSteadyStateTicks(t *testing.T) {
+	credentialBody := loadModuleServiceUnitBody(t, "claude-tmux", "credential")
+	credentialService := unitBodyServiceJSON(t, "credential", credentialBody)
+
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credentialUnit := lifecycle.UnitName("m1", "credential")
+	resultKey := "systemctl show " + credentialUnit + " --property=Result --value"
+	appActiveKey := "systemctl is-active " + appUnit
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	// credential is ALREADY misconfigured before this episode even starts.
+	// app is healthy throughout — it must never block this scenario.
+	runner.StubOutput = map[string][]byte{
+		resultKey:    []byte("exit-code\n"),
+		appActiveKey: []byte("active\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, credential already misconfigured): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+credentialService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// Nothing else blocks this bump, so it commits on its first attempt,
+	// exempting credential's own pre-existing failure.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, credential's pre-existing failure exempted): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d2" {
+		t.Fatalf("precondition: expected the exempted commit to land on d2, got digest=%q ok=%v", digest, ok)
+	}
+	if degraded := knownDegradedUnits(t, statePath, "m1"); len(degraded) != 1 || degraded[0] != credentialUnit {
+		t.Fatalf("precondition: expected KnownDegradedUnits=[%s] after the exempted commit, got %v", credentialUnit, degraded)
+	}
+
+	// STEADY STATE: no upgrade in flight at all — credential is STILL
+	// exit-code, unchanged. It must keep showing in the unconverged channel
+	// on this ordinary tick, not just the commit tick.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (steady state, credential still degraded): %v", err)
+	}
+	if failures := r.ConvergenceFailures(); !convergenceFailuresContain(failures, "reconciler:known_degraded_unit") || !convergenceFailuresContain(failures, credentialUnit) {
+		t.Fatalf("V1 REGRESSION: expected pass 3 (a plain steady-state tick, no bump in flight) to keep reporting %s as degraded, got failures=%v", credentialUnit, failures)
+	}
+	if degraded := knownDegradedUnits(t, statePath, "m1"); len(degraded) != 1 || degraded[0] != credentialUnit {
+		t.Fatalf("expected KnownDegradedUnits to still name %s after pass 3, got %v", credentialUnit, degraded)
+	}
+
+	// RECOVERY: credential is fixed (operator configured it). The very next
+	// tick must stop reporting it and drop it from state — silence is the
+	// recovery signal, matching every other unconverged-channel consumer.
+	runner.StubOutput[resultKey] = []byte("success\n")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (credential recovers): %v", err)
+	}
+	if failures := r.ConvergenceFailures(); convergenceFailuresContain(failures, "reconciler:known_degraded_unit") {
+		t.Fatalf("V1 REGRESSION: expected pass 4 to stop reporting %s once recovered, got failures=%v", credentialUnit, failures)
+	}
+	if degraded := knownDegradedUnits(t, statePath, "m1"); len(degraded) != 0 {
+		t.Fatalf("expected KnownDegradedUnits to be cleared once %s recovered, got %v", credentialUnit, degraded)
 	}
 }

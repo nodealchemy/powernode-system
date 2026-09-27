@@ -113,6 +113,10 @@ type settleFailure struct {
 	unit               string
 	aerr               error
 	result, condResult string
+	// runsOnce (V1) is unitSettled's own run-once verdict for this unit —
+	// carried through so the pre-existing-failure exemption (scoped to
+	// run-once units only) never needs a second, independent query.
+	runsOnce bool
 }
 
 // unitRunsOnce decides whether unit is systemd-oneshot-shaped — settled
@@ -181,20 +185,27 @@ func unitBodyDeclaresOneshot(body string) bool {
 // Shared by upgradeModule's own settle-check loop and
 // recoverFromDepartingUnitConflict's post-recovery check (O1), so the two
 // call sites can never silently disagree about what "settled" means.
-func unitSettled(ctx context.Context, runner mount.Runner, unit string, svc manifest.Service) (settled bool, aerr error, result, condResult string) {
+//
+// runsOnce (V1, delta review on 83d056ea) is returned alongside everything
+// else — computed via the SAME unitRunsOnce call this predicate already
+// makes internally — so a caller that needs to know (upgradeModule's own
+// pre-existing-failure exemption, scoped to run-once units only) never
+// issues a second, independently-drifting live query for the same fact.
+func unitSettled(ctx context.Context, runner mount.Runner, unit string, svc manifest.Service) (settled bool, aerr error, result, condResult string, runsOnce bool) {
+	runsOnce = unitRunsOnce(ctx, runner, unit, svc)
 	active, aerr := systemd.IsActive(ctx, runner, unit)
 	if aerr == nil && active {
-		return true, aerr, "", ""
+		return true, aerr, "", "", runsOnce
 	}
 	result, _ = systemd.ShowProperty(ctx, runner, unit, "Result")
 	condResult, _ = systemd.ShowProperty(ctx, runner, unit, "ConditionResult")
 	if condResult == "no" {
-		return true, aerr, result, condResult
+		return true, aerr, result, condResult, runsOnce
 	}
-	if unitRunsOnce(ctx, runner, unit, svc) && result == "success" {
-		return true, aerr, result, condResult
+	if runsOnce && result == "success" {
+		return true, aerr, result, condResult, runsOnce
 	}
-	return false, aerr, result, condResult
+	return false, aerr, result, condResult, runsOnce
 }
 
 // moduleUpgrade pairs a version bump's OLD (currently-attached) and NEW
@@ -627,35 +638,63 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		svcByUnit[lifecycle.UnitName(newMod.ID, svc.Name)] = svc
 	}
 
-	// V1 (live rehearsal on VM 9002, HIGH): record each new-manifest unit's
-	// OWN pre-upgrade state — ActiveState (is-active) and Result — right
-	// before step 4 restarts anything. unitSettled's own post-restart check
-	// has no memory of what a unit's state was BEFORE this attempt: a
-	// oneshot that legitimately fails for a reason entirely unrelated to the
-	// digest bump (e.g. claude-tmux's credential unit on a node with no
-	// Claude credential configured — HTTP 404, operator configuration, not a
-	// regression) failed identically before this bump too. Without this,
-	// that unit refused the commit on EVERY attempt forever, and each
-	// backoff retry force-restarted every OTHER active unit of the module
-	// (M1's own ForceRestartActive) right along with it — the live tmux
-	// session bounced roughly every 5 minutes, fleet-wide, on any node with
-	// this same configuration gap. Only used for a unit this OLD digest
-	// already owned (oldUnitSet below) — a unit new-this-upgrade has no
-	// "before" state to compare against and is judged on its own, same as
-	// today.
-	type preUpgradeUnitState struct {
-		active bool
-		result string
-	}
-	preUpgradeStates := make(map[string]preUpgradeUnitState, len(newMf.UnitNames()))
-	for _, unit := range newMf.UnitNames() {
-		active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
-		result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
-		preUpgradeStates[unit] = preUpgradeUnitState{active: active, result: result}
-	}
 	oldUnitSet := make(map[string]bool, len(oldUnits))
 	for _, u := range oldUnits {
 		oldUnitSet[u] = true
+	}
+
+	// V1 (delta review, HIGH — corrects this same round's own first attempt,
+	// verified DO-NOT-SHIP): the EPISODE's baseline — which units this OLD
+	// digest already owned were ALREADY inactive with a non-success Result —
+	// must be captured ONCE, the first time step 4 is EVER attempted for
+	// this episode, and PERSISTED. Gated directly on PendingDigestUnitsTouched
+	// (no separate flag needed): that field is set true a few lines above,
+	// unconditionally, right before step 4 ever issues its first restart —
+	// BEFORE that attempt's own settle check runs, so before it can be known
+	// to block or pass — and per P2 (review round 13, see its own doc on
+	// mount.Module) is deliberately NEVER reset on a re-target to a
+	// different digest, only at commit or revert. So old.PendingDigestUnitsTouched
+	// is already exactly "has step 4 ever been attempted for this episode",
+	// true from the first attempt onward regardless of outcome, and sticky
+	// across a re-target — precisely the gate this baseline needs. Without
+	// gating on it (this round's own first cut had no gate at all), a retry
+	// of a digest that keeps correctly BLOCKING — step 4 genuinely restarts
+	// the unit every attempt, it genuinely crashes every time — would
+	// re-sample live on each retry and read OUR OWN previous attempt's
+	// crash as "already failing", laundering a genuine regression into
+	// looking pre-existing and letting the commit land on a crash-looping
+	// unit.
+	var preUpgradeFailed map[string]bool
+	if old.PendingDigestUnitsTouched {
+		preUpgradeFailed = make(map[string]bool, len(old.PendingPreUpgradeFailed))
+		for _, u := range old.PendingPreUpgradeFailed {
+			preUpgradeFailed[u] = true
+		}
+	} else {
+		var failedNow []string
+		for _, unit := range newMf.UnitNames() {
+			if !oldUnitSet[unit] {
+				continue // new-this-upgrade: no "before" state to capture
+			}
+			active, _ := systemd.IsActive(ctx, r.cfg.MountRunner, unit)
+			result, _ := systemd.ShowProperty(ctx, r.cfg.MountRunner, unit, "Result")
+			if !active && result != "success" {
+				failedNow = append(failedNow, unit)
+			}
+		}
+		preUpgradeFailed = make(map[string]bool, len(failedNow))
+		for _, u := range failedNow {
+			preUpgradeFailed[u] = true
+		}
+		for i, m := range current.AttachedModules {
+			if m.ID == old.ID {
+				current.AttachedModules[i].PendingPreUpgradeFailed = failedNow
+				break
+			}
+		}
+		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+			r.cfg.OnError("reconciler:upgrade_pending_save", fmt.Errorf("module %s: could not persist the pre-upgrade baseline before this episode's first restart: %w", newMod.ID, err))
+		}
 	}
 
 	// Step 4: write the new digest's unit files and FORCE-restart every unit
@@ -724,26 +763,34 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
 	var failures []settleFailure
 	for _, unit := range newMf.UnitNames() {
-		if settled, aerr, result, condResult := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
-			failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult})
+		if settled, aerr, result, condResult, runsOnce := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
+			failures = append(failures, settleFailure{unit: unit, aerr: aerr, result: result, condResult: condResult, runsOnce: runsOnce})
 		}
 	}
 
-	// V1: split failures into BLOCKING and pre-existing (non-blocking).
-	// Keep blocking a unit that is new-this-upgrade (oldUnitSet doesn't name
-	// it — it has no "before" state to compare, same as today), or one that
-	// WAS active or Result=="success" before this attempt and fails now —
-	// that IS a regression this digest introduced. A unit this OLD digest
-	// already owned, already inactive with a non-success Result BEFORE step
-	// 4, and still exactly that after it, is not new information: report it
-	// through the unconverged channel as a non-blocking warning and let the
-	// commit proceed.
+	// V1 (delta review, HIGH — corrects this same round's own first attempt):
+	// split failures into BLOCKING and pre-existing (non-blocking), using the
+	// EPISODE's persisted baseline (preUpgradeFailed, captured once above),
+	// never a fresh live sample — a live re-sample on a RETRY reads OUR OWN
+	// previous attempt's crash as "already failing" and launders a genuine
+	// regression into looking pre-existing. Keep blocking:
+	//   - a unit that is new-this-upgrade (oldUnitSet doesn't name it — no
+	//     "before" state exists to compare, same as today);
+	//   - a unit the baseline does NOT name (it was fine at episode start,
+	//     fails now — a genuine regression this digest introduced);
+	//   - a PERSISTENT unit, baseline or not: silently committing a
+	//     crash-looping daemon is worse than refusing forever, so the
+	//     exemption is scoped to run-once (oneshot) units only.
+	// Otherwise (old, baseline-failed, run-once): not new information, so it
+	// no longer blocks — reported through the unconverged channel instead,
+	// and (KnownDegradedUnits, set at commit below) kept visible on every
+	// later steady-state tick for as long as it stays failed.
+	var exemptedThisAttempt []string
 	if len(failures) > 0 {
 		var blocking []settleFailure
 		var preExisting []settleFailure
 		for _, f := range failures {
-			pre, wasOld := preUpgradeStates[f.unit]
-			if !oldUnitSet[f.unit] || !wasOld || pre.active || pre.result == "success" {
+			if !oldUnitSet[f.unit] || !preUpgradeFailed[f.unit] || !f.runsOnce {
 				blocking = append(blocking, f)
 				continue
 			}
@@ -751,8 +798,9 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		}
 		failures = blocking
 		for _, f := range preExisting {
+			exemptedThisAttempt = append(exemptedThisAttempt, f.unit)
 			r.noteUnconverged("reconciler:upgrade_settle_check_pre_existing", newMod.ID, fmt.Errorf(
-				"module %s: unit %s did not settle after restart, but it was ALREADY inactive with Result=%q before this upgrade attempt too — not a regression this digest introduced (operator configuration, e.g. an unconfigured credential), proceeding with the commit",
+				"module %s: unit %s did not settle after restart, but it was ALREADY failing before this whole upgrade episode started (Result=%q) — not a regression this digest introduced (operator configuration, e.g. an unconfigured credential), proceeding with the commit; it will keep showing here on every tick until it recovers",
 				newMod.ID, f.unit, f.result))
 		}
 	}
@@ -840,6 +888,24 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// this makes that later cleanup tick a no-op for THIS case (nothing left
 	// to prune) rather than removing its job.
 	newMod.Units = newMf.UnitNames()
+	// V1: carry KnownDegradedUnits onto the committed entry — UNLIKE every
+	// Pending* field, this one deliberately survives the commit (see its own
+	// doc on mount.Module) so RunOnce's steady-state pass keeps reporting it.
+	// Union this attempt's own newly-exempted unit(s) with whatever the OLD
+	// entry already carried, filtered to units the NEW manifest still names
+	// (a renamed/removed unit's stale degraded marker would otherwise check
+	// a name that no longer exists, forever).
+	newUnitSet := make(map[string]bool, len(newMf.UnitNames()))
+	for _, u := range newMf.UnitNames() {
+		newUnitSet[u] = true
+	}
+	var carriedDegraded []string
+	for _, u := range old.KnownDegradedUnits {
+		if newUnitSet[u] {
+			carriedDegraded = append(carriedDegraded, u)
+		}
+	}
+	newMod.KnownDegradedUnits = unionStrings(carriedDegraded, exemptedThisAttempt)
 	replaced := false
 	dedup := make([]mount.Module, 0, len(current.AttachedModules))
 	for _, m := range current.AttachedModules {
@@ -1034,7 +1100,7 @@ func (r *Reconciler) recoverFromDepartingUnitConflict(ctx context.Context, curre
 	sleepForUpgradeSettle(r.cfg.UpgradeSettleWindow)
 	recovered := true
 	for _, unit := range failedUnits {
-		if settled, _, _, _ := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
+		if settled, _, _, _, _ := unitSettled(ctx, r.cfg.MountRunner, unit, svcByUnit[unit]); !settled {
 			recovered = false
 		}
 	}

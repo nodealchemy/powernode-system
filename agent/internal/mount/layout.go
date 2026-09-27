@@ -311,6 +311,54 @@ type Module struct {
 	// attempt begins, so a LATER bump's own episode starts with a clean
 	// slate for this tracking too.
 	PendingRevertAttemptsReset bool `json:"PendingRevertAttemptsReset,omitempty"`
+	// PendingPreUpgradeFailed (V1, delta review on 83d056ea, HIGH) is the
+	// EPISODE's own baseline: the names of every unit this OLD digest
+	// already owned that was ALREADY inactive with a non-success Result
+	// BEFORE this stuck-upgrade episode's very FIRST step-4 restart attempt
+	// — captured ONCE and never re-sampled on a retry. Without persisting
+	// this, a live re-sample on every retry attempt reads OUR OWN previous
+	// attempt's own crash as "already failing" the moment step 4 restarts a
+	// unit and it dies — laundering a genuine regression this digest
+	// introduced into looking pre-existing, and letting the commit land on
+	// a crash-looping unit.
+	//
+	// Gated directly on PendingDigestUnitsTouched — no separate "already
+	// captured" flag needed. That field is set true unconditionally, right
+	// before step 4 ever issues its first restart for this episode (see its
+	// own doc, above), BEFORE that attempt's own settle check can even run,
+	// so it is already true from the first attempt onward regardless of
+	// whether that attempt goes on to block or pass. And per P2 (review
+	// round 13, see PendingDigestUnitsTouched's own doc) it is deliberately
+	// NEVER reset on a re-target to a different digest, only at commit or
+	// revert — so an episode stuck refusing on the SAME digest, retry after
+	// retry, or one that re-targets mid-episode, both read it as already
+	// true and reuse the SAME baseline rather than recapturing (the units
+	// may already carry an earlier attempt's own damage by then, which is
+	// exactly what re-sampling here would launder). An earlier round of
+	// this fix added a second, parallel bool for this gate on the mistaken
+	// belief that PendingDigestUnitsTouched only becomes true once a settle
+	// check passes; direct code reading and a debug-instrumented test run
+	// disproved that (it is set before step 4 even runs), so the extra
+	// field was removed as redundant.
+	//
+	// Cleared alongside PendingDigestUnitsTouched/PendingIntroducedUnits/
+	// PendingTouchedDigests: at commit (the replacing entry carries none of
+	// this episode's own Pending* fields) or at revert (reconcile.go's own
+	// clearing loops, both branches).
+	PendingPreUpgradeFailed []string `json:"PendingPreUpgradeFailed,omitempty"`
+	// KnownDegradedUnits (V1, delta review on 83d056ea) names a run-once
+	// unit whose commit was let through despite a still-failing settle check
+	// because PendingPreUpgradeFailed proved it was already broken before
+	// this episode ever started (see applyIdentityAndSudoers's sibling,
+	// upgradeModule's own settle classification). UNLIKE every Pending*
+	// field above, this SURVIVES the commit — carried onto the fresh
+	// committed entry at step 7 — specifically so the module stays visibly
+	// degraded afterward rather than reporting once during the bump tick and
+	// falling silent: RunOnce's own steady-state pass (reportKnownDegradedUnits)
+	// re-checks every named unit on EVERY ordinary tick, keeps reporting it
+	// through the same unconverged channel for as long as it stays failed,
+	// and removes it the first tick it is observed genuinely healthy again.
+	KnownDegradedUnits []string `json:"KnownDegradedUnits,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result
