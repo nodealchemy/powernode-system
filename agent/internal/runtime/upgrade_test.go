@@ -5358,3 +5358,80 @@ func TestUpgradeModule_UnapprovedPrivilegedRefusalNeverTouchesRunningCapabilitie
 		t.Errorf("U2 REGRESSION: an unapproved-privileged bump refusal must leave the running unit's capabilities.conf byte-identical, got:\n%s\nwant:\n%s", gotBody, preAttemptState)
 	}
 }
+
+// otherModuleFixtureWithUser is m2's own counterpart to
+// upgradeModuleFixtureWithUser (which hardcodes "id":"m1") — used to
+// construct a SECOND module bumping in the same tick as m1.
+func otherModuleFixtureWithUser(digest, userName string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m2", "name":"other-mod",
+			"priority":200, "effective_priority":200,
+			"digest":"%s",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"users": [{"name":%q,"uid":6001,"primary_gid":6001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
+			"groups": [{"name":%q,"gid":6001}],
+			"services": [%s]
+		}
+	}`, digest, userName, userName, userName, userName, upgradeAppService)
+}
+
+// TestUpgradeModule_SecondBumpInSameTickSeesFirstBumpsNewUser is U1 (final
+// delta review, MEDIUM, verified): m1 (priority 100) bumps d1->d2 (adds
+// d2user) and m2 (priority 200) bumps e1->e2 (adds e2user) in the SAME
+// tick — sortedBumps processes m1 first. Before this fix, m2's own
+// pre-step-4 render read r.tickIdentityManifests exactly as RunOnce's own
+// render left it BEFORE m1 ran: still carrying m1's OLD side, not d2 —
+// d2user (and d2's own sudoers grants) would vanish from the render for the
+// rest of the tick, even though m1's own bump just applied and restarted
+// under d2. Any d2 crash-restart in that window hits 217/USER. The tick's
+// LAST identity render (m2's own pre-step-4 call) must include BOTH bumps'
+// new users.
+func TestUpgradeModule_SecondBumpInSameTickSeesFirstBumpsNewUser(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	otherUnit := lifecycle.UnitName("m2", "app")
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other-mod", "priority":200, "effective_priority":200, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d1", upgradeAppService, "d1user")
+	client.responses["/api/v1/system/node_api/modules/m2"] = otherModuleFixtureWithUser("e1", "e1user")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach d1, e1): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	client.responses["/api/v1/system/node_api/modules/m2"] = otherModuleFixtureWithUser("e2", "e2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	backdateManifestCache(t, manifestRoot, "m2")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit:   []byte("active\n"),
+		"systemctl is-active " + otherUnit: []byte("active\n"),
+	}
+
+	var sets [][]string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		var u []string
+		for _, x := range set.Users {
+			u = append(u, x.Name)
+		}
+		sets = append(sets, u)
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (both m1 and m2 bump): %v", err)
+	}
+	if len(sets) == 0 {
+		t.Fatalf("expected at least one identity render this tick")
+	}
+	final := sets[len(sets)-1]
+	t.Logf("identity renders this tick: %v", sets)
+	if !containsArg(final, "d2user") || !containsArg(final, "e2user") {
+		t.Fatalf("U1 REGRESSION: the tick's final render must include BOTH bumps' new users, got %v", final)
+	}
+}

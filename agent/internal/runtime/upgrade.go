@@ -516,6 +516,20 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}
+	// U1 (final delta review, MEDIUM): a SECOND bump processed later in this
+	// SAME tick's sortedBumps loop would otherwise render from
+	// r.tickIdentityManifests exactly as RunOnce's own render left it BEFORE
+	// this bump ran — still carrying THIS module's own old ∪ touched side,
+	// not newMf. That second bump's own pre-step-4 render (and, if it never
+	// reaches this point, RunOnce's end-of-tick save/next-tick render) would
+	// silently drop newMf's own new user/sudoers grant for the rest of this
+	// tick, even though the render just above proves it renders and applies
+	// cleanly. Advance the shared tick set to what was JUST applied — a
+	// strict superset of what it held before (this module's own new digest
+	// replacing its old ∪ touched contribution, everything else unchanged),
+	// so it stays a safe, already-applied view even if a LATER bump this
+	// same tick goes on to refuse.
+	r.tickIdentityManifests = bumpIdentityManifests
 
 	// M9 (review round 9, HIGH) / O8(d) (review round 12): PendingDigest
 	// itself is already set (moved to the top of this function, above — see
