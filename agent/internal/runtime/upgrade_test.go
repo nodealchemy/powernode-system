@@ -2468,6 +2468,55 @@ func TestUpgradeModule_RestoreRemovesADropInFileTheNewPolicyCreated(t *testing.T
 	}
 }
 
+// TestUpgradeModule_RestoreNeverLosesTheLegacyAmbientFile is W3
+// (IMP-caef5c00d63f round W): a legacy ambient-capabilities.conf an OLDER
+// compose left behind, sitting alongside the OLD digest's own
+// capabilities.conf, must survive a failed upgrade attempt's restore.
+// WriteCapabilityDropIn now deletes that legacy file as a side effect of
+// writing the NEW digest's own capabilities.conf (step 2, R7-style
+// hygiene) — without extending the snapshot/restore list to cover it too,
+// a refused upgrade's own best-effort restore would re-apply the OLD
+// digest's capabilities.conf but silently leave the legacy file's own
+// deletion in place, losing content that existed before this upgrade
+// attempt ever touched anything.
+func TestUpgradeModule_RestoreNeverLosesTheLegacyAmbientFile(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	// An OLDER compose left this behind before this agent version's own W3
+	// cleanup existed — sitting alongside d1's own capabilities.conf.
+	legacyPath := filepath.Join(dropInRoot, unit+".d", "ambient-capabilities.conf")
+	legacyContent := "[Service]\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"
+	if err := os.WriteFile(legacyPath, []byte(legacyContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN", "CAP_NET_ADMIN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubErr = map[string]error{
+		"systemctl start " + unit: errors.New("start refused (test)"),
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2: %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("pass 2: expected m1 to remain attached at d1, got digest=%q ok=%v", digest, ok)
+	}
+	got, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("W3 REGRESSION: expected the legacy ambient-capabilities.conf to survive the failed upgrade's restore, stat/read err=%v", err)
+	}
+	if string(got) != legacyContent {
+		t.Errorf("W3 REGRESSION: expected the legacy file restored to its ORIGINAL content %q, got %q", legacyContent, got)
+	}
+}
+
 // TestLoadOrTakeDropInSnapshot_PersistsAndReusesAcrossAttempts is N7's own
 // test (review round 11, MEDIUM), exercising loadOrTakeDropInSnapshot
 // directly rather than through a full RunOnce tick: a fresh snapshot taken

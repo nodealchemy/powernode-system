@@ -139,3 +139,64 @@ func TestWriteCapabilityDropIn_ReportsChanged(t *testing.T) {
 		t.Error("W1 REGRESSION: re-writing byte-identical content must report changed=false")
 	}
 }
+
+// TestWriteCapabilityDropIn_RemovesLegacyAmbientFile is W3
+// (IMP-caef5c00d63f round W): an older compose could have left a
+// stand-alone ambient-capabilities.conf in the SAME <unit>.d directory —
+// writing the current capabilities.conf must clean it up, and its removal
+// must itself count toward the returned changed signal (W1).
+func TestWriteCapabilityDropIn_RemovesLegacyAmbientFile(t *testing.T) {
+	root := withTempSystemdRootCaps(t)
+	unit := "powernode-x-app.service"
+	legacyPath := filepath.Join(root, unit+".d", "ambient-capabilities.conf")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("[Service]\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := WriteCapabilityDropIn(unit, []string{"CAP_CHOWN"})
+	if err != nil {
+		t.Fatalf("WriteCapabilityDropIn: %v", err)
+	}
+	if !changed {
+		t.Error("W3/W1 REGRESSION: removing the legacy ambient file must itself report changed=true")
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("W3 REGRESSION: expected the legacy ambient-capabilities.conf to be removed, stat err=%v", err)
+	}
+}
+
+// TestRemoveCapabilityDropIn_RemovesLegacyAmbientFile is W3's sibling for
+// the opt-out path (a unit becoming privileged, R7's own hygiene case).
+func TestRemoveCapabilityDropIn_RemovesLegacyAmbientFile(t *testing.T) {
+	root := withTempSystemdRootCaps(t)
+	unit := "powernode-x-app.service"
+	dropInDir := filepath.Join(root, unit+".d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(dropInDir, "capabilities.conf")
+	legacyPath := filepath.Join(dropInDir, "ambient-capabilities.conf")
+	if err := os.WriteFile(capPath, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := RemoveCapabilityDropIn(unit)
+	if err != nil {
+		t.Fatalf("RemoveCapabilityDropIn: %v", err)
+	}
+	if !changed {
+		t.Error("W3/W1 REGRESSION: expected changed=true when either file was actually removed")
+	}
+	if _, err := os.Stat(capPath); !os.IsNotExist(err) {
+		t.Errorf("expected capabilities.conf removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("W3 REGRESSION: expected the legacy ambient-capabilities.conf also removed, stat err=%v", err)
+	}
+}

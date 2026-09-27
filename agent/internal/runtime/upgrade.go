@@ -1297,11 +1297,22 @@ func (r *Reconciler) retryPendingUndoUnits(ctx context.Context, current *mount.S
 
 // dropInFileNames is the fixed set of per-unit drop-in files any writer in
 // this codebase creates (security/capabilities.go WriteCapabilityDropIn(At),
-// mac.go writeSeccompDropInAt, userns_dropin.go writeUserNamespaceDropInAt).
-// snapshotUnitDropIns/restoreDropInSnapshot only ever touch these three
-// names, under a unit this upgrade's own old-or-new unit set names — never
-// an arbitrary path.
-var dropInFileNames = []string{"capabilities.conf", "seccomp.conf", "userns.conf"}
+// mac.go writeSeccompDropInAt, userns_dropin.go writeUserNamespaceDropInAt),
+// plus the legacy ambient-capabilities.conf an older compose could have left
+// behind (W3, IMP-caef5c00d63f round W — see
+// security.removeLegacyAmbientDropIn's own doc). snapshotUnitDropIns/
+// restoreDropInSnapshot only ever touch these four names, under a unit this
+// upgrade's own old-or-new unit set names — never an arbitrary path.
+//
+// W3: the legacy file's own inclusion here matters specifically because
+// WriteCapabilityDropIn(At) now DELETES it as a side effect of writing
+// capabilities.conf (R7-style hygiene) — without also snapshotting it, a
+// failed upgrade attempt's own best-effort restore (restoreDropInSnapshot)
+// would re-apply the OLD digest's capabilities.conf but leave the legacy
+// file's own deletion uncaptured, silently losing it from the restore even
+// though the OLD digest's own on-disk state, before this upgrade attempt
+// ever touched anything, still had it.
+var dropInFileNames = []string{"capabilities.conf", "seccomp.conf", "userns.conf", "ambient-capabilities.conf"}
 
 // dropInSnapshot captures one drop-in file's on-disk content at a point in
 // time, byte-exact.
