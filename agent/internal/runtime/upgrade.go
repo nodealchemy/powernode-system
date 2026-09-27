@@ -445,6 +445,32 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		// exists to report, and before this it silently never did for this
 		// class.
 		r.recordSecurityFailClosed(newMf.UnitNames())
+		// T3 (final review on f3339424, LOW, safety): unlike attachModule's
+		// own fresh-attach refusal (which correctly writes NOTHING — the
+		// module never ran, so there is no stale absence to protect
+		// against, see TestPrivilegedModuleNotOnAllowlist_RefusedOnBothPaths),
+		// `old` HERE is already attached and its units may already be
+		// RUNNING right now. If old was privileged (approved) until this
+		// very tick, R7 removed its units' capabilities.conf/seccomp.conf
+		// entirely (a privileged unit opts out of both writes) — an
+		// operator revoking that approval, refused here as
+		// PolicyDecisionPrivilegedUnapproved, would otherwise leave those
+		// files ABSENT exactly as R7 left them: a crash-restart of the
+		// still-running old unit comes back with EVERY capability,
+		// unconfined, despite this refusal. Write the most restrictive
+		// capability drop-in (empty CapabilityBoundingSet/
+		// AmbientCapabilities — narrower than any real policy could
+		// resolve to, never wider) for every unit the NEW manifest
+		// declares — a plain file write, never a restart (step 4 never
+		// runs from this branch), so the still-running unit is completely
+		// untouched; only a LATER crash-restart of it ever reads this file.
+		if pde, ok := err.(*PolicyDecisionError); ok && pde.Reason == PolicyDecisionPrivilegedUnapproved {
+			for _, unit := range newMf.UnitNames() {
+				if werr := security.WriteCapabilityDropIn(unit, nil); werr != nil {
+					r.cfg.OnError("reconciler:capability_dropin_restrict_on_revoke", fmt.Errorf("module %s unit %s: %w", newMod.ID, unit, werr))
+				}
+			}
+		}
 		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
 		return
 	}

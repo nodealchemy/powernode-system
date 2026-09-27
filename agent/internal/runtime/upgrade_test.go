@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -3996,6 +3997,25 @@ func TestUpgradeModule_LaterCommitStopsAnEarlierAbandonedTargetsIntroducedUnit(t
 // with no operator approval — decideModuleSecurityPolicy refuses that
 // deterministically at step 2, every tick, with no need to stub systemctl
 // at all (P3's own test, review round 13).
+// privilegedOnlyModuleFixture declares ONLY security.privileged=true, no
+// explicit capabilities list — policy.Validate() rejects a manifest
+// declaring both (upgradeModuleFixturePrivilegedWithSudoer always sets
+// CAP_CHOWN alongside privileged, which is fine for THAT fixture's own
+// sudoers-focused tests but invalid on its own as a plain privileged-module
+// fixture).
+func privilegedOnlyModuleFixture(digest string) string {
+	return fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m1", "name":"app-mod",
+			"priority":100, "effective_priority":100,
+			"digest":"%s",
+			"config": {"security": {"privileged": true}},
+			"services": [%s]
+		}
+	}`, digest, upgradeAppService)
+}
+
 func upgradeModuleFixturePrivilegedWithSudoer(digest string, privileged bool, sudoerID string) string {
 	return fmt.Sprintf(`{
 		"success": true,
@@ -5164,5 +5184,59 @@ func TestReconcile_RevertRendersDepartingDigestsUserWhileItsUnitsStop(t *testing
 	}
 	if !containsArg(users, "d2user") {
 		t.Fatalf("T2 REGRESSION: the revert tick's own render dropped d2user before d2's units were actually stopped this same tick: %v", users)
+	}
+}
+
+// TestReconcile_RevokedPrivilegedRefusalWritesRestrictiveCapabilityDropIn is
+// T3 (final review on f3339424, LOW, safety): a module PRIVILEGED (approved)
+// at d1 has no capabilities.conf at all (R7's own opt-out removed it). Its
+// d2 bump — still requesting privileged, but the operator has since revoked
+// the approval — is refused at step 2 (PolicyDecisionPrivilegedUnapproved).
+// Before this fix, that refusal left capabilities.conf ABSENT, exactly as R7
+// left it: a crash-restart of the still-running d1 unit would come back with
+// every capability. The refusal must write the most restrictive drop-in
+// (empty CapabilityBoundingSet, no AmbientCapabilities) as a plain file
+// write — never stopping or restarting the still-running unit.
+func TestReconcile_RevokedPrivilegedRefusalWritesRestrictiveCapabilityDropIn(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, dropInRoot := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {
+		"privileged_module_ids": ["m1"],
+		"modules": [{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = privilegedOnlyModuleFixture("d1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach d1, privileged approved): %v", err)
+	}
+	capPath := filepath.Join(dropInRoot, appUnit+".d", "capabilities.conf")
+	if _, err := os.Stat(capPath); err == nil {
+		t.Fatalf("precondition: expected no capabilities.conf while privileged and approved, found one")
+	}
+
+	// Revoke: privileged_module_ids no longer names m1. d2 still requests
+	// privileged — refused at step 2.
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {
+		"modules": [{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = privilegedOnlyModuleFixture("d2")
+	backdateManifestCache(t, manifestRoot, "m1")
+	preInvocations := len(runner.Invocations)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (revoked, refused): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("precondition: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) ||
+		hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) ||
+		hasSystemctlOp(runner.Invocations[preInvocations:], "stop", appUnit) {
+		t.Errorf("T3: refusing a revoked-privileged bump must never stop or restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+	body, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("T3 REGRESSION: expected capabilities.conf to exist after the revoked-privileged refusal, got: %v", err)
+	}
+	if !strings.Contains(string(body), "CapabilityBoundingSet=\n") || strings.Contains(string(body), "CAP_") {
+		t.Errorf("T3: expected an EMPTY CapabilityBoundingSet/AmbientCapabilities (no capability names at all), got: %s", body)
 	}
 }
