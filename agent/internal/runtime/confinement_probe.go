@@ -20,7 +20,7 @@
 // compose can write drop-ins before NTP has run, and identical-byte
 // rewrites never touch mtime at all).
 //
-//	declared  := CapabilityMask(unitAllow[u]) & kernelCapMask  // round Z Z3
+//	declared  := CapabilityMask(unitAllow[u])
 //	probed    := ActiveState == "active" && MainPID > 0 && /proc/<MainPID>/status readable
 //	wider(u)  := probed && ((CapBnd &^ declared) != 0 || (CapAmb &^ declared) != 0)
 //
@@ -33,13 +33,16 @@
 // nothing downstream of this pass ever needed once R2 (the restart) itself
 // was already gone (Z1).
 //
-// kernelCapMask (round Z Z3): declared is intersected with the RUNNING
-// kernel's own highest supported capability bit (/proc/sys/kernel/
-// cap_last_cap) before the comparison — a capability this kernel does not
-// implement at all must never count toward a widening finding, on either
-// side of the comparison, regardless of what a manifest's own capability
-// list (or a "full known set" exemption computed from this agent
-// BINARY's own, possibly newer, capability table) happens to name.
+// ROUND Z (Z7): Z3 also shipped a declared/cap_last_cap intersection
+// (declared masked to /proc/sys/kernel/cap_last_cap before the compare),
+// reasoning that a capability the running kernel does not implement should
+// never count toward a widening finding. Deleted here: reviewer A proved
+// it is provably inert given the invariant above — the kernel can never
+// report a CapBnd/CapAmb bit beyond its own cap_last_cap in the first
+// place (/proc always reports a kernel-bounded value), so removing that
+// same bit from `declared` can never change `CapBnd &^ declared` or the
+// ambient equivalent. Confirmed independently before deleting it: no test
+// in the suite depended on the intersection being present.
 //
 // Bounding is compared EXACTLY (it is the ceiling — systemd's
 // CapabilityBoundingSet=<list> drops every other bit, so an empty list
@@ -139,37 +142,6 @@ func (r *Reconciler) declaredCapMasks(mod mount.Module, mf *manifest.Manifest) (
 	return masks, true
 }
 
-// capLastCap reads the running kernel's own highest supported capability
-// bit index from /proc/sys/kernel/cap_last_cap (under procRoot, the same
-// test seam readProcCapSets uses).
-func capLastCap() (int, error) {
-	data, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/cap_last_cap"))
-	if err != nil {
-		return 0, err
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, fmt.Errorf("cap_last_cap: %w", err)
-	}
-	return n, nil
-}
-
-// capLastCapMask returns a bitmask covering bits 0..cap_last_cap inclusive
-// — every capability THIS running kernel actually implements (round Z,
-// Z3). Fails OPEN (all-ones, i.e. no narrowing at all) when cap_last_cap
-// cannot be read or parsed: the file always exists and is readable on a
-// real Linux host (it has been present since Linux 3.2), so an error here
-// means "we could not learn anything new about this kernel", not "this
-// kernel supports zero capabilities" — the latter reading would silently
-// suppress every genuine widening finding.
-func capLastCapMask() uint64 {
-	n, err := capLastCap()
-	if err != nil || n < 0 || n >= 63 {
-		return ^uint64(0)
-	}
-	return (uint64(1) << (n + 1)) - 1
-}
-
 // readProcCapSets reads CapBnd/CapAmb from /proc/<pid>/status (under
 // procRoot, the test seam). Both fields are always present on a real
 // kernel; their absence here means the process vanished mid-read or
@@ -243,9 +215,6 @@ func (r *Reconciler) probeUnitConfinement(ctx context.Context, unit string, decl
 // pattern — a concurrent heartbeat read never sees a half-built set.
 func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mount.State, manifests map[string]*manifest.Manifest) {
 	var staleUnits []string
-	// Round Z (Z3): read once per pass — cap_last_cap is a kernel-wide
-	// constant, not a per-module or per-unit fact.
-	kernelMask := capLastCapMask()
 	for _, mod := range current.AttachedModules {
 		mf, ok := manifests[mod.ID]
 		if !ok {
@@ -271,7 +240,7 @@ func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mou
 				// probed, matching the attach path's own skip.
 				continue
 			}
-			uc := r.probeUnitConfinement(ctx, unit, declared&kernelMask)
+			uc := r.probeUnitConfinement(ctx, unit, declared)
 			if uc.Err != nil {
 				// Round Z (Z6, reviewer A, LOW): a probe failure (systemctl
 				// show itself erroring, or /proc vanishing between the

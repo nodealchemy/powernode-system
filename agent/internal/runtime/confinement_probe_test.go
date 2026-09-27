@@ -346,6 +346,39 @@ func TestReconcileStaleConfinement_ProbeFailureIsReported(t *testing.T) {
 	})
 }
 
+// TestReconcileStaleConfinement_NarrowerIsCompletelySilent is Z3's own
+// integration-level pin: a narrower-only finding must not appear in
+// ConfinementStaleUnits() and must not report ANYTHING through OnError —
+// not even the round-Y/Z1 "report only" message. Silent means silent.
+// (Originally paired with Z3's own cap_last_cap fixture; that intersection
+// was deleted in Z7 as provably inert, so this test no longer pins
+// cap_last_cap at all — only the narrower-is-silent gate.)
+func TestReconcileStaleConfinement_NarrowerIsCompletelySilent(t *testing.T) {
+	r, runner := probeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+	root := withProcRoot(t)
+	runner.StubOutput = map[string][]byte{
+		showPropsKey(unit): []byte("ActiveState=active\nMainPID=4242\nNeedDaemonReload=no\n"),
+	}
+	fakeProcPID(t, root, 4242, 0x3, 0x0) // strictly narrower than declared (0xF)
+
+	mf := parseManifestEnvelope(t, manifestFixtureWithCaps("abc123", []string{"CAP_CHOWN", "CAP_FOWNER", "CAP_DAC_OVERRIDE", "CAP_NET_ADMIN"}))
+	current := &mount.State{AttachedModules: []mount.Module{{ID: "m1", Digest: "abc123"}}}
+	manifests := map[string]*manifest.Manifest{"m1": mf}
+
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
+
+	r.reconcileStaleConfinement(context.Background(), current, manifests)
+
+	if got := r.ConfinementStaleUnits(); len(got) != 0 {
+		t.Errorf("Z3 REGRESSION: expected a narrower-only finding to be completely absent from ConfinementStaleUnits(), got %v", got)
+	}
+	if convergenceFailuresContain(onErrors, "reconciler:confinement_stale") {
+		t.Errorf("Z3 REGRESSION: expected NO confinement_stale report at all for a narrower-only finding, got %v", onErrors)
+	}
+}
+
 // TestReconcileStaleConfinement_N4Gate_SkipsDigestMismatchModule is round
 // Z's Z4 (Y8): the PROBE's own copy of the N4 gate's SECOND clause — a
 // module whose attached digest no longer matches this tick's fetched
