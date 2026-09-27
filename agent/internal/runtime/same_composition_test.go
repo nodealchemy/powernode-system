@@ -67,6 +67,10 @@ func TestSameCompositionDetectsEachBehaviouralField(t *testing.T) {
 		{"security", `{"security":{"privileged":false}}`, `{"security":{"privileged":true}}`},
 		{"sudoers", `{"sudoers":[{"user":"a"}]}`, `{"sudoers":[{"user":"b"}]}`},
 		{"init", `{"init":{"start":"x"}}`, `{"init":{"start":"y"}}`},
+		// W4 (IMP-caef5c00d63f round W): a TOP-LEVEL marker, not nested under
+		// "security" — see behaviouralManifestFields' own doc for why it
+		// changes what a service's declared `capabilities: []` resolves to.
+		{"service_capabilities_presence", `{"service_capabilities_presence":false}`, `{"service_capabilities_presence":true}`},
 	}
 	for _, c := range cases {
 		t.Run(c.field, func(t *testing.T) {
@@ -76,6 +80,26 @@ func TestSameCompositionDetectsEachBehaviouralField(t *testing.T) {
 				t.Fatalf("a change to %q must restage — it changes what the node runs", c.field)
 			}
 		})
+	}
+}
+
+// TestSameCompositionDetectsCapabilitiesPresenceMarkerAlone is W4's own
+// realistic scenario: a server re-publish that flips ONLY
+// service_capabilities_presence (a stage-1 migration catching up an older
+// module) — same services, same declared (empty) capabilities list, same
+// digest — must still restage, because the marker alone changes whether
+// that declared [] resolves to "explicit zero" or "untrustworthy, inherit
+// the ceiling" (security.ResolveServiceCapabilities). Before W4 this
+// compared as the SAME composition since the marker lives outside every
+// field behaviouralManifestKey read.
+func TestSameCompositionDetectsCapabilitiesPresenceMarkerAlone(t *testing.T) {
+	before := []LKGModule{mod("m1", "sha256:aaa",
+		`{"services":[{"name":"app","capabilities":[]}]}`)}
+	after := []LKGModule{mod("m1", "sha256:aaa",
+		`{"services":[{"name":"app","capabilities":[]}],"service_capabilities_presence":true}`)}
+
+	if sameComposition(before, after) {
+		t.Fatal("W4 REGRESSION: a service_capabilities_presence-only change must restage — it flips a declared [] between 'inherit the ceiling' and 'explicit zero'")
 	}
 }
 

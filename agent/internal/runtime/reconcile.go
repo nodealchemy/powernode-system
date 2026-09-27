@@ -2249,13 +2249,27 @@ func sameComposition(a, b []LKGModule) bool {
 // RUNS on the node, as opposed to how it is described. Everything outside this
 // set is cosmetic for staging purposes.
 //
-//	services  -> systemd units (name, exec, deps, health, user)
-//	users     -> /etc/passwd entries the agent reconciles
-//	groups    -> /etc/group entries
-//	security  -> capability/userns/egress drop-ins
-//	sudoers   -> /etc/sudoers.d grants
-//	init      -> init_start/stop/restart lifecycle hooks
-var behaviouralManifestFields = []string{"services", "users", "groups", "security", "sudoers", "init"}
+//	services                       -> systemd units (name, exec, deps, health, user)
+//	users                          -> /etc/passwd entries the agent reconciles
+//	groups                         -> /etc/group entries
+//	security                       -> capability/userns/egress drop-ins
+//	sudoers                        -> /etc/sudoers.d grants
+//	init                           -> init_start/stop/restart lifecycle hooks
+//	service_capabilities_presence  -> W4 (IMP-caef5c00d63f round W): a
+//	  TOP-LEVEL marker (manifest.Manifest.ServiceCapabilitiesPresence, NOT
+//	  nested under "security") that changes how a service's OWN declared
+//	  `capabilities: []` resolves — see security.ResolveServiceCapabilities'
+//	  caller doc: without the marker, a declared [] is untrustworthy (a
+//	  pre-stage-1 server sends [] for every service regardless of the
+//	  manifest) and falls back to inheriting the module's ceiling; with it,
+//	  [] means the operator explicitly granted zero capabilities. A server
+//	  re-publish that flips ONLY this marker (capabilities/services/security
+//	  blocks otherwise byte-identical) therefore changes the RESOLVED
+//	  capability set a service actually runs with — exactly the class of
+//	  change sameComposition's own doc says this set exists to catch — but
+//	  was invisible to behaviouralManifestKey before this, since it lives
+//	  outside every key already listed here.
+var behaviouralManifestFields = []string{"services", "users", "groups", "security", "sudoers", "init", "service_capabilities_presence"}
 
 // behaviouralManifestKey returns a stable digest over just those fields. Empty
 // string for an absent or unparseable manifest, so a module without one
