@@ -1522,7 +1522,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.composeFailed.Store(true)
 			continue
 		}
-		if _, err := r.attachModule(ctx, mod, mf); err != nil {
+		changedUnits, err := r.attachModule(ctx, mod, mf)
+		if err != nil {
 			r.noteUnconverged("reconciler:attach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			r.composeFailed.Store(true)
 			// M8 (review round 9, cleanup): this loop never handles a version
@@ -1536,6 +1537,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		mod.Units = mf.UnitNames()
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
+		// X2 (IMP-caef5c00d63f round X, MEDIUM): persist this pass's own
+		// changedUnits durably BEFORE hotReconcileIfNeeded can refuse and
+		// `continue` past the attachModuleServices call below — on a pivot
+		// node, compose may already have STARTED this module's units with
+		// stale drop-ins before this tick's own state rebase emptied (or
+		// never carried) an entry for it, which is exactly the "fresh
+		// attach" shape this loop handles; without this, a refused
+		// materialization here would silently drop the W1 signal the same
+		// way an un-persisted changedUnits always did before X1.
+		trackPendingConfinementUnits(current, mod.ID, changedUnits)
 		// N3 (review round 11): persist THIS digest's manifest content,
 		// independent of the ID-keyed "latest fetch" cache a LATER tick's
 		// fetch of a different (attempted upgrade) digest will overwrite —
@@ -1564,7 +1575,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// an old digest this same attempt already stopped.
 			continue
 		}
-		r.attachModuleServices(ctx, current, mod, mf, nil)
+		// X2: thread changedUnits (not nil) — see the trackPendingConfinementUnits
+		// call above for why a fresh attach can still carry a real confinement
+		// change on a pivot node where compose already started the unit.
+		r.attachModuleServices(ctx, current, mod, mf, changedUnits)
 	}
 
 	// In-place upgrades (round 9) — every version bump partitioned out of
@@ -4121,18 +4135,26 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	// instance across the CLI-shaped call and the read. The durable signal
 	// for an operator running this CLI command is its own output and exit
 	// code — see SecurityFailClosedError and RunAttach (attach_cmd.go).
-	if _, attachErr := r.attachModule(ctx, mod, mf); attachErr != nil {
+	changedUnits, attachErr := r.attachModule(ctx, mod, mf)
+	if attachErr != nil {
 		return "", attachErr
 	}
+	// X2 (IMP-caef5c00d63f round X, MEDIUM): append to current.AttachedModules
+	// BEFORE attachModuleServices — its own X1 pending-confinement bookkeeping
+	// looks the module up by ID in this slice, and threading changedUnits
+	// (not nil) matters here for the same reason it matters in RunOnce's own
+	// fresh-attach loop: a module can already be running (e.g. a pivot
+	// node's own boot compose started it) with drop-ins this call's
+	// attachModule just rewrote.
+	mod.Units = mf.UnitNames()
+	current.AttachedModules = append(current.AttachedModules, mod)
 	// Unconditional, unlike the two reconcile loops: this path never runs
 	// hotReconcileIfNeeded, so there is no materialization verdict to honour
 	// and nothing to gate on. The operator asked for a single hot-add and the
 	// CLI promises "mount + start units" — returning attach_status="attached"
 	// with no unit would be a false success.
-	r.attachModuleServices(ctx, current, mod, mf, nil)
+	r.attachModuleServices(ctx, current, mod, mf, changedUnits)
 
-	mod.Units = mf.UnitNames()
-	current.AttachedModules = append(current.AttachedModules, mod)
 	// T1 (final review on f3339424): persist THIS digest's manifest content,
 	// same as RunOnce's own attach loop and upgradeModule's own step 7 —
 	// without this, a LATER AttachOne call upgrading this same module could
