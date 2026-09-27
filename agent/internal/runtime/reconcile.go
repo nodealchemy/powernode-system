@@ -804,13 +804,21 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	}
 	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
 
-	// Round Z (Z2): compute THIS tick's own positive-proof signal for
-	// restartPermitted (selfhost.go) — after the rebase has settled
-	// current.AttachedModules, before any attach/reattach loop can restart
-	// anything. See hostsControlPlaneModule's own doc for the fail-safe
-	// (an attached module whose manifest this tick could not resolve, or
-	// whose Name is empty, counts AS control-plane).
-	r.hostsControlPlaneModule = hostsControlPlaneModule(current.AttachedModules, manifests)
+	// Round Z (Z2, widened Z5): compute THIS tick's own positive-proof
+	// signal for restartPermitted (selfhost.go) — after the rebase has
+	// settled current.AttachedModules, before any attach/reattach loop can
+	// restart anything. Z5 (reviewer A, MEDIUM): scanning
+	// current.AttachedModules ALONE missed a hub module on its own first
+	// pivot boot (state empty, nothing "attached" yet by this tick's own
+	// bookkeeping) or right after a state rebase drops its entries — the
+	// gate read as clear, and the fresh-attach loop's own R1 restarted a
+	// unit compose had already started. Scanning the UNION of attached AND
+	// desired/assigned modules closes that: a hub module about to be
+	// attached this same tick counts just as much as one already running.
+	// See hostsControlPlaneModule's own doc for the fail-safe (a module
+	// whose manifest this tick could not resolve, or whose Name is empty,
+	// counts AS control-plane).
+	r.hostsControlPlaneModule = hostsControlPlaneModule(unionModulesByID(current.AttachedModules, desired), manifests)
 
 	// O7 (review round 12): bootstrap the N3 attached-snapshot store for any
 	// module whose CURRENTLY attached digest has no snapshot of its own yet —

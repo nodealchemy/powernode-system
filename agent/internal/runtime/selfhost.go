@@ -159,16 +159,25 @@ var hubModuleNames = map[string]bool{
 	"powernode-extension-system": true,
 }
 
-// hostsControlPlaneModule reports whether attached names ANY pinned
+// hostsControlPlaneModule reports whether modules names ANY pinned
 // control-plane module (round Z, Z2) — FAIL SAFE: a module this tick could
 // not resolve a manifest for, or one whose manifest carries no Name at all,
 // counts AS a control-plane module. This is a POSITIVE PROOF requirement,
 // not an absence-of-evidence one: restartPermitted (below) must be able to
-// point at a resolved, non-hub name for EVERY attached module before it can
+// point at a resolved, non-hub name for EVERY module in scope before it can
 // conclude this node does not host the control plane — it is not enough
 // that nothing LOOKS like a hub module.
-func hostsControlPlaneModule(attached []mount.Module, manifests map[string]*manifest.Manifest) bool {
-	for _, mod := range attached {
+//
+// modules is the caller's scope (round Z, Z5): RunOnce passes the UNION of
+// current.AttachedModules and this tick's desired/assigned set, NOT
+// AttachedModules alone — a hub module on its own first pivot boot (state
+// empty, nothing "attached" by this tick's own bookkeeping yet) or one
+// whose entry a state rebase just dropped is still ABOUT to be attached
+// this same tick, and the fresh-attach loop's own R1 can still restart a
+// unit compose already started for it. Scoping to attached-only missed
+// exactly that window.
+func hostsControlPlaneModule(modules []mount.Module, manifests map[string]*manifest.Manifest) bool {
+	for _, mod := range modules {
 		mf, ok := manifests[mod.ID]
 		if !ok || mf == nil || mf.Name == "" {
 			return true
@@ -178,6 +187,26 @@ func hostsControlPlaneModule(attached []mount.Module, manifests map[string]*mani
 		}
 	}
 	return false
+}
+
+// unionModulesByID merges a and b, deduped by ID (round Z, Z5) — order and
+// every OTHER field are irrelevant to every caller of the result
+// (hostsControlPlaneModule only ever reads .ID), so the first occurrence
+// of a given ID wins and nothing downstream needs to care which slice it
+// came from.
+func unionModulesByID(a, b []mount.Module) []mount.Module {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]mount.Module, 0, len(a)+len(b))
+	for _, group := range [][]mount.Module{a, b} {
+		for _, mod := range group {
+			if seen[mod.ID] {
+				continue
+			}
+			seen[mod.ID] = true
+			out = append(out, mod)
+		}
+	}
+	return out
 }
 
 // restartPermitted reports whether a live restart is safe to issue at all
