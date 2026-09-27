@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -176,79 +175,103 @@ func TestProbeUnitConfinement_AmbientWiderSubsetCheck(t *testing.T) {
 	}
 }
 
-// TestHandleStaleUnit_SelfHostedNeverRestarts pins invariant 1: a wider
-// unit on a self-hosted node is reported but NEVER restarted.
-func TestHandleStaleUnit_SelfHostedNeverRestarts(t *testing.T) {
-	r, runner := probeTestReconciler(t)
-	r.selfHostLatched = true
+// TestHandleStaleUnit_NeverMutatesSystemdRegardlessOfNodeType is round Z's
+// own replacement for the round-Y R2 tests (self-hosted-withholds,
+// unknown-withholds, non-self-hosted-restarts-then-backs-off — R2 itself is
+// deleted, Z1): a WIDER finding is reported on EVERY node type — self-
+// hosted, detection Unknown, and a definite remote/non-self-hosted node —
+// and NEVER issues systemctl restart, reload or stop. There is no longer a
+// node-type-dependent branch in handleStaleUnit at all to distinguish.
+func TestHandleStaleUnit_NeverMutatesSystemdRegardlessOfNodeType(t *testing.T) {
 	unit := lifecycle.UnitName("m1", "app")
-	var onErrors []string
-	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
-
 	uc := unitConfinement{Unit: unit, Probed: true, RunningBnd: 0x1F, Declared: 0xF}
-	r.handleStaleUnit(context.Background(), mount.Module{ID: "m1"}, uc)
 
-	if hasSystemctlOp(runner.Invocations, "restart", unit) {
-		t.Error("invariant 1 REGRESSION: a self-hosted node must never restart on a wider confinement finding")
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, r *Reconciler)
+	}{
+		{"self-hosted", func(t *testing.T, r *Reconciler) { r.selfHostLatched = true }},
+		{"detection-unknown", func(t *testing.T, r *Reconciler) {
+			r.cfg.PlatformURL = "https://ops-hub.example.test"
+			withLookups(t, nil, []string{"192.0.2.1"}, fmt.Errorf("no such host"))
+		}},
+		{"definite-remote", func(t *testing.T, r *Reconciler) {
+			r.cfg.PlatformURL = "https://ops-hub.example.test"
+			withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
+		}},
 	}
-	if !convergenceFailuresContain(onErrors, "reconciler:confinement_stale") || !convergenceFailuresContain(onErrors, unit) {
-		t.Errorf("expected a withheld-restart report naming %s, got %v", unit, onErrors)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, runner := probeTestReconciler(t)
+			tc.setup(t, r)
+			var onErrors []string
+			r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
+
+			r.handleStaleUnit(mount.Module{ID: "m1"}, uc)
+
+			if len(runner.Invocations) != 0 {
+				t.Errorf("Z1 REGRESSION: expected NO systemctl mutation of any kind on %s, got %v", tc.name, runner.Invocations)
+			}
+			if !convergenceFailuresContain(onErrors, "reconciler:confinement_stale") || !convergenceFailuresContain(onErrors, unit) {
+				t.Errorf("expected a report naming %s, got %v", unit, onErrors)
+			}
+		})
 	}
 }
 
-// TestHandleStaleUnit_UnknownNeverRestarts pins N2's own extension into R2:
-// Unknown detection must withhold a level restart exactly like Yes does.
-func TestHandleStaleUnit_UnknownNeverRestarts(t *testing.T) {
-	r, runner := probeTestReconciler(t)
-	r.cfg.PlatformURL = "https://ops-hub.example.test"
-	withLookups(t, nil, []string{"192.0.2.1"}, fmt.Errorf("no such host"))
-
+// TestReconcileStaleConfinement_FailClosedDropInPlusWiderNeverRestarts is
+// the "previously looping case" round Z's operator decision names
+// explicitly: reviewer A found round Y's own R2 could restart a unit
+// FOREVER, on a 15-minute cadence, when its drop-in write kept failing
+// closed — the restart never actually applied the narrower policy (the
+// on-disk drop-in never changed), so R2 just kept restarting the same
+// service, permanently, for a condition it had no way to fix. With R2
+// deleted, this must simply never restart, reload or stop anything, on
+// ANY tick, no matter how many times the write keeps failing while the
+// running process stays wider.
+func TestReconcileStaleConfinement_FailClosedDropInPlusWiderNeverRestarts(t *testing.T) {
+	r, client, runner, _, manifestRoot, dropIns := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
-	uc := unitConfinement{Unit: unit, Probed: true, RunningBnd: 0x1F, Declared: 0xF}
-	r.handleStaleUnit(context.Background(), mount.Module{ID: "m1"}, uc)
 
-	if hasSystemctlOp(runner.Invocations, "restart", unit) {
-		t.Error("invariant 1 REGRESSION: Unknown detection must withhold a level restart, same as Yes")
-	}
-}
-
-// TestHandleStaleUnit_NonSelfHostedRestartsThenBacksOff pins R2 itself: a
-// non-self-hosted node restarts a wider unit once, and a SECOND finding
-// within the 15-minute backoff window does not restart it again.
-func TestHandleStaleUnit_NonSelfHostedRestartsThenBacksOff(t *testing.T) {
-	r, runner := probeTestReconciler(t)
-	unit := lifecycle.UnitName("m1", "app")
-	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
-	var onErrors []string
-	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
-
-	fixedNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	origNow := nowForConfinementBackoff
-	now := fixedNow
-	nowForConfinementBackoff = func() time.Time { return now }
-	t.Cleanup(func() { nowForConfinementBackoff = origNow })
-
-	uc := unitConfinement{Unit: unit, Probed: true, RunningBnd: 0x1F, Declared: 0xF}
-	r.handleStaleUnit(context.Background(), mount.Module{ID: "m1"}, uc)
-	if !hasSystemctlOp(runner.Invocations, "restart", unit) {
-		t.Fatalf("expected the first wider finding to issue a restart, invocations=%v", runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce tick 1: %v", err)
 	}
 
-	preSecond := len(runner.Invocations)
-	now = fixedNow.Add(5 * time.Minute) // inside the 15-minute backoff
-	r.handleStaleUnit(context.Background(), mount.Module{ID: "m1"}, uc)
-	if hasSystemctlOp(runner.Invocations[preSecond:], "restart", unit) {
-		t.Errorf("R2 REGRESSION: expected the second finding (5 min later) to be backed off, invocations=%v", runner.Invocations[preSecond:])
+	// Force the drop-in write to fail closed from here on: block the exact
+	// path capabilities.conf needs with a directory (security_fail_closed_
+	// reattach_path_test.go's own established technique).
+	unitDropInDir := filepath.Join(dropIns, unit+".d")
+	blocked := filepath.Join(unitDropInDir, "capabilities.conf")
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
 	}
-	if !convergenceFailuresContain(onErrors, "backed off") {
-		t.Errorf("expected a backoff report, got %v", onErrors)
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
 	}
 
-	preThird := len(runner.Invocations)
-	now = fixedNow.Add(16 * time.Minute) // past the 15-minute backoff
-	r.handleStaleUnit(context.Background(), mount.Module{ID: "m1"}, uc)
-	if !hasSystemctlOp(runner.Invocations[preThird:], "restart", unit) {
-		t.Errorf("expected a THIRD finding past the backoff window to restart again, invocations=%v", runner.Invocations[preThird:])
+	// A capabilities-list edit (same digest) so the reattach loop actually
+	// attempts (and fails) the write on every subsequent tick.
+	if err := os.RemoveAll(filepath.Join(manifestRoot, "m1")); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = manifestFixtureWithCaps("abc123", []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
+	declared := capMaskFor(t, []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
+	root := withProcRoot(t)
+	fakeProcPID(t, root, 4242, declared|testExtraCapBit, 0x0) // running process stays wider — the fix never lands
+	runner.StubOutput = staleProbeStub(unit, "active", 4242, false)
+
+	for i := 2; i <= 4; i++ {
+		pre := len(runner.Invocations)
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce tick %d: %v", i, err)
+		}
+		tick := runner.Invocations[pre:]
+		if hasSystemctlOp(tick, "restart", unit) || countSystemctlOp(tick, "daemon-reload") != 0 || hasSystemctlOp(tick, "stop", unit) {
+			t.Errorf("Z1 REGRESSION: tick %d issued a systemctl mutation for a permanently fail-closed, wider unit — the exact restart loop round Z deleted R2 to close, invocations=%v", i, tick)
+		}
+		if got := r.SecurityFailClosedUnits(); !containsArg(got, unit) {
+			t.Errorf("tick %d: precondition failed — expected the write to still be failing closed, SecurityFailClosedUnits()=%v", i, got)
+		}
 	}
 }
 

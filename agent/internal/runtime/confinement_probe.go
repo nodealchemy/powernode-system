@@ -32,14 +32,21 @@
 // false-positives, while a legacy ambient-capabilities.conf grant wider
 // than declared still shows.
 //
-// wider(), not stale(), gates a restart: a running set can never be WIDER
-// than what systemd applied at exec, so a wider process is by construction
-// one that started under an OLDER, wider drop-in — exactly the crash-mid-
-// tick / failed-restart / withheld-under-unknown residue N3 and round W
-// lost. A unit that is merely narrower than declared (a widening change
-// whose restart was lost) is report-only: it heals on the next restart of
-// ANY kind, and restarting a unit that has self-narrowed its OWN bounding
-// set is not a security gap to correct.
+// ROUND Z (Z1): this pass is PURELY DIAGNOSTIC — it never restarts,
+// reloads or stops anything, on ANY node type. Round Y's own R2 (a
+// level-triggered restart for a unit found wider than declared) is
+// DELETED: reviewer A found it could loop forever on a unit whose drop-in
+// write itself keeps failing closed — the restart never fixes anything
+// (the on-disk drop-in never actually changed), so R2 just restarted the
+// same service every backoff interval, permanently, for a condition R2
+// itself had no way to resolve. The only restart mechanism left in this
+// package is R1 (attachModuleServicesOpts' own edge-triggered restart,
+// gated on restartPermitted, fired only when THIS tick's own drop-in
+// write actually changed bytes) — see reconcile.go's own doc on
+// attachModuleServices for that path. A unit this pass finds wider is
+// reported every tick for as long as it stays wider; recovering it is an
+// operator action (`systemctl restart <unit>`) or the unit's own next
+// recompose, never something this pass does for you.
 package runtime
 
 import (
@@ -50,7 +57,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -61,17 +67,6 @@ import (
 // procRoot is a seam so tests can point the probe at a temp directory
 // carrying fake "<pid>/status" files instead of the real /proc.
 var procRoot = "/proc"
-
-// nowForConfinementBackoff is a seam so R2's own 15-minute backoff is
-// testable without a real wall-clock wait — mirrors nowForUpgradeBackoff's
-// own established pattern in this package (upgrade.go).
-var nowForConfinementBackoff = time.Now
-
-// levelRestartBackoff is R2's own per-unit cooldown after issuing (or
-// attempting) a level-triggered restart — see Reconciler.levelRestartAt's
-// own doc for why losing this state can only delay a restart, never cause
-// one.
-const levelRestartBackoff = 15 * time.Minute
 
 // unitConfinement is one unit's probed-vs-declared capability comparison
 // for a single tick. Zero value (Probed=false) means "nothing to compare" —
@@ -238,76 +233,28 @@ func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mou
 				continue
 			}
 			staleUnits = append(staleUnits, unit)
-			r.handleStaleUnit(ctx, mod, uc)
+			r.handleStaleUnit(mod, uc)
 		}
 	}
 	sort.Strings(staleUnits)
 	r.confinementStaleUnits.Store(&staleUnits)
 }
 
-// handleStaleUnit is reconcileStaleConfinement's own per-unit disposition:
-// report always; restart (R2) only when wider, only when restartPermitted
-// (never on Yes/Unknown — invariant 1), and only outside the per-unit
-// backoff.
-func (r *Reconciler) handleStaleUnit(ctx context.Context, mod mount.Module, uc unitConfinement) {
+// handleStaleUnit is reconcileStaleConfinement's own per-unit disposition
+// (round Z, Z1): REPORT ONLY, on every node type, in both directions —
+// never a systemctl restart, reload, or stop. See this file's own top-of-
+// file doc for why R2 (the level-triggered restart this replaced) was
+// deleted rather than patched.
+func (r *Reconciler) handleStaleUnit(mod mount.Module, uc unitConfinement) {
 	if !uc.wider() {
 		r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
 			"module %s: unit %s's running capabilities are NARROWER than its current manifest declares (bounding running=%#x declared=%#x) — self-narrowing is not a gap, report only; heals on the unit's own next restart of any kind",
 			mod.ID, uc.Unit, uc.RunningBnd, uc.Declared))
 		return
 	}
-	if !r.restartPermitted() {
-		r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
-			"module %s: unit %s's running capabilities are WIDER than its current manifest declares (bounding running=%#x declared=%#x, ambient extra=%#x) but this node is self-hosted (or restart is not positively confirmed safe) — restart deliberately withheld (rule 1); schedule `systemctl restart %s` or wait for the next recompose",
-			mod.ID, uc.Unit, uc.RunningBnd, uc.Declared, uc.RunningAmb&^uc.Declared, uc.Unit))
-		return
-	}
-	if until, backedOff := r.levelRestartBackoffActive(uc.Unit); backedOff {
-		r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
-			"module %s: unit %s's running capabilities are WIDER than declared; a level-triggered restart already ran recently and is backed off until %s",
-			mod.ID, uc.Unit, until.Format(time.RFC3339)))
-		return
-	}
-	r.markLevelRestartAttempt(uc.Unit)
-	if uc.NeedReload {
-		if err := systemd.DaemonReload(ctx, r.cfg.MountRunner); err != nil {
-			r.noteUnconverged("reconciler:confinement_restart_failed", mod.ID, fmt.Errorf(
-				"module %s: unit %s: daemon-reload before its level-triggered restart failed: %w", mod.ID, uc.Unit, err))
-			return
-		}
-	}
-	if err := systemd.Action(ctx, r.cfg.MountRunner, uc.Unit, systemd.Restart); err != nil {
-		r.noteUnconverged("reconciler:confinement_restart_failed", mod.ID, fmt.Errorf(
-			"module %s: unit %s: level-triggered restart (R2, wider than declared) failed: %w", mod.ID, uc.Unit, err))
-		return
-	}
 	r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
-		"module %s: unit %s's running capabilities were WIDER than declared (bounding running=%#x declared=%#x) — level-triggered restart issued",
-		mod.ID, uc.Unit, uc.RunningBnd, uc.Declared))
-}
-
-// levelRestartBackoffActive reports whether unit is still within its
-// 15-minute post-restart cooldown, and the instant it clears.
-func (r *Reconciler) levelRestartBackoffActive(unit string) (until time.Time, active bool) {
-	last, ok := r.levelRestartAt[unit]
-	if !ok {
-		return time.Time{}, false
-	}
-	until = last.Add(levelRestartBackoff)
-	return until, nowForConfinementBackoff().Before(until)
-}
-
-// markLevelRestartAttempt records THIS instant as unit's own last
-// level-restart attempt — called BEFORE the restart itself, deliberately:
-// a restart this call issues but which then FAILS must still start the
-// backoff clock (an immediate retry against a unit whose restart just
-// failed is not a recovery strategy this narrow self-heal is meant to
-// provide; the ordinary edge/manual paths remain available regardless).
-func (r *Reconciler) markLevelRestartAttempt(unit string) {
-	if r.levelRestartAt == nil {
-		r.levelRestartAt = make(map[string]time.Time)
-	}
-	r.levelRestartAt[unit] = nowForConfinementBackoff()
+		"module %s: unit %s's running capabilities are WIDER than its current manifest declares (bounding running=%#x declared=%#x, ambient extra=%#x) — report only (round Z: no agent-issued restart for this); recover via `systemctl restart %s` or the next recompose",
+		mod.ID, uc.Unit, uc.RunningBnd, uc.Declared, uc.RunningAmb&^uc.Declared, uc.Unit))
 }
 
 // ConfinementStaleUnits returns the units the most recently COMPLETED

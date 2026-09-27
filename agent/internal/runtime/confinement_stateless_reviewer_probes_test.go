@@ -18,17 +18,30 @@ import (
 // (X1's persisted pending set is gone), so every tick independently
 // re-derives whatever it reports from the manifest and /proc.
 //
-// SCOPE NOTE: this file covers probes 1/2 (multi-tick self-hosted +
-// operator-restart-clears), 4 (renamed unit), 5 (detection Unknown on the
-// changed-caps tick), 6 (crash mid-tick), and 8 (non-self-hosted edge
-// restart failure). Probe 3 (reboot/legacy-ambient-file clearing) and probe
-// 9 (recheck N5 independence) are NOT re-covered here — they are already
-// exercised at the RunOnce level by TestReconcile_NewBootCompositionRewritesADivergentDropInAndW1ThenApplies
+// ROUND Z (Z1): R2 (the level-triggered restart for a unit found wider
+// than declared) is DELETED — reviewer A found it could restart the same
+// unit forever, on a fixed cadence, whenever the underlying drop-in write
+// itself kept failing closed, since the restart never actually applied the
+// fix. Every probe below that used to assert "R2 restarts" now asserts the
+// opposite: a wider unit is reported, on every tick it stays wider, and
+// NEVER restarted by this pass, regardless of node type or how self-host
+// detection resolves. Only R1 (the edge-triggered restart fired when THIS
+// tick's own drop-in write changed bytes, gated on restartPermitted) can
+// still restart a unit.
+//
+// SCOPE NOTE (round Y, still true): this file covers probes 1/2 (multi-tick
+// self-hosted + operator-restart-clears), 4 (renamed unit), 5 (detection
+// Unknown on the changed-caps tick), 6 (crash mid-tick), and 8 (non-self-
+// hosted edge restart failure). Probe 3 (reboot/legacy-ambient-file
+// clearing) and probe 9 (recheck N5 independence) are NOT re-covered here —
+// they are already exercised at the RunOnce level by
+// TestReconcile_NewBootCompositionRewritesADivergentDropInAndW1ThenApplies
 // (confinement_reattach_test.go, pre-existing W2 coverage unaffected by
-// round Y) and by TestReconfirmConfinement_N5_PerModuleIndependence /
+// round Y/Z) and by TestReconfirmConfinement_N5_PerModuleIndependence /
 // TestReconfirmConfinement_N4Gate_* (confinement_recheck_n4_n5_test.go,
-// direct-call per the design's own test-plan split) respectively. Flagged
-// to team-lead as a scope reduction under time, not silently skipped.
+// direct-call per the design's own test-plan split) respectively. Round Z
+// step 4 adds probe 3 at the RunOnce level explicitly (see
+// confinement_reboot_probe_test.go).
 
 // testExtraCapBit is a bit position GUARANTEED outside the 41 known
 // capability bits (0-40, CAP_CHOWN..CAP_CHECKPOINT_RESTORE) — ORing it onto
@@ -238,12 +251,14 @@ func TestConfinementProbe_RenamedUnitNeverProbesTheOldName(t *testing.T) {
 	}
 }
 
-// TestConfinementProbe_DetectionUnknownWithholdsThenRestartsOnceResolved is
-// reviewer probe 5: a resolver hiccup on the changed-caps tick must
-// withhold BOTH the edge restart (R1) and any level restart (R2) — Unknown
-// is never treated as "safe to restart" — and once detection resolves to a
-// definite remote node, R2 restarts exactly once for a fixture still wider.
-func TestConfinementProbe_DetectionUnknownWithholdsThenRestartsOnceResolved(t *testing.T) {
+// TestConfinementProbe_DetectionUnknownNeverRestartsEitherBeforeOrAfterResolution
+// is reviewer probe 5 (round Z: R2 deleted, so there is no longer a "once
+// resolved, restart" half to this probe — see Z1). A resolver hiccup on the
+// changed-caps tick must withhold R1 (Unknown is never "safe to restart");
+// once detection resolves to a definite remote node, there is still nothing
+// to restart the STALE PROBE would do (R2 is gone) — a wider unit stays
+// reported, never restarted, regardless of how detection resolves.
+func TestConfinementProbe_DetectionUnknownNeverRestartsEitherBeforeOrAfterResolution(t *testing.T) {
 	r, client, runner, _, manifestRoot, _ := newConfinementReattachReconciler(t)
 	r.cfg.PlatformURL = "https://ops-hub.example.test"
 	unit := lifecycle.UnitName("m1", "app")
@@ -270,20 +285,24 @@ func TestConfinementProbe_DetectionUnknownWithholdsThenRestartsOnceResolved(t *t
 		t.Fatalf("RunOnce tick 2 (unknown): %v", err)
 	}
 	if hasSystemctlOp(runner.Invocations[pre2:], "restart", unit) {
-		t.Errorf("N2 REGRESSION: Unknown detection must withhold BOTH R1 and R2, invocations=%v", runner.Invocations[pre2:])
+		t.Errorf("N2 REGRESSION: Unknown detection must withhold R1, invocations=%v", runner.Invocations[pre2:])
 	}
 
 	// Tick 3: resolver succeeds, resolves to a DEFINITE remote node.
-	// Nothing about the manifest changes this tick — R1 has nothing to do;
-	// R2 alone restarts the still-wider unit exactly once.
+	// Nothing about the manifest changes this tick, so R1 has nothing to
+	// fire on either — round Z has no level-triggered restart left to fire
+	// regardless of how detection resolves.
 	withLookups(t, map[string][]string{"ops-hub.example.test": {"192.0.2.22"}}, []string{"192.0.2.99"}, nil)
 	pre3 := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce tick 3 (resolved): %v", err)
 	}
 	tick3 := runner.Invocations[pre3:]
-	if n := countSystemctlOp(tick3, "restart"); n != 1 {
-		t.Errorf("expected exactly ONE R2 restart once detection resolves, got %d (invocations=%v)", n, tick3)
+	if countSystemctlOp(tick3, "restart") != 0 {
+		t.Errorf("Z1 REGRESSION: expected NO restart even once detection resolves — R2 is deleted, invocations=%v", tick3)
+	}
+	if got := r.ConfinementStaleUnits(); len(got) != 1 || got[0] != unit {
+		t.Errorf("expected the still-wider unit to keep reporting after resolution, got %v", got)
 	}
 }
 
@@ -325,16 +344,19 @@ func TestConfinementProbe_DetectionUnknownNarrowerNeverRestarts(t *testing.T) {
 	}
 }
 
-// TestConfinementProbe_CrashMidTickSelfHealsViaTheStaleProbe is reviewer
-// probe 6: a drop-in write that reached disk but never reached a
+// TestConfinementProbe_CrashMidTickIsReportedNotRestarted is reviewer probe
+// 6 (round Z: R2 deleted, so this is no longer a "self-heals" probe — it
+// pins the opposite: the crash-window residue is REPORTED, forever, never
+// restarted). A drop-in write that reached disk but never reached a
 // reload/restart (an agent crash between the two — N3's own crash window)
 // leaves writeIfChanged reporting changed=false on the NEXT tick (bytes
-// already match), so R1 stays silent — but the stale probe finds the
-// running process still holding the OLD, now-wider-than-declared
-// capabilities independent of what changed this tick, and R2 self-heals it
-// (or reports it, self-hosted) without needing anything carried over from
-// the crashed tick.
-func TestConfinementProbe_CrashMidTickSelfHealsViaTheStaleProbe(t *testing.T) {
+// already match), so R1 stays silent — the stale probe independently finds
+// the running process still holding the OLD, now-wider-than-declared
+// capabilities and reports it every tick, with no restart of any kind
+// (round Y's R2 would have self-healed this; round Z's operator decision
+// was that R2's own failure mode — see the fail-closed-loop test — outweighs
+// this convenience).
+func TestConfinementProbe_CrashMidTickIsReportedNotRestarted(t *testing.T) {
 	r, client, runner, _, manifestRoot, _ := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 
@@ -364,6 +386,9 @@ func TestConfinementProbe_CrashMidTickSelfHealsViaTheStaleProbe(t *testing.T) {
 	fakeProcPID(t, root, 4242, wider, 0x0)
 	runner.StubOutput = staleProbeStub(unit, "active", 4242, false)
 
+	var onErrors []string
+	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
+
 	pre := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce (post-crash tick): %v", err)
@@ -372,19 +397,26 @@ func TestConfinementProbe_CrashMidTickSelfHealsViaTheStaleProbe(t *testing.T) {
 	if countSystemctlOp(tick, "daemon-reload") != 0 {
 		t.Errorf("expected R1 silent (bytes already matched on disk — no edge to fire), got a daemon-reload: %v", tick)
 	}
-	if n := countSystemctlOp(tick, "restart"); n != 1 {
-		t.Errorf("expected R2 to self-heal via the stale probe exactly once, got %d restarts (invocations=%v)", n, tick)
+	if countSystemctlOp(tick, "restart") != 0 {
+		t.Errorf("Z1 REGRESSION: expected NO restart — R2 is deleted, the crash residue is report-only now, invocations=%v", tick)
+	}
+	if !convergenceFailuresContain(onErrors, "reconciler:confinement_stale") {
+		t.Errorf("expected the crash residue to be reported, got %v", onErrors)
 	}
 
-	// Second RunOnce within the 15-minute backoff, fixture still wider (the
-	// restart target in this test double never actually changes /proc) —
-	// must NOT restart again.
+	// A second RunOnce, fixture still wider (nothing here ever changes
+	// /proc) — still no restart, still reported. There is no backoff to
+	// exercise any more; this just confirms the report keeps recurring.
+	onErrors = nil
 	preSecond := len(runner.Invocations)
 	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce (backoff tick): %v", err)
+		t.Fatalf("RunOnce (second tick): %v", err)
 	}
 	if hasSystemctlOp(runner.Invocations[preSecond:], "restart", unit) {
-		t.Errorf("R2 REGRESSION: expected the backoff to suppress a second restart, invocations=%v", runner.Invocations[preSecond:])
+		t.Errorf("Z1 REGRESSION: expected no restart on the second tick either, invocations=%v", runner.Invocations[preSecond:])
+	}
+	if !convergenceFailuresContain(onErrors, "reconciler:confinement_stale") {
+		t.Errorf("expected a FRESH report on the second tick too, got %v", onErrors)
 	}
 }
 

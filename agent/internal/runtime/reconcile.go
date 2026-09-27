@@ -317,16 +317,6 @@ type Reconciler struct {
 	// verdict: the next tick's own /proc probe re-derives it immediately.
 	confinementStaleUnits atomic.Pointer[[]string]
 
-	// levelRestartAt (round Y) is R2's own per-unit backoff — the last time
-	// this process issued (or attempted) a level-triggered restart for a
-	// unit found wider than its declared ceiling, keyed by unit name.
-	// SUPPRESSION-ONLY state: losing it (an agent restart) can only DELAY a
-	// restart R2 would otherwise have skipped, never CAUSE one — the next
-	// tick's probe still has to independently find the unit wider before R2
-	// does anything at all. Touched only from inside RunOnce, which holds mu
-	// for its own body, so this needs no lock of its own.
-	levelRestartAt map[string]time.Time
-
 	// Boot state rebase bookkeeping (see state_rebase.go), guarded by mu —
 	// only RunOnce touches it. stateRebaseActive holds the condition ids the
 	// last evaluation raised (a condition is signalled when it newly appears);
