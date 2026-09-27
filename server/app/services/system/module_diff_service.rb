@@ -76,7 +76,7 @@ module System
       Result.new(ok?: false, error: "Invalid module version(s) supplied for comparison")
     rescue StandardError => e
       Rails.logger.error("[ModuleDiffService] #{e.class}: #{e.message}")
-      Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Result.new(ok?: false, error: ::System::CallerFacingMessages::GENERIC)
     end
 
     private

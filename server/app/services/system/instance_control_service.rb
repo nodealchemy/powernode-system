@@ -116,7 +116,7 @@ module System
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[InstanceControlService] Provider error: #{e.message}")
       revert_status(instance) unless provider_succeeded
-      Runtime::Result.err(error: "#{action} failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue StandardError => e
       # Revert only when the provider action itself did not succeed. Once it
       # has, the stamped state is the truth (the machine really
@@ -125,7 +125,7 @@ module System
       # For terminate that rewrite would resurrect a destroyed instance.
       Rails.logger.error("[InstanceControlService] #{action} failed: #{e.class}: #{e.message}")
       revert_status(instance) unless provider_succeeded
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     private

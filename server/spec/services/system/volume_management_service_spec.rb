@@ -262,12 +262,16 @@ RSpec.describe System::VolumeManagementService do
       end
     end
 
-    # IMP-7e549d7506cf (Route 2 remediation) — this producer's rescue arms
-    # (attach/detach/snapshot's own, plus the shared #resolve_adapter and
+    # IMP-7e549d7506cf (Route 2 remediation) — every one of this producer's
+    # rescue arms (attach, detach, delete, check, snapshot, delete_snapshot,
+    # restore_snapshot, plus the shared #resolve_adapter and
     # #record_restored_copy private helpers) used to put e.message (or, for
     # ActiveRecord::RecordInvalid, e.record.errors.full_messages) straight
     # into Runtime::Result#error. Each test here drives the ACTUAL rescue
-    # arm with a controlled exception carrying a sentinel.
+    # arm with a controlled exception carrying a sentinel — round-2 review
+    # found this comment naming only attach/detach/snapshot while the file
+    # covered less than that name implied; the list above is now the full
+    # set actually exercised below.
     describe "sanitizes exceptions before they reach the caller (IMP-7e549d7506cf)" do
       it "does not forward raw UnknownProviderError text (attach)" do
         sentinel = "SENTINEL_VOL_UNKNOWN_#{SecureRandom.hex(8)}"
@@ -320,6 +324,211 @@ RSpec.describe System::VolumeManagementService do
 
         expect(result.success?).to be false
         expect(result.error).not_to include(sentinel)
+      end
+
+      it "does not forward raw UnknownProviderError text (detach)" do
+        volume.update!(node_instance: instance, status: "in-use", device_name: "/dev/vdb")
+        sentinel = "SENTINEL_VOL_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_volume)
+          .with(volume).and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.detach(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("UnknownProviderError")
+      end
+
+      it "does not forward raw ProviderError text (detach)" do
+        volume.update!(node_instance: instance, status: "in-use", device_name: "/dev/vdb")
+        sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:detach_volume)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.detach(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("ProviderError")
+      end
+
+      it "does not forward raw StandardError text or the exception class name (detach)" do
+        volume.update!(node_instance: instance, status: "in-use", device_name: "/dev/vdb")
+        sentinel = "SENTINEL_VOL_STANDARD_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:detach_volume).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.detach(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("StandardError")
+      end
+
+      it "does not forward raw UnknownProviderError text (delete)" do
+        sentinel = "SENTINEL_VOL_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_volume)
+          .with(volume).and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.delete(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("UnknownProviderError")
+      end
+
+      it "does not forward raw ProviderError text (delete)" do
+        sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:delete_volume)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.delete(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("ProviderError")
+      end
+
+      it "does not forward raw UnknownProviderError text (check)" do
+        sentinel = "SENTINEL_VOL_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_volume)
+          .with(volume).and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.check(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("UnknownProviderError")
+      end
+
+      it "does not forward raw ProviderError text (check)" do
+        sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:get_volume)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.check(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("ProviderError")
+      end
+
+      it "does not forward raw ProviderError text (snapshot)" do
+        sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+        allow(adapter).to receive(:create_volume_snapshot)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.snapshot(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("ProviderError")
+      end
+
+      it "does not forward raw StandardError text or the exception class name (snapshot)" do
+        sentinel = "SENTINEL_VOL_STANDARD_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+        allow(adapter).to receive(:create_volume_snapshot).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.snapshot(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("StandardError")
+      end
+
+      it "does not forward raw UnknownProviderError text (resolve_adapter, via snapshot)" do
+        sentinel = "SENTINEL_VOL_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_volume)
+          .with(volume).and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = described_class.new.snapshot(volume: volume)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("UnknownProviderError")
+      end
+
+      context "with a completed snapshot" do
+        let(:vol_snapshot) do
+          create(:system_provider_volume_snapshot, account: account, volume: volume,
+                 status: "completed", external_id: "snap-1")
+        end
+
+        it "does not forward raw ProviderError text (delete_snapshot)" do
+          sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:delete_volume_snapshot)
+            .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+          expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+          result = described_class.new.delete_snapshot(snapshot: vol_snapshot)
+
+          expect(result.success?).to be false
+          expect(result.error).not_to include(sentinel)
+          expect(result.error).not_to include("ProviderError")
+        end
+
+        it "does not forward raw ProviderError text (restore_snapshot)" do
+          sentinel = "SENTINEL_VOL_PROVIDER_#{SecureRandom.hex(8)}"
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:volume_snapshot_restore_mode).and_return(:in_place)
+          allow(adapter).to receive(:restore_volume_snapshot)
+            .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+          expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+          result = described_class.new.restore_snapshot(snapshot: vol_snapshot)
+
+          expect(result.success?).to be false
+          expect(result.error).not_to include(sentinel)
+          expect(result.error).not_to include("ProviderError")
+        end
+
+        it "does not forward raw StandardError text or the exception class name (restore_snapshot)" do
+          sentinel = "SENTINEL_VOL_STANDARD_#{SecureRandom.hex(8)}"
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:volume_snapshot_restore_mode).and_return(:in_place)
+          allow(adapter).to receive(:restore_volume_snapshot).and_raise(StandardError, sentinel)
+          expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+          result = described_class.new.restore_snapshot(snapshot: vol_snapshot)
+
+          expect(result.success?).to be false
+          expect(result.error).not_to include(sentinel)
+          expect(result.error).not_to include("StandardError")
+        end
+
+        it "does not forward raw ActiveRecord::RecordInvalid validation text (record_restored_copy, via restore_snapshot)" do
+          sentinel = "SENTINEL_VOL_RECORDINVALID_#{SecureRandom.hex(8)}"
+          allow(adapter).to receive(:supports_volume_snapshots?).and_return(true)
+          allow(adapter).to receive(:volume_snapshot_restore_mode).and_return(:copy)
+          allow(adapter).to receive(:restore_volume_snapshot)
+            .and_return({ success: true, volume_id: "vol-restored-1", size_gb: 50 })
+          invalid = System::ProviderVolume.new
+          invalid.errors.add(:base, sentinel)
+          allow(volume.account.system_provider_volumes).to receive(:create!)
+            .and_raise(ActiveRecord::RecordInvalid, invalid)
+          expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+          result = described_class.new.restore_snapshot(snapshot: vol_snapshot)
+
+          expect(result.success?).to be false
+          expect(result.error).not_to include(sentinel)
+          # The provider-created volume id IS caller-relevant (an operator
+          # needs it to reconcile the orphan by hand) and stays in the
+          # message; only the raw AR validation text is sanitized away.
+          expect(result.error).to include("vol-restored-1")
+        end
       end
     end
   end

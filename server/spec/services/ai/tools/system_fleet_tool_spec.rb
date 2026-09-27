@@ -1576,6 +1576,11 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:success]).to be false
       expect(r[:error]).not_to include(sentinel)
       expect(r[:error]).not_to include("StandardError")
+      # Nit (round-2 review): assert on the WHOLE serialized envelope, not
+      # just the :error key — a sentinel leaking into some other field this
+      # sink adds (e.g. a nested `data` hash) would pass the two checks
+      # above and still reach the model.
+      expect(r.to_json).not_to include(sentinel)
     end
   end
 
@@ -2420,6 +2425,9 @@ end
       expect(r[:success]).to be false
       expect(r[:error]).not_to include(sentinel)
       expect(r[:error]).not_to include("RecordInvalid")
+      # Nit (round-2 review): assert on the WHOLE serialized envelope, not
+      # just the :error key.
+      expect(r.to_json).not_to include(sentinel)
     end
 
     it "returns NO-OP (already_current:true) when booted sha equals target sha and force not set" do

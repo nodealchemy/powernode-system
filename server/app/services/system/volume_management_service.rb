@@ -129,12 +129,12 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume attach failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError, VolumeError
       raise
     rescue StandardError => e
       Rails.logger.error("[VolumeManagementService] Attach failed: #{e.class}: #{e.message}")
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     def detach(volume:, force: false)
@@ -163,12 +163,12 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume detach failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError
       raise
     rescue StandardError => e
       Rails.logger.error("[VolumeManagementService] Detach failed: #{e.class}: #{e.message}")
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     def provision(account:, region:, volume_type:, size_gb:, options: {})
@@ -225,12 +225,12 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume provisioning failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError
       raise
     rescue StandardError => e
       Rails.logger.error("[VolumeManagementService] Provision failed: #{e.class}: #{e.message}")
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     def delete(volume:)
@@ -262,7 +262,7 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume delete failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError
       raise
     end
@@ -300,7 +300,7 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume status check failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError
       raise
     end
@@ -377,14 +377,14 @@ module System
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
       record&.update(status: "error")
-      Runtime::Result.err(error: "Volume snapshot failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue StandardError => e
       # The sibling lifecycle methods all carry this arm. Without it a
       # timeout or an adapter NoMethodError strands the row in "creating" —
       # in_progress? forever, neither restorable nor (before this) deletable.
       Rails.logger.error("[VolumeManagementService] Snapshot failed: #{e.class}: #{e.message}")
       record&.update(status: "error")
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     # The DB rows are the platform's RECORD; the provider is the AUTHORITY on
@@ -467,7 +467,7 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume snapshot delete failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     end
 
     # Restore from this snapshot, per the provider's declared restore MODE.
@@ -548,10 +548,10 @@ module System
       swap_restored_copy_into_place(source: volume, recorded: recorded)
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
-      Runtime::Result.err(error: "Volume snapshot restore failed at the provider")
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue StandardError => e
       Rails.logger.error("[VolumeManagementService] Restore failed: #{e.class}: #{e.message}")
-      Runtime::Result.err(error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC)
     end
 
     def snapshot_schedule_for(mission:, now: Time.current)

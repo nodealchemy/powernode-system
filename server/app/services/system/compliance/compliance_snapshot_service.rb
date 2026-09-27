@@ -44,7 +44,7 @@ module System
         Result.new(ok?: true, snapshot: snapshot, generated_at: Time.current)
       rescue StandardError => e
         Rails.logger.error("[ComplianceSnapshotService] #{e.class}: #{e.message}")
-        Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+        Result.new(ok?: false, error: ::System::CallerFacingMessages::GENERIC)
       end
 
       private

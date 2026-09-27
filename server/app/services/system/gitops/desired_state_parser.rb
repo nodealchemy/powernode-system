@@ -79,7 +79,7 @@ module System
         Result.new(ok?: false, error: "fleet.yaml has a YAML syntax error")
       rescue StandardError => e
         Rails.logger.error("[Gitops::DesiredStateParser] #{e.class}: #{e.message}")
-        Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
+        Result.new(ok?: false, error: ::System::CallerFacingMessages::GENERIC)
       end
 
       private

@@ -43,7 +43,7 @@ module System
         Result.new(ok?: true, diffs: diffs)
       rescue StandardError => e
         Rails.logger.error("[Gitops::DiffEngine] #{e.class}: #{e.message}")
-        Result.new(ok?: false, error: ::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE, diffs: [])
+        Result.new(ok?: false, error: ::System::CallerFacingMessages::GENERIC, diffs: [])
       end
 
       private
