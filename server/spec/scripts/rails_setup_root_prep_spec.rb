@@ -2067,18 +2067,23 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(relock_section).not_to be_nil
     end
 
-    it "uses the SAME env rails itself resolves through" do
-      expect(relock_section).to match(/export POWERNODE_DEPLOYED=1/)
-      expect(relock_section).to match(/export BUNDLE_GEMFILE="\$RAILS_DIR\/Gemfile"/)
-      expect(relock_section).to match(/export BUNDLE_APP_CONFIG="\$BUNDLE_CONFIG_DIR"/)
+    it "does NOT reuse this node's REAL bundler config/path -- that was the HIGH finding (review round)" do
+      expect(relock_code_lines).not_to match(/BUNDLE_APP_CONFIG="\$BUNDLE_CONFIG_DIR"/),
+        "pointing root's bundle resolve at rails-owned $BUNDLE_CONFIG_DIR/$BUNDLE_STATE_DIR lets a " \
+        "compromised rails plant a gemspec root then evaluates as Ruby -- see this section's SECURITY comment"
+      expect(relock_code_lines).not_to match(/BUNDLE_PATH="\$BUNDLE_STATE_DIR"/)
     end
 
-    it "checks before it locks -- bundle check runs strictly before bundle lock --local" do
-      check_idx = relock_code_lines.index("bundle check")
-      lock_idx  = relock_code_lines.index("bundle lock --local")
-      expect(check_idx).not_to be_nil
-      expect(lock_idx).not_to be_nil
-      expect(check_idx).to be < lock_idx
+    it "isolates BUNDLE_APP_CONFIG, BUNDLE_PATH, HOME and TMPDIR under a root-owned scratch dir, as local -x" do
+      %w[BUNDLE_APP_CONFIG BUNDLE_PATH HOME TMPDIR].each do |var|
+        expect(relock_code_lines).to match(/local -x #{var}="\$scratch\//),
+          "#{var} must be `local -x` under $scratch -- exported for this function only, never leaked to the " \
+          "rest of the script, and never under a rails-writable path"
+      end
+    end
+
+    it "drops `bundle check` entirely (review round) -- it hit the same rails-owned-path escalation as the old lock step" do
+      expect(relock_code_lines).not_to match(/bundle\s+check\b/)
     end
 
     it "locks with --local only -- no network, and never a full bundle install" do
@@ -2088,10 +2093,26 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         "`bundle lock --local` belongs here"
     end
 
+    it "resolves into a TEMP lockfile and replaces the real one atomically (mv -f), never writing bundler straight to it" do
+      expect(relock_code_lines).to match(/mktemp "\$RAILS_DIR\/Gemfile\.lock\.relock\.XXXXXX"/)
+      expect(relock_code_lines).to match(/--lockfile="\$tmp_lockfile"/)
+      expect(relock_code_lines).to match(/cmp -s "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"/)
+      expect(relock_code_lines).to match(/mv -f "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"/)
+    end
+
+    it "wraps the resolve in `timeout 120` -- a oneshot has no systemd start timeout of its own" do
+      expect(relock_code_lines).to match(/timeout 120 "\$BUNDLE_BIN" lock --local/)
+    end
+
+    it "cleans up its scratch dir and temp lockfile on every return, via a RETURN trap" do
+      expect(relock_code_lines).to match(/trap 'rm -rf "\$scratch"; rm -f "\$tmp_lockfile"' RETURN/)
+    end
+
     it "is loud but non-fatal: a lock failure warns and continues, never aborts the script" do
-      expect(relock_code_lines).to match(/if\s+\(cd "\$RAILS_DIR" && \/usr\/local\/bin\/bundle lock --local\); then/)
       expect(relock_code_lines).to match(/echo.*WARNING.*bundle lock --local failed/i)
       expect(relock_code_lines).not_to match(/\bexit\s+[1-9]/), "must degrade, not abort the script"
+      expect(relock_code_lines).to match(/relock_gemfile_for_this_node \|\| true/),
+        "the caller must tolerate a nonzero return under this script's own set -e"
     end
 
     it "documents that non-fatal is only safe while rails still holds the capability ceiling" do
@@ -2099,7 +2120,18 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       expect(relock_section).to match(/stops being a safety net once rails' capabilities are narrowed to \[\]/)
     end
 
-    it "runs before the STATE_DIR ownership sweep, which cleans up anything it might drop as root" do
+    it "documents BOTH remaining blockers for rails=[] (review round), not just the manifest change" do
+      expect(relock_section).to match(/rails-start\.sh's own first-boot `bundle install --local`/),
+        "blocker (a): rails-start.sh's first-boot bundle install still touches Gemfile.lock's mtime"
+      expect(relock_section).to match(/a live module refresh that restarts ONLY the `rails` unit/),
+        "blocker (b): a live module refresh restarting only rails does not re-run this script"
+      expect(relock_section).to match(/writeDependencyDirectives/),
+        "blocker (b)'s answer must cite where it was actually checked in the agent, not asserted"
+      expect(relock_section).to match(/systemd\.units, Action/i).or match(/units\.go, Action/)
+    end
+
+    it "runs before the STATE_DIR ownership sweep -- moot for this section's OWN writes now (nothing left under " \
+        "STATE_DIR to sweep), but still correct ordering" do
       relock_idx = script.index("Re-lock Gemfile.lock for THIS NODE")
       sweep_idx  = script.index("# LOUD BUT NON-FATAL: everything else under STATE_DIR")
       expect(relock_idx).not_to be_nil
@@ -2177,6 +2209,213 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         expect(status.success?).to be(true),
           "a lockfile with NO PATH block must not abort the script under set -e/pipefail: #{err}"
         expect(out.strip).to eq("")
+      end
+    end
+
+    # Genuinely EXECUTES relock_gemfile_for_this_node (extracted verbatim
+    # from the file, not retyped) against a STUB `bundle` this describe
+    # block substitutes via BUNDLE_BIN -- proves the review-round fixes
+    # (isolation, atomic replace, non-fatal failure) by RUNNING them, not
+    # by reading the source for the right words.
+    describe "relock_gemfile_for_this_node, actually run against a stub bundle" do
+      let(:relock_function_body) do
+        script[/relock_gemfile_for_this_node\(\) \{\n(.*?)\n\}\n/m, 1]
+      end
+      let(:path_gems_function_body) do
+        script[/path_gems_in_lock\(\) \{\n(.*?)\n\}/m, 1]
+      end
+
+      it "the extraction itself found the real function body (sanity-checks the extraction, not the script)" do
+        expect(relock_function_body).not_to be_nil
+        expect(relock_function_body).to include("trap ")
+        expect(relock_function_body).to include("mv -f")
+      end
+
+      # Shared runner: invokes the extracted function via `bash -c` exactly
+      # as rails-setup.sh itself would call it (same function body, same
+      # `path_gems_in_lock` dependency, same BUNDLE_BIN override point).
+      def run_relock(rails_dir:, stub_path:, relock_function_body:, path_gems_function_body:)
+        snippet = <<~BASH
+          set -euo pipefail
+          RAILS_DIR=#{rails_dir}
+          BUNDLE_BIN=#{stub_path}
+          path_gems_in_lock() {
+          #{path_gems_function_body}
+          }
+          relock_gemfile_for_this_node() {
+          #{relock_function_body}
+          }
+          relock_gemfile_for_this_node
+          echo "RELOCK_EXIT=$?"
+        BASH
+        Open3.capture3("bash", "-c", snippet)
+      end
+
+      it "is non-fatal when bundle fails: warns, and the caller's own exit code is 0" do
+        failing_stub = "#!/bin/bash\nexit 1\n"
+        Dir.mktmpdir do |dir|
+          rails_dir = File.join(dir, "server")
+          FileUtils.mkdir_p(rails_dir)
+          File.write(File.join(rails_dir, "Gemfile.lock"), "GEM\n  remote: https://rubygems.org/\n")
+          stub_path = File.join(dir, "bundle")
+          File.write(stub_path, failing_stub)
+          FileUtils.chmod(0o755, stub_path)
+
+          snippet = <<~BASH
+            set -euo pipefail
+            RAILS_DIR=#{rails_dir}
+            BUNDLE_BIN=#{stub_path}
+            path_gems_in_lock() {
+            #{path_gems_function_body}
+            }
+            relock_gemfile_for_this_node() {
+            #{relock_function_body}
+            }
+            relock_gemfile_for_this_node || true
+            echo "SCRIPT_EXIT=$?"
+          BASH
+          out, err, status = Open3.capture3("bash", "-c", snippet)
+
+          expect(status.success?).to be(true), "the driving script must not abort: #{err}"
+          expect(out).to include("SCRIPT_EXIT=0")
+          expect(err).to match(/WARNING.*bundle lock --local failed/i)
+        end
+      end
+
+      it "passes bundle a root-owned scratch env -- BUNDLE_APP_CONFIG/BUNDLE_PATH/HOME/TMPDIR never under STATE_DIR or RAILS_DIR" do
+        Dir.mktmpdir do |dir|
+          rails_dir = File.join(dir, "server")
+          state_dir = File.join(dir, "persist", "powernode-rails") # a rails-writable path this must NEVER touch
+          FileUtils.mkdir_p(rails_dir)
+          FileUtils.mkdir_p(state_dir)
+          File.write(File.join(rails_dir, "Gemfile.lock"), "GEM\n  remote: https://rubygems.org/\n")
+
+          env_log = File.join(dir, "env.log")
+          stub = <<~STUB
+            #!/bin/bash
+            env | sort > "#{env_log}"
+            for arg in "$@"; do
+              case "$arg" in
+                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
+              esac
+            done
+            cp #{File.join(rails_dir, "Gemfile.lock")} "$lockfile"
+            exit 0
+          STUB
+          stub_path = File.join(dir, "bundle")
+          File.write(stub_path, stub)
+          FileUtils.chmod(0o755, stub_path)
+
+          run_relock(rails_dir: rails_dir, stub_path: stub_path,
+                     relock_function_body: relock_function_body, path_gems_function_body: path_gems_function_body)
+
+          env_lines = File.read(env_log).lines
+          %w[BUNDLE_APP_CONFIG BUNDLE_PATH HOME TMPDIR].each do |var|
+            line = env_lines.find { |l| l.start_with?("#{var}=") }
+            expect(line).not_to be_nil, "#{var} was not exported to the bundle invocation at all"
+            value = line.split("=", 2).last.strip
+            expect(value).not_to start_with(state_dir),
+              "#{var}=#{value} points under the rails-writable STATE_DIR -- exactly the HIGH finding this fix closes"
+            expect(value).not_to start_with(rails_dir),
+              "#{var}=#{value} points under RAILS_DIR -- must be an isolated scratch dir instead"
+          end
+        end
+      end
+
+      it "cmp-equal (bundle resolves to the SAME content) makes no replacement -- inode is unchanged" do
+        lock_contents = "GEM\n  remote: https://rubygems.org/\n  specs:\n    foo (1.0)\n"
+        Dir.mktmpdir do |dir|
+          rails_dir = File.join(dir, "server")
+          FileUtils.mkdir_p(rails_dir)
+          File.write(File.join(rails_dir, "Gemfile.lock"), lock_contents)
+          before_inode = File.stat(File.join(rails_dir, "Gemfile.lock")).ino
+
+          # `cp` a real fixture file, not a `cat <<HEREDOC` embedding the
+          # content inline: interpolating multi-line, already-newline-
+          # terminated content into a second heredoc reliably adds an
+          # extra trailing blank line, which would make cmp -s see a
+          # difference that was never really there.
+          resolved_fixture = File.join(dir, "resolved.lock")
+          File.write(resolved_fixture, lock_contents)
+          stub = <<~STUB
+            #!/bin/bash
+            for arg in "$@"; do
+              case "$arg" in
+                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
+              esac
+            done
+            cp #{resolved_fixture} "$lockfile"
+            exit 0
+          STUB
+          stub_path = File.join(dir, "bundle")
+          File.write(stub_path, stub)
+          FileUtils.chmod(0o755, stub_path)
+
+          out, err, status = run_relock(rails_dir: rails_dir, stub_path: stub_path,
+                                         relock_function_body: relock_function_body,
+                                         path_gems_function_body: path_gems_function_body)
+
+          expect(status.success?).to be(true), "aborted: #{err}"
+          expect(out).to include("RELOCK_EXIT=0")
+          expect(out).to include("already matches")
+          after_inode = File.stat(File.join(rails_dir, "Gemfile.lock")).ino
+          expect(after_inode).to eq(before_inode), "the file was replaced even though bundler resolved to identical content"
+
+          leftover = Dir.glob(File.join(rails_dir, "Gemfile.lock.relock.*"))
+          expect(leftover).to be_empty, "a temp lockfile was left behind: #{leftover.inspect}"
+        end
+      end
+
+      it "a DIFFERENT resolve replaces the lockfile atomically (mv), and leaves no temp file behind" do
+        old_contents = "GEM\n  remote: https://rubygems.org/\n  specs:\n    foo (1.0)\n"
+        new_contents = <<~LOCK
+          PATH
+            remote: ../extensions/system/server
+            specs:
+              powernode_system (0.1.0)
+
+          GEM
+            remote: https://rubygems.org/
+            specs:
+              foo (1.0)
+        LOCK
+
+        Dir.mktmpdir do |dir|
+          rails_dir = File.join(dir, "server")
+          FileUtils.mkdir_p(rails_dir)
+          File.write(File.join(rails_dir, "Gemfile.lock"), old_contents)
+
+          # `cp` a real fixture file -- see the cmp-equal test above for why
+          # not a nested heredoc.
+          resolved_fixture = File.join(dir, "resolved.lock")
+          File.write(resolved_fixture, new_contents)
+          stub = <<~STUB
+            #!/bin/bash
+            for arg in "$@"; do
+              case "$arg" in
+                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
+              esac
+            done
+            cp #{resolved_fixture} "$lockfile"
+            exit 0
+          STUB
+          stub_path = File.join(dir, "bundle")
+          File.write(stub_path, stub)
+          FileUtils.chmod(0o755, stub_path)
+
+          out, err, status = run_relock(rails_dir: rails_dir, stub_path: stub_path,
+                                         relock_function_body: relock_function_body,
+                                         path_gems_function_body: path_gems_function_body)
+
+          expect(status.success?).to be(true), "aborted: #{err}"
+          expect(out).to include("RELOCK_EXIT=0")
+          expect(out).to include("re-locked Gemfile.lock")
+          expect(out).to include("../extensions/system/server")
+          expect(File.read(File.join(rails_dir, "Gemfile.lock"))).to eq(new_contents)
+
+          leftover = Dir.glob(File.join(rails_dir, "Gemfile.lock.relock.*"))
+          expect(leftover).to be_empty, "a temp lockfile was left behind: #{leftover.inspect}"
+        end
       end
     end
   end

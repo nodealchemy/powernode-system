@@ -62,12 +62,14 @@
 # ALSO HERE (IMP-01a0e40a-c0ef, follow-up to IMP-caef5c00d63f): re-locking
 # Gemfile.lock for this node's actual extension composition, root, before
 # rails ever starts — see that section's own header, below, for the full
-# incident and the mechanism. Its out-of-band counterpart is
-# /usr/local/bin/powernode-rails-exec, a small wrapper (shipped alongside
-# this script) that gives an operator's manual `bundle exec` the same
-# POWERNODE_DEPLOYED/BUNDLE_GEMFILE/BUNDLE_APP_CONFIG env this script and
-# rails-start.sh both resolve through, so an out-of-band invocation never
-# has a reason to disagree with either of them about the lockfile.
+# incident, the mechanism, and (review round) why it resolves inside an
+# ISOLATED scratch env rather than rails' own BUNDLE_PATH. Its
+# out-of-band counterpart is /usr/local/bin/powernode-rails-exec (shipped
+# alongside this script), which mirrors the `rails` SERVICE's own runtime
+# env instead — a DIFFERENT env, by design: an operator's manual
+# `bundle exec rails console`/`runner` needs to actually RUN the app, so
+# it needs the service's real env, not this section's isolated,
+# resolve-only one. See that script's own header for the full reasoning.
 set -euo pipefail
 
 RAILS_USER=powernode-rails
@@ -301,30 +303,75 @@ fi
 #     lock itself the moment ANYTHING calls it — which used to be the
 #     non-root `rails` process's own first `bundle exec`, needing
 #     CAP_DAC_OVERRIDE on the root-owned lockfile to succeed. Confirmed
-#     directly (2026-09-27): a `bundle lock --local` run with the SAME env
-#     this section uses reproduces the live lockfile byte-for-byte; the
-#     same command WITHOUT POWERNODE_DEPLOYED=1 drops the extension
-#     entirely. Doing the re-lock HERE, as root, before rails ever starts,
-#     means rails's own Bundler.setup finds a lock that already matches
-#     and never needs to write it itself.
+#     directly (2026-09-27): a `bundle lock --local` run reproduces the
+#     live lockfile byte-for-byte when POWERNODE_DEPLOYED=1 is set; the
+#     same command without it drops the extension entirely.
 #
-#     SAME ENV rails resolves through — POWERNODE_DEPLOYED, BUNDLE_GEMFILE,
-#     BUNDLE_APP_CONFIG (the file this script just wrote above, pointing
-#     BUNDLE_PATH at STATE_DIR) — so this computes exactly what rails's
-#     own Bundler.setup would compute, not some other resolution. The
-#     out-of-band counterpart to this env is
-#     /usr/local/bin/powernode-rails-exec (see this file's header).
+#     SECURITY (review round, HIGH — this undid IMP-3731023204f2): the
+#     first draft of this section pointed Bundler at THIS NODE's REAL
+#     BUNDLE_APP_CONFIG/BUNDLE_PATH ($BUNDLE_CONFIG_DIR / $BUNDLE_STATE_DIR,
+#     both under STATE_DIR, which is rails-owned 0700). Bundler evaluates
+#     every installed gem's *.gemspec as ordinary Ruby whenever that gem's
+#     fast-path stub header is missing — reproduced live, against bundler
+#     2.7.1, for BOTH `bundle check` and `bundle lock --local`. A
+#     compromised/buggy rails process can therefore plant or edit a
+#     gemspec under $BUNDLE_STATE_DIR, and root would execute it AS ROOT
+#     at the very next boot — exactly the escalation shape
+#     IMP-3731023204f2 closed everywhere else in this file, reopened here
+#     by handing root's own Bundler config to rails-writable state. The
+#     symlink guard on $BUNDLE_CONFIG_DIR above (:249) does not help: it
+#     protects the WRITE of that config file, not a later READ of it (or
+#     of anything under the BUNDLE_PATH it names) by an unrelated root
+#     command.
 #
-#     `bundle check` FIRST, `bundle lock --local` only when it is not
-#     already satisfied: on a boot where this node's composition hasn't
-#     changed (the common case), that is one cheap read-only check, not a
-#     resolve. `--local` on the lock itself means no network and no
-#     compilation — purely re-resolving the dependency graph from
-#     gemspecs and the vendored gem cache. Measured directly: `bundle lock
-#     --local` alone does not grow the root overlay's disk usage; `bundle
-#     install` (which compiles native extensions) does, and filled the
-#     512M root overlay to 100% during this investigation. Never call
-#     `bundle install` here.
+#     FIX: resolve entirely inside an ISOLATED, root-owned scratch
+#     directory instead of any rails-writable path. BUNDLE_APP_CONFIG,
+#     BUNDLE_PATH, HOME and TMPDIR all point under a fresh `mktemp -d`
+#     this function owns exclusively and deletes before it returns (see
+#     relock_gemfile_for_this_node's own trap, below) — nothing rails has
+#     ever touched is reachable from there, so nothing rails plants can
+#     be evaluated as root. Verified this still resolves correctly:
+#     reproduced live (2026-09-27) with this exact isolation, byte-for-
+#     byte identical to the real lockfile.
+#
+#     `bundle check` is DROPPED (review round). It hit the identical
+#     gemspec-eval path against the SAME rails-owned BUNDLE_PATH the lock
+#     step used to — the same escalation — and once that path moved to
+#     the isolated scratch dir above, `check` and `lock` would be reading
+#     DIFFERENT installed-gem state and could disagree, making a passing
+#     check's "already matches" message actively misleading. `bundle lock
+#     --local` now runs every boot unconditionally; it is still cheap
+#     (see the `--local` paragraph below) and the cmp-based skip a few
+#     lines down gives back the "nothing to do" fast path a different way
+#     — by comparing RESULTS, not by trusting a check against untrusted
+#     installed state.
+#
+#     ATOMIC replace, never a write in place (review round — this also
+#     closes an ENOSPC-truncation risk): resolve into a TEMP lockfile
+#     living in $RAILS_DIR itself (`--lockfile=`, same filesystem as the
+#     real one, so the final `mv -f` is a same-fs rename, not a
+#     cross-filesystem copy), `cmp -s` it against the real Gemfile.lock,
+#     and only replace when they differ. A resolve that exhausts the
+#     overlay mid-write now leaves the ORIGINAL lockfile untouched —
+#     writing straight to Gemfile.lock, by contrast, could hit ENOSPC
+#     partway through and leave a truncated, unparseable lock in its
+#     place (the exact overlay this script's own header already
+#     references filling to 100% during this investigation).
+#
+#     `timeout 120` (review round): a Type=oneshot unit has no
+#     systemd-enforced start timeout of its own, so an offline resolve
+#     that wedges (a corrupt local gem-cache entry, a stuck lock) would
+#     otherwise leave rails-setup.service hung and rails never starting
+#     at all, instead of degrading loudly the way every other failure in
+#     this section does.
+#
+#     `--local` still means no network and no compilation — purely
+#     re-resolving the dependency graph from gemspecs and the vendored
+#     gem cache. Measured directly: `bundle lock --local` alone does not
+#     grow the root overlay's disk usage; `bundle install` (which
+#     compiles native extensions) does, and filled the 512M root overlay
+#     to 100% during this investigation. Never call `bundle install`
+#     here.
 #
 #     NON-FATAL, LOUDLY, ON PURPOSE — read this before changing it: a
 #     failure in this section must not stop the boot. TODAY, rails STILL
@@ -334,22 +381,42 @@ fi
 #     un-re-locked Gemfile.lock leaves rails able to repair it itself on
 #     its own first Bundler.setup, exactly as before this change existed.
 #     THIS STOPS BEING TRUE the day rails' capabilities are narrowed back
-#     to `[]` — at that point a failure in this section becomes a hard
-#     boot blocker (rails can no longer self-repair), and this section's
-#     "log and continue" posture MUST be revisited alongside that manifest
-#     change, not before it.
+#     to `[]` — and TWO OTHER things must ALSO be fixed first, not just
+#     the manifest change; this section's "log and continue" posture must
+#     be revisited alongside ALL THREE:
+#       (a) rails-start.sh's own first-boot `bundle install --local`
+#           (taken whenever $BUNDLE_PATH is empty — first boot, or any
+#           boot after a wiped /persist) still touches Gemfile.lock's
+#           mtime, which EPERMs on a root-owned lockfile without
+#           CAP_FOWNER/CAP_DAC_OVERRIDE. Zero-cap rails would crash-loop
+#           on exactly that boot, one layer later than the 2026-09-20
+#           incident. NOT fixed here — deliberately deferred, tracked
+#           alongside this same IMP.
+#       (b) a live module refresh that restarts ONLY the `rails` unit
+#           does NOT re-run this script. Checked directly against the
+#           agent, not assumed: rails' `start_before` edge on rails-setup
+#           renders as Requires=+After= on rails.service
+#           (agent/internal/lifecycle/service.go,
+#           writeDependencyDirectives), and the agent's restart task
+#           issues a single-unit `systemctl restart <unit>`
+#           (agent/internal/systemd/units.go, Action) — restart does not
+#           cascade to units named in another unit's Requires=, and
+#           rails-setup.service stays "active (exited)"
+#           (RemainAfterExit=yes) from the boot that ran it, so no new
+#           start job for it is ever queued by restarting rails alone. A
+#           composition change delivered via a live refresh (not a
+#           reboot) would therefore run against whatever THIS section
+#           computed at the LAST boot — stale, with no root capability
+#           left to fix it at request time either, once (a) above is
+#           also closed.
 #
-#     OWNERSHIP: deliberately no separate sweep here. Any file bundler
-#     creates under BUNDLE_STATE_DIR/BUNDLE_CONFIG_DIR as a side effect of
-#     running this AS ROOT would otherwise be a landmine for rails
-#     (root-owned entries inside directories rails needs to write) — this
-#     section runs BEFORE the STATE_DIR ownership sweep further down,
-#     which already walks every file under STATE_DIR and fixes anything
-#     not owned by $RAILS_USER, including whatever this section might
-#     have dropped.
-export POWERNODE_DEPLOYED=1
+#     OWNERSHIP: nothing to sweep here (review round) — the isolation fix
+#     above means this section no longer writes anything under STATE_DIR
+#     at all; everything it touches lives in a scratch dir it creates and
+#     destroys itself, and the real Gemfile.lock replacement is a single
+#     atomic rename within $RAILS_DIR, not a directory bundler was ever
+#     given write access to.
 export BUNDLE_GEMFILE="$RAILS_DIR/Gemfile"
-export BUNDLE_APP_CONFIG="$BUNDLE_CONFIG_DIR"
 
 # The PATH-gem `remote:` lines from every PATH block in the current lock —
 # the before/after signal this section logs, not a full lockfile diff.
@@ -366,22 +433,64 @@ path_gems_in_lock() {
   grep -A1 '^PATH$' "$RAILS_DIR/Gemfile.lock" 2>/dev/null | grep 'remote:' | sed 's/^ *remote: *//' | sort
 }
 
-rails_lock_before="$(path_gems_in_lock || true)"
+# BUNDLE_BIN, not a hardcoded literal: lets a spec point this at a stub
+# executable instead of the real bundler, so the behavioral properties
+# below (isolation, atomic replace, non-fatal failure) can be exercised
+# without needing a real gem environment. Unset/default in production —
+# every boot resolves to the same /usr/local/bin/bundle it always did.
+BUNDLE_BIN="${BUNDLE_BIN:-/usr/local/bin/bundle}"
 
-if (cd "$RAILS_DIR" && /usr/local/bin/bundle check >/dev/null 2>&1); then
-  echo "[rails-setup] Gemfile.lock already matches this node's extension composition (bundle check passed) -- not re-locking"
-else
-  echo "[rails-setup] Gemfile.lock does not match this node's extension composition -- re-locking (bundle lock --local)"
-  if (cd "$RAILS_DIR" && /usr/local/bin/bundle lock --local); then
-    rails_lock_after="$(path_gems_in_lock || true)"
-    echo "[rails-setup] re-lock done. PATH gems before:"
-    echo "${rails_lock_before:-<none>}" | sed 's/^/[rails-setup]   /'
-    echo "[rails-setup] PATH gems after:"
-    echo "${rails_lock_after:-<none>}" | sed 's/^/[rails-setup]   /'
-  else
-    echo "[rails-setup] WARNING: bundle lock --local failed -- Gemfile.lock may still disagree with this node's extension composition. rails currently still holds the module's capability ceiling and can repair this itself on its own Bundler.setup (see this section's header) -- but that stops being a safety net once rails' capabilities are narrowed to []." >&2
+# Isolated per the SECURITY note above: BUNDLE_APP_CONFIG, BUNDLE_PATH,
+# HOME and TMPDIR are all `local -x` — exported for THIS function and its
+# children only, never leaking into the rest of this script — and all
+# point under a root-owned scratch dir this function creates and
+# destroys itself. Non-fatal on every return path; the caller does
+# `relock_gemfile_for_this_node || true` under this script's `set -e`.
+relock_gemfile_for_this_node() {
+  local scratch tmp_lockfile before after
+
+  if ! scratch="$(mktemp -d)"; then
+    echo "[rails-setup] WARNING: could not create a scratch dir for the Gemfile.lock re-lock -- skipping (see this section's header)" >&2
+    return 1
   fi
-fi
+  if ! tmp_lockfile="$(mktemp "$RAILS_DIR/Gemfile.lock.relock.XXXXXX")"; then
+    echo "[rails-setup] WARNING: could not create a temp lockfile under $RAILS_DIR -- skipping the Gemfile.lock re-lock (see this section's header)" >&2
+    rm -rf "$scratch"
+    return 1
+  fi
+  # Cleans up on EVERY return below -- success, an early failure, or
+  # `timeout` killing bundler partway through. `rm -f` on tmp_lockfile is
+  # a no-op once the success path below has already `mv -f`'d it away.
+  trap 'rm -rf "$scratch"; rm -f "$tmp_lockfile"' RETURN
+
+  local -x BUNDLE_APP_CONFIG="$scratch/bundle-config"
+  local -x BUNDLE_PATH="$scratch/bundle-path"
+  local -x HOME="$scratch/home"
+  local -x TMPDIR="$scratch/tmp"
+  local -x POWERNODE_DEPLOYED=1
+  mkdir -p "$BUNDLE_APP_CONFIG" "$BUNDLE_PATH" "$HOME" "$TMPDIR"
+
+  before="$(path_gems_in_lock || true)"
+
+  if ! (cd "$RAILS_DIR" && timeout 120 "$BUNDLE_BIN" lock --local --lockfile="$tmp_lockfile"); then
+    echo "[rails-setup] WARNING: bundle lock --local failed or timed out -- Gemfile.lock may still disagree with this node's extension composition. rails currently still holds the module's capability ceiling and can repair this itself on its own Bundler.setup (see this section's header) -- but that stops being a safety net once rails' capabilities are narrowed to []." >&2
+    return 1
+  fi
+
+  if cmp -s "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock" 2>/dev/null; then
+    echo "[rails-setup] Gemfile.lock already matches this node's extension composition -- not re-locking"
+    return 0
+  fi
+
+  mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"
+  after="$(path_gems_in_lock || true)"
+  echo "[rails-setup] re-locked Gemfile.lock for this node's extension composition. PATH gems before:"
+  echo "${before:-<none>}" | sed 's/^/[rails-setup]   /'
+  echo "[rails-setup] PATH gems after:"
+  echo "${after:-<none>}" | sed 's/^/[rails-setup]   /'
+}
+
+relock_gemfile_for_this_node || true
 
 # FATAL: STATE_DIR itself and the two secrets files rails reads at boot.
 # Adoption (b) originally made the WHOLE recursive sweep below fatal too
