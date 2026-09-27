@@ -240,3 +240,144 @@ func TestAttachServicesModeOpts_DefaultNeverRestarts(t *testing.T) {
 		t.Fatal("unit naming precondition changed")
 	}
 }
+
+// W1 (IMP-caef5c00d63f round W, HIGH): a live reconcile that changes ONLY a
+// security drop-in moves no unit BODY at all, so anyWritten/Skipped
+// (unit-body-write tracking) never sees it. ConfinementChangedUnits is the
+// signal a caller (applyModuleSecurityPolicy) threads through to say "this
+// unit's confinement changed even though its body did not."
+//
+// A drop-in-only change on an ACTIVE unit, with RestartChanged on (the
+// non-self-hosted case), must be RESTARTED — same as a body change — and
+// daemon-reload must run even though the unit body itself is byte-identical
+// to what is already on disk (anyWritten would otherwise stay false).
+func TestAttachServicesModeOpts_ConfinementOnlyChangeRestartsActiveUnitWhenRestartChanged(t *testing.T) {
+	setUnitDir(t)
+	services := []manifest.Service{{Name: "api", StartCommand: "/usr/bin/api"}}
+	ctx := context.Background()
+	unit := UnitName("m1", "api")
+
+	// Seed: identical body already on disk (no body change this pass).
+	seed := &mount.RecorderRunner{}
+	if _, err := AttachServicesModeOpts(ctx, seed, "m1", services, RootModeNative, AttachOptions{}); err != nil {
+		t.Fatalf("seed attach: %v", err)
+	}
+
+	runner := &mount.RecorderRunner{
+		StubOutput: map[string][]byte{
+			"systemctl is-active " + unit: []byte("active\n"),
+		},
+	}
+	results, err := AttachServicesModeOpts(ctx, runner, "m1", services, RootModeNative,
+		AttachOptions{RestartChanged: true, ConfinementChangedUnits: []string{unit}})
+	if err != nil {
+		t.Fatalf("AttachServicesModeOpts: %v", err)
+	}
+
+	if got := invocationsOf(runner, "restart"); len(got) != 1 || got[0] != unit {
+		t.Fatalf("W1 REGRESSION: expected the confinement-only change to restart the active unit despite an UNCHANGED body, got restarts=%v starts=%v",
+			got, invocationsOf(runner, "start"))
+	}
+	if !results[0].Restarted {
+		t.Error("AttachResult.Restarted should record the restart")
+	}
+	if results[0].ConfinementPendingRestart {
+		t.Error("a restart that actually happened must not also report ConfinementPendingRestart")
+	}
+	if !hasDaemonReload(runner) {
+		t.Error("W1 REGRESSION: expected daemon-reload for a confinement-only change even though no unit body was written")
+	}
+}
+
+// The SELF-HOSTED case (modeled here as RestartChanged: false, exactly what
+// the reconciler passes on a self-hosted node — see selfHosted()'s own
+// callers): a confinement change on an ACTIVE unit gets a RELOAD (the new
+// drop-in must at least be loaded) but NO restart (rule 1: never restart a
+// service this node's own reconcile depends on) — and the unit is reported
+// as ConfinementPendingRestart so the caller can refuse to call the module
+// converged.
+func TestAttachServicesModeOpts_ConfinementChangeSelfHostedReloadsWithoutRestartingAndFlagsPending(t *testing.T) {
+	setUnitDir(t)
+	services := []manifest.Service{{Name: "api", StartCommand: "/usr/bin/api"}}
+	ctx := context.Background()
+	unit := UnitName("m1", "api")
+
+	seed := &mount.RecorderRunner{}
+	if _, err := AttachServicesModeOpts(ctx, seed, "m1", services, RootModeNative, AttachOptions{}); err != nil {
+		t.Fatalf("seed attach: %v", err)
+	}
+
+	runner := &mount.RecorderRunner{
+		StubOutput: map[string][]byte{
+			"systemctl is-active " + unit: []byte("active\n"),
+		},
+	}
+	results, err := AttachServicesModeOpts(ctx, runner, "m1", services, RootModeNative,
+		AttachOptions{RestartChanged: false, ConfinementChangedUnits: []string{unit}})
+	if err != nil {
+		t.Fatalf("AttachServicesModeOpts: %v", err)
+	}
+
+	if got := invocationsOf(runner, "restart"); len(got) != 0 {
+		t.Fatalf("W1 REGRESSION (rule 1): a self-hosted node must NEVER restart on a confinement change, got restarts=%v", got)
+	}
+	if !hasDaemonReload(runner) {
+		t.Error("W1 REGRESSION: expected a reload even when the restart is withheld — the drop-in must at least be loaded")
+	}
+	if !results[0].ConfinementPendingRestart {
+		t.Error("W1 REGRESSION: expected ConfinementPendingRestart=true — a withheld restart on an ACTIVE unit must be visible, not silent")
+	}
+	if results[0].Restarted {
+		t.Error("Restarted must be false when the restart was deliberately withheld")
+	}
+}
+
+// An unchanged unit named nowhere in ConfinementChangedUnits gets neither a
+// reload nor a restart — the baseline, unaffected by this field's mere
+// presence in AttachOptions (an empty/nil set must behave exactly like
+// before W1 existed).
+func TestAttachServicesModeOpts_NoConfinementChangeGivesNoReloadNoRestart(t *testing.T) {
+	setUnitDir(t)
+	services := []manifest.Service{{Name: "api", StartCommand: "/usr/bin/api"}}
+	ctx := context.Background()
+	unit := UnitName("m1", "api")
+
+	seed := &mount.RecorderRunner{}
+	if _, err := AttachServicesModeOpts(ctx, seed, "m1", services, RootModeNative, AttachOptions{}); err != nil {
+		t.Fatalf("seed attach: %v", err)
+	}
+
+	runner := &mount.RecorderRunner{
+		StubOutput: map[string][]byte{
+			"systemctl is-active " + unit: []byte("active\n"),
+		},
+	}
+	results, err := AttachServicesModeOpts(ctx, runner, "m1", services, RootModeNative,
+		AttachOptions{RestartChanged: true, ConfinementChangedUnits: nil})
+	if err != nil {
+		t.Fatalf("AttachServicesModeOpts: %v", err)
+	}
+
+	if hasDaemonReload(runner) {
+		t.Error("expected no reload when nothing changed at all")
+	}
+	if got := invocationsOf(runner, "restart"); len(got) != 0 {
+		t.Fatalf("expected no restart when nothing changed at all, got %v", got)
+	}
+	if results[0].ConfinementPendingRestart {
+		t.Error("a unit whose confinement did not change must never report ConfinementPendingRestart")
+	}
+}
+
+// hasDaemonReload reports whether runner recorded a bare `systemctl
+// daemon-reload` invocation — invocationsOf can't answer this itself since
+// it only inspects a verb's OWN second argument (the unit name), and
+// daemon-reload takes none.
+func hasDaemonReload(r *mount.RecorderRunner) bool {
+	for _, inv := range r.Invocations {
+		if inv.Name == "systemctl" && len(inv.Args) == 1 && inv.Args[0] == "daemon-reload" {
+			return true
+		}
+	}
+	return false
+}

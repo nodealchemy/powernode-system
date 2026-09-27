@@ -21,7 +21,7 @@ func withTempSystemdRootUserns(t *testing.T) string {
 
 func TestWriteUserNamespaceDropIn_EnabledEmitsPrivateUsersYes(t *testing.T) {
 	root := withTempSystemdRootUserns(t)
-	if err := WriteUserNamespaceDropIn("powernode-redis-redis.service", true); err != nil {
+	if _, err := WriteUserNamespaceDropIn("powernode-redis-redis.service", true); err != nil {
 		t.Fatalf("WriteUserNamespaceDropIn: %v", err)
 	}
 	path := filepath.Join(root, "powernode-redis-redis.service.d", "userns.conf")
@@ -43,7 +43,7 @@ func TestWriteUserNamespaceDropIn_EnabledEmitsPrivateUsersYes(t *testing.T) {
 
 func TestWriteUserNamespaceDropIn_DisabledEmitsPrivateUsersNo(t *testing.T) {
 	root := withTempSystemdRootUserns(t)
-	if err := WriteUserNamespaceDropIn("powernode-rawsock-rawsock.service", false); err != nil {
+	if _, err := WriteUserNamespaceDropIn("powernode-rawsock-rawsock.service", false); err != nil {
 		t.Fatalf("WriteUserNamespaceDropIn: %v", err)
 	}
 	path := filepath.Join(root, "powernode-rawsock-rawsock.service.d", "userns.conf")
@@ -63,14 +63,14 @@ func TestWriteUserNamespaceDropIn_DisabledEmitsPrivateUsersNo(t *testing.T) {
 func TestWriteUserNamespaceDropIn_IsIdempotent(t *testing.T) {
 	root := withTempSystemdRootUserns(t)
 	unit := "powernode-base.service"
-	if err := WriteUserNamespaceDropIn(unit, true); err != nil {
+	if _, err := WriteUserNamespaceDropIn(unit, true); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	first, err := os.ReadFile(filepath.Join(root, unit+".d", "userns.conf"))
 	if err != nil {
 		t.Fatalf("read first: %v", err)
 	}
-	if err := WriteUserNamespaceDropIn(unit, true); err != nil {
+	if _, err := WriteUserNamespaceDropIn(unit, true); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	second, err := os.ReadFile(filepath.Join(root, unit+".d", "userns.conf"))
@@ -91,7 +91,7 @@ func TestWriteUserNamespaceDropIn_RejectsBadUnitNames(t *testing.T) {
 		// alongside ".." or "\\" would still pass every case above.
 		"escape..d", "foo\\bar",
 	} {
-		if err := WriteUserNamespaceDropIn(bad, true); err == nil {
+		if _, err := WriteUserNamespaceDropIn(bad, true); err == nil {
 			t.Errorf("expected error for unit name %q", bad)
 		}
 	}

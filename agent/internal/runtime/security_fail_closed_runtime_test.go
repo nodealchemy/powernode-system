@@ -66,7 +66,7 @@ func TestAttachModule_RefusesWholeModuleWhenAUnitsSecurityDropInFailsToWrite(t *
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
 
-	err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf)
+	_, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf)
 	if err == nil {
 		t.Fatal("attachModule must return an error when a non-exempt security drop-in fails to write (fail closed)")
 	}
@@ -111,7 +111,7 @@ func TestAttachModule_UnapprovedPrivilegedRecordsSecurityFailClosed(t *testing.T
 	}
 	unit := lifecycle.UnitName(mf.ID, "app")
 
-	err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf)
+	_, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf)
 	if err == nil {
 		t.Fatal("attachModule must refuse an unapproved privileged request")
 	}
@@ -227,7 +227,7 @@ func TestAttachModule_DoesNotStopARunningUnitOnFailedReattach(t *testing.T) {
 			r := liveReconciler(t, rec)
 			r.selfHostLatched = selfHosted
 
-			if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
+			if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
 				t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
 			}
 
@@ -277,7 +277,7 @@ func TestAttachModule_FullCapabilitySetExemptFromFailClosed(t *testing.T) {
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage) }
 
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
 		t.Errorf("a full-known-capability-set write failure must NOT fail closed attachModule, got: %v", err)
 	}
 	if containsArg(onErrors, "reconciler:security_dropin_fail_closed") {
@@ -299,7 +299,7 @@ func TestAttachModule_SuccessRecordsUnitsAsRecovered(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	r := liveReconciler(t, rec)
 
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
 		t.Fatalf("attachModule: %v", err)
 	}
 
@@ -337,7 +337,7 @@ func TestAttachModule_FailureDoesNotRecordUnitsAsRecovered(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	r := liveReconciler(t, rec)
 
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err == nil {
 		t.Fatal("test setup problem: attachModule must fail closed for this to be meaningful")
 	}
 
@@ -504,7 +504,7 @@ func TestSecurityFailClosedParity_BothPathsAgree(t *testing.T) {
 			liveRec := &mount.RecorderRunner{}
 			liveR := liveReconciler(t, liveRec)
 			liveR.privilegedAllow = tc.privilegedAllow
-			liveErr := liveR.attachModule(context.Background(), mount.Module{ID: liveMf.ID, Digest: "d1", Priority: 1}, liveMf)
+			_, liveErr := liveR.attachModule(context.Background(), mount.Module{ID: liveMf.ID, Digest: "d1", Priority: 1}, liveMf)
 			liveRefused := liveErr != nil
 
 			// Pivot path.

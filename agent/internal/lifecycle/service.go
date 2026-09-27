@@ -63,7 +63,18 @@ type AttachResult struct {
 	// A plain `systemctl start` on a running unit is a no-op, so without this
 	// a corrected unit reaches the DISK and never the running process.
 	Restarted bool
-	StepErr   error // non-nil for the step that failed; preceding steps still ran
+	// ConfinementPendingRestart (W1, IMP-caef5c00d63f round W) is true when
+	// this unit's security drop-ins CHANGED this pass (named in
+	// AttachOptions.ConfinementChangedUnits), the unit is currently ACTIVE,
+	// and neither RestartChanged nor ForceRestartActive actually issued a
+	// restart for it — i.e. rule 1 (never restart a self-hosted node's own
+	// services) deliberately withheld one. The unit's confinement was
+	// RELOADED (daemon-reload ran) but the running process still holds its
+	// OLD effective capabilities/seccomp/userns until something else
+	// restarts it. The caller must treat this as NOT CONVERGED — see
+	// Reconciler.attachModuleServices' own doc.
+	ConfinementPendingRestart bool
+	StepErr                   error // non-nil for the step that failed; preceding steps still ran
 }
 
 // AttachOptions carries the decisions the RECONCILER makes and the renderer
@@ -104,6 +115,44 @@ type AttachOptions struct {
 	// never gated on whether THIS pass's own write changed anything, which
 	// is not a durable signal a retry can rely on.
 	ForceRestartActive bool
+
+	// ConfinementChangedUnits (W1, IMP-caef5c00d63f round W, HIGH) names
+	// every unit whose SECURITY DROP-IN bytes (capabilities/seccomp/userns)
+	// actually changed THIS pass, via applyModuleSecurityPolicy running
+	// BEFORE this call — a change that moves NO unit body at all, so
+	// writeIfChanged's own anyWritten/Skipped tracking (unit-body writes
+	// only) is completely blind to it. Before this field existed, a live
+	// reconcile that changed ONLY a manifest's security policy (e.g. one
+	// service's own `capabilities:` list) wrote the new drop-in to disk,
+	// recorded the module as converged, and then did NOTHING ELSE: no
+	// daemon-reload (anyWritten stayed false), no restart (RestartChanged
+	// gates on the unit BODY, which never changed) — the running process
+	// kept its OLD effective capabilities indefinitely, with the reconciler
+	// reporting the module as up to date the entire time.
+	//
+	// Consulted in TWO places below, both gated the same way body-changed
+	// already is:
+	//   - daemon-reload: unconditional whenever this set is non-empty, same
+	//     as ForceRestartActive — a confinement change is meaningless to a
+	//     systemd manager that has not reloaded it.
+	//   - restart decision: treated as an ADDITIONAL "changed" signal
+	//     alongside body-changed, so RestartChanged's own existing
+	//     self-hosted fence (off entirely on a self-hosted node) applies
+	//     here identically — rule 1 (never restart a service THIS node's
+	//     own reconcile depends on) is never weakened by this field. On a
+	//     self-hosted node, or whenever RestartChanged is otherwise false,
+	//     an ACTIVE unit named here instead gets
+	//     AttachResult.ConfinementPendingRestart — reloaded, restart
+	//     deliberately withheld, and the caller must treat the module as
+	//     NOT CONVERGED (see that field's own doc).
+	//
+	// nil is always safe and preserves EVERY pre-W1 caller's exact
+	// behavior — ForceRestartActive callers (upgradeModule's own step 4,
+	// the N2 revert-forced-restart branch) pass nil deliberately: they
+	// already force-restart every active unit of this module regardless of
+	// what changed, so this field would only risk a confusing SECOND
+	// restart decision for units already covered.
+	ConfinementChangedUnits []string
 }
 
 // AttachServices renders each unit in the cloud_init chroot mode
@@ -161,6 +210,13 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 	// carries. See recoveryDependents / writeDependencyDirectives.
 	dependents := recoveryDependents(services)
 
+	// confinementChanged (W1): O(1) membership, computed once — see
+	// AttachOptions.ConfinementChangedUnits' own doc.
+	confinementChanged := make(map[string]bool, len(opts.ConfinementChangedUnits))
+	for _, u := range opts.ConfinementChangedUnits {
+		confinementChanged[u] = true
+	}
+
 	results := make([]AttachResult, 0, len(ordered))
 	anyWritten := false
 	for _, svc := range ordered {
@@ -183,7 +239,14 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 	// invisible to anyWritten (which only tracks THIS function's own unit
 	// BODY writes). A new binary must never restart against a systemd
 	// manager that has not reloaded the drop-ins step 2 just wrote.
-	if anyWritten || opts.ForceRestartActive {
+	//
+	// ConfinementChangedUnits (W1): a LIVE reconcile that changed ONLY a
+	// security drop-in (no ForceRestartActive, no unit body change at all)
+	// needs the exact same unconditional reload — a confinement change is
+	// meaningless to a systemd manager that has not reloaded it, and
+	// anyWritten never sees a security-drop-in-only write either, for
+	// exactly the same reason it never sees step 2's writes above.
+	if anyWritten || opts.ForceRestartActive || len(opts.ConfinementChangedUnits) > 0 {
 		if err := runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 			return results, fmt.Errorf("daemon-reload: %w", err)
 		}
@@ -247,10 +310,28 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 		// finding). ForceRestartActive restarts every unit of the CURRENT
 		// (new) manifest that is active, regardless of whether its body
 		// happened to change on this pass.
+		//
+		// W1: a unit named in ConfinementChangedUnits is an ADDITIONAL
+		// "changed" signal, on equal footing with a body change — a
+		// security-drop-in-only edit needs the exact same restart under
+		// RestartChanged's own existing rules (including its self-hosted
+		// fence: RestartChanged is already false on a self-hosted node, so
+		// this never restarts a service that node's own reconcile depends
+		// on). When RestartChanged does NOT fire for a confinement change
+		// (self-hosted, or RestartChanged otherwise false) but the unit is
+		// genuinely active under the STALE confinement right now, that is
+		// surfaced instead as ConfinementPendingRestart — reloaded above,
+		// restart deliberately withheld, caller must not treat this as
+		// converged.
+		changedThisPass := !results[i].Skipped || confinementChanged[unitName]
 		verb := systemd.Start
-		if opts.ForceRestartActive || (opts.RestartChanged && !results[i].Skipped) {
+		if opts.ForceRestartActive || (opts.RestartChanged && changedThisPass) {
 			if active, err := systemd.IsActive(ctx, runner, unitName); err == nil && active {
 				verb = systemd.Restart
+			}
+		} else if confinementChanged[unitName] {
+			if active, err := systemd.IsActive(ctx, runner, unitName); err == nil && active {
+				results[i].ConfinementPendingRestart = true
 			}
 		}
 

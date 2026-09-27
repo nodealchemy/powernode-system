@@ -59,7 +59,7 @@ func TestSecurityPolicyDecision_LiveAndPivotAgreeOnCapabilitiesCeilingViolation(
 	t.Cleanup(security.SetSystemdDropInRootForTest(t.TempDir()))
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
 	liveR := &Reconciler{cfg: ReconcilerConfig{MountRunner: &mount.RecorderRunner{}, OnError: func(string, error) {}}}
-	if _, err := liveR.applyModuleSecurityPolicy(context.Background(), mod, mf); err == nil {
+	if _, _, err := liveR.applyModuleSecurityPolicy(context.Background(), mod, mf); err == nil {
 		t.Fatal("live path: expected applyModuleSecurityPolicy to refuse a per-service capability outside the module ceiling")
 	} else {
 		var pde *PolicyDecisionError
@@ -133,7 +133,7 @@ func TestSecurityPolicyDecision_LiveAndPivotAgreeOnUnapprovedPrivileged(t *testi
 	liveR := &Reconciler{cfg: ReconcilerConfig{MountRunner: &mount.RecorderRunner{}, OnError: func(string, error) {}}}
 	// privilegedAllow left nil — no operator grant, matching pivot's frozen
 	// allowlist below (neither names the module).
-	if _, err := liveR.applyModuleSecurityPolicy(context.Background(), mod, mf); err == nil {
+	if _, _, err := liveR.applyModuleSecurityPolicy(context.Background(), mod, mf); err == nil {
 		t.Fatal("live path: expected applyModuleSecurityPolicy to refuse an unapproved privileged request")
 	} else {
 		var pde *PolicyDecisionError

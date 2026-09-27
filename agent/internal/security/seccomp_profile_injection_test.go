@@ -66,7 +66,7 @@ func TestWriteSeccompDropInRefusesInjection(t *testing.T) {
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := withTempSystemdRoot(t)
-			err := WriteSeccompDropIn("nginx.service", payload)
+			_, err := WriteSeccompDropIn("nginx.service", payload)
 			if err == nil {
 				body, _ := os.ReadFile(filepath.Join(root, "nginx.service.d", "seccomp.conf"))
 				t.Fatalf("accepted %q — generated unit body:\n%s", payload, body)
@@ -131,7 +131,7 @@ func TestSeccompFilterNameAcceptsLegitimateProfiles(t *testing.T) {
 
 func TestWriteSeccompDropInAcceptsLegitimateProfile(t *testing.T) {
 	root := withTempSystemdRoot(t)
-	if err := WriteSeccompDropIn("app.service", "/mnt/modules/abc123/profiles/system-service"); err != nil {
+	if _, err := WriteSeccompDropIn("app.service", "/mnt/modules/abc123/profiles/system-service"); err != nil {
 		t.Fatalf("legitimate profile rejected: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "app.service.d", "seccomp.conf"))

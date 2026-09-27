@@ -60,7 +60,7 @@ func TestAttachModule_UnknownCapabilityFromNewerManifestIsDroppedNotRefused(t *t
 		t.Fatal(err)
 	}
 
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
 		t.Fatalf("K5b REGRESSION: attachModule must NOT refuse the whole module over one unrecognized capability name (it must be dropped, not fatal): %v", err)
 	}
 

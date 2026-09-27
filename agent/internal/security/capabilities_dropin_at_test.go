@@ -18,7 +18,7 @@ import (
 func TestWriteCapabilityDropInAt_AllowListEmitsBothSetsAtExplicitRoot(t *testing.T) {
 	root := t.TempDir()
 	unit := "powernode-019e5b9a-bf81-traefik.service"
-	if err := WriteCapabilityDropInAt(root, unit, []string{"CAP_NET_BIND_SERVICE", "cap_chown"}); err != nil {
+	if _, err := WriteCapabilityDropInAt(root, unit, []string{"CAP_NET_BIND_SERVICE", "cap_chown"}); err != nil {
 		t.Fatalf("WriteCapabilityDropInAt: %v", err)
 	}
 	path := filepath.Join(root, "etc", "systemd", "system", unit+".d", "capabilities.conf")
@@ -42,7 +42,7 @@ func TestWriteCapabilityDropInAt_EmptyAllowListStillWritesTheStrictestDropIn(t *
 	// exactly the gap IMP-caef5c00d63f phase 2 closes.
 	root := t.TempDir()
 	unit := "powernode-postgres-postgres.service"
-	if err := WriteCapabilityDropInAt(root, unit, nil); err != nil {
+	if _, err := WriteCapabilityDropInAt(root, unit, nil); err != nil {
 		t.Fatalf("WriteCapabilityDropInAt: %v", err)
 	}
 	path := filepath.Join(root, "etc", "systemd", "system", unit+".d", "capabilities.conf")
@@ -63,7 +63,7 @@ func TestWriteCapabilityDropInAt_EmptyAllowListStillWritesTheStrictestDropIn(t *
 }
 
 func TestWriteCapabilityDropInAt_RejectsUnknownCap(t *testing.T) {
-	err := WriteCapabilityDropInAt(t.TempDir(), "foo.service", []string{"CAP_MADE_UP"})
+	_, err := WriteCapabilityDropInAt(t.TempDir(), "foo.service", []string{"CAP_MADE_UP"})
 	if err == nil || !strings.Contains(err.Error(), "CAP_MADE_UP") {
 		t.Errorf("expected error mentioning CAP_MADE_UP; got %v", err)
 	}
@@ -80,7 +80,7 @@ func TestWriteCapabilityDropInAt_RejectsPathTraversal(t *testing.T) {
 		"escape..d", // bare ".." with no path separator anywhere
 		"foo\\bar",  // bare backslash with no path separator anywhere
 	} {
-		if err := WriteCapabilityDropInAt(root, bad, []string{"CAP_CHOWN"}); err == nil {
+		if _, err := WriteCapabilityDropInAt(root, bad, []string{"CAP_CHOWN"}); err == nil {
 			t.Errorf("expected error for unit name %q", bad)
 		}
 	}
@@ -90,11 +90,11 @@ func TestWriteCapabilityDropInAt_IsIdempotentAndSorted(t *testing.T) {
 	root := t.TempDir()
 	unit := "powernode-x.service"
 	path := filepath.Join(root, "etc", "systemd", "system", unit+".d", "capabilities.conf")
-	if err := WriteCapabilityDropInAt(root, unit, []string{"CAP_NET_BIND_SERVICE", "CAP_CHOWN"}); err != nil {
+	if _, err := WriteCapabilityDropInAt(root, unit, []string{"CAP_NET_BIND_SERVICE", "CAP_CHOWN"}); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	first, _ := os.ReadFile(path)
-	if err := WriteCapabilityDropInAt(root, unit, []string{"cap_chown", "CAP_NET_BIND_SERVICE"}); err != nil {
+	if _, err := WriteCapabilityDropInAt(root, unit, []string{"cap_chown", "CAP_NET_BIND_SERVICE"}); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	second, _ := os.ReadFile(path)
@@ -116,24 +116,27 @@ func TestWriteCapabilityDropInAt_IsIdempotentAndSorted(t *testing.T) {
 func TestCapabilityDropInWriters_ShareUnitNameValidation(t *testing.T) {
 	badNames := []string{"", "../escape", "foo/bar", "foo\x00null", "-leading-dash", "escape..d", "foo\\bar"}
 	for _, bad := range badNames {
-		atErr := WriteCapabilityDropInAt(t.TempDir(), bad, nil)
+		_, atErr := WriteCapabilityDropInAt(t.TempDir(), bad, nil)
 		liveErr := func() error {
 			original := systemdDropInRoot
 			systemdDropInRoot = t.TempDir()
 			defer func() { systemdDropInRoot = original }()
-			return WriteCapabilityDropIn(bad, nil)
+			_, err := WriteCapabilityDropIn(bad, nil)
+			return err
 		}()
 		usernsErr := func() error {
 			original := systemdDropInRoot
 			systemdDropInRoot = t.TempDir()
 			defer func() { systemdDropInRoot = original }()
-			return WriteUserNamespaceDropIn(bad, true)
+			_, err := WriteUserNamespaceDropIn(bad, true)
+			return err
 		}()
 		seccompErr := func() error {
 			original := systemdDropInRoot
 			systemdDropInRoot = t.TempDir()
 			defer func() { systemdDropInRoot = original }()
-			return WriteSeccompDropIn(bad, "")
+			_, err := WriteSeccompDropIn(bad, "")
+			return err
 		}()
 		if (atErr == nil) != (liveErr == nil) {
 			t.Errorf("unit %q: WriteCapabilityDropInAt err=%v, WriteCapabilityDropIn err=%v — the two writers disagree", bad, atErr, liveErr)

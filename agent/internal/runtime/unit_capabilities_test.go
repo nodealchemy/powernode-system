@@ -214,7 +214,7 @@ func TestComposeAndAttach_WriteByteIdenticalCapabilityDropIns(t *testing.T) {
 		Layout:      layout,
 		OnError:     func(string, error) {},
 	}}
-	if err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+	if _, err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
 		t.Fatalf("attachModule: %v", err)
 	}
 
@@ -387,7 +387,7 @@ func TestAttachModule_WritesEachUnitsResolvedCapabilityDropIn(t *testing.T) {
 	}}
 
 	mf := hubBackendLike(t)
-	if err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, mf); err != nil {
 		t.Fatalf("attachModule: %v", err)
 	}
 
@@ -579,7 +579,7 @@ func TestUnitCapabilities_QgaShapedManifestDisablesUserNamespaceOnBothPaths(t *t
 		Layout:      layout,
 		OnError:     func(string, error) {},
 	}}
-	if err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, &mf); err != nil {
+	if _, err := ar.attachModule(context.Background(), mount.Module{ID: mf.ID, Digest: "d1", Priority: 1}, &mf); err != nil {
 		t.Fatalf("attachModule: %v", err)
 	}
 	attached, err := os.ReadFile(filepath.Join(attachRoot, unit+".d", "userns.conf"))
@@ -1073,7 +1073,7 @@ func TestPrivilegedModule_GetsNoCapabilityDropInOnEitherPath(t *testing.T) {
 			OnError:     func(string, error) {},
 		}}
 		r.privilegedAllow = []string{mf.ID} // operator-approved: attachModule enforces this allowlist unconditionally
-		if err := r.attachModule(context.Background(), mod, mf); err != nil {
+		if _, err := r.attachModule(context.Background(), mod, mf); err != nil {
 			t.Fatalf("attachModule: %v", err)
 		}
 		unit := lifecycle.UnitName(mf.ID, "app")
@@ -1138,7 +1138,7 @@ func TestPrivilegedModuleNotOnAllowlist_RefusedOnBothPaths(t *testing.T) {
 			OnError:     func(string, error) {},
 		}}
 		r.privilegedAllow = []string{"some-other-module"} // populated, but does NOT approve this module
-		if err := r.attachModule(context.Background(), mod, mf); err == nil {
+		if _, err := r.attachModule(context.Background(), mod, mf); err == nil {
 			t.Fatal("attachModule must refuse a privileged module absent from the allowlist")
 		}
 		unit := lifecycle.UnitName(mf.ID, "app")

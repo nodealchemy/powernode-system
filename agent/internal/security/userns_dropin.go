@@ -36,7 +36,7 @@ import (
 // alongside the others never weakens them.
 //
 // Caller must invoke systemctl daemon-reload after writing drop-ins.
-func WriteUserNamespaceDropIn(unit string, enabled bool) error {
+func WriteUserNamespaceDropIn(unit string, enabled bool) (changed bool, err error) {
 	return writeUserNamespaceDropInAt(systemdDropInRoot, unit, enabled)
 }
 
@@ -46,7 +46,7 @@ func WriteUserNamespaceDropIn(unit string, enabled bool) error {
 // WriteCapabilityDropInAt / WriteSeccompDropInAt. Without this the
 // documented user_namespace default (true) was silently unenforced on the
 // pivot boot path (IMP-01a02f70-9bfb).
-func WriteUserNamespaceDropInAt(root, unit string, enabled bool) error {
+func WriteUserNamespaceDropInAt(root, unit string, enabled bool) (changed bool, err error) {
 	base := filepath.Join(root, "etc", "systemd", "system")
 	return writeUserNamespaceDropInAt(base, unit, enabled)
 }
@@ -72,7 +72,7 @@ func RenderUserNamespaceDropInBody(enabled bool) string {
 	return body.String()
 }
 
-func writeUserNamespaceDropInAt(base, unit string, enabled bool) error {
+func writeUserNamespaceDropInAt(base, unit string, enabled bool) (changed bool, err error) {
 	// Shared with WriteCapabilityDropIn/WriteCapabilityDropInAt
 	// (capabilities.go) — this used to carry its own copy of the same three
 	// checks (empty / path-traversal / leading-dash), which had already
@@ -80,14 +80,15 @@ func writeUserNamespaceDropInAt(base, unit string, enabled bool) error {
 	// restored on the capability writers alone. One helper, so the three
 	// drop-in writers can never again refuse different unit names.
 	if err := validateDropInUnitName("WriteUserNamespaceDropIn", unit); err != nil {
-		return err
+		return false, err
 	}
 
 	body := RenderUserNamespaceDropInBody(enabled)
 
 	dropInDir := filepath.Join(base, unit+".d")
-	if err := writeDropInFile(dropInDir, "userns.conf", body); err != nil {
-		return fmt.Errorf("WriteUserNamespaceDropIn: %w", err)
+	changed, err = writeDropInFile(dropInDir, "userns.conf", body)
+	if err != nil {
+		return false, fmt.Errorf("WriteUserNamespaceDropIn: %w", err)
 	}
-	return nil
+	return changed, nil
 }

@@ -1504,7 +1504,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.composeFailed.Store(true)
 			continue
 		}
-		if err := r.attachModule(ctx, mod, mf); err != nil {
+		if _, err := r.attachModule(ctx, mod, mf); err != nil {
 			r.noteUnconverged("reconciler:attach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			r.composeFailed.Store(true)
 			// M8 (review round 9, cleanup): this loop never handles a version
@@ -1546,7 +1546,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// an old digest this same attempt already stopped.
 			continue
 		}
-		r.attachModuleServices(ctx, mod, mf)
+		r.attachModuleServices(ctx, mod, mf, nil)
 	}
 
 	// In-place upgrades (round 9) — every version bump partitioned out of
@@ -1611,7 +1611,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		if err := r.attachModule(ctx, mod, mf); err != nil {
+		// W1 (IMP-caef5c00d63f round W): changedUnits names every unit whose
+		// security drop-in this SAME call actually rewrote — threaded into
+		// every attachModuleServices(Opts) call below that follows it for
+		// THIS module, so a confinement-only change (no unit body change at
+		// all) still reaches an already-running unit instead of silently
+		// sitting on disk unapplied until something else restarts it.
+		changedUnits, err := r.attachModule(ctx, mod, mf)
+		if err != nil {
 			r.noteUnconverged("reconciler:reattach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
@@ -1703,7 +1710,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 					r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest for a never-touched attempt: %w", mod.ID, err))
 				}
-				r.attachModuleServices(ctx, mod, mf)
+				// W1: a pending-restart unit means this module is NOT
+				// actually converged yet — undo the stamp already written
+				// above (line ~1625) so it stays queued for a retry.
+				if pending := r.attachModuleServices(ctx, mod, mf, changedUnits); len(pending) > 0 {
+					delete(current.LastAttachedManifestHashes, mod.ID)
+				}
 			} else {
 				// N2 (review round 11): this entry is a REVERT of a
 				// failed/incomplete upgrade attempt, not an ordinary manifest
@@ -1738,7 +1750,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 					r.cfg.OnError("reconciler:revert_pending_attempt_save", fmt.Errorf("module %s: could not persist the revert attempt counter: %w", mod.ID, err))
 				}
-				if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true); err != nil {
+				if _, err := r.attachModuleServicesOpts(ctx, mod, mf, true, true, nil); err != nil {
 					// F8 (V1 second delta review): a FAILED revert attempt
 					// deliberately does NOT clear PendingPreUpgradeFailed/
 					// PendingDigestUnitsTouched/PendingConflictRecoveryAttempted
@@ -1834,7 +1846,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				}
 			}
 		} else {
-			r.attachModuleServices(ctx, mod, mf)
+			// W1: same un-stamp-on-pending-restart treatment as the
+			// never-touched-revert branch above.
+			if pending := r.attachModuleServices(ctx, mod, mf, changedUnits); len(pending) > 0 {
+				delete(current.LastAttachedManifestHashes, mod.ID)
+			}
 		}
 		// round 9: refresh the STORED entry's Units for a manifest-only
 		// change too (same digest, edited services) — upgradeModule's own
@@ -2626,10 +2642,16 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 // mutation) and the REAL seccomp/capability/user-namespace drop-in writers
 // (security_dropins.go's applyModuleSecurityDropIns), which overwrite the
 // unit's LIVE drop-in files on disk. Returns the units (if any) whose
-// drop-in write failed non-exempt.
+// drop-in write failed non-exempt, AND (W1, IMP-caef5c00d63f round W) the
+// units whose drop-in bytes actually CHANGED — a live reconcile that only
+// touches security drop-ins moves no unit BODY at all, so
+// AttachServicesModeOpts' own anyWritten/RestartChanged tracking (which only
+// sees unit-body writes) is blind to it; the caller threads changedUnits
+// into the services attach so a confinement-only change still reaches a
+// running unit instead of silently sitting on disk unapplied.
 //
 // Called ONLY from attachModule — the real (re)attach path.
-func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (failedUnits []string, err error) {
+func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (changedUnits, failedUnits []string, err error) {
 	// enforcePrivileged: true — the live path enforces the privileged-approval
 	// gate unconditionally, unlike the pivot path's frozen-allowlist
 	// conditional (see decideModuleSecurityPolicy's own doc).
@@ -2643,10 +2665,10 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 			fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from its declared ceiling (this agent version does not know them) — narrowing, never widening, what the module is confined to", mod.ID, droppedCaps))
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
-		return nil, fmt.Errorf("apply policy: %w", err)
+		return nil, nil, fmt.Errorf("apply policy: %w", err)
 	}
 	// Seccomp + capability + user-namespace drop-ins, through the SAME
 	// decision renderPivotUnits (compose.go) uses — applyModuleSecurityDropIns
@@ -2660,7 +2682,7 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 	// attachModuleServices, which WRITES the unit and STARTS it — unconfined,
 	// because the drop-in never landed — while nothing distinguished that
 	// attach from an ordinary successful one.
-	failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
+	changedUnits, failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
 		securityDropInFuncs{
 			userNamespace:    security.WriteUserNamespaceDropIn,
 			seccomp:          security.WriteSeccompDropIn,
@@ -2670,7 +2692,7 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 		},
 		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
 	)
-	return failedUnits, nil
+	return changedUnits, failedUnits, nil
 }
 
 // attachModule pulls + verifies + mounts a single module and applies its
@@ -2678,9 +2700,16 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 // attachModuleServices, which every caller must invoke separately once the
 // module's FILES are on disk. See attachModuleServices for why the two halves
 // are split.
-func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+//
+// changedUnits (W1, IMP-caef5c00d63f round W) names every unit whose
+// security drop-in bytes actually changed THIS pass (nil on any refusal
+// path, and always nil for the fresh-attach case — nothing was running
+// before to restart). The caller threads it into the matching
+// attachModuleServices call so a confinement-only change (no unit body
+// change at all) still reaches an already-running unit.
+func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (changedUnits []string, err error) {
 	if err := r.mountModuleArtifact(ctx, mod); err != nil {
-		return err
+		return nil, err
 	}
 
 	// J3 (review round 5): record these units as ATTEMPTED this pass
@@ -2694,7 +2723,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// replace, not preserve, whatever was published before.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, mf.UnitNames()...)
 
-	failedUnits, err := r.applyModuleSecurityPolicy(ctx, mod, mf)
+	changedUnits, failedUnits, err := r.applyModuleSecurityPolicy(ctx, mod, mf)
 	if err != nil {
 		// K5a (review round 6): an unapproved privileged request, an invalid
 		// policy, or a Policy.Apply (MAC profile load) failure is the SAME
@@ -2711,7 +2740,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// SecurityFailClosedUnits()/the heartbeat's RuntimeSecurityFailClosedUnits
 		// at all — despite being, per K5a's own doc, the SAME kind of event.
 		r.recordSecurityFailClosed(mf.UnitNames())
-		return &SecurityFailClosedError{ModuleID: mod.ID, Units: mf.UnitNames(), Reason: err.Error()}
+		return nil, &SecurityFailClosedError{ModuleID: mod.ID, Units: mf.UnitNames(), Reason: err.Error()}
 	}
 
 	if len(failedUnits) > 0 {
@@ -2770,7 +2799,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		// code for it, once this function stops publishing into
 		// SecurityFailClosedUnits() from that process (H1 was reverted
 		// because that publish had no reader there).
-		return &SecurityFailClosedError{ModuleID: mod.ID, Units: failedUnits, Reason: "security drop-in write failed and was not exempt"}
+		return nil, &SecurityFailClosedError{ModuleID: mod.ID, Units: failedUnits, Reason: "security drop-in write failed and was not exempt"}
 	}
 
 	// Every one of this module's security drop-ins just wrote successfully —
@@ -2783,7 +2812,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// for one that was.
 	r.recordSecurityFailClosedRecovered(mf.UnitNames())
 
-	return nil
+	return changedUnits, nil
 }
 
 // attachModuleServices is the SECOND half of an attach: the systemd side.
@@ -2944,7 +2973,21 @@ func stampContentOnly(fullStamp string) string {
 	return fullStamp[:idx]
 }
 
-func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest) {
+// confinementChanged (W1, IMP-caef5c00d63f round W) names every unit whose
+// security drop-in the CALLER's own attachModule call just rewrote (nil for
+// a fresh attach — nothing was running before). See attachModuleServicesOpts'
+// own doc for how it changes the restart decision, and this function's
+// return value's own doc for the visibility half.
+//
+// Returns the units whose confinement changed but whose restart was
+// deliberately WITHHELD (self-hosted node) — see
+// lifecycle.AttachResult.ConfinementPendingRestart's own doc. The caller
+// must treat a non-empty return as "this module has not actually converged
+// yet": it reports reconciler:confinement_pending_restart (below) and must
+// not stamp the module's attach hash, so it stays queued for a retry on
+// every later tick until an operator-scheduled restart (or a recompose)
+// picks the new confinement up.
+func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module, mf *manifest.Manifest, confinementChanged []string) (pendingRestartUnits []string) {
 	// FENCED ON THE SELF-HOSTED NODE, for the same reason and by the same
 	// invariant as filterUnsafeDetaches (selfhost.go): the services that
 	// answer this node's own reconcile endpoint are the ones it would be
@@ -2962,7 +3005,15 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 	// node's own rails/postgres via its own stop+start cycle. Every OTHER
 	// caller — an ordinary manifest-only reattach, a fresh attach — still
 	// goes through this fenced path unchanged.
-	_, _ = r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false)
+	results, _ := r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false, confinementChanged)
+	for _, res := range results {
+		if res.ConfinementPendingRestart {
+			pendingRestartUnits = append(pendingRestartUnits, res.Unit)
+			r.cfg.OnError("reconciler:confinement_pending_restart",
+				fmt.Errorf("module %s: unit %s's security confinement changed but this node is self-hosted — reload applied, restart deliberately withheld (rule 1: never restart a service this node's own reconcile depends on); not converged until an operator-scheduled restart or a recompose applies it", mod.ID, res.Unit))
+		}
+	}
+	return pendingRestartUnits
 }
 
 // attachModuleServicesOpts is attachModuleServices' parameterized core
@@ -2982,7 +3033,19 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, mod mount.Module,
 // units attempted before the failing one are still named here — so its own
 // failure-path drop-in restore never re-applies the OLD policy under a unit
 // that is already running the NEW process. Every other caller discards it.
-func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged, forceRestartActive bool) ([]lifecycle.AttachResult, error) {
+//
+// confinementChanged (W1, IMP-caef5c00d63f round W) names units whose
+// security drop-in bytes actually changed THIS pass — a change that moves
+// no unit BODY at all, so AttachServicesModeOpts' own writeIfChanged/
+// anyWritten tracking (unit-body writes only) never sees it. Passing nil is
+// always safe (matches every pre-W1 caller's behavior exactly) — every
+// caller that ALREADY force-restarts unconditionally (forceRestartActive,
+// upgradeModule's own step 4 and the N2 revert-forced-restart branch) passes
+// nil deliberately: ForceRestartActive already restarts every active unit
+// of this module regardless of what changed, so consulting this set there
+// would only risk a confusing SECOND restart decision for units already
+// covered, never a genuinely different outcome.
+func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Module, mf *manifest.Manifest, restartChanged, forceRestartActive bool, confinementChanged []string) ([]lifecycle.AttachResult, error) {
 	if len(mf.Services) == 0 {
 		return nil, nil
 	}
@@ -3000,7 +3063,7 @@ func (r *Reconciler) attachModuleServicesOpts(ctx context.Context, mod mount.Mod
 	// service kept running the old definition until something else restarted
 	// it. AttachServicesModeOpts restarts a unit only when its body actually
 	// changed on this pass AND it is currently active.
-	opts := lifecycle.AttachOptions{RestartChanged: restartChanged, ForceRestartActive: forceRestartActive}
+	opts := lifecycle.AttachOptions{RestartChanged: restartChanged, ForceRestartActive: forceRestartActive, ConfinementChangedUnits: confinementChanged}
 	results, err := lifecycle.AttachServicesModeOpts(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode(), opts)
 	if err != nil {
 		r.cfg.OnError("reconciler:attach_services",
@@ -3871,7 +3934,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	// instance across the CLI-shaped call and the read. The durable signal
 	// for an operator running this CLI command is its own output and exit
 	// code — see SecurityFailClosedError and RunAttach (attach_cmd.go).
-	if attachErr := r.attachModule(ctx, mod, mf); attachErr != nil {
+	if _, attachErr := r.attachModule(ctx, mod, mf); attachErr != nil {
 		return "", attachErr
 	}
 	// Unconditional, unlike the two reconcile loops: this path never runs
@@ -3879,7 +3942,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	// and nothing to gate on. The operator asked for a single hot-add and the
 	// CLI promises "mount + start units" — returning attach_status="attached"
 	// with no unit would be a false success.
-	r.attachModuleServices(ctx, mod, mf)
+	r.attachModuleServices(ctx, mod, mf, nil)
 
 	mod.Units = mf.UnitNames()
 	current.AttachedModules = append(current.AttachedModules, mod)

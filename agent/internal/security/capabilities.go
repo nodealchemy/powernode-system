@@ -187,21 +187,27 @@ func validateDropInUnitName(caller, unit string) error {
 // bounding capabilities — strictest possible posture for unknown modules.
 //
 // Caller must invoke systemctl daemon-reload after writing drop-ins.
-func WriteCapabilityDropIn(unit string, allow []string) error {
+//
+// changed (W1, IMP-caef5c00d63f round W) reports whether the on-disk bytes
+// actually differed — see writeDropInFile's own doc for why this matters: a
+// capability-only change moves NO unit body at all, so a caller deciding
+// whether a RUNNING unit needs restarting has nothing else to go on.
+func WriteCapabilityDropIn(unit string, allow []string) (changed bool, err error) {
 	if err := validateDropInUnitName("WriteCapabilityDropIn", unit); err != nil {
-		return err
+		return false, err
 	}
 
 	body, err := RenderCapabilityDropInBody(allow)
 	if err != nil {
-		return fmt.Errorf("WriteCapabilityDropIn: %w", err)
+		return false, fmt.Errorf("WriteCapabilityDropIn: %w", err)
 	}
 
 	dropInDir := filepath.Join(systemdDropInRoot, unit+".d")
-	if err := writeDropInFile(dropInDir, "capabilities.conf", body); err != nil {
-		return fmt.Errorf("WriteCapabilityDropIn: %w", err)
+	changed, err = writeDropInFile(dropInDir, "capabilities.conf", body)
+	if err != nil {
+		return false, fmt.Errorf("WriteCapabilityDropIn: %w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 // RemoveCapabilityDropIn removes THIS unit's capabilities.conf, if any (R7,
@@ -211,9 +217,9 @@ func WriteCapabilityDropIn(unit string, allow []string) error {
 // keeps narrowing the unit below what "privileged" is supposed to mean,
 // forever, since nothing ever re-writes OR removes it once that branch is
 // taken. Absence is success — see removeDropInFile's own doc.
-func RemoveCapabilityDropIn(unit string) error {
+func RemoveCapabilityDropIn(unit string) (changed bool, err error) {
 	if err := validateDropInUnitName("RemoveCapabilityDropIn", unit); err != nil {
-		return err
+		return false, err
 	}
 	return removeDropInFile(filepath.Join(systemdDropInRoot, unit+".d"), "capabilities.conf")
 }
@@ -221,9 +227,9 @@ func RemoveCapabilityDropIn(unit string) error {
 // RemoveCapabilityDropInAt is RemoveCapabilityDropIn's pivot-compose
 // counterpart, mirroring WriteCapabilityDropInAt's own explicit-root
 // targeting.
-func RemoveCapabilityDropInAt(root, unit string) error {
+func RemoveCapabilityDropInAt(root, unit string) (changed bool, err error) {
 	if err := validateDropInUnitName("RemoveCapabilityDropInAt", unit); err != nil {
-		return err
+		return false, err
 	}
 	dropInDir := filepath.Join(root, "etc", "systemd", "system", unit+".d")
 	return removeDropInFile(dropInDir, "capabilities.conf")
@@ -308,19 +314,20 @@ func RenderCapabilityDropInBody(allow []string) (string, error) {
 // ALWAYS written for a non-privileged unit, never skipped for an empty list
 // (mirrors reconcile.go's attachModule loop; see that loop's own comment for
 // why "empty means skip" is the wrong default here).
-func WriteCapabilityDropInAt(root, unit string, allow []string) error {
+func WriteCapabilityDropInAt(root, unit string, allow []string) (changed bool, err error) {
 	if err := validateDropInUnitName("WriteCapabilityDropInAt", unit); err != nil {
-		return err
+		return false, err
 	}
 
 	body, err := RenderCapabilityDropInBody(allow)
 	if err != nil {
-		return fmt.Errorf("WriteCapabilityDropInAt: %w", err)
+		return false, fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
 
 	dropInDir := filepath.Join(root, "etc", "systemd", "system", unit+".d")
-	if err := writeDropInFile(dropInDir, "capabilities.conf", body); err != nil {
-		return fmt.Errorf("WriteCapabilityDropInAt: %w", err)
+	changed, err = writeDropInFile(dropInDir, "capabilities.conf", body)
+	if err != nil {
+		return false, fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
-	return nil
+	return changed, nil
 }

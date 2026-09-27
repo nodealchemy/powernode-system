@@ -339,21 +339,21 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 		// exemption; the exemption's job is only to stop a qga-only drop-in
 		// failure from being treated as a security fail-closed event when
 		// the unit would otherwise have started fine.
-		failedUnits := applyModuleSecurityDropIns(mod.ID, mf, policy, unitAllow, r.privilegedAllow,
+		_, failedUnits := applyModuleSecurityDropIns(mod.ID, mf, policy, unitAllow, r.privilegedAllow,
 			securityDropInFuncs{
-				userNamespace: func(unit string, enabled bool) error {
+				userNamespace: func(unit string, enabled bool) (bool, error) {
 					return security.WriteUserNamespaceDropInAt(sysroot, unit, enabled)
 				},
-				seccomp: func(unit, profilePath string) error {
+				seccomp: func(unit, profilePath string) (bool, error) {
 					return security.WriteSeccompDropInAt(sysroot, unit, profilePath)
 				},
-				capability: func(unit string, allow []string) error {
+				capability: func(unit string, allow []string) (bool, error) {
 					return security.WriteCapabilityDropInAt(sysroot, unit, allow)
 				},
-				removeSeccomp: func(unit string) error {
+				removeSeccomp: func(unit string) (bool, error) {
 					return security.RemoveSeccompDropInAt(sysroot, unit)
 				},
-				removeCapability: func(unit string) error {
+				removeCapability: func(unit string) (bool, error) {
 					return security.RemoveCapabilityDropInAt(sysroot, unit)
 				},
 			},

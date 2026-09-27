@@ -36,9 +36,21 @@ import (
 // path (most commonly a stray directory, review's own repro shape), the
 // write is refused up front with a clear diagnosis instead of failing
 // opaquely inside os.WriteFile.
-func writeDropInFile(dropInDir, filename, body string) error {
+//
+// changed (W1, IMP-caef5c00d63f round W, HIGH) reports whether the on-disk
+// bytes actually DIFFERED from body (true) or were already byte-identical,
+// so nothing was written (false) — a plain nil error cannot distinguish "I
+// wrote something new" from "there was nothing to do", and a caller whose
+// job is deciding whether a RUNNING unit needs a restart/reload needs
+// exactly that distinction: a no-op write must never trigger one, but a
+// real content change (e.g. a security drop-in) must, even though no unit
+// BODY changed at all and AttachServicesModeOpts' own writeIfChanged never
+// sees this write. A read failure (most commonly os.ErrNotExist, the
+// ordinary first-ever-write case) counts as changed — going from "absent"
+// to "present" is exactly the kind of change a caller must act on.
+func writeDropInFile(dropInDir, filename, body string) (changed bool, err error) {
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
-		return fmt.Errorf("writeDropInFile: mkdir %s: %w", dropInDir, err)
+		return false, fmt.Errorf("writeDropInFile: mkdir %s: %w", dropInDir, err)
 	}
 
 	dropInPath := filepath.Join(dropInDir, filename)
@@ -47,7 +59,7 @@ func writeDropInFile(dropInDir, filename, body string) error {
 	// commonly os.ErrNotExist, the ordinary first-ever-write case) falls
 	// through to the write below exactly as before this existed.
 	if existing, err := os.ReadFile(dropInPath); err == nil && string(existing) == body {
-		return nil
+		return false, nil
 	}
 
 	tmp := dropInPath + ".tmp"
@@ -57,16 +69,16 @@ func writeDropInFile(dropInDir, filename, body string) error {
 	// fails anyway, but this names the actual cause rather than surfacing
 	// whatever bare os error WriteFile happens to return for it.
 	if fi, err := os.Lstat(tmp); err == nil && !fi.Mode().IsRegular() {
-		return fmt.Errorf("writeDropInFile: %s exists and is not a regular file (mode %v) — cannot stage the write", tmp, fi.Mode())
+		return false, fmt.Errorf("writeDropInFile: %s exists and is not a regular file (mode %v) — cannot stage the write", tmp, fi.Mode())
 	}
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("writeDropInFile: write tmp %s: %w", tmp, err)
+		return false, fmt.Errorf("writeDropInFile: write tmp %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, dropInPath); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("writeDropInFile: rename %s: %w", tmp, err)
+		return false, fmt.Errorf("writeDropInFile: rename %s: %w", tmp, err)
 	}
-	return nil
+	return true, nil
 }
 
 // removeDropInFile removes ONE drop-in file, shared by every stale-drop-in
@@ -82,10 +94,18 @@ func writeDropInFile(dropInDir, filename, body string) error {
 // unit's WHOLE <unit>.d directory) — this function removes exactly one file
 // within it, for a unit that is NOT departing, just no longer declaring
 // that one directive.
-func removeDropInFile(dropInDir, filename string) error {
+//
+// changed (W1) mirrors writeDropInFile's own: true only when a file
+// genuinely existed and was removed — an ALREADY-absent file (the ordinary
+// steady-state case, re-checked every tick) is not a confinement change a
+// caller needs to restart/reload for.
+func removeDropInFile(dropInDir, filename string) (changed bool, err error) {
 	path := filepath.Join(dropInDir, filename)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removeDropInFile: remove %s: %w", path, err)
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("removeDropInFile: remove %s: %w", path, err)
 	}
-	return nil
+	return true, nil
 }

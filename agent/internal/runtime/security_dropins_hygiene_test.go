@@ -44,7 +44,7 @@ func TestApplyModuleSecurityDropIns_RemovesStaleSeccompWhenProfileDropped(t *tes
 
 	// First attach: seccomp_profile declared.
 	withProfile := &security.Policy{Capabilities: []string{"CAP_CHOWN"}, SeccompProfile: "system-service"}
-	if failed := applyModuleSecurityDropIns("m1", mf, withProfile, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
+	if _, failed := applyModuleSecurityDropIns("m1", mf, withProfile, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
 		t.Fatalf("precondition: first attach must not fail, got %v", failed)
 	}
 	if _, err := os.Stat(seccompPath); err != nil {
@@ -53,7 +53,7 @@ func TestApplyModuleSecurityDropIns_RemovesStaleSeccompWhenProfileDropped(t *tes
 
 	// Second attach: the manifest edit drops seccomp_profile entirely.
 	withoutProfile := &security.Policy{Capabilities: []string{"CAP_CHOWN"}}
-	if failed := applyModuleSecurityDropIns("m1", mf, withoutProfile, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
+	if _, failed := applyModuleSecurityDropIns("m1", mf, withoutProfile, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
 		t.Fatalf("second attach must not fail, got %v", failed)
 	}
 	if _, err := os.Stat(seccompPath); !os.IsNotExist(err) {
@@ -83,7 +83,7 @@ func TestApplyModuleSecurityDropIns_RemovesStaleCapabilityAndSeccompWhenPrivileg
 
 	// First attach: non-privileged, narrow capabilities + a seccomp profile.
 	nonPrivileged := &security.Policy{Capabilities: []string{"CAP_CHOWN"}, SeccompProfile: "system-service"}
-	if failed := applyModuleSecurityDropIns("m1", mf, nonPrivileged, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
+	if _, failed := applyModuleSecurityDropIns("m1", mf, nonPrivileged, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
 		t.Fatalf("precondition: first attach must not fail, got %v", failed)
 	}
 	if _, err := os.Stat(capPath); err != nil {
@@ -95,7 +95,7 @@ func TestApplyModuleSecurityDropIns_RemovesStaleCapabilityAndSeccompWhenPrivileg
 
 	// Second attach: the module is now operator-approved privileged.
 	privileged := &security.Policy{Privileged: true}
-	if failed := applyModuleSecurityDropIns("m1", mf, privileged, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
+	if _, failed := applyModuleSecurityDropIns("m1", mf, privileged, unitAllow, nil, liveSecurityDropInFuncs(), func(string, error) {}); len(failed) != 0 {
 		t.Fatalf("second attach must not fail, got %v", failed)
 	}
 	if _, err := os.Stat(capPath); !os.IsNotExist(err) {

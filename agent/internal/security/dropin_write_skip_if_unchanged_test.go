@@ -36,7 +36,7 @@ func TestWriteCapabilityDropIn_SkipsTheWriteWhenContentIsAlreadyIdentical(t *tes
 
 	// First write happens with no rlimit constraint — establishes the
 	// on-disk content this test's "unchanged" re-write will match.
-	if err := WriteCapabilityDropIn(unit, allow); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, allow); err != nil {
 		t.Fatalf("initial write: %v", err)
 	}
 
@@ -56,14 +56,14 @@ func TestWriteCapabilityDropIn_SkipsTheWriteWhenContentIsAlreadyIdentical(t *tes
 	// Sanity FIRST, same tiny limit: a write that must ACTUALLY change
 	// content still fails under it — proving the limit is doing real work,
 	// not that WriteCapabilityDropIn has stopped writing altogether.
-	if err := WriteCapabilityDropIn(unit, []string{"CAP_SYS_ADMIN"}); err == nil {
+	if _, err := WriteCapabilityDropIn(unit, []string{"CAP_SYS_ADMIN"}); err == nil {
 		t.Fatalf("test setup: expected a genuinely CHANGED write to fail under an 8-byte RLIMIT_FSIZE")
 	}
 	// Restore the original content the "unchanged" case below expects,
 	// still under no rlimit constraint (writing a small amount here is not
 	// what this test is about).
 	_ = unix.Setrlimit(unix.RLIMIT_FSIZE, &orig)
-	if err := WriteCapabilityDropIn(unit, allow); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, allow); err != nil {
 		t.Fatalf("re-establish original content: %v", err)
 	}
 	if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &lim); err != nil {
@@ -73,7 +73,7 @@ func TestWriteCapabilityDropIn_SkipsTheWriteWhenContentIsAlreadyIdentical(t *tes
 	// The actual assertion: re-writing the EXACT SAME allow list (byte-
 	// identical rendered content) must succeed even though a real write
 	// could not possibly fit under this limit.
-	if err := WriteCapabilityDropIn(unit, allow); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, allow); err != nil {
 		t.Errorf("L3(c) REGRESSION: expected re-writing byte-identical content to succeed by skipping the write entirely, got %v", err)
 	}
 }

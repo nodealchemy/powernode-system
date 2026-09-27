@@ -146,7 +146,7 @@ func TestAttachOne_PreviouslyRecoveredUnitFailingAgainStillRefuses(t *testing.T)
 		Config:                      map[string]any{"security": map[string]any{"capabilities": []any{"CAP_CHOWN"}, "user_namespace": false}},
 		Services:                    []manifest.Service{{Name: "app", StartCommand: "/bin/true"}},
 	}
-	if err := r.attachModule(context.Background(), mount.Module{ID: "m1", Digest: "abc123", Priority: 1}, mf); err != nil {
+	if _, err := r.attachModule(context.Background(), mount.Module{ID: "m1", Digest: "abc123", Priority: 1}, mf); err != nil {
 		t.Fatalf("test setup: attachModule (first, successful) must succeed: %v", err)
 	}
 	if recovered := r.SecurityFailClosedRecovered(); !recovered[unit] {

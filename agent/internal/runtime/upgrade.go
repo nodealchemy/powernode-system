@@ -463,7 +463,15 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 
 	// Step 2: apply the NEW digest's security policy for real.
 	r.securityPolicyAttemptedUnits = append(r.securityPolicyAttemptedUnits, newMf.UnitNames()...)
-	failedUnits, err := r.applyModuleSecurityPolicy(ctx, newMod, newMf)
+	// W1 (IMP-caef5c00d63f round W): the changed-units set applyModuleSecurityPolicy
+	// now also returns is deliberately discarded here — step 4 below
+	// (ForceRestartActive: true) ALREADY force-restarts every active unit of
+	// this module regardless of whether its body OR its confinement changed
+	// (see ForceRestartActive's own doc), so a version bump's own drop-in
+	// changes are already covered without consulting this set. Threading it
+	// through anyway would risk a SECOND, redundant restart decision for the
+	// exact same units in the exact same tick.
+	_, failedUnits, err := r.applyModuleSecurityPolicy(ctx, newMod, newMf)
 	if err != nil {
 		r.noteUnconverged("reconciler:upgrade_policy", newMod.ID, fmt.Errorf("module %s: %w", newMod.ID, err))
 		// decideModuleSecurityPolicy's OWN refusals (unapproved privileged,
@@ -734,7 +742,7 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// this pass (M1, review round 9 — see lifecycle.AttachOptions.
 	// ForceRestartActive's own doc for why the ordinary RestartChanged
 	// decision is wrong for a digest bump specifically).
-	results, err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true)
+	results, err := r.attachModuleServicesOpts(ctx, newMod, newMf, true, true, nil)
 	// N6 (review round 11): every unit step 4 actually bounced onto the new
 	// binary, regardless of whether the OVERALL call returned an error —
 	// AttachServicesModeOpts keeps attempting units after one fails (its own

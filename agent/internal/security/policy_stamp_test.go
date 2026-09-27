@@ -46,13 +46,13 @@ func TestRenderedPolicyHash_MatchesTheDropInsWritersProduce(t *testing.T) {
 	}
 	unit := "powernode-m1-api.service"
 
-	if err := WriteCapabilityDropIn(unit, p.Capabilities); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, p.Capabilities); err != nil {
 		t.Fatalf("WriteCapabilityDropIn: %v", err)
 	}
-	if err := WriteSeccompDropIn(unit, p.SeccompProfile); err != nil {
+	if _, err := WriteSeccompDropIn(unit, p.SeccompProfile); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
-	if err := WriteUserNamespaceDropIn(unit, p.UserNamespace); err != nil {
+	if _, err := WriteUserNamespaceDropIn(unit, p.UserNamespace); err != nil {
 		t.Fatalf("WriteUserNamespaceDropIn: %v", err)
 	}
 

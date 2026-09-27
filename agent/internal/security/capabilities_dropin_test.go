@@ -21,7 +21,7 @@ func withTempSystemdRootCaps(t *testing.T) string {
 
 func TestWriteCapabilityDropIn_AllowsListEmitsBothSets(t *testing.T) {
 	root := withTempSystemdRootCaps(t)
-	if err := WriteCapabilityDropIn("powernode-redis-redis.service",
+	if _, err := WriteCapabilityDropIn("powernode-redis-redis.service",
 		[]string{"CAP_NET_BIND_SERVICE", "cap_chown"}); err != nil {
 		t.Fatalf("WriteCapabilityDropIn: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestWriteCapabilityDropIn_AllowsListEmitsBothSets(t *testing.T) {
 
 func TestWriteCapabilityDropIn_EmptyAllowListDropsAll(t *testing.T) {
 	root := withTempSystemdRootCaps(t)
-	if err := WriteCapabilityDropIn("powernode-postgres-postgres.service", nil); err != nil {
+	if _, err := WriteCapabilityDropIn("powernode-postgres-postgres.service", nil); err != nil {
 		t.Fatalf("WriteCapabilityDropIn: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(root, "powernode-postgres-postgres.service.d", "capabilities.conf"))
@@ -65,7 +65,7 @@ func TestWriteCapabilityDropIn_EmptyAllowListDropsAll(t *testing.T) {
 
 func TestWriteCapabilityDropIn_RejectsUnknownCap(t *testing.T) {
 	withTempSystemdRootCaps(t)
-	err := WriteCapabilityDropIn("foo.service", []string{"CAP_MADE_UP"})
+	_, err := WriteCapabilityDropIn("foo.service", []string{"CAP_MADE_UP"})
 	if err == nil || !strings.Contains(err.Error(), "CAP_MADE_UP") {
 		t.Errorf("expected error mentioning CAP_MADE_UP; got %v", err)
 	}
@@ -74,7 +74,7 @@ func TestWriteCapabilityDropIn_RejectsUnknownCap(t *testing.T) {
 func TestWriteCapabilityDropIn_RejectsPathTraversal(t *testing.T) {
 	withTempSystemdRootCaps(t)
 	for _, bad := range []string{"../escape", "foo/bar", "foo\x00null", "-leading-dash"} {
-		if err := WriteCapabilityDropIn(bad, nil); err == nil {
+		if _, err := WriteCapabilityDropIn(bad, nil); err == nil {
 			t.Errorf("expected error for unit name %q", bad)
 		}
 	}
@@ -84,7 +84,7 @@ func TestWriteCapabilityDropIn_IsIdempotent(t *testing.T) {
 	root := withTempSystemdRootCaps(t)
 	unit := "powernode-base.service"
 	caps := []string{"CAP_NET_BIND_SERVICE", "CAP_CHOWN"}
-	if err := WriteCapabilityDropIn(unit, caps); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, caps); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	first, err := os.ReadFile(filepath.Join(root, unit+".d", "capabilities.conf"))
@@ -92,7 +92,7 @@ func TestWriteCapabilityDropIn_IsIdempotent(t *testing.T) {
 		t.Fatalf("read first: %v", err)
 	}
 	// Re-write with a permuted allowlist — sorted output must be identical.
-	if err := WriteCapabilityDropIn(unit, []string{"cap_chown", "CAP_NET_BIND_SERVICE"}); err != nil {
+	if _, err := WriteCapabilityDropIn(unit, []string{"cap_chown", "CAP_NET_BIND_SERVICE"}); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	second, err := os.ReadFile(filepath.Join(root, unit+".d", "capabilities.conf"))
@@ -101,5 +101,41 @@ func TestWriteCapabilityDropIn_IsIdempotent(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Errorf("drop-in not idempotent under name permutation:\nfirst=%s\nsecond=%s", first, second)
+	}
+}
+
+// TestWriteCapabilityDropIn_ReportsChanged is W1 (IMP-caef5c00d63f round W,
+// HIGH) at its foundation: the FIRST write of a unit's capabilities.conf
+// (nothing on disk yet), a write that genuinely changes the allow list, and
+// a write of byte-identical content must report changed=true, true, false
+// respectively — this is the ONLY signal a caller deciding whether a
+// RUNNING unit needs a daemon-reload/restart has, since a capability-only
+// edit moves no unit body at all.
+func TestWriteCapabilityDropIn_ReportsChanged(t *testing.T) {
+	withTempSystemdRootCaps(t)
+	unit := "powernode-x-app.service"
+
+	changed, err := WriteCapabilityDropIn(unit, []string{"CAP_CHOWN"})
+	if err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if !changed {
+		t.Error("W1 REGRESSION: the FIRST write of a drop-in (nothing on disk yet) must report changed=true")
+	}
+
+	changed, err = WriteCapabilityDropIn(unit, []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
+	if err != nil {
+		t.Fatalf("second write (genuinely different allow list): %v", err)
+	}
+	if !changed {
+		t.Error("W1 REGRESSION: a write with a genuinely DIFFERENT allow list must report changed=true")
+	}
+
+	changed, err = WriteCapabilityDropIn(unit, []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
+	if err != nil {
+		t.Fatalf("third write (byte-identical): %v", err)
+	}
+	if changed {
+		t.Error("W1 REGRESSION: re-writing byte-identical content must report changed=false")
 	}
 }

@@ -29,7 +29,7 @@ func TestWriteSeccompDropInBasic(t *testing.T) {
 	// path, per ApplySeccompProfile's os.Stat, or a set name, per this
 	// directive), tracked separately. This test asserts the drop-in SHAPE, and
 	// deliberately does not bless the broken spelling as expected output.
-	if err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/system-service"); err != nil {
+	if _, err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/system-service"); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestWriteSeccompDropInRejectsTraversal(t *testing.T) {
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := WriteSeccompDropIn(name, "/path/p.json"); err == nil {
+			if _, err := WriteSeccompDropIn(name, "/path/p.json"); err == nil {
 				t.Errorf("expected rejection of unit name %q", name)
 			}
 		})
@@ -70,13 +70,13 @@ func TestWriteSeccompDropInRejectsTraversal(t *testing.T) {
 
 func TestWriteSeccompDropInRejectsUnusableProfilePaths(t *testing.T) {
 	withTempSystemdRoot(t)
-	if err := WriteSeccompDropIn("", "/x/p.json"); err == nil {
+	if _, err := WriteSeccompDropIn("", "/x/p.json"); err == nil {
 		t.Errorf("empty unit should error")
 	}
-	if err := WriteSeccompDropIn("nginx.service", ""); err == nil {
+	if _, err := WriteSeccompDropIn("nginx.service", ""); err == nil {
 		t.Errorf("empty profilePath should error")
 	}
-	if err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/"); err == nil {
+	if _, err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/"); err == nil {
 		t.Errorf("profilePath with no base name should error")
 	}
 }
@@ -84,10 +84,10 @@ func TestWriteSeccompDropInRejectsUnusableProfilePaths(t *testing.T) {
 func TestWriteSeccompDropInOverwrites(t *testing.T) {
 	withTempSystemdRoot(t)
 
-	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/basic-io"); err != nil {
+	if _, err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/basic-io"); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/system-service"); err != nil {
+	if _, err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/system-service"); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestWriteSeccompDropInCreatesParentDir(t *testing.T) {
 		t.Fatalf("parent dir already exists: %v", err)
 	}
 
-	if err := WriteSeccompDropIn("fresh.service", "/path/network-io"); err != nil {
+	if _, err := WriteSeccompDropIn("fresh.service", "/path/network-io"); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
 	if _, err := os.Stat(expectedDir); err != nil {

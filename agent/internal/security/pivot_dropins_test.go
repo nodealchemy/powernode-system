@@ -14,7 +14,7 @@ import (
 
 func TestWriteSeccompDropInAt_WritesUnderSysroot(t *testing.T) {
 	root := t.TempDir()
-	if err := WriteSeccompDropInAt(root, "app.service", "system-service"); err != nil {
+	if _, err := WriteSeccompDropInAt(root, "app.service", "system-service"); err != nil {
 		t.Fatalf("WriteSeccompDropInAt: %v", err)
 	}
 	p := filepath.Join(root, "etc", "systemd", "system", "app.service.d", "seccomp.conf")
@@ -27,7 +27,7 @@ func TestWriteSeccompDropInAt_WritesUnderSysroot(t *testing.T) {
 	}
 	// The injection barrier still holds on the At-variant: a newline-bearing
 	// profile must be refused and write NO file.
-	if err := WriteSeccompDropInAt(root, "app2.service", "deny\nUser=root"); err == nil {
+	if _, err := WriteSeccompDropInAt(root, "app2.service", "deny\nUser=root"); err == nil {
 		t.Error("At-variant accepted an injection payload")
 	}
 	if _, err := os.Stat(filepath.Join(root, "etc", "systemd", "system", "app2.service.d", "seccomp.conf")); !os.IsNotExist(err) {
@@ -37,7 +37,7 @@ func TestWriteSeccompDropInAt_WritesUnderSysroot(t *testing.T) {
 
 func TestWriteUserNamespaceDropInAt_WritesUnderSysroot(t *testing.T) {
 	root := t.TempDir()
-	if err := WriteUserNamespaceDropInAt(root, "app.service", true); err != nil {
+	if _, err := WriteUserNamespaceDropInAt(root, "app.service", true); err != nil {
 		t.Fatalf("WriteUserNamespaceDropInAt: %v", err)
 	}
 	p := filepath.Join(root, "etc", "systemd", "system", "app.service.d", "userns.conf")

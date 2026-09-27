@@ -15,17 +15,26 @@ import (
 // explicit sysroot. The two paths otherwise share the identical DECISION —
 // see applyModuleSecurityDropIns — so only the I/O target differs.
 type securityDropInFuncs struct {
-	userNamespace func(unit string, enabled bool) error
-	seccomp       func(unit, profilePath string) error
-	capability    func(unit string, allow []string) error
+	// userNamespace/seccomp/capability (W1, IMP-caef5c00d63f round W) now
+	// report a `changed bool` alongside error — see writeDropInFile's own
+	// doc (security/dropin_write.go) for why: a security-drop-in-ONLY
+	// change moves no unit BODY at all, so applyModuleSecurityDropIns'
+	// caller (applyModuleSecurityPolicy) has no other way to learn that a
+	// RUNNING unit's confinement actually changed and may need a
+	// daemon-reload/restart to take effect.
+	userNamespace func(unit string, enabled bool) (bool, error)
+	seccomp       func(unit, profilePath string) (bool, error)
+	capability    func(unit string, allow []string) (bool, error)
 	// removeSeccomp/removeCapability (R7, review round 14, hygiene) remove a
 	// STALE seccomp.conf/capabilities.conf a PRIOR policy left behind — a
 	// manifest edit that stops declaring a profile, or a unit becoming
 	// privileged (which opts out of the corresponding write entirely), must
 	// not leave that file still enforced. Absence is success; see
 	// security.RemoveSeccompDropIn(At)/RemoveCapabilityDropIn(At)'s own doc.
-	removeSeccomp    func(unit string) error
-	removeCapability func(unit string) error
+	// Also now report `changed` (W1) for the same reason: removing a STALE
+	// drop-in is itself a confinement change a running unit needs applied.
+	removeSeccomp    func(unit string) (bool, error)
+	removeCapability func(unit string) (bool, error)
 }
 
 // qgaModuleName is R5's own pinned recovery-channel identity check (review
@@ -108,25 +117,43 @@ func qualifiesForFullSetExemption(moduleID string, mf *manifest.Manifest, privil
 // caller wraps it with its own path's existing prefix ("compose:" /
 // "reconciler:") so neither path's OnError stage names change shape from
 // before this helper existed.
-func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string, privilegedAllow []string, funcs securityDropInFuncs, onError func(stage string, err error)) []string {
-	seen := make(map[string]bool)
-	var failedUnits []string
+//
+// changedUnits (W1, IMP-caef5c00d63f round W) is the DEDUPED set of units
+// whose on-disk drop-in bytes actually changed this pass — a write that hit
+// writeDropInFile's own skip-if-identical path, or a remove of an
+// already-absent file, never adds a unit here. The live reconcile path
+// (applyModuleSecurityPolicy) needs this to decide whether a RUNNING unit's
+// confinement actually moved and needs a daemon-reload/restart; the
+// boot/pivot-compose path (compose.go) discards it — nothing is running yet
+// at that point, so "changed" carries no restart decision to make.
+func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string, privilegedAllow []string, funcs securityDropInFuncs, onError func(stage string, err error)) (changedUnits, failedUnits []string) {
+	seenFailed := make(map[string]bool)
 	fail := func(unit string) {
-		if seen[unit] {
+		if seenFailed[unit] {
 			return
 		}
-		seen[unit] = true
+		seenFailed[unit] = true
 		failedUnits = append(failedUnits, unit)
+	}
+	seenChanged := make(map[string]bool)
+	markChanged := func(unit string, changed bool) {
+		if !changed || seenChanged[unit] {
+			return
+		}
+		seenChanged[unit] = true
+		changedUnits = append(changedUnits, unit)
 	}
 
 	for _, svc := range mf.Services {
 		unit := lifecycle.UnitName(moduleID, svc.Name)
 
-		if err := funcs.userNamespace(unit, policy.UserNamespace); err != nil {
+		if changed, err := funcs.userNamespace(unit, policy.UserNamespace); err != nil {
 			onError("userns_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 			if policy.UserNamespace {
 				fail(unit)
 			}
+		} else {
+			markChanged(unit, changed)
 		}
 
 		if policy.Privileged {
@@ -138,31 +165,39 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 			// failure is reported but never fails the unit closed — unlike
 			// a write failure, it cannot leave the unit MORE exposed than
 			// its manifest declares.
-			if err := funcs.removeSeccomp(unit); err != nil {
+			if changed, err := funcs.removeSeccomp(unit); err != nil {
 				onError("seccomp_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+			} else {
+				markChanged(unit, changed)
 			}
-			if err := funcs.removeCapability(unit); err != nil {
+			if changed, err := funcs.removeCapability(unit); err != nil {
 				onError("capability_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+			} else {
+				markChanged(unit, changed)
 			}
 			continue
 		}
 
 		if policy.SeccompProfile != "" {
-			if err := funcs.seccomp(unit, policy.SeccompProfile); err != nil {
+			if changed, err := funcs.seccomp(unit, policy.SeccompProfile); err != nil {
 				onError("seccomp_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 				fail(unit)
+			} else {
+				markChanged(unit, changed)
 			}
-		} else if err := funcs.removeSeccomp(unit); err != nil {
+		} else if changed, err := funcs.removeSeccomp(unit); err != nil {
 			// R7: no profile declared (or no longer declared) — remove any
 			// STALE seccomp.conf a PRIOR policy left behind, so a manifest
 			// edit that drops seccomp_profile actually takes effect on the
 			// NEXT attach, not just "stop writing a new one" while the old
 			// one stays loaded and enforced.
 			onError("seccomp_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+		} else {
+			markChanged(unit, changed)
 		}
 
 		allow := unitAllow[unit]
-		if err := funcs.capability(unit, allow); err != nil {
+		if changed, err := funcs.capability(unit, allow); err != nil {
 			// R5 (review round 14, SECURITY): the full-set exemption requires
 			// BOTH the resolved shape (full capability set) AND a trusted
 			// identity (qualifiesForFullSetExemption) — a module merely
@@ -175,8 +210,10 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 				onError("capability_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
 				fail(unit)
 			}
+		} else {
+			markChanged(unit, changed)
 		}
 	}
 
-	return failedUnits
+	return changedUnits, failedUnits
 }
