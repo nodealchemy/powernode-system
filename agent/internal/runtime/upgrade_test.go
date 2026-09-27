@@ -4976,3 +4976,193 @@ func TestUpgradeModule_NewUserWrittenBeforeFirstRestart(t *testing.T) {
 		t.Fatalf("217/USER: appUnit's first restart under d2 was issued before d2user was ever written — users seen at that point: %v", sawUsersAtFirstRestart)
 	}
 }
+
+// TestReviewer_BumpRenderDropsOtherModulesUsers is the final review's own
+// repro for T1 (HIGH, do-not-ship on f3339424): upgradeModule's pre-step-4
+// render passed ONLY the upgrading module's own manifests (old ∪ touched ∪
+// new) to applyIdentityAndSudoers. etcidentity.Apply renders passwd/group/
+// shadow/gshadow as a FULL set (baseline + whatever manifests it is given)
+// — so every upgrade wiped every OTHER module's users for the rest of the
+// tick, m2's pguser included. Fixed by threading RunOnce's own full,
+// tick-scoped identity manifest set into upgradeModule instead.
+func TestReviewer_BumpRenderDropsOtherModulesUsers(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
+		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d1", upgradeAppService, "d1user")
+	appUnit := lifecycle.UnitName("m1", "app")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass1: %v", err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	backdateManifestCache(t, manifestRoot, "m2")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	var sets [][]string
+	orig := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		var u []string
+		for _, x := range set.Users {
+			u = append(u, x.Name)
+		}
+		sets = append(sets, u)
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = orig })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass2: %v", err)
+	}
+	t.Logf("identity renders this tick: %v", sets)
+	for i, s := range sets {
+		if !containsArg(s, "pguser") {
+			t.Errorf("render #%d dropped m2's pguser: %v", i, s)
+		}
+	}
+}
+
+// TestAttachOne_UpgradeRendersOtherAttachedModulesUser is T1's own AttachOne
+// coverage (final review on f3339424, HIGH): AttachOne runs entirely
+// outside RunOnce's own render — before this fix, upgradeModule's pre-
+// step-4 render there had no per-tick full manifest set at all, so an
+// AttachOne-driven upgrade of m1 wiped m2's own user for the rest of that
+// call exactly like the RunOnce-driven case did.
+func TestAttachOne_UpgradeRendersOtherAttachedModulesUser(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d1", upgradeAppService, "d1user")
+	if _, err := r.AttachOne(context.Background(), "m1"); err != nil {
+		t.Fatalf("AttachOne m1 (fresh): %v", err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
+		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	if _, err := r.AttachOne(context.Background(), "m2"); err != nil {
+		t.Fatalf("AttachOne m2 (fresh): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	var sets [][]string
+	orig := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		var u []string
+		for _, x := range set.Users {
+			u = append(u, x.Name)
+		}
+		sets = append(sets, u)
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = orig })
+
+	if _, err := r.AttachOne(context.Background(), "m1"); err != nil {
+		t.Fatalf("AttachOne m1 (digest change): %v", err)
+	}
+	t.Logf("identity renders during the AttachOne upgrade: %v", sets)
+	for i, s := range sets {
+		if !containsArg(s, "pguser") {
+			t.Errorf("render #%d dropped m2's pguser: %v", i, s)
+		}
+	}
+}
+
+// TestAttachOne_UnresolvableAttachedManifestRefusesBeforeRestart is T1's own
+// refusal coverage: if AttachOne cannot resolve some OTHER currently
+// attached module's own manifest snapshot, it must refuse the requested
+// upgrade entirely — rendering a partial identity/sudoers set (silently
+// missing that module) is exactly the "confidently wrong" failure mode this
+// whole fix exists to prevent — rather than issue any restart at all.
+func TestAttachOne_UnresolvableAttachedManifestRefusesBeforeRestart(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d1", upgradeAppService, "d1user")
+	if _, err := r.AttachOne(context.Background(), "m1"); err != nil {
+		t.Fatalf("AttachOne m1 (fresh): %v", err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
+		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	if _, err := r.AttachOne(context.Background(), "m2"); err != nil {
+		t.Fatalf("AttachOne m2 (fresh): %v", err)
+	}
+
+	// Destroy m2's own persisted attached snapshot — the ONLY source the
+	// tick-scoped rebuild has for a module it isn't currently upgrading.
+	if err := os.RemoveAll(filepath.Join(manifestRoot, "m2", "attached")); err != nil {
+		t.Fatalf("RemoveAll m2 attached snapshot: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	preInvocations := len(runner.Invocations)
+	if _, err := r.AttachOne(context.Background(), "m1"); err == nil {
+		t.Fatalf("expected AttachOne to refuse the upgrade when m2's own manifest can't be resolved, got success")
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) || hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) {
+		t.Errorf("refused upgrade must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+}
+
+// TestReconcile_RevertRendersDepartingDigestsUserWhileItsUnitsStop is T2
+// (final review on f3339424, LOW): a module currently REVERTING is not part
+// of RunOnce's own `bumps` partition at all (desired already resolves back
+// to the stable digest), so bumpOldSide's own touched-digest union never
+// even considered it — the revert tick's own render used mergedManifests
+// alone, which knows the stable digest but nothing about
+// PendingTouchedDigests, dropping d2's own user before the SAME tick's own
+// forced restart has actually stopped d2's units.
+func TestReconcile_RevertRendersDepartingDigestsUserWhileItsUnitsStop(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1): %v", err)
+	}
+
+	// d2 TOUCHES: app force-restarts, new-worker never becomes active — a
+	// permanent settle failure, PendingDigest=d2, PendingTouchedDigests=[d2].
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser(
+		"d2", upgradeAppService+","+upgradeNewWorkerService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (d2 touched): %v", err)
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("precondition: expected PendingDigest=d2 after pass 2, got %q ok=%v", pd, ok)
+	}
+
+	// Revert: desired goes back to the ORIGINAL d1 content.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 3 (revert tick): %v", err)
+	}
+	if !containsArg(users, "d2user") {
+		t.Fatalf("T2 REGRESSION: the revert tick's own render dropped d2user before d2's units were actually stopped this same tick: %v", users)
+	}
+}

@@ -248,6 +248,36 @@ type Reconciler struct {
 	securityFailClosedPending    []string
 	securityPolicyAttemptedUnits []string
 
+	// tickIdentityManifests (T1, final review on f3339424, HIGH) is THIS
+	// tick's own full identity/sudoers manifest set — every currently
+	// desired/attached module's manifest, with any actively-bumping
+	// module's own contribution already substituted to old ∪ touched by
+	// RunOnce's own render (see that render block's own doc) — set once per
+	// RunOnce pass, immediately after that render computes it, and read by
+	// every upgradeModule call the SAME tick.
+	//
+	// Before this field existed, upgradeModule's own pre-step-4 render
+	// passed applyIdentityAndSudoers ONLY the bumping module's own old ∪
+	// touched ∪ new manifests — a SUBSET of the node's real identity set.
+	// etcidentity.Apply (and etcsudoers.Apply) render a FULL replacement set
+	// from whatever manifests they are given, not a merge against what's
+	// already on disk, so that subset silently wiped every OTHER module's
+	// users/groups and sudoers grants for the rest of the tick — a second
+	// module's own restart landing in that window got 217/USER for a user
+	// upgradeModule never even knew existed. Set to nil + skipped=true
+	// whenever RunOnce's own render is skipped entirely (an unresolved
+	// attached module's manifest — same mustSkipRender gate as
+	// reconciler:identity_render_skipped) — see tickIdentityRenderSkipped.
+	tickIdentityManifests []*manifest.Manifest
+	// tickIdentityRenderSkipped is true exactly when RunOnce's own render
+	// this tick could not resolve every attached/boot-composed module's
+	// manifest (mustSkipRender) — tickIdentityManifests is nil in that case,
+	// and upgradeModule must refuse before step 4 rather than render
+	// whatever partial set it does have: a partial render is exactly the
+	// same "confidently wrong" failure mode mustSkipRender itself exists to
+	// avoid, just reached through the bump path instead of RunOnce's own.
+	tickIdentityRenderSkipped bool
+
 	// securityFailClosedRecovered names units whose LIVE (attachModule)
 	// security drop-in write has SUCCEEDED at least once since this boot —
 	// proof this boot CAN write that unit's confinement correctly, regardless
@@ -1151,6 +1181,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.cfg.OnError("reconciler:identity_render_skipped", fmt.Errorf(
 			"this pass could not resolve %d module(s) [%s] that ARE attached or boot-composed (no fresh manifest, no usable cache, no breadcrumb entry); skipping the /etc/passwd + sudoers + egress render entirely rather than render a view known to be missing a real module — the previous render stays in effect",
 			len(unresolvedReal), strings.Join(unresolvedReal, ", ")))
+		// T1: no full identity set exists this tick at all — any bump this
+		// tick's own upgradeModule call must refuse its own pre-step-4
+		// render rather than render a subset (see tickIdentityRenderSkipped's
+		// own doc).
+		r.tickIdentityManifests = nil
+		r.tickIdentityRenderSkipped = true
 	} else {
 		mergedManifestsSlice := make([]*manifest.Manifest, 0, len(mergedManifests))
 		for _, m := range mergedManifests {
@@ -1186,6 +1222,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// user or switching egress, not a confinement gap.
 		identityManifests := mergedManifestsSlice
 		egressManifestsSlice := mergedManifestsSlice
+		// T2 (final review on f3339424, LOW): bumpOldSide is declared OUTSIDE
+		// the `len(bumps) > 0` gate below so a tick with NO bump in flight at
+		// all — a pure revert-to-stable, which never appears in `bumps` at
+		// all (desired already resolves back to the attached digest, so
+		// mount.Reconcile's own diff sees no bump to pair) — still reaches
+		// the union loop further down that consults it (empty, in that
+		// case) alongside revertTouchedByID.
+		bumpOldSide := make(map[string][]*manifest.Manifest, len(bumps))
 		if len(bumps) > 0 {
 			// S1 (delta review on 5f61d389, HIGH — supersedes P3/Q1/Q3
 			// entirely, all three REMOVED): this render runs in RunOnce
@@ -1228,7 +1272,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// starts, decided at the ONE point in the tick that knows
 			// step 4 is actually about to happen, not several lines
 			// earlier on a guess.
-			bumpOldSide := make(map[string][]*manifest.Manifest, len(bumps))
 			for _, b := range bumps {
 				// N3 (review round 11): the digest-keyed attached snapshot is
 				// the AUTHORITATIVE old side — unlike previousManifests
@@ -1266,25 +1309,74 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				}
 				bumpOldSide[b.new.ID] = oldSide
 			}
-			if len(bumpOldSide) > 0 {
-				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldSide))
-				egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
-				for id, m := range mergedManifests {
-					if oldSide, isBump := bumpOldSide[id]; isBump {
-						// S1: the new (bumping) manifest is NEVER appended
-						// here — identity/sudoers render old ∪ touched
-						// ONLY. egress keeps the stable digest ONLY
-						// (oldSide[0], appended first above, unconditionally,
-						// before any touched-digest is ever appended).
-						identityManifests = append(identityManifests, oldSide...)
-						egressManifestsSlice = append(egressManifestsSlice, oldSide[0])
-						continue
-					}
-					identityManifests = append(identityManifests, m)
-					egressManifestsSlice = append(egressManifestsSlice, m)
+		}
+		// T2 (final review on f3339424, LOW): a module currently REVERTING
+		// (desired already back at its own stable digest, but an earlier
+		// abandoned target's units may still be running until THIS tick's
+		// own forced restart completes) needs the SAME touched-digest union
+		// bumpOldSide gives an in-flight bump. mergedManifests[id] already
+		// resolves to the correct STABLE manifest for a reverting module
+		// (there is nothing to substitute), but on its own it carries no
+		// knowledge of PendingTouchedDigests — without this, the departing
+		// digest's own users vanish from the render on the very tick its
+		// units are still being stopped. Computed UNCONDITIONALLY (not
+		// nested inside `len(bumps) > 0` above) because a pure revert never
+		// appears in `bumps` at all: desired already resolves back to the
+		// attached digest, so mount.Reconcile's own diff pairs nothing to
+		// bump. pendingRevertIDs marks ANY module with a nonzero
+		// PendingDigest, including one still actively bumping FORWARD
+		// (bumpIDsThisTick) — excluded here since that case is already
+		// fully handled by bumpOldSide above.
+		revertTouchedByID := make(map[string][]*manifest.Manifest)
+		for _, m := range current.AttachedModules {
+			if !pendingRevertIDs[m.ID] || bumpIDsThisTick[m.ID] || len(m.PendingTouchedDigests) == 0 {
+				continue
+			}
+			var extra []*manifest.Manifest
+			for _, digest := range m.PendingTouchedDigests {
+				if digest == m.Digest {
+					continue // already covered by mergedManifests[id] itself
+				}
+				if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, m.ID, digest); err == nil && snap != nil {
+					extra = append(extra, snap)
+				}
+			}
+			if len(extra) > 0 {
+				revertTouchedByID[m.ID] = extra
+			}
+		}
+		if len(bumpOldSide) > 0 || len(revertTouchedByID) > 0 {
+			identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldSide)+len(revertTouchedByID))
+			egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
+			for id, m := range mergedManifests {
+				if oldSide, isBump := bumpOldSide[id]; isBump {
+					// S1: the new (bumping) manifest is NEVER appended
+					// here — identity/sudoers render old ∪ touched
+					// ONLY. egress keeps the stable digest ONLY
+					// (oldSide[0], appended first above, unconditionally,
+					// before any touched-digest is ever appended).
+					identityManifests = append(identityManifests, oldSide...)
+					egressManifestsSlice = append(egressManifestsSlice, oldSide[0])
+					continue
+				}
+				identityManifests = append(identityManifests, m)
+				egressManifestsSlice = append(egressManifestsSlice, m)
+				if extra, isReverting := revertTouchedByID[id]; isReverting {
+					// T2: identity/sudoers union in the departing
+					// digest(s)' own users too — egress stays
+					// stable-only, same rule as the bump path above.
+					identityManifests = append(identityManifests, extra...)
 				}
 			}
 		}
+
+		// T1 (final review on f3339424, HIGH): snapshot THIS tick's own full
+		// identity manifest set for upgradeModule's own pre-step-4 render to
+		// reuse (append its new target, refuse if this is nil-with-skipped)
+		// — see tickIdentityManifests' own doc for why passing it only the
+		// bumping module's own manifests was the bug.
+		r.tickIdentityManifests = identityManifests
+		r.tickIdentityRenderSkipped = false
 
 		// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from the
 		// merged (fresh + cached/breadcrumb-fallback) manifest set BEFORE any
@@ -3596,6 +3688,38 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	// the partition-level backstop) — stopping the very unit this call just
 	// started.
 	if existing != nil {
+		// T1 (final review on f3339424, HIGH): AttachOne runs entirely
+		// outside RunOnce's own render, so it never re-renders identity —
+		// upgradeModule's own pre-step-4 call reads r.tickIdentityManifests
+		// (RunOnce's own field, meant for a RunOnce-driven bump), which
+		// would otherwise sit stale from whatever RunOnce pass last set it,
+		// or nil/zero on an agent that has never run one yet. Rebuild the
+		// full set here from every currently attached module's own
+		// snapshot — this entry (existing) included, giving its OWN old
+		// side exactly like RunOnce's own bumpOldSide does — refusing
+		// before step 4 if any of them can't be resolved (never render a
+		// partial set; same rule as reconciler:identity_render_skipped).
+		var tickManifests []*manifest.Manifest
+		var unresolved []string
+		for _, am := range current.AttachedModules {
+			snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, am.ID, am.Digest)
+			if err != nil || snap == nil {
+				unresolved = append(unresolved, am.ID)
+				continue
+			}
+			tickManifests = append(tickManifests, snap)
+		}
+		if len(unresolved) > 0 {
+			sort.Strings(unresolved)
+			r.cfg.OnError("reconciler:identity_render_skipped", fmt.Errorf(
+				"AttachOne(%s): could not resolve %d currently attached module(s)' manifest(s) [%s]; refusing this upgrade's own pre-step-4 identity render rather than render a view known to be missing a real module",
+				moduleID, len(unresolved), strings.Join(unresolved, ", ")))
+			r.tickIdentityManifests = nil
+			r.tickIdentityRenderSkipped = true
+		} else {
+			r.tickIdentityManifests = tickManifests
+			r.tickIdentityRenderSkipped = false
+		}
 		u := moduleUpgrade{old: *existing, new: mod}
 		r.upgradeModule(ctx, current, u, mf, oldMfSnapshot, nil, mount.ModuleStack{}, false)
 		if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
@@ -3635,6 +3759,15 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 
 	mod.Units = mf.UnitNames()
 	current.AttachedModules = append(current.AttachedModules, mod)
+	// T1 (final review on f3339424): persist THIS digest's manifest content,
+	// same as RunOnce's own attach loop and upgradeModule's own step 7 —
+	// without this, a LATER AttachOne call upgrading this same module could
+	// never resolve ITS OWN old side via LoadAttachedSnapshot, and the
+	// tick-scoped identity rebuild above would refuse every subsequent
+	// AttachOne upgrade of a module that was ever first attached THIS way.
+	if err := manifest.SaveAttachedSnapshot(r.cfg.ManifestRoot, mod.ID, mod.Digest, mf); err != nil {
+		r.cfg.OnError("reconciler:attached_snapshot_save", fmt.Errorf("module %s digest %s: %w", mod.ID, mod.Digest, err))
+	}
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		return "", fmt.Errorf("save state: %w", err)
 	}

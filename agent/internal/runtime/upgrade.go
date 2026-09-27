@@ -479,29 +479,36 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	}
 
 	// S1 (delta review on 5f61d389, HIGH): render and APPLY identity/sudoers
-	// for old ∪ touched ∪ new right here — the one point in the tick that
-	// actually knows step 4 is about to restart units under the new digest.
-	// RunOnce's own render (reconcile.go) never looks at newMf at all
-	// (S1's whole point — see that render block's own doc), so if this
-	// module's new digest introduces a user, NOTHING else in this tick ever
-	// writes it before now. If this render/apply fails, refuse before step 4
-	// ever restarts anything: restore step 2's drop-in snapshot (nothing has
-	// restarted yet) and count it against backoff exactly like a step 1-3
-	// refusal, using the SAME code path RunOnce itself uses
-	// (applyIdentityAndSudoers, reconcile.go) so there is only one place that
-	// decides how identity/sudoers precedence, conflicts and writes work.
-	bumpIdentityManifests := make([]*manifest.Manifest, 0, len(old.PendingTouchedDigests)+2)
-	if oldMf != nil {
-		bumpIdentityManifests = append(bumpIdentityManifests, oldMf)
+	// right here — the one point in the tick that actually knows step 4 is
+	// about to restart units under the new digest. RunOnce's own render
+	// (reconcile.go) never looks at newMf at all (S1's whole point — see
+	// that render block's own doc), so if this module's new digest
+	// introduces a user, NOTHING else in this tick ever writes it before
+	// now.
+	//
+	// T1 (final review on f3339424, HIGH): the set rendered here must be
+	// RunOnce's own full, tick-scoped identity manifest set
+	// (r.tickIdentityManifests — every desired/attached module, this
+	// module's own contribution already old ∪ touched via that render's own
+	// bumpOldSide) plus newMf, NEVER just this module's own old ∪ touched ∪
+	// new in isolation: etcidentity.Apply and etcsudoers.Apply both render a
+	// FULL replacement set from whatever manifests they are given, so a
+	// subset silently wipes every OTHER module's users/groups/grants for the
+	// rest of the tick. If RunOnce's own render this tick could not resolve
+	// every attached module's manifest (tickIdentityRenderSkipped — the same
+	// mustSkipRender gate as reconciler:identity_render_skipped), there is
+	// no full set to render a subset OF either — refuse before step 4,
+	// exactly like a failed render/apply below, rather than write a partial
+	// view that would silently drop whatever module RunOnce's own pass
+	// couldn't resolve.
+	if r.tickIdentityRenderSkipped {
+		r.noteUnconverged("reconciler:upgrade_identity", newMod.ID, fmt.Errorf("module %s: refusing to render identity/sudoers before step 4 — this tick's own identity render was skipped (see reconciler:identity_render_skipped)", newMod.ID))
+		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
+		return
 	}
-	for _, digest := range old.PendingTouchedDigests {
-		if digest == old.Digest {
-			continue // already covered by oldMf above
-		}
-		if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, old.ID, digest); err == nil && snap != nil {
-			bumpIdentityManifests = append(bumpIdentityManifests, snap)
-		}
-	}
+	bumpIdentityManifests := make([]*manifest.Manifest, 0, len(r.tickIdentityManifests)+1)
+	bumpIdentityManifests = append(bumpIdentityManifests, r.tickIdentityManifests...)
 	bumpIdentityManifests = append(bumpIdentityManifests, newMf)
 	if err := r.applyIdentityAndSudoers(bumpIdentityManifests, "reconciler:upgrade_"); err != nil {
 		r.noteUnconverged("reconciler:upgrade_identity", newMod.ID, fmt.Errorf("module %s: identity/sudoers render failed, refusing to restart: %w", newMod.ID, err))
