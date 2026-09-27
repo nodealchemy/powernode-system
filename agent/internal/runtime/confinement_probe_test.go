@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -300,6 +301,49 @@ func TestReconcileStaleConfinement_N4Gate_SkipsPendingDigestModule(t *testing.T)
 			t.Errorf("N4 REGRESSION: expected NO systemctl show call for a PendingDigest module's unit, got %v", inv)
 		}
 	}
+}
+
+// TestReconcileStaleConfinement_ProbeFailureIsReported is round Z's Z6
+// (reviewer A, LOW): a probe failure (systemctl show itself erroring, or
+// /proc vanishing between the is-active read and the status read) must be
+// visible — before this fix it was silently dropped (uc.Err set, Probed
+// stays false, wider() reads false, the loop just moves on), so a unit
+// that WAS actually wider this tick went completely unreported with no
+// signal anything was even checked.
+func TestReconcileStaleConfinement_ProbeFailureIsReported(t *testing.T) {
+	mf := parseManifestEnvelope(t, manifestFixtureWithCaps("abc123", []string{"CAP_CHOWN"}))
+	current := &mount.State{AttachedModules: []mount.Module{{ID: "m1", Digest: "abc123"}}}
+	manifests := map[string]*manifest.Manifest{"m1": mf}
+	unit := lifecycle.UnitName("m1", "app")
+
+	t.Run("systemctl show fails", func(t *testing.T) {
+		r, runner := probeTestReconciler(t)
+		runner.StubErr = map[string]error{showPropsKey(unit): errors.New("connection refused to systemd bus")}
+		var onErrors []string
+		r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
+
+		r.reconcileStaleConfinement(context.Background(), current, manifests)
+
+		if !convergenceFailuresContain(onErrors, "reconciler:confinement_probe_failed") || !convergenceFailuresContain(onErrors, unit) {
+			t.Errorf("Z6 REGRESSION: expected a confinement_probe_failed report naming %s, got %v", unit, onErrors)
+		}
+	})
+
+	t.Run("proc read fails (process vanished)", func(t *testing.T) {
+		r, runner := probeTestReconciler(t)
+		withProcRoot(t) // empty — no <pid>/status file at all
+		runner.StubOutput = map[string][]byte{
+			showPropsKey(unit): []byte("ActiveState=active\nMainPID=4242\nNeedDaemonReload=no\n"),
+		}
+		var onErrors []string
+		r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
+
+		r.reconcileStaleConfinement(context.Background(), current, manifests)
+
+		if !convergenceFailuresContain(onErrors, "reconciler:confinement_probe_failed") || !convergenceFailuresContain(onErrors, unit) {
+			t.Errorf("Z6 REGRESSION: expected a confinement_probe_failed report naming %s, got %v", unit, onErrors)
+		}
+	})
 }
 
 // TestReconcileStaleConfinement_N4Gate_SkipsDigestMismatchModule is round

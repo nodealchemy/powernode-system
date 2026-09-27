@@ -272,6 +272,21 @@ func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mou
 				continue
 			}
 			uc := r.probeUnitConfinement(ctx, unit, declared&kernelMask)
+			if uc.Err != nil {
+				// Round Z (Z6, reviewer A, LOW): a probe failure (systemctl
+				// show itself erroring, or /proc vanishing between the
+				// is-active read and the status read) used to be dropped
+				// silently — uc.Err set, Probed stays false, wider() reads
+				// false, and the loop just moved on. A unit that IS wider
+				// this tick would then go completely unreported, with no
+				// signal that anything was even checked. Report-only, same
+				// as every other channel in this file — this pass cannot
+				// restart anything regardless, so a probe failure is not a
+				// converge-blocking condition, only a visibility one.
+				r.cfg.OnError("reconciler:confinement_probe_failed", fmt.Errorf(
+					"module %s: unit %s: could not verify running confinement this tick: %w", mod.ID, unit, uc.Err))
+				continue
+			}
 			if !uc.wider() {
 				continue
 			}
