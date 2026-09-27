@@ -61,35 +61,57 @@ var (
 	}
 )
 
-// selfHosted reports whether cfg.PlatformURL points at THIS node.
-//
-// The result LATCHES once true and is never recomputed. DNS is frequently
-// the first casualty of the kind of degradation this guard exists for, and a
-// probe that answered "not self-hosted" during a resolver failure would
-// disarm the protection at precisely the wrong moment. Latching false-to-true
-// only (never true-to-false) means the worst a flaky probe can do is arm the
-// guard late, never drop it.
-func (r *Reconciler) selfHosted() bool {
+// selfHostState is the tri-state self-hosting probe result (round Y,
+// IMP-caef5c00d63f — N2 from the round-X confirm review). The pre-round-Y
+// selfHosted() collapsed every probe failure (DNS error, interface-list
+// error, an unparsable PlatformURL) to `false` ("not self-hosted, safe to
+// restart") — the SAME answer a genuine remote node gives. On a
+// self-hosted node's own first tick after a transient resolver hiccup,
+// that meant "restart this node's own control-plane unit", the exact
+// outage class this whole guard exists to prevent, before the latch ever
+// had a chance to arm. selfHostUnknown separates "we could not tell" from
+// "we positively confirmed this is not us", so a caller deciding whether a
+// restart is safe (restartPermitted, below) can treat unknown the same as
+// self-hosted rather than the same as remote.
+type selfHostState int
+
+const (
+	selfHostUnknown selfHostState = iota
+	selfHostNo
+	selfHostYes
+)
+
+// selfHostState resolves the tri-state. The Yes answer LATCHES once
+// reached and is never recomputed — DNS is frequently the first casualty
+// of the kind of degradation this guard exists for, and re-probing on
+// every tick would let a resolver blip disarm the protection at precisely
+// the wrong moment. Latching only toward Yes (never Yes-to-No or
+// Yes-to-Unknown) means the worst a flaky probe can do afterward is
+// nothing — once armed, it stays armed.
+func (r *Reconciler) selfHostState() selfHostState {
 	r.selfHostMu.Lock()
 	defer r.selfHostMu.Unlock()
 	if r.selfHostLatched {
-		return true
+		return selfHostYes
 	}
 	if r.cfg.PlatformURL == "" {
-		return false
+		// No platform configured at all means no self-hosting is even
+		// possible — a definite No, not an Unknown withholding restarts
+		// for no reason.
+		return selfHostNo
 	}
 
 	host := hostFromURL(r.cfg.PlatformURL)
 	if host == "" {
-		return false
+		return selfHostUnknown
 	}
 	platformIPs, err := lookupHostIPs(host)
 	if err != nil || len(platformIPs) == 0 {
-		return false
+		return selfHostUnknown
 	}
 	locals, err := localInterfaceIPs()
 	if err != nil {
-		return false
+		return selfHostUnknown
 	}
 	localSet := make(map[string]bool, len(locals))
 	for _, l := range locals {
@@ -98,10 +120,33 @@ func (r *Reconciler) selfHosted() bool {
 	for _, p := range platformIPs {
 		if localSet[strings.TrimSpace(p)] {
 			r.selfHostLatched = true
-			return true
+			return selfHostYes
 		}
 	}
-	return false
+	return selfHostNo
+}
+
+// selfHosted reports whether cfg.PlatformURL points at THIS node, for
+// callers that only need the CONSERVATIVE (defer-if-unsure) reading —
+// filterUnsafeDetaches' own detach fence, where treating Unknown the same
+// as Yes only ever costs a deferred, next-tick-retried detach, never an
+// unrecoverable one. Callers deciding whether a RESTART is safe must use
+// restartPermitted instead — a restart withheld under Unknown costs
+// nothing durable, but one issued under Unknown could be the same
+// self-inflicted outage class N2 exists to close.
+func (r *Reconciler) selfHosted() bool {
+	return r.selfHostState() != selfHostNo
+}
+
+// restartPermitted reports whether a live restart is safe to issue at all
+// (round Y). Only Unknown->No is unsafe territory this function refuses:
+// Unknown is treated the SAME as Yes here (never permit), closing N2 —
+// see selfHostState's own doc for the outage that treating it like a
+// remote node caused. Every restart site in this package (R1's
+// ConfinementChangedUnits-driven restart, R2's level self-heal) must gate
+// on this, never on `!selfHosted()` directly.
+func (r *Reconciler) restartPermitted() bool {
+	return r.selfHostState() == selfHostNo
 }
 
 // filterUnsafeDetaches drops service-bearing modules from a detach set when
