@@ -138,6 +138,14 @@
 
 set -euo pipefail
 
+# Resolved BEFORE the `cd "$ws"` below (and before the case arms, which run
+# with CWD already changed to the workspace) — IMP-fad0b3f67255's
+# powernode-extension-system arm shells out to a sibling script and must
+# find it regardless of the caller's own CWD (this script runs from a
+# Gitea Actions step, whose CWD convention differs from a future on-node
+# build's, per the file header above).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
   cat <<'EOF'
 Usage: PARENT_PAT=token stage15.sh --module MODULE --workspace DIR
@@ -931,17 +939,16 @@ case "$MODULE" in
     ;;
   powernode-extension-system)
     # THIS submodule (powernode-system) IS the system extension.
-    # Stage its server/ + extension.json into the parent's
-    # extensions/system/ tree shape.
-    mkdir -p /tmp/fat/opt/powernode/extensions/system
-    rsync -a \
-      --exclude='.git' --exclude='tmp' --exclude='log' \
-      --exclude='node_modules' --exclude='coverage' \
-      server/ /tmp/fat/opt/powernode/extensions/system/server/
-    if [ -f extension.json ]; then
-      cp extension.json /tmp/fat/opt/powernode/extensions/system/extension.json
-    fi
-
+    # Stage its server/, config/, worker/ + extension.json into the parent's
+    # extensions/system/ tree shape — extracted to
+    # stage-extension-system-files.sh (IMP-fad0b3f67255) so this specific,
+    # network-free staging logic is unit-testable on its own. See that
+    # script's own header for the config/ fix (this arm never rsynced
+    # config/ at all before this — extensions/system/config/runbooks.yml
+    # never shipped, and System::Status::RemediationWiring#
+    # register_runbook_source! failed on every boot as a result) and its
+    # FATAL guards.
+    #
     # --- Worker component (Sidekiq jobs + scheduler) --------------------
     # extension.json declares components.worker:true, so BOTH runtime seams
     # in the hub-worker process look for this extension's worker tree under
@@ -973,17 +980,9 @@ case "$MODULE" in
     # BaseJob (core) that POSTs to the backend worker_api over HTTP and rides
     # the core worker's own bundle — same rationale as the server arm cloning
     # no worker gems.
-    if [ -d worker ]; then
-      rsync -a \
-        --exclude='.git' --exclude='tmp' --exclude='log' \
-        --exclude='node_modules' --exclude='coverage' \
-        worker/ /tmp/fat/opt/powernode/extensions/system/worker/
-      # shellcheck disable=SC2012  # ls glob is fine here — just counting the shipped job files
-      echo "=== extension-system worker component: $(ls /tmp/fat/opt/powernode/extensions/system/worker/app/jobs/*.rb 2>/dev/null | wc -l) job files + $(ls /tmp/fat/opt/powernode/extensions/system/worker/config/sidekiq_*.yml 2>/dev/null | wc -l) scheduler yml ==="
-    else
-      echo "[stage-1.5] extension-system: FATAL — worker/ tree missing from workspace; extension.json declares components.worker:true but no worker code to ship" >&2
-      exit 1
-    fi
+    bash "$SCRIPT_DIR/stage-extension-system-files.sh" --workspace "$ws"
+    # shellcheck disable=SC2012  # ls glob is fine here — just counting the shipped job files
+    echo "=== extension-system worker component: $(ls /tmp/fat/opt/powernode/extensions/system/worker/app/jobs/*.rb 2>/dev/null | wc -l) job files + $(ls /tmp/fat/opt/powernode/extensions/system/worker/config/sidekiq_*.yml 2>/dev/null | wc -l) scheduler yml ==="
 
     # --- Dedicated-module frontend build (P2) ---------------------------
     # Builds this extension's frontend as a standalone ESM bundle (every
