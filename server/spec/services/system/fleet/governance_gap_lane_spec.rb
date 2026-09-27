@@ -59,7 +59,10 @@ RSpec.describe "fleet governance-gap lane (sense → propose → verify)", type:
     it "declares the Platform Architect as a core-canonical identity with the propose and materialise categories" do
       d = System::Governance::PolicyDeclarations
       expect(d::AGENT_IDENTITIES["platform-architect"]).to eq(name: "Platform Architect", agent_type: "assistant")
-      expect(d::CORE_CANONICAL_KEYS).to eq(%w[platform-architect])
+      # IMP-ad746acac343: Platform Health Monitor joined CORE_CANONICAL_KEYS
+      # alongside the Platform Architect this example is about — same
+      # core-canonical treatment, unrelated to the governance-gap lane.
+      expect(d::CORE_CANONICAL_KEYS).to eq(%w[platform-architect platform-health-monitor])
       expect(d::PLATFORM_ARCHITECT_POLICIES).to eq(
         "dev.campaign_propose" => "auto_approve",
         "dev.governance_materialize" => "require_approval"
@@ -74,8 +77,11 @@ RSpec.describe "fleet governance-gap lane (sense → propose → verify)", type:
 
     it "keeps the Platform Architect OUT of the hierarchy reconciler's attach list (core owns its delegation)" do
       expect(System::Governance::HierarchyReconciler::CHILD_IDENTITIES.keys).not_to include("platform-architect")
+      # -CORE_CANONICAL_KEYS.size, not a hardcoded -1: IMP-ad746acac343 added
+      # a second core canonical (Platform Health Monitor), also excluded here.
       expect(System::Governance::HierarchyReconciler::CHILD_IDENTITIES.size)
-        .to eq(System::Governance::PolicyDeclarations::AGENT_IDENTITIES.size - 1)
+        .to eq(System::Governance::PolicyDeclarations::AGENT_IDENTITIES.size -
+               System::Governance::PolicyDeclarations::CORE_CANONICAL_KEYS.size)
     end
 
     it "resolves the Platform Architect through AgentResolver like any declared owner" do

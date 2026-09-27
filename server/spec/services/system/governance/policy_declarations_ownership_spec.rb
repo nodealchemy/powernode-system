@@ -311,9 +311,18 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
       # Eleven extension-seeded identities plus the Platform Architect — a CORE
       # canonical declared here as the owner of the governance-gap lane
       # (HIER-P3; CORE_CANONICAL_KEYS) but seeded, and delegation-governed, by core.
-      expect(d::AGENT_IDENTITIES.size).to eq(12)
+      #
+      # IMP-ad746acac343: plus a THIRTEENTH, Platform Health Monitor — also a
+      # core canonical (IMP-80a353489ba4), also in CORE_CANONICAL_KEYS (see
+      # that constant's own comment for why leaving it out broke
+      # system_agent_hierarchy_spec's drift report). Declared here so
+      # AGENT_ALIASES resolves through a source key, per
+      # agent_lookup_by_display_name_spec's "resolves every skill binding
+      # through a source key" example.
+      expect(d::AGENT_IDENTITIES.size).to eq(13)
       expect(d::AGENT_IDENTITIES["platform-architect"]).to eq(name: "Platform Architect", agent_type: "assistant")
-      expect(d::CORE_CANONICAL_KEYS).to eq(%w[platform-architect])
+      expect(d::AGENT_IDENTITIES["platform-health-monitor"]).to eq(name: "Platform Health Monitor", agent_type: "monitor")
+      expect(d::CORE_CANONICAL_KEYS).to eq(%w[platform-architect platform-health-monitor])
       expect(d::CORE_CANONICAL_KEYS - d::AGENT_IDENTITIES.keys).to eq([])
     end
 

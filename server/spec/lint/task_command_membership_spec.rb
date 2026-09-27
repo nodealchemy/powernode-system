@@ -98,7 +98,17 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # line above it went with System::Task's dispatch after_commit, and the
       # comment replacing it is longer. Re-audited — the call sites are
       # unchanged, still three distinct values.
-      "models/system/node_instance_spec.rb" => [ 957 ],
+      #
+      # MOVED 957 -> 1109 (IMP-ad746acac343, re-verified against the actual
+      # scanner output rather than guessed): unrelated content was added
+      # earlier in the file between the two pins. RE-AUDITED by re-grepping
+      # every `task_with(` call in this describe block (:1200, :1211, :1219,
+      # :1229-1231, :1249, :1297, plus the implicit no-arg call at :1113) —
+      # only three pass `command:` at all (:1229 "sync_modules", :1230
+      # "apply_config", :1231 "upgrade_boot_image"); every other call takes
+      # the `command: "sync_modules"` default on the helper itself. Still the
+      # same three COMMANDS members as before the move.
+      "models/system/node_instance_spec.rb" => [ 1109 ],
       # `command: command` inside a HEREDOC FIXTURE (<<~RUBY) that the census
       # scanner parses as text — it is source code under test, never executed,
       # and constructs no System::Task. The scanner's own "FIRES on the variable

@@ -30,12 +30,25 @@ module System
   # candidates among what a previous apply already removed, so it reports
   # zero removals.
   class SampleContentRemovalService
-    SAMPLE_AGENT_NAMES = [
-      "Legal & Compliance Analyst",
-      "Life Sciences Research Analyst",
-      "Finance Operations Analyst",
-      "Sales Operations Specialist",
-      "Customer Success Agent"
+    # IMP-ad746acac343 (lint fix): was `where(name: SAMPLE_AGENT_NAMES)` — a
+    # display name is not an identity (spec/lint/agent_lookup_by_display_name
+    # _spec.rb). These are account-scoped sample agents (autonomy_data_seed.rb
+    # creates them via `find_or_create_by!(account:, name:)`, never as a
+    # global canonical), so they carry no source_key — only a `slug`, set at
+    # creation from the same seed's `ad[:slug]` and re-derived by
+    # Ai::Agent#generate_slug from `name` on every rename. Slug is the right
+    # key here specifically BECAUSE of that re-derivation, not despite it:
+    # if an operator renames one of these into a real business agent (the
+    # scenario the "SKIP-IF-REFERENCED" checks throughout this service exist
+    # to protect), its slug changes too, and this removal tool correctly
+    # stops matching it — a rename-immune key would keep matching, and
+    # destroy, an agent an operator has since adopted as their own.
+    SAMPLE_AGENT_SLUGS = %w[
+      legal-compliance-analyst
+      life-sciences-research-analyst
+      finance-operations-analyst
+      sales-operations-specialist
+      customer-success-agent
     ].freeze
 
     # rpi4-base/rpi4-hardened/web-apache/web-nginx and the modules only they
@@ -98,7 +111,7 @@ module System
 
     def classify_candidates
       {
-        agents:    ::Ai::Agent.where(name: SAMPLE_AGENT_NAMES).to_a,
+        agents:    ::Ai::Agent.where(slug: SAMPLE_AGENT_SLUGS).to_a,
         templates: ::System::NodeTemplate.where(name: SAMPLE_TEMPLATE_NAMES).to_a,
         modules:   ::System::NodeModule.where(name: SAMPLE_MODULE_NAMES).to_a,
         providers: ::System::Provider.where(provider_type: SAMPLE_PROVIDER_TYPE).to_a

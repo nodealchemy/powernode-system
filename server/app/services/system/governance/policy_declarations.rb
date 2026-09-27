@@ -1506,7 +1506,19 @@ module System
       # HierarchyReconciler::CHILD_IDENTITIES: the extension attaches its edge
       # under System Concierge (db/seeds/system_agent_hierarchy.rb) and never
       # writes its delegation policy, which core owns.
-      CORE_CANONICAL_KEYS = %w[platform-architect].freeze
+      #
+      # IMP-ad746acac343: Platform Health Monitor added alongside Platform
+      # Architect — confirmed a SECOND core canonical the same way (core's
+      # monitoring_analytics_agents_seed.rb), not just assumed from its
+      # comment in skill_bindings.rb. Leaving it OUT of this list (declared
+      # only in AGENT_IDENTITIES below) was tried first and reverted:
+      # HierarchyReconciler's CHILD_IDENTITIES (== AGENT_IDENTITIES minus this
+      # list) treated it as an EXTENSION-owned identity with no agent behind
+      # it, which system_agent_hierarchy_spec's drift-report examples
+      # correctly caught as "platform-health-monitor(agent absent)" —
+      # exactly the false-drift state this list exists to prevent for a
+      # core-seeded identity.
+      CORE_CANONICAL_KEYS = %w[platform-architect platform-health-monitor].freeze
 
       # Agent identity is keyed on SOURCE_KEY, not name. The seeds look agents
       # up by name, but every seeded agent also carries a source_key and the
@@ -1526,19 +1538,33 @@ module System
       # HIER-P3 added the Platform Architect — a CORE canonical (see
       # CORE_CANONICAL_KEYS), the first owner of an extension-routed lane that
       # this extension does not seed.
+      #
+      # IMP-ad746acac343 (lint fix): Platform Health Monitor is a SECOND core
+      # canonical (IMP-80a353489ba4, seeded by core's
+      # monitoring_analytics_agents_seed.rb: source_key/slug
+      # "platform-health-monitor", name "Platform Health Monitor", agent_type
+      # "monitor") that skill_bindings.rb's AGENT_ALIASES already resolves by
+      # source_key, but it was never added HERE — which
+      # spec/lint/agent_lookup_by_display_name_spec.rb's "resolves every
+      # skill binding through a source key" example catches (every
+      # AGENT_ALIASES value must be a declared key, aside from the one named
+      # system-concierge exception). Also added to CORE_CANONICAL_KEYS above
+      # — see that constant's comment for why leaving it out is actually
+      # wrong, not just untested.
       AGENT_IDENTITIES = {
-        "fleet-autonomy"       => { name: "Fleet Autonomy",           agent_type: "monitor" },
-        "sdwan-manager"        => { name: "SDWAN Manager",            agent_type: "monitor" },
-        "cve-responder"        => { name: "CVE Responder",            agent_type: "monitor" },
-        "disk-image-manager"   => { name: "Disk Image Manager",       agent_type: "monitor" },
-        "gitops-reconciler"    => { name: "GitOps Reconciler",        agent_type: "monitor" },
-        "runtime-manager"      => { name: "Runtime Manager",          agent_type: "monitor" },
-        "capacity-manager"     => { name: "Capacity Manager",         agent_type: "monitor" },
-        "storage-manager"      => { name: "Storage Manager",          agent_type: "monitor" },
-        "ingress-manager"      => { name: "Ingress Manager",          agent_type: "monitor" },
-        "supply-chain-manager" => { name: "Supply Chain Manager",     agent_type: "monitor" },
-        "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" },
-        "platform-architect"   => { name: "Platform Architect",       agent_type: "assistant" }
+        "fleet-autonomy"          => { name: "Fleet Autonomy",           agent_type: "monitor" },
+        "sdwan-manager"           => { name: "SDWAN Manager",            agent_type: "monitor" },
+        "cve-responder"           => { name: "CVE Responder",            agent_type: "monitor" },
+        "disk-image-manager"      => { name: "Disk Image Manager",       agent_type: "monitor" },
+        "gitops-reconciler"       => { name: "GitOps Reconciler",        agent_type: "monitor" },
+        "runtime-manager"         => { name: "Runtime Manager",          agent_type: "monitor" },
+        "capacity-manager"        => { name: "Capacity Manager",         agent_type: "monitor" },
+        "storage-manager"         => { name: "Storage Manager",          agent_type: "monitor" },
+        "ingress-manager"         => { name: "Ingress Manager",          agent_type: "monitor" },
+        "supply-chain-manager"    => { name: "Supply Chain Manager",     agent_type: "monitor" },
+        "topology-designer"       => { name: "System Topology Designer", agent_type: "assistant" },
+        "platform-architect"      => { name: "Platform Architect",       agent_type: "assistant" },
+        "platform-health-monitor" => { name: "Platform Health Monitor",  agent_type: "monitor" }
       }.freeze
 
       # Every declared row group, with the SHAPE it resolves at. `agent_key`
