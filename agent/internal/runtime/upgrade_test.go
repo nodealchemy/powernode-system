@@ -5487,3 +5487,117 @@ func TestUpgradeModule_UnresolvableAttachedModulePlusBumpRefuses(t *testing.T) {
 		t.Errorf("U3 REGRESSION: refusing on an unresolvable attached module must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
 	}
 }
+
+// TestAttachOne_RefusesWhenBreadcrumbNamesAnUnattachedDataModule is U4's own
+// breadcrumb-completeness test (final delta review, LOW): AttachOne's own
+// tick-scoped identity rebuild only ever iterates current.AttachedModules —
+// unlike RunOnce's own render, it has no breadcrumb fallback at all, so a
+// module this BOOT genuinely composed but that is (for any reason) currently
+// absent from current.AttachedModules would silently drop out of the
+// rebuilt set instead of being caught the way RunOnce's own
+// resolveRenderCandidates would catch it. Refuse the AttachOne call outright
+// rather than rebuild from a view known to be incomplete.
+func TestAttachOne_RefusesWhenBreadcrumbNamesAnUnattachedDataModule(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach m1 via RunOnce): %v", err)
+	}
+
+	breadcrumbPath := filepath.Join(t.TempDir(), "boot-composed.json")
+	t.Cleanup(SetBootBreadcrumbPathForTest(breadcrumbPath))
+	bc := &BootComposedBreadcrumb{
+		Modules: []LKGModule{
+			{ID: "m1", HasDataFile: true},
+			{ID: "m3", HasDataFile: true}, // genuinely composed, never attached here
+		},
+	}
+	if err := WriteBreadcrumb(breadcrumbPath, bc); err != nil {
+		t.Fatalf("WriteBreadcrumb: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	preInvocations := len(runner.Invocations)
+	if _, err := r.AttachOne(context.Background(), "m1"); err == nil {
+		t.Fatalf("U4 REGRESSION: expected AttachOne to refuse when the boot breadcrumb names m3, which is not attached")
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[preInvocations:], "start", appUnit) || hasSystemctlOp(runner.Invocations[preInvocations:], "restart", appUnit) {
+		t.Errorf("a breadcrumb-completeness refusal must never restart %s, invocations: %v", appUnit, runner.Invocations[preInvocations:])
+	}
+}
+
+// TestAttachOne_UnionsAnotherAttachedModulesTouchedDigest is U4's own
+// touched-digest test (final delta review, LOW): AttachOne's tick-scoped
+// rebuild only ever reads am.Digest (the stable one) for every OTHER
+// attached module — unlike RunOnce's own bumpOldSide, it never unions in
+// PendingTouchedDigests, so a unit genuinely still running under an
+// abandoned target's digest would drop out of the render during an
+// AttachOne-driven upgrade of a DIFFERENT module.
+func TestAttachOne_UnionsAnotherAttachedModulesTouchedDigest(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	otherAppUnit := lifecycle.UnitName("m2", "app")
+	otherNewWorkerUnit := lifecycle.UnitName("m2", "new-worker")
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other-mod", "priority":200, "effective_priority":200, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m2"] = otherModuleFixtureWithUser("e1", "e1user")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach m1 + m2): %v", err)
+	}
+
+	// m2 e1->e2 TOUCHES via RunOnce: app force-restarts, new-worker never
+	// settles — PendingDigest=e2, PendingTouchedDigests=[e2], never commits.
+	client.responses["/api/v1/system/node_api/modules/m2"] = fmt.Sprintf(`{
+		"success": true,
+		"data": {
+			"id":"m2", "name":"other-mod",
+			"priority":200, "effective_priority":200,
+			"digest":"e2",
+			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+			"users": [{"name":"e2user","uid":6002,"primary_gid":6002,"primary_group":"e2user","shell":"/bin/false","home":"/home/e2user"}],
+			"groups": [{"name":"e2user","gid":6002}],
+			"services": [%s,%s]
+		}
+	}`, upgradeAppService, upgradeNewWorkerService)
+	backdateManifestCache(t, manifestRoot, "m2")
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + otherAppUnit:       []byte("active\n"),
+		"systemctl is-active " + otherNewWorkerUnit: []byte("inactive\n"), // never settles
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (m2 touched, settle fails): %v", err)
+	}
+
+	// Now bump m1 via AttachOne — a completely separate call, outside
+	// RunOnce entirely.
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d2", []string{"CAP_CHOWN"}, upgradeAppService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput["systemctl is-active "+appUnit] = []byte("active\n")
+
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	if _, err := r.AttachOne(context.Background(), "m1"); err != nil {
+		t.Fatalf("AttachOne m1: %v", err)
+	}
+	if !containsArg(users, "e2user") {
+		t.Fatalf("U4 REGRESSION: AttachOne's own rebuilt tick set dropped m2's touched-digest user e2user (units still running under e2): %v", users)
+	}
+}

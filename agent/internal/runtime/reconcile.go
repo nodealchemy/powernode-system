@@ -3699,6 +3699,47 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 		// side exactly like RunOnce's own bumpOldSide does — refusing
 		// before step 4 if any of them can't be resolved (never render a
 		// partial set; same rule as reconciler:identity_render_skipped).
+		//
+		// U4 (final delta review, LOW): this rebuild is still NARROWER than
+		// RunOnce's own render in two ways RunOnce's own resolveRenderCandidates
+		// (+ bumpOldSide) covers and this simpler loop does not:
+		//   1. A "breadcrumb-only" module — genuinely boot-composed but for
+		//      any reason absent from current.AttachedModules right now —
+		//      never contributes here at all, where RunOnce's own render
+		//      would still include it via the breadcrumb fallback.
+		//   2. PendingTouchedDigests for an OTHER attached module mid an
+		//      abandoned/reverting episode names content genuinely still
+		//      running on some unit — RunOnce's own bumpOldSide unions it
+		//      in; this loop only ever reads am.Digest (the stable one).
+		// Fix, picking the SMALLER of the two options team-lead offered:
+		// reusing resolveRenderCandidates wholesale here would mean
+		// replicating RunOnce's OWN fresh-fetch-every-desired-module step
+		// (manifestFetchFailed, retained, desiredForLayers — none of which
+		// AttachOne computes at all, being a single-module CLI command) for
+		// a rare, operator-invoked path. Instead: (2) is closed directly
+		// (a cheap, local per-module union, mirroring bumpOldSide's own
+		// shape); (1) is closed by REFUSING outright — before any render is
+		// even attempted — whenever the CURRENT boot's own breadcrumb names
+		// a data-bearing module current.AttachedModules doesn't have, since
+		// there is no cheap way for this path to independently reconstruct
+		// that module's own identity contribution the way RunOnce's fresh
+		// manifest-fetch loop can.
+		if _, _, breadcrumbDataIDs := loadBreadcrumbManifests(); len(breadcrumbDataIDs) > 0 {
+			attachedIDs := make(map[string]bool, len(current.AttachedModules))
+			for _, am := range current.AttachedModules {
+				attachedIDs[am.ID] = true
+			}
+			var missing []string
+			for id := range breadcrumbDataIDs {
+				if !attachedIDs[id] {
+					missing = append(missing, id)
+				}
+			}
+			if len(missing) > 0 {
+				sort.Strings(missing)
+				return "", fmt.Errorf("AttachOne(%s): this boot's own breadcrumb names data-bearing module(s) %v not present in current.AttachedModules — refusing rather than rebuild this tick's identity set from a view known to be incomplete", moduleID, missing)
+			}
+		}
 		var tickManifests []*manifest.Manifest
 		var unresolved []string
 		for _, am := range current.AttachedModules {
@@ -3708,6 +3749,16 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 				continue
 			}
 			tickManifests = append(tickManifests, snap)
+			// U4: union in every digest this OTHER module's own episode
+			// already touched, same as RunOnce's own bumpOldSide.
+			for _, digest := range am.PendingTouchedDigests {
+				if digest == am.Digest {
+					continue // already covered above
+				}
+				if tsnap, terr := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, am.ID, digest); terr == nil && tsnap != nil {
+					tickManifests = append(tickManifests, tsnap)
+				}
+			}
 		}
 		if len(unresolved) > 0 {
 			sort.Strings(unresolved)
