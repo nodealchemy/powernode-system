@@ -302,6 +302,84 @@ func TestReconcileStaleConfinement_N4Gate_SkipsPendingDigestModule(t *testing.T)
 	}
 }
 
+// TestReconcileStaleConfinement_N4Gate_SkipsDigestMismatchModule is round
+// Z's Z4 (Y8): the PROBE's own copy of the N4 gate's SECOND clause — a
+// module whose attached digest no longer matches this tick's fetched
+// manifest (PendingDigest itself empty) must be skipped exactly like the
+// PendingDigest-set half already tested above.
+// TestReconcileStaleConfinement_N4Gate_SkipsPendingDigestModule only
+// exercised the first clause; this closes the gap on the second.
+func TestReconcileStaleConfinement_N4Gate_SkipsDigestMismatchModule(t *testing.T) {
+	r, runner := probeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+	runner.StubOutput = map[string][]byte{
+		showPropsKey(unit): []byte("ActiveState=active\nMainPID=4242\nNeedDaemonReload=no\n"),
+	}
+	fakeProcPID(t, withProcRoot(t), 4242, 0x1F, 0x0) // would read as wider if ever probed
+
+	mf := parseManifestEnvelope(t, manifestFixtureWithCaps("def456", []string{"CAP_CHOWN"})) // freshly fetched: def456
+	current := &mount.State{AttachedModules: []mount.Module{
+		{ID: "m1", Digest: "abc123"}, // attached: abc123 — mismatch, PendingDigest empty
+	}}
+	manifests := map[string]*manifest.Manifest{"m1": mf}
+
+	r.reconcileStaleConfinement(context.Background(), current, manifests)
+
+	if got := r.ConfinementStaleUnits(); len(got) != 0 {
+		t.Errorf("Y8/N4 REGRESSION: expected a digest-mismatch module's units to never be probed, got stale=%v", got)
+	}
+	for _, inv := range runner.Invocations {
+		if inv.Op == "Output" && inv.Name == "systemctl" {
+			t.Errorf("Y8/N4 REGRESSION: expected NO systemctl show call for a digest-mismatch module's unit, got %v", inv)
+		}
+	}
+}
+
+// TestDeclaredCapMasks_PrivilegedModuleIsSkipped is round Z's Z4 (Y6): a
+// privileged module must never be probed. Confirms EQUIVALENCE too: the
+// explicit policy.Privileged early return in declaredCapMasks is actually
+// REDUNDANT with the natural behaviour — decideModuleSecurityPolicy skips
+// its own capability-resolution loop entirely under Privileged (see that
+// function's own `if !policy.Privileged` guard), so unitAllow (and
+// therefore the returned masks map) is ALREADY EMPTY for a privileged
+// module even without this function's own explicit check — the per-unit
+// loop's own `declared, ok := masks[unit]; if !ok { continue }` would skip
+// every one of its units regardless. Both facts are asserted here.
+func TestDeclaredCapMasks_PrivilegedModuleIsSkipped(t *testing.T) {
+	r, runner := probeTestReconciler(t)
+	unit := lifecycle.UnitName("m1", "app")
+	runner.StubOutput = map[string][]byte{
+		showPropsKey(unit): []byte("ActiveState=active\nMainPID=4242\nNeedDaemonReload=no\n"),
+	}
+	fakeProcPID(t, withProcRoot(t), 4242, 0x1F, 0x0) // would read as wider if ever probed
+
+	mod := mount.Module{ID: "m1", Digest: "abc123"}
+	mf := parseManifestEnvelope(t, manifestFixturePrivileged("abc123"))
+	r.privilegedAllow = []string{"m1"} // approved, so this is a genuinely privileged, non-refused module
+
+	masks, ok := r.declaredCapMasks(mod, mf)
+	if ok {
+		t.Errorf("expected declaredCapMasks to return ok=false for a privileged module, got masks=%v", masks)
+	}
+	if len(masks) != 0 {
+		t.Errorf("EQUIVALENCE CHECK: expected the underlying unitAllow to already be empty for a privileged module regardless of the explicit early return, got %v", masks)
+	}
+
+	// End-to-end: the stale probe must never issue a single systemctl call
+	// for this module's units.
+	current := &mount.State{AttachedModules: []mount.Module{mod}}
+	manifests := map[string]*manifest.Manifest{"m1": mf}
+	r.reconcileStaleConfinement(context.Background(), current, manifests)
+	if got := r.ConfinementStaleUnits(); len(got) != 0 {
+		t.Errorf("Y6 REGRESSION: expected a privileged module's units to never be probed, got stale=%v", got)
+	}
+	for _, inv := range runner.Invocations {
+		if inv.Op == "Output" && inv.Name == "systemctl" {
+			t.Errorf("Y6 REGRESSION: expected NO systemctl show call for a privileged module's unit, got %v", inv)
+		}
+	}
+}
+
 // TestReconcileStaleConfinement_PublishesForHeartbeat pins the heartbeat
 // wiring end to end: ConfinementStaleUnits() reflects the most recently
 // completed pass, and clears once the unit reads clean.
