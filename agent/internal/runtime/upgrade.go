@@ -820,10 +820,20 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	//     value is not proof it is the SAME failure; a genuine regression
 	//     this digest introduced could easily share it.
 	// Otherwise (old, baseline-failed, run-once, failed IDENTICALLY): not new
-	// information, so it no longer blocks — reported through the unconverged
-	// channel instead, and (KnownDegradedUnits, set at commit below) kept
-	// visible on every later steady-state tick for as long as it stays
-	// failed.
+	// information, so it no longer blocks — reported below through the
+	// unconverged channel for THIS bump attempt's own tick (a one-time
+	// event describing what just happened during an active upgrade, not a
+	// standing condition), and separately carried forward as
+	// KnownDegradedUnits (set at commit below) for every LATER steady-state
+	// tick while it stays failed. That LATER, ongoing reporting is F1 (V1
+	// second delta review, verified): reportKnownDegradedUnits (reconcile.go)
+	// deliberately does NOT reuse the unconverged channel — routing an
+	// already-exempted, standing condition through ConvergenceFailures on
+	// EVERY ordinary tick would fail an apply_config task forever over
+	// something already proven pre-existing — it reports through
+	// r.cfg.OnError directly instead. This classification-time message
+	// below is unaffected by F1: it fires once, on the tick the exemption
+	// itself happens, not on every tick thereafter.
 	var exemptedThisAttempt []string
 	if len(failures) > 0 {
 		var blocking []settleFailure

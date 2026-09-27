@@ -5782,6 +5782,15 @@ func TestUpgradeModule_RetryDoesNotLaunderOwnCrashIntoPreExisting(t *testing.T) 
 	}
 	t.Cleanup(func() { sleepForUpgradeSettle = origSleep })
 
+	// N5 (delta cleanup): control the clock from here on so a SECOND retry
+	// (a third attempt overall against d2, below) is not simply refused by
+	// backoffAllows before ever reaching the baseline/classification logic
+	// at all — attempts >= 2 requires real elapsed time.
+	fakeNow := time.Now()
+	origNow := nowForUpgradeBackoff
+	nowForUpgradeBackoff = func() time.Time { return fakeNow }
+	t.Cleanup(func() { nowForUpgradeBackoff = origNow })
+
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce pass 2 (bump to d2, credential regresses, first attempt refused): %v", err)
 	}
@@ -5801,6 +5810,23 @@ func TestUpgradeModule_RetryDoesNotLaunderOwnCrashIntoPreExisting(t *testing.T) 
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Fatalf("V1 REGRESSION (re-sample-on-retry mutant survives): a credential regression must still refuse the commit on a RETRY of the same digest — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+
+	// N5 (delta cleanup): a SECOND retry — the THIRD attempt overall against
+	// d2 — must ALSO still refuse, proving the stored baseline is not
+	// overwritten (e.g. by some off-by-one that only guards the FIRST
+	// retry correctly) on a later retry too. Advance the clock past the
+	// attempts=2 backoff window (20s) so this attempt is not merely backed
+	// off without ever reaching the classification logic at all.
+	fakeNow = fakeNow.Add(30 * time.Second)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 4 (second retry of the same d2, backoff elapsed): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("N5 REGRESSION (baseline overwritten on a LATER retry): a credential regression must still refuse the commit on a SECOND retry of the same digest — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+	if degraded := knownDegradedUnits(t, statePath, "m1"); len(degraded) != 0 {
+		t.Fatalf("N5: a genuinely BLOCKING regression must never be recorded as KnownDegradedUnits (that exemption never fired), got %v", degraded)
 	}
 }
 
@@ -6065,6 +6091,50 @@ func TestUpgradeModule_UnreadableBaselineResultNeverExemptsAsPreExisting(t *test
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Fatalf("F2/M12 REGRESSION: a unit whose Result was never actually READABLE must never be exempted as pre-existing — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
+	}
+}
+
+// TestUpgradeModule_EmptyResultWithNoQueryErrorNeverExemptsAsPreExisting is
+// F2/M12 in ISOLATION (V1 second delta review, delta cleanup): the SIBLING
+// case to TestUpgradeModule_UnreadableBaselineResultNeverExemptsAsPreExisting
+// above, which uses a QUERY ERROR — that error check alone would ALSO catch
+// a mutant that only drops the `result == ""` guard, since the error check
+// still fires independently. This test drops the query error entirely: the
+// Result query SUCCEEDS every time (no error, ever) but answers "" — a
+// unit systemd has genuinely no opinion about yet. A mutant that keeps the
+// error checks but drops JUST the empty-string check would ADD this unit to
+// the baseline and (since the SAME empty answer recurs identically at the
+// later settle check) wrongly exempt it via F5's own exact-match. The
+// commit must still be refused.
+func TestUpgradeModule_EmptyResultWithNoQueryErrorNeverExemptsAsPreExisting(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	credUnit := lifecycle.UnitName("m1", "cred")
+	resultKey := "systemctl show " + credUnit + " --property=Result --value"
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeCredService)
+	// cred's Result query SUCCEEDS (no StubErr at all) but answers "" every
+	// time — no error anywhere in this scenario, isolating the empty-string
+	// guard specifically. No ExecMainStatus stub either (also succeeds
+	// empty, consistently, both times).
+	runner.StubOutput = map[string][]byte{
+		"systemctl is-active " + appUnit: []byte("active\n"),
+		resultKey:                        []byte("\n"),
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1 (attach d1, cred's Result reads empty, no error): %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
+		"d2", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeCredService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	// Same empty-but-successful answer, unchanged — nothing else blocks.
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2, cred's Result still reads empty): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Fatalf("F2/M12 REGRESSION (empty-Result-in-isolation): a unit whose Result reads EMPTY (no query error at all) must never be exempted as pre-existing — expected m1 to stay at d1, got digest=%q ok=%v", digest, ok)
 	}
 }
 
