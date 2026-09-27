@@ -1033,15 +1033,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.cfg.OnError("reconciler:revert_attempts_reset_save", fmt.Errorf("could not persist a revert episode's attempts reset: %w", err))
 		}
 	}
-	// W2 (IMP-caef5c00d63f round W, HIGH): once per boot composition, force
-	// EVERY already-attached module through the ordinary reattach path below
-	// regardless of whether its attach stamp matches — see
-	// confinement_recheck.go's own doc for why the stamp alone (manifest
-	// content, not on-disk bytes) cannot see a compose step that rewrote a
-	// stale/absent drop-in for an unchanged manifest.
-	confinementRecheckKey, confinementRecheckOK := r.confinementRecheckKey()
-	forceConfinementRecheck := confinementRecheckOK && current.ConfinementReconfirmedAgainst != confinementRecheckKey
-
+	// W2/X4 (IMP-caef5c00d63f): once-per-boot-composition drop-in
+	// reverification no longer forces a module into THIS loop at all — see
+	// reconfirmConfinementIfNeeded (confinement_recheck.go), called near the
+	// end of this tick, for why a narrower, dedicated path replaced routing
+	// it through the full ordinary reattach gate below.
 	toReattach := make(mount.ModuleStack, 0)
 	for _, mod := range desired {
 		if !attachedNow[mod.ID] {
@@ -1065,18 +1061,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		fresh := r.attachStamp(mod.ID, mf)
-		if pendingRevertIDs[mod.ID] || current.LastAttachedManifestHashes[mod.ID] != fresh || forceConfinementRecheck {
+		if pendingRevertIDs[mod.ID] || current.LastAttachedManifestHashes[mod.ID] != fresh {
 			toReattach = append(toReattach, mod)
 		}
-	}
-	if forceConfinementRecheck {
-		// Marked done for THIS composition regardless of each individual
-		// module's own outcome below — a module whose reattach genuinely
-		// fails this tick is not lost: attachModule never updates its stamp
-		// on failure, so the ORDINARY stamp-diff check re-queues it into
-		// toReattach on every later tick exactly as it already does for any
-		// other reattach failure, independent of this key.
-		current.ConfinementReconfirmedAgainst = confinementRecheckKey
 	}
 
 	if r.cfg.DryRun {
@@ -2065,6 +2052,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		sort.Strings(current.UnmaterializedModules)
 	}
 
+	// W2/X3/X4 (IMP-caef5c00d63f): once-per-boot-composition drop-in
+	// reverification — see confinement_recheck.go's own doc. Runs after both
+	// attach loops and every upgrade have settled for this tick, over
+	// current.AttachedModules' own final state.
+	r.reconfirmConfinementIfNeeded(ctx, current, manifests)
+
 	// V1 (delta review on 83d056ea, point 3 — visibility): re-check every
 	// unit an earlier V1 exemption let commit despite it, on EVERY ordinary
 	// tick, not just while some OTHER bump is in flight — see this
@@ -2717,18 +2710,7 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 //
 // Called ONLY from attachModule — the real (re)attach path.
 func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Module, mf *manifest.Manifest) (changedUnits, failedUnits []string, err error) {
-	// enforcePrivileged: true — the live path enforces the privileged-approval
-	// gate unconditionally, unlike the pivot path's frozen-allowlist
-	// conditional (see decideModuleSecurityPolicy's own doc).
-	policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow, true, attachCapabilityWrites)
-	if len(droppedCaps) > 0 {
-		// K5b (review round 6): a real warning, not silence — dropping is the
-		// SAFE response to a version-skew capability name (narrower, never
-		// wider), but a silently narrowed ceiling would hide a genuine
-		// manifest typo just as cleanly as it hides a real skew name.
-		r.cfg.OnError("reconciler:unknown_capability_dropped",
-			fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from its declared ceiling (this agent version does not know them) — narrowing, never widening, what the module is confined to", mod.ID, droppedCaps))
-	}
+	policy, unitAllow, err := r.decideSecurityPolicyForAttach(mod, mf)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2747,6 +2729,38 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 	// attachModuleServices, which WRITES the unit and STARTS it — unconfined,
 	// because the drop-in never landed — while nothing distinguished that
 	// attach from an ordinary successful one.
+	return r.writeSecurityDropIns(mf, policy, unitAllow)
+}
+
+// decideSecurityPolicyForAttach wraps decideModuleSecurityPolicy with the
+// live path's own fixed parameters (enforcePrivileged: true — unlike the
+// pivot path's frozen-allowlist conditional, see decideModuleSecurityPolicy's
+// own doc) plus the K5b (review round 6) droppedCaps warning, shared by
+// applyModuleSecurityPolicy (the full attach path) and
+// applyModuleSecurityDropInsOnly (X4, IMP-caef5c00d63f round X — the
+// once-per-boot confinement recheck's own narrower drop-in-only path) so
+// the two can never independently drift on the decision itself.
+func (r *Reconciler) decideSecurityPolicyForAttach(mod mount.Module, mf *manifest.Manifest) (policy *security.Policy, unitAllow map[string][]string, err error) {
+	policy, unitAllow, droppedCaps, err := decideModuleSecurityPolicy(mod, mf, r.privilegedAllow, true, attachCapabilityWrites)
+	if len(droppedCaps) > 0 {
+		// K5b (review round 6): a real warning, not silence — dropping is the
+		// SAFE response to a version-skew capability name (narrower, never
+		// wider), but a silently narrowed ceiling would hide a genuine
+		// manifest typo just as cleanly as it hides a real skew name.
+		r.cfg.OnError("reconciler:unknown_capability_dropped",
+			fmt.Errorf("module %s: dropped unrecognized capability name(s) %v from its declared ceiling (this agent version does not know them) — narrowing, never widening, what the module is confined to", mod.ID, droppedCaps))
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return policy, unitAllow, nil
+}
+
+// writeSecurityDropIns runs the actual drop-in writers (security_dropins.go)
+// for an already-decided policy — factored out of applyModuleSecurityPolicy
+// so applyModuleSecurityDropInsOnly (X4) can share the exact same writer
+// wiring without also running policy.Apply (MAC profile load/host mutation).
+func (r *Reconciler) writeSecurityDropIns(mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string) (changedUnits, failedUnits []string, err error) {
 	changedUnits, failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
 		securityDropInFuncs{
 			userNamespace:    security.WriteUserNamespaceDropIn,
@@ -2758,6 +2772,31 @@ func (r *Reconciler) applyModuleSecurityPolicy(ctx context.Context, mod mount.Mo
 		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
 	)
 	return changedUnits, failedUnits, nil
+}
+
+// applyModuleSecurityDropInsOnly (X4, IMP-caef5c00d63f round X, MEDIUM) is
+// applyModuleSecurityPolicy's DROP-IN half only: decideSecurityPolicyForAttach
+// (pure) + writeSecurityDropIns (the writers), deliberately WITHOUT
+// policy.Apply (MAC profile load/host mutation) and without anything
+// attachModule itself does (mountModuleArtifact's Pull/verify/cosign,
+// hotReconcileIfNeeded's SyncModuleFiles). Used only by
+// reconfirmConfinementIfNeeded (the once-per-boot-composition recheck,
+// confinement_recheck.go): that path exists to catch a stale on-disk
+// DROP-IN an older compose left behind for an otherwise-unchanged,
+// already-attached module — nothing else about the module needs
+// re-verifying or re-copying for that narrow purpose, and doing so anyway
+// (the ORIGINAL W1-round design, which forced the module through the FULL
+// attachModule) is exactly the unwanted cost/risk this function removes: a
+// whole-blob re-pull/re-verify/cosign check on every boot regardless of
+// whether the drop-in actually diverged, an unrelated MAC profile reload,
+// and hotReconcileIfNeeded's file sync potentially overwriting content a
+// LATER runtime write already rewrote.
+func (r *Reconciler) applyModuleSecurityDropInsOnly(mod mount.Module, mf *manifest.Manifest) (changedUnits, failedUnits []string, err error) {
+	policy, unitAllow, err := r.decideSecurityPolicyForAttach(mod, mf)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r.writeSecurityDropIns(mf, policy, unitAllow)
 }
 
 // attachModule pulls + verifies + mounts a single module and applies its
