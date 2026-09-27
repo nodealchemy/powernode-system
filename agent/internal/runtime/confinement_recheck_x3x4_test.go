@@ -49,11 +49,13 @@ func manifestFixturePrivileged(digest string) string {
 
 // TestReconfirmConfinement_ForcedFailureRetriesAndSkipsPull is X3+X4
 // (IMP-caef5c00d63f round X, MEDIUM): a module the once-per-boot-composition
-// recheck cannot cleanly resolve must leave the WHOLE composition's
-// ConfinementReconfirmedAgainst UNSET, so the NEXT tick under the SAME
-// composition retries — not just once, silently dropped, the way marking
-// the key BEFORE processing (the original W1-round design) did. Also pins
-// X4's own narrowing: the recheck must never re-Pull the module's artifact.
+// recheck cannot cleanly resolve must leave ITS OWN ConfinementReconfirmed[id]
+// UNSET (round Y: per-module, not one shared composition flag — see
+// mount.State.ConfinementReconfirmed's own doc), so the NEXT tick under the
+// SAME composition retries — not just once, silently dropped, the way
+// marking the key BEFORE processing (the original W1-round design) did.
+// Also pins X4's own narrowing: the recheck must never re-Pull the module's
+// artifact.
 //
 // m1's manifest (privileged: true) never changes across any tick — the
 // ordinary attach-stamp gate has nothing to see — only the operator's
@@ -114,8 +116,8 @@ func TestReconfirmConfinement_ForcedFailureRetriesAndSkipsPull(t *testing.T) {
 		t.Fatalf("LoadState: %v", err)
 	}
 	bootBKey := stateRebaseKeyOf(bootB, composedAt.Add(time.Hour))
-	if st.ConfinementReconfirmedAgainst == bootBKey {
-		t.Error("X3 REGRESSION: the composition was marked reconfirmed despite a module failing its own recheck")
+	if st.ConfinementReconfirmed["m1"] == bootBKey {
+		t.Error("X3 REGRESSION: m1 was marked reconfirmed despite failing its own recheck")
 	}
 	if got := len(puller.calls); got != pullsAfterTick1 {
 		t.Errorf("X4 REGRESSION: expected NO additional Pull during the recheck, calls before=%d after=%d (%v)", pullsAfterTick1, got, puller.calls)

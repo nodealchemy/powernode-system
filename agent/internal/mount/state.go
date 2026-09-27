@@ -76,12 +76,23 @@ type State struct {
 	// retried rather than silently marked done.
 	RebasedAgainst string `json:"rebased_against,omitempty"`
 
-	// ConfinementReconfirmedAgainst (W2, IMP-caef5c00d63f round W, HIGH)
-	// names the boot composition (runtime.stateRebaseKeyOf: same key shape
-	// RebasedAgainst uses — boot id + compose time, not the kernel boot id
-	// alone) the live path last forced EVERY currently-attached module's
-	// security drop-ins to be RE-APPLIED for, regardless of whether the
-	// attach stamp matched.
+	// ConfinementReconfirmed (round Y, IMP-caef5c00d63f — N5 from the round-X
+	// confirm review) maps moduleID -> the boot composition
+	// (runtime.stateRebaseKeyOf: same key shape RebasedAgainst uses — boot
+	// id + compose time, not the kernel boot id alone) the live path last
+	// forced THAT module's security drop-ins to be RE-APPLIED for,
+	// regardless of whether the attach stamp matched.
+	//
+	// PER-MODULE, not a single global flag (the pre-round-Y
+	// ConfinementReconfirmedAgainst this replaces): the recheck loop
+	// processes every attached module independently, and a global "all OK"
+	// flag meant ONE module's policy-decision error or fail-closed drop-in
+	// blocked the composition key from EVER being marked done — so every
+	// OTHER, perfectly healthy module got re-forced through the drop-in
+	// stage on every single tick for as long as the one bad module stayed
+	// bad, not just re-examined once. Keying by module ID means a clean
+	// module's own key is set the tick it succeeds and stays set,
+	// independent of any other module's fate.
 	//
 	// The attach stamp compares MANIFEST content, not what is actually on
 	// disk — the drop-ins themselves live in the tmpfs upper, rewritten
@@ -93,12 +104,16 @@ type State struct {
 	// re-enters the reattach loop, and the drop-in stays wrong until the
 	// next manifest edit — which may never come.
 	//
-	// Written on the first live reconcile tick of each NEW composition
+	// Set for a module on the first live reconcile tick of each NEW
+	// composition that module's own drop-in stage resolves cleanly for
 	// (whether or not anything actually needed re-applying); carried
 	// through unchanged by every other writer, so a tick that could not
 	// determine the current composition (root mode not native, no usable
-	// boot breadcrumb) never marks it done and a later tick retries.
-	ConfinementReconfirmedAgainst string `json:"confinement_reconfirmed_against,omitempty"`
+	// boot breadcrumb) never marks any module done and a later tick
+	// retries. Old field simply stops being read on upgrade — the first
+	// tick after an agent upgrade re-runs the (idempotent) recheck once
+	// per module, same as a brand-new composition would.
+	ConfinementReconfirmed map[string]string `json:"confinement_reconfirmed,omitempty"`
 
 	// SecurityFailClosedUnits (R6, review round 14) is the LAST PUBLISHED
 	// copy of the live reconcile path's own fail-closed set

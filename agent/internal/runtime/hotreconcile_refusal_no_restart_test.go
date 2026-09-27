@@ -300,6 +300,16 @@ func TestRunOnce_RefusedMaterializationOnFirstAttachDoesNotStartUnits(t *testing
 		t.Fatalf("refused first-attach module not recorded as unmaterialized (got %v)",
 			state.UnmaterializedModules)
 	}
+	// Round Y (IMP-caef5c00d63f): this un-stamp (reconcile.go:1553) predates
+	// X1's confinement-pending bookkeeping and is UNRELATED to it — pinned
+	// here explicitly so round Y's removal of the X1-specific un-stamps
+	// (reconcile.go:1745-1746, 1889-1890) cannot accidentally take this one
+	// with it. See TestRunOnce_RefusedMaterializationDoesNotStartUnits for
+	// the same assertion on the toReattach loop's sibling site (:1667).
+	if _, stamped := state.LastAttachedManifestHashes["m1"]; stamped {
+		t.Fatalf("refused first-attach module kept its manifest-hash stamp; the reattach " +
+			"gate will skip it next tick and it never converges")
+	}
 }
 
 // CONTROL for the toAttach arm, mirroring the re-attach control: a new module

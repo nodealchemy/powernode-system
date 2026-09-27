@@ -38,22 +38,34 @@ package runtime
 // userns drop-in; and SyncModuleFiles can overwrite content a LATER
 // runtime write already rewrote (its own doc, hotReconcileIfNeeded).
 //
-// X3 (IMP-caef5c00d63f round X, MEDIUM): the composition is marked
-// reconfirmed (mount.State.ConfinementReconfirmedAgainst) ONLY after every
-// module this pass could reach a decision for succeeded — never marked
-// before processing. The ORIGINAL design marked it unconditionally before
-// the toReattach loop even ran, reasoning (wrongly) that "a module whose
-// reattach genuinely fails this tick is not lost: the ordinary stamp-diff
-// check re-queues it" — but the module's stamp already MATCHES (that is
-// the entire premise this fix exists for), so a stamp-diff re-queue never
-// fires for it; marking the key done regardless of outcome silently
-// dropped a failed module's own recheck for the rest of the boot. Now: any
-// module this pass could not cleanly resolve (a policy-decision error, a
-// drop-in write that failed closed, or one still confinement-pending after
-// attachModuleServices) leaves the whole composition's key UNSET, so the
-// NEXT tick retries EVERY forced module again — cheap and idempotent under
-// X4's narrowing, unlike a retry of the original full-attachModule design
-// would have been.
+// X3 (IMP-caef5c00d63f round X, MEDIUM): a module is marked reconfirmed
+// (mount.State.ConfinementReconfirmed[mod.ID]) ONLY once its OWN drop-in
+// stage this pass resolved cleanly — never marked before processing. The
+// ORIGINAL design marked it unconditionally before the toReattach loop even
+// ran, reasoning (wrongly) that "a module whose reattach genuinely fails
+// this tick is not lost: the ordinary stamp-diff check re-queues it" — but
+// the module's stamp already MATCHES (that is the entire premise this fix
+// exists for), so a stamp-diff re-queue never fires for it; marking it done
+// regardless of outcome silently dropped a failed module's own recheck for
+// the rest of the boot.
+//
+// Round Y (N5 from the round-X confirm review): this key is now PER-MODULE,
+// not one global flag for the whole composition — see mount.State.
+// ConfinementReconfirmed's own doc for why a single shared flag meant one
+// bad module blocked every OTHER, healthy module's own key from ever being
+// set, re-forcing all of them through this stage every tick indefinitely.
+// A module this pass could not cleanly resolve (a policy-decision error, or
+// a drop-in write that failed closed) simply never gets its own key set, so
+// the NEXT tick retries ONLY that module — cheap and idempotent under X4's
+// narrowing, unlike a retry of the original full-attachModule design would
+// have been, and no longer drags every unrelated module along with it.
+//
+// Round Y also drops this loop's own N4 gate duty to the stale-confinement
+// probe's shared rule: a module with an in-flight upgrade (PendingDigest
+// set) or whose attached digest no longer matches this tick's fetched
+// manifest is skipped entirely here too — its drop-ins are mid-transition
+// and re-applying the WRONG (stable-digest) policy over them would fight
+// the upgrade rather than recheck anything.
 //
 // Deliberately NOT the state-rebase machinery's own report-only/sentinel-
 // gated enforcement (state_rebase.go): re-applying a manifest's OWN
@@ -121,19 +133,29 @@ func (r *Reconciler) confinementRecheckKey() (key string, ok bool) {
 // tick" as a second set to reason about.
 func (r *Reconciler) reconfirmConfinementIfNeeded(ctx context.Context, current *mount.State, manifests map[string]*manifest.Manifest) {
 	key, ok := r.confinementRecheckKey()
-	if !ok || current.ConfinementReconfirmedAgainst == key {
+	if !ok {
 		return
 	}
 
-	allOK := true
 	for _, mod := range current.AttachedModules {
+		if current.ConfinementReconfirmed[mod.ID] == key {
+			continue
+		}
 		mf, ok := manifests[mod.ID]
 		if !ok {
 			// Same fallback as the ordinary reattach gate: nothing fresh to
 			// re-check this module against on a tick whose manifest fetch
-			// for it failed. Does not block marking the composition
-			// reconfirmed — a module this tick genuinely could not reach is
-			// no different from one the ordinary path also could not reach.
+			// for it failed. This module's own key simply stays unset; a
+			// later tick with a fresh fetch retries it.
+			continue
+		}
+		// N4 (round Y, from the round-X confirm review): a module mid
+		// upgrade, or one whose attached digest no longer matches this
+		// tick's fetched manifest, is skipped — re-applying the STABLE
+		// digest's policy over drop-ins an in-flight upgrade is actively
+		// changing would fight that upgrade rather than recheck anything.
+		// See this file's own doc.
+		if mod.PendingDigest != "" || mf.Digest != mod.Digest {
 			continue
 		}
 		// J3 (review round 5, restated here): a module whose decision this
@@ -143,32 +165,24 @@ func (r *Reconciler) reconfirmConfinementIfNeeded(ctx context.Context, current *
 
 		changedUnits, failedUnits, err := r.applyModuleSecurityDropInsOnly(mod, mf)
 		if err != nil {
-			allOK = false
 			r.cfg.OnError("reconciler:confinement_recheck_failed", fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
 		if len(failedUnits) > 0 {
-			allOK = false
 			r.recordSecurityFailClosed(failedUnits)
 			r.cfg.OnError("reconciler:confinement_recheck_dropin_fail_closed",
-				fmt.Errorf("module %s: security drop-in re-apply failed for unit(s) %v during the once-per-boot-composition confinement recheck — refusing to consider this composition reconfirmed", mod.ID, failedUnits))
+				fmt.Errorf("module %s: security drop-in re-apply failed for unit(s) %v during the once-per-boot-composition confinement recheck — refusing to consider this module's recheck reconfirmed", mod.ID, failedUnits))
 			continue
 		}
 		r.recordSecurityFailClosedRecovered(mf.UnitNames())
-		if pending := r.attachModuleServices(ctx, current, mod, mf, changedUnits); len(pending) > 0 {
-			// X1's own pending machinery already reports + persists this;
-			// the composition-level key stays withheld below so this
-			// module's drop-in stage is re-examined again next tick too —
-			// cheap under X4's narrowing, unlike the ORIGINAL full-attach
-			// design's equivalent retry would have been.
-			allOK = false
+		r.attachModuleServices(ctx, current, mod, mf, changedUnits)
+		// X3/N5: marked done for THIS module, against THIS composition,
+		// only once its own drop-in stage resolved cleanly — see this
+		// file's own doc and mount.State.ConfinementReconfirmed's own doc
+		// for why this is keyed per-module rather than one shared flag.
+		if current.ConfinementReconfirmed == nil {
+			current.ConfinementReconfirmed = make(map[string]string, len(current.AttachedModules))
 		}
-	}
-	if allOK {
-		// X3: marked done for THIS composition only once every module this
-		// pass could reach a decision for resolved cleanly — see this
-		// file's own doc for why marking it BEFORE processing (the original
-		// design) silently dropped a failed module's own recheck.
-		current.ConfinementReconfirmedAgainst = key
+		current.ConfinementReconfirmed[mod.ID] = key
 	}
 }

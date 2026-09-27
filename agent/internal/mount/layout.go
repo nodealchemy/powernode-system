@@ -387,40 +387,6 @@ type Module struct {
 	// through the same unconverged channel for as long as it stays failed,
 	// and removes it the first tick it is observed genuinely healthy again.
 	KnownDegradedUnits []string `json:"KnownDegradedUnits,omitempty"`
-
-	// PendingConfinementUnits (X1, IMP-caef5c00d63f round X, HIGH) persists
-	// the set of THIS module's units whose security drop-in bytes changed on
-	// some tick but have not yet actually reached the running process — a
-	// daemon-reload plus either a restart or a confirmed-inactive unit.
-	//
-	// WHY THIS MUST BE PERSISTED, NOT RE-DERIVED PER TICK. W1's own
-	// changedUnits (applyModuleSecurityPolicy's return value) is an
-	// EDGE-triggered signal: writeDropInFile's skip-if-identical means a
-	// SECOND write of bytes already on disk reports changed=false, even
-	// though nothing ever reloaded/restarted the unit for the FIRST write.
-	// Every path that can write a drop-in and then never reach a reload or
-	// restart this same tick loses that edge the moment it is not re-derived
-	// from something durable — a self-hosted node's own rule-1 restart
-	// withhold, a hot-reconcile refusal right after the write, a
-	// daemon-reload or unit-write failure, an early return on a hard-dep
-	// start failure, or the process simply crashing between the write and
-	// the reload. Without this field, tick N+1 recomputes changedUnits as
-	// empty (the bytes already match) and the module is stamped converged
-	// with the running unit still holding its OLD effective capabilities.
-	//
-	// Accumulated (unioned, never replaced) on every write that reports
-	// changed=true; cleared for a unit only once a later tick's own
-	// daemon-reload succeeds AND that unit either genuinely restarted or is
-	// confirmed not currently active (an inactive unit picks the reload up
-	// on its own next start — no further action needed). While ANY unit
-	// remains here, the reconciler reports it via noteUnconverged EVERY
-	// tick and must not stamp this module's own attach hash converged.
-	//
-	// Clearing on the module's own removal (an entry simply not carried
-	// forward into a fresh replacing entry, e.g. a commit or a detach) is
-	// also acceptable — there is no running process left for a stale
-	// entry to describe.
-	PendingConfinementUnits []string `json:"PendingConfinementUnits,omitempty"`
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

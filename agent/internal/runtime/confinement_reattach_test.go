@@ -94,7 +94,7 @@ func TestReconcile_ConfinementOnlyChangeRestartsActiveUnitOnLiveReattach(t *test
 	}
 }
 
-func TestReconcile_ConfinementOnlyChangeSelfHostedStaysUnconvergedAndPending(t *testing.T) {
+func TestReconcile_ConfinementOnlyChangeSelfHostedWithholdsRestartButStillStamps(t *testing.T) {
 	r, client, runner, statePath, manifestRoot, _ := newConfinementReattachReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 	var onErrors []string
@@ -129,12 +129,18 @@ func TestReconcile_ConfinementOnlyChangeSelfHostedStaysUnconvergedAndPending(t *
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	// The stamp already written earlier in this SAME tick (before
-	// attachModuleServices ran) must have been UNDONE — a self-hosted
-	// confinement-pending-restart module is NOT converged, so it must stay
-	// queued for a retry on the very next tick.
-	if _, stamped := st.LastAttachedManifestHashes["m1"]; stamped {
-		t.Errorf("W1 REGRESSION: expected m1's attach stamp to be cleared while a confinement restart is pending — got %q", st.LastAttachedManifestHashes["m1"])
+	// Round Y (IMP-caef5c00d63f): unlike X1's now-deleted persisted pending
+	// set, the stamp is NOT undone here. This tick's own attach content
+	// (mount + manifest + drop-in write + reload) genuinely DID apply —
+	// only the running process's own restart was withheld under rule 1.
+	// Un-stamping the whole module was the root of N1 (a self-hosted node's
+	// pending set could never clear, forcing a full reattach+reload every
+	// tick forever): reconcileStaleConfinement now re-derives the withheld
+	// unit's own staleness straight from /proc every tick, independent of
+	// this stamp, so nothing needs the module itself marked unconverged to
+	// keep being noticed.
+	if _, stamped := st.LastAttachedManifestHashes["m1"]; !stamped {
+		t.Errorf("round Y REGRESSION: expected m1's attach stamp to remain set even though its confinement restart was withheld — got unstamped")
 	}
 }
 
@@ -177,7 +183,7 @@ func TestReconcile_NewBootCompositionRewritesADivergentDropInAndW1ThenApplies(t 
 	writeBreadcrumb(bootA, composedAt)
 
 	// TICK 1: clean attach under boot A. Writes the correct drop-in and
-	// marks ConfinementReconfirmedAgainst for boot A's own composition key
+	// marks ConfinementReconfirmed["m1"] for boot A's own composition key
 	// (nothing to force yet — m1 is a fresh attach this tick).
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce tick 1 (boot A): %v", err)
@@ -231,8 +237,8 @@ func TestReconcile_NewBootCompositionRewritesADivergentDropInAndW1ThenApplies(t 
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if st.ConfinementReconfirmedAgainst == "" {
-		t.Error("expected ConfinementReconfirmedAgainst to be set after a tick that determined the current composition")
+	if st.ConfinementReconfirmed["m1"] == "" {
+		t.Error("expected ConfinementReconfirmed[\"m1\"] to be set after a tick that determined the current composition")
 	}
 
 	// ONCE PER COMPOSITION: a THIRD tick, still under boot B, with the

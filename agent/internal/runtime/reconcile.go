@@ -1524,16 +1524,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		mod.Units = mf.UnitNames()
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
-		// X2 (IMP-caef5c00d63f round X, MEDIUM): persist this pass's own
-		// changedUnits durably BEFORE hotReconcileIfNeeded can refuse and
-		// `continue` past the attachModuleServices call below — on a pivot
-		// node, compose may already have STARTED this module's units with
-		// stale drop-ins before this tick's own state rebase emptied (or
-		// never carried) an entry for it, which is exactly the "fresh
-		// attach" shape this loop handles; without this, a refused
-		// materialization here would silently drop the W1 signal the same
-		// way an un-persisted changedUnits always did before X1.
-		trackPendingConfinementUnits(current, mod.ID, changedUnits)
 		// N3 (review round 11): persist THIS digest's manifest content,
 		// independent of the ID-keyed "latest fetch" cache a LATER tick's
 		// fetch of a different (attempted upgrade) digest will overwrite —
@@ -1562,9 +1552,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// an old digest this same attempt already stopped.
 			continue
 		}
-		// X2: thread changedUnits (not nil) — see the trackPendingConfinementUnits
-		// call above for why a fresh attach can still carry a real confinement
-		// change on a pivot node where compose already started the unit.
+		// X2: thread changedUnits (not nil) — a fresh attach can still carry
+		// a real confinement change on a pivot node where compose already
+		// started the unit with stale drop-ins before this tick's own
+		// attachModule call ran.
 		r.attachModuleServices(ctx, current, mod, mf, changedUnits)
 	}
 
@@ -1641,16 +1632,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.noteUnconverged("reconciler:reattach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
-		// X1 (IMP-caef5c00d63f round X, HIGH): persist this pass's own
-		// changedUnits durably BEFORE hotReconcileIfNeeded can refuse and
-		// `continue` past the attachModuleServices calls below — a
-		// materialization refusal right after a genuine confinement change
-		// used to lose that change entirely (nothing else in this tick ever
-		// threads changedUnits anywhere once this loop `continue`s), and the
-		// NEXT tick's own attachModule call would see identical on-disk
-		// drop-in bytes (writeDropInFile's own skip-if-identical) and report
-		// changed=false, so the pending state silently vanished.
-		trackPendingConfinementUnits(current, mod.ID, changedUnits)
 		current.LastAttachedManifestHashes[mod.ID] = r.attachStamp(mod.ID, mf)
 		// N3 (review round 11): a manifest-only edit at this STABLE digest
 		// still changes what "the content attached at this digest" means —
@@ -1739,12 +1720,15 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 					r.cfg.OnError("reconciler:revert_pending_save", fmt.Errorf("module %s: could not persist the cleared PendingDigest for a never-touched attempt: %w", mod.ID, err))
 				}
-				// W1: a pending-restart unit means this module is NOT
-				// actually converged yet — undo the stamp already written
-				// above (line ~1625) so it stays queued for a retry.
-				if pending := r.attachModuleServices(ctx, current, mod, mf, changedUnits); len(pending) > 0 {
-					delete(current.LastAttachedManifestHashes, mod.ID)
-				}
+				// Round Y: no un-stamp on a withheld confinement restart —
+				// see attachModuleServices' own doc. The module's manifest
+				// hash stamp reflects whether ITS OWN content is applied,
+				// which this call already achieved (the write + reload
+				// happened; only a running-process restart was withheld);
+				// reconcileStaleConfinement reports and, where permitted,
+				// heals the running process independently, every tick,
+				// straight from /proc.
+				r.attachModuleServices(ctx, current, mod, mf, changedUnits)
 			} else {
 				// N2 (review round 11): this entry is a REVERT of a
 				// failed/incomplete upgrade attempt, not an ordinary manifest
@@ -1792,15 +1776,6 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						"module %s: force-restart on revert failed: %w (PendingDigest left set — a later tick retries)", mod.ID, err))
 					continue
 				}
-				// X1 (IMP-caef5c00d63f round X): a successful ForceRestartActive
-				// pass restarts (or starts) every unit of the CURRENT manifest
-				// that is active/inactive respectively, regardless of what
-				// changed — any confinement change this module was still
-				// carrying as pending from an earlier tick is necessarily
-				// applied by it too. Clear the persisted set here rather than
-				// leave a stale entry only the next ordinary reattach would
-				// otherwise resolve.
-				setPendingConfinementUnits(current, mod.ID, nil)
 				// O4 (review round 12, MEDIUM) / P2 (review round 13, HIGH): a
 				// unit that exists ONLY in an abandoned PENDING digest (started
 				// during a failed upgrade attempt's own step 4, e.g. a renamed
@@ -1884,11 +1859,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				}
 			}
 		} else {
-			// W1: same un-stamp-on-pending-restart treatment as the
-			// never-touched-revert branch above.
-			if pending := r.attachModuleServices(ctx, current, mod, mf, changedUnits); len(pending) > 0 {
-				delete(current.LastAttachedManifestHashes, mod.ID)
-			}
+			// Round Y: ordinary manifest-only reattach — no un-stamp on a
+			// withheld confinement restart (see attachModuleServices' own
+			// doc and the never-touched-revert branch above).
+			r.attachModuleServices(ctx, current, mod, mf, changedUnits)
 		}
 		// round 9: refresh the STORED entry's Units for a manifest-only
 		// change too (same digest, edited services) — upgradeModule's own
@@ -3081,30 +3055,19 @@ func stampContentOnly(fullStamp string) string {
 // confinementChanged (W1, IMP-caef5c00d63f round W) names every unit whose
 // security drop-in the CALLER's own attachModule call just rewrote (nil for
 // a fresh attach — nothing was running before). See attachModuleServicesOpts'
-// own doc for how it changes the restart decision, and this function's
-// return value's own doc for the visibility half.
+// own doc for how it changes the restart decision.
 //
-// Returns the units still pending after this call — X1's own persisted
-// mount.Module.PendingConfinementUnits set, merged with confinementChanged
-// and resolved against this call's own results (see
-// resolvePendingConfinementUnits). The caller must treat a non-empty return
-// as "this module has not actually converged yet": every unit in it is
-// reported via reconciler:confinement_pending_restart (below) and the
-// caller must not stamp the module's attach hash, so it stays queued for a
-// retry on every later tick.
-//
-// current is threaded through (X1, IMP-caef5c00d63f round X, HIGH) so the
-// pending set survives a tick that never reaches this function at all for a
-// unit whose drop-in already changed — a hot-reconcile refusal right after
-// attachModule, a daemon-reload/unit-write failure inside
-// attachModuleServicesOpts, or the process crashing between the write and
-// the reload all used to LOSE confinementChanged's own edge the moment the
-// bytes already matched on the next attempt (writeDropInFile's own
-// skip-if-identical reports changed=false for a write that never actually
-// reached a reload/restart). Callers that write a drop-in but cannot reach
-// this function on the SAME tick must call trackPendingConfinementUnits
-// directly so the set is not lost — see that function's own doc.
-func (r *Reconciler) attachModuleServices(ctx context.Context, current *mount.State, mod mount.Module, mf *manifest.Manifest, confinementChanged []string) (pendingRestartUnits []string) {
+// Round Y (IMP-caef5c00d63f): void — X1's persisted pending-confinement set
+// (mount.Module.PendingConfinementUnits, pendingConfinementUnitsFor/set/
+// track/resolve/report, all deleted this round) is gone. A unit this node
+// declines to restart (self-hosted, or detection Unknown) is no longer
+// bookkept as "pending" at all: reconcileStaleConfinement (confinement_
+// probe.go) RE-DERIVES staleness every tick straight from /proc, so there is
+// nothing to carry forward and nothing that ever needs un-stamping to force
+// a retry — see that file's own doc for why that closes N1 (a self-hosted
+// node's pending set that could never clear) and N3 (the crash-window gap
+// a persisted set could lose).
+func (r *Reconciler) attachModuleServices(ctx context.Context, current *mount.State, mod mount.Module, mf *manifest.Manifest, confinementChanged []string) {
 	// FENCED ON THE SELF-HOSTED NODE, for the same reason and by the same
 	// invariant as filterUnsafeDetaches (selfhost.go): the services that
 	// answer this node's own reconcile endpoint are the ones it would be
@@ -3122,138 +3085,48 @@ func (r *Reconciler) attachModuleServices(ctx context.Context, current *mount.St
 	// node's own rails/postgres via its own stop+start cycle. Every OTHER
 	// caller — an ordinary manifest-only reattach, a fresh attach — still
 	// goes through this fenced path unchanged.
-	attempted := trackPendingConfinementUnits(current, mod.ID, confinementChanged)
-	results, err := r.attachModuleServicesOpts(ctx, mod, mf, !r.selfHosted(), false, attempted)
-	pendingRestartUnits = r.resolvePendingConfinementUnits(ctx, attempted, results, err)
-	setPendingConfinementUnits(current, mod.ID, pendingRestartUnits)
-	r.reportPendingConfinement(mod, pendingRestartUnits, results)
-	return pendingRestartUnits
+	//
+	// round Y: restartPermitted() replaces !r.selfHosted() — Unknown
+	// detection now withholds a restart too (N2), not just a confirmed Yes.
+	results, err := r.attachModuleServicesOpts(ctx, mod, mf, r.restartPermitted(), false, confinementChanged)
+	r.reportConfinementRestartOutcome(mod, confinementChanged, results, err)
 }
 
-// pendingConfinementUnitsFor returns moduleID's own currently persisted
-// pending-confinement set (X1). nil for a module with no entry or nothing
-// pending, matching every other Pending* field's own "absent means
-// resolved" convention.
-func pendingConfinementUnitsFor(current *mount.State, moduleID string) []string {
-	for _, m := range current.AttachedModules {
-		if m.ID == moduleID {
-			return m.PendingConfinementUnits
-		}
-	}
-	return nil
-}
-
-// setPendingConfinementUnits persists stillPending as moduleID's own
-// pending-confinement set (X1), across EVERY matching row for this ID — the
-// same M4 duplicate-state-entry guard every other Pending* field already
-// applies (see mount.Module.PendingDigestUnitsTouched's O8(a) doc). nil/
-// empty clears the field.
-func setPendingConfinementUnits(current *mount.State, moduleID string, stillPending []string) {
-	for i, m := range current.AttachedModules {
-		if m.ID == moduleID {
-			current.AttachedModules[i].PendingConfinementUnits = stillPending
-		}
-	}
-}
-
-// trackPendingConfinementUnits (X1, IMP-caef5c00d63f round X, HIGH) unions
-// changedThisTick into moduleID's persisted pending-confinement set and
-// returns the merged, deduped result — the effective set every caller must
-// pass into attachModuleServicesOpts' own confinementChanged parameter,
-// instead of changedThisTick alone. A unit that changed on an EARLIER tick
-// but was never actually reloaded/restarted (see mount.Module.
-// PendingConfinementUnits' own doc for the enumerated ways that happens)
-// must still be retried even on a tick where THIS pass's own write reports
-// changed=false (writeDropInFile's skip-if-identical, since the bytes
-// already match).
+// reportConfinementRestartOutcome (round Y) is attachModuleServices' own
+// visibility half, replacing X1's reportPendingConfinement. Nothing here is
+// bookkept as durably "pending" any more (see attachModuleServices' own
+// doc) — a withheld restart is reported THIS TICK ONLY, on the same channel
+// every other transient reconcile condition uses, and reconcileStaleConfinement
+// re-reports it (or not) fresh on the next tick from /proc, never from
+// anything this function wrote.
 //
-// Persists immediately (mutates current in place) so a caller that writes a
-// drop-in and then cannot reach attachModuleServices on the SAME tick (a
-// hot-reconcile refusal, a materialization refusal) still recorded the
-// change durably before returning — the accumulation itself must never
-// depend on this tick reaching a reload attempt.
-func trackPendingConfinementUnits(current *mount.State, moduleID string, changedThisTick []string) (effective []string) {
-	effective = unionStrings(pendingConfinementUnitsFor(current, moduleID), changedThisTick)
-	setPendingConfinementUnits(current, moduleID, effective)
-	return effective
-}
-
-// resolvePendingConfinementUnits (X1) decides, after an
-// attachModuleServicesOpts call made with `attempted` as its own
-// confinementChanged input, which of those units are now safe to drop from
-// the persisted pending set.
-//
-// reloadErr non-nil via errors.Is(reloadErr, lifecycle.
-// ErrConfinementApplyIncomplete) means the write or the daemon-reload
-// itself never completed this pass — every unit in `attempted` stays
-// pending unconditionally, regardless of what any individual AttachResult
-// says, since neither the write nor the reload it depends on reached ANY of
-// them.
-//
-// Otherwise, a unit clears only when this pass's own result proves the
-// change actually reached the running process: a genuine restart
-// (Restarted), or — when not restarted — a FRESH is-active probe (not the
-// one AttachServicesModeOpts already ran internally, whose error handling
-// this function cannot see) confirms the unit is not currently active right
-// now. An inactive unit's own next start reads the just-reloaded drop-in
-// directly; nothing is running under the stale confinement in the
-// meantime. A unit that IS active and was neither restarted nor freshly
-// started this pass (self-hosted's rule-1 withhold, a StepErr, or an
-// internal active-probe error that silently fell back to a no-op start)
-// stays pending — the running process never actually changed.
-func (r *Reconciler) resolvePendingConfinementUnits(ctx context.Context, attempted []string, results []lifecycle.AttachResult, reloadErr error) (stillPending []string) {
-	if errors.Is(reloadErr, lifecycle.ErrConfinementApplyIncomplete) {
-		return append([]string(nil), attempted...)
+// A restart the agent itself ISSUED this pass but that FAILED is the one
+// case that still goes through noteUnconverged: that is a genuine "we tried
+// and failed" for a task consulting ConvergenceFailures() (apply_config,
+// sync), and it cannot linger as bookkeeping because the next tick
+// re-derives everything from scratch.
+func (r *Reconciler) reportConfinementRestartOutcome(mod mount.Module, confinementChanged []string, results []lifecycle.AttachResult, err error) {
+	if len(confinementChanged) == 0 {
+		return
 	}
 	byUnit := make(map[string]lifecycle.AttachResult, len(results))
 	for _, res := range results {
 		byUnit[res.Unit] = res
 	}
-	for _, unit := range attempted {
+	for _, unit := range confinementChanged {
 		res, ok := byUnit[unit]
-		if ok && res.Restarted && res.StepErr == nil {
-			continue // a genuine restart applied the reload.
-		}
-		if ok && res.StepErr == nil {
-			if active, err := systemd.IsActive(ctx, r.cfg.MountRunner, unit); err == nil && !active {
-				continue // confirmed inactive — its own next start reloads it.
-			}
-		}
-		stillPending = append(stillPending, unit)
-	}
-	sort.Strings(stillPending)
-	return stillPending
-}
-
-// reportPendingConfinement surfaces every still-pending unit — X5
-// (IMP-caef5c00d63f round X, MEDIUM, invariant 2): through noteUnconverged,
-// not a bare r.cfg.OnError call, so a genuinely non-converged module (a
-// confinement-only restart that itself FAILED — e.g. the narrower caps
-// break the unit's own start — is exactly this case: resolvePendingConfinementUnits
-// already keeps such a unit in stillPending via its own StepErr check, but
-// before this fix nothing surfaced that through ConvergenceFailures(), so
-// tasks.SyncHandler's own apply_config gate (IMP-f1c1e6d61104) never saw it
-// and the module could still read as converged to anything consulting that
-// channel) is visible on EVERY tick it remains pending, the same channel
-// "reconciler:reattach" and friends already use, not just the self-hosted
-// rule-1 withhold case W1 originally reported this way. Distinguishes the
-// self-hosted withhold (ConfinementPendingRestart, wording preserved from
-// the original W1 message) from every other still-pending reason (a write/
-// reload/restart step that did not complete this pass, including one that
-// failed outright).
-func (r *Reconciler) reportPendingConfinement(mod mount.Module, stillPending []string, results []lifecycle.AttachResult) {
-	byUnit := make(map[string]lifecycle.AttachResult, len(results))
-	for _, res := range results {
-		byUnit[res.Unit] = res
-	}
-	for _, unit := range stillPending {
-		if res, ok := byUnit[unit]; ok && res.ConfinementPendingRestart {
-			r.noteUnconverged("reconciler:confinement_pending_restart", mod.ID,
-				fmt.Errorf("module %s: unit %s's security confinement changed but this node is self-hosted — reload applied, restart deliberately withheld (rule 1: never restart a service this node's own reconcile depends on); not converged until an operator-scheduled restart or a recompose applies it", mod.ID, unit))
+		if ok && res.StepErr != nil {
+			r.noteUnconverged("reconciler:confinement_restart_failed", mod.ID,
+				fmt.Errorf("module %s: unit %s's security confinement changed and a restart was attempted but failed: %w", mod.ID, unit, res.StepErr))
 			continue
 		}
-		r.noteUnconverged("reconciler:confinement_pending_restart", mod.ID,
-			fmt.Errorf("module %s: unit %s's security confinement change has not yet reached the running process (a write, daemon-reload, or restart step did not complete this pass, or the restart/start itself failed) — not converged, a later tick retries", mod.ID, unit))
+		if ok && res.ConfinementPendingRestart {
+			r.cfg.OnError("reconciler:confinement_pending_restart",
+				fmt.Errorf("module %s: unit %s's security confinement changed but this node is self-hosted (or restart is not positively confirmed safe) — reload applied, restart deliberately withheld (rule 1: never restart a service this node's own reconcile may depend on); schedule an operator restart or wait for the next recompose", mod.ID, unit))
+		}
+	}
+	if err != nil {
+		r.cfg.OnError("reconciler:confinement_apply", fmt.Errorf("module %s: applying confinement changes to %v: %w", mod.ID, confinementChanged, err))
 	}
 }
 
