@@ -143,20 +143,8 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       agent_seeds.each { |file| load_seed!(file) }
     end
 
-    # OWNERS only (AGENT_SET_OWNERS.values — the agent_key of every POLICY_SETS
-    # entry), not every AGENT_IDENTITIES key. IMP-ad746acac343 added
-    # "platform-health-monitor" to AGENT_IDENTITIES so AGENT_ALIASES resolves
-    # it by source_key (agent_lookup_by_display_name_spec) — it owns no
-    # extension policy set (unlike Platform Architect, seeded by the
-    # core_seeds entry above specifically because it DOES), so this "every
-    # declared OWNER" check, true to its own name, should never have reached
-    # an identity that owns nothing here in the first place.
-    def owned_identities
-      declarations::AGENT_IDENTITIES.slice(*declarations::AGENT_SET_OWNERS.values.uniq)
-    end
-
     it "seed a GLOBAL canonical for every declared owner" do
-      missing = owned_identities.reject do |_key, identity|
+      missing = declarations::AGENT_IDENTITIES.reject do |_key, identity|
         Ai::Agent.global.exists?(name: identity[:name], agent_type: identity[:agent_type])
       end
       expect(missing.keys).to be_empty
@@ -186,7 +174,7 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
         "Ingress Manager Actions", "Supply Chain Manager Actions"
       )
 
-      unscored = owned_identities.reject do |_key, identity|
+      unscored = declarations::AGENT_IDENTITIES.reject do |_key, identity|
         canonical = Ai::Agent.global.find_by(name: identity[:name], agent_type: identity[:agent_type])
         canonical && Ai::AgentTrustScore.exists?(agent_id: canonical.id)
       end

@@ -31,18 +31,19 @@ module System
   # zero removals.
   class SampleContentRemovalService
     # IMP-ad746acac343 (lint fix): was `where(name: SAMPLE_AGENT_NAMES)` — a
-    # display name is not an identity (spec/lint/agent_lookup_by_display_name
-    # _spec.rb). These are account-scoped sample agents (autonomy_data_seed.rb
-    # creates them via `find_or_create_by!(account:, name:)`, never as a
-    # global canonical), so they carry no source_key — only a `slug`, set at
-    # creation from the same seed's `ad[:slug]` and re-derived by
-    # Ai::Agent#generate_slug from `name` on every rename. Slug is the right
-    # key here specifically BECAUSE of that re-derivation, not despite it:
-    # if an operator renames one of these into a real business agent (the
-    # scenario the "SKIP-IF-REFERENCED" checks throughout this service exist
-    # to protect), its slug changes too, and this removal tool correctly
-    # stops matching it — a rename-immune key would keep matching, and
-    # destroy, an agent an operator has since adopted as their own.
+    # display name is not a STABLE IDENTIFIER, not display text (spec/lint/
+    # agent_lookup_by_display_name_spec.rb). These are account-scoped sample
+    # agents (autonomy_data_seed.rb creates them via
+    # `find_or_create_by!(account:, name:)`, never as a global canonical), so
+    # they carry no source_key — only a `slug`, set at creation from the same
+    # seed's `ad[:slug]`. Scoped to #seed_account (not global — see that
+    # method) because a slug alone is not enough: it also matches
+    # case/punctuation variants of an unrelated agent's name (Ai::Agent
+    # #generate_slug downcases and strips punctuation), and a collision
+    # suffix (generate_slug appends "-1", "-2", ... on a slug clash within
+    # the same scope) means a genuinely-seeded row could carry a suffixed
+    # slug while a DIFFERENT agent an operator happened to name identically
+    # sits at the bare slug — review round 2.
     SAMPLE_AGENT_SLUGS = %w[
       legal-compliance-analyst
       life-sciences-research-analyst
@@ -111,11 +112,28 @@ module System
 
     def classify_candidates
       {
-        agents:    ::Ai::Agent.where(slug: SAMPLE_AGENT_SLUGS).to_a,
+        agents:    seed_account ? ::Ai::Agent.where(account: seed_account, slug: SAMPLE_AGENT_SLUGS).to_a : [],
         templates: ::System::NodeTemplate.where(name: SAMPLE_TEMPLATE_NAMES).to_a,
         modules:   ::System::NodeModule.where(name: SAMPLE_MODULE_NAMES).to_a,
         providers: ::System::Provider.where(provider_type: SAMPLE_PROVIDER_TYPE).to_a
       }
+    end
+
+    # review round 2: `where(slug: SAMPLE_AGENT_SLUGS)` alone, with no account
+    # scope, could match a GLOBAL canonical whose slug happens to collide
+    # (account: nil is a real, distinct row, not "unscoped"), or leave a
+    # genuinely-seeded row unmatched while destroying a different account's
+    # differently-owned agent that merely collided on slug. Scoped to the
+    # SAME well-known account every seed that creates this content resolves
+    # by name (autonomy_data_seed.rb, and the dozen other core seeds that
+    # write "Powernode Admin" — there is no shared constant for it; this
+    # matches that established, repo-wide convention rather than inventing
+    # one). A missing account (never seeded, or a bare test DB) means there
+    # is nothing to remove, not "match everything" — #classify_candidates
+    # returns no agent candidates rather than falling back to an unscoped or
+    # global query.
+    def seed_account
+      @seed_account ||= ::Account.find_by(name: "Powernode Admin")
     end
 
     def process_agent(agent, removed, skipped)

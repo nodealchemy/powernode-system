@@ -78,36 +78,32 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # or passes one.
       "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 28 ],
       "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
-      # `command` is a keyword param of the local #task_with helper (:955),
-      # defaulting to "sync_modules". AUDITED by grepping every `task_with`
-      # call in the file — 22 of them. Only THREE pass `command:` at all:
-      # :1076 "sync_modules", :1077 "apply_config", :1078 "upgrade_boot_image".
-      # The other 19 take the default. So the binding carries three distinct
-      # values, all three COMMANDS members.
-      #
-      # (An earlier draft of this note listed eight line numbers as "every
-      # caller" and said four values. Both were wrong — it had enumerated the
-      # calls that pass ANY keyword, not the calls that pass `command:`.)
+      # `command` is a keyword param of the local #task_with helper, defaulting
+      # to "sync_modules". CURRENT AUDIT (IMP-ad746acac343, review round 2 —
+      # corrects earlier drafts of this note, which cited line numbers for
+      # calls that no longer exist at those lines): every `task_with` call in
+      # this describe block, by grep, is 25 total. Only THREE pass `command:`
+      # explicitly — :1229 "sync_modules", :1230 "apply_config", :1231
+      # "upgrade_boot_image" — all current COMMANDS members. The other 22 take
+      # the helper's own default: 17 bare `task_with` calls with no
+      # parentheses at all (:1113, :1128, :1136, :1147, :1161, :1171, :1183,
+      # :1191, :1239, :1248, :1258, :1267, :1278, :1279, :1308, :1318, :1327),
+      # plus 5 more that pass OTHER keywords but not `command:` (:1200, :1211,
+      # :1219 pass only `status:`; :1249, :1297 pass only `target:`). So the
+      # binding carries exactly three distinct values, all three COMMANDS
+      # members — same conclusion as every prior audit of this site, just
+      # with an accurate call inventory this time.
       #
       # THIS SITE WAS RED ON develop, not introduced by campaign 01a0790b: it
       # arrived with the IMP-9cc83aa64bff terminate-cleanup examples and was
       # merged without this lint being run. Acknowledged here rather than left
       # for a later increment to trip over.
       #
-      # MOVED 956 -> 957 in increment 3: the `before { allow(WorkerDispatch)... }`
-      # line above it went with System::Task's dispatch after_commit, and the
-      # comment replacing it is longer. Re-audited — the call sites are
-      # unchanged, still three distinct values.
-      #
-      # MOVED 957 -> 1109 (IMP-ad746acac343, re-verified against the actual
-      # scanner output rather than guessed): unrelated content was added
-      # earlier in the file between the two pins. RE-AUDITED by re-grepping
-      # every `task_with(` call in this describe block (:1200, :1211, :1219,
-      # :1229-1231, :1249, :1297, plus the implicit no-arg call at :1113) —
-      # only three pass `command:` at all (:1229 "sync_modules", :1230
-      # "apply_config", :1231 "upgrade_boot_image"); every other call takes
-      # the `command: "sync_modules"` default on the helper itself. Still the
-      # same three COMMANDS members as before the move.
+      # MOVE HISTORY (site, not conclusion, changed each time — every move
+      # re-audited and found the same three values): :955 -> :956 -> :957
+      # (increment 3, a `before` block's line changed) -> :1109
+      # (IMP-ad746acac343, re-verified against the actual scanner output
+      # rather than guessed).
       "models/system/node_instance_spec.rb" => [ 1109 ],
       # `command: command` inside a HEREDOC FIXTURE (<<~RUBY) that the census
       # scanner parses as text — it is source code under test, never executed,

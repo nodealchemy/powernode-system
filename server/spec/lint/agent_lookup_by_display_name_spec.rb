@@ -120,7 +120,14 @@ RSpec.describe "agent lookups never key on a display name", type: :lint do
 
   it "resolves every skill binding through a source key" do
     values = System::Ai::Skills::SkillBindings::AGENT_ALIASES.values.uniq
-    declared = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.keys
+    d = System::Governance::PolicyDeclarations
+    # AGENT_IDENTITIES: every hierarchy/policy-owning identity.
+    # CORE_OWNED_SKILL_BOUND_KEYS (IMP-ad746acac343 review round 2): a core
+    # canonical resolved by source_key for SKILL BINDINGS only — deliberately
+    # NOT in AGENT_IDENTITIES/CORE_CANONICAL_KEYS, because (unlike Platform
+    # Architect) it already has a core parent and declaring it there
+    # reparented it on every reconcile. See that constant's own comment.
+    declared = d::AGENT_IDENTITIES.keys + d::CORE_OWNED_SKILL_BOUND_KEYS.keys
 
     # Every alias target is a source_key. The concierge is the one agent with
     # no policy set, so it is not in AGENT_IDENTITIES and is named explicitly.

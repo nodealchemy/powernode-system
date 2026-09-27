@@ -212,9 +212,22 @@ module System
         # The registry-named agents that are CORE canonicals — declared as such
         # by PolicyDeclarations::CORE_CANONICAL_KEYS, resolved by the identity
         # name the registry binds them under.
+        #
+        # PLUS CORE_OWNED_SKILL_BOUND_KEYS (IMP-ad746acac343 review round 2):
+        # Platform Health Monitor is a core canonical whose skills need this
+        # SAME protection (it registers 3 core skills — sre-incident-response,
+        # devops-engineer, security-analyst — that this registry does not
+        # declare, so without this they were pruned every boot, the same
+        # defect HIER-P3 fixed for the Platform Architect) but it cannot go in
+        # CORE_CANONICAL_KEYS itself: that constant is ALSO
+        # HierarchyReconciler's edge-only-attach list, and Platform Health
+        # Monitor already has a core parent, so attaching a second edge there
+        # would reparent it every reconcile. See CORE_CANONICAL_KEYS's own
+        # comment.
         def core_canonical_agent_ids(plan)
           declarations = ::System::Governance::PolicyDeclarations
-          names = declarations::CORE_CANONICAL_KEYS.map { |key| declarations::AGENT_IDENTITIES.fetch(key)[:name] }
+          names = declarations::CORE_CANONICAL_KEYS.map { |key| declarations::AGENT_IDENTITIES.fetch(key)[:name] } +
+                  declarations::CORE_OWNED_SKILL_BOUND_KEYS.values
           plan[:agents_by_id].values.select { |agent| names.include?(agent.name) }.map(&:id)
         end
 

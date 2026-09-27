@@ -9,7 +9,13 @@ require "rails_helper"
 # template reference, or a provider with real infrastructure must never be
 # removed, even though its name matches the sample-content list.
 RSpec.describe System::SampleContentRemovalService do
-  let!(:account) { create(:account) }
+  # IMP-ad746acac343 (review round 2): the agent lookup is scoped to the
+  # well-known seed account by NAME (Account.find_by(name: "Powernode
+  # Admin")) — every fixture agent in this file must live in an account with
+  # that exact name, or #classify_candidates finds no agent candidates at
+  # all and every "removes/skips the agent" example below would silently
+  # pass on zero agents.
+  let!(:account) { create(:account, name: "Powernode Admin") }
 
   describe "#initialize" do
     it "defaults to dry_run: true" do
@@ -122,6 +128,33 @@ RSpec.describe System::SampleContentRemovalService do
       report = described_class.new.call
       expect(report.removed[:providers]).to be_empty
       expect(report.skipped[:providers].first).to include(id: provider.id)
+    end
+  end
+
+  # IMP-ad746acac343 (review round 2): the agent lookup is scoped to the
+  # well-known seed account (Account.find_by(name: "Powernode Admin")), not
+  # global by slug alone — a same-named/same-slug agent belonging to a
+  # DIFFERENT account is a different agent, never a candidate.
+  describe "agent identity scoping (review round 2)" do
+    it "does not touch a same-slug agent in a DIFFERENT account" do
+      other_account = create(:account, name: "Some Customer Account")
+      other_agent = create(:ai_agent, account: other_account, name: "Customer Success Agent")
+
+      report = described_class.new.call
+
+      expect(report.counted[:agents]).to eq(0)
+      expect(report.removed[:agents]).to be_empty
+      expect(report.skipped[:agents]).to be_empty
+      expect(::Ai::Agent.exists?(other_agent.id)).to be(true)
+    end
+
+    it "finds no agent candidates at all when the seed account does not exist" do
+      account.update!(name: "Not The Seed Account")
+      create(:ai_agent, account: account, name: "Customer Success Agent")
+
+      report = described_class.new.call
+
+      expect(report.counted[:agents]).to eq(0)
     end
   end
 

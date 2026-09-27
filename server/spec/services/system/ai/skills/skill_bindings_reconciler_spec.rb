@@ -122,6 +122,30 @@ RSpec.describe System::Ai::Skills::SkillBindingsReconciler do
       expect(result.removed).to eq(0)
     end
 
+    # IMP-ad746acac343 (review round 2) — the same HIER-P3 defect, for a
+    # SECOND core canonical: Platform Health Monitor resolves through
+    # source_key (SkillBindings::AGENT_ALIASES) but is deliberately NOT in
+    # PolicyDeclarations::AGENT_IDENTITIES/CORE_CANONICAL_KEYS (it already has
+    # a core parent — see CORE_CANONICAL_KEYS's own comment for why adding it
+    # there reparented it on every reconcile). Without
+    # CORE_OWNED_SKILL_BOUND_KEYS protecting it here too, its three core
+    # skills — sre-incident-response, devops-engineer, security-analyst —
+    # would be pruned every boot, the same failure mode HIER-P3 fixed above.
+    it "never prunes Platform Health Monitor's core bindings either, via CORE_OWNED_SKILL_BOUND_KEYS" do
+      seed_skill_catalog!
+      monitor = canonical("Platform Health Monitor", agent_type: "monitor")
+      core_skills = %w[sre-incident-response devops-engineer security-analyst].map do |slug|
+        create(:ai_skill, :global, slug: slug, name: slug.titleize)
+      end
+      core_bindings = core_skills.map { |skill| create(:ai_agent_skill, agent: monitor, skill: skill) }
+
+      result = reconciler.reconcile!
+
+      expect(core_bindings).to all(satisfy { |b| Ai::AgentSkill.exists?(b.id) })
+      expect(reconciler.drift.stale).not_to include(a_string_matching(/Platform Health Monitor/))
+      expect(result.removed).to eq(0)
+    end
+
     it "is idempotent: a second run changes nothing" do
       seed_skill_catalog!
       canonical("CVE Responder")

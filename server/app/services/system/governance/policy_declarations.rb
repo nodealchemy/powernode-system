@@ -1507,18 +1507,40 @@ module System
       # under System Concierge (db/seeds/system_agent_hierarchy.rb) and never
       # writes its delegation policy, which core owns.
       #
-      # IMP-ad746acac343: Platform Health Monitor added alongside Platform
-      # Architect — confirmed a SECOND core canonical the same way (core's
-      # monitoring_analytics_agents_seed.rb), not just assumed from its
-      # comment in skill_bindings.rb. Leaving it OUT of this list (declared
-      # only in AGENT_IDENTITIES below) was tried first and reverted:
-      # HierarchyReconciler's CHILD_IDENTITIES (== AGENT_IDENTITIES minus this
-      # list) treated it as an EXTENSION-owned identity with no agent behind
-      # it, which system_agent_hierarchy_spec's drift-report examples
-      # correctly caught as "platform-health-monitor(agent absent)" —
-      # exactly the false-drift state this list exists to prevent for a
-      # core-seeded identity.
-      CORE_CANONICAL_KEYS = %w[platform-architect platform-health-monitor].freeze
+      # IMP-ad746acac343 (review round 2 — REVERTED a round-1 mistake):
+      # Platform Health Monitor does NOT belong here, unlike Platform
+      # Architect. Both are core canonicals, but Platform Architect is the
+      # Engineering root with NO core parent — HierarchyReconciler treats a
+      # CORE_CANONICAL_KEYS member as "edge-only": attach it under System
+      # Concierge and never touch its policy. Platform Health Monitor DOES
+      # have a core parent (powernode-assistant, core's own
+      # ai_agent_hierarchy_seed.rb) — attaching a SECOND edge for it here
+      # made core's HierarchyWriter#attach! terminate_other_edges! reparent
+      # it away from its real parent on every extension reconcile, which the
+      # core seed then reparents right back on its own next run. The
+      # system_agent_hierarchy_spec drift round 1 "fixed" by adding it here
+      # was the SIGNAL this doesn't belong, not a gap to close. See
+      # CORE_OWNED_SKILL_BOUND_KEYS below for the one thing it DOES need.
+      CORE_CANONICAL_KEYS = %w[platform-architect].freeze
+
+      # A core canonical whose skill bindings resolve through source_key
+      # (SkillBindings::AGENT_ALIASES) but that must NEVER be treated as a
+      # hierarchy/policy owner the way CORE_CANONICAL_KEYS members are — see
+      # that constant's comment for why Platform Health Monitor specifically
+      # cannot go there (it has a core PARENT; Platform Architect does not).
+      # Used only by SkillBindingsReconciler (to exclude it from stale-skill
+      # pruning, the same defect HIER-P3 fixed for Platform Architect via
+      # CORE_CANONICAL_KEYS — three of its core skills, sre-incident-
+      # response/devops-engineer/security-analyst, were pruned every boot
+      # before this) and by agent_lookup_by_display_name_spec's "every skill
+      # binding resolves through a source key" example. Never read by
+      # HierarchyReconciler, PolicyReconciler, or AgentResolver.
+      #
+      # Hash of key => NAME, not a plain array like CORE_CANONICAL_KEYS: its
+      # one consumer (SkillBindingsReconciler#core_canonical_agent_ids) only
+      # ever needs the display name to match against, and this key
+      # deliberately has no AGENT_IDENTITIES entry to `.fetch` one from.
+      CORE_OWNED_SKILL_BOUND_KEYS = { "platform-health-monitor" => "Platform Health Monitor" }.freeze
 
       # Agent identity is keyed on SOURCE_KEY, not name. The seeds look agents
       # up by name, but every seeded agent also carries a source_key and the
@@ -1539,32 +1561,26 @@ module System
       # CORE_CANONICAL_KEYS), the first owner of an extension-routed lane that
       # this extension does not seed.
       #
-      # IMP-ad746acac343 (lint fix): Platform Health Monitor is a SECOND core
-      # canonical (IMP-80a353489ba4, seeded by core's
-      # monitoring_analytics_agents_seed.rb: source_key/slug
-      # "platform-health-monitor", name "Platform Health Monitor", agent_type
-      # "monitor") that skill_bindings.rb's AGENT_ALIASES already resolves by
-      # source_key, but it was never added HERE — which
-      # spec/lint/agent_lookup_by_display_name_spec.rb's "resolves every
-      # skill binding through a source key" example catches (every
-      # AGENT_ALIASES value must be a declared key, aside from the one named
-      # system-concierge exception). Also added to CORE_CANONICAL_KEYS above
-      # — see that constant's comment for why leaving it out is actually
-      # wrong, not just untested.
+      # Platform Health Monitor is DELIBERATELY absent here — see
+      # CORE_OWNED_SKILL_BOUND_KEYS above. It is a core canonical too, but
+      # unlike Platform Architect it has a core PARENT already, and this map
+      # doubles as HierarchyReconciler's candidate list (minus
+      # CORE_CANONICAL_KEYS) for attaching an edge under System Concierge —
+      # declaring it here reparented it away from its real core parent on
+      # every reconcile (IMP-ad746acac343 review round 2).
       AGENT_IDENTITIES = {
-        "fleet-autonomy"          => { name: "Fleet Autonomy",           agent_type: "monitor" },
-        "sdwan-manager"           => { name: "SDWAN Manager",            agent_type: "monitor" },
-        "cve-responder"           => { name: "CVE Responder",            agent_type: "monitor" },
-        "disk-image-manager"      => { name: "Disk Image Manager",       agent_type: "monitor" },
-        "gitops-reconciler"       => { name: "GitOps Reconciler",        agent_type: "monitor" },
-        "runtime-manager"         => { name: "Runtime Manager",          agent_type: "monitor" },
-        "capacity-manager"        => { name: "Capacity Manager",         agent_type: "monitor" },
-        "storage-manager"         => { name: "Storage Manager",          agent_type: "monitor" },
-        "ingress-manager"         => { name: "Ingress Manager",          agent_type: "monitor" },
-        "supply-chain-manager"    => { name: "Supply Chain Manager",     agent_type: "monitor" },
-        "topology-designer"       => { name: "System Topology Designer", agent_type: "assistant" },
-        "platform-architect"      => { name: "Platform Architect",       agent_type: "assistant" },
-        "platform-health-monitor" => { name: "Platform Health Monitor",  agent_type: "monitor" }
+        "fleet-autonomy"       => { name: "Fleet Autonomy",           agent_type: "monitor" },
+        "sdwan-manager"        => { name: "SDWAN Manager",            agent_type: "monitor" },
+        "cve-responder"        => { name: "CVE Responder",            agent_type: "monitor" },
+        "disk-image-manager"   => { name: "Disk Image Manager",       agent_type: "monitor" },
+        "gitops-reconciler"    => { name: "GitOps Reconciler",        agent_type: "monitor" },
+        "runtime-manager"      => { name: "Runtime Manager",          agent_type: "monitor" },
+        "capacity-manager"     => { name: "Capacity Manager",         agent_type: "monitor" },
+        "storage-manager"      => { name: "Storage Manager",          agent_type: "monitor" },
+        "ingress-manager"      => { name: "Ingress Manager",          agent_type: "monitor" },
+        "supply-chain-manager" => { name: "Supply Chain Manager",     agent_type: "monitor" },
+        "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" },
+        "platform-architect"   => { name: "Platform Architect",       agent_type: "assistant" }
       }.freeze
 
       # Every declared row group, with the SHAPE it resolves at. `agent_key`
