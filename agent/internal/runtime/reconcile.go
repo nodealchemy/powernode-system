@@ -2763,11 +2763,12 @@ func (r *Reconciler) decideSecurityPolicyForAttach(mod mount.Module, mf *manifes
 func (r *Reconciler) writeSecurityDropIns(mf *manifest.Manifest, policy *security.Policy, unitAllow map[string][]string) (changedUnits, failedUnits []string, err error) {
 	changedUnits, failedUnits = applyModuleSecurityDropIns(mf.ID, mf, policy, unitAllow, r.privilegedAllow,
 		securityDropInFuncs{
-			userNamespace:    security.WriteUserNamespaceDropIn,
-			seccomp:          security.WriteSeccompDropIn,
-			capability:       security.WriteCapabilityDropIn,
-			removeSeccomp:    security.RemoveSeccompDropIn,
-			removeCapability: security.RemoveCapabilityDropIn,
+			userNamespace:                 security.WriteUserNamespaceDropIn,
+			seccomp:                       security.WriteSeccompDropIn,
+			capability:                    security.WriteCapabilityDropIn,
+			removeSeccomp:                 security.RemoveSeccompDropIn,
+			removeCapability:              security.RemoveCapabilityDropIn,
+			removeLegacyAmbientCapability: security.RemoveLegacyAmbientCapabilityDropIn,
 		},
 		func(stage string, err error) { r.cfg.OnError("reconciler:"+stage, err) },
 	)

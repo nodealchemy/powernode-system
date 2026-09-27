@@ -356,6 +356,9 @@ func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack
 				removeCapability: func(unit string) (bool, error) {
 					return security.RemoveCapabilityDropInAt(sysroot, unit)
 				},
+				removeLegacyAmbientCapability: func(unit string) (bool, error) {
+					return security.RemoveLegacyAmbientCapabilityDropInAt(sysroot, unit)
+				},
 			},
 			func(stage string, err error) { r.cfg.OnError("compose:"+stage, err) },
 		)

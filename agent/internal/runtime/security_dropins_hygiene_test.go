@@ -15,11 +15,12 @@ import (
 // systemdDropInRoot (SetSystemdDropInRootForTest points that at a tempdir).
 func liveSecurityDropInFuncs() securityDropInFuncs {
 	return securityDropInFuncs{
-		userNamespace:    security.WriteUserNamespaceDropIn,
-		seccomp:          security.WriteSeccompDropIn,
-		capability:       security.WriteCapabilityDropIn,
-		removeSeccomp:    security.RemoveSeccompDropIn,
-		removeCapability: security.RemoveCapabilityDropIn,
+		userNamespace:                 security.WriteUserNamespaceDropIn,
+		seccomp:                       security.WriteSeccompDropIn,
+		capability:                    security.WriteCapabilityDropIn,
+		removeSeccomp:                 security.RemoveSeccompDropIn,
+		removeCapability:              security.RemoveCapabilityDropIn,
+		removeLegacyAmbientCapability: security.RemoveLegacyAmbientCapabilityDropIn,
 	}
 }
 

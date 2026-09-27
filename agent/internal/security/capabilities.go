@@ -202,11 +202,50 @@ func validateDropInUnitName(caller, unit string) error {
 const legacyAmbientCapabilitiesDropInFile = "ambient-capabilities.conf"
 
 // removeLegacyAmbientDropIn deletes legacyAmbientCapabilitiesDropInFile from
-// dropInDir if present — shared by every Write/RemoveCapabilityDropIn(At)
-// variant (W3) so the cleanup can never drift between the four call sites.
-// Absence is success, same as removeDropInFile's own doc.
+// dropInDir if present. Absence is success, same as removeDropInFile's own
+// doc.
+//
+// X6 (IMP-caef5c00d63f round X, HIGH, B1 — delta on W3): NO LONGER called
+// from inside WriteCapabilityDropIn(At)/RemoveCapabilityDropIn(At)
+// themselves. It used to be, merging its own error into that of the
+// PRIMARY capabilities.conf write/remove — which meant a failure removing
+// this purely-cosmetic legacy file (e.g. it exists as a non-empty
+// directory, not a regular file) discarded a SUCCESSFUL primary write's own
+// changed=true and reported the whole call as failed. The caller
+// (applyModuleSecurityDropIns, security_dropins.go) treats any such error as
+// fail-closed: the module is refused (re)attach/start entirely — including
+// the restart that would have applied the primary write's own already-
+// on-disk, already-narrower capabilities.conf to the running process. Net
+// effect: the unit keeps running under its OLD, WIDER capabilities
+// indefinitely, specifically BECAUSE the narrowing write's own success was
+// thrown away by an unrelated cleanup failure. RemoveLegacyAmbientCapabilityDropIn(At)
+// below are the exported wrappers applyModuleSecurityDropIns now calls as
+// their OWN independent, non-fatal step — same treatment the privileged
+// branch's removeSeccomp/removeCapability calls already get there.
 func removeLegacyAmbientDropIn(dropInDir string) (changed bool, err error) {
 	return removeDropInFile(dropInDir, legacyAmbientCapabilitiesDropInFile)
+}
+
+// RemoveLegacyAmbientCapabilityDropIn is removeLegacyAmbientDropIn's
+// exported, live-reconcile-rooted entry point (X6) — the counterpart to
+// WriteCapabilityDropIn's own systemdDropInRoot resolution, so
+// applyModuleSecurityDropIns can run this cleanup as an independent step
+// instead of it being merged into the primary write/remove call's own
+// error.
+func RemoveLegacyAmbientCapabilityDropIn(unit string) (changed bool, err error) {
+	if err := validateDropInUnitName("RemoveLegacyAmbientCapabilityDropIn", unit); err != nil {
+		return false, err
+	}
+	return removeLegacyAmbientDropIn(filepath.Join(systemdDropInRoot, unit+".d"))
+}
+
+// RemoveLegacyAmbientCapabilityDropInAt is RemoveLegacyAmbientCapabilityDropIn's
+// pivot-compose (explicit-root) counterpart (X6).
+func RemoveLegacyAmbientCapabilityDropInAt(root, unit string) (changed bool, err error) {
+	if err := validateDropInUnitName("RemoveLegacyAmbientCapabilityDropInAt", unit); err != nil {
+		return false, err
+	}
+	return removeLegacyAmbientDropIn(filepath.Join(root, "etc", "systemd", "system", unit+".d"))
 }
 
 // Empty allow list -> bounding set explicitly empty (drop everything).
@@ -218,11 +257,14 @@ func removeLegacyAmbientDropIn(dropInDir string) (changed bool, err error) {
 // changed (W1, IMP-caef5c00d63f round W) reports whether the on-disk bytes
 // actually differed — see writeDropInFile's own doc for why this matters: a
 // capability-only change moves NO unit body at all, so a caller deciding
-// whether a RUNNING unit needs restarting has nothing else to go on. W3
-// folds the legacy ambient-capabilities.conf cleanup's own changed signal
-// into this same return: its removal is itself a confinement-relevant
-// change a caller must reload/restart for, same as the capabilities.conf
-// write itself.
+// whether a RUNNING unit needs restarting has nothing else to go on. THIS
+// function's own changed/err describe ONLY the primary capabilities.conf
+// write — X6 (round X) moved the legacy ambient-capabilities.conf cleanup
+// out to RemoveLegacyAmbientCapabilityDropIn, called as its own independent,
+// non-fatal step by applyModuleSecurityDropIns, precisely so a failure
+// removing that unrelated legacy file can never discard THIS write's own
+// success (see removeLegacyAmbientDropIn's own doc for the outage that
+// merging them caused).
 func WriteCapabilityDropIn(unit string, allow []string) (changed bool, err error) {
 	if err := validateDropInUnitName("WriteCapabilityDropIn", unit); err != nil {
 		return false, err
@@ -238,11 +280,7 @@ func WriteCapabilityDropIn(unit string, allow []string) (changed bool, err error
 	if err != nil {
 		return false, fmt.Errorf("WriteCapabilityDropIn: %w", err)
 	}
-	legacyChanged, err := removeLegacyAmbientDropIn(dropInDir)
-	if err != nil {
-		return false, fmt.Errorf("WriteCapabilityDropIn: remove legacy %s: %w", legacyAmbientCapabilitiesDropInFile, err)
-	}
-	return changed || legacyChanged, nil
+	return changed, nil
 }
 
 // RemoveCapabilityDropIn removes THIS unit's capabilities.conf, if any (R7,
@@ -251,9 +289,10 @@ func WriteCapabilityDropIn(unit string, allow []string) (changed bool, err error
 // without this, a STALE capabilities.conf from a PRIOR non-privileged state
 // keeps narrowing the unit below what "privileged" is supposed to mean,
 // forever, since nothing ever re-writes OR removes it once that branch is
-// taken. Absence is success — see removeDropInFile's own doc. W3: also
-// removes the legacy ambient-capabilities.conf a PRIOR (older-agent) compose
-// may have left behind — see removeLegacyAmbientDropIn's own doc.
+// taken. Absence is success — see removeDropInFile's own doc. X6 (round X):
+// the legacy ambient-capabilities.conf cleanup lives in
+// RemoveLegacyAmbientCapabilityDropIn, its own independent step, not merged
+// into this function's own return.
 func RemoveCapabilityDropIn(unit string) (changed bool, err error) {
 	if err := validateDropInUnitName("RemoveCapabilityDropIn", unit); err != nil {
 		return false, err
@@ -263,16 +302,13 @@ func RemoveCapabilityDropIn(unit string) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	legacyChanged, err := removeLegacyAmbientDropIn(dropInDir)
-	if err != nil {
-		return false, fmt.Errorf("RemoveCapabilityDropIn: remove legacy %s: %w", legacyAmbientCapabilitiesDropInFile, err)
-	}
-	return changed || legacyChanged, nil
+	return changed, nil
 }
 
 // RemoveCapabilityDropInAt is RemoveCapabilityDropIn's pivot-compose
 // counterpart, mirroring WriteCapabilityDropInAt's own explicit-root
-// targeting. W3: same legacy ambient-capabilities.conf cleanup.
+// targeting. X6 (round X): same as RemoveCapabilityDropIn — legacy cleanup
+// is RemoveLegacyAmbientCapabilityDropInAt's own independent step.
 func RemoveCapabilityDropInAt(root, unit string) (changed bool, err error) {
 	if err := validateDropInUnitName("RemoveCapabilityDropInAt", unit); err != nil {
 		return false, err
@@ -282,11 +318,7 @@ func RemoveCapabilityDropInAt(root, unit string) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	legacyChanged, err := removeLegacyAmbientDropIn(dropInDir)
-	if err != nil {
-		return false, fmt.Errorf("RemoveCapabilityDropInAt: remove legacy %s: %w", legacyAmbientCapabilitiesDropInFile, err)
-	}
-	return changed || legacyChanged, nil
+	return changed, nil
 }
 
 // RenderCapabilityDropInBody is WriteCapabilityDropIn's file body, factored
@@ -383,9 +415,5 @@ func WriteCapabilityDropInAt(root, unit string, allow []string) (changed bool, e
 	if err != nil {
 		return false, fmt.Errorf("WriteCapabilityDropInAt: %w", err)
 	}
-	legacyChanged, err := removeLegacyAmbientDropIn(dropInDir)
-	if err != nil {
-		return false, fmt.Errorf("WriteCapabilityDropInAt: remove legacy %s: %w", legacyAmbientCapabilitiesDropInFile, err)
-	}
-	return changed || legacyChanged, nil
+	return changed, nil
 }

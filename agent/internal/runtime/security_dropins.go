@@ -35,6 +35,18 @@ type securityDropInFuncs struct {
 	// drop-in is itself a confinement change a running unit needs applied.
 	removeSeccomp    func(unit string) (bool, error)
 	removeCapability func(unit string) (bool, error)
+	// removeLegacyAmbientCapability (X6, IMP-caef5c00d63f round X, HIGH,
+	// B1 — delta on W3) removes a PRIOR (older-agent) compose's stand-alone
+	// ambient-capabilities.conf, run as its OWN independent step for EVERY
+	// unit regardless of posture (privileged or not — the legacy file is
+	// stale cruft either way). Deliberately separate from the capability/
+	// removeCapability calls above: a failure here is ALWAYS non-fatal (see
+	// applyModuleSecurityDropIns' own call site) — merging it into the
+	// primary write/remove's own error (the pre-X6 shape) meant a failure
+	// cleaning up this unrelated legacy file discarded a SUCCESSFUL primary
+	// write and failed the unit closed, which then never restarted to pick
+	// up the narrower capabilities.conf that had, in fact, already landed.
+	removeLegacyAmbientCapability func(unit string) (bool, error)
 }
 
 // qgaModuleName is R5's own pinned recovery-channel identity check (review
@@ -146,6 +158,22 @@ func applyModuleSecurityDropIns(moduleID string, mf *manifest.Manifest, policy *
 
 	for _, svc := range mf.Services {
 		unit := lifecycle.UnitName(moduleID, svc.Name)
+
+		// X6 (IMP-caef5c00d63f round X, HIGH, B1): run BEFORE and
+		// INDEPENDENTLY of every other write/remove below, for every unit
+		// regardless of posture (privileged or not — the legacy file is
+		// stale cruft either way, same reasoning W3 already applied).
+		// Best-effort like the privileged branch's own removeSeccomp/
+		// removeCapability calls: a failure here is reported but NEVER
+		// fails the unit closed and never discards another call's own
+		// changed=true — merging it into the primary capability write's own
+		// error (the pre-X6 shape) is exactly what let a successful
+		// narrowing write get thrown away by an unrelated cleanup failure.
+		if changed, err := funcs.removeLegacyAmbientCapability(unit); err != nil {
+			onError("legacy_ambient_capability_dropin_remove", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
+		} else {
+			markChanged(unit, changed)
+		}
 
 		if changed, err := funcs.userNamespace(unit, policy.UserNamespace); err != nil {
 			onError("userns_dropin", fmt.Errorf("module %s unit %s: %w", moduleID, unit, err))
