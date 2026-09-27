@@ -21,6 +21,18 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 )
 
+// ErrConfinementApplyIncomplete (X1, IMP-caef5c00d63f round X, HIGH) wraps
+// AttachServicesModeOpts' own unit-write or daemon-reload failure so a
+// caller consulting AttachOptions.ConfinementChangedUnits afterward can tell
+// "the write/reload never completed for ANY unit this pass" apart from "the
+// reload succeeded, THIS unit's own start/restart failed"
+// (AttachResult.StepErr already covers the latter, per unit). Both failure
+// sites return before the per-unit start loop ever runs, so no AttachResult
+// in that case carries a usable Restarted/ConfinementPendingRestart signal
+// for a confinement-changed unit — the caller must treat every one of them
+// as still unapplied, not just the literal step that errored.
+var ErrConfinementApplyIncomplete = errors.New("confinement drop-in write or reload did not complete")
+
 // DefaultUnitDir is where systemd looks for operator-installed units.
 // Override via POWERNODE_LIFECYCLE_UNIT_DIR for dev/test isolation.
 const DefaultUnitDir = "/etc/systemd/system"
@@ -227,7 +239,7 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 		written, err := writeIfChanged(path, body)
 		if err != nil {
 			results = append(results, AttachResult{Unit: unitName, StepErr: fmt.Errorf("write %s: %w", path, err)})
-			return results, err
+			return results, fmt.Errorf("%w: write %s: %w", ErrConfinementApplyIncomplete, path, err)
 		}
 		anyWritten = anyWritten || written
 		results = append(results, AttachResult{Unit: unitName, Skipped: !written})
@@ -248,7 +260,7 @@ func AttachServicesModeOpts(ctx context.Context, runner mount.Runner, moduleID s
 	// exactly the same reason it never sees step 2's writes above.
 	if anyWritten || opts.ForceRestartActive || len(opts.ConfinementChangedUnits) > 0 {
 		if err := runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
-			return results, fmt.Errorf("daemon-reload: %w", err)
+			return results, fmt.Errorf("%w: daemon-reload: %w", ErrConfinementApplyIncomplete, err)
 		}
 	}
 
