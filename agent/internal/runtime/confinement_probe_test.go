@@ -92,8 +92,8 @@ func TestProbeUnitConfinement_RemainAfterExitNotStale(t *testing.T) {
 	if uc.Probed {
 		t.Error("expected RemainAfterExit (MainPID=0) to not be probed")
 	}
-	if uc.stale() || uc.wider() {
-		t.Error("expected RemainAfterExit to be neither stale nor wider")
+	if uc.wider() {
+		t.Error("expected RemainAfterExit to never read as wider")
 	}
 }
 
@@ -107,15 +107,15 @@ func TestProbeUnitConfinement_InactiveNotStale(t *testing.T) {
 		showPropsKey(unit): []byte("ActiveState=inactive\nMainPID=0\nNeedDaemonReload=no\n"),
 	}
 	uc := r.probeUnitConfinement(context.Background(), unit, 0xF)
-	if uc.Probed || uc.stale() {
-		t.Error("expected an inactive unit to be neither probed nor stale")
+	if uc.Probed || uc.wider() {
+		t.Error("expected an inactive unit to be neither probed nor wider")
 	}
 }
 
-// TestProbeUnitConfinement_RunningNarrower_StaleNotWider: a self-narrowed
-// process (running bounding set is a STRICT SUBSET of declared) is stale
-// (it diverges) but never wider — the direction R2 must not restart for.
-func TestProbeUnitConfinement_RunningNarrower_StaleNotWider(t *testing.T) {
+// TestProbeUnitConfinement_RunningNarrower_NeverWider: a self-narrowed
+// process (running bounding set is a STRICT SUBSET of declared) must never
+// read as wider — round Z (Z3): narrower is silent, not even reported.
+func TestProbeUnitConfinement_RunningNarrower_NeverWider(t *testing.T) {
 	r, runner := probeTestReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 	runner.StubOutput = map[string][]byte{
@@ -126,18 +126,14 @@ func TestProbeUnitConfinement_RunningNarrower_StaleNotWider(t *testing.T) {
 	if !uc.Probed {
 		t.Fatal("expected an active unit with a live MainPID to be probed")
 	}
-	if !uc.stale() {
-		t.Error("expected a narrower-than-declared bounding set to read as stale")
-	}
 	if uc.wider() {
 		t.Error("REGRESSION: a self-narrowed process must never read as wider")
 	}
 }
 
-// TestProbeUnitConfinement_RunningWider_StaleAndWider: a running bounding
-// set with bits OUTSIDE declared is both stale and wider — the shape R2
-// self-heals.
-func TestProbeUnitConfinement_RunningWider_StaleAndWider(t *testing.T) {
+// TestProbeUnitConfinement_RunningWider_IsWider: a running bounding set
+// with bits OUTSIDE declared reads as wider.
+func TestProbeUnitConfinement_RunningWider_IsWider(t *testing.T) {
 	r, runner := probeTestReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
 	runner.StubOutput = map[string][]byte{
@@ -145,16 +141,16 @@ func TestProbeUnitConfinement_RunningWider_StaleAndWider(t *testing.T) {
 	}
 	fakeProcPID(t, withProcRoot(t), 4242, 0x1F, 0x0)
 	uc := r.probeUnitConfinement(context.Background(), unit, 0xF)
-	if !uc.stale() || !uc.wider() {
-		t.Errorf("expected a wider-than-declared bounding set to be both stale and wider, got stale=%v wider=%v", uc.stale(), uc.wider())
+	if !uc.wider() {
+		t.Error("expected a wider-than-declared bounding set to read as wider")
 	}
 }
 
 // TestProbeUnitConfinement_AmbientWiderSubsetCheck: ambient is compared as
 // a SUBSET (design section 1) — a running ambient set with a bit outside
 // declared is wider even when bounding matches exactly, but a running
-// ambient set that is a (possibly proper) subset of declared is neither
-// stale nor wider on the ambient axis, regardless of bounding.
+// ambient set that is a (possibly proper) subset of declared is not wider
+// on the ambient axis, regardless of bounding.
 func TestProbeUnitConfinement_AmbientWiderSubsetCheck(t *testing.T) {
 	r, runner := probeTestReconciler(t)
 	unit := lifecycle.UnitName("m1", "app")
@@ -164,14 +160,14 @@ func TestProbeUnitConfinement_AmbientWiderSubsetCheck(t *testing.T) {
 	root := withProcRoot(t)
 	fakeProcPID(t, root, 4242, 0xF, 0x10) // bounding matches; ambient has an extra bit
 	uc := r.probeUnitConfinement(context.Background(), unit, 0xF)
-	if !uc.stale() || !uc.wider() {
-		t.Errorf("expected an ambient bit outside declared to be stale+wider even with bounding matching, got stale=%v wider=%v", uc.stale(), uc.wider())
+	if !uc.wider() {
+		t.Error("expected an ambient bit outside declared to read as wider even with bounding matching")
 	}
 
 	fakeProcPID(t, root, 4242, 0xF, 0x3) // ambient is a strict subset of declared
 	uc = r.probeUnitConfinement(context.Background(), unit, 0xF)
-	if uc.stale() || uc.wider() {
-		t.Errorf("expected an ambient subset of declared (with bounding matching) to be neither stale nor wider, got stale=%v wider=%v", uc.stale(), uc.wider())
+	if uc.wider() {
+		t.Error("expected an ambient subset of declared (with bounding matching) to not be wider")
 	}
 }
 

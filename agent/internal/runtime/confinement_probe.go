@@ -15,15 +15,31 @@
 // independent of what any earlier tick did or failed to do, until an
 // operator restart or a recompose actually changes what is running.
 //
-// STALENESS PREDICATE (acceptance-level, not clock/mtime-based — see the
+// WIDENING PREDICATE (acceptance-level, not clock/mtime-based — see the
 // design's own rejection of ActiveEnterTimestamp/mtime comparisons: boot
 // compose can write drop-ins before NTP has run, and identical-byte
 // rewrites never touch mtime at all).
 //
-//	declared  := CapabilityMask(unitAllow[u])          // the writer's own resolved list
+//	declared  := CapabilityMask(unitAllow[u]) & kernelCapMask  // round Z Z3
 //	probed    := ActiveState == "active" && MainPID > 0 && /proc/<MainPID>/status readable
-//	stale(u)  := probed && (CapBnd != declared || (CapAmb &^ declared) != 0)
 //	wider(u)  := probed && ((CapBnd &^ declared) != 0 || (CapAmb &^ declared) != 0)
+//
+// ROUND Z (Z3): WIDER is the only direction this pass ever acts on —
+// narrower-than-declared is SILENT, not even reported. Round Y (and Z1)
+// used to report a narrower finding too (report-only, since it was never
+// actionable); Z3 removes that entirely: a self-narrowed process is not a
+// security-relevant fact worth a log line every tick, and folding "stale"
+// (either direction) and "wider" into one predicate removes a distinction
+// nothing downstream of this pass ever needed once R2 (the restart) itself
+// was already gone (Z1).
+//
+// kernelCapMask (round Z Z3): declared is intersected with the RUNNING
+// kernel's own highest supported capability bit (/proc/sys/kernel/
+// cap_last_cap) before the comparison — a capability this kernel does not
+// implement at all must never count toward a widening finding, on either
+// side of the comparison, regardless of what a manifest's own capability
+// list (or a "full known set" exemption computed from this agent
+// BINARY's own, possibly newer, capability table) happens to name.
 //
 // Bounding is compared EXACTLY (it is the ceiling — systemd's
 // CapabilityBoundingSet=<list> drops every other bit, so an empty list
@@ -85,16 +101,9 @@ type unitConfinement struct {
 	Err        error
 }
 
-// stale reports whether the running process's effective capabilities
-// diverge from the manifest's current declaration in EITHER direction
-// (wider OR narrower).
-func (u unitConfinement) stale() bool {
-	return u.Probed && (u.RunningBnd != u.Declared || (u.RunningAmb&^u.Declared) != 0)
-}
-
 // wider reports whether the running process holds MORE than the manifest
-// currently declares — the only direction R2 ever restarts for. See this
-// file's own top-of-file doc for why narrower is report-only.
+// currently declares — the ONLY direction this pass acts on at all (round
+// Z, Z3: narrower is silent — see this file's own top-of-file doc).
 func (u unitConfinement) wider() bool {
 	return u.Probed && ((u.RunningBnd&^u.Declared) != 0 || (u.RunningAmb&^u.Declared) != 0)
 }
@@ -128,6 +137,37 @@ func (r *Reconciler) declaredCapMasks(mod mount.Module, mf *manifest.Manifest) (
 		masks[unit] = mask
 	}
 	return masks, true
+}
+
+// capLastCap reads the running kernel's own highest supported capability
+// bit index from /proc/sys/kernel/cap_last_cap (under procRoot, the same
+// test seam readProcCapSets uses).
+func capLastCap() (int, error) {
+	data, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/cap_last_cap"))
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, fmt.Errorf("cap_last_cap: %w", err)
+	}
+	return n, nil
+}
+
+// capLastCapMask returns a bitmask covering bits 0..cap_last_cap inclusive
+// — every capability THIS running kernel actually implements (round Z,
+// Z3). Fails OPEN (all-ones, i.e. no narrowing at all) when cap_last_cap
+// cannot be read or parsed: the file always exists and is readable on a
+// real Linux host (it has been present since Linux 3.2), so an error here
+// means "we could not learn anything new about this kernel", not "this
+// kernel supports zero capabilities" — the latter reading would silently
+// suppress every genuine widening finding.
+func capLastCapMask() uint64 {
+	n, err := capLastCap()
+	if err != nil || n < 0 || n >= 63 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << (n + 1)) - 1
 }
 
 // readProcCapSets reads CapBnd/CapAmb from /proc/<pid>/status (under
@@ -203,6 +243,9 @@ func (r *Reconciler) probeUnitConfinement(ctx context.Context, unit string, decl
 // pattern — a concurrent heartbeat read never sees a half-built set.
 func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mount.State, manifests map[string]*manifest.Manifest) {
 	var staleUnits []string
+	// Round Z (Z3): read once per pass — cap_last_cap is a kernel-wide
+	// constant, not a per-module or per-unit fact.
+	kernelMask := capLastCapMask()
 	for _, mod := range current.AttachedModules {
 		mf, ok := manifests[mod.ID]
 		if !ok {
@@ -228,8 +271,8 @@ func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mou
 				// probed, matching the attach path's own skip.
 				continue
 			}
-			uc := r.probeUnitConfinement(ctx, unit, declared)
-			if !uc.stale() {
+			uc := r.probeUnitConfinement(ctx, unit, declared&kernelMask)
+			if !uc.wider() {
 				continue
 			}
 			staleUnits = append(staleUnits, unit)
@@ -241,17 +284,11 @@ func (r *Reconciler) reconcileStaleConfinement(ctx context.Context, current *mou
 }
 
 // handleStaleUnit is reconcileStaleConfinement's own per-unit disposition
-// (round Z, Z1): REPORT ONLY, on every node type, in both directions —
-// never a systemctl restart, reload, or stop. See this file's own top-of-
-// file doc for why R2 (the level-triggered restart this replaced) was
-// deleted rather than patched.
+// (round Z: Z1 deleted the restart; Z3 narrowed the caller's own gate to
+// WIDER only, so this is never called for a narrower unit any more — there
+// is no narrower branch left to have). REPORT ONLY: never a systemctl
+// restart, reload, or stop.
 func (r *Reconciler) handleStaleUnit(mod mount.Module, uc unitConfinement) {
-	if !uc.wider() {
-		r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
-			"module %s: unit %s's running capabilities are NARROWER than its current manifest declares (bounding running=%#x declared=%#x) — self-narrowing is not a gap, report only; heals on the unit's own next restart of any kind",
-			mod.ID, uc.Unit, uc.RunningBnd, uc.Declared))
-		return
-	}
 	r.cfg.OnError("reconciler:confinement_stale", fmt.Errorf(
 		"module %s: unit %s's running capabilities are WIDER than its current manifest declares (bounding running=%#x declared=%#x, ambient extra=%#x) — report only (round Z: no agent-issued restart for this); recover via `systemctl restart %s` or the next recompose",
 		mod.ID, uc.Unit, uc.RunningBnd, uc.Declared, uc.RunningAmb&^uc.Declared, uc.Unit))
