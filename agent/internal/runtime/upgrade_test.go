@@ -4184,18 +4184,21 @@ func TestReconcile_RefusedRetargetStillUnionsAnEarlierTouchedDigestsIdentity(t *
 	}
 }
 
-// TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick is Q3
-// (review round 14, LOW): decideModuleSecurityPolicy's own PREDICTION
-// (P3/Q1) is pure — no I/O — so it is blind to an EFFECTFUL refusal: an
-// artifact pull failure (step 1), an actual drop-in write error (step 2),
-// or a hot-reconcile materialization refusal (step 3). A target the
-// prediction says would succeed, but whose real attempt keeps genuinely
-// failing at step 1 for an unrelated reason (here: a stubbed pull failure,
-// unprivileged so the prediction itself always passes), rendered old∪new
-// every tick forever. d2's own sudoers grant may still render on the FIRST
-// tick (nothing has recorded the refusal yet at the START of that tick's own
-// render), but from the SECOND tick on — once PendingDigestActuallyRefused
-// is set by the first tick's own real failure — the render must go old-only.
+// TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick is Q3's
+// original test (review round 14, LOW), REWRITTEN for S1 (delta review on
+// 5f61d389, HIGH): decideModuleSecurityPolicy's own PREDICTION (P3/Q1) and
+// PendingDigestActuallyRefused (Q3) are both REMOVED entirely. RunOnce's own
+// render never looks at the new target's manifest at all, on ANY tick — it
+// always renders stable ∪ PendingTouchedDigests only (see that render
+// block's own doc). A new digest's own sudoers/identity is instead rendered
+// and APPLIED separately, by upgradeModule itself, immediately before step
+// 4's first restart — the one point in the tick that actually knows step 4
+// is about to happen. A target whose step 1 (artifact pull) keeps genuinely,
+// persistently failing NEVER reaches that point, so its own grant must NEVER
+// render — not even on the FIRST attempt tick, unlike the old
+// prediction-gated design (which rendered it on tick 2, before any real
+// failure had been recorded anywhere, and only suppressed it from tick 3 on
+// once the now-removed flag was set).
 func TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick(t *testing.T) {
 	r, client, _, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
 
@@ -4227,30 +4230,19 @@ func TestReconcile_PersistentStep1RefusalGoesOldOnlyAfterTheFirstTick(t *testing
 		return false
 	}
 
-	// Tick 2 (first attempt): nothing has recorded a refusal yet at the
-	// START of this tick, so the (passing) prediction alone governs — the
-	// union renders, same as any ordinary in-flight bump.
-	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce tick 2 (d2's first step-1 refusal): %v", err)
-	}
-	if !grantRendered() {
-		t.Fatalf("precondition: expected d2-only-grant to render on tick 2 (nothing recorded yet), got %v", renderedGrantIDs)
-	}
-	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
-		t.Fatalf("precondition: expected PendingDigest=d2 after tick 2, got %q ok=%v", pd, ok)
-	}
-
-	// Ticks 3-4: the SAME step-1 failure persists. The prediction alone
-	// would keep saying "fine" every tick (unprivileged, no policy issue at
-	// all) — PendingDigestActuallyRefused (recorded by tick 2's own real
-	// failure) is what must now suppress the grant.
-	for tick := 3; tick <= 4; tick++ {
+	// Ticks 2-4: step 1 (artifact pull) genuinely, persistently fails on d2.
+	// upgradeModule never reaches its own pre-step-4 render/apply point for
+	// it, so d2-only-grant must never render on ANY of these ticks.
+	for tick := 2; tick <= 4; tick++ {
 		if err := r.RunOnce(context.Background()); err != nil {
-			t.Fatalf("RunOnce tick %d (step 1 still refusing): %v", tick, err)
+			t.Fatalf("RunOnce tick %d (step 1 refusing): %v", tick, err)
 		}
 		if grantRendered() {
-			t.Errorf("Q3 REGRESSION: tick %d rendered d2-only-grant even though step 1 has been genuinely, persistently refusing it — the pure prediction cannot see an effectful pull failure, and PendingDigestActuallyRefused must suppress the union once recorded: %v", tick, renderedGrantIDs)
+			t.Errorf("S1 REGRESSION: tick %d rendered d2-only-grant even though upgradeModule never reached step 4 for it — a target's own new-digest grant must never render until upgradeModule's own pre-step-4 render/apply point: %v", tick, renderedGrantIDs)
 		}
+	}
+	if pd, ok := pendingDigest(t, statePath, "m1"); !ok || pd != "d2" {
+		t.Fatalf("expected PendingDigest=d2 to remain recorded across the persistent refusal, got %q ok=%v", pd, ok)
 	}
 	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
 		t.Errorf("precondition drifted: expected m1 to stay refused at d1, got digest=%q ok=%v", digest, ok)
@@ -4775,5 +4767,212 @@ func TestReconcile_RevertClearsUnitsTouchedSoALaterUnrelatedBumpStartsFresh(t *t
 		if id == "d3-only-grant" {
 			t.Fatalf("P5 REGRESSION (stale PendingDigestUnitsTouched leaked into a later episode): d3's own sudoers grant was rendered on its VERY FIRST tick despite being refused at step 2: %v", renderedGrantIDs)
 		}
+	}
+}
+
+// TestReview_TransientStep1RefusalThenSuccessRendersNewUser is the delta
+// review's repro #1 for S1 (HIGH, do-not-ship on 5f61d389): a TRANSIENT
+// step-1 failure used to set the now-removed PendingDigestActuallyRefused;
+// the next tick's own RunOnce render ran old-only (that flag hadn't cleared
+// yet), the pull then succeeded THAT SAME tick, and step 4 restarted
+// app under d2 — committing without d2user ever having been rendered
+// anywhere. Under S1, upgradeModule itself renders+applies d2's own user
+// immediately before step 4's first restart, independent of RunOnce's own
+// (now permanently old∪touched-only) render.
+func TestReview_TransientStep1RefusalThenSuccessRendersNewUser(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	orig := r.cfg.Puller
+	r.cfg.Puller = &failingPuller{PullerAPI: orig, failDigest: "d2"}
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	if err := r.RunOnce(context.Background()); err != nil { // step 1 fails
+		t.Fatal(err)
+	}
+	r.cfg.Puller = orig // transient failure clears
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := attachedDigest(t, statePath, "m1")
+	t.Logf("attached digest after success tick = %q; users rendered on that tick = %v", d, users)
+	if d == "d2" && !containsArg(users, "d2user") {
+		t.Fatalf("217/USER: d2 committed (its units restarted) on a tick whose identity render omitted d2user: %v", users)
+	}
+}
+
+// TestReview_StaleActuallyRefusedAfterRevertOmitsNextBumpsUser is the delta
+// review's repro #2 for S1: the now-removed PendingDigestActuallyRefused was
+// never cleared by the revert path. d2 step-1 refused -> desired goes back to
+// d1 (never-touched revert) -> later d3 (with a new user) whose FIRST tick
+// must still commit with d3user rendered. Since the flag no longer exists at
+// all, it cannot survive the revert to poison the later, unrelated episode.
+func TestReview_StaleActuallyRefusedAfterRevertOmitsNextBumpsUser(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	d1 := client.responses["/api/v1/system/node_api/modules/m1"]
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	orig := r.cfg.Puller
+	r.cfg.Puller = &failingPuller{PullerAPI: orig, failDigest: "d2"}
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = d1
+	backdateManifestCache(t, manifestRoot, "m1")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range st.AttachedModules {
+		t.Logf("after revert: digest=%s pending=%q revertReset=%v", m.Digest, m.PendingDigest, m.PendingRevertAttemptsReset)
+	}
+	r.cfg.Puller = orig
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d3", upgradeAppService, "d3user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := attachedDigest(t, statePath, "m1")
+	t.Logf("digest=%q users=%v", d, users)
+	if d == "d3" && !containsArg(users, "d3user") {
+		t.Fatalf("217/USER via stale flag: d3 committed on a tick whose render omitted d3user")
+	}
+}
+
+// TestReview_TouchedThenRefusedSameTargetDropsRunningUser is the delta
+// review's repro #3 for S1: d2 TOUCHED (units genuinely running d2), then a
+// retry of the SAME d2 hits a step-1 failure. The OLD old-only render used to
+// skip d2's own snapshot because digest == b.new.Digest ("covered by
+// mergedManifests") — but in the refused branch mergedManifests was never
+// actually used, so d2's own running user vanished from every render. S1
+// removes that skip entirely: the new target is never unioned in by
+// RunOnce's own render regardless, so PendingTouchedDigests alone (already
+// containing d2 from the earlier touch) covers it.
+func TestReview_TouchedThenRefusedSameTargetDropsRunningUser(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService+","+upgradeNewWorkerService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+	if err := r.RunOnce(context.Background()); err != nil { // d2 touched, settle fails
+		t.Fatal(err)
+	}
+	orig := r.cfg.Puller
+	r.cfg.Puller = &failingPuller{PullerAPI: orig, failDigest: "d2"}
+	if err := r.RunOnce(context.Background()); err != nil { // retry: step 1 fails
+		t.Fatal(err)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range st.AttachedModules {
+		t.Logf("state: digest=%s pending=%q touched=%v touchedDigests=%v attempts=%d", m.Digest, m.PendingDigest, m.PendingDigestUnitsTouched, m.PendingTouchedDigests, m.PendingDigestAttempts)
+	}
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !containsArg(users, "d2user") {
+		t.Fatalf("217/USER: d2 units are running (touched) but render omitted d2user: %v", users)
+	}
+}
+
+// TestUpgradeModule_NewUserWrittenBeforeFirstRestart is S1's own ordering
+// test: upgradeModule's pre-step-4 render+apply of old ∪ touched ∪ new
+// identity must land on disk BEFORE step 4 issues its first restart of a
+// unit that will run under the new digest — a unit started even one
+// systemctl call before its own User= entry exists is exactly the 217/USER
+// outage this whole redesign exists to prevent. hookRunner's own onRun fires
+// synchronously inside mount.Runner.Run, so the FIRST systemctl
+// start/restart call for appUnit is the earliest possible point to sample
+// "what did applyIdentity most recently see".
+func TestUpgradeModule_NewUserWrittenBeforeFirstRestart(t *testing.T) {
+	r, client, runner, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 1: %v", err)
+	}
+
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d2", upgradeAppService, "d2user")
+	backdateManifestCache(t, manifestRoot, "m1")
+	runner.StubOutput = map[string][]byte{"systemctl is-active " + appUnit: []byte("active\n")}
+
+	var users []string
+	origIdentity := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error {
+		users = nil
+		for _, u := range set.Users {
+			users = append(users, u.Name)
+		}
+		return nil
+	}
+	t.Cleanup(func() { applyIdentity = origIdentity })
+
+	var sawUsersAtFirstRestart []string
+	var sawRestartCall bool
+	hooked := &hookRunner{Runner: runner, onRun: func(name string, args []string) {
+		if sawRestartCall || name != "systemctl" || !containsArg(args, appUnit) ||
+			(!containsArg(args, "start") && !containsArg(args, "restart")) {
+			return
+		}
+		sawRestartCall = true
+		sawUsersAtFirstRestart = append([]string(nil), users...)
+	}}
+	r.cfg.MountRunner = hooked
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce pass 2 (bump to d2): %v", err)
+	}
+	if !sawRestartCall {
+		t.Fatalf("fixture did not reach the restart call at all")
+	}
+	if !containsArg(sawUsersAtFirstRestart, "d2user") {
+		t.Fatalf("217/USER: appUnit's first restart under d2 was issued before d2user was ever written — users seen at that point: %v", sawUsersAtFirstRestart)
 	}
 }

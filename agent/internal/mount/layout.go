@@ -283,23 +283,21 @@ type Module struct {
 	// same reasoning: a commit or a revert is what actually resolves the
 	// whole episode, not a mere re-target.
 	PendingTouchedDigests []string `json:"PendingTouchedDigests,omitempty"`
-	// PendingDigestActuallyRefused (Q3, review round 14) records that steps
-	// 1-3 (artifact pull/mount, security policy, hot-reconcile
-	// materialization) genuinely refused the CURRENT PendingDigest on a
-	// PRIOR tick — as opposed to reconcile.go's own decideModuleSecurityPolicy
-	// PREDICTION (P3/Q1), which is pure (no I/O) and therefore blind to an
-	// effectful failure: a real drop-in WRITE error, an artifact pull
-	// failure, or a hot-reconcile materialization refusal. Without this, a
-	// target the prediction says would succeed but which keeps genuinely
-	// failing for one of those reasons rendered old∪new every tick forever
-	// — the same "refused content stays unioned in" bug P3/Q1 fix for a
-	// PREDICTED refusal, just via a failure mode the prediction cannot see.
-	// Set at each of steps 1-3's own refusal points (recordPendingDigestAttempt,
-	// its own sibling signal). Reset false on a fresh re-target and once
-	// step 4 is actually reached (this target is no longer merely
-	// "refused", it is touched — PendingTouchedDigests/PendingIntroducedUnits
-	// take over from there).
-	PendingDigestActuallyRefused bool `json:"PendingDigestActuallyRefused,omitempty"`
+	// PendingDigestActuallyRefused (Q3, review round 14) is REMOVED (S1,
+	// delta review on 5f61d389, HIGH): it gated RunOnce's own identity/
+	// sudoers render (alongside P3/Q1's prediction, also removed) against a
+	// PRIOR tick's refusal — but that render runs BEFORE upgradeModule
+	// executes THIS tick, so a decision based on a PAST tick's outcome
+	// could be directly contradicted by a TRANSIENT failure resolving on
+	// THIS tick (step 1 fails one tick, succeeds and reaches step 4 the
+	// next — the render for that second tick still ran old-only, since the
+	// flag had not yet been cleared). The structural fix no longer needs
+	// this field at all: RunOnce's render never looks at the new digest
+	// regardless of refusal status (always stable ∪ PendingTouchedDigests),
+	// and upgradeModule renders+applies old ∪ touched ∪ new itself,
+	// immediately before step 4's first restart — the one point in the
+	// tick that actually knows step 4 is about to happen.
+	//
 	// PendingRevertAttemptsReset (Q5, review round 14) marks that
 	// PendingDigestAttempts/PendingDigestLastAttemptUnix have already been
 	// reset for THIS revert episode's own force-restart retries

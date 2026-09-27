@@ -1187,47 +1187,49 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		identityManifests := mergedManifestsSlice
 		egressManifestsSlice := mergedManifestsSlice
 		if len(bumps) > 0 {
-			bumpOldMf := make(map[string][]*manifest.Manifest, len(bumps))
-			// P3 (review round 13, MEDIUM, security) / Q1 (review round 14,
-			// MEDIUM, security): bumpRefusedOldMf names a bump whose new
-			// digest's policy this tick's own step 2 would REFUSE (predicted
-			// via decideModuleSecurityPolicy — the PURE half
-			// applyModuleSecurityPolicy itself calls later this same tick, no
-			// I/O, safe to call here before upgradeModule has actually run).
-			// Q1: the prediction now runs UNCONDITIONALLY — P3's own
-			// "UNLESS units have already been touched this episode" guard
-			// was itself a bug once PendingDigestUnitsTouched became sticky
-			// across a re-target (P2): d2 touching units and then being
-			// abandoned for a refused d3 left that flag true, so d3's own
-			// prediction was skipped entirely and its refused content still
-			// unioned in unconditionally on every tick it stayed refused. A
-			// re-target's own new target is refused or not independent of
-			// what an EARLIER, abandoned target already did. A refused-and-
-			// untouched bump now renders OLD ONLY: the new manifest is
-			// excluded from the render entirely, not merely left un-unioned.
-			bumpRefusedOldMf := make(map[string][]*manifest.Manifest, len(bumps))
+			// S1 (delta review on 5f61d389, HIGH — supersedes P3/Q1/Q3
+			// entirely, all three REMOVED): this render runs in RunOnce
+			// BEFORE upgradeModule executes THIS SAME tick. Any decision it
+			// makes about whether THIS tick's own attempt will succeed or
+			// fail — P3's pure prediction, Q1's touched-digest union gated
+			// on that prediction, Q3's PendingDigestActuallyRefused carry-
+			// forward from a PRIOR tick — can be directly CONTRADICTED by
+			// what actually happens a few lines later in the very same
+			// tick, once upgradeModule runs: a TRANSIENT step-1 failure
+			// recorded as "refused" one tick can still succeed and reach
+			// step 4 (restarting units under the new digest) THIS tick,
+			// after this render already ran old-only — 217/USER, just via
+			// the render running too EARLY rather than a write failing.
+			// Confirmed by the delta reviewer's own repro tests: a
+			// transient refusal-then-success tick, a stale
+			// PendingDigestActuallyRefused surviving a revert into an
+			// unrelated later bump's own first tick, and the refused
+			// branch's own digest-equality skip dropping a TOUCHED (units
+			// genuinely running) digest's identity entirely.
+			//
+			// The structural fix: this render NEVER looks at the new
+			// target's manifest, and never tries to predict or remember
+			// whether THIS tick's attempt will succeed. It always renders
+			// stable (b.old.Digest, the content ACTUALLY attached) union
+			// every digest PendingTouchedDigests already names — content
+			// some unit is GENUINELY running, per a PAST tick's own step 4,
+			// never a guess about the future. Identity/sudoers union those;
+			// egress renders the stable digest ONLY (unchanged from its own
+			// pre-existing "keep old until commit" behavior — egress must
+			// not narrow or widen ahead of the binary that will actually
+			// apply it, and touched-digest union has no place there
+			// either).
+			//
+			// The NEW digest's own identity/sudoers is rendered and
+			// APPLIED separately, by upgradeModule itself
+			// (applyIdentityAndSudoers), immediately before step 4's first
+			// restart — so a unit about to actually run the new binary
+			// always has the new digest's users/grants in place before it
+			// starts, decided at the ONE point in the tick that knows
+			// step 4 is actually about to happen, not several lines
+			// earlier on a guess.
+			bumpOldSide := make(map[string][]*manifest.Manifest, len(bumps))
 			for _, b := range bumps {
-				newMfForBump, ok := mergedManifests[b.new.ID]
-				if !ok {
-					continue
-				}
-				// Q3 (review round 14, LOW): a target ALREADY recorded as
-				// genuinely refused at steps 1-3 on a prior tick
-				// (PendingDigestActuallyRefused) stays refused without
-				// re-running the prediction — the prediction is pure (no
-				// I/O) and therefore blind to exactly the failure modes that
-				// set this flag (an effectful drop-in write error, an
-				// artifact pull failure, a hot-reconcile refusal); without
-				// this, such a target's policy PREDICTION could keep saying
-				// "would succeed" every tick while the REAL attempt keeps
-				// genuinely failing for an unrelated reason, rendering
-				// old∪new forever instead of old-only.
-				refused := b.old.PendingDigestActuallyRefused
-				if !refused {
-					if _, _, _, perr := decideModuleSecurityPolicy(b.new, newMfForBump, r.privilegedAllow, true, attachCapabilityWrites); perr != nil {
-						refused = true
-					}
-				}
 				// N3 (review round 11): the digest-keyed attached snapshot is
 				// the AUTHORITATIVE old side — unlike previousManifests
 				// (RunOnce's own ID-keyed pre-fetch disk snapshot, captured
@@ -1243,90 +1245,42 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 				} else if bmf, ok := previousManifests[b.old.ID]; ok && bmf != nil {
 					oldSide = append(oldSide, bmf)
 				}
-				// Q1 (review round 14, MEDIUM, security): ALSO union in
-				// every digest this episode already TOUCHED (b.old.
-				// PendingTouchedDigests — an EARLIER, now-abandoned target
-				// that reached step 4), not just the stable digest. Before
-				// this, d2 touching units and then being abandoned for a
-				// refused d3 rendered stable∪d3 — d2's own content, which
-				// may still genuinely be running on some unit, was silently
-				// omitted from the render entirely.
+				// Q1 (review round 14): union in every digest this episode
+				// already TOUCHED (b.old.PendingTouchedDigests — an
+				// EARLIER, now-abandoned target that reached step 4), not
+				// just the stable digest — that content may still
+				// genuinely be running on some unit. S1: no longer skips a
+				// digest equal to b.new.Digest — the new target is never
+				// rendered here at all regardless (see the render loop
+				// below), so there is nothing to double-count against.
 				for _, digest := range b.old.PendingTouchedDigests {
-					if digest == b.old.Digest || digest == b.new.Digest {
-						continue // already covered by oldSide or mergedManifests itself
+					if digest == b.old.Digest {
+						continue // already covered by oldSide above
 					}
 					if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, b.old.ID, digest); err == nil && snap != nil {
 						oldSide = append(oldSide, snap)
 					}
 				}
 				if len(oldSide) == 0 {
-					continue // nothing to substitute or union — falls back to a plain new-only render
+					continue // nothing to substitute — falls back to a plain new-only render
 				}
-				if refused {
-					bumpRefusedOldMf[b.new.ID] = oldSide
-				} else {
-					bumpOldMf[b.new.ID] = oldSide
-				}
+				bumpOldSide[b.new.ID] = oldSide
 			}
-			if len(bumpOldMf) > 0 || len(bumpRefusedOldMf) > 0 {
-				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldMf))
+			if len(bumpOldSide) > 0 {
+				identityManifests = make([]*manifest.Manifest, 0, len(mergedManifestsSlice)+len(bumpOldSide))
 				egressManifestsSlice = make([]*manifest.Manifest, 0, len(mergedManifestsSlice))
-				// Doc (review round 11, requested alongside N3): precedence and
-				// its accepted cost, stated explicitly rather than left
-				// implicit in append order. NEW is appended before OLD for
-				// each bumped ID below — etcidentity.Collect/etcsudoers.
-				// CollectFromManifests both keep the FIRST occurrence of a
-				// given name and only ever CONFLICT-REPORT (never silently
-				// merge) a same-name entry that later disagrees on UID/GID —
-				// so a user or group the old and new manifests both declare
-				// under the SAME name resolves to the NEW manifest's values,
-				// with the discrepancy surfaced via reconciler:identity_conflict
-				// rather than silently applied. This is ACCEPTED: the
-				// alternative (old wins) would describe the old digest's
-				// values under a name the new digest is about to redefine,
-				// which is no better once the bump commits. What this does
-				// NOT catch: two DIFFERENT names colliding on the SAME UID/GID
-				// (old declares "olduser" at 5001, new declares "svc" at
-				// 5001) — Collect's own conflict detection is keyed by name,
-				// not by id, so that case renders two passwd entries sharing
-				// one UID with no warning at all. Also accepted here — a bump
-				// that both renames a user's login name AND keeps its exact
-				// old numeric id is exactly the shape a real "svc user
-				// rename" migration takes, and this union render only ever
-				// lasts until the bump commits or reverts.
-				//
-				// The sudoers side of the SAME union is a temporary
-				// old∪new — a grant either manifest declares is honoured for
-				// as long as the bump is pending, WIDER than either digest
-				// alone would grant on its own. Also accepted: sudoers scope
-				// creep for the duration of an in-flight upgrade is a smaller
-				// risk than a crash-restarting unit finding a sudo rule it
-				// needs missing. O8(c) (review round 12): correcting this
-				// comment's own earlier claim — that duration is VISIBLE
-				// (PendingDigest + the heartbeat's PendingModuleDigests stay
-				// set the entire time) but is NOT bounded. A crash-looping
-				// settle failure retries under backoffAllows' growing wait, and
-				// a revert that itself keeps failing retries under the same
-				// backoff — either can hold this union open for as long as the
-				// underlying failure persists, with no upper bound this code
-				// enforces. "Visible" is the actual mitigation here, not
-				// "bounded".
 				for id, m := range mergedManifests {
-					// P3: a refused-and-untouched bump renders OLD (+ every
-					// touched digest, Q1) ONLY — m (the new, refused
-					// manifest) is deliberately never appended here at all,
-					// unlike the union case below.
-					if oldSide, isRefused := bumpRefusedOldMf[id]; isRefused {
+					if oldSide, isBump := bumpOldSide[id]; isBump {
+						// S1: the new (bumping) manifest is NEVER appended
+						// here — identity/sudoers render old ∪ touched
+						// ONLY. egress keeps the stable digest ONLY
+						// (oldSide[0], appended first above, unconditionally,
+						// before any touched-digest is ever appended).
 						identityManifests = append(identityManifests, oldSide...)
-						egressManifestsSlice = append(egressManifestsSlice, oldSide...)
+						egressManifestsSlice = append(egressManifestsSlice, oldSide[0])
 						continue
 					}
 					identityManifests = append(identityManifests, m)
-					if oldSide, isBump := bumpOldMf[id]; isBump {
-						identityManifests = append(identityManifests, oldSide...)
-						egressManifestsSlice = append(egressManifestsSlice, oldSide...)
-						continue
-					}
 					egressManifestsSlice = append(egressManifestsSlice, m)
 				}
 			}
@@ -1339,23 +1293,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// just-rendered users is in place before service start. Both
 		// renderers are idempotent and run every reconcile tick — atomic
 		// writes are no-ops if contents match.
-		identitySet, conflicts := etcidentity.Collect(identityManifests)
-		for _, c := range conflicts {
-			r.cfg.OnError("reconciler:identity_conflict",
-				fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
-					c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
-		}
-		if err := applyIdentity(identitySet); err != nil {
-			r.cfg.OnError("reconciler:identity_write", err)
-		}
-		// Make the filesystem agree with the passwd we just rendered: managed
-		// home dirs must be owned by the user etcidentity declared (uid/gid =
-		// platform source of truth) and /home must stay traversable, else sshd
-		// and any unprivileged service with HOME there break. Idempotent.
-		reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
-		if err := applySudoers(etcsudoers.CollectFromManifests(identityManifests)); err != nil {
-			r.cfg.OnError("reconciler:sudoers_write", err)
-		}
+		_ = r.applyIdentityAndSudoers(identityManifests, "reconciler:")
 
 		// Node-wide egress enforcement, same pattern as identity/sudoers just
 		// above: one shared nftables OUTPUT chain governs the WHOLE node, so
@@ -1655,6 +1593,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						current.AttachedModules[i].PendingUndoUnits = nil
 						current.AttachedModules[i].PendingIntroducedUnits = nil
 						current.AttachedModules[i].PendingTouchedDigests = nil
+						// S1 (delta review on 5f61d389): this revert episode is
+						// fully resolved (nothing was ever touched) — clear
+						// Q5's own reset flag too, per team-lead's explicit
+						// instruction, even though a fresh upgrade attempt's own
+						// re-target branch (upgrade.go) already resets it before
+						// this would otherwise matter.
+						current.AttachedModules[i].PendingRevertAttemptsReset = false
 					}
 				}
 				pruneDropInSnapshotsForModule(r.cfg.StatePath, mod.ID, "")
@@ -1763,6 +1708,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 						// Q1 (review round 14): PendingIntroducedUnits' own
 						// sibling — cleared for the same reason, same place.
 						current.AttachedModules[i].PendingTouchedDigests = nil
+						// S1 (delta review on 5f61d389): clear Q5's own reset
+						// flag here too, now that this revert's forced restart
+						// has genuinely completed — per team-lead's explicit
+						// instruction, in BOTH revert-completion branches.
+						current.AttachedModules[i].PendingRevertAttemptsReset = false
 					}
 				}
 				// N7 (review round 11): the abandoned target's persisted drop-in
@@ -2429,6 +2379,80 @@ func decideModuleSecurityPolicy(
 		unitAllow[uc.Unit] = uc.Allow
 	}
 	return policy, unitAllow, droppedCaps, nil
+}
+
+// applyIdentityAndSudoers renders and applies /etc/passwd + /etc/group +
+// /etc/shadow + /etc/gshadow and sudoers from manifests — the SAME
+// render/apply RunOnce's own identity/sudoers block performs, factored out
+// (S1, delta review on 5f61d389, HIGH) so upgradeModule can call it too,
+// immediately before step 4's first restart (see that call site's own doc),
+// and refuse to restart at all if it fails.
+//
+// Both writes are always ATTEMPTED regardless of the other's outcome — an
+// identity failure does not skip the sudoers attempt — matching RunOnce's
+// own pre-existing resilience exactly (a caller that only wants "did
+// EITHER fail" gets that from the returned error; RunOnce itself ignores
+// it, since its own behavior was always "log and continue" via the
+// per-write OnError calls below, never a hard stop). stagePrefix
+// distinguishes RunOnce's own OnError lines ("reconciler:") from
+// upgradeModule's own pre-step-4 call, matching every other decision this
+// file shares between the live and bump paths.
+func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, stagePrefix string) error {
+	// Doc (review round 11, requested alongside N3): precedence and its
+	// accepted cost, stated explicitly rather than left implicit in
+	// manifests' own construction order. Wherever a caller unions an OLD
+	// manifest alongside a NEW one for the same module ID (RunOnce's own
+	// touched-digest union, or upgradeModule's own old∪touched∪new render),
+	// etcidentity.Collect/etcsudoers.CollectFromManifests both keep the
+	// FIRST occurrence of a given name and only ever CONFLICT-REPORT (never
+	// silently merge) a same-name entry that later disagrees on UID/GID —
+	// so which manifest is ordered first decides which one's values win a
+	// same-name collision. This is ACCEPTED regardless of ordering: either
+	// resolution describes a digest that either already ran or is about to,
+	// and the discrepancy is always surfaced via reconciler:identity_conflict
+	// rather than silently applied. What this does NOT catch: two DIFFERENT
+	// names colliding on the SAME UID/GID — Collect's own conflict detection
+	// is keyed by name, not by id, so that case renders two passwd entries
+	// sharing one UID with no warning at all. Also accepted here — a bump
+	// that both renames a user's login name AND keeps its exact old numeric
+	// id is exactly the shape a real "svc user rename" migration takes.
+	//
+	// The sudoers side of the SAME union is a temporary WIDENING for as
+	// long as a bump stays pending (a grant either the old or the touched
+	// side declares is honoured), WIDER than either digest alone would
+	// grant on its own. Also accepted: sudoers scope creep for the
+	// duration of an in-flight upgrade is a smaller risk than a
+	// crash-restarting unit finding a sudo rule it needs missing. O8(c)
+	// (review round 12): that duration is VISIBLE (PendingDigest + the
+	// heartbeat's PendingModuleDigests stay set the entire time) but is
+	// NOT bounded — a crash-looping settle failure retries under
+	// backoffAllows' growing wait, and a revert that itself keeps failing
+	// retries under the same backoff — either can hold this union open for
+	// as long as the underlying failure persists. "Visible" is the actual
+	// mitigation here, not "bounded".
+	identitySet, conflicts := etcidentity.Collect(manifests)
+	for _, c := range conflicts {
+		r.cfg.OnError(stagePrefix+"identity_conflict",
+			fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
+				c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
+	}
+	var firstErr error
+	if err := applyIdentity(identitySet); err != nil {
+		r.cfg.OnError(stagePrefix+"identity_write", err)
+		firstErr = fmt.Errorf("identity: %w", err)
+	}
+	// Make the filesystem agree with the passwd we just rendered: managed
+	// home dirs must be owned by the user etcidentity declared (uid/gid =
+	// platform source of truth) and /home must stay traversable, else sshd
+	// and any unprivileged service with HOME there break. Idempotent.
+	reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
+	if err := applySudoers(etcsudoers.CollectFromManifests(manifests)); err != nil {
+		r.cfg.OnError(stagePrefix+"sudoers_write", err)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("sudoers: %w", err)
+		}
+	}
+	return firstErr
 }
 
 // applyModuleSecurityPolicy is the EFFECTFUL half: builds/validates the

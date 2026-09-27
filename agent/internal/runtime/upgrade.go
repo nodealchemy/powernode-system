@@ -98,12 +98,6 @@ func (r *Reconciler) recordPendingDigestAttempt(current *mount.State, moduleID s
 		if m.ID == moduleID {
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
-			// Q3 (review round 14, LOW): ALSO record that steps 1-3 genuinely
-			// refused this target — see PendingDigestActuallyRefused's own
-			// doc. Every call site of this function IS one of steps 1-3's
-			// own refusal points, so this belongs here rather than
-			// duplicated at each call site.
-			current.AttachedModules[i].PendingDigestActuallyRefused = true
 			break
 		}
 	}
@@ -377,10 +371,6 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 				current.AttachedModules[i].PendingDigest = newMod.Digest
 				current.AttachedModules[i].PendingDigestAttempts = 0
 				current.AttachedModules[i].PendingConflictRecoveryAttempted = false
-				// Q3 (review round 14): a fresh target's own steps 1-3 have
-				// not run yet — any refusal recorded belonged to whatever
-				// was PREVIOUSLY pending, not this one.
-				current.AttachedModules[i].PendingDigestActuallyRefused = false
 				// Q5 (review round 14): a fresh upgrade episode's own
 				// attempts have not been reset-for-revert yet either — see
 				// PendingRevertAttemptsReset's own doc.
@@ -488,6 +478,38 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 		return
 	}
 
+	// S1 (delta review on 5f61d389, HIGH): render and APPLY identity/sudoers
+	// for old ∪ touched ∪ new right here — the one point in the tick that
+	// actually knows step 4 is about to restart units under the new digest.
+	// RunOnce's own render (reconcile.go) never looks at newMf at all
+	// (S1's whole point — see that render block's own doc), so if this
+	// module's new digest introduces a user, NOTHING else in this tick ever
+	// writes it before now. If this render/apply fails, refuse before step 4
+	// ever restarts anything: restore step 2's drop-in snapshot (nothing has
+	// restarted yet) and count it against backoff exactly like a step 1-3
+	// refusal, using the SAME code path RunOnce itself uses
+	// (applyIdentityAndSudoers, reconcile.go) so there is only one place that
+	// decides how identity/sudoers precedence, conflicts and writes work.
+	bumpIdentityManifests := make([]*manifest.Manifest, 0, len(old.PendingTouchedDigests)+2)
+	if oldMf != nil {
+		bumpIdentityManifests = append(bumpIdentityManifests, oldMf)
+	}
+	for _, digest := range old.PendingTouchedDigests {
+		if digest == old.Digest {
+			continue // already covered by oldMf above
+		}
+		if snap, err := manifest.LoadAttachedSnapshot(r.cfg.ManifestRoot, old.ID, digest); err == nil && snap != nil {
+			bumpIdentityManifests = append(bumpIdentityManifests, snap)
+		}
+	}
+	bumpIdentityManifests = append(bumpIdentityManifests, newMf)
+	if err := r.applyIdentityAndSudoers(bumpIdentityManifests, "reconciler:upgrade_"); err != nil {
+		r.noteUnconverged("reconciler:upgrade_identity", newMod.ID, fmt.Errorf("module %s: identity/sudoers render failed, refusing to restart: %w", newMod.ID, err))
+		restoreDropInSnapshot(dropInSnap, nil, r.cfg.OnError)
+		r.recordPendingDigestAttempt(current, newMod.ID) // P7: count against backoff
+		return
+	}
+
 	// M9 (review round 9, HIGH) / O8(d) (review round 12): PendingDigest
 	// itself is already set (moved to the top of this function, above — see
 	// that block's own doc). What happens HERE, immediately before step 4
@@ -521,10 +543,6 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 			current.AttachedModules[i].PendingDigestUnitsTouched = true
 			current.AttachedModules[i].PendingDigestAttempts++
 			current.AttachedModules[i].PendingDigestLastAttemptUnix = nowForUpgradeBackoff().Unix()
-			// Q3 (review round 14): this target just reached step 4 — it is
-			// touched now, not merely "refused"; PendingTouchedDigests/
-			// PendingIntroducedUnits take over the render from here.
-			current.AttachedModules[i].PendingDigestActuallyRefused = false
 			current.AttachedModules[i].PendingIntroducedUnits = unionStrings(current.AttachedModules[i].PendingIntroducedUnits, newlyIntroduced)
 			// Q1 (review round 14, MEDIUM): accumulate THIS target's own
 			// digest into PendingTouchedDigests — see that field's own doc.
@@ -720,18 +738,35 @@ func (r *Reconciler) upgradeModule(ctx context.Context, current *mount.State, u 
 	// Step 7: replace the AttachedModules entry by ID (never append —
 	// there must only ever be one entry per module ID), and write the
 	// re-attach stamp.
+	//
+	// S1 (delta review on 5f61d389): collapse EVERY entry with this ID into
+	// the single committed newMod, not just the first match. Simply
+	// overwriting each matching index in place (still one loop, no `break`)
+	// is NOT enough — it would leave two IDENTICAL newMod rows for the M4
+	// duplicate-state-entry case, permanently: TestReconcile_
+	// DuplicateBumpEntryRunsUpgradeExactlyOnce's own reconcile.go "M4 fix
+	// (b)" orphan cleanup only prunes a row whose digest DIFFERS from the
+	// now-desired one, so two rows already at the same (correct) digest
+	// would never be pruned. Instead, drop every OTHER matching row here —
+	// this makes that later cleanup tick a no-op for THIS case (nothing left
+	// to prune) rather than removing its job.
 	newMod.Units = newMf.UnitNames()
 	replaced := false
-	for i, m := range current.AttachedModules {
+	dedup := make([]mount.Module, 0, len(current.AttachedModules))
+	for _, m := range current.AttachedModules {
 		if m.ID == newMod.ID {
-			current.AttachedModules[i] = newMod
-			replaced = true
-			break
+			if !replaced {
+				dedup = append(dedup, newMod)
+				replaced = true
+			}
+			continue
 		}
+		dedup = append(dedup, m)
 	}
 	if !replaced {
-		current.AttachedModules = append(current.AttachedModules, newMod)
+		dedup = append(dedup, newMod)
 	}
+	current.AttachedModules = dedup
 	current.LastAttachedManifestHashes[newMod.ID] = r.attachStamp(newMod.ID, newMf)
 	// N3 (review round 11): persist the NEW digest's own snapshot at the
 	// moment it becomes the attached, running content — a LATER bump of
