@@ -21,11 +21,23 @@ import (
 // TestHostsControlPlaneModule_HubModuleNameMatches is the direct unit test
 // for the pin itself: a module named exactly like one of the pinned
 // control-plane identities is a positive match.
+//
+// Round Z, Z8 (reviewer A): the original version of this test only ever
+// supplied "powernode-hub-backend" — a mutant that special-cased the
+// -backend name (e.g. hardcoding the comparison instead of reading
+// hubModuleNames, or dropping one of the other two map entries) would
+// survive, since nothing exercised powernode-hub-worker or
+// powernode-extension-system at all. Table-driven over all three pinned
+// names closes that gap.
 func TestHostsControlPlaneModule_HubModuleNameMatches(t *testing.T) {
-	attached := []mount.Module{{ID: "m1"}}
-	manifests := map[string]*manifest.Manifest{"m1": {ID: "m1", Name: "powernode-hub-backend"}}
-	if !hostsControlPlaneModule(attached, manifests) {
-		t.Error("expected a module named powernode-hub-backend to be recognised as control-plane")
+	for name := range hubModuleNames {
+		t.Run(name, func(t *testing.T) {
+			attached := []mount.Module{{ID: "m1"}}
+			manifests := map[string]*manifest.Manifest{"m1": {ID: "m1", Name: name}}
+			if !hostsControlPlaneModule(attached, manifests) {
+				t.Errorf("Z8 REGRESSION: expected a module named %s to be recognised as control-plane", name)
+			}
+		})
 	}
 }
 
@@ -142,27 +154,37 @@ func hubGateReconciler(t *testing.T, m2Name string) (r *Reconciler, client *stub
 // field manipulation above): m2 is a pinned hub module; m1 is an ordinary
 // module whose OWN confinement changes. Even though m1 itself is not the
 // hub module, hosting m2 anywhere on this node must block m1's restart too.
+//
+// Round Z, Z8 (reviewer A): subtests over all three pinned names — the
+// original version only ever ran m2 as "powernode-hub-backend", so a
+// mutant narrowing the end-to-end gate to that one name specifically
+// (rather than reading hubModuleNames generically) would survive.
 func TestConfinementRestart_HubModuleAttachedAnywhereBlocksEveryRestart(t *testing.T) {
-	r, client, runner, manifestRoot := hubGateReconciler(t, "powernode-hub-backend")
-	unit := lifecycle.UnitName("m1", "app")
+	for name := range hubModuleNames {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			r, client, runner, manifestRoot := hubGateReconciler(t, name)
+			unit := lifecycle.UnitName("m1", "app")
 
-	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce tick 1: %v", err)
-	}
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce tick 1: %v", err)
+			}
 
-	if err := os.RemoveAll(filepath.Join(manifestRoot, "m1")); err != nil {
-		t.Fatal(err)
-	}
-	client.responses["/api/v1/system/node_api/modules/m1"] = manifestFixtureWithCaps("abc123", []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
-	runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
-	pre := len(runner.Invocations)
+			if err := os.RemoveAll(filepath.Join(manifestRoot, "m1")); err != nil {
+				t.Fatal(err)
+			}
+			client.responses["/api/v1/system/node_api/modules/m1"] = manifestFixtureWithCaps("abc123", []string{"CAP_CHOWN", "CAP_NET_ADMIN"})
+			runner.StubOutput = map[string][]byte{"systemctl is-active " + unit: []byte("active\n")}
+			pre := len(runner.Invocations)
 
-	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce tick 2: %v", err)
-	}
-	tick2 := runner.Invocations[pre:]
-	if hasSystemctlOp(tick2, "restart", unit) {
-		t.Errorf("Z2 REGRESSION: expected m1's restart to be refused because m2 (a pinned hub module) is attached, invocations=%v", tick2)
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce tick 2: %v", err)
+			}
+			tick2 := runner.Invocations[pre:]
+			if hasSystemctlOp(tick2, "restart", unit) {
+				t.Errorf("Z2/Z8 REGRESSION: expected m1's restart to be refused because m2 (%s, a pinned hub module) is attached, invocations=%v", name, tick2)
+			}
+		})
 	}
 }
 
