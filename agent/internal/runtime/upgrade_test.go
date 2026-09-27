@@ -5604,7 +5604,7 @@ func TestAttachOne_UnionsAnotherAttachedModulesTouchedDigest(t *testing.T) {
 }
 
 // TestUpgradeModule_PreExistingOneshotFailureDoesNotBlockCommit is V1 (live
-// rehearsal on VM 9002, HIGH): on a node with no Claude credential
+// rehearsal on a test node, HIGH): on a node with no Claude credential
 // configured, the real claude-tmux credential oneshot fails with
 // Result=exit-code — operator configuration, not a regression from any
 // digest bump. unitSettled has no memory of what this unit's OWN state was
