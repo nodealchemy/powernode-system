@@ -29,7 +29,7 @@ RSpec.describe "system canonical agent content" do
 
   def age!(slug, description:)
     agent = global(slug)
-    agent.update_columns(description: description, mcp_metadata: agent.mcp_metadata.except(stamp_key))
+    agent.update_columns(description: description, mcp_metadata: agent.mcp_metadata.except(Ai::Agents::CanonicalContentRefresh::STAMP_KEY))
   end
 
   content::AGENTS.each do |slug, entry|
