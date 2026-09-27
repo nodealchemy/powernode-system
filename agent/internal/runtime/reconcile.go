@@ -1033,6 +1033,15 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.cfg.OnError("reconciler:revert_attempts_reset_save", fmt.Errorf("could not persist a revert episode's attempts reset: %w", err))
 		}
 	}
+	// W2 (IMP-caef5c00d63f round W, HIGH): once per boot composition, force
+	// EVERY already-attached module through the ordinary reattach path below
+	// regardless of whether its attach stamp matches — see
+	// confinement_recheck.go's own doc for why the stamp alone (manifest
+	// content, not on-disk bytes) cannot see a compose step that rewrote a
+	// stale/absent drop-in for an unchanged manifest.
+	confinementRecheckKey, confinementRecheckOK := r.confinementRecheckKey()
+	forceConfinementRecheck := confinementRecheckOK && current.ConfinementReconfirmedAgainst != confinementRecheckKey
+
 	toReattach := make(mount.ModuleStack, 0)
 	for _, mod := range desired {
 		if !attachedNow[mod.ID] {
@@ -1056,9 +1065,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		fresh := r.attachStamp(mod.ID, mf)
-		if pendingRevertIDs[mod.ID] || current.LastAttachedManifestHashes[mod.ID] != fresh {
+		if pendingRevertIDs[mod.ID] || current.LastAttachedManifestHashes[mod.ID] != fresh || forceConfinementRecheck {
 			toReattach = append(toReattach, mod)
 		}
+	}
+	if forceConfinementRecheck {
+		// Marked done for THIS composition regardless of each individual
+		// module's own outcome below — a module whose reattach genuinely
+		// fails this tick is not lost: attachModule never updates its stamp
+		// on failure, so the ORDINARY stamp-diff check re-queues it into
+		// toReattach on every later tick exactly as it already does for any
+		// other reattach failure, independent of this key.
+		current.ConfinementReconfirmedAgainst = confinementRecheckKey
 	}
 
 	if r.cfg.DryRun {

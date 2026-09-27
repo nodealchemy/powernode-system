@@ -76,6 +76,30 @@ type State struct {
 	// retried rather than silently marked done.
 	RebasedAgainst string `json:"rebased_against,omitempty"`
 
+	// ConfinementReconfirmedAgainst (W2, IMP-caef5c00d63f round W, HIGH)
+	// names the boot composition (runtime.stateRebaseKeyOf: same key shape
+	// RebasedAgainst uses — boot id + compose time, not the kernel boot id
+	// alone) the live path last forced EVERY currently-attached module's
+	// security drop-ins to be RE-APPLIED for, regardless of whether the
+	// attach stamp matched.
+	//
+	// The attach stamp compares MANIFEST content, not what is actually on
+	// disk — the drop-ins themselves live in the tmpfs upper, rewritten
+	// fresh by EVERY boot's own compose step, possibly by an OLDER
+	// initramfs agent binary that renders a different (or no) drop-in for
+	// the SAME manifest content. A boot whose compose wrote a stale/absent
+	// drop-in for an already-stamped module is invisible to the ordinary
+	// stamp-diff check: the stamp still matches, so the module never
+	// re-enters the reattach loop, and the drop-in stays wrong until the
+	// next manifest edit — which may never come.
+	//
+	// Written on the first live reconcile tick of each NEW composition
+	// (whether or not anything actually needed re-applying); carried
+	// through unchanged by every other writer, so a tick that could not
+	// determine the current composition (root mode not native, no usable
+	// boot breadcrumb) never marks it done and a later tick retries.
+	ConfinementReconfirmedAgainst string `json:"confinement_reconfirmed_against,omitempty"`
+
 	// SecurityFailClosedUnits (R6, review round 14) is the LAST PUBLISHED
 	// copy of the live reconcile path's own fail-closed set
 	// (Reconciler.SecurityFailClosedUnits — see that method's own doc for
