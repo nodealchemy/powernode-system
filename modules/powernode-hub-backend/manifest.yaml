@@ -83,90 +83,149 @@ services:
     # the traefik ingress dirs' setgid) before this service starts —
     # see `dependencies:` below and rails-setup.sh's own header comment
     # for the full inventory of what moved and why.
-    start_command: "/usr/local/bin/rails-start.sh"
-    restart_policy: always
-    user: powernode-rails
-    working_directory: /opt/powernode/server
-    env:
-      RAILS_ENV: production
-      RAILS_LOG_TO_STDOUT: "1"
-      DATABASE_URL: "postgres://powernode@localhost:5432/powernode_production"
-      REDIS_URL: "redis://localhost:6379/0"
-      # Gate for extensions_loader_helper.rb's discover_extension_gems_by_visibility:
-      # without it, a deployed node has no .gitmodules (not in file_spec below), so
-      # every on-disk extension (including the public system extension composed
-      # via the powernode-extension-system module) reads as private-by-determination
-      # and gets silently skipped — the Gemfile resolves core-only and the composed
-      # extension never loads, with no error. Setting this to "1" tells the Gemfile
-      # a node's disk contents ARE the composition decision (a NodeModule put an
-      # extension there on purpose), loading every present extension regardless of
-      # public/private. MUST live here (systemd env, not the generated
-      # backend-default.conf secrets file): rails-start.sh only writes that file on
-      # first-boot secret generation, so a persisted secrets file from an older
-      # image would never pick this up on a later image upgrade.
-      POWERNODE_DEPLOYED: "1"
-      # These two overrides were introduced together because this all-in-one hub
-      # had NEITHER backing table: the Rails 8 defaults (solid_cache_store /
-      # solid_queue) hit a missing table, and Rails.cache writes plus db:seed's
-      # site-settings step failed on "solid_cache_entries does not exist".
-      #
-      # MUST live here (systemd env), not just in the generated
-      # backend-default.conf: rails-start.sh only writes the secrets file on
-      # first-boot generation, so a persisted secrets file from an older image
-      # never picks these up.
-      #
-      # THAT JUSTIFICATION HAS EXPIRED FOR CACHE, AND ONLY FOR CACHE
-      # (IMP-a95f7b6b3e01). db/cache_migrate/20260904175500_create_solid_cache_entries.rb
-      # now ships the table, and config/database.yml's production `cache:` entry
-      # declares `migrations_paths: db/cache_migrate`, so the db:migrate
-      # rails-start.sh already runs creates it — on a fresh install and on an
-      # established host's next boot alike. rails-start.sh's own copy of this
-      # note was corrected in 815d07cb7 and says the same thing in different
-      # words; grepping one of the two misses the other.
-      #
-      # There is still NO db/queue_migrate (nor db/cable_migrate), so
-      # solid_queue's table genuinely does not exist and QUEUE_ADAPTER keeps its
-      # original reason. The server also does not bundle sidekiq (background work
-      # goes to hub-worker over HTTP), so async remains the safe table-free
-      # ActiveJob fallback for stray enqueues.
-      #
-      # WHY CACHE_STORE STAYS PINNED ANYWAY, deliberately and not by inertia:
-      # unpinning it is a live-hub deploy decision, not a config tidy-up. A cache
-      # store that cannot be reached at boot fails a self-hosted hub closed, and
-      # this hub cannot be recovered by the control plane it is running.
-      #
-      # The correctness prerequisite for solid_cache IS now landed:
-      # CacheVersioning no longer uses a resumable counter, and no longer falls
-      # back to a shared "never bumped" namespace either — a swept version row
-      # used to let a later bump re-issue keys a previous bump had retired.
-      # Deliberately NOT listed as a further prerequisite: config/cache.yml's
-      # missing max_age. Setting it explicitly to 2.weeks changes nothing, and
-      # setting it to nil only disables the age sweep — the cache_full sweep
-      # (max_size: 256 MB) evicts the version row regardless and ignores
-      # created_at entirely, so that knob protects nothing the token change did
-      # not already handle.
-      #
-      # WHAT THE PIN COSTS TODAY, stated so nobody assumes otherwise: MemoryStore
-      # is per-process, so each puma worker holds its own cache and a
-      # CacheVersioning bump in one retires nothing in the others or in
-      # hub-worker. Every invalidation is therefore per-process here. That is not
-      # a regression — MemoryStore's #delete_matched was equally per-process — but
-      # it does mean cross-process invalidation is not yet delivered in
-      # production. See app/services/concerns/cache_versioning.rb.
-      CACHE_STORE: "memory_store"
-      QUEUE_ADAPTER: "async"
-      # Pin the internal CA adapter. Unset, System::InternalCaService#
-      # resolve_default_mode probes Vault LIVE and prefers it in production, so
-      # the first restart after Vault becomes reachable would silently switch
-      # this hub from its on-disk anchor to a Vault-issued chain -- a CA
-      # ROTATION, which the service's own docs classify as a deliberate,
-      # planned operation and not something a health probe should trigger.
-      # Every certificate issued by the local anchor would stop verifying.
-      # Pinning "local" makes adopting Vault an explicit operator change.
-      # (POWERNODE_CA_LOCAL_DIR is NOT set here: its value depends on whether
-      # /persist is a mountpoint, which a static manifest value cannot express,
-      # so rails-start.sh exports it.)
-      POWERNODE_CA_MODE: "local"
+    #
+    # unit_body, not start_command/user/working_directory/env (IMP-
+    # 094d900f9093 part 2): the structured Service fields the agent's
+    # renderer understands cannot express ExecStartPre (see
+    # agent/internal/lifecycle/service.go's renderUnitBodyMode doc
+    # comment, and rails-setup's own header above, which hit the same
+    # limit first) — UnitBody is mutually exclusive with StartCommand,
+    # so getting an ExecStartPre= on THIS unit means hand-writing the
+    # whole body. The ExecStartPre=-+ below re-locks Gemfile.lock (root,
+    # exempt from this unit's own User=/CapabilityBoundingSet=[] — the
+    # `+` prefix runs that one line with full privileges, per
+    # systemd.service(5)) on EVERY rails start, closing the gap where a
+    # live module refresh restarting only this unit skips rails-setup
+    # entirely (see rails-relock-gemfile.sh's header for the full
+    # incident). The leading `-` (review round) makes a FAILURE of that
+    # one line -- including 203/EXEC if the helper is ever missing or
+    # not executable, the exact class of accident this same task's own
+    # review caught on rails-setup.sh itself -- non-fatal to the unit;
+    # without it, rails' own start job would be cancelled the same way
+    # rails-setup's was when ITS executable bit was lost. `capabilities:`,
+    # `health:`, `dependencies:` and `exposed_ports:` below are
+    # unaffected by this switch — none of them are rendered by the
+    # StartCommand/UnitBody branch, so they keep working exactly as
+    # before. Every other field that WAS structured (User=,
+    # WorkingDirectory=, the Environment= lines, Restart=, RestartSec=,
+    # the [Install] section) is now hand-maintained in the body below
+    # instead of generated — a future change to any of those must be made
+    # here, not by adding a structured field back (adding both would be
+    # silently ignored: UnitBody wins outright).
+    #
+    # TimeoutStartSec=180 (review round): ExecStartPre= counts against
+    # the unit's own start timeout (default 90s for Type=simple) — shorter
+    # than rails-relock-gemfile.sh's own internal `timeout -k 10 120`
+    # bound, so without raising this, systemd would kill the whole start
+    # job at 90s before that internal timeout ever gets to fire and log
+    # anything. Keep this >= that script's own bound (120+10) if either
+    # changes.
+    unit_body: |
+      [Unit]
+      Description=Powernode service rails (module powernode-hub-backend)
+      [Service]
+      Type=simple
+      TimeoutStartSec=180
+      User=powernode-rails
+      WorkingDirectory=/opt/powernode/server
+      Environment=RAILS_ENV=production
+      Environment=RAILS_LOG_TO_STDOUT=1
+      Environment=DATABASE_URL=postgres://powernode@localhost:5432/powernode_production
+      Environment=REDIS_URL=redis://localhost:6379/0
+      Environment=POWERNODE_DEPLOYED=1
+      Environment=CACHE_STORE=memory_store
+      Environment=QUEUE_ADAPTER=async
+      Environment=POWERNODE_CA_MODE=local
+      ExecStartPre=-+/usr/local/bin/rails-relock-gemfile.sh
+      ExecStart=/usr/local/bin/rails-start.sh
+      Restart=always
+      RestartSec=5s
+      [Install]
+      WantedBy=multi-user.target
+    # Env var rationale (why each Environment= line above is pinned here
+    # rather than left to the generated backend-default.conf secrets
+    # file — unchanged by the unit_body switch, just no longer attached
+    # to a structured `env:` map key):
+    #
+    # DATABASE_URL / REDIS_URL / RAILS_LOG_TO_STDOUT: standard boot config,
+    # no special reasoning.
+    #
+    # POWERNODE_DEPLOYED=1 — gate for extensions_loader_helper.rb's
+    # discover_extension_gems_by_visibility: without it, a deployed node
+    # has no .gitmodules (not in file_spec below), so every on-disk
+    # extension (including the public system extension composed via the
+    # powernode-extension-system module) reads as private-by-determination
+    # and gets silently skipped — the Gemfile resolves core-only and the
+    # composed extension never loads, with no error. Setting this to "1"
+    # tells the Gemfile a node's disk contents ARE the composition
+    # decision (a NodeModule put an extension there on purpose), loading
+    # every present extension regardless of public/private. MUST live
+    # here (systemd env, not the generated backend-default.conf secrets
+    # file): rails-start.sh only writes that file on first-boot secret
+    # generation, so a persisted secrets file from an older image would
+    # never pick this up on a later image upgrade.
+    #
+    # CACHE_STORE / QUEUE_ADAPTER — these two overrides were introduced
+    # together because this all-in-one hub had NEITHER backing table: the
+    # Rails 8 defaults (solid_cache_store / solid_queue) hit a missing
+    # table, and Rails.cache writes plus db:seed's site-settings step
+    # failed on "solid_cache_entries does not exist".
+    #
+    # MUST live here (systemd env), not just in the generated
+    # backend-default.conf: rails-start.sh only writes the secrets file on
+    # first-boot generation, so a persisted secrets file from an older
+    # image never picks these up.
+    #
+    # THAT JUSTIFICATION HAS EXPIRED FOR CACHE, AND ONLY FOR CACHE
+    # (IMP-a95f7b6b3e01). db/cache_migrate/20260904175500_create_solid_cache_entries.rb
+    # now ships the table, and config/database.yml's production `cache:` entry
+    # declares `migrations_paths: db/cache_migrate`, so the db:migrate
+    # rails-start.sh already runs creates it — on a fresh install and on an
+    # established host's next boot alike. rails-start.sh's own copy of this
+    # note was corrected in 815d07cb7 and says the same thing in different
+    # words; grepping one of the two misses the other.
+    #
+    # There is still NO db/queue_migrate (nor db/cable_migrate), so
+    # solid_queue's table genuinely does not exist and QUEUE_ADAPTER keeps its
+    # original reason. The server also does not bundle sidekiq (background work
+    # goes to hub-worker over HTTP), so async remains the safe table-free
+    # ActiveJob fallback for stray enqueues.
+    #
+    # WHY CACHE_STORE STAYS PINNED ANYWAY, deliberately and not by inertia:
+    # unpinning it is a live-hub deploy decision, not a config tidy-up. A cache
+    # store that cannot be reached at boot fails a self-hosted hub closed, and
+    # this hub cannot be recovered by the control plane it is running.
+    #
+    # The correctness prerequisite for solid_cache IS now landed:
+    # CacheVersioning no longer uses a resumable counter, and no longer falls
+    # back to a shared "never bumped" namespace either — a swept version row
+    # used to let a later bump re-issue keys a previous bump had retired.
+    # Deliberately NOT listed as a further prerequisite: config/cache.yml's
+    # missing max_age. Setting it explicitly to 2.weeks changes nothing, and
+    # setting it to nil only disables the age sweep — the cache_full sweep
+    # (max_size: 256 MB) evicts the version row regardless and ignores
+    # created_at entirely, so that knob protects nothing the token change did
+    # not already handle.
+    #
+    # WHAT THE PIN COSTS TODAY, stated so nobody assumes otherwise: MemoryStore
+    # is per-process, so each puma worker holds its own cache and a
+    # CacheVersioning bump in one retires nothing in the others or in
+    # hub-worker. Every invalidation is therefore per-process here. That is not
+    # a regression — MemoryStore's #delete_matched was equally per-process — but
+    # it does mean cross-process invalidation is not yet delivered in
+    # production. See app/services/concerns/cache_versioning.rb.
+    #
+    # POWERNODE_CA_MODE=local — pin the internal CA adapter. Unset,
+    # System::InternalCaService#resolve_default_mode probes Vault LIVE and
+    # prefers it in production, so the first restart after Vault becomes
+    # reachable would silently switch this hub from its on-disk anchor to
+    # a Vault-issued chain -- a CA ROTATION, which the service's own docs
+    # classify as a deliberate, planned operation and not something a
+    # health probe should trigger. Every certificate issued by the local
+    # anchor would stop verifying. Pinning "local" makes adopting Vault an
+    # explicit operator change. (POWERNODE_CA_LOCAL_DIR is NOT set here:
+    # its value depends on whether /persist is a mountpoint, which a
+    # static unit_body value cannot express, so rails-start.sh exports it.)
     exposed_ports:
       - { port: 3000, protocol: tcp, name: http }
     # IMP-094d900f9093: rails now runs with ZERO capabilities. This used to

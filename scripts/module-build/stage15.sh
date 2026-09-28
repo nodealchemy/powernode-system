@@ -731,11 +731,15 @@ case "$MODULE" in
     # pointer, and never from whatever version happens to be running on
     # the hub being targeted. That's fine: the lock only cares about the
     # extension gemspec's name/version/declared dependencies, not its
-    # runtime code, and a mismatch between the two is exactly what
-    # rails-setup's own re-lock at boot remains the safety net for (this
-    # module ships no BUNDLE_FROZEN, so that boot-time re-lock is never
-    # blocked from correcting a genuine drift — it is a backstop, not the
-    # only place this gets resolved).
+    # runtime code. A mismatch between the two is now caught HERE, at
+    # build time, by the frozen-equivalence check below (IMP-094d900f9093
+    # part 2) — rails itself runs with BUNDLE_FROZEN=1 and capabilities:[]
+    # on the deployed hub, so it can no longer repair a genuine drift at
+    # boot the way it silently used to; rails-setup's own re-lock (via
+    # rails-relock-gemfile.sh, also run on every rails start now) remains
+    # the runtime backstop for drift that happens AFTER this build — e.g.
+    # a live module refresh changing the node's composition — but this
+    # build-time check is what catches a bad build before it ships at all.
     #
     # SCOPE: only the system extension is staged here, and the assertion
     # below checks only for it. If a second extension module is ever
@@ -771,6 +775,91 @@ case "$MODULE" in
       --lock /tmp/fat/opt/powernode/server/Gemfile.lock \
       --gem powernode_system \
       --remote ../extensions/system/server
+
+    # --- Build-time frozen-equivalence check (review round R3 S5; replaced
+    # under review round R4 item 4) ---------------------------------------
+    # The assertion above only proves the extension's PATH remote survived
+    # the re-lock — it says nothing about whether EVERY gem the lock lists
+    # is actually resolvable from what was just cached. A version bump, a
+    # dropped transitive dependency, or a CHECKSUMS mismatch all pass the
+    # PATH-presence check above and still crash-loop a frozen rails at
+    # boot.
+    #
+    # REPLACED (review round R4, item 4): R3's version of this check ran a
+    # REAL, native-compiling `bundle install --local` here, in the
+    # BUILDER. That is the wrong toolchain to trust for this assertion —
+    # the builder may lack libpq/libyaml/etc headers a deployed hub's
+    # runtime image ships, or may run a DIFFERENT Ruby than the deployed
+    # one, so a failure here could be a builder-environment gap rather
+    # than a real lock/cache defect (and, worse, a builder that happens to
+    # have everything could pass while the actual deployed image still
+    # fails). Replaced with a NON-COMPILING, metadata-only equivalent:
+    # load the just-built Gemfile/Gemfile.lock exactly the way a frozen
+    # rails does at boot (Bundler::Definition, POWERNODE_DEPLOYED=1
+    # BUNDLE_FROZEN=1) and (1) call ensure_equivalent_gemfile_and_lockfile
+    # — the same equivalence check `bundle install --local` performs
+    # before it ever touches a gem — then (2) confirm every locked spec's
+    # cached .gem actually exists in vendor/cache, via Bundler's own
+    # Source::Rubygems#cached_gem (a PATH/git-sourced spec — the extension
+    # itself — has no cached_gem and is correctly skipped, the same way
+    # rails-relock-gemfile.sh's own resolve never expects one). Neither
+    # step compiles or installs anything, so this exercises exactly the
+    # metadata a frozen boot depends on, independent of what headers or
+    # Ruby the builder itself happens to have.
+    rm -rf /tmp/hub-backend-frozen-check
+    mkdir -p /tmp/hub-backend-frozen-check
+    frozen_check_status=0
+    ( cd /tmp/fat/opt/powernode/server
+      export POWERNODE_DEPLOYED=1
+      export BUNDLE_FROZEN=1
+      export BUNDLE_GEMFILE=/tmp/fat/opt/powernode/server/Gemfile
+      export BUNDLE_APP_CONFIG=/tmp/hub-backend-frozen-check
+      ruby -e '
+        require "bundler"
+
+        begin
+          definition = Bundler::Definition.build(Bundler.default_gemfile, Bundler.default_lockfile, false)
+          definition.ensure_equivalent_gemfile_and_lockfile
+        rescue StandardError => e
+          warn "FATAL: Gemfile/Gemfile.lock are not frozen-equivalent (#{e.class}): #{e.message}"
+          exit 1
+        end
+
+        # Bundler::Source::Rubygems#cached_gem is NOT what it sounds like
+        # here (verified live, bundler 2.7.1): it does not exist on this
+        # class at all in this version, so a naive
+        # `source.respond_to?(:cached_gem)` guard silently skips EVERY
+        # spec and this check would pass no matter what vendor/cache
+        # holds. Check the vendor/cache DIRECTORY directly instead
+        # (Bundler.app_cache — the exact path `bundle cache` just wrote
+        # above) and only for Rubygems-sourced specs; a PATH source (the
+        # extension itself) or the synthetic Metadata source (the "bundler"
+        # pseudo-spec) never has -- and never needs -- a vendor/cache entry.
+        vendor_cache_dir = Bundler.app_cache
+        missing = []
+        definition.specs.each do |spec|
+          next unless spec.source.is_a?(Bundler::Source::Rubygems)
+          cached = vendor_cache_dir.join("#{spec.full_name}.gem")
+          missing << spec.full_name unless cached.exist?
+        end
+
+        unless missing.empty?
+          warn "FATAL: #{missing.size} locked gem(s) have no cached .gem in #{vendor_cache_dir}: #{missing.sort.join(%(, ))}"
+          exit 1
+        end
+
+        puts "[hub-backend build] frozen-equivalence OK: #{definition.specs.count} locked specs, every rubygems-sourced gem cached in #{vendor_cache_dir}"
+      '
+    ) || frozen_check_status=$?
+    # Clean up the scratch BUNDLE_APP_CONFIG on EVERY path, success or
+    # failure, before deciding whether to abort the build (review round
+    # R4, item 4 -- the R3 version's cleanup line sat AFTER the `if`
+    # block's own `exit 1`, so a failing check never ran it).
+    rm -rf /tmp/hub-backend-frozen-check
+    if [ "$frozen_check_status" -ne 0 ]; then
+      echo "FATAL: the just-built Gemfile.lock does not resolve under BUNDLE_FROZEN=1 from vendor/cache alone -- the deployed hub's rails (which runs with capabilities:[] and cannot repair its own lock) would crash-loop at boot on this exact failure (IMP-094d900f9093 part 2)" >&2
+      exit 1
+    fi
 
     # The staged extensions/ tree was only ever needed for the re-lock
     # above to see it — see this section's opening comment for why it's

@@ -88,6 +88,17 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     # than one whitespace-separated token and are deliberately excluded:
     # THOSE files are read by an interpreter, which only needs read
     # permission, not the executable bit.
+    #
+    # Leading `-`/`+`/`!`/`@` (IMP-094d900f9093 part 2, review round) are
+    # systemd's own per-command prefix markers on ExecStart=/ExecStartPre=/
+    # ExecStartPost=/etc (systemd.service(5)) — `-` ignores the command's
+    # exit status, `+` runs with full privileges, `!`/`!!` run with only
+    # partial privilege elevation, `@` overrides argv[0] — none are part
+    # of the path, and systemd accepts them combined in any order (e.g.
+    # `-+/path`). Stripped in a loop before the single-token/absolute-path
+    # check below, so a prefixed command is still caught by it.
+    EXEC_PREFIX_CHARS = %w[- + ! @].freeze
+
     def bare_exec_path(command)
       return nil unless command.is_a?(String)
 
@@ -95,14 +106,17 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       return nil unless tokens.size == 1
 
       path = tokens.first
+      path = path[1..] while path.length > 1 && EXEC_PREFIX_CHARS.include?(path[0])
       path.start_with?("/") ? path : nil
     end
 
-    # Every ExecStart= line inside a raw `unit_body:` (rails-setup has no
-    # structured `start_command`, only a hand-written unit) plus every
-    # structured `start_command:` field (rails) across ALL services in
-    # THIS module's manifest -- generalized so a FUTURE bare-path service
-    # in this manifest is caught the same way, not just this one file.
+    # Every ExecStart=/ExecStartPre= line inside a raw `unit_body:`
+    # (rails-setup and, as of IMP-094d900f9093 part 2, rails itself have
+    # no structured `start_command`, only a hand-written unit) plus every
+    # structured `start_command:` field across ALL services in THIS
+    # module's manifest -- generalized so a FUTURE bare-path service (or
+    # ExecStartPre) in this manifest is caught the same way, not just this
+    # one file.
     def bare_rootfs_execs(manifest)
       execs = []
       (manifest["services"] || []).each do |svc|
@@ -110,7 +124,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
           execs << cmd
         end
         if (unit_body = svc["unit_body"])
-          unit_body.scan(/^ExecStart=(.*)$/).each do |(line)|
+          unit_body.scan(/^ExecStart(?:Pre)?=(.*)$/).each do |(line)|
             path = bare_exec_path(line)
             execs << path if path
           end
@@ -127,13 +141,41 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       out.split(/\s+/).first
     end
 
+    # The INDEX is what actually ships (git_tracked_mode, above) -- but the
+    # index is a cached snapshot: it only reflects the working tree at the
+    # last `git add`, not live. A rewrite that drops the exec bit in the
+    # WORKING TREE (e.g. `mv` from a freshly-created temp file, which takes
+    # umask defaults rather than the original's mode) is invisible to
+    # git_tracked_mode until the next `git add` -- and a spec run in
+    # between (exactly what happened here: IMP-094d900f9093 part 2's own
+    # rewrite of this file dropped the exec bit in the working tree, but
+    # this spec ran BEFORE the subsequent `git add -A` re-staged it, so
+    # git_tracked_mode still read the stale, correct 100755 the index had
+    # from HEAD) reports green on a file that is about to ship broken the
+    # moment someone DOES stage it. Checking the working tree too closes
+    # that ordering gap: it fails regardless of whether the regression has
+    # been staged yet.
+    #
+    # Owner-exec bit only, not an exact mode string: git itself only ever
+    # tracks two states, 100644/100755 (any executable bit collapses to
+    # the same tree entry) -- a working tree file at 775 or 750 is exactly
+    # as fine to `git add` as 755, so asserting the FULL mode here would
+    # fail on legitimate umask differences that were never the bug.
+    def working_tree_executable?(relative_path)
+      full_path = File.join(extension_root, relative_path)
+      return false unless File.exist?(full_path)
+
+      File.executable?(full_path)
+    end
+
     # Sanity-checks the extraction itself, not the fix -- if this finds
     # nothing, every example below would vacuously pass on an empty list,
     # which is worse than not having the spec at all.
-    it "finds at least the two known bare-path services in this manifest (rails-setup, rails)" do
+    it "finds at least the three known bare-path execs in this manifest (rails-setup, rails, rails' ExecStartPre relock)" do
       execs = bare_rootfs_execs(manifest)
       expect(execs).to include("/usr/local/bin/rails-setup.sh")
       expect(execs).to include("/usr/local/bin/rails-start.sh")
+      expect(execs).to include("/usr/local/bin/rails-relock-gemfile.sh")
     end
 
     it "every bare-path ExecStart/start_command in this manifest is committed 100755, not just chmod'd in the working tree" do
@@ -148,6 +190,14 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
           "#{relative} is committed #{mode} but is exec'd directly (no interpreter prefix) by " \
           "#{manifest_path} -- a build that preserves modes (rsync -a, no chmod step) would ship it " \
           "non-executable and the unit fails 203/EXEC at boot"
+
+        # Belt and suspenders against the INDEX being stale (see
+        # working_tree_executable?'s own comment): the file that is
+        # actually on disk right now must ALSO be executable, independent
+        # of whatever the index currently says.
+        expect(working_tree_executable?(relative)).to be(true),
+          "#{relative} is NOT executable on disk right now -- even if the index still shows 100755 from a " \
+          "stale `git add`, this WILL ship broken the next time someone stages it"
       end
     end
 
@@ -2042,454 +2092,24 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     end
   end
 
-  # IMP-01a0e40a-c0ef — rails-setup re-locks Gemfile.lock for THIS NODE's
-  # actual extension composition before rails starts, so rails's own
-  # first Bundler.setup finds a lock that already matches and never needs
-  # to write it itself (that write needed CAP_DAC_OVERRIDE on the
-  # root-owned lockfile). See rails-setup.sh's own header comment on this
-  # section for the full incident and mechanism.
-  describe "IMP-01a0e40a-c0ef: re-locks Gemfile.lock for this node's extension composition" do
-    let(:relock_section) do
-      script[/# --- Re-lock Gemfile\.lock for THIS NODE.*?\n\n(?=# FATAL: STATE_DIR itself)/m]
+  # IMP-01a0e40a-c0ef / IMP-094d900f9093 part 2 -- the re-lock logic that
+  # used to be inlined here moved to a standalone script
+  # (rails-relock-gemfile.sh) so rails.service's own ExecStartPre=+ can
+  # call the SAME logic on every rails start, not just once per boot.
+  # See rails_relock_gemfile_spec.rb for its own spec, and this file's
+  # header comment above for why a root-only prep unit exists at all.
+  describe "IMP-01a0e40a-c0ef / IMP-094d900f9093 part 2: delegates the Gemfile.lock re-lock to a standalone script" do
+    it "calls rails-relock-gemfile.sh, non-fatally, before the FATAL STATE_DIR block" do
+      call_idx  = script.index("/usr/local/bin/rails-relock-gemfile.sh || true")
+      fatal_idx = script.index("# FATAL: STATE_DIR itself")
+      expect(call_idx).not_to be_nil, "rails-setup.sh no longer calls the relock helper at all"
+      expect(fatal_idx).not_to be_nil
+      expect(call_idx).to be < fatal_idx,
+        "the relock call must run BEFORE the FATAL STATE_DIR block, same ordering as when it was inlined"
     end
 
-    # The header comment's own prose documents "bundle install", "bundle lock
-    # --local", and (in path_gems_in_lock's docstring) "exit 1" as things it
-    # explains or forbids -- so index/regex assertions about the actual
-    # CODE's behavior must not be fooled by those words appearing first, or
-    # at all, in the comments. Strip comment-only lines before making any
-    # claim about what the code does.
-    let(:relock_code_lines) do
-      relock_section.lines.reject { |line| line.strip.start_with?("#") }.join
-    end
-
-    it "the section exists, between the bundler app config write and the FATAL STATE_DIR block" do
-      expect(relock_section).not_to be_nil
-    end
-
-    it "does NOT reuse this node's REAL bundler config/path -- that was the HIGH finding (review round)" do
-      expect(relock_code_lines).not_to match(/BUNDLE_APP_CONFIG="\$BUNDLE_CONFIG_DIR"/),
-        "pointing root's bundle resolve at rails-owned $BUNDLE_CONFIG_DIR/$BUNDLE_STATE_DIR lets a " \
-        "compromised rails plant a gemspec root then evaluates as Ruby -- see this section's SECURITY comment"
-      expect(relock_code_lines).not_to match(/BUNDLE_PATH="\$BUNDLE_STATE_DIR"/)
-    end
-
-    it "isolates BUNDLE_APP_CONFIG, BUNDLE_PATH, HOME and TMPDIR under a root-owned scratch dir, as local -x" do
-      %w[BUNDLE_APP_CONFIG BUNDLE_PATH HOME TMPDIR].each do |var|
-        expect(relock_code_lines).to match(/local -x #{var}="\$scratch\//),
-          "#{var} must be `local -x` under $scratch -- exported for this function only, never leaked to the " \
-          "rest of the script, and never under a rails-writable path"
-      end
-    end
-
-    it "drops `bundle check` entirely (review round) -- it hit the same rails-owned-path escalation as the old lock step" do
-      expect(relock_code_lines).not_to match(/bundle\s+check\b/)
-    end
-
-    it "locks with --local only -- no network, and never a full bundle install" do
-      expect(relock_code_lines).to match(/bundle lock --local/)
-      expect(relock_code_lines).not_to match(/bundle\s+install/),
-        "a full `bundle install` compiles native extensions and can fill the small root overlay -- only " \
-        "`bundle lock --local` belongs here"
-    end
-
-    it "resolves into a TEMP lockfile and replaces the real one atomically (mv -f), never writing bundler straight to it" do
-      expect(relock_code_lines).to match(/mktemp "\$RAILS_DIR\/Gemfile\.lock\.relock\.XXXXXX"/)
-      expect(relock_code_lines).to match(/--lockfile="\$tmp_lockfile"/)
-      expect(relock_code_lines).to match(/cmp -s "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"/)
-      expect(relock_code_lines).to match(/mv -f "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"/)
-    end
-
-    it "seeds the temp lockfile from the CURRENT lock (cp -p) BEFORE resolving -- second review round, HIGH #2" do
-      expect(relock_code_lines).to match(/cp -p "\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/),
-        "resolving `--lockfile=` against an EMPTY temp file (mktemp's default) makes bundler fail outright or " \
-        "re-resolve from scratch against the isolated, empty BUNDLE_PATH -- it must be seeded with the CURRENT " \
-        "lock's content first"
-      seed_idx = relock_code_lines.index('cp -p "$RAILS_DIR/Gemfile.lock" "$tmp_lockfile"')
-      lock_idx = relock_code_lines.index("bundle lock --local")
-      expect(seed_idx).not_to be_nil
-      expect(lock_idx).not_to be_nil
-      expect(seed_idx).to be < lock_idx, "must seed the temp lockfile before calling bundle lock, not after"
-    end
-
-    it "matches the ORIGINAL lockfile's mode and owner before the swap -- second review round, HIGH #1" do
-      expect(relock_code_lines).to match(/chmod --reference="\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/),
-        "mktemp creates the temp file 0600; mv installs it with whatever mode it already had -- rails reads the " \
-        "real lockfile only via CAP_DAC_OVERRIDE today, and powernode-rails-exec (no elevated capabilities) " \
-        "already cannot read a 0600 root-owned file at all"
-      expect(relock_code_lines).to match(/chmod 0644 "\$tmp_lockfile"/), "a literal fallback if --reference can't read the original"
-      expect(relock_code_lines).to match(/chown --reference="\$RAILS_DIR\/Gemfile\.lock" "\$tmp_lockfile"/)
-
-      reference_idx = relock_code_lines.index('chmod --reference="$RAILS_DIR/Gemfile.lock" "$tmp_lockfile"')
-      mv_idx        = relock_code_lines.index('mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"')
-      expect(reference_idx).not_to be_nil
-      expect(mv_idx).not_to be_nil
-      expect(reference_idx).to be < mv_idx, "mode/owner must be fixed BEFORE the swap, not after"
-    end
-
-    it "a failed mv does not log \"re-locked\" -- checks mv's own exit status (nit)" do
-      expect(relock_code_lines).to match(/if ! mv -f "\$tmp_lockfile" "\$RAILS_DIR\/Gemfile\.lock"; then/)
-      mv_check_idx    = relock_code_lines.index('if ! mv -f "$tmp_lockfile" "$RAILS_DIR/Gemfile.lock"; then')
-      relocked_log_idx = relock_code_lines.index("re-locked Gemfile.lock")
-      expect(mv_check_idx).not_to be_nil
-      expect(relocked_log_idx).not_to be_nil
-      expect(mv_check_idx).to be < relocked_log_idx, "the mv guard must wrap the success log, not follow it unconditionally"
-    end
-
-    it "wraps the resolve in `timeout -k 10 120` -- a oneshot has no systemd start timeout of its own (nit: -k)" do
-      expect(relock_code_lines).to match(/timeout -k 10 120 "\$BUNDLE_BIN" lock --local/)
-    end
-
-    it "cleans up its scratch dir and temp lockfile on every return, via a RETURN trap, and disarms it on the success path (nit)" do
-      expect(relock_code_lines).to match(/trap 'rm -rf "\$scratch"; rm -f "\$tmp_lockfile"' RETURN/)
-      expect(relock_code_lines).to match(/trap - RETURN/)
-    end
-
-    it "is loud but non-fatal: a lock failure warns and continues, never aborts the script" do
-      expect(relock_code_lines).to match(/echo.*WARNING.*bundle lock --local failed/i)
-      expect(relock_code_lines).not_to match(/\bexit\s+[1-9]/), "must degrade, not abort the script"
-      expect(relock_code_lines).to match(/relock_gemfile_for_this_node \|\| true/),
-        "the caller must tolerate a nonzero return under this script's own set -e"
-    end
-
-    it "documents that non-fatal is only safe while rails still holds the capability ceiling" do
-      expect(relock_section).to match(/rails currently still holds the module's capability ceiling/)
-      expect(relock_section).to match(/stops being a safety net once rails' capabilities are narrowed to \[\]/)
-    end
-
-    it "documents BOTH remaining blockers for rails=[] (review round), not just the manifest change" do
-      expect(relock_section).to match(/rails-start\.sh's own first-boot `bundle install --local`/),
-        "blocker (a): rails-start.sh's first-boot bundle install still touches Gemfile.lock's mtime"
-      expect(relock_section).to match(/a live module refresh that restarts ONLY the `rails` unit/),
-        "blocker (b): a live module refresh restarting only rails does not re-run this script"
-      expect(relock_section).to match(/writeDependencyDirectives/),
-        "blocker (b)'s answer must cite where it was actually checked in the agent, not asserted"
-      expect(relock_section).to match(/systemd\.units, Action/i).or match(/units\.go, Action/)
-    end
-
-    it "runs before the STATE_DIR ownership sweep -- moot for this section's OWN writes now (nothing left under " \
-        "STATE_DIR to sweep), but still correct ordering" do
-      relock_idx = script.index("Re-lock Gemfile.lock for THIS NODE")
-      sweep_idx  = script.index("# LOUD BUT NON-FATAL: everything else under STATE_DIR")
-      expect(relock_idx).not_to be_nil
-      expect(sweep_idx).not_to be_nil
-      expect(relock_idx).to be < sweep_idx
-    end
-
-    it "logs the before and after PATH-gem list, not just pass/fail" do
-      expect(relock_section).to match(/PATH gems before:/)
-      expect(relock_section).to match(/PATH gems after:/)
-    end
-
-    # Genuinely EXECUTES the extracted path_gems_in_lock function against
-    # real fixture lockfiles -- proving the extraction actually parses the
-    # PATH block shape bundler writes, in both the multi-extension (a
-    # dev/CI build, all public extensions present) and no-extension
-    # (nothing composed yet) shapes. The second case is a real, previously
-    # unfixed defect: a lockfile with NO PATH block makes the first grep
-    # in the pipeline exit 1 with nothing for the rest of the pipe to
-    # match either, and under this script's own `set -euo pipefail` that
-    # propagated straight through `set -e` and aborted the WHOLE SCRIPT --
-    # a logging helper taking rails-setup.service down with it. Fixed by
-    # `|| true` at the call site; this test pins that fix by actually
-    # hitting the failure shape, not just reading the source for the
-    # string `|| true`.
-    it "path_gems_in_lock, actually run, extracts PATH gem remotes and tolerates a lockfile with none" do
-      function_body = script[/path_gems_in_lock\(\) \{\n(.*?)\n\}/m, 1]
-      expect(function_body).not_to be_nil
-
-      Dir.mktmpdir do |dir|
-        rails_dir = File.join(dir, "server")
-        FileUtils.mkdir_p(rails_dir)
-
-        run_against = lambda do |lock_contents|
-          File.write(File.join(rails_dir, "Gemfile.lock"), lock_contents)
-          snippet = <<~BASH
-            set -euo pipefail
-            RAILS_DIR=#{rails_dir}
-            path_gems_in_lock() {
-            #{function_body}
-            }
-            path_gems_in_lock || true
-          BASH
-          Open3.capture3("bash", "-c", snippet)
-        end
-
-        multi_extension_lock = <<~LOCK
-          PATH
-            remote: ../extensions/marketing/server
-            specs:
-              powernode_marketing (0.1.0)
-
-          PATH
-            remote: ../extensions/supply-chain/server
-            specs:
-              powernode_supply_chain (0.1.0)
-
-          PATH
-            remote: ../extensions/system/server
-            specs:
-              powernode_system (0.1.0)
-
-          GEM
-            remote: https://rubygems.org/
-        LOCK
-
-        out, err, status = run_against.call(multi_extension_lock)
-        expect(status.success?).to be(true), "aborted on a real multi-extension lock: #{err}"
-        expect(out.split("\n")).to contain_exactly(
-          "../extensions/marketing/server", "../extensions/supply-chain/server", "../extensions/system/server"
-        )
-
-        no_extension_lock = "GEM\n  remote: https://rubygems.org/\n"
-        out, err, status = run_against.call(no_extension_lock)
-        expect(status.success?).to be(true),
-          "a lockfile with NO PATH block must not abort the script under set -e/pipefail: #{err}"
-        expect(out.strip).to eq("")
-      end
-    end
-
-    # Genuinely EXECUTES relock_gemfile_for_this_node (extracted verbatim
-    # from the file, not retyped) against a STUB `bundle` this describe
-    # block substitutes via BUNDLE_BIN -- proves the review-round fixes
-    # (isolation, atomic replace, non-fatal failure) by RUNNING them, not
-    # by reading the source for the right words.
-    describe "relock_gemfile_for_this_node, actually run against a stub bundle" do
-      let(:relock_function_body) do
-        script[/relock_gemfile_for_this_node\(\) \{\n(.*?)\n\}\n/m, 1]
-      end
-      let(:path_gems_function_body) do
-        script[/path_gems_in_lock\(\) \{\n(.*?)\n\}/m, 1]
-      end
-
-      it "the extraction itself found the real function body (sanity-checks the extraction, not the script)" do
-        expect(relock_function_body).not_to be_nil
-        expect(relock_function_body).to include("trap ")
-        expect(relock_function_body).to include("mv -f")
-      end
-
-      # Shared runner: invokes the extracted function via `bash -c` exactly
-      # as rails-setup.sh itself would call it (same function body, same
-      # `path_gems_in_lock` dependency, same BUNDLE_BIN override point).
-      def run_relock(rails_dir:, stub_path:, relock_function_body:, path_gems_function_body:)
-        snippet = <<~BASH
-          set -euo pipefail
-          RAILS_DIR=#{rails_dir}
-          BUNDLE_BIN=#{stub_path}
-          path_gems_in_lock() {
-          #{path_gems_function_body}
-          }
-          relock_gemfile_for_this_node() {
-          #{relock_function_body}
-          }
-          relock_gemfile_for_this_node
-          echo "RELOCK_EXIT=$?"
-        BASH
-        Open3.capture3("bash", "-c", snippet)
-      end
-
-      it "is non-fatal when bundle fails: warns, and the caller's own exit code is 0" do
-        failing_stub = "#!/bin/bash\nexit 1\n"
-        Dir.mktmpdir do |dir|
-          rails_dir = File.join(dir, "server")
-          FileUtils.mkdir_p(rails_dir)
-          File.write(File.join(rails_dir, "Gemfile.lock"), "GEM\n  remote: https://rubygems.org/\n")
-          stub_path = File.join(dir, "bundle")
-          File.write(stub_path, failing_stub)
-          FileUtils.chmod(0o755, stub_path)
-
-          snippet = <<~BASH
-            set -euo pipefail
-            RAILS_DIR=#{rails_dir}
-            BUNDLE_BIN=#{stub_path}
-            path_gems_in_lock() {
-            #{path_gems_function_body}
-            }
-            relock_gemfile_for_this_node() {
-            #{relock_function_body}
-            }
-            relock_gemfile_for_this_node || true
-            echo "SCRIPT_EXIT=$?"
-          BASH
-          out, err, status = Open3.capture3("bash", "-c", snippet)
-
-          expect(status.success?).to be(true), "the driving script must not abort: #{err}"
-          expect(out).to include("SCRIPT_EXIT=0")
-          expect(err).to match(/WARNING.*bundle lock --local failed/i)
-        end
-      end
-
-      it "passes bundle a root-owned scratch env -- BUNDLE_APP_CONFIG/BUNDLE_PATH/HOME/TMPDIR never under STATE_DIR or RAILS_DIR" do
-        Dir.mktmpdir do |dir|
-          rails_dir = File.join(dir, "server")
-          state_dir = File.join(dir, "persist", "powernode-rails") # a rails-writable path this must NEVER touch
-          FileUtils.mkdir_p(rails_dir)
-          FileUtils.mkdir_p(state_dir)
-          File.write(File.join(rails_dir, "Gemfile.lock"), "GEM\n  remote: https://rubygems.org/\n")
-
-          env_log = File.join(dir, "env.log")
-          stub = <<~STUB
-            #!/bin/bash
-            env | sort > "#{env_log}"
-            for arg in "$@"; do
-              case "$arg" in
-                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
-              esac
-            done
-            cp #{File.join(rails_dir, "Gemfile.lock")} "$lockfile"
-            exit 0
-          STUB
-          stub_path = File.join(dir, "bundle")
-          File.write(stub_path, stub)
-          FileUtils.chmod(0o755, stub_path)
-
-          run_relock(rails_dir: rails_dir, stub_path: stub_path,
-                     relock_function_body: relock_function_body, path_gems_function_body: path_gems_function_body)
-
-          env_lines = File.read(env_log).lines
-          %w[BUNDLE_APP_CONFIG BUNDLE_PATH HOME TMPDIR].each do |var|
-            line = env_lines.find { |l| l.start_with?("#{var}=") }
-            expect(line).not_to be_nil, "#{var} was not exported to the bundle invocation at all"
-            value = line.split("=", 2).last.strip
-            expect(value).not_to start_with(state_dir),
-              "#{var}=#{value} points under the rails-writable STATE_DIR -- exactly the HIGH finding this fix closes"
-            expect(value).not_to start_with(rails_dir),
-              "#{var}=#{value} points under RAILS_DIR -- must be an isolated scratch dir instead"
-          end
-        end
-      end
-
-      it "cmp-equal (bundle resolves to the SAME content) makes no replacement -- inode is unchanged" do
-        lock_contents = "GEM\n  remote: https://rubygems.org/\n  specs:\n    foo (1.0)\n"
-        Dir.mktmpdir do |dir|
-          rails_dir = File.join(dir, "server")
-          FileUtils.mkdir_p(rails_dir)
-          File.write(File.join(rails_dir, "Gemfile.lock"), lock_contents)
-          before_inode = File.stat(File.join(rails_dir, "Gemfile.lock")).ino
-
-          # `cp` a real fixture file, not a `cat <<HEREDOC` embedding the
-          # content inline: interpolating multi-line, already-newline-
-          # terminated content into a second heredoc reliably adds an
-          # extra trailing blank line, which would make cmp -s see a
-          # difference that was never really there.
-          resolved_fixture = File.join(dir, "resolved.lock")
-          File.write(resolved_fixture, lock_contents)
-          # Asserts it received the CURRENT lock's content at --lockfile=
-          # time, not an empty file -- this is exactly what would have
-          # caught HIGH #2 (resolving from an empty temp lockfile).
-          stub = <<~STUB
-            #!/bin/bash
-            for arg in "$@"; do
-              case "$arg" in
-                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
-              esac
-            done
-            if [ ! -s "$lockfile" ]; then
-              echo "STUB: --lockfile was EMPTY at invocation time -- not seeded from the current lock" >&2
-              exit 1
-            fi
-            if ! cmp -s "$lockfile" #{File.join(rails_dir, "Gemfile.lock")}; then
-              echo "STUB: --lockfile did not contain the CURRENT lock's content at invocation time" >&2
-              exit 1
-            fi
-            cp #{resolved_fixture} "$lockfile"
-            exit 0
-          STUB
-          stub_path = File.join(dir, "bundle")
-          File.write(stub_path, stub)
-          FileUtils.chmod(0o755, stub_path)
-
-          out, err, status = run_relock(rails_dir: rails_dir, stub_path: stub_path,
-                                         relock_function_body: relock_function_body,
-                                         path_gems_function_body: path_gems_function_body)
-
-          expect(status.success?).to be(true), "aborted: #{err}"
-          expect(out).to include("RELOCK_EXIT=0")
-          expect(out).to include("already matches")
-          after_inode = File.stat(File.join(rails_dir, "Gemfile.lock")).ino
-          expect(after_inode).to eq(before_inode), "the file was replaced even though bundler resolved to identical content"
-
-          leftover = Dir.glob(File.join(rails_dir, "Gemfile.lock.relock.*"))
-          expect(leftover).to be_empty, "a temp lockfile was left behind: #{leftover.inspect}"
-        end
-      end
-
-      it "a DIFFERENT resolve replaces the lockfile atomically (mv), and leaves no temp file behind" do
-        old_contents = "GEM\n  remote: https://rubygems.org/\n  specs:\n    foo (1.0)\n"
-        new_contents = <<~LOCK
-          PATH
-            remote: ../extensions/system/server
-            specs:
-              powernode_system (0.1.0)
-
-          GEM
-            remote: https://rubygems.org/
-            specs:
-              foo (1.0)
-        LOCK
-
-        Dir.mktmpdir do |dir|
-          rails_dir = File.join(dir, "server")
-          FileUtils.mkdir_p(rails_dir)
-          gemfile_lock_path = File.join(rails_dir, "Gemfile.lock")
-          File.write(gemfile_lock_path, old_contents)
-          # The ORIGINAL's mode -- deliberately NOT 0600 (what mktemp
-          # would leave the temp file at), so a regression of HIGH #1
-          # would be visible: 0644, matching what root's own umask
-          # normally leaves a plain `File.open(..., "w")`-created file
-          # at, and what rails actually needs to be able to read it via.
-          FileUtils.chmod(0o644, gemfile_lock_path)
-          original_uid = File.stat(gemfile_lock_path).uid
-          original_gid = File.stat(gemfile_lock_path).gid
-
-          # `cp` a real fixture file -- see the cmp-equal test above for why
-          # not a nested heredoc. Also asserts it received the CURRENT
-          # lock's content at --lockfile= time (would have caught HIGH #2).
-          resolved_fixture = File.join(dir, "resolved.lock")
-          File.write(resolved_fixture, new_contents)
-          stub = <<~STUB
-            #!/bin/bash
-            for arg in "$@"; do
-              case "$arg" in
-                --lockfile=*) lockfile="${arg#--lockfile=}" ;;
-              esac
-            done
-            if [ ! -s "$lockfile" ]; then
-              echo "STUB: --lockfile was EMPTY at invocation time -- not seeded from the current lock" >&2
-              exit 1
-            fi
-            if ! cmp -s "$lockfile" #{gemfile_lock_path}; then
-              echo "STUB: --lockfile did not contain the CURRENT lock's content at invocation time" >&2
-              exit 1
-            fi
-            cp #{resolved_fixture} "$lockfile"
-            exit 0
-          STUB
-          stub_path = File.join(dir, "bundle")
-          File.write(stub_path, stub)
-          FileUtils.chmod(0o755, stub_path)
-
-          out, err, status = run_relock(rails_dir: rails_dir, stub_path: stub_path,
-                                         relock_function_body: relock_function_body,
-                                         path_gems_function_body: path_gems_function_body)
-
-          expect(status.success?).to be(true), "aborted: #{err}"
-          expect(out).to include("RELOCK_EXIT=0")
-          expect(out).to include("re-locked Gemfile.lock")
-          expect(out).to include("../extensions/system/server")
-          expect(File.read(gemfile_lock_path)).to eq(new_contents)
-
-          final_stat = File.stat(gemfile_lock_path)
-          expect(final_stat.mode & 0o777).to eq(0o644),
-            "expected the swapped-in lockfile to keep the ORIGINAL's 0644 mode, got #{(final_stat.mode & 0o777).to_s(8)} " \
-            "-- mktemp creates the temp file 0600, and mv installs it with whatever mode it already had (HIGH #1)"
-          expect(final_stat.uid).to eq(original_uid), "owner changed across the swap"
-          expect(final_stat.gid).to eq(original_gid), "group changed across the swap"
-
-          leftover = Dir.glob(File.join(rails_dir, "Gemfile.lock.relock.*"))
-          expect(leftover).to be_empty, "a temp lockfile was left behind: #{leftover.inspect}"
-        end
-      end
+    it "tolerates the helper failing or being missing -- `|| true`, never `set -e`-aborts the rest of this script's prep" do
+      expect(script).to match(%r{/usr/local/bin/rails-relock-gemfile\.sh \|\| true})
     end
   end
 end

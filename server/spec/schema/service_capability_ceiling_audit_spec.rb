@@ -173,8 +173,12 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
         "Gemfile.lock resolved for the deployed composition (IMP-094d900f9093) — Bundler.setup no " \
         "longer needs CAP_DAC_OVERRIDE to rewrite it at boot"
       expect(rails["capabilities"]).to eq([])
-      expect(rails["user"]).to be_present
-      expect(rails["user"]).not_to eq("root")
+      # rails moved to unit_body (IMP-094d900f9093 part 2, for its own
+      # ExecStartPre= — see the manifest's rails service comment) so its
+      # user no longer lives at a structured `user:` key; it's the
+      # unit_body's own User= line instead.
+      expect(rails["user"]).to be_nil
+      expect(rails["unit_body"]).to match(/^User=powernode-rails$/)
     end
 
     it "grants exactly CAP_CHOWN, CAP_FOWNER and CAP_DAC_OVERRIDE as the module ceiling" do

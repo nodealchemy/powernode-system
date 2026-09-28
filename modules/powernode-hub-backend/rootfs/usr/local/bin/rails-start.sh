@@ -301,11 +301,44 @@ fi
 # cache and compiles native extensions here, on-instance, against runtime-ruby
 # (build-essential + *-dev headers ship in that module) so they ABI-match.
 #
-# Still NOT --deployment: the parent's Gemfile.lock lists path gems for every
-# extension (powernode_business, etc.), but an instance only mounts a subset.
-# discover_extension_gems resolves the in-memory Gemfile to the mounted set;
-# the build-time cache ran with the same set staged, so the shipped lock
-# matches and --local resolves cleanly without --deployment's fatal-on-drift.
+# BUNDLE_FROZEN=1 (IMP-094d900f9093 part 2): this used to be deliberately
+# UNSET, on the reasoning "the parent's Gemfile.lock lists path gems for
+# every extension, but an instance only mounts a subset, so frozen mode's
+# fatal-on-drift would fire on a normal, expected mismatch". That premise
+# is gone as of IMP-094d900f9093 part 1: the shipped Gemfile.lock is now
+# built for THIS module's actual deployed composition (not the parent's
+# full lock), so a real mismatch here means something is genuinely wrong,
+# not an expected subset. Frozen mode changes ONE thing that matters on a
+# genuine first boot (empty BUNDLE_PATH, e.g. before /persist has ever been
+# populated, or after an operator wipes it): without it, bundler's
+# write_lock still calls `FileUtils.touch(Gemfile.lock)` to refresh its
+# mtime even when the CONTENT already matches (bundler's own
+# definition.rb: `if lockfiles_equal?(...); return if
+# Bundler.frozen_bundle?; ...; FileUtils.touch(file); return; end`) —
+# FileUtils.touch succeeds for an OWNING user regardless of the file's
+# write bit, which is why this was invisible while rails held
+# CAP_DAC_OVERRIDE/ownership-equivalent access, and exactly why it fails
+# now that rails runs at capabilities:[] and does not own the root-owned
+# lockfile: verified live with real Ruby 3.2.8 + Bundler 2.7.1 against a
+# root-owned, content-identical lock — the SAME install this section runs
+# fails outright (Bundler::PermissionError, exit 23) without
+# BUNDLE_FROZEN, and succeeds (exit 0, lock's sha AND mtime both
+# byte-for-byte unchanged) with it. A genuine Gemfile/lock mismatch under
+# BUNDLE_FROZEN=1 fails loud (exit 16, "frozen mode is set") without
+# touching the lock at all — strictly safer than the old fatal-on-drift
+# worry, since this process could not repair a real mismatch either way.
+#
+# POWERNODE_BUNDLE_FROZEN override (review round R4, comment fix #7): the
+# recovery recipe in rails-relock-gemfile.sh's header (search that file for
+# "RECOVERY, when that happens") restores rails' capabilities for ONE
+# restart so rails' OWN Bundler.setup can self-heal a genuinely stale lock
+# — but that only works if THIS line can be told to actually allow the
+# rewrite. A literal `export BUNDLE_FROZEN=1` cannot be overridden short of
+# editing this file, which defeats "one restart, then revert". Indirected
+# through POWERNODE_BUNDLE_FROZEN (default 1, i.e. unchanged behavior for
+# every normal boot) so the emergency /run drop-in can add
+# `Environment=POWERNODE_BUNDLE_FROZEN=0` alongside the capability
+# restoration, and remove both together once the underlying drift is fixed.
 #
 # IMP-94977647c24c: BUNDLE_PATH points into STATE_DIR (pre-created +
 # owned by this user in rails-setup.sh), not vendor/bundle under
@@ -322,6 +355,7 @@ fi
 # re-asserts every boot for exactly this reason).
 export BUNDLE_PATH="$STATE_DIR/vendor/bundle"
 export BUNDLE_WITHOUT="development:test"
+export BUNDLE_FROZEN="${POWERNODE_BUNDLE_FROZEN:-1}"
 # rails-setup.sh (root) also persists these same two settings to
 # $STATE_DIR/.bundle/config, so an operator's OUT-OF-BAND
 # `bundle exec rails runner`/`console` (run manually, not via this unit)

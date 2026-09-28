@@ -67,7 +67,11 @@ RSpec.describe "module manifest: root-user-exceptions registry" do
 
     it "declares rails running as the dedicated powernode-rails user" do
       rails_service = manifest["services"].find { |s| s["name"] == "rails" }
-      expect(rails_service["user"]).to eq("powernode-rails")
+      # rails moved to unit_body (IMP-094d900f9093 part 2, for its own
+      # ExecStartPre=) so its user no longer lives at a structured `user:`
+      # key; it's the unit_body's own User= line instead.
+      expect(rails_service["user"]).to be_nil
+      expect(rails_service["unit_body"]).to match(/^User=powernode-rails$/)
     end
 
     it "declares the powernode-rails user with traefik as a supplementary group" do
