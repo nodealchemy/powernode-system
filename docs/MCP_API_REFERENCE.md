@@ -212,6 +212,18 @@ See [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) for the operator-facing workflow th
 |---|---|---|
 | `system_readvance_module_build_batch` | Re-advance ONE batch whose member build finished while its entry is still `dispatched` (`stalled: true` on `system_get_module_build_batch`) — the lease sweep's readvance backstop, on demand, for when the hub-worker cron that normally runs it is down. Calls the sweep service itself, so it does exactly what the sweep would: a completed build is signed + published (and promoted, unless shadow or withheld), a failed one retried or failed, and still-queued members of the batch dispatched. Like the unattended sweep, it publishes and promotes **without** the release-promote autonomy gate — deliberate, since it is the sweep's own step run on demand; the kill-switch and control-plane gates still apply. Refused under the account kill switch or on a standby control plane; a batch with nothing stalled, not in `dispatched`/`awaiting_signature`/`publishing`, or already being advanced is a no-op (`readvanced: false` + `reason`). Requires `system.module_builds.readvance` (admin / owner / manager, like `system.module_builds.cancel`) | operator |
 
+#### Waiting instead of polling
+
+Three read-only long-polls replace polling the database. `system_get_task` and `system_get_module_build_batch` take `wait_seconds`; `system_wait_for` holds a rollout.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_get_task` + `wait_seconds` | Holds until the task is `finished?` (complete, failed, aborted or cancelled) | operator, agent, instance |
+| `system_get_module_build_batch` + `wait_seconds` | Holds until the batch is `finished?` (complete, partial, failed or cancelled) | operator, agent, instance |
+| `system_wait_for` (`module_version_id`, `environment`) | Holds until every running node in the environment that carries the module reports the version's `oci_digest` in its heartbeat `running_module_digests`; an environment with no such node is not converged. Returns `converged`, `instance_count`, `converged_count` and the `pending` nodes with the digest each runs | operator, agent, instance |
+
+`wait_seconds` is clamped to the server cap (`SystemFleetTool::WAIT_MAX_SECONDS`, 45s, under the 60s read timeout of the platform's own MCP client) and polls every 2s. An expired wait is a success carrying `timed_out: true` and the current snapshot, never an error; call again to keep waiting. Absent or `0`, the two getters answer at once with their old reply. `system_wait_for` defaults to the cap, and `0` checks once. All three need only their read permission (`system.infra_tasks.read`, `system.module_builds.read`, `system.modules.read`); an instance principal reaches them by an MCP tool grant naming them (`system_grant_instance_mcp_tools`), since none is destroy-shaped. Each wait holds one Puma thread while it runs.
+
 #### CI worker provisioning
 
 | Action | What it does | Audience |

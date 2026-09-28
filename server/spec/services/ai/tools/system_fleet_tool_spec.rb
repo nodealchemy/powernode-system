@@ -4915,7 +4915,7 @@ end
 
     it "is a read verb: gated on system.module_builds.read and declared non-mutating" do
       expect(described_class::ACTION_PERMISSIONS.fetch("system_get_module_build_batch")).to eq("system.module_builds.read")
-      expect(described_class.action_definitions.fetch("system_get_module_build_batch")[:parameters].keys).to eq([ :batch_id ])
+      expect(described_class.action_definitions.fetch("system_get_module_build_batch")[:parameters].keys).to eq([ :batch_id, :wait_seconds ])
     end
   end
 

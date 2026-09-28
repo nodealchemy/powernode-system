@@ -62,6 +62,17 @@ module Ai
         "If the tool is still not listed after this call, reconnect the MCP session before " \
         "re-granting or widening further."
 
+      # IMP-054397261461 — the wait-for long-poll (wait_seconds on system_get_task
+      # and system_get_module_build_batch; system_wait_for). Polls at the same
+      # 2s beat as Ai::Tools::AgentManagementTool#wait_for_task. The cap sits
+      # under the tightest MCP HTTP timeout in the codebase (the 60s read timeout
+      # in Mcp::SyncExecutionService; the dev-cell MCP proxy allows an hour and
+      # Puma sets none), so a request is answered — timed_out: true plus the
+      # current snapshot — before any hop can drop it. A larger wait_seconds is
+      # clamped, not refused. Each wait holds one Puma thread for its duration.
+      WAIT_POLL_SECONDS = 2
+      WAIT_MAX_SECONDS = 45
+
       # Per-action permission map. Aligned with the registered
       # `system.<resource>.<action>` catalog — the authoritative home is the
       # Permissions.register_catalog(namespace: "system") block in
@@ -128,6 +139,8 @@ module Ai
         "system_update_sensor_config"   => "system.fleet.manage",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
+        # IMP-054397261461 — a read of the module (its version and the nodes running it).
+        "system_wait_for"               => "system.modules.read",
 
         # Mutate
         "system_create_node"            => "system.nodes.create",
@@ -1129,6 +1142,7 @@ module Ai
       declare_action "system_update_volume", mutating: true, returns: "volume, full record", refuses: "no mutable field is supplied"
       declare_action "system_upgrade_boot_image", mutating: true, destructive: true
       declare_action "system_validate_module_manifest", mutating: false
+      declare_action "system_wait_for", mutating: false, returns: "converged, timed_out and the rollout snapshot: instance_count, converged_count and the pending nodes", refuses: "module_version_id or environment is missing or not in this account, or the version has no oci_digest"
 
       def self.definition
         {
@@ -1144,6 +1158,7 @@ module Ai
             instance_id: { type: "string", required: false },
             module_id: { type: "string", required: false },
             module_version_id: { type: "string", required: false },
+            wait_seconds: { type: "integer", required: false, description: "Long-poll seconds (system_get_task, system_get_module_build_batch, system_wait_for); clamped to the server cap" },
             module_name: { type: "string", required: false, description: "Module slug as CI publishes it (system_module_publish_target)" },
             gitea_repo: { type: "string", required: false, description: "OCI repo full name; defaults to powernode/<module_name> (system_module_publish_target)" },
             environment: { type: "string", required: false, description: "Environment slug or id (a plane of the fleet)" },
@@ -1727,7 +1742,11 @@ module Ai
           },
           "system_get_task" => {
             description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, timestamps, and error_message — the full stored failure reason (16 KB cap, vs 300 chars on system_list_tasks), REDACTED of credential-shaped tokens since it carries raw build/shell output. Not-found errors when the id is unknown or belongs to another account.",
-            parameters: { task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" } }
+            parameters: {
+              task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" },
+              wait_seconds: { type: "integer", required: false,
+                              description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied. Absent or 0 answers at once, unchanged." }
+            }
           },
           "system_cancel_task" => {
             description: "Cancel a task that has not started yet, one that is pending or scheduled.",
@@ -2422,7 +2441,19 @@ module Ai
           "system_get_module_build_batch" => {
             description: "Inspect one native module-build batch in full: the batch row plus each module's orchestration state. Per module that is state (queued/dispatched/succeeded/failed/cancelled), attempts, tag and error, joined with its ci.module_build Task's status and its builder lease's status, plus the plan, excluded modules, source_repo and expected_core_sha. `stalled: true` on a module is the exact shape the lease sweep's readvance backstop heals on its next tick (task finished, entry still `dispatched`): a batch parked in `publishing` with a stalled module is a sweep gap, not a publish failure — check this before reaching for a manual publish.",
             parameters: {
-              batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id" }
+              batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id" },
+              wait_seconds: { type: "integer", required: false,
+                              description: "Long-poll: when > 0, hold the call until the batch is finished (complete, partial, failed or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current batch. The reply then also carries wait_seconds, the value applied. Absent or 0 answers at once, unchanged." }
+            }
+          },
+
+          "system_wait_for" => {
+            description: "Block until a module version is rolled out to an environment: every running node in that environment that carries the module reports the version's oci_digest in its heartbeat running_module_digests. Read-only long-poll (never mutates). Converged is false while the environment has no such node. Returns {converged, timed_out, wait_seconds, target_digest, instance_count, converged_count, pending}; pending lists the nodes not yet reporting the digest with the digest each is running. On expiry the reply is still a success with timed_out: true and the current snapshot. wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; 0 checks once. To keep waiting, call again.",
+            parameters: {
+              module_version_id: { type: "string", required: true, description: "NodeModuleVersion id (account-scoped) whose oci_digest the nodes must report running" },
+              environment: { type: "string", required: true, description: "Slug or id of the environment whose nodes are watched" },
+              wait_seconds: { type: "integer", required: false,
+                              description: "Seconds to wait, clamped to the server cap of #{WAIT_MAX_SECONDS}; defaults to the cap; 0 checks once without waiting." }
             }
           },
 
@@ -2718,6 +2749,7 @@ module Ai
         when "system_drift_report"             then drift_report(params)
         when "system_list_tasks"               then list_tasks(params)
         when "system_get_task"                 then get_task(params)
+        when "system_wait_for"                 then wait_for_rollout(params)
         when "system_cancel_task"              then cancel_task(params)
         when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
@@ -5668,7 +5700,85 @@ module Ai
       def get_task(params)
         target_id = params[:task_id].presence
         task = ::System::Task.where(account: @account).find(target_id)
-        success_result(task: serialize_task(task, full_error: true))
+        wait = wait_seconds_param(params)
+        return success_result(task: serialize_task(task, full_error: true)) if wait.zero?
+
+        task, timed_out = wait_until(wait) { [ task.reload.finished?, task ] }
+        success_result(task: serialize_task(task, full_error: true), timed_out: timed_out, wait_seconds: wait)
+      end
+
+      # === wait-for (IMP-054397261461) ===
+
+      # The caller's wait_seconds, clamped to 0..WAIT_MAX_SECONDS. `default`
+      # applies only when the key is absent: system_wait_for exists to wait,
+      # while the two getters stay instant unless asked.
+      def wait_seconds_param(params, default: 0)
+        raw = params[:wait_seconds]
+        (raw.nil? || raw == "" ? default : raw.to_i).clamp(0, WAIT_MAX_SECONDS)
+      end
+
+      # Bounded long-poll over the reference wait loop's shape (sleep, re-read,
+      # deadline). The block re-reads state and returns [done, snapshot]; the
+      # result is [snapshot, timed_out] — never an error on expiry. Uncached so
+      # the request's query cache cannot replay the first read for the whole wait.
+      def wait_until(seconds)
+        deadline = Time.current + seconds
+        loop do
+          done, snapshot = ::ActiveRecord::Base.uncached { yield }
+          return [ snapshot, false ] if done
+
+          remaining = deadline - Time.current
+          return [ snapshot, true ] if remaining <= 0
+
+          sleep [ WAIT_POLL_SECONDS, remaining ].min
+        end
+      end
+
+      # Done when the nodes in `environment` report the version's digest running
+      # (the same running_module_digests match PromotionCriteria counts as
+      # evidence). Read-only; an empty environment is not converged.
+      def wait_for_rollout(params)
+        return error_result("module_version_id is required") if params[:module_version_id].blank?
+        return error_result("environment is required") if params[:environment].blank?
+
+        version = ::System::NodeModuleVersion.joins(:node_module)
+                                             .where(system_node_modules: { account_id: @account.id })
+                                             .find_by(id: params[:module_version_id].to_s)
+        return error_result("Module version '#{params[:module_version_id]}' not found") unless version
+
+        environment = ::Ai::Environment.find_for_account(@account.id, params[:environment].to_s)
+        return error_result("Environment '#{params[:environment]}' not found") unless environment
+
+        digest = version.oci_digest
+        return error_result("Module version '#{version.id}' has no oci_digest, so there is nothing to converge on") if digest.blank?
+
+        wait = wait_seconds_param(params, default: WAIT_MAX_SECONDS)
+        snapshot, timed_out = wait_until(wait) do
+          state = rollout_state(version, environment, digest)
+          [ state[:converged], state ]
+        end
+
+        success_result(snapshot.merge(timed_out: timed_out, wait_seconds: wait))
+      end
+
+      def rollout_state(version, environment, digest)
+        module_key = version.node_module_id.to_s
+        watched = ::System::NodeInstance.where(account_id: @account.id, environment_id: environment.id, status: "running")
+                                        .joins(node: :node_modules)
+                                        .where(system_node_modules: { id: version.node_module_id }).distinct.to_a
+        on_digest = ::System::Fleet::PromotionCriteria.matching_instances(version, digest, environment).pluck(:id)
+        pending = watched.reject { |i| on_digest.include?(i.id) }
+
+        {
+          converged: watched.any? && pending.empty?,
+          module_version_id: version.id,
+          module_id: version.node_module_id,
+          environment: environment.slug,
+          target_digest: digest,
+          instance_count: watched.size,
+          converged_count: watched.size - pending.size,
+          pending: pending.map { |i| { instance_id: i.id, name: i.name, running_digest: (i.running_module_digests || {})[module_key] } }
+        }
       end
 
       # === Module diff ===
@@ -9074,7 +9184,11 @@ module Ai
         batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
         return error_result("Module build batch '#{batch_id}' not found") unless batch
 
-        success_result(module_build_batch: serialize_module_build_batch_detail(batch))
+        wait = wait_seconds_param(params)
+        return success_result(module_build_batch: serialize_module_build_batch_detail(batch)) if wait.zero?
+
+        batch, timed_out = wait_until(wait) { [ batch.reload.finished?, batch ] }
+        success_result(module_build_batch: serialize_module_build_batch_detail(batch), timed_out: timed_out, wait_seconds: wait)
       end
 
       # The summary row plus the orchestrator's per-module state joined with
