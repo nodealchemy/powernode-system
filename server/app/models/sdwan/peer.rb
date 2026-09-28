@@ -359,12 +359,24 @@ module Sdwan
     # an idle tunnel really does report rx_bytes: 0, so a consumer that cannot
     # separate "no sample" from "sampled, no traffic" would read every
     # never-reported peer as an idle one. counters_sampled_at is what makes a
-    # rate computable (updated_at cannot serve: the heartbeat writes through
-    # update_columns and never bumps it) — the counters are raw cumulative
+    # rate computable (updated_at cannot serve: the heartbeat's write never
+    # bumps it, whether through update_columns or the conditional raw UPDATE
+    # #apply_peer_observation! now uses) — the counters are raw cumulative
     # kernel totals, and
     # WireGuard restarts them at zero when the interface is recreated, so a
     # reader differencing two samples must treat `newer < older` as a reset and
     # take the newer value as the interval's traffic.
+    #
+    # WHO MEASURES THESE (IMP-329f2438cc8d): rx_bytes/tx_bytes are almost
+    # never sampled by THIS peer's own instance — the agent reports on
+    # REMOTE counterparts (see Sdwan::PeerEntry.build's doc), so this row is
+    # normally filled in by whichever OTHER peer on the network has a live
+    # WireGuard session with it. That reporter's own interface is what
+    # "restarted" means above: a reset in this row's counters reflects the
+    # COUNTERPART's interface being recreated, not necessarily anything
+    # about this peer's own node. SdwanController#peer_observation_columns
+    # swaps the reporter's rx/tx on write so the values stored here stay in
+    # THIS peer's own perspective regardless of who measured them.
     def observed_traffic
       {
         rx_bytes: rx_bytes,

@@ -120,6 +120,18 @@ module Api
           # #peer_observation_columns for the NOT-MEASURED-vs-measured-zero
           # rule and #parse_counter for why they are stored raw and cumulative.
           #
+          # IMP-329f2438cc8d — peer_id NAMES THE COUNTERPART, not the
+          # reporter's own row. Sdwan::PeerEntry.build's `peer_id: peer.id`
+          # (agent/internal/sdwan/manager.go's peerReportsFromActual) reports
+          # each REMOTE peer the agent's own WireGuard interface has a live
+          # session with — an instance never reports its own peer id in
+          # practice. #reportable_peers_by_id scopes to every peer on a
+          # network THIS instance itself belongs to (own account), which is
+          # exactly the set the agent's compiled config could ever name.
+          # Before this, the lookup matched only the reporter's OWN peer
+          # rows — a shape the agent never sends — so every real heartbeat's
+          # handshake/counters silently vanished behind a 200 `reported: 0`.
+          #
           # A hub's compiled view also carries every active user device
           # (HubAndSpoke#hub_view emits `peer_id: <UserDevice#id>`), so the
           # agent reports those ids on the same batch. They are NOT
@@ -127,10 +139,10 @@ module Api
           # lookup which drives `last_seen_at` (IMP-6fe639b14797). Peer
           # remains the primary lookup — the device path is a fallback only.
           #
-          # `reported` counts the entries we RECOGNIZED (a peer of ours, or a
-          # device on a network we hub). An entry we did not recognize is not
-          # counted, and a recognized entry carrying no usable handshake is
-          # counted but writes nothing.
+          # `reported` counts the entries we RECOGNIZED (a peer on a network
+          # we belong to, or a device on a network we hub). An entry we did
+          # not recognize is not counted, and a recognized entry carrying no
+          # usable handshake is counted but writes nothing.
           #
           # Both lookups are batched. This runs on every agent heartbeat tick
           # for every host in the fleet, so a per-entry query is an N+1
@@ -144,8 +156,26 @@ module Api
             reports = Array(params[:peers]).select { |r| r.respond_to?(:key?) }
             ids     = reports.filter_map { |r| normalized_peer_id(r[:peer_id]) }.uniq
 
-            peers_by_id   = own_peers_by_id(instance, ids)
+            peers_by_id   = reportable_peers_by_id(instance, ids)
             devices_by_id = hubbed_devices_by_id(instance, ids - peers_by_id.keys)
+
+            # ONE count query for the whole batch, not one per matched peer
+            # (review round, IMP-329f2438cc8d item 1) — #counters_unambiguous_for?
+            # only needs "how many peers does THIS network have", and every
+            # matched peer's network is already known from peers_by_id. Skipped
+            # entirely (not even an empty-array query) when no peer matched at
+            # all — a batch of pure user-device reports must not pay for a
+            # query nothing in it needs; see sdwan_user_device_liveness_spec's
+            # bounded-query-count assertion.
+            network_peer_counts =
+              if peers_by_id.empty?
+                {}
+              else
+                ::Sdwan::Peer
+                  .where(sdwan_network_id: peers_by_id.values.map(&:sdwan_network_id).uniq)
+                  .group(:sdwan_network_id)
+                  .count
+              end
 
             updated = reports.filter_map do |r|
               id = normalized_peer_id(r[:peer_id])
@@ -154,9 +184,11 @@ module Api
                 # One write per peer per heartbeat. This runs for every peer on
                 # every host in the fleet, so the handshake and the byte
                 # counters share a single UPDATE rather than stacking a second
-                # one behind the first.
-                observed = peer_observation_columns(r)
-                peer.update_columns(observed) if observed.any?
+                # one behind the first — see #apply_peer_observation! for why
+                # that UPDATE is now conditional SQL rather than a plain
+                # update_columns.
+                observed = peer_observation_columns(r, peer, network_peer_counts)
+                apply_peer_observation!(peer, observed)
                 peer.recompute_status_from_handshake!
                 { peer_id: peer.id, status: peer.status }
               elsif (device = devices_by_id[id])
@@ -227,8 +259,23 @@ module Api
               end
           end
 
-          # IMP-ab73cc2fca65 — the columns ONE heartbeat entry authorizes us to
-          # write for a peer.
+          # IMP-ab73cc2fca65 / IMP-329f2438cc8d — the columns ONE heartbeat
+          # entry authorizes us to write for a peer.
+          #
+          # HANDSHAKE: migrated onto the same strict #parse_handshake_time
+          # reader the user-device arm already used (see that method's own
+          # doc, and record_device_handshake! for the sibling pattern this
+          # mirrors) — the ArgumentError-swallowing parse_time this replaced
+          # fabricated a fresh handshake (Time.current) on any malformed
+          # string, and had NO future-timestamp or monotonic protection at
+          # all. Both bounds are enforced here in Ruby, on the INPUT alone:
+          # parse_handshake_time itself refuses anything more than
+          # MAX_HANDSHAKE_CLOCK_SKEW ahead of now (so a too-far-future value
+          # never even reaches this method), and predating the peer's own
+          # creation (minus the same skew) is refused the same way a
+          # handshake cannot precede the peer existing. What is NOT decided
+          # here any more is monotonicity — see #apply_peer_observation! for
+          # why that moved to the database.
           #
           # ABSENCE IS THE SIGNAL — FOR THE COUNTERS. A counter this entry did
           # not carry, or carried in a form we cannot trust, contributes NO KEY,
@@ -238,43 +285,149 @@ module Api
           # traffic" are different facts and a reader has to be able to tell
           # them apart, so nothing here ever writes a placeholder counter.
           #
-          # The handshake half does NOT yet hold to that rule and this comment
-          # does not claim it does: parse_time below falls back to Time.current
-          # on a malformed string, which fabricates a fresh handshake and flips
-          # the peer to active. The user-device arm already has the strict
-          # reader this needs (parse_handshake_time) and the peer arm does not.
-          # Migrating it changes handshake semantics fleet-wide, so it is filed
-          # separately rather than smuggled in here — see the follow-on on
-          # #parse_time.
-          #
           # rx and tx move together or not at all. The agent emits both on
           # every entry (state.go PeerStatusReport, no omitempty), so a
           # half-populated pair is not something an honest reporter produces —
           # recording one side of it would publish a counter whose partner is
           # from a different observation, or from none.
-          def peer_observation_columns(report)
+          #
+          # DIRECTION IS SWAPPED ON WRITE (IMP-329f2438cc8d item 4). The
+          # report's rx_bytes/tx_bytes are measured by the REPORTER's own
+          # `wg show`, from the REPORTER's perspective of its link to the
+          # reported peer — rx is what the reporter received FROM the
+          # reported peer, tx is what the reporter sent TO it. But this row
+          # is the REPORTED peer's own record, which readers (Peer#
+          # observed_traffic, both peer serializers) treat as THAT peer's
+          # own rx/tx. The reporter's rx is the reported peer's tx (what it
+          # sent, received on the other end) and vice versa, so the columns
+          # are swapped here to keep every row in its own subject's
+          # perspective regardless of who measured it.
+          #
+          # COUNTERS AMBIGUITY (IMP-329f2438cc8d): peer_id can now name a
+          # COUNTERPART — a different node_instance's row on a network this
+          # instance also belongs to (#reportable_peers_by_id) — because
+          # that is what the agent actually reports. Both ends of a link
+          # report the SAME peer row from opposite vantage points, which is
+          # harmless for last_handshake_at (the fresher clock wins,
+          # monotonically) but not for a cumulative byte COUNTER: if the
+          # reported peer's network holds more than one OTHER peer, more
+          # than one distinct reporter can legitimately name it, each with
+          # its OWN (rx, tx) pair measured over a DIFFERENT link, and there
+          # is no way to tell whose sample a write would be recording. The
+          # SAME row would then also flip between two DIFFERENT counterpart
+          # links' perspectives from tick to tick, which the swap above
+          # cannot fix — it only orients a single, unambiguous link
+          # correctly. #counters_unambiguous_for? keeps this simple and
+          # conservative rather than deriving hub/spoke cardinality:
+          # counters are written only when the network has AT MOST ONE
+          # OTHER peer — a genuine point-to-point pair, or the degenerate
+          # "no counterpart exists at all" case (which is exactly when the
+          # only possible reporter is the peer's own instance). A wider
+          # (fan-out) network still gets its handshake/status updated every
+          # tick from every reporter; only the byte counters are withheld
+          # until the link is unambiguous. network_peer_counts is the whole
+          # batch's per-network peer tally, computed once by the caller
+          # (#report) rather than one COUNT query per matched peer.
+          def peer_observation_columns(report, peer, network_peer_counts)
             columns = {}
 
-            if report[:last_handshake_at].present?
-              columns[:last_handshake_at] = parse_time(report[:last_handshake_at])
+            if (observed = parse_handshake_time(report[:last_handshake_at])) &&
+               observed >= peer.created_at - MAX_HANDSHAKE_CLOCK_SKEW
+              columns[:last_handshake_at] = observed
             end
 
-            rx = parse_counter(report[:rx_bytes])
-            tx = parse_counter(report[:tx_bytes])
-            if rx && tx
-              columns[:rx_bytes] = rx
-              columns[:tx_bytes] = tx
-              # The freshness stamp readers need to turn two cumulative
-              # samples into a rate. It cannot be inferred from updated_at:
-              # update_columns deliberately leaves updated_at alone, exactly as
-              # the last_handshake_at write always has. A heartbeat is an
-              # observation, not an edit — bumping updated_at once a minute for
-              # every peer in the fleet would destroy it as a "last changed"
-              # signal and fire the model's after_save hooks every tick.
-              columns[:counters_sampled_at] = Time.current
+            if counters_unambiguous_for?(peer, network_peer_counts)
+              # Reported from the REPORTER's perspective; swapped below.
+              reporter_rx = parse_counter(report[:rx_bytes])
+              reporter_tx = parse_counter(report[:tx_bytes])
+              if reporter_rx && reporter_tx
+                columns[:rx_bytes] = reporter_tx
+                columns[:tx_bytes] = reporter_rx
+                # The freshness stamp readers need to turn two cumulative
+                # samples into a rate. It cannot be inferred from updated_at:
+                # the write below deliberately leaves updated_at alone, exactly
+                # as the last_handshake_at write always has. A heartbeat is an
+                # observation, not an edit — bumping updated_at once a minute for
+                # every peer in the fleet would destroy it as a "last changed"
+                # signal and fire the model's after_save hooks every tick.
+                columns[:counters_sampled_at] = Time.current
+              end
             end
 
             columns
+          end
+
+          # See peer_observation_columns' own "COUNTERS AMBIGUITY" doc for
+          # the full reasoning; this is the predicate it names.
+          # network_peer_counts is keyed by sdwan_network_id, built once per
+          # request (#report) — an id absent from it (a network with zero
+          # OTHER matched peers this tick doesn't change that network's
+          # actual population) defaults to 0, which reads as "count <= 2",
+          # matching the single-query-per-request contract: this method
+          # itself must never issue a query.
+          def counters_unambiguous_for?(peer, network_peer_counts)
+            network_peer_counts.fetch(peer.sdwan_network_id, 0) <= 2
+          end
+
+          # Writes the columns #peer_observation_columns authorized, as ONE
+          # atomic, conditional UPDATE rather than a Ruby read-compare-write
+          # (review round, IMP-329f2438cc8d item 3).
+          #
+          # THE RACE THIS CLOSES: `peer` here is a snapshot from THIS
+          # request's own #reportable_peers_by_id lookup. A hub-shaped
+          # network can have several concurrent reporters for the SAME row
+          # (see the COUNTERS AMBIGUITY doc above), each holding its OWN
+          # stale snapshot. Comparing `observed > peer.last_handshake_at` in
+          # RUBY and then writing unconditionally — which is what this
+          # method replaces — lets two concurrent requests both decide
+          # "mine is newer" against their own stale reads and then race at
+          # the database; whichever UPDATE commits SECOND wins regardless of
+          # which timestamp was actually newer, silently losing the other.
+          #
+          # GREATEST(last_handshake_at, ?) resolves the compare-and-set
+          # INSIDE the single UPDATE statement, atomically, against whatever
+          # the column ACTUALLY holds at write time rather than what this
+          # request last read — Postgres's GREATEST ignores a NULL argument
+          # ("NULL values in the argument list are ignored"), so the
+          # never-yet-set case and the monotonic case are the same one
+          # expression; no separate nil branch is needed. This is the same
+          # pattern already used to close an equivalent race elsewhere on
+          # this model (Sdwan::MultiIbgpHostFlagger.merge_key!).
+          #
+          # update_all bypasses ActiveRecord's attribute cache, so `peer`'s
+          # in-memory attributes are stale immediately after this call — the
+          # caller's #recompute_status_from_handshake! reads
+          # last_handshake_at off that same object, and a status recompute
+          # from a stale value would be wrong exactly when the race above
+          # actually mattered (a concurrent write landing between this
+          # method's UPDATE and the caller's recompute). #reload makes the
+          # two consistent with whatever was ACTUALLY committed, which may
+          # differ from `columns[:last_handshake_at]` under a concurrent
+          # writer — that is the correct outcome, not a bug: GREATEST may
+          # have kept the column exactly where a fresher racing write left
+          # it, and status must recompute from THAT.
+          def apply_peer_observation!(peer, columns)
+            return if columns.empty?
+
+            set_clauses = []
+            binds = []
+
+            if columns.key?(:last_handshake_at)
+              set_clauses << "last_handshake_at = GREATEST(last_handshake_at, ?)"
+              binds << columns[:last_handshake_at]
+            end
+
+            if columns.key?(:rx_bytes)
+              set_clauses << "rx_bytes = ?"
+              binds << columns[:rx_bytes]
+              set_clauses << "tx_bytes = ?"
+              binds << columns[:tx_bytes]
+              set_clauses << "counters_sampled_at = ?"
+              binds << columns[:counters_sampled_at]
+            end
+
+            ::Sdwan::Peer.where(id: peer.id).update_all([ set_clauses.join(", "), *binds ])
+            peer.reload
           end
 
           # A WireGuard byte counter, stored RAW and CUMULATIVE — never
@@ -310,12 +463,6 @@ module Api
             value
           end
 
-          def parse_time(raw)
-            Time.parse(raw.to_s)
-          rescue ArgumentError
-            Time.current
-          end
-
           # The batched lookups key rows by the id Postgres returns, which is
           # always canonical. The uuid cast Rails applies inside `where(id:)`
           # accepts far more than that — braces, missing dashes, any case —
@@ -333,11 +480,38 @@ module Api
             ::Sdwan::Peer.type_for_attribute(:id).cast(raw)
           end
 
-          def own_peers_by_id(instance, ids)
+          # IMP-329f2438cc8d — TENANCY, replacing the old own_peers_by_id
+          # (which matched only `node_instance_id: instance.id`, a shape the
+          # agent's counterpart reports never carry — see #report's doc).
+          #
+          # The scope is derived ONLY from the authenticated instance
+          # (guidance-executor-tenancy-anchors: an ABSOLUTE anchor, not a
+          # check relative to the request body) — every network this
+          # instance itself holds a peer on, intersected with its OWN
+          # account. That is exactly the set of rows this instance's real
+          # WireGuard interfaces could ever hold a live tunnel to: the agent
+          # only reports peer ids present in its own compiled config
+          # (TopologyCompiler -> Sdwan::PeerEntry.build), and every entry in
+          # that config sits on a network the instance is itself a member
+          # of. `account_id` is asserted directly rather than trusted
+          # transitively through the network join, matching the "absolute,
+          # not relative" anchor guidance.
+          #
+          # An id naming a peer on a network we do NOT belong to (a
+          # different account, or simply a network we've never joined)
+          # matches nothing here — byte-identical to an id naming no peer
+          # at all, so a caller cannot use this to probe for a foreign
+          # peer's existence.
+          def reportable_peers_by_id(instance, ids)
             return {} if ids.empty?
 
+            network_ids = ::Sdwan::Peer.where(node_instance_id: instance.id)
+                                        .distinct
+                                        .pluck(:sdwan_network_id)
+            return {} if network_ids.empty?
+
             ids.each_slice(ID_QUERY_BATCH).flat_map { |slice|
-              ::Sdwan::Peer.where(node_instance_id: instance.id, id: slice).to_a
+              ::Sdwan::Peer.where(account_id: instance.account_id, sdwan_network_id: network_ids, id: slice).to_a
             }.index_by(&:id)
           end
 
@@ -398,10 +572,16 @@ module Api
           # nothing cross-checks it. Scoping (hubbed_devices_by_id) bounds the
           # blast radius to devices that hub already serves.
           #
-          # Deliberately NOT parse_time: its ArgumentError fallback to
-          # Time.current would turn a malformed field into fabricated
-          # liveness. Monotonic, so a second hub replaying an older handshake
-          # cannot walk a fresher observation backwards.
+          # parse_handshake_time never falls back to Time.current on a
+          # malformed field — that would turn a parse failure into
+          # fabricated liveness. Monotonic, so a second hub replaying an
+          # older handshake cannot walk a fresher observation backwards.
+          # This stays a plain Ruby read-compare-write, unlike the peer arm's
+          # #apply_peer_observation! — NOT because multiple hubs reporting
+          # the same device is impossible (nothing here enforces a
+          # single-hub-per-network invariant), but because closing that race
+          # is out of scope for IMP-329f2438cc8d, which touches the peer arm
+          # only. Filed as a follow-up rather than fixed here.
           #
           # The device's own creation is the lower bound: a handshake cannot
           # have been observed before the key existed. That is exact — it
@@ -426,7 +606,10 @@ module Api
           end
 
           # Strict RFC3339 with an explicit zone — the wire format the agent
-          # emits (`.UTC().Format(time.RFC3339)`). Anything else is nil:
+          # emits (`.UTC().Format(time.RFC3339)`). Shared by both handshake
+          # consumers (the user-device arm's record_device_handshake! and
+          # the peer arm's peer_observation_columns — IMP-329f2438cc8d).
+          # Anything else is nil:
           #
           #   ""              the agent's "never handshaked" sentinel
           #   no offset       otherwise silently read in the server's local
@@ -434,12 +617,13 @@ module Api
           #                   caller controls
           #   in the future   a handshake cannot have been observed at a time
           #                   that has not happened. Left unclamped it would
-          #                   both advance last_seen_at with no observation
-          #                   AND — via the monotonic guard — pin it there
-          #                   permanently, since every honest later report is
-          #                   older. A year past the Postgres timestamp
-          #                   ceiling lands here too, so a malformed value
-          #                   cannot 500 a heartbeat the agent will retry.
+          #                   both advance the handshake column with no
+          #                   observation AND — via the caller's monotonic
+          #                   guard — pin it there permanently, since every
+          #                   honest later report is older. A year past the
+          #                   Postgres timestamp ceiling lands here too, so a
+          #                   malformed value cannot 500 a heartbeat the
+          #                   agent will retry.
           def parse_handshake_time(raw)
             return nil if raw.blank?
             return nil unless raw.is_a?(String) && raw.match?(RFC3339_ZONE)

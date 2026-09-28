@@ -89,7 +89,7 @@ RSpec.describe "Api::V1::System::NodeApi::Sdwan", type: :request do
   end
 
   describe "POST /api/v1/system/node_api/status/sdwan" do
-    it "updates only the caller's own peers and ignores peers owned by another instance" do
+    it "updates only peers on networks the caller belongs to and ignores a peer on a network it does not" do
       ts = 2.minutes.ago.change(usec: 0)
 
       post "/api/v1/system/node_api/status/sdwan",
