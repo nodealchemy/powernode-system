@@ -242,6 +242,11 @@ RSpec.describe "Extension MCP tool parameter enum/items declarations" do
       enum = r.fetch(:enum)
       next true if enum.is_a?(Array) && enum.any?
 
+      # An array parameter's closed set lives on its ELEMENTS: items: { enum: }.
+      items = r.fetch(:items)
+      items_enum = items.is_a?(Hash) ? (items[:enum] || items["enum"]) : nil
+      next true if r.type == "array" && items_enum.is_a?(Array) && items_enum.any?
+
       props = r.fetch(:properties)
       r.type == "object" && props.is_a?(Hash) && props.any?
     }

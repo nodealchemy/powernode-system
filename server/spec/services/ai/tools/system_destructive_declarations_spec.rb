@@ -3,16 +3,18 @@
 require "rails_helper"
 
 # E2 (campaign 01a08c9b) gave declare_action a `destructive:` flag, which the
-# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped
+# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped (41 with system_out_of_band_exec)
 # verbs are those Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS already refuses to
 # an instance principal. Until each declares the flag, the catalog's
 # classification rests on the deny-overlay floor alone.
 #
 # EQUALITY, not inclusion. The set of destructive verbs across these six tool
-# classes must be exactly the 40 below. A verb dropped from the list and a
+# classes must be exactly the 41 below. A verb dropped from the list and a
 # destroy-shaped verb added without the flag both red this file, so the
 # declaration cannot drift from the overlay silently in either direction.
 RSpec.describe "system extension destructive declarations" do
+  # system_out_of_band_exec runs arbitrary code on a fleet node, which is
+  # irreversible and so destroy-shaped (IMP-9ce0ed39c557); it is the 41st.
   DESTRUCTIVE_VERBS = {
     Ai::Tools::SystemFleetTool => %w[
       system_terminate_instance system_delete_cve system_delete_instance_pool system_delete_module
@@ -22,6 +24,7 @@ RSpec.describe "system extension destructive declarations" do
       system_reap_agent_fleet system_reap_instance system_reboot_instance system_recycle_pool
       system_replace_instance system_rotate_vault_transit_pepper system_stop_instance
       system_terminate_ci_worker system_upgrade_boot_image
+      system_out_of_band_exec
     ],
     Ai::Tools::SdwanTool => %w[
       system_sdwan_delete_firewall_rule system_sdwan_delete_ipfix_collector
@@ -41,9 +44,9 @@ RSpec.describe "system extension destructive declarations" do
     klass.declared_actions.select { |_name, decl| decl[:destructive] }.keys
   end
 
-  it "pins exactly the 40 verbs E2 listed" do
-    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(40)
-    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(40)
+  it "pins exactly the 41 destroy-shaped verbs" do
+    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(41)
+    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(41)
   end
 
   DESTRUCTIVE_VERBS.each do |klass, verbs|

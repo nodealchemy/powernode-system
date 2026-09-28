@@ -1507,6 +1507,24 @@ module Ai
                          "Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to terminate (destroys the cloud resource)" } }
           },
+          # IMP-9ce0ed39c557 — see the declare_action for the gate and its
+          # human_only refusal; the description names both because an agent
+          # reads the catalog, not the declaration.
+          "system_out_of_band_exec" => {
+            description: "Run ONE command on an instance over SSH from the control plane, without its agent. " \
+                         "Arbitrary code execution: destructive, refused outright for an instance principal, " \
+                         "and refused for a target this control plane self-hosts or a blank command. " \
+                         "APPROVAL-GATED (system.instance.out_of_band_exec) and human-only: this returns " \
+                         "{pending: true} with an approval_request_id and NOTHING runs until a person approves " \
+                         "in their own session; no agent or connector may approve it. Do not report the command " \
+                         "as run on that response. The instance's current SSH IP is pinned when the request is " \
+                         "parked; a target repointed before approval is refused at execution time.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to run the command on (account-scoped; must have an SSH IP address)" },
+              command: { type: "string", required: true, description: "The single command to run" },
+              sudo: { type: "boolean", required: false, default: true, description: "Run the command under sudo (default true)" }
+            }
+          },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
           #
           # Both descriptions name their gate and the pending shape, because an
@@ -2724,6 +2742,8 @@ module Ai
         # Gate-routed (IMP-d410a587d6bf) — see declare_action at the top of the
         # class. This arm exists only so a direct #call fails loudly.
         when "system_terminate_instance"       then gate_routed_only("system_terminate_instance")
+        # Gate-routed and human-only (IMP-9ce0ed39c557) — same tripwire as terminate.
+        when "system_out_of_band_exec"         then gate_routed_only("system_out_of_band_exec")
         # Gate-routed (IMP-4e49eb79c5e0) — the DR lane's two doors. Same
         # tripwire: reaching either arm means #call was invoked directly and
         # would otherwise have run a replace, or a terminate, with no policy
