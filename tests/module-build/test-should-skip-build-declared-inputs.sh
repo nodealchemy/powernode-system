@@ -186,6 +186,66 @@ echo "=== sibling modules already in NEEDS_DECLARED_INPUTS are unaffected (no re
 
 rm -rf "$REPO" "$STUB_BIN"
 
+# --- IMP-094d900f9093 -------------------------------------------------------
+#
+# hub-backend's build now ALSO reads this repo's own root content
+# (server/*.gemspec, extension.json — staged via stage-extension-system-
+# files.sh and folded into server/Gemfile.lock by stage15.sh's re-lock), on
+# top of the parent-repo subtree --core-ref already covers. Before this fix,
+# powernode-hub-backend was NOT in NEEDS_DECLARED_INPUTS (its whole payload
+# was, correctly, a packaged subtree of core, fully covered by the core-ref
+# fold) — same shape as the extension-system incident above: a batch whose
+# core ref AND modules/powernode-hub-backend/ tree are both unchanged hashes
+# identically to the last published artifact and gets silently re-tagged, no
+# matter what changed in the extension's own gemspec/extension.json. Since
+# hub-backend is narrow-dispatched, the fix is the simpler "always rebuild"
+# shape its NEEDS_DECLARED_INPUTS siblings already have — not threading real
+# --input-path declarations through for it.
+HB_MODULE=powernode-hub-backend
+HB_CORE_REF_FIXTURE=deadbeefcafef00ddeadbeefcafef00ddeadbeef
+HB_REPO=$(mktemp -d)
+HB_STUB_BIN=$(mktemp -d)
+git -C "$HB_REPO" init --quiet -b main
+git -C "$HB_REPO" config user.email test@example.invalid
+git -C "$HB_REPO" config user.name "test"
+mkdir -p "$HB_REPO/modules/$HB_MODULE"
+echo "name: $HB_MODULE" > "$HB_REPO/modules/$HB_MODULE/manifest.yaml"
+git -C "$HB_REPO" add -A
+git -C "$HB_REPO" commit --quiet -m "fixture: modules/$HB_MODULE tree"
+
+HB_PUBLISHED_HASH=$(bash "$HASH_SCRIPT" --module "$HB_MODULE" --repo "$HB_REPO" --ref HEAD --core-ref "$HB_CORE_REF_FIXTURE")
+[ -n "$HB_PUBLISHED_HASH" ] || { echo "FIXTURE SETUP FAILED: could not compute published hash for $HB_MODULE" >&2; exit 2; }
+
+cat > "$HB_STUB_BIN/oras" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "manifest" ] && [ "\$2" = "fetch" ] && [ "\$3" = "$REGISTRY/$OWNER/$HB_MODULE:$TAG" ]; then
+  printf '{"annotations":{"org.powernode.build-inputs-sha256":"$HB_PUBLISHED_HASH"}}\n'
+  exit 0
+fi
+echo "stub oras: unexpected invocation: \$*" >&2
+exit 1
+EOF
+chmod +x "$HB_STUB_BIN/oras"
+
+echo "=== regression: powernode-hub-backend with unchanged modules/<slug> tree + unchanged core-ref ==="
+{
+  RUN_OUT=$(PATH="$HB_STUB_BIN:$PATH" CORE_REF="$HB_CORE_REF_FIXTURE" \
+    bash "$SCRIPT" --module "$HB_MODULE" --repo "$HB_REPO" --ref HEAD \
+    --registry "$REGISTRY" --owner "$OWNER" --tag "$TAG" 2>&1)
+  RUN_RC=$?
+  # THE FIX under test. Before it, NEEDS_DECLARED_INPUTS omitted
+  # powernode-hub-backend, the local hash matched the stub's published hash
+  # exactly (both computed the same way), and this exited 0 (SKIP) — the
+  # shape that would re-tag an old, core-only-locked digest onto a batch
+  # carrying only IMP-094d900f9093's own fix. After the fix, this must
+  # refuse to skip.
+  assert_eq "hub-backend: refuses to skip (exit 1 = BUILD, never SKIP)" "1" "$RUN_RC"
+  assert_contains "hub-backend: names the module and the real reason (undeclared inputs)" "$RUN_OUT" "reads inputs outside modules/$HB_MODULE/ and none were declared"
+  assert_contains "hub-backend: -> BUILD is the decision logged" "$RUN_OUT" "-> BUILD"
+}
+
+rm -rf "$HB_REPO" "$HB_STUB_BIN"
+
 echo ""
 echo "=== summary: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 if [ "$FAIL_COUNT" -gt 0 ]; then

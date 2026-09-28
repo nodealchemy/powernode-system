@@ -45,16 +45,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Modules whose build reads content OUTSIDE modules/<slug>/, so the default
 # input path is INCOMPLETE for them and a skip would compare an incomplete hash:
 #
-#   powernode-hub-backend|hub-worker|hub-frontend  stage15's needs_parent list —
-#                                                  their WHOLE payload (server/,
-#                                                  worker/, frontend dist) IS a
-#                                                  packaged subtree of the
-#                                                  parent core repo, fully
-#                                                  covered by folding --core-ref
-#                                                  into the hash (see below) —
-#                                                  no local BUILD_INPUT_PATHS
-#                                                  needed, so these three stay
-#                                                  OFF this list.
+#   powernode-hub-worker|hub-frontend              stage15's needs_parent list —
+#                                                  their WHOLE payload (worker/,
+#                                                  frontend dist) IS a packaged
+#                                                  subtree of the parent core
+#                                                  repo, fully covered by
+#                                                  folding --core-ref into the
+#                                                  hash (see below) — no local
+#                                                  BUILD_INPUT_PATHS needed, so
+#                                                  these two stay OFF this list.
+#   powernode-hub-backend                          ALSO packages a subtree of
+#                                                  the parent core repo
+#                                                  (server/), but
+#                                                  IMP-094d900f9093 added a
+#                                                  re-lock step that ALSO reads
+#                                                  this repo's OWN root content
+#                                                  (server/*.gemspec,
+#                                                  extension.json — staged via
+#                                                  stage-extension-system-
+#                                                  files.sh, folded into
+#                                                  server/Gemfile.lock) — the
+#                                                  same "reads THIS repo's root,
+#                                                  not just the parent subtree"
+#                                                  shape powernode-extension-
+#                                                  system already has below, so
+#                                                  it joins this list for the
+#                                                  same reason. It is
+#                                                  narrow-dispatched, so rather
+#                                                  than thread real
+#                                                  --input-path declarations
+#                                                  through for it, it takes the
+#                                                  same "always refuse to skip"
+#                                                  shape as powernode-system-base
+#                                                  and module-forge below —
+#                                                  nothing currently sets
+#                                                  BUILD_INPUT_PATHS for any of
+#                                                  the three.
 #   powernode-extension-system                     ALSO in needs_parent (it
 #                                                  clones the parent for its
 #                                                  separate dedicated-module
@@ -121,12 +147,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scenario, which declares --input-path for powernode-extension-system and
 # confirms it still separately refuses without a --core-ref.
 #
-# hub-backend/-worker/-frontend are NOT listed here: their out-of-tree input
-# IS the parent repo, fully covered by the core-ref fold, so BUILD_INPUT_PATHS
-# would add nothing for them. powernode-extension-system's out-of-tree input
-# is NOT the parent repo (see above) — the core-ref fold does not cover it, so
-# it belongs here too, same as powernode-system-base and module-forge.
-NEEDS_DECLARED_INPUTS="powernode-system-base module-forge powernode-extension-system"
+# hub-worker/-frontend are NOT listed here: their ONLY out-of-tree input IS
+# the parent repo, fully covered by the core-ref fold, so BUILD_INPUT_PATHS
+# would add nothing for them. hub-backend and powernode-extension-system are
+# BOTH listed: each has an out-of-tree input beyond the parent repo (see
+# above) — the core-ref fold does not cover a needs-parent module's OWN
+# repo-root content, so they belong here too, same as powernode-system-base
+# and module-forge.
+NEEDS_DECLARED_INPUTS="powernode-system-base module-forge powernode-extension-system powernode-hub-backend"
 
 note() { echo "[skip-check] $*" >&2; }
 build() { note "$1 -> BUILD"; exit 1; }

@@ -684,14 +684,65 @@ case "$MODULE" in
     # rails-start.sh can `bundle install --local` (offline); native
     # extensions compile on-instance against runtime-ruby.
     #
-    # Resolve gems the SAME way the runtime does. discover_extension_gems
-    # (server/Gemfile) only promotes an extension to a path gem when its
-    # slug is in /opt/powernode/.gitmodules — which is NOT shipped to
-    # /sysroot — so at runtime NO extension is a path gem and the Gemfile
-    # resolves core-only. We therefore re-lock here WITHOUT staging
-    # .gitmodules or any extensions/, producing a core-only lock + cache
-    # that match the runtime resolution exactly (so the on-node --local
-    # install needs no re-resolution and no network).
+    # IMP-094d900f9093: resolve gems the SAME way the DEPLOYED node
+    # actually runs, not the way this comment used to (wrongly) claim it
+    # did. A deployed hub runs rails with POWERNODE_DEPLOYED=1 and
+    # extensions/system composed alongside this module (the separate
+    # powernode-extension-system module lands at /opt/powernode/
+    # extensions/system/ on the same node) — that flag makes
+    # extensions_loader_helper.rb load EVERY extension present on disk
+    # regardless of .gitmodules (see its own doc: "on a node, presence-
+    # on-disk IS the composition decision").
+    #
+    # The re-lock below is genuinely NEEDED, not merely harmless: core's
+    # own committed Gemfile.lock (rsynced in above from /tmp/parent/server/)
+    # carries a PATH section for every extension present in a normal core
+    # checkout — today that's marketing, supply-chain AND system — but the
+    # hub only ever composes system alongside this module. Re-locking is
+    # what drops the two extensions that were never going to be present on
+    # a deployed hub. The bug was that it used to run with NO extensions/
+    # directory staged on the builder AT ALL, so
+    # discover_extension_gems_by_visibility's `Dir.exist?(dir)` check
+    # failed immediately and returned nothing — dropping EVERY extension,
+    # including the one the hub actually composes. On a deployed hub,
+    # rails' own Bundler.setup then found the Gemfile and the shipped lock
+    # disagreeing about the extension gem and rewrote the root-owned lock
+    # AT BOOT, which needs CAP_DAC_OVERRIDE — a capability drop away from
+    # crash-looping on EACCES on every boot.
+    #
+    # Fix: stage ONLY extensions/system (the one this module actually
+    # composes with — see the scope note below) the SAME way the
+    # powernode-extension-system arm further down does (same script, so
+    # this can never drift from that arm's own fail-loud guards), then
+    # re-lock WITH POWERNODE_DEPLOYED=1 so the Gemfile resolves exactly as
+    # rails will at runtime — correctly dropping marketing/supply-chain
+    # while correctly keeping system. The staged extensions/ tree is
+    # removed afterward — this module's file_spec never includes
+    # /opt/powernode/extensions/** (that content belongs to, and already
+    # ships from, the separate powernode-extension-system module), so
+    # leaving it would only be redundant bytes in this module's build
+    # tree, not a shipped duplication (stage2-carve.sh's rsync filter is
+    # include-based off file_spec) — removed anyway so a future, looser
+    # carve filter can never surprise-ship it from here.
+    #
+    # STALENESS/SKEW: the staged extensions/system content comes from
+    # THIS BUILDER'S OWN WORKSPACE ($ws) at whatever commit the batch
+    # checked out for the extension repo — never from core's submodule
+    # pointer, and never from whatever version happens to be running on
+    # the hub being targeted. That's fine: the lock only cares about the
+    # extension gemspec's name/version/declared dependencies, not its
+    # runtime code, and a mismatch between the two is exactly what
+    # rails-setup's own re-lock at boot remains the safety net for (this
+    # module ships no BUNDLE_FROZEN, so that boot-time re-lock is never
+    # blocked from correcting a genuine drift — it is a backstop, not the
+    # only place this gets resolved).
+    #
+    # SCOPE: only the system extension is staged here, and the assertion
+    # below checks only for it. If a second extension module is ever
+    # composed alongside hub-backend on a deployed hub, it must be staged
+    # here too (and added to the assertion) or its own PATH gem will drift
+    # out of this lock exactly the way system's did.
+    bash "$SCRIPT_DIR/stage-extension-system-files.sh" --workspace "$ws"
     if ! command -v gem >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
@@ -704,12 +755,27 @@ case "$MODULE" in
     SRVB=$(awk '/BUNDLED WITH/{getline; gsub(/[[:space:]]/, ""); print; exit}' /tmp/fat/opt/powernode/server/Gemfile.lock)
     gem install bundler ${SRVB:+-v "$SRVB"} --no-document
     ( cd /tmp/fat/opt/powernode/server
+      export POWERNODE_DEPLOYED=1
       bundle ${SRVB:+_${SRVB}_} config set --local path vendor/bundle
       bundle ${SRVB:+_${SRVB}_} config set --local without development:test
       bundle ${SRVB:+_${SRVB}_} lock
       bundle ${SRVB:+_${SRVB}_} cache --no-install --all-platforms )
     # shellcheck disable=SC2012  # ls glob is fine here — just counting *.gem cache entries (verbatim from the original inline workflow step)
     echo "=== hub-backend vendored cache: $(ls /tmp/fat/opt/powernode/server/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
+
+    # --- Build-time assertion (IMP-094d900f9093) -------------------------
+    # Fails the BUILD here, loud, instead of shipping a lock that would
+    # only reveal itself as a boot-time crash loop on a deployed hub — see
+    # the long comment above for the full mechanism.
+    bash "$SCRIPT_DIR/assert-gemfile-lock-has-extension-path.sh" \
+      --lock /tmp/fat/opt/powernode/server/Gemfile.lock \
+      --gem powernode_system \
+      --remote ../extensions/system/server
+
+    # The staged extensions/ tree was only ever needed for the re-lock
+    # above to see it — see this section's opening comment for why it's
+    # never part of this module's own shipped content either way.
+    rm -rf /tmp/fat/opt/powernode/extensions
     ;;
   powernode-hub-worker)
     mkdir -p /tmp/fat/opt/powernode
