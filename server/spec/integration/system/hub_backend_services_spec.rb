@@ -41,8 +41,20 @@ require "rails_helper"
 # per-service key "never reaches the drop-in". It does. Rails' own boot
 # (Bundler.setup rewriting the root-owned server/Gemfile.lock) needs
 # CAP_DAC_OVERRIDE, so declaring `[]` there crash-looped rails with
-# CapEff=0. rails now has NO capabilities key at all and inherits the
-# ceiling, same as rails-setup.
+# CapEff=0. rails had NO capabilities key at all and inherited the
+# ceiling, same as rails-setup — the state this spec pinned until the next
+# entry below reversed it.
+#
+# REVERSED, IMP-094d900f9093: the root cause of the boot-time rewrite is
+# fixed — the build pipeline now ships a Gemfile.lock already resolved for
+# the deployed composition, with a build-time assertion that fails the
+# build if it doesn't match, so Bundler.setup has nothing left to rewrite
+# at boot. rails now declares its OWN explicit `capabilities: []` again
+# (see the manifest's rails service entry for the live verification this
+# was based on), same shape as rails-setup's grant but zero instead of the
+# ceiling. rails-setup is UNCHANGED by this: it still inherits the
+# top-level ceiling, still runs as root before rails, and its own re-lock
+# step remains the safety net for a genuine drift.
 RSpec.describe "powernode-hub-backend module services" do
   let(:manifest_path) do
     Rails.root.join("../extensions/system/modules/powernode-hub-backend/manifest.yaml")
@@ -113,18 +125,23 @@ RSpec.describe "powernode-hub-backend module services" do
       expect(manifest.dig("security", "privileged")).to be false
     end
 
-    it "rails inherits the module ceiling — neither service declares a per-service capabilities key" do
+    it "rails-setup inherits the module ceiling; rails declares its own explicit zero (IMP-094d900f9093)" do
       rails_setup = services.find { |s| s["name"] == "rails-setup" }
       rails_service = services.find { |s| s["name"] == "rails" }
       # rails-setup has no structured `capabilities:` field at all (it's a
-      # raw unit_body). rails' own per-service field must be ABSENT, not
-      # an explicit `[]` — a declared `[]` is honoured as ZERO by the
-      # per-service resolver (IMP-caef5c00d63f) and crash-loops rails,
-      # which needs CAP_DAC_OVERRIDE for its own boot-time Gemfile.lock
-      # rewrite. The grant lives ONLY at the top level; both services
-      # inherit it.
+      # raw unit_body) — it inherits the top-level ceiling
+      # (CAP_CHOWN/CAP_FOWNER/CAP_DAC_OVERRIDE), unchanged by this task.
+      #
+      # rails' own per-service field must be an explicit `[]`, not absent.
+      # This is the REVERSE of what this spec asserted before
+      # IMP-094d900f9093: a declared `[]` is honoured as ZERO by the
+      # per-service resolver (IMP-caef5c00d63f), which used to crash-loop
+      # rails because its own boot rewrote the root-owned Gemfile.lock
+      # (needing CAP_DAC_OVERRIDE). That boot-time rewrite is gone now —
+      # the shipped lock already matches the deployed composition — so
+      # rails needs, and now declares, zero capabilities.
       expect(rails_setup["capabilities"]).to be_nil
-      expect(rails_service).not_to have_key("capabilities")
+      expect(rails_service["capabilities"]).to eq([])
     end
   end
 end

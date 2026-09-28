@@ -169,24 +169,36 @@ services:
       POWERNODE_CA_MODE: "local"
     exposed_ports:
       - { port: 3000, protocol: tcp, name: http }
-    # IMP-caef5c00d63f follow-on (2026-09-27, ops-hub outage): this used to
-    # declare an explicit `capabilities: []`, on the belief that a
-    # per-service capabilities key never reached the agent's drop-in (see
-    # the stale version of the comment in the `security:` block below,
-    # corrected alongside this change). It does: the per-service resolver
-    # (agent/internal/runtime/unit_capabilities.go,
-    # security.ResolveServiceCapabilities) honours a declared `[]` as
-    # ZERO capabilities for that one unit. rails' own boot (rails-start.sh
-    # -> Bundler.setup) rewrites the root-owned
-    # /opt/powernode/server/Gemfile.lock on every boot, which needs
-    # CAP_DAC_OVERRIDE — CapEff=0 made that an EPERM/EACCES crash loop.
-    # Absent key = inherit the module's security.capabilities ceiling
-    # (CAP_CHOWN/CAP_FOWNER/CAP_DAC_OVERRIDE), same as before this outage.
-    # The genuine zero-cap target for rails is BLOCKED on removing that
-    # boot-time lockfile rewrite (rails-setup.sh / rails-start.sh are a
-    # separate follow-up, deliberately not touched here) — once rails no
-    # longer writes anywhere it doesn't own, re-declare `capabilities: []`
-    # then, not before.
+    # IMP-094d900f9093: rails now runs with ZERO capabilities. This used to
+    # be blocked on rails' own boot (rails-start.sh -> Bundler.setup)
+    # rewriting the root-owned /opt/powernode/server/Gemfile.lock on every
+    # boot — that write needs CAP_DAC_OVERRIDE, so CapEff=0 was an
+    # EPERM/EACCES crash loop (see the earlier IMP-caef5c00d63f follow-on
+    # history in this file's git log for that outage). It's safe now
+    # because the build pipeline ships a Gemfile.lock already resolved for
+    # the DEPLOYED composition (core + the extension(s) actually composed
+    # alongside this module), with a build-time assertion that fails the
+    # build outright if the shipped lock doesn't match — so Bundler.setup
+    # finds the Gemfile and the lock already agreeing at boot and has
+    # nothing left to rewrite.
+    #
+    # rails-setup (above, still ceiling-scoped — see the `security:` block
+    # below) remains the safety net: it runs as root, before this service
+    # starts, and its own re-lock step still exists to correct a genuine
+    # drift if one ever occurs. This service's own zero capabilities are
+    # what changed, not that backstop.
+    #
+    # WARNING TO FUTURE EDITORS: this hub is its own control plane — there
+    # is no separate operator path to fix it if it stops booting. Adding
+    # ANY boot-time write here that touches something rails does not
+    # already own (a new root-owned file it must chown/rewrite, a new
+    # directory outside what rails-setup already prepared) will reproduce
+    # the exact EACCES/EPERM crash loop this capability drop just closed,
+    # and the hub cannot self-recover from that. Check whether rails-setup
+    # already prepares the target BEFORE adding any such write, or restore
+    # the capability this service needs — do not assume zero capabilities
+    # is free to keep once boot-time behavior changes.
+    capabilities: []
     health:
       endpoint: "/up"
       method: GET
@@ -259,16 +271,17 @@ security:
   # dying at :183-184 since that incident.
   #
   # This MUST stay declared here, at the TOP-LEVEL security block: it is
-  # the module's CEILING, and every service with no capabilities key of
-  # its own (rails-setup, and rails — see the rails service entry above)
-  # INHERITS this exact set.
+  # the module's CEILING. rails-setup has no capabilities key of its own,
+  # so it INHERITS this exact set. rails itself now declares its own
+  # `capabilities: []` (IMP-094d900f9093 — see the rails service entry
+  # above) and no longer inherits this ceiling at all.
   #
   # CORRECTED (IMP-caef5c00d63f follow-on, 2026-09-27): this comment used
   # to claim a per-service `capabilities:` key "never reaches the drop-in"
   # and that declaring one there is a harmless no-op. That was wrong, and
   # believing it is exactly what caused the 2026-09-27 ops-hub outage —
-  # rails' own per-service `capabilities: []` (removed above) WAS honoured
-  # by the agent's per-service resolver
+  # rails' own per-service `capabilities: []` (re-declared above,
+  # IMP-094d900f9093) WAS honoured by the agent's per-service resolver
   # (agent/internal/runtime/unit_capabilities.go,
   # security.ResolveServiceCapabilities, IMP-caef5c00d63f), which reads
   # this ceiling and grants each service either the whole ceiling (no key)

@@ -148,6 +148,14 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
   # that boot-time lockfile rewrite (separate follow-up; rails-setup.sh /
   # rails-start.sh deliberately not touched here) — re-declare `[]` once
   # rails no longer writes anywhere it doesn't own, not before.
+  #
+  # REVERSED AGAIN, IMP-094d900f9093: the boot-time lockfile rewrite is
+  # gone — the build pipeline now ships a Gemfile.lock already resolved
+  # for the deployed composition, with a build-time assertion that fails
+  # the build outright if it doesn't match, so Bundler.setup has nothing
+  # left to rewrite at boot. rails declares an explicit `[]` again;
+  # rails-setup is unchanged (still inherits the ceiling for its root
+  # prep).
   describe "powernode-hub-backend" do
     manifest_for = -> { load_manifest.call("powernode-hub-backend") }
 
@@ -157,12 +165,14 @@ RSpec.describe "service-level capabilities audit (IMP-e75df089523d)" do
       expect(rails_setup.key?("capabilities")).to be(false)
     end
 
-    it "rails inherits the module ceiling (no capabilities key) and runs as a non-root user" do
+    it "rails declares an explicit [] (IMP-094d900f9093 — the shipped lock now matches, so it needs nothing)" do
       rails = service_in.call(manifest_for.call, "rails")
       expect(rails).not_to be_nil
-      expect(rails.key?("capabilities")).to be(false),
-        "rails declares a service-level capabilities key; an explicit `[]` resolves to ZERO under the " \
-        "per-service resolver and strips the CAP_DAC_OVERRIDE its own boot-time Gemfile.lock rewrite needs"
+      expect(rails.key?("capabilities")).to be(true),
+        "rails should declare an explicit capabilities key now that the build pipeline ships a " \
+        "Gemfile.lock resolved for the deployed composition (IMP-094d900f9093) — Bundler.setup no " \
+        "longer needs CAP_DAC_OVERRIDE to rewrite it at boot"
+      expect(rails["capabilities"]).to eq([])
       expect(rails["user"]).to be_present
       expect(rails["user"]).not_to eq("root")
     end
