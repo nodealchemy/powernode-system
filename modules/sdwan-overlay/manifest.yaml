@@ -28,7 +28,7 @@ package_spec:
 # Unit-enablement decisions (deliberate, per the agent's ownership model):
 #   * wg-quick@.service — MASKED via rootfs symlink to /dev/null (redis
 #     precedent). The agent creates and configures WG interfaces itself
-#     (`ip link add ... type wireguard` + `wg setconf`, wg_applier.go); a
+#     (`ip link add ... type wireguard` + `wg syncconf`, wg_applier.go); a
 #     wg-quick instance enabled by hand or preset would fight the agent
 #     for the same interfaces.
 #   * nftables.service — MASKED via rootfs symlink. The stock unit runs

@@ -83,7 +83,7 @@ type EgressExtras struct {
 //     own :443 are both syntactically valid entries).
 //  2. `oifname <Interface> {ip|ip6} daddr { <AllowedIPs of this family> }
 //     accept` — matches PLAINTEXT packets a local process routes INTO the
-//     tunnel, scoped to exactly what wg_applier.go's `wg setconf` actually
+//     tunnel, scoped to exactly what wg_applier.go's `wg syncconf` actually
 //     installs as this interface's crypto-routes (AllowedIPs). A blanket
 //     `oifname X accept` would let a platform-pushed 0.0.0.0/0 or ::/0
 //     AllowedIPs turn into unrestricted egress for every module on the

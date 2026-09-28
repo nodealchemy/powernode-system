@@ -592,7 +592,7 @@ func (m *Manager) FirstOverlayAddress() string {
 // (b) would let ANY local process send UDP to a platform-controlled
 // IP:port — endpoints are writable by anyone with SDWAN write), and the
 // union of its peers' AllowedIPs (scopes the interface's own tunnel-egress
-// rule to what wg_applier.go's `wg setconf` actually routes onto that
+// rule to what wg_applier.go's `wg syncconf` actually routes onto that
 // device, rather than a blanket oifname accept a pushed 0.0.0.0/0 or ::/0
 // AllowedIPs could turn into unrestricted module egress through).
 //
@@ -857,7 +857,7 @@ func (m *Manager) fetchDesiredConfig(ctx context.Context) (*DesiredConfig, error
 // response (TopologyCompiler#include_private_key=true on the node-API
 // path; the operator topology endpoint never sets it). The agent never
 // persists it to disk; it lives only in process memory and in the
-// mode-0600 temp file we pass to `wg setconf`.
+// mode-0600 temp file we pass to `wg syncconf`.
 //
 // Slice 2 hardening: split it into a dedicated /node_api/sdwan/keys
 // endpoint with a shorter TTL; the inline emit becomes a fallback path.

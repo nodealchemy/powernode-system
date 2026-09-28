@@ -56,3 +56,63 @@ func TestIsIPAddrAddAlreadyExistsErr(t *testing.T) {
 		})
 	}
 }
+
+// TestParseWgLinkShow_RealisticIPLinkJSON exercises readLinkState's
+// pure parsing half (IMP-82208d22fdd1) against full, realistic `ip -j
+// link show <name>` output — every field a real iproute2 emits, not
+// just the three this package reads — to pin two things at once: that
+// unrecognized fields don't break parsing, and that the admin-up check
+// reads the "UP" flag specifically, NOT operstate or LOWER_UP. A
+// WireGuard link commonly reports operstate "UNKNOWN" even while fully
+// admin-up (it doesn't run carrier detection the way ethernet does), so
+// keying off operstate would have misread every real WG interface as
+// down.
+func TestParseWgLinkShow_RealisticIPLinkJSON(t *testing.T) {
+	cases := []struct {
+		name       string
+		json       string
+		wantMTU    int
+		wantMaster string
+		wantUp     bool
+	}{
+		{
+			name:       "wg link enslaved to a VRF, operstate UNKNOWN despite being admin-up",
+			json:       `[{"ifindex":12,"ifname":"wg-sdwan-aaaa11","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"],"mtu":1420,"qdisc":"noqueue","operstate":"UNKNOWN","linkmode":"DEFAULT","group":"default","txqlen":1000,"link_type":"none","master":"sdwan-aaaa11"}]`,
+			wantMTU:    1420,
+			wantMaster: "sdwan-aaaa11",
+			wantUp:     true,
+		},
+		{
+			name:       "link with no master at all",
+			json:       `[{"ifindex":13,"ifname":"wg-sdwan-bbbb22","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"],"mtu":1420,"qdisc":"noqueue","operstate":"UNKNOWN","linkmode":"DEFAULT","group":"default","txqlen":1000,"link_type":"none"}]`,
+			wantMTU:    1420,
+			wantMaster: "",
+			wantUp:     true,
+		},
+		{
+			name:       "LOWER_UP present but UP absent — must read false, not true",
+			json:       `[{"ifindex":14,"ifname":"wg-sdwan-cccc33","flags":["POINTOPOINT","NOARP","LOWER_UP"],"mtu":1420,"qdisc":"noop","operstate":"UNKNOWN","linkmode":"DEFAULT","group":"default","txqlen":1000,"link_type":"none","master":"sdwan-cccc33"}]`,
+			wantMTU:    1420,
+			wantMaster: "sdwan-cccc33",
+			wantUp:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := parseWgLinkShow(tc.json)
+			if state == nil {
+				t.Fatalf("expected a parsed state, got nil")
+			}
+			if state.MTU != tc.wantMTU {
+				t.Errorf("MTU = %d, want %d", state.MTU, tc.wantMTU)
+			}
+			if state.Master != tc.wantMaster {
+				t.Errorf("Master = %q, want %q", state.Master, tc.wantMaster)
+			}
+			if state.Up != tc.wantUp {
+				t.Errorf("Up = %v, want %v", state.Up, tc.wantUp)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ package sdwan
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -122,6 +123,70 @@ func delAddr(ctx context.Context, ip, ifname, cidr string) error {
 	cmd := exec.CommandContext(ctx, ip, "addr", "del", cidr, "dev", ifname)
 	_, _ = cmd.CombinedOutput()
 	return nil
+}
+
+// linkState is the subset of a single interface's `ip -j link show`
+// JSON that IMP-82208d22fdd1's idempotency checks care about: enough
+// to decide whether an `ip link set ...` call would be a no-op, without
+// pulling in every field iproute2 emits.
+type linkState struct {
+	MTU    int
+	Master string
+	Up     bool
+}
+
+type wgLinkShowEntry struct {
+	Flags  []string `json:"flags"`
+	MTU    int      `json:"mtu"`
+	Master string   `json:"master"`
+}
+
+// readLinkState reads `ip -j link show <name>` for exactly one named
+// interface and reports its MTU, VRF master (if any), and admin
+// up/down state (the "UP" flag — NOT "LOWER_UP"/operstate, which for a
+// WireGuard link reflects carrier/handshake status rather than the
+// administrative state `ip link set up` controls).
+//
+// Returns nil — never an error, so there is nothing for a caller to
+// mishandle — when the interface doesn't exist, or the read/parse fails
+// for any other reason. Callers use state == nil as "unknown; always
+// reissue the ip link set call", which is always safe (every such call
+// this package makes is itself idempotent at the kernel level) — this
+// function's whole purpose is to let a caller SKIP a redundant reissue
+// when it can positively confirm the state already matches, never to
+// justify skipping when it can't.
+func readLinkState(ctx context.Context, ip, name string) *linkState {
+	cmd := exec.CommandContext(ctx, ip, "-j", "link", "show", name)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Nonexistent interface (not yet created, or raced away) reads
+		// as "no state" — see the safe-fallback note above.
+		return nil
+	}
+	return parseWgLinkShow(stdout.String())
+}
+
+// parseWgLinkShow is readLinkState's pure parsing half, split out so it's
+// directly table-testable against realistic `ip -j link show` JSON
+// without shelling out. Malformed/empty input reads the same as a
+// nonexistent interface (nil) — see readLinkState's doc for why that's
+// always a safe fallback.
+func parseWgLinkShow(out string) *linkState {
+	var entries []wgLinkShowEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil || len(entries) == 0 {
+		return nil
+	}
+
+	up := false
+	for _, f := range entries[0].Flags {
+		if f == "UP" {
+			up = true
+			break
+		}
+	}
+	return &linkState{MTU: entries[0].MTU, Master: entries[0].Master, Up: up}
 }
 
 // captureLinkShow runs `ip -d -j link show type <linkType>` and returns

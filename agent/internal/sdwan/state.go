@@ -202,7 +202,7 @@ type FirewallConf struct {
 // because the caller's instance-JWT proves they are the owning peer).
 // The operator-facing /sdwan/networks/:id/topology endpoint omits it.
 // We never persist it to disk — it lives only in process memory and in
-// the mode-0600 temp file we hand to `wg setconf`.
+// the mode-0600 temp file we hand to `wg syncconf`.
 type InterfaceConf struct {
 	Name          string         `json:"name"`    // wg-sdwan-<8>
 	Address       string         `json:"address"` // /128
@@ -228,7 +228,7 @@ type PrivateKeyRef struct {
 	PeerKeyID string `json:"peer_key_id"`
 }
 
-// PeerConf is one [Peer] section in `wg setconf` terms.
+// PeerConf is one [Peer] section in `wg syncconf` terms.
 type PeerConf struct {
 	PeerID              string   `json:"peer_id"`
 	PublicKey           string   `json:"public_key"`

@@ -16,6 +16,7 @@ package sdwan
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -71,17 +72,44 @@ func (a *ShellApplier) ip() string {
 
 // ApplyInterface is the main reconcile entrypoint. It:
 //  1. Creates the wg interface (idempotent: ignores EEXIST).
-//  2. Sets the link MTU + brings it up.
+//  2. Sets the link MTU + brings it up (idempotent: skipped when a
+//     read of the current state already matches).
 //  3. Assigns the IPv6 host address (idempotent: ignores EEXIST).
-//  4. Writes the wg config (private key + listen port + peers) via
-//     `wg setconf` from a temp file — never as a CLI argument so the
+//  4. Converges the wg config (private key + listen port + peers) via
+//     `wg syncconf` from a temp file — never as a CLI argument so the
 //     private key never appears in `ps`/shell history.
+//
+// IMP-82208d22fdd1: this used to run unconditionally on every reconcile
+// tick (every ~30s), including steps 2 and 4 even when nothing had
+// changed. Step 4 was the destructive one — `wg setconf` REPLACES the
+// entire peer set, which resets every peer's session: latest-handshake
+// goes to "now" and rx/tx counters restart, even though nothing was
+// actually reconfigured. Live symptom: rx/tx frozen at one handshake's
+// worth of bytes forever while last_handshake_at kept refreshing.
+// `wg syncconf` reads the same setconf-format file (still NOT the
+// wg-quick [Interface] Address/DNS form — syncconf doesn't accept that
+// either) but diffs against the live peer list at the kernel level and
+// only touches what actually changed, so calling it unconditionally on
+// every tick is safe: an unchanged config is a no-op for any peer whose
+// session is untouched. Steps 2/2a below still needed their own guard
+// because `ip link set` has no equivalent "diff before touching"
+// behavior of its own — it reissues MTU/up/master unconditionally, so
+// WE compute the drift with a `readLinkState` read.
 func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, peers []PeerConf, privateKey string) error {
 	if cfg.Name == "" {
 		return errors.New("ApplyInterface: empty interface name")
 	}
 	if privateKey == "" {
 		return errors.New("ApplyInterface: empty private key")
+	}
+	// A malformed key reaching wg's own config parser gets echoed back
+	// in its error text — see the redacted-error handling on the
+	// syncconf call below. Rejecting it here, before it's ever written
+	// to the conf file or handed to `wg`, is the belt to that suspenders:
+	// this error text is guaranteed not to contain privateKey at all,
+	// whereas wg's own parser error might.
+	if err := validateWgPrivateKey(privateKey); err != nil {
+		return err
 	}
 
 	// 1. Create the link if missing.
@@ -91,29 +119,46 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 		}
 	}
 
+	// Read once, use for both the VRF-master and MTU/up decisions below.
+	// state == nil (interface just created, or the read itself failed)
+	// means "reissue unconditionally" — both calls below are themselves
+	// idempotent at the kernel level, so that fallback is always safe;
+	// it just costs an extra no-op call rather than an incorrect skip.
+	state := readLinkState(ctx, a.ip(), cfg.Name)
+
 	// 1a. Phase N1a: bind the iface to its network's VRF master device.
 	// vrf_applier runs before wg_applier in the manager loop so the
 	// VRF exists at this point; we still tolerate an absent VRF
 	// (transient state during cutover) by surfacing the error in a way
 	// the manager records but does not fail the whole reconcile on.
 	//
-	// Re-binding is idempotent — the kernel accepts `ip link set X
-	// master Y` even when X is already mastered by Y. We always issue
-	// the command so a misconfigured iface (master pointing at the
-	// wrong VRF) self-corrects on the next tick.
-	if cfg.VrfName != "" {
+	// IMP-82208d22fdd1: only reissue `ip link set X master Y` when the
+	// current master doesn't already match — plain `ip link set` has no
+	// built-in idempotency of its own, unlike `wg syncconf` above.
+	// Reissuing it every tick was never destructive (the kernel accepts
+	// a redundant `master` set as a no-op); this guard only saves an
+	// unnecessary exec per tick, it does not close a correctness gap on
+	// its own. The self-correction property from Phase N1a is unchanged:
+	// a misconfigured master (state.Master != cfg.VrfName) is still
+	// detected and fixed on the very next tick, because we re-read state
+	// every call rather than trusting a cached value.
+	if cfg.VrfName != "" && (state == nil || state.Master != cfg.VrfName) {
 		if err := run(ctx, a.ip(), "link", "set", cfg.Name, "master", cfg.VrfName); err != nil {
 			return fmt.Errorf("ip link set %s master %s: %w", cfg.Name, cfg.VrfName, err)
 		}
 	}
 
-	// 2. MTU + state.
+	// 2. MTU + up state. Same reasoning as 1a: only reissue when the
+	// current MTU or admin state doesn't already match — read via the
+	// state captured above rather than a second `ip link show`.
 	mtu := cfg.MTU
 	if mtu <= 0 {
 		mtu = 1420
 	}
-	if err := run(ctx, a.ip(), "link", "set", cfg.Name, "mtu", strconv.Itoa(mtu), "up"); err != nil {
-		return fmt.Errorf("ip link set %s: %w", cfg.Name, err)
+	if state == nil || state.MTU != mtu || !state.Up {
+		if err := run(ctx, a.ip(), "link", "set", cfg.Name, "mtu", strconv.Itoa(mtu), "up"); err != nil {
+			return fmt.Errorf("ip link set %s: %w", cfg.Name, err)
+		}
 	}
 
 	// 3. IPv6 host address. `ip addr add` is treated as idempotent: the
@@ -132,7 +177,8 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 		}
 	}
 
-	// 4. WireGuard config. Build a wg-setconf-format file in a tempdir
+	// 4. WireGuard config. Build a wg-setconf-format file (syncconf reads
+	//    the identical format — see the doc comment above) in a tempdir
 	//    with mode 0600 so the private key never hits a shared shell-history.
 	confPath, err := writeWgConfFile(cfg, peers, privateKey)
 	if err != nil {
@@ -140,10 +186,54 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 	}
 	defer os.Remove(confPath)
 
-	if err := run(ctx, a.wg(), "setconf", cfg.Name, confPath); err != nil {
-		return fmt.Errorf("wg setconf %s: %w", cfg.Name, err)
+	// IMP-82208d22fdd1: syncconf, not setconf — see the doc comment on
+	// ApplyInterface for why setconf's full-replace semantics were the
+	// actual defect. Called unconditionally every tick; that's fine
+	// because syncconf itself is the drift check for the peer set (it
+	// diffs against the live kernel state before touching anything),
+	// unlike the ip link steps above which needed us to compute drift.
+	//
+	// Uses runWgSyncconfRedacted, not the ordinary run() helper: this is
+	// the one call in the package whose input includes a private key,
+	// and wg's own config parser echoes a malformed value back in its
+	// error text. run() embeds CombinedOutput() in the returned error,
+	// which the manager's recordError plumbs into the heartbeat — that
+	// would leak the key off the node. validateWgPrivateKey above
+	// rejects an obviously-malformed key before we ever get here; this
+	// is the second layer, for whatever it doesn't catch.
+	if err := runWgSyncconfRedacted(ctx, a.wg(), cfg.Name, confPath); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// validateWgPrivateKey rejects anything that isn't a syntactically valid
+// WireGuard private key (32 raw bytes, standard base64) BEFORE it's
+// written to the conf file or handed to `wg`. See the doc comment on its
+// call site for why this matters beyond input hygiene: it's the layer
+// that's guaranteed never to echo the bad value back.
+func validateWgPrivateKey(key string) error {
+	decoded, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(decoded) != 32 {
+		return errors.New("ApplyInterface: private key is not a valid base64-encoded 32-byte WireGuard key")
+	}
+	return nil
+}
+
+// runWgSyncconfRedacted runs `wg syncconf <ifname> <confPath>` without
+// ever capturing its stdout/stderr — see the call site's doc comment for
+// why: wg's own parser can echo a malformed private key back in its
+// error text, and that text would otherwise flow into the manager's
+// recordError and out through the heartbeat. The tradeoff is a less
+// specific error message on a genuine (non-key) failure — e.g. a
+// permissions problem — which is accepted here because this is the only
+// call in the package whose input includes key material.
+func runWgSyncconfRedacted(ctx context.Context, wgPath, ifname, confPath string) error {
+	cmd := exec.CommandContext(ctx, wgPath, "syncconf", ifname, confPath)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("wg syncconf %s failed: %s", ifname, err)
+	}
 	return nil
 }
 
@@ -266,12 +356,30 @@ func writeWgConfFile(cfg InterfaceConf, peers []PeerConf, privateKey string) (st
 		if len(p.AllowedIPs) > 0 {
 			fmt.Fprintf(&b, "AllowedIPs = %s\n", strings.Join(p.AllowedIPs, ","))
 		}
+		// Endpoint is only written when the platform has one — unlike
+		// PersistentKeepalive below, omitting it is NOT fixed here.
+		// wg's own diffing (via syncconf) leaves an attribute alone when
+		// its config-file line is absent, so a peer's endpoint (often
+		// learned dynamically as it roams, not authoritative from this
+		// file) can't be force-cleared this way regardless. Clearing an
+		// endpoint server-side is out of scope for IMP-82208d22fdd1.
 		if p.Endpoint != "" {
 			fmt.Fprintf(&b, "Endpoint = %s\n", p.Endpoint)
 		}
+		// IMP-82208d22fdd1: always write PersistentKeepalive, even when
+		// it's 0/unset — never omit the line. `wg setconf` rebuilt every
+		// peer from scratch, so an omitted line always meant "off" (the
+		// zero value). `wg syncconf` only changes an attribute when the
+		// file carries a value for it, so omitting the line here used to
+		// mean "leave whatever the node already has" — a platform change
+		// from 25 to 0/nil never reached the node. Writing `= 0`
+		// explicitly is a kernel no-op when it's already 0, so this is
+		// safe to do unconditionally on every tick.
+		keepalive := 0
 		if p.PersistentKeepalive != nil && *p.PersistentKeepalive > 0 {
-			fmt.Fprintf(&b, "PersistentKeepalive = %d\n", *p.PersistentKeepalive)
+			keepalive = *p.PersistentKeepalive
 		}
+		fmt.Fprintf(&b, "PersistentKeepalive = %d\n", keepalive)
 	}
 
 	f, err := os.CreateTemp("", "sdwan-wg-*.conf")
