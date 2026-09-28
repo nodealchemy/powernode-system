@@ -30,6 +30,9 @@ type stubWg struct{}
 func (stubWg) ApplyInterface(context.Context, sdwan.InterfaceConf, []sdwan.PeerConf, string) error {
 	return nil
 }
+func (stubWg) ApplyRoutes(context.Context, sdwan.InterfaceConf, []sdwan.PeerConf) error {
+	return nil
+}
 func (stubWg) RemoveInterface(context.Context, string) error { return nil }
 func (stubWg) ReadActualState(context.Context, string) (*sdwan.ActualInterfaceState, error) {
 	return &sdwan.ActualInterfaceState{}, nil

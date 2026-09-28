@@ -36,7 +36,13 @@ type fakeWgApplier struct {
 	handshakeAge time.Duration
 	readErr      error
 	applyErr     error
-	removed      []string
+	// routesErr — IMP-470b28a77962 review (B2): ApplyRoutes is a
+	// SEPARATE step from ApplyInterface precisely so a routing failure
+	// can be exercised independently of applyErr, proving one doesn't
+	// block the other's downstream steps (firewall/nat/read_actual/
+	// egress). See TestRouteFailureDoesNotBlockPeerReportsOrEgress.
+	routesErr error
+	removed   []string
 	// existing is what the kernel reports back, which is how a test puts an
 	// ORPHAN in front of the reaper (IMP-01a07d31).
 	existing []string
@@ -44,6 +50,10 @@ type fakeWgApplier struct {
 
 func (f *fakeWgApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, peers []PeerConf, privateKey string) error {
 	return f.applyErr
+}
+
+func (f *fakeWgApplier) ApplyRoutes(ctx context.Context, cfg InterfaceConf, peers []PeerConf) error {
+	return f.routesErr
 }
 
 func (f *fakeWgApplier) RemoveInterface(ctx context.Context, name string) error {
@@ -57,6 +67,12 @@ func (f *fakeWgApplier) ReadActualState(ctx context.Context, name string) (*Actu
 	}
 	return &ActualInterfaceState{
 		Name: name,
+		// IMP-470b28a77962 review (B2): a nonzero ListenPort here is what
+		// lets TestRouteFailureDoesNotBlockPeerReportsOrEgress prove
+		// EgressContributions still gets a MEASURED port — no prior test
+		// in this file inspected ListenPort, so this default was
+		// previously always 0 (unmeasured) for every test here.
+		ListenPort: 51820,
 		Peers: []ActualPeerState{
 			{PublicKey: "PEERPUB-" + name, LastHandshakeAt: time.Now().Add(-f.handshakeAge)},
 		},
@@ -634,8 +650,11 @@ func TestNoSubsystemsMeasuredYieldsNoGreenClaims(t *testing.T) {
 	st := h.statusFor(t, netA)
 	for _, s := range st.SubsystemStates {
 		switch s.Subsystem {
-		case "fetch_desired_config", "private_key_lookup", "apply_interface", "read_actual", "post_status":
-			// These genuinely ran.
+		case "fetch_desired_config", "private_key_lookup", "apply_interface", "apply_routes", "read_actual", "post_status":
+			// These genuinely ran. apply_routes — IMP-470b28a77962 review
+			// (B2) — runs unconditionally right after apply_interface
+			// succeeds, independent of NftablesApplier/NatApplier/
+			// VRFApplier being nil.
 		default:
 			t.Errorf("unexpected %q outcome for a subsystem that never ran: %+v", s.Subsystem, s)
 		}
@@ -1058,5 +1077,66 @@ func TestSplitSubsystemLabel(t *testing.T) {
 		if sub != c.subsystem || scope != c.scope {
 			t.Errorf("splitSubsystemLabel(%q) = (%q, %q), want (%q, %q)", c.label, sub, scope, c.subsystem, c.scope)
 		}
+	}
+}
+
+// ------------------------------------------------------------------
+// IMP-470b28a77962 review (B2, BLOCKER) — a route failure must not
+// silence a network
+// ------------------------------------------------------------------
+//
+// Before this fix, ApplyRoutes' error was folded into ApplyInterface's
+// own return value, and the reconcile loop `continue`s past ANY
+// apply_interface error — skipping apply_firewall, apply_nat AND
+// read_actual entirely. Consequence: one bad AllowedIPs entry, or a
+// transient `ip route` failure, made healthy_peers go null and
+// EgressContributions' ListenPort silently drop to 0 (which
+// buildEgressExtrasRules reads as "skip the WG egress allow"), on a
+// default-deny host actively blocking that network's traffic — worse
+// than the missing-route bug IMP-470b28a77962 set out to fix. Routes
+// are now their own step (`apply_routes:<iface>`), called with `_ =`
+// like apply_firewall/apply_nat, specifically so its failure can never
+// gate what comes after it.
+func TestRouteFailureDoesNotBlockPeerReportsOrEgress(t *testing.T) {
+	h := newHarness(t, networkJSON(netA, ifaceA, false, false))
+	h.wg.routesErr = errors.New("ip route replace: RTNETLINK answers: File exists")
+
+	h.reconcile()
+
+	st := h.statusFor(t, netA)
+
+	// The route failure IS surfaced, under its own label — not swallowed.
+	// Scoped by INTERFACE name, same convention as apply_interface
+	// (both are per-interface, not per-network, labels).
+	routes := mustSubsystem(t, st, "apply_routes", ifaceA)
+	if routes.State != SubsystemStateError {
+		t.Errorf("apply_routes state = %q, want %q", routes.State, SubsystemStateError)
+	}
+	if !strings.Contains(routes.Message, "RTNETLINK") {
+		t.Errorf("apply_routes message = %q, want the applier's error text", routes.Message)
+	}
+
+	// apply_interface itself is unaffected — it's a different step.
+	iface := mustSubsystem(t, st, "apply_interface", ifaceA)
+	if iface.State != SubsystemStateOK {
+		t.Errorf("apply_interface state = %q, want %q (a route failure must not fail interface apply)", iface.State, SubsystemStateOK)
+	}
+
+	// read_actual — and therefore peer reporting — still ran.
+	if st.HealthyPeers == nil {
+		t.Fatal("healthy_peers is nil; a route failure must not block read_actual")
+	}
+	if *st.HealthyPeers != 1 {
+		t.Errorf("healthy_peers = %d, want 1", *st.HealthyPeers)
+	}
+
+	// EgressContributions still gets a MEASURED, live ListenPort — the
+	// concrete default-deny-host consequence this review round flagged.
+	extras := h.mgr.EgressContributions()
+	if len(extras.Networks) != 1 {
+		t.Fatalf("expected exactly 1 egress network, got %d: %+v", len(extras.Networks), extras.Networks)
+	}
+	if extras.Networks[0].ListenPort == 0 {
+		t.Errorf("ListenPort = 0 (unmeasured); a route failure must not skip read_actual, which is what measures it")
 	}
 }

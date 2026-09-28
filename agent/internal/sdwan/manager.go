@@ -317,6 +317,22 @@ func (m *Manager) Reconcile(ctx context.Context) {
 			continue
 		}
 
+		// IMP-470b28a77962 review (B2, BLOCKER): routes are their OWN
+		// step, deliberately not folded into apply_interface above.
+		// `continue`ing past a route failure the way apply_interface's
+		// own error does would skip apply_firewall, apply_nat AND
+		// read_actual for the whole network over one bad AllowedIPs
+		// entry or a transient `ip route` failure — worse than the
+		// missing-route bug this task fixes (no peer reports,
+		// healthy_peers goes null, and EgressContributions' ListenPort
+		// silently drops to 0, which removes the WG egress allow on a
+		// default-deny host). `_ =`, same pattern as apply_firewall/
+		// apply_nat below: the failure is recorded under its own label,
+		// never gates what comes after it.
+		_ = m.step("apply_routes:"+net.Interface.Name, func() error {
+			return m.Applier.ApplyRoutes(ctx, net.Interface, net.Peers)
+		})
+
 		// Apply the firewall ruleset AFTER the wg interface is up — the
 		// nft script references the interface by name (`iif "wg-sdwan-..."`),
 		// so attempting to install rules before the interface exists works

@@ -38,7 +38,11 @@ const testWgPrivateKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 //   - wgPayloadLog: the content of the conf file passed to `wg
 //     syncconf`/`setconf`, so tests can assert on which peers were
 //     actually written without needing the (already-removed) temp file.
-func newWgRecorderShims(t *testing.T) (ipBin, wgBin, ipLog, wgLog, linkStatePath, wgPayloadLog string) {
+//   - routeV4Path / routeV6Path: IMP-470b28a77962 — pre-seed with the
+//     `ip -4/-6 -j route show dev <name> proto static [vrf <vrf>]` JSON
+//     a real kernel would report, to exercise reapStaleRoutes. Empty/
+//     unseeded means "no routes of this family" (exit 1, empty stdout).
+func newWgRecorderShims(t *testing.T) (ipBin, wgBin, ipLog, wgLog, linkStatePath, wgPayloadLog, routeV4Path, routeV6Path string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -49,8 +53,10 @@ func newWgRecorderShims(t *testing.T) (ipBin, wgBin, ipLog, wgLog, linkStatePath
 	state := filepath.Join(dir, "state")
 	linkStatePath = filepath.Join(dir, "link-state.json")
 	wgPayloadLog = filepath.Join(dir, "wg-payloads")
+	routeV4Path = filepath.Join(dir, "route-state-v4.json")
+	routeV6Path = filepath.Join(dir, "route-state-v6.json")
 
-	for _, p := range []string{ipLog, wgLog, state, linkStatePath, wgPayloadLog} {
+	for _, p := range []string{ipLog, wgLog, state, linkStatePath, wgPayloadLog, routeV4Path, routeV6Path} {
 		if err := os.WriteFile(p, []byte(""), 0o644); err != nil {
 			t.Fatalf("seed %s: %v", p, err)
 		}
@@ -59,6 +65,31 @@ func newWgRecorderShims(t *testing.T) (ipBin, wgBin, ipLog, wgLog, linkStatePath
 	ipScript := fmt.Sprintf(`#!/usr/bin/env bash
 echo "$@" >> %q
 case "$*" in
+    "-4 -j route show "*)
+        # IMP-470b28a77962: reapStaleRoutes' IPv4 source. A seed file
+        # starting with "ERROR:" simulates a genuine `+"`"+`ip`+"`"+` failure — nonzero
+        # exit WITH nonempty output — as opposed to an empty/unseeded
+        # file, which means "no routes" (exit 1, empty stdout).
+        if [ -s %q ]; then
+            cat %q
+            if head -c6 %q | grep -q "^ERROR:"; then
+                exit 1
+            fi
+            exit 0
+        fi
+        exit 1
+        ;;
+    "-6 -j route show "*)
+        # IMP-470b28a77962: reapStaleRoutes' IPv6 source. See -4 above.
+        if [ -s %q ]; then
+            cat %q
+            if head -c6 %q | grep -q "^ERROR:"; then
+                exit 1
+            fi
+            exit 0
+        fi
+        exit 1
+        ;;
     "-j link show "*)
         # IMP-82208d22fdd1: readLinkState's source. Unseeded (empty
         # file) => "not found" (exit 1), matching state == nil.
@@ -86,7 +117,7 @@ case "$*" in
         exit 0
         ;;
 esac
-`, ipLog, linkStatePath, linkStatePath, state, state)
+`, ipLog, routeV4Path, routeV4Path, routeV4Path, routeV6Path, routeV6Path, routeV6Path, linkStatePath, linkStatePath, state, state)
 
 	wgScript := fmt.Sprintf(`#!/usr/bin/env bash
 echo "$@" >> %q
@@ -125,12 +156,63 @@ func writeWgLinkState(t *testing.T, path string, mtu int, master string, up bool
 	}
 }
 
+// routeStateEntry seeds one line of a fake `ip -j route show` response.
+// Fields map 1:1 onto routeShowEntry's JSON fields. Deliberately no
+// zero-value defaults for Dev/Protocol/Metric — IMP-470b28a77962 review
+// B1: real iproute2 always prints these when the listing ISN'T filtered
+// on them (which is exactly what listSdwanRoutesOnDevice now does), so
+// a realistic fixture must set them explicitly rather than rely on a
+// convenient default the real command would never actually omit.
+type routeStateEntry struct {
+	Dst      string
+	Dev      string
+	Protocol string
+	Metric   int
+}
+
+// writeRouteState seeds the fake `ip -4/-6 -j route show` response used
+// by reapStaleRoutes. Deliberately accepts entries of ANY
+// dev/protocol/metric combination — including ones that don't belong to
+// this package at all — so tests can prove listSdwanRoutesOnDevice's
+// own three-way Go-side filter (dev == ifname, protocol ==
+// sdwanRouteProto, metric == sdwanRouteMetric) actually does something,
+// against a realistic UNFILTERED listing (see route_applier.go's B1
+// doc for why the command itself carries no dev/proto filter).
+func writeRouteState(t *testing.T, path string, entries []routeStateEntry) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("[")
+	for i, e := range entries {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"dst":%q,"dev":%q,"protocol":%q,"metric":%d,"flags":[]}`, e.Dst, e.Dev, e.Protocol, e.Metric)
+	}
+	b.WriteString("]")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write route state: %v", err)
+	}
+}
+
+// writeRouteListError seeds the fake `ip -4/-6 -j route show` response
+// to simulate a genuine `ip` failure — nonzero exit WITH nonempty
+// output — as opposed to an unseeded/empty file, which the shim (and
+// listSdwanRoutesOnDevice) both treat as "no routes of this family".
+// SF4: proves a listing failure aborts the WHOLE reap with zero deletes,
+// rather than proceeding on partial information.
+func writeRouteListError(t *testing.T, path, message string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("ERROR: "+message), 0o644); err != nil {
+		t.Fatalf("write route list error: %v", err)
+	}
+}
+
 func TestWgApplier_BindsIfaceToVRFOnCreate(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
 
-	ipBin, wgBin, ipLog, _, _, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -157,7 +239,7 @@ func TestWgApplier_BindsIfaceToVRFOnCreate(t *testing.T) {
 }
 
 func TestWgApplier_NoBindWhenVrfNameEmpty(t *testing.T) {
-	ipBin, wgBin, ipLog, _, _, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -192,7 +274,7 @@ func TestWgApplier_RebindsOnMasterDrift(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, ipLog, _, linkStatePath, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, _, linkStatePath, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -226,7 +308,7 @@ func TestWgApplier_BindsWhenMasterEmpty(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, ipLog, _, linkStatePath, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, _, linkStatePath, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -259,7 +341,7 @@ func TestWgApplier_ReissuesUpWhenLinkIsDown(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, ipLog, _, linkStatePath, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, _, linkStatePath, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -299,7 +381,7 @@ func TestWgApplier_FirstTimeCreationStillWorks(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, ipLog, wgLog, _, wgPayloadLog := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, wgLog, _, wgPayloadLog, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -344,7 +426,7 @@ func TestWgApplier_IdempotentOnUnchangedConfig(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, ipLog, wgLog, linkStatePath, _ := newWgRecorderShims(t)
+	ipBin, wgBin, ipLog, wgLog, linkStatePath, _, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -392,7 +474,7 @@ func TestWgApplier_ConvergesOnPeerSetChange(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, _, wgLog, linkStatePath, wgPayloadLog := newWgRecorderShims(t)
+	ipBin, wgBin, _, wgLog, linkStatePath, wgPayloadLog, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -435,7 +517,7 @@ func TestWgApplier_PersistentKeepaliveCanBeClearedToZero(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("recorder shim assumes POSIX shell")
 	}
-	ipBin, wgBin, _, _, linkStatePath, wgPayloadLog := newWgRecorderShims(t)
+	ipBin, wgBin, _, _, linkStatePath, wgPayloadLog, _, _ := newWgRecorderShims(t)
 	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
 
 	cfg := InterfaceConf{
@@ -490,5 +572,300 @@ func TestWgApplier_MalformedPrivateKeyErrorDoesNotLeakTheKey(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), badKey) {
 		t.Errorf("error must not contain the private key value, got: %v", err)
+	}
+}
+
+// --- IMP-470b28a77962 --------------------------------------------------
+//
+// The agent never installed a kernel route for a peer's AllowedIPs, so
+// a completed WireGuard handshake still left overlay traffic beyond the
+// peer's own /128 with "Network is unreachable". These tests exercise
+// ApplyRoutes directly (NOT ApplyInterface — review round B2 split them
+// apart; see ApplyRoutes' own doc). Fixtures use documentation-only
+// prefixes (RFC 5737 / RFC 3849), never the live fd-prefixed overlay.
+
+// TestWgApplier_InstallsRoutesForEveryAllowedIP is contract (a): every
+// AllowedIPs entry across every peer gets its own route, in both
+// families, with the documented vrf/dev/proto/metric.
+func TestWgApplier_InstallsRoutesForEveryAllowedIP(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-kkkk11", VrfName: "sdwan-kkkk11"}
+	peers := []PeerConf{
+		{PublicKey: "peer1=", AllowedIPs: []string{"2001:db8:1::/64"}},
+		{PublicKey: "peer2=", AllowedIPs: []string{"192.0.2.0/24", "2001:db8:2::/64"}},
+	}
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes: %v", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	calls := string(raw)
+	for _, want := range []string{
+		"-6 route replace 2001:db8:1::/64 dev wg-sdwan-kkkk11 vrf sdwan-kkkk11 proto 241 metric 1024",
+		"-4 route replace 192.0.2.0/24 dev wg-sdwan-kkkk11 vrf sdwan-kkkk11 proto 241 metric 1024",
+		"-6 route replace 2001:db8:2::/64 dev wg-sdwan-kkkk11 vrf sdwan-kkkk11 proto 241 metric 1024",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("expected %q, missing from:\n%s", want, calls)
+		}
+	}
+}
+
+// TestWgApplier_RoutesReissuedOnEveryApply is contract (b): calling
+// ApplyRoutes repeatedly reissues `route replace` every time — there is
+// no drift-skip inside ApplyRoutes itself (unlike ApplyInterface's
+// link/master/MTU steps), because `ip route replace` is already
+// idempotent at the kernel level, and because the manager calls this as
+// its own step on EVERY tick regardless of what ApplyInterface's
+// link-drift guard decided (see manager.go's apply_routes step and
+// TestRouteFailureDoesNotBlockPeerReportsOrEgress for the integration-
+// level half of this guarantee).
+func TestWgApplier_RoutesReissuedOnEveryApply(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-llll21", VrfName: "sdwan-llll21"}
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{"2001:db8:3::/64"}}}
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes 1: %v", err)
+	}
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes 2: %v", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	want := "route replace 2001:db8:3::/64 dev wg-sdwan-llll21 vrf sdwan-llll21 proto 241 metric 1024"
+	count := strings.Count(string(raw), want)
+	if count != 2 {
+		t.Errorf("expected the route replace call on both applies, got %d in:\n%s", count, raw)
+	}
+}
+
+// TestWgApplier_ReapsOnlyOwnedStaleRoutes is contract (c), core case:
+// reaping deletes a stale route this package owns (proto 241, dev, and
+// metric all matching), but never a still-desired one, and never a
+// route that merely shares ONE of proto/dev/metric with what this
+// package installs — review round SF4's explicit ask that a
+// same-dst-different-proto-or-metric entry survive. Fixtures are
+// REALISTIC per B1: dev/protocol/metric are always present, since the
+// listing command itself no longer filters on any of them.
+func TestWgApplier_ReapsOnlyOwnedStaleRoutes(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, routeV6Path := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-llll22", VrfName: "sdwan-llll22"}
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{"2001:db8:5::/64"}}}
+
+	writeRouteState(t, routeV6Path, []routeStateEntry{
+		// Still desired — owned by this package (dev/proto/metric all
+		// match) — must survive.
+		{Dst: "2001:db8:5::/64", Dev: "wg-sdwan-llll22", Protocol: "241", Metric: 1024},
+		// Stale, owned by this package — must be reaped.
+		{Dst: "2001:db8:6::/64", Dev: "wg-sdwan-llll22", Protocol: "241", Metric: 1024},
+		// Same dst as a "stale" entry could be, but proto is an
+		// operator's static route, not ours — dev matches, proto
+		// doesn't. Must survive.
+		{Dst: "2001:db8:7::/64", Dev: "wg-sdwan-llll22", Protocol: "static", Metric: 1024},
+		// Our proto+dev, but a DIFFERENT metric — not something
+		// replaceRoute itself installed. Must survive (SF1/SF4).
+		{Dst: "2001:db8:8::/64", Dev: "wg-sdwan-llll22", Protocol: "241", Metric: 100},
+		// Our proto+metric, but on a DIFFERENT device entirely (e.g.
+		// another SDWAN network sharing this VRF). Must survive.
+		{Dst: "2001:db8:9::/64", Dev: "wg-sdwan-OTHER", Protocol: "241", Metric: 1024},
+	})
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes: %v", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	calls := string(raw)
+	if !strings.Contains(calls, "route del 2001:db8:6::/64 dev wg-sdwan-llll22") {
+		t.Errorf("expected the stale, package-owned route to be reaped, missing from:\n%s", calls)
+	}
+	for _, mustSurvive := range []string{
+		"route del 2001:db8:5::/64", // still desired
+		"route del 2001:db8:7::/64", // proto mismatch
+		"route del 2001:db8:8::/64", // metric mismatch
+		"route del 2001:db8:9::/64", // dev mismatch
+	} {
+		if strings.Contains(calls, mustSurvive) {
+			t.Errorf("must not delete a route that isn't a stale, package-owned one (%q), got:\n%s", mustSurvive, calls)
+		}
+	}
+}
+
+// TestWgApplier_ReapHandlesBareHostAddressAndDefaultRoute is SF4: a
+// host route (the hub's real /128 case) prints from `ip -j route show`
+// as a bare address with no "/n" suffix, and the default route prints
+// as the literal string "default" — both must parse correctly, and a
+// stale default route must be reapable (SF3), not silently invisible.
+func TestWgApplier_ReapHandlesBareHostAddressAndDefaultRoute(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, routeV6Path := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-hhhh55", VrfName: "sdwan-hhhh55"}
+	// The hub's real case: a single peer's own /128.
+	peers := []PeerConf{{PublicKey: "hub=", AllowedIPs: []string{"2001:db8:ffff::1/128"}}}
+
+	writeRouteState(t, routeV6Path, []routeStateEntry{
+		// Still-desired /128, rendered WITHOUT a "/128" suffix — exactly
+		// how `ip -j route show` prints a host route.
+		{Dst: "2001:db8:ffff::1", Dev: "wg-sdwan-hhhh55", Protocol: "241", Metric: 1024},
+		// A stale default route this package once installed.
+		{Dst: "default", Dev: "wg-sdwan-hhhh55", Protocol: "241", Metric: 1024},
+	})
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes: %v", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	calls := string(raw)
+	if strings.Contains(calls, "route del 2001:db8:ffff::1") {
+		t.Errorf("must not delete the still-desired bare-address host route, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "route del ::/0 dev wg-sdwan-hhhh55") {
+		t.Errorf("expected the stale \"default\" entry to be reaped as ::/0, got:\n%s", calls)
+	}
+}
+
+// TestWgApplier_ListingFailureDeletesNothing is SF4: when listing this
+// device's routes genuinely fails (nonzero exit WITH output — not the
+// empty-output/no-routes case), reaping must abort entirely rather than
+// proceed on a partial or absent view of what's actually installed.
+func TestWgApplier_ListingFailureDeletesNothing(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, routeV4Path, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-iiii66", VrfName: "sdwan-iiii66"}
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{"192.0.2.0/24"}}}
+
+	writeRouteListError(t, routeV4Path, "Error: Table does not exist.")
+
+	err := a.ApplyRoutes(context.Background(), cfg, peers)
+	if err == nil {
+		t.Fatal("expected an error when the route listing itself fails")
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	if strings.Contains(string(raw), "route del") {
+		t.Errorf("a failed listing must delete NOTHING, got:\n%s", raw)
+	}
+	// The desired route install (independent of the listing/reap path)
+	// still happened — a listing failure only aborts the reap half.
+	if !strings.Contains(string(raw), "route replace 192.0.2.0/24 dev wg-sdwan-iiii66 vrf sdwan-iiii66 proto 241 metric 1024") {
+		t.Errorf("expected the install half to still run despite the reap-side listing failure, got:\n%s", raw)
+	}
+}
+
+// TestWgApplier_MasksHostBitsInsteadOfRejecting is contract (d), review
+// round SF2: an AllowedIPs entry with host bits set is MASKED (not
+// rejected) before it reaches argv — WireGuard's own cryptokey routing
+// masks AllowedIPs the same way, so the installed route has to match
+// what's actually reachable through the tunnel.
+func TestWgApplier_MasksHostBitsInsteadOfRejecting(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-mmmm33", VrfName: "sdwan-mmmm33"}
+	// Host bits set — not masked as sent by the platform.
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{"2001:db8:9::5/64"}}}
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes: %v (host bits must be masked, not rejected)", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	calls := string(raw)
+	if !strings.Contains(calls, "route replace 2001:db8:9::/64 dev wg-sdwan-mmmm33 vrf sdwan-mmmm33 proto 241 metric 1024") {
+		t.Errorf("expected the MASKED destination to be installed, got:\n%s", calls)
+	}
+	if strings.Contains(calls, "2001:db8:9::5") {
+		t.Errorf("the unmasked, host-bit-set form must never reach argv, got:\n%s", calls)
+	}
+}
+
+// TestWgApplier_SkipsInvalidAllowedIPEntriesIndividually pins the two
+// cases SF2 explicitly kept as outright rejections (parse failure and
+// an IPv4-mapped IPv6 address) — each skipped individually, without
+// blocking a valid sibling entry in the same apply.
+func TestWgApplier_SkipsInvalidAllowedIPEntriesIndividually(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-nnnn44", VrfName: "sdwan-nnnn44"}
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{
+		"not-a-cidr",
+		"::ffff:192.0.2.1/128", // IPv4-mapped IPv6 — still rejected
+		"2001:db8:10::/64",     // valid sibling
+	}}}
+
+	err := a.ApplyRoutes(context.Background(), cfg, peers)
+	if err == nil {
+		t.Fatal("expected an error reporting the invalid entries")
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	calls := string(raw)
+	if strings.Contains(calls, "not-a-cidr") || strings.Contains(calls, "192.0.2.1") {
+		t.Errorf("an invalid entry must never reach argv, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "route replace 2001:db8:10::/64 dev wg-sdwan-nnnn44 vrf sdwan-nnnn44 proto 241 metric 1024") {
+		t.Errorf("the valid sibling must still be installed despite the others' rejection, got:\n%s", calls)
+	}
+}
+
+// TestWgApplier_SkipsRoutesEntirelyWhenVrfEmpty is contract (e), review
+// round B3 (BLOCKER): with no VRF, ApplyRoutes must issue ZERO `ip`
+// commands — installing/reaping in the MAIN table risks overwriting the
+// node's own underlay routes (`ip route replace` matches on dst[+tos]+
+// metric, not dev, so a peer AllowedIPs entry colliding with the
+// node's default route or connected LAN route at the same metric would
+// silently replace it — see route_applier.go's B3 doc for the full
+// scenario). This replaces the old "main table, no vrf clause" version
+// of this test, which is no longer the decided behavior.
+func TestWgApplier_SkipsRoutesEntirelyWhenVrfEmpty(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("recorder shim assumes POSIX shell")
+	}
+	ipBin, wgBin, ipLog, _, _, _, _, _ := newWgRecorderShims(t)
+	a := &ShellApplier{IpPath: ipBin, WgPath: wgBin}
+
+	cfg := InterfaceConf{Name: "wg-sdwan-oooo77"} // no VrfName
+	peers := []PeerConf{{PublicKey: "peer1=", AllowedIPs: []string{"192.0.2.0/24"}}}
+
+	if err := a.ApplyRoutes(context.Background(), cfg, peers); err != nil {
+		t.Fatalf("apply routes: %v", err)
+	}
+
+	raw, _ := os.ReadFile(ipLog)
+	if strings.TrimSpace(string(raw)) != "" {
+		t.Errorf("expected ZERO ip commands when VrfName is empty, got:\n%s", raw)
 	}
 }

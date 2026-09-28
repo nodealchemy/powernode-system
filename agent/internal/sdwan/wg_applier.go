@@ -34,6 +34,15 @@ type WgApplier interface {
 	// wrong settings, they're updated. Idempotent.
 	ApplyInterface(ctx context.Context, cfg InterfaceConf, peers []PeerConf, privateKey string) error
 
+	// ApplyRoutes installs/reaps kernel routes for peers' AllowedIPs —
+	// IMP-470b28a77962. Deliberately a SEPARATE step from ApplyInterface
+	// (see ApplyInterface's implementation doc, review round B2): the
+	// manager calls this on its own, right after ApplyInterface
+	// succeeds, so a route failure can never skip apply_firewall,
+	// apply_nat, read_actual or EgressContributions the way folding it
+	// into ApplyInterface's own error used to.
+	ApplyRoutes(ctx context.Context, cfg InterfaceConf, peers []PeerConf) error
+
 	// RemoveInterface tears down the interface. Tolerates "doesn't exist".
 	RemoveInterface(ctx context.Context, name string) error
 
@@ -78,6 +87,10 @@ func (a *ShellApplier) ip() string {
 //  4. Converges the wg config (private key + listen port + peers) via
 //     `wg syncconf` from a temp file — never as a CLI argument so the
 //     private key never appears in `ps`/shell history.
+//
+// VRF routes for peer AllowedIPs (IMP-470b28a77962) are a SEPARATE
+// method, ApplyRoutes, deliberately NOT a step of this function — see
+// its own doc comment for why (review round B2, BLOCKER).
 //
 // IMP-82208d22fdd1: this used to run unconditionally on every reconcile
 // tick (every ~30s), including steps 2 and 4 even when nothing had
@@ -206,6 +219,27 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 	}
 
 	return nil
+}
+
+// ApplyRoutes installs and reaps kernel routes for cfg's peers'
+// AllowedIPs — IMP-470b28a77962. See route_applier.go's package doc for
+// what and why.
+//
+// Review round B2 (BLOCKER): deliberately NOT part of ApplyInterface.
+// It used to run as ApplyInterface's own last step, so a route error
+// became ApplyInterface's return value — and the manager's reconcile
+// loop `continue`s past ANY apply_interface error, which skipped
+// apply_firewall, apply_nat AND read_actual for the whole network over
+// one bad AllowedIPs entry or a transient `ip route` failure. That's
+// worse than the missing-route bug this task fixes: no peer reports,
+// healthy_peers goes null, and EgressContributions' ListenPort silently
+// drops to 0 — which removes the WG egress allow on a default-deny
+// host. The manager now calls this as its own step
+// ("apply_routes:<iface>"), right after apply_interface succeeds, with
+// `_ =` (same pattern as apply_firewall/apply_nat) so its error is
+// recorded but never gates what comes after it.
+func (a *ShellApplier) ApplyRoutes(ctx context.Context, cfg InterfaceConf, peers []PeerConf) error {
+	return reconcilePeerRoutes(ctx, a.ip(), cfg.Name, cfg.VrfName, peers)
 }
 
 // validateWgPrivateKey rejects anything that isn't a syntactically valid
