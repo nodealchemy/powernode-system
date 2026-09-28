@@ -18,13 +18,14 @@ module System
   #
   #   * A string under a hash key is redacted together with the key as its lead.
   #     If redaction rewrote the lead itself the value is withheld whole.
-  #   * A run of consecutive strings in an array is redacted as ONE string (its
-  #     elements joined by a space, and again by a newline). If that changed
-  #     anything the whole run is withheld: mapping a redaction back onto
-  #     elements is not reliable (a PEM split across lines, an argv whose -p is
-  #     two elements after `login`), and over-redacting a log-line array is
-  #     cheaper than leaking.
-  #   * A secret-NAMED key (password, pwd, token, api_key, cookie, ...) withholds
+  #   * The strings of an array are checked as ONE string (nested arrays
+  #     flattened, other scalars stringified, joined by a space and again by a
+  #     newline). If that changed anything, every string of the array, nested
+  #     ones included, is withheld: mapping a redaction back onto elements is
+  #     not reliable (a PEM split across lines, an argv whose -p is several
+  #     elements after `login`), and over-redacting a log-line array is cheaper
+  #     than leaking.
+  #   * A secret-NAMED key (password, pwd, pin, token, any *_key, cookie, ...) withholds
   #     its whole subtree whatever the value's type or shape, because a short
   #     value, a passphrase with spaces, a number or a nested object carries no
   #     pattern for the redactor to see.
@@ -42,6 +43,12 @@ module System
     MAX_WIDTH = 50
     MAX_KEY_LENGTH = 200
 
+    # The credential check over an array joins its strings; past these it stops
+    # checking and withholds the array instead of running the patterns over an
+    # unbounded amount of text.
+    MAX_CHECK_TEXTS = 500
+    MAX_CHECK_CHARS = 262_144
+
     # Keys whose value is a log: an operator wants its END (the failing last
     # lines), so these are bounded from the end rather than the start.
     LOG_SEGMENTS = %w[log logs tail stdout stderr output trace].freeze
@@ -54,7 +61,14 @@ module System
     EXTRA_SECRET_SUBSTRINGS = %w[
       passwd authorization apikey access_key accesskey privatekey secretkey
     ].freeze
-    SECRET_SEGMENTS = %w[pass pwd auth cookie cookies session signature].freeze
+    SECRET_SEGMENTS = %w[pass pwd auth cookie cookies session signature pin otp totp passcode mfa].freeze
+
+    # ANY key ending in key/keys names key material (master_key, signing_key,
+    # ssh_keys, a bare "key") unless it is one of these, which name a lookup or
+    # a public value. Kept explicit and small: a new entry is a decision that
+    # its value is never a secret.
+    KEY_SUFFIXES = %w[key keys].freeze
+    NON_SECRET_KEYS = %w[sort_key cache_key primary_key foreign_key idempotency_key partition_key public_key].freeze
 
     # A number under one of these is a measurement, not a credential:
     # token_count, token_ttl, secret_length.
@@ -62,6 +76,8 @@ module System
 
     # Bounded PEM-shaped lines at the START of a cut window: the BEGIN header
     # fell outside it, so no block or clipped-block pattern can see them.
+    # One line of a PEM body (or blank), for the array form of the same cut.
+    PEM_LINE = %r{\A(?:[A-Za-z0-9+/=]{16,}|(?:Proc-Type|DEK-Info):.*)?\z}
     PEM_BODY_LEAD = %r{\A(?:\r?\n|[A-Za-z0-9+/=]{16,}\r?\n|(?:Proc-Type|DEK-Info):[^\n]*\n)+}
 
     Budget = Struct.new(:chars, :nodes, :string_limit, :patterns) do
@@ -123,7 +139,7 @@ module System
 
         case value
         when ::Hash then walk_hash(value, budget, secret: secret, depth: depth)
-        when ::Array then walk_array(value, budget, key: key, secret: secret, depth: depth)
+        when ::Array then walk_array(value, budget, key: key, depth: depth)
         when ::String then walk_string(value, budget, key: key)
         else
           budget.chars -= value.to_s.length
@@ -152,27 +168,81 @@ module System
         out
       end
 
-      def walk_array(array, budget, key:, secret:, depth:)
+      # `withhold` is nil for the outermost array, which decides it from ALL its
+      # strings, nested arrays included; a nested array inherits that decision.
+      def walk_array(array, budget, key:, depth:, withhold: nil)
         return spend(budget, TOO_DEEP) if depth >= MAX_DEPTH
 
         from = log_key?(key) ? :tail : :head
         items = from == :tail ? array.last(MAX_WIDTH) : array.first(MAX_WIDTH)
+        # A tail cut can land inside a PEM whose BEGIN line it dropped, leaving
+        # base64 body lines no pattern can see; drop them like the string path.
+        items = items.drop_while { |item| item.is_a?(::String) && item.scrub("").match?(PEM_LINE) } if from == :tail && array.size > items.size
+        dropped = array.size - items.size
+        withhold = credential_in?(items, key, from, budget.string_limit) if withhold.nil?
+
         out = []
-        out << spend(budget, "[#{array.size - items.size} earlier items truncated]") if from == :tail && array.size > items.size
-        items.chunk_while { |a, b| a.is_a?(::String) && b.is_a?(::String) }.each do |run|
+        out << spend(budget, "[#{dropped} earlier items truncated]") if from == :tail && dropped.positive?
+        items.each do |item|
           if budget.exhausted?
-            out << spend(budget, "[omitted: event payload budget exhausted]")
+            out << spend(budget, OMITTED)
             return out
           end
 
-          if run.first.is_a?(::String)
-            out.concat(string_run(run, budget, key: key, from: from))
-          else
-            out << walk(run.first, budget, key: key, secret: secret, depth: depth + 1)
+          out << array_item(item, budget, key: key, from: from, withhold: withhold, depth: depth)
+        end
+        out << spend(budget, "[#{dropped} more items truncated]") if from == :head && dropped.positive?
+        out
+      end
+
+      def array_item(item, budget, key:, from:, withhold:, depth:)
+        case item
+        when ::String
+          budget.nodes -= 1
+          return spend(budget, REDACTED) if withhold
+
+          room = [ budget.string_limit, budget.chars ].min
+          room <= 0 ? spend(budget, OMITTED) : spend(budget, bounded(item, room, from: from, inclusive: true))
+        when ::Array
+          budget.nodes -= 1
+          walk_array(item, budget, key: key, depth: depth + 1, withhold: withhold)
+        else
+          walk(item, budget, key: key, secret: false, depth: depth + 1)
+        end
+      end
+
+      # Whether joining the array's strings (nested arrays flattened, other
+      # scalars stringified) shows a credential the per-string patterns cannot:
+      # an argv whose -p sits several elements after `login`, a PEM split into
+      # lines, a .netrc line split into words. Joined by a space AND by a
+      # newline, since the patterns differ on which they tolerate. Anything
+      # unbounded is treated as a hit.
+      def credential_in?(items, key, from, limit)
+        texts = flat_texts(items, 0, [])
+        return true if texts.size > MAX_CHECK_TEXTS
+
+        texts = texts.map { |text| bound_input(text.scrub(""), limit, from) }
+        return true if texts.sum(&:length) > MAX_CHECK_CHARS
+
+        lead = "#{key.last(MAX_KEY_LENGTH)}: " if key
+        [ " ", "\n" ].any? do |separator|
+          joined = "#{lead}#{texts.join(separator)}"
+          ::System::ShellOutputSanitizer.redact_text(joined) != joined
+        end
+      end
+
+      def flat_texts(items, depth, acc)
+        items.each do |item|
+          return acc if acc.size > MAX_CHECK_TEXTS
+
+          case item
+          when ::Array then flat_texts(item.first(MAX_WIDTH), depth + 1, acc) if depth < MAX_DEPTH
+          when ::String then acc << item
+          when ::Hash, nil then nil
+          else acc << item.to_s
           end
         end
-        out << spend(budget, "[#{array.size - items.size} more items truncated]") if from == :head && array.size > items.size
-        out
+        acc
       end
 
       def walk_string(string, budget, key:)
@@ -183,24 +253,6 @@ module System
         result = bounded(string, limit, from: log_key?(key) ? :tail : :head, lead: lead, inclusive: true)
         budget.chars -= result.length
         result
-      end
-
-      # A run of consecutive strings redacted as one. See the class comment.
-      def string_run(run, budget, key:, from:)
-        budget.nodes -= run.size
-        limit = budget.string_limit
-        texts = run.map { |string| bound_input(string.to_s.scrub(""), limit, from) }
-        lead = "#{key.last(MAX_KEY_LENGTH)}: " if key
-        changed = [ " ", "\n" ].any? do |separator|
-          joined = "#{lead}#{texts.join(separator)}"
-          ::System::ShellOutputSanitizer.redact_text(joined) != joined
-        end
-        return run.map { spend(budget, REDACTED) } if changed
-
-        texts.map do |text|
-          room = [ limit, budget.chars ].min
-          room <= 0 ? spend(budget, OMITTED) : spend(budget, cut(text, room, from, true))
-        end
       end
 
       def spend(budget, text)
@@ -249,7 +301,16 @@ module System
         keep = inclusive ? [ limit - marker.length, 0 ].max : limit
         return marker if keep.zero?
 
-        from == :tail ? "#{marker}#{text[-keep..]}" : "#{text[0, keep]}#{marker}"
+        slice = from == :tail ? text[-keep..] : text[0, keep]
+        # The slice is a window the full text was not matched as: a \b-anchored
+        # pattern (ghp_, sk-) can match at a boundary the cut created. Re-check
+        # it, and re-clip in case a marker is longer than what it replaced.
+        # Events only: error_message keeps its historical bytes.
+        if inclusive
+          slice = ::System::ShellOutputSanitizer.redact_text(slice)
+          slice = from == :tail ? slice.last(keep) : slice[0, keep]
+        end
+        from == :tail ? "#{marker}#{slice}" : "#{slice}#{marker}"
       end
 
       def log_key?(key)
@@ -259,8 +320,10 @@ module System
       def secret_key?(name, value, budget)
         snake = snake_case(name)
         parts = snake.split("_")
-        return false unless budget.patterns.any? { |pattern| snake.include?(pattern) } ||
-                            parts.intersect?(SECRET_SEGMENTS)
+        named = budget.patterns.any? { |pattern| snake.include?(pattern) } ||
+                parts.intersect?(SECRET_SEGMENTS) ||
+                (KEY_SUFFIXES.include?(parts.last) && !NON_SECRET_KEYS.include?(snake))
+        return false unless named
 
         !(value.is_a?(::Numeric) && METADATA_SEGMENTS.include?(parts.last))
       end

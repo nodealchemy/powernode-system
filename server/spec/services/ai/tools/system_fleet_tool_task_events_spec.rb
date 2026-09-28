@@ -119,32 +119,39 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
       expect(result["sha"]).to eq("sha256:abc")
     end
 
-    # A secret whose value straddles the cut. If the cut came first, the
-    # fragment of the value inside the window would be served raw.
-    it "redacts before cutting a head-bounded string: a secret straddling the cap is gone" do
+    # A secret whose VALUE straddles the cut. The events cut is `cap` minus the
+    # marker, so that is the offset the value must cross: if the cut came before
+    # the redaction, the four value characters inside the window would be served
+    # raw (a 4-character fragment is too short for the redactor to see on its own).
+    it "redacts before cutting a head-bounded string: a secret straddling the cut is gone" do
       cap = described_class::GET_ERROR_MESSAGE_LIMIT
-      text = ("x" * (cap - 9)) + " password=FAKEhunter2FAKE" + (" tail" * 10)
+      window = cap - "...[truncated]".length
+      # " password=" is 10 characters, so the value starts 4 characters inside the window.
+      text = ("x" * (window - 14)) + " password=FAKEhunter2FAKE" + (" tail" * 10)
       t = build_task(events: [ completed_event({ "detail" => text }) ])
 
       detail = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["detail"]
 
+      expect(detail.length).to be <= cap
+      expect(detail).to end_with("...[truncated]")
       expect(detail).not_to include("FAKE")
       expect(detail).not_to include("hunter")
     end
 
     it "redacts before cutting a tail-bounded log_tail: a secret straddling the cut is gone, the end is kept" do
       cap = described_class::GET_ERROR_MESSAGE_LIMIT
-      secret = " password=FAKEhunter2FAKE"
-      # The last `cap` characters begin inside the secret's value.
-      text = ("x" * 20_000) + secret + " " + ("y" * (cap - 7))
+      window = cap - "[truncated]...".length
+      # The last `window` characters begin 6 characters before the value ends.
+      text = ("x" * 20_000) + " password=FAKEhunter2FAKE" + " " + ("y" * (window - 7))
       t = build_task(events: [ completed_event({ "log_tail" => text }) ])
 
       tail = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["log_tail"]
 
+      expect(tail.length).to be <= cap
+      expect(tail).to start_with("[truncated]...")
+      expect(tail).to end_with("y" * 50)
       expect(tail).not_to include("FAKE")
       expect(tail).not_to include("hunter")
-      expect(tail).to end_with("y" * 50)
-      expect(tail.length).to be <= cap
     end
 
     it "redacts a secret planted in a hash KEY" do
@@ -210,6 +217,30 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
         expect(JSON.generate(out)).not_to include("FAKEcurlTOKEN99")
       end
 
+      it "withholds an argv broken by a non-string element" do
+        out = result_of([ "oras", "login", "-u", "ci", true, "-p", "FAKEsecret123" ])
+
+        expect(JSON.generate(out)).not_to include("FAKEsecret123")
+        expect(out).to include(true)
+      end
+
+      it "withholds an argv split across nested arrays, nested strings included" do
+        out = result_of([ %w[docker login], %w[-p FAKEsecretX9] ])
+
+        expect(out).to eq([ [ "[REDACTED]", "[REDACTED]" ], [ "[REDACTED]", "[REDACTED]" ] ])
+      end
+
+      it "keeps the retained lines of a tail-bounded array from starting inside a PEM whose BEGIN line was dropped" do
+        body = %w[FAKEFAKEFAKEFAKEFAKEFAKEFAKE0001 FAKEFAKEFAKEFAKEFAKEFAKEFAKE0002 FAKEFAKEFAKEFAKEFAKEFAKEFAKE0003]
+        lines = [ "-----BEGIN PRIVATE KEY-----" ] + body + Array.new(47) { |i| "build line #{i}" }
+        t = build_task(events: [ completed_event({ "stderr" => lines }) ])
+
+        out = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["stderr"]
+
+        expect(JSON.generate(out)).not_to include("FAKEFAKEFAKE")
+        expect(out.last).to eq("build line 46")
+      end
+
       it "leaves an array of ordinary strings intact" do
         expect(result_of([ "make", "-j4", "all" ])).to eq([ "make", "-j4", "all" ])
       end
@@ -240,7 +271,17 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
         [ "cookie", "abc" ],
         [ "session", "abc" ],
         [ "signature", "abc" ],
-        [ "x-auth-token", "abc" ]
+        [ "x-auth-token", "abc" ],
+        [ "pin", 123_456 ],
+        [ "otp", "1" ],
+        [ "passcode", "x" ],
+        [ "totp", 123_456 ],
+        [ "mfa", "x" ],
+        [ "master_key", "short" ],
+        [ "signing_key", 1 ],
+        [ "encryptionKey", "x" ],
+        [ "ssh_keys", [ "a" ] ],
+        [ "key", "short" ]
       ].each do |key, value|
         it "withholds #{value.class} under #{key.inspect}" do
           expect(result_of({ key => value, "sha" => "sha256:abc" })).to eq({ key => "[REDACTED]", "sha" => "sha256:abc" })
@@ -254,9 +295,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
       end
 
       it "does not withhold obvious non-secrets" do
-        out = result_of({ "token_count" => 3, "passed" => true, "bypass" => "ok", "author" => "me", "compass" => "n" })
+        safe = { "token_count" => 3, "passed" => true, "bypass" => "ok", "author" => "me", "compass" => "n",
+                 "sort_key" => "a", "cache_key" => "b", "primary_key" => "id", "foreign_key" => "fk",
+                 "idempotency_key" => "c", "partition_key" => "d", "public_key" => "pk1" }
 
-        expect(out).to eq({ "token_count" => 3, "passed" => true, "bypass" => "ok", "author" => "me", "compass" => "n" })
+        expect(result_of(safe)).to eq(safe)
       end
 
       it "leaves a nil value under a secret-named key as nil" do
@@ -369,15 +412,26 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
       expect(result.size).to be < 15
     end
 
-    it "charges keys and non-string scalars to the budget" do
-      big = (0...50).to_h { |i| [ ("k#{i}-" + ("q" * 190))[0, 190], i ] }
-      t = build_task(events: Array.new(20) { completed_event(big) })
+    # nil values are free, so the only spend here is the keys.
+    it "charges hash keys to the budget" do
+      keys = (0...50).to_h { |i| [ "k#{i}-#{'q' * 190}"[0, 190], nil ] }
+      t = build_task(events: Array.new(20) { completed_event(keys) })
 
       events = call(task_id: t.id, include_events: true)[:data][:events]
 
-      chars = JSON.generate(events).length
-      expect(chars).to be < described_class::TASK_EVENTS_MAX_CHARS * 2
-      expect(events.first).to be_a(String)
+      expect(events.first).to match(/older events.*budget exhausted/)
+      expect(events.size).to be < 20
+    end
+
+    # Short keys, no strings: the only spend is the numbers' digits.
+    it "charges non-string scalars to the budget" do
+      numbers = (0...50).to_h { |i| [ "n#{i}", 10**300 ] }
+      t = build_task(events: Array.new(20) { completed_event(numbers) })
+
+      events = call(task_id: t.id, include_events: true)[:data][:events]
+
+      expect(events.first).to match(/older events.*budget exhausted/)
+      expect(events.size).to be < 20
     end
 
     it "caps the nodes returned in one reply and says so" do
