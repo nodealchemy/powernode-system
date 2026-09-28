@@ -174,10 +174,7 @@ module System
         return spend(budget, TOO_DEEP) if depth >= MAX_DEPTH
 
         from = log_key?(key) ? :tail : :head
-        items = from == :tail ? array.last(MAX_WIDTH) : array.first(MAX_WIDTH)
-        # A tail cut can land inside a PEM whose BEGIN line it dropped, leaving
-        # base64 body lines no pattern can see; drop them like the string path.
-        items = items.drop_while { |item| item.is_a?(::String) && item.scrub("").match?(PEM_LINE) } if from == :tail && array.size > items.size
+        items = retained_items(array, from)
         dropped = array.size - items.size
         withhold = credential_in?(items, key, from, budget.string_limit) if withhold.nil?
 
@@ -218,12 +215,10 @@ module System
       # newline, since the patterns differ on which they tolerate. Anything
       # unbounded is treated as a hit.
       def credential_in?(items, key, from, limit)
-        texts = flat_texts(items, 0, [])
-        return true if texts.size > MAX_CHECK_TEXTS
+        acc = { texts: [], chars: 0 }
+        return true unless collect_texts(items, 0, acc, from, limit)
 
-        texts = texts.map { |text| bound_input(text.scrub(""), limit, from) }
-        return true if texts.sum(&:length) > MAX_CHECK_CHARS
-
+        texts = acc[:texts].map { |text| bound_input(text, limit, from) }
         lead = "#{key.last(MAX_KEY_LENGTH)}: " if key
         [ " ", "\n" ].any? do |separator|
           joined = "#{lead}#{texts.join(separator)}"
@@ -231,18 +226,35 @@ module System
         end
       end
 
-      def flat_texts(items, depth, acc)
-        items.each do |item|
-          return acc if acc.size > MAX_CHECK_TEXTS
+      # The items an array emits: the first or last MAX_WIDTH, and for a tail
+      # cut without the PEM-body lines whose BEGIN line the cut dropped. The
+      # ONE definition of "retained", used by both the emit and the check at
+      # every nesting level, so exactly what is checked is what is emitted.
+      def retained_items(array, from)
+        items = from == :tail ? array.last(MAX_WIDTH) : array.first(MAX_WIDTH)
+        return items unless from == :tail && array.size > items.size
 
-          case item
-          when ::Array then flat_texts(item.first(MAX_WIDTH), depth + 1, acc) if depth < MAX_DEPTH
-          when ::String then acc << item
-          when ::Hash, nil then nil
-          else acc << item.to_s
+        items.drop_while { |item| item.is_a?(::String) && item.scrub("").match?(PEM_LINE) }
+      end
+
+      # Collects the (scrubbed) strings to check, nested arrays flattened
+      # through retained_items and other scalars stringified. False as soon as
+      # the running total passes the check bounds, before any more text is
+      # copied: the caller then withholds the array unchecked.
+      def collect_texts(items, depth, acc, from, limit)
+        items.each do |item|
+          if item.is_a?(::Array)
+            next if depth >= MAX_DEPTH
+            return false unless collect_texts(retained_items(item, from), depth + 1, acc, from, limit)
+          elsif !(item.is_a?(::Hash) || item.nil?)
+            text = item.to_s
+            acc[:chars] += [ text.length, limit * 4 ].min
+            return false if acc[:texts].size >= MAX_CHECK_TEXTS || acc[:chars] > MAX_CHECK_CHARS
+
+            acc[:texts] << text.scrub("")
           end
         end
-        acc
+        true
       end
 
       def walk_string(string, budget, key:)

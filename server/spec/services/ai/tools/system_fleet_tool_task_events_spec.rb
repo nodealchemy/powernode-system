@@ -241,6 +241,25 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
         expect(out.last).to eq("build line 46")
       end
 
+      # The check and the output must see the SAME slice at every nesting level:
+      # this nested log array is longer than 50, so what is emitted (the last 50)
+      # includes items the first 50 never contained.
+      it "checks exactly the retained slice of a nested log array" do
+        nested = Array.new(50) { "x" } + %w[oras login -p FAKEsecret1]
+        t = build_task(events: [ completed_event({ "stderr" => [ nested ] }) ])
+
+        out = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["stderr"]
+
+        expect(JSON.generate(out)).not_to include("FAKEsecret1")
+      end
+
+      it "withholds an array too large to check, without checking it" do
+        big = Array.new(20) { "q" * 20_000 }
+        out = result_of(big)
+
+        expect(out).to all(eq("[REDACTED]"))
+      end
+
       it "leaves an array of ordinary strings intact" do
         expect(result_of([ "make", "-j4", "all" ])).to eq([ "make", "-j4", "all" ])
       end
