@@ -119,16 +119,149 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
       expect(result["sha"]).to eq("sha256:abc")
     end
 
-    it "redacts a secret sitting past the per-string cap in both the truncated and the full copy" do
+    # A secret whose value straddles the cut. If the cut came first, the
+    # fragment of the value inside the window would be served raw.
+    it "redacts before cutting a head-bounded string: a secret straddling the cap is gone" do
       cap = described_class::GET_ERROR_MESSAGE_LIMIT
-      huge = ("x " * cap) + fake_password
-      t = build_task(events: [ completed_event({ "log_tail" => huge }) ])
+      text = ("x" * (cap - 9)) + " password=FAKEhunter2FAKE" + (" tail" * 10)
+      t = build_task(events: [ completed_event({ "detail" => text }) ])
 
-      r = call(task_id: t.id, include_events: true)
-      tail = r[:data][:events].first["result"]["log_tail"]
+      detail = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["detail"]
 
-      expect(tail.length).to be <= cap + "...[truncated]".length
-      expect(tail).not_to include("FAKEhunter2FAKE")
+      expect(detail).not_to include("FAKE")
+      expect(detail).not_to include("hunter")
+    end
+
+    it "redacts before cutting a tail-bounded log_tail: a secret straddling the cut is gone, the end is kept" do
+      cap = described_class::GET_ERROR_MESSAGE_LIMIT
+      secret = " password=FAKEhunter2FAKE"
+      # The last `cap` characters begin inside the secret's value.
+      text = ("x" * 20_000) + secret + " " + ("y" * (cap - 7))
+      t = build_task(events: [ completed_event({ "log_tail" => text }) ])
+
+      tail = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["log_tail"]
+
+      expect(tail).not_to include("FAKE")
+      expect(tail).not_to include("hunter")
+      expect(tail).to end_with("y" * 50)
+      expect(tail.length).to be <= cap
+    end
+
+    it "redacts a secret planted in a hash KEY" do
+      key = "Bearer FAKEFAKEFAKEFAKEFAKEFAKEFAKE0001"
+      t = build_task(events: [ completed_event({ key => "value" }) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      expect(JSON.generate(result)).not_to include("FAKEFAKEFAKE")
+      expect(result.keys).to eq([ "Bearer [REDACTED]" ])
+    end
+
+    it "keeps two keys that redact to the same text apart, deterministically" do
+      k1 = "Bearer FAKEFAKEFAKEFAKEFAKEFAKEFAKE0001"
+      k2 = "Bearer FAKEFAKEFAKEFAKEFAKEFAKEFAKE0002"
+      t = build_task(events: [ completed_event({ k1 => "one", k2 => "two" }) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      expect(result.keys).to eq([ "Bearer [REDACTED]", "Bearer [REDACTED]#2" ])
+    end
+
+    # The lead (the key, here) is stripped back off after redaction. A redaction
+    # that rewrote the lead itself means the value cannot be located: withhold it.
+    it "withholds a value whole when redaction altered the lead it was read with" do
+      t = build_task(events: [ completed_event({ "-----BEGIN PRIVATE KEY-----" => "innocuous value" }) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      expect(result).to eq({ "[REDACTED]" => "[REDACTED]" })
+    end
+
+    describe "arrays of strings are redacted as a whole" do
+      def result_of(value)
+        t = build_task(events: [ completed_event({ "argv" => value }) ])
+        call(task_id: t.id, include_events: true)[:data][:events].first["result"]["argv"]
+      end
+
+      it "withholds an oras login argv whose -p sits two elements after login" do
+        out = result_of(%w[oras login -u ci -p FAKEsecret123])
+
+        expect(JSON.generate(out)).not_to include("FAKEsecret123")
+      end
+
+      it "withholds a PEM split across array lines, including the lines after the second" do
+        pem = [ "-----BEGIN PRIVATE KEY-----", "FAKEFAKEFAKEFAKEFAKEFAKEFAKE0001",
+                "FAKEFAKEFAKEFAKEFAKEFAKEFAKE0002", "FAKEFAKEFAKEFAKEFAKEFAKEFAKE0003",
+                "-----END PRIVATE KEY-----" ]
+        out = result_of(pem)
+
+        expect(JSON.generate(out)).not_to include("FAKEFAKEFAKE")
+      end
+
+      it "withholds a .netrc line split across elements" do
+        out = result_of(%w[machine registry.example.test login ci password FAKEnetrcSECRET99])
+
+        expect(JSON.generate(out)).not_to include("FAKEnetrcSECRET99")
+      end
+
+      it "withholds a curl -u user:token split across elements" do
+        out = result_of(%w[curl -u ci:FAKEcurlTOKEN99 https://example.test])
+
+        expect(JSON.generate(out)).not_to include("FAKEcurlTOKEN99")
+      end
+
+      it "leaves an array of ordinary strings intact" do
+        expect(result_of([ "make", "-j4", "all" ])).to eq([ "make", "-j4", "all" ])
+      end
+    end
+
+    describe "a secret-named key withholds its whole subtree" do
+      def result_of(hash)
+        t = build_task(events: [ completed_event(hash) ])
+        call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+      end
+
+      [
+        [ "password", "short" ],
+        [ "password", "correct horse battery staple" ],
+        [ "password", { "value" => "FAKEnested" } ],
+        [ "password", 12_345_678 ],
+        [ "pwd", "x" ],
+        [ "pass", "y" ],
+        [ "DB_PASS", "abc" ],
+        [ "passphrase", [ "a", "b" ] ],
+        [ "apiKey", "k" ],
+        [ "client_secret", { "a" => [ "b" ] } ],
+        [ "access_key", "z" ],
+        [ "private_key", "z" ],
+        [ "credentials", { "user" => "u" } ],
+        [ "Authorization", "abc" ],
+        [ "auth", "abc" ],
+        [ "cookie", "abc" ],
+        [ "session", "abc" ],
+        [ "signature", "abc" ],
+        [ "x-auth-token", "abc" ]
+      ].each do |key, value|
+        it "withholds #{value.class} under #{key.inspect}" do
+          expect(result_of({ key => value, "sha" => "sha256:abc" })).to eq({ key => "[REDACTED]", "sha" => "sha256:abc" })
+        end
+      end
+
+      it "withholds every descendant of a secret-named ancestor, whatever its own key" do
+        out = result_of({ "credentials" => { "user" => { "name" => "n" }, "list" => [ 1, 2 ] } })
+
+        expect(out).to eq({ "credentials" => "[REDACTED]" })
+      end
+
+      it "does not withhold obvious non-secrets" do
+        out = result_of({ "token_count" => 3, "passed" => true, "bypass" => "ok", "author" => "me", "compass" => "n" })
+
+        expect(out).to eq({ "token_count" => 3, "passed" => true, "bypass" => "ok", "author" => "me", "compass" => "n" })
+      end
+
+      it "leaves a nil value under a secret-named key as nil" do
+        expect(result_of({ "password" => nil })).to eq({ "password" => nil })
+      end
     end
 
     # jsonb cannot hold invalid UTF-8, so this is defence in depth: the
@@ -170,26 +303,99 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_task include_events" do
       expect(r[:data][:events_truncated]).to be false
     end
 
-    it "caps each string at the single-task error limit" do
+    it "caps each string at the single-task error limit, the marker included" do
       cap = described_class::GET_ERROR_MESSAGE_LIMIT
-      t = build_task(events: [ completed_event({ "log_tail" => "y" * (cap * 3) }) ])
+      t = build_task(events: [ completed_event({ "detail" => "y" * (cap * 3), "log_tail" => "y" * (cap * 3) }) ])
 
-      r = call(task_id: t.id, include_events: true)
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
 
-      expect(r[:data][:events].first["result"]["log_tail"]).to eq("#{'y' * cap}...[truncated]")
+      expect(result["detail"]).to eq("#{'y' * (cap - 14)}...[truncated]")
+      expect(result["log_tail"]).to eq("[truncated]...#{'y' * (cap - 14)}")
     end
 
-    it "spends the total string budget newest-first, omitting the oldest strings once it is gone" do
+    it "keeps the END of a log_tail, where a long stderr's failure is" do
+      text = "stdout: ok\nstderr: #{"noise line\n" * 10_000}FATAL: build exploded\n"
+      t = build_task(events: [ completed_event({ "log_tail" => text }) ])
+
+      tail = call(task_id: t.id, include_events: true)[:data][:events].first["result"]["log_tail"]
+
+      expect(tail).to start_with("[truncated]...")
+      expect(tail).to end_with("FATAL: build exploded\n")
+      expect(tail).not_to include("stdout: ok")
+    end
+
+    it "keeps the END of stdout- and stderr-named keys too, and the head of others" do
+      text = "HEAD-MARK\n#{"n\n" * 20_000}END-MARK"
+      t = build_task(events: [ completed_event({ "stderr" => text, "stdout" => text, "note" => text }) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      expect(result["stderr"]).to end_with("END-MARK")
+      expect(result["stdout"]).to end_with("END-MARK")
+      expect(result["note"]).to start_with("HEAD-MARK")
+    end
+
+    it "caps a hash key at 200 characters, the marker included" do
+      t = build_task(events: [ completed_event({ ("k" * 1000) => "v" }) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      expect(result.keys.first.length).to be <= 200
+    end
+
+    it "spends the string budget newest-first and collapses the older events into ONE marker" do
       cap = described_class::GET_ERROR_MESSAGE_LIMIT
       fat = build_task(events: Array.new(described_class::TASK_EVENTS_LIMIT) { |i| completed_event({ "log_tail" => "z" * cap, "n" => i }) })
 
-      r = call(task_id: fat.id, include_events: true)
-      tails = r[:data][:events].map { |e| e["result"]["log_tail"] }
+      events = call(task_id: fat.id, include_events: true)[:data][:events]
+      marker, *kept = events
 
-      expect(tails.last).to eq("z" * cap)
-      expect(tails.first).to match(/omitted: event payload budget exhausted/)
-      spent = tails.reject { |t| t.include?("omitted:") }.sum(&:length)
-      expect(spent).to be <= described_class::TASK_EVENTS_MAX_CHARS
+      expect(marker).to be_a(String)
+      expect(marker).to match(/older events.*budget exhausted/)
+      expect(kept.size).to be < described_class::TASK_EVENTS_LIMIT - 1
+      expect(kept.last["result"]["log_tail"]).to eq("z" * cap)
+      expect(kept.map { |e| e["result"]["log_tail"].length }.sum).to be <= described_class::TASK_EVENTS_MAX_CHARS
+    end
+
+    it "collapses the rest of a subtree into ONE marker once the budget is gone" do
+      cap = described_class::GET_ERROR_MESSAGE_LIMIT
+      wide = (0...50).to_h { |i| [ "k#{i}", "v" * cap ] }
+      t = build_task(events: [ completed_event(wide) ])
+
+      result = call(task_id: t.id, include_events: true)[:data][:events].first["result"]
+
+      omitted = result.select { |k, _| k.include?("omitted") }
+      expect(omitted.size).to eq(1)
+      expect(result.size).to be < 15
+    end
+
+    it "charges keys and non-string scalars to the budget" do
+      big = (0...50).to_h { |i| [ ("k#{i}-" + ("q" * 190))[0, 190], i ] }
+      t = build_task(events: Array.new(20) { completed_event(big) })
+
+      events = call(task_id: t.id, include_events: true)[:data][:events]
+
+      chars = JSON.generate(events).length
+      expect(chars).to be < described_class::TASK_EVENTS_MAX_CHARS * 2
+      expect(events.first).to be_a(String)
+    end
+
+    it "caps the nodes returned in one reply and says so" do
+      row = (0...10).to_h { |i| [ "f#{i}", i ] }
+      event = completed_event({ "rows" => Array.new(45) { row } })
+      t = build_task(events: Array.new(20) { event })
+
+      events = call(task_id: t.id, include_events: true)[:data][:events]
+
+      count = lambda do |v|
+        case v
+        when Hash then v.sum { |_, x| 1 + count.call(x) }
+        when Array then v.sum { |x| 1 + count.call(x) }
+        else 0
+        end
+      end
+      expect(count.call(events)).to be <= 5_000 + 100
+      expect(JSON.generate(events)).to match(/omitted/)
     end
 
     it "bounds nesting depth and collection width" do

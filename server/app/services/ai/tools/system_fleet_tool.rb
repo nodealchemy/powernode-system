@@ -1778,7 +1778,7 @@ module Ai
             parameters: {
               task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" },
               include_events: { type: "boolean", required: false,
-                                description: "When true, the reply also carries events (the newest #{TASK_EVENTS_LIMIT}, oldest first, each with its type, message, timestamp, data and any result such as log_tail), events_total and events_truncated. Every string in them is REDACTED of credential-shaped tokens exactly as error_message is and capped at 16 KB, with #{TASK_EVENTS_MAX_CHARS / 1024} KB in all (newest events kept whole first); nested values are limited in depth and width. With wait_seconds, the events are those of the final snapshot. Absent or false leaves the reply unchanged; a value that is not true or false is refused." },
+                                description: "When true, the reply also carries events (the newest #{TASK_EVENTS_LIMIT}, oldest first, each with its type, message, timestamp, data and any result such as log_tail), events_total and events_truncated. Every string in them, keys included, is REDACTED of credential-shaped tokens exactly as error_message is; a value under a secret-named key (password, token, api_key, cookie and the like) and an array of strings in which a credential is found are withheld whole. Strings are capped at 16 KB (marker included), a log_tail or stdout/stderr string keeps its END, and the reply holds #{TASK_EVENTS_MAX_CHARS / 1024} KB of text and #{TASK_EVENTS_MAX_NODES} values in all (newest events kept whole first, older ones collapsing into one marker). With wait_seconds, the events are those of the final snapshot. Absent or false leaves the reply unchanged; a value that is not true or false is refused." },
               wait_seconds: { type: "integer", required: false,
                               description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied, and wait_degraded: true when the server was at its concurrent-wait limit and answered with one check. Absent or 0 answers at once, unchanged." }
             }
@@ -7454,13 +7454,12 @@ module Ai
       # a completed event; the events column is unbounded jsonb written from
       # agent-supplied params, so the read is bounded on every axis: the newest
       # TASK_EVENTS_LIMIT events, GET_ERROR_MESSAGE_LIMIT per string, a
-      # TASK_EVENTS_MAX_CHARS budget over all strings (spent newest-first), and
-      # depth / width caps on nested values.
+      # TASK_EVENTS_MAX_CHARS budget over every string, key and scalar (spent
+      # newest-first), and TASK_EVENTS_MAX_NODES values in all. Depth, width and
+      # key length are System::StoredOutputRedactor's.
       TASK_EVENTS_LIMIT = 20
       TASK_EVENTS_MAX_CHARS = 131_072
-      TASK_EVENT_MAX_DEPTH = 6
-      TASK_EVENT_MAX_WIDTH = 50
-      TASK_EVENT_LEAD_CHARS = 200
+      TASK_EVENTS_MAX_NODES = 5_000
 
       # `full_error: true` returns the whole (redacted) error_message — the
       # single-task read, where the operator came specifically for the reason.
@@ -7494,118 +7493,19 @@ module Ai
       def task_error_message(raw, full:)
         return nil if raw.blank?
 
-        redact_bounded(raw, full ? GET_ERROR_MESSAGE_LIMIT : LIST_ERROR_MESSAGE_LIMIT)
+        ::System::StoredOutputRedactor.bounded(raw, full ? GET_ERROR_MESSAGE_LIMIT : LIST_ERROR_MESSAGE_LIMIT)
       end
 
-      # The one redact-then-bound routine every stored-output string on this
-      # surface goes through (error_message, and each string of an event).
-      #
-      # `lead` is the text that sat immediately before the value in its source
-      # (a hash key, the preceding argv element). The redactor's patterns are
-      # keyed on what precedes a secret (password=, --password, api_key:), so a
-      # bare value read out of {"api_key" => "…"} or ["--password", "…"] is
-      # invisible to them on its own. The value is redacted WITH its lead and
-      # the lead stripped again; if the redactor altered the lead itself the
-      # value is withheld whole rather than guessed at.
-      def redact_bounded(raw, limit, lead: nil)
-        # .scrub — the redaction regexes raise ArgumentError on invalid UTF-8,
-        # and this is captured node output, not text the platform authored.
-        text = raw.to_s.scrub("")
-
-        # Bounding the redaction INPUT (rather than only its output) keeps a
-        # list call from running every pattern over 100 unbounded blobs. It is
-        # NOT safe on its own: this comment used to say a secret cut by the 4x
-        # slice "lies far outside the returned window", which is false whenever
-        # redaction SHRINKS the head — a run of long token= values collapses to
-        # short markers and the fragment the slice left at ~limit*4 lands
-        # inside the window (measured: a 9-char credential fragment served
-        # over MCP, IMP-675ed7763230 review). So the trailing run the cut
-        # split is dropped — but only while enough text survives to fill the
-        # bound, since a whitespace-free body would otherwise be stripped to
-        # nothing (BaseSkillExecutor#audit_text, the same rule).
-        sliced = text[0, limit * 4]
-        if text.length > limit * 4
-          stripped = sliced.sub(/\S+\z/, "")
-          sliced = stripped if stripped.length >= limit
-        end
-        redacted = ::System::ShellOutputSanitizer.redact_text("#{lead}#{sliced}")
-        if lead
-          return ::System::ShellOutputSanitizer::REDACTED unless redacted.start_with?(lead)
-
-          redacted = redacted[lead.length..]
-        end
-        return redacted if redacted.length <= limit
-
-        "#{redacted[0, limit]}...[truncated]"
-      end
-
-      # The newest TASK_EVENTS_LIMIT events of `task`, oldest first, redacted,
-      # plus the total and whether older ones were dropped. Newest-first is
-      # also the order the string budget is spent in, so a task with a huge
-      # history still returns its latest events whole.
+      # The newest TASK_EVENTS_LIMIT events of `task`, oldest first, redacted
+      # and bounded by System::StoredOutputRedactor (which owns the mechanism;
+      # the limits are this surface's policy), plus the total and whether older
+      # ones were dropped.
       def task_events_payload(task)
-        all = task.events.is_a?(::Array) ? task.events : []
-        budget = { chars: TASK_EVENTS_MAX_CHARS }
-        newest = all.last(TASK_EVENTS_LIMIT).reverse.map { |event| redact_event_value(event, budget: budget) }
-        { events: newest.reverse, events_total: all.size, events_truncated: all.size > TASK_EVENTS_LIMIT }
-      end
-
-      # Walks an event's jsonb value and returns a redacted, bounded copy.
-      # Strings go through redact_bounded; numbers, booleans and nil hold no
-      # credential text and pass through. `key` is the enclosing hash key and
-      # `prev` the preceding string sibling in an array — the lead redact_bounded
-      # needs to see a keyed or flag-shaped secret.
-      def redact_event_value(value, budget:, key: nil, prev: nil, depth: 0)
-        case value
-        when ::Hash
-          return "[max depth exceeded]" if depth >= TASK_EVENT_MAX_DEPTH
-
-          out = value.first(TASK_EVENT_MAX_WIDTH).to_h do |k, v|
-            k = k.to_s
-            # Keys are redacted but outside the string budget: an omitted key
-            # would collapse distinct fields onto one name.
-            [ redact_bounded(k, TASK_EVENT_LEAD_CHARS),
-              redact_event_value(v, budget: budget, key: k, depth: depth + 1) ]
-          end
-          out["...[truncated]"] = "#{value.size - TASK_EVENT_MAX_WIDTH} more keys" if value.size > TASK_EVENT_MAX_WIDTH
-          out
-        when ::Array
-          return "[max depth exceeded]" if depth >= TASK_EVENT_MAX_DEPTH
-
-          items = value.first(TASK_EVENT_MAX_WIDTH)
-          out = items.each_with_index.map do |v, i|
-            sibling = items[i - 1] if i.positive?
-            redact_event_value(v, budget: budget, key: key, prev: sibling.is_a?(::String) ? sibling : nil, depth: depth + 1)
-          end
-          out << "[#{value.size - TASK_EVENT_MAX_WIDTH} more items truncated]" if value.size > TASK_EVENT_MAX_WIDTH
-          out
-        when ::String
-          lead = event_string_lead(prev, key)
-          redact_event_string(value, budget: budget, lead: lead)
-        else
-          value
-        end
-      end
-
-      def event_string_lead(prev, key)
-        return " #{prev.scrub('').last(TASK_EVENT_LEAD_CHARS)} " if prev
-
-        "#{key}: " if key
-      end
-
-      # One event string, redacted and capped at the single-task limit or what
-      # is left of the payload budget, whichever is smaller. Spending is by the
-      # length actually returned.
-      def redact_event_string(text, budget:, lead: nil, limit: GET_ERROR_MESSAGE_LIMIT)
-        limit = [ limit, budget[:chars] ].min
-        # .empty? not .blank?: blank? runs a regexp, which raises on the invalid
-        # UTF-8 that redact_bounded is about to scrub.
-        return text if text.empty?
-        return "[omitted: event payload budget exhausted]" if limit <= 0
-
-        result = redact_bounded(text, limit, lead: lead)
-        budget[:chars] -= result.length
-        result
+        out = ::System::StoredOutputRedactor.events(
+          task.events, limit: TASK_EVENTS_LIMIT, string_limit: GET_ERROR_MESSAGE_LIMIT,
+                       max_chars: TASK_EVENTS_MAX_CHARS, max_nodes: TASK_EVENTS_MAX_NODES
+        )
+        { events: out[:events], events_total: out[:total], events_truncated: out[:truncated] }
       end
 
       # Mirrors NodeModuleAssignmentsController#serialize_assignment.
