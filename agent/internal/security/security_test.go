@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -211,13 +213,16 @@ func TestUnionEgressPolicy_UndeclaredModuleContributesNothing(t *testing.T) {
 
 func TestApplyEgressAllowlist_AllowsLoopbackAndDNS(t *testing.T) {
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	if err := ApplyEgressAllowlist(context.Background(), rec, []string{}); err != nil {
 		t.Fatalf("ApplyEgressAllowlist: %v", err)
 	}
-	if !rulesAccept(rec, "lo") {
+	assertSingleNftDashF(t, rec)
+	script := readEgressScript(t)
+	if !rulesAccept(script, "lo") {
 		t.Error("expected loopback accept rule")
 	}
-	if !rulesAccept(rec, "53") {
+	if !rulesAccept(script, "53") {
 		t.Error("expected DNS port 53 accept rule")
 	}
 }
@@ -235,17 +240,19 @@ func TestApplyEgressAllowlist_PerEntryRules(t *testing.T) {
 	t.Cleanup(func() { egressResolveHost = orig })
 
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	allow := []string{"api.example.com:443", "1.2.3.4"}
 	if err := ApplyEgressAllowlist(context.Background(), rec, allow); err != nil {
 		t.Fatalf("ApplyEgressAllowlist: %v", err)
 	}
-	if !rulesAccept(rec, "203.0.113.7") {
+	script := readEgressScript(t)
+	if !rulesAccept(script, "203.0.113.7") {
 		t.Error("expected resolved api.example.com (203.0.113.7) rule")
 	}
-	if !rulesAccept(rec, "443") {
+	if !rulesAccept(script, "443") {
 		t.Error("expected port 443 rule")
 	}
-	if !rulesAccept(rec, "1.2.3.4") {
+	if !rulesAccept(script, "1.2.3.4") {
 		t.Error("expected 1.2.3.4 rule")
 	}
 }
@@ -259,34 +266,32 @@ func TestApplyEgressAllowlist_PerEntryRules(t *testing.T) {
 // rule.
 func TestApplyEgressAllowlist_ProtectedHostIPLiteral(t *testing.T) {
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	if err := ApplyEgressAllowlistWithProtected(
 		context.Background(), rec, nil, []string{"192.0.2.10"},
 	); err != nil {
 		t.Fatalf("ApplyEgressAllowlistWithProtected: %v", err)
 	}
-	var found bool
-	for _, inv := range rec.Invocations {
-		if inv.Op != "Run" || inv.Name != "nft" {
-			continue
-		}
-		var sawIp, sawDaddr, sawAddr bool
-		for _, a := range inv.Args {
-			switch a {
-			case "ip":
-				sawIp = true
-			case "daddr":
-				sawDaddr = true
-			case "192.0.2.10":
-				sawAddr = true
-			}
-		}
-		if sawIp && sawDaddr && sawAddr {
-			found = true
-			break
-		}
+	script := readEgressScript(t)
+	if !hasRule(script, "ip", "daddr", "192.0.2.10", "accept") {
+		t.Errorf("expected `ip daddr 192.0.2.10 accept` rule for protected host; got script:\n%s", script)
 	}
-	if !found {
-		t.Errorf("expected `ip daddr 192.0.2.10 accept` rule for protected host; got: %+v", rec.Invocations)
+}
+
+// IMP-13645c4df90a review round item 2 (per-process staging filename): the
+// staged script is removed after apply in production. Every other test in
+// this package relies on testing.Testing()'s exemption to read the file
+// back; this one flips SetEgressForceCleanupForTest to observe the removal
+// itself.
+func TestApplyEgressAllowlist_RemovesStagedScriptAfterApply(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
+	t.Cleanup(SetEgressForceCleanupForTest(true))
+	if err := ApplyEgressAllowlist(context.Background(), rec, nil); err != nil {
+		t.Fatalf("ApplyEgressAllowlist: %v", err)
+	}
+	if _, err := os.Stat(egressStagingPath()); !os.IsNotExist(err) {
+		t.Errorf("expected the staged script to be removed after apply, stat err=%v", err)
 	}
 }
 
@@ -336,11 +341,85 @@ func TestParseEgressGrammar(t *testing.T) {
 	if host, port, lits, err := parseEgressGrammar("api.example.com:443"); err != nil || host != "api.example.com" || port != 443 || lits != nil {
 		t.Errorf(`parseEgressGrammar("api.example.com:443") = (%q,%d,%v,%v); want ("api.example.com",443,nil,nil)`, host, port, lits, err)
 	}
-	for _, bad := range []string{"badport:99999", "host.example.com:abc", "10.0.0.0/255.0.0.0", "fe80::1%eth0"} {
+	for _, bad := range []string{
+		"badport:99999", "host.example.com:abc", "10.0.0.0/255.0.0.0", "fe80::1%eth0",
+		"::ffff:0:0/96", // IMP-13645c4df90a review round item 3: IPv4-mapped IPv6 CIDR, refused outright
+	} {
 		if _, _, _, err := parseEgressGrammar(bad); err == nil {
 			t.Errorf("parseEgressGrammar(%q) accepted a contract-invalid entry", bad)
 		}
 	}
+}
+
+// IMP-13645c4df90a review round item 3: an entry with non-zero host bits
+// ("10.0.0.5/24" — a legal, if unusual, prefix-form CIDR) used to render the
+// RAW entry text; a caller writing an address that doesn't sit on the
+// prefix boundary would get exactly that address back, not the network it
+// names. The canonical (Masked) form is what egressCanonicalCIDR now emits,
+// matching the SDWAN AllowedIPs path (splitEgressCIDRs) — one canonicalizer
+// for both.
+func TestParseEgressGrammar_CanonicalizesNonZeroHostBits(t *testing.T) {
+	_, _, literals, err := parseEgressGrammar("10.0.0.5/24")
+	if err != nil {
+		t.Fatalf("parseEgressGrammar(%q) errored: %v", "10.0.0.5/24", err)
+	}
+	if len(literals) != 1 || literals[0].family != "ip" || literals[0].addr != "10.0.0.0/24" {
+		t.Errorf(`parseEgressGrammar("10.0.0.5/24") = %+v; want a single ip literal "10.0.0.0/24" (masked)`, literals)
+	}
+}
+
+// IMP-13645c4df90a review round item 6: the grammar guard is STRUCTURAL, not
+// merely "every line passes a charset". A line that is charset-clean but
+// does not target the exact table/chain this package renders into (or a
+// header line that has been subtly rewritten) must be refused even though a
+// naive charset-only check would have accepted it.
+func TestValidateEgressScriptGrammar_StructuralChecks(t *testing.T) {
+	goodHeader := strings.Join(egressScriptHeaderLines, "\n") + "\n"
+
+	t.Run("accepts a well-formed script", func(t *testing.T) {
+		script := goodHeader + egressScriptRulePrefix + "ct state established,related accept\n"
+		if err := validateEgressScriptGrammar(script); err != nil {
+			t.Errorf("expected a well-formed script to pass, got: %v", err)
+		}
+	})
+
+	t.Run("rejects a rule line targeting a DIFFERENT table (charset-clean, wrong prefix)", func(t *testing.T) {
+		script := goodHeader + "add rule inet some_other_table powernode_egress_filter ip daddr 1.2.3.4 accept\n"
+		if err := validateEgressScriptGrammar(script); err == nil {
+			t.Error("expected a rule line targeting a different table to be refused")
+		}
+	})
+
+	t.Run("rejects a rule line targeting a DIFFERENT chain (charset-clean, wrong prefix)", func(t *testing.T) {
+		script := goodHeader + "add rule inet " + EgressTable + " some_other_chain ip daddr 1.2.3.4 accept\n"
+		if err := validateEgressScriptGrammar(script); err == nil {
+			t.Error("expected a rule line targeting a different chain to be refused")
+		}
+	})
+
+	t.Run("rejects a subtly rewritten chain-definition header (still charset-clean)", func(t *testing.T) {
+		lines := append([]string(nil), egressScriptHeaderLines...)
+		lines[1] = strings.Replace(lines[1], "policy drop", "policy accept", 1)
+		script := strings.Join(lines, "\n") + "\n" + egressScriptRulePrefix + "ct state established,related accept\n"
+		if err := validateEgressScriptGrammar(script); err == nil {
+			t.Error("expected a rewritten (policy accept instead of drop) chain header to be refused")
+		}
+	})
+
+	t.Run("rejects the header lines out of order", func(t *testing.T) {
+		lines := []string{egressScriptHeaderLines[1], egressScriptHeaderLines[0], egressScriptHeaderLines[2]}
+		script := strings.Join(lines, "\n") + "\n"
+		if err := validateEgressScriptGrammar(script); err == nil {
+			t.Error("expected out-of-order header lines to be refused")
+		}
+	})
+
+	t.Run("still refuses a semicolon on a rule line, unlike the exempted chain header", func(t *testing.T) {
+		script := goodHeader + egressScriptRulePrefix + "ct state established,related accept ; add rule\n"
+		if err := validateEgressScriptGrammar(script); err == nil {
+			t.Error("expected a semicolon on a rule line to be refused")
+		}
+	})
 }
 
 func TestKnownCapabilities_HasReasonableSet(t *testing.T) {
@@ -385,19 +464,99 @@ func findCapsArg(r *mount.RecorderRunner) string {
 	return ""
 }
 
-// rulesAccept returns true when any nft invocation includes a rule
-// whose args contain `match` and end with "accept".
-func rulesAccept(r *mount.RecorderRunner, match string) bool {
-	for _, inv := range r.Invocations {
-		if inv.Name != "nft" {
-			continue
-		}
-		joined := strings.Join(inv.Args, " ")
-		if strings.Contains(joined, match) && strings.Contains(joined, "accept") {
+// rulesAccept returns true when any LINE of a rendered egress script (see
+// readEgressScript) contains `match` and ends with "accept". Egress apply is
+// now one `nft -f <script>` transaction (IMP-13645c4df90a atomic rebuild),
+// so there is no longer a per-rule nft invocation to inspect — assertions
+// read the script file the apply staged instead. Kept substring-based
+// (rather than an exact-line hasRule match) for callers that only care
+// whether SOME rule mentions a value, not its exact surrounding tokens.
+func rulesAccept(script, match string) bool {
+	for _, line := range strings.Split(script, "\n") {
+		if strings.Contains(line, match) && strings.HasSuffix(line, "accept") {
 			return true
 		}
 	}
 	return false
+}
+
+// hasRule reports whether the rendered egress script contains a rule line
+// whose trailing tokens (after "add rule inet <table> <chain> ") exactly
+// match want, joined by single spaces, in order.
+func hasRule(script string, want ...string) bool {
+	target := fmt.Sprintf("add rule inet %s %s %s", EgressTable, egressChain, strings.Join(want, " "))
+	for _, line := range strings.Split(script, "\n") {
+		if line == target {
+			return true
+		}
+	}
+	return false
+}
+
+// withTempEgressScriptPath redirects the package-level egressScriptPath
+// into a per-test temp dir for the test's duration, restoring the original
+// after. Every test that calls an ApplyEgress* function and then wants to
+// inspect what was rendered needs this — production defaults to the
+// root-only /run/powernode-agent/egress.nft, which a test must never touch.
+// Thin wrapper over SetEgressScriptPathForTest (the same seam runtime's
+// reconcile_test.go uses cross-package) so there is one mechanism, not two.
+func withTempEgressScriptPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "egress.nft")
+	restore := SetEgressScriptPathForTest(path)
+	t.Cleanup(restore)
+	return path
+}
+
+// readEgressScript reads back the script the most recent ApplyEgress* call
+// staged at egressScriptPath. Callers must have called
+// withTempEgressScriptPath first (real production code path — the write is
+// genuine fsutil.AtomicWrite I/O, never faked by RecorderRunner, which only
+// records the trailing `nft -f <path>` invocation).
+func readEgressScript(t *testing.T) string {
+	t.Helper()
+	path := egressStagingPath()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read egress script %s: %v", path, err)
+	}
+	return string(body)
+}
+
+// assertEgressScriptGrammar re-runs the SAME production fail-closed guard
+// (validateEgressScriptGrammar) a rendered script already passed inside
+// renderEgressScript, directly against test-obtained script text — the plan
+// calls for the grammar guard to be "reused by tests", not re-implemented
+// with a second, potentially-diverging character class.
+func assertEgressScriptGrammar(t *testing.T, script string) {
+	t.Helper()
+	if err := validateEgressScriptGrammar(script); err != nil {
+		t.Fatalf("rendered egress script failed its own grammar guard: %v\nscript:\n%s", err, script)
+	}
+}
+
+// assertSingleNftDashF pins the atomic-rebuild invariant every successful
+// apply must hold: exactly one nft invocation, and it is `-f <path>` — never
+// a per-rule call, and never `delete chain`.
+func assertSingleNftDashF(t *testing.T, r *mount.RecorderRunner) {
+	t.Helper()
+	var nftCalls []mount.Invocation
+	for _, inv := range r.Invocations {
+		if inv.Name == "nft" {
+			nftCalls = append(nftCalls, inv)
+		}
+	}
+	if len(nftCalls) != 1 {
+		t.Fatalf("expected exactly one nft invocation, got %d: %+v", len(nftCalls), nftCalls)
+	}
+	if len(nftCalls[0].Args) < 1 || nftCalls[0].Args[0] != "-f" {
+		t.Fatalf("expected the one nft invocation to be `-f <path>`, got %v", nftCalls[0].Args)
+	}
+	for _, a := range nftCalls[0].Args {
+		if a == "delete" {
+			t.Fatalf("must never `delete chain` — atomic rebuild uses flush, not delete-then-add: %v", nftCalls[0].Args)
+		}
+	}
 }
 
 // F3 — Policy.Validate must reject a path-bearing or control-char SELinux/

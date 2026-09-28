@@ -12,6 +12,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -1018,6 +1019,7 @@ func TestReconcilerAppliesEgressWhenTheRenderIsFullyResolved(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	t.Cleanup(security.SetEgressScriptPathForTest(filepath.Join(tmpRoot, "egress.nft")))
 
 	client := &stubModulesClient{
 		responses: map[string]string{
@@ -1059,14 +1061,16 @@ func TestReconcilerAppliesEgressWhenTheRenderIsFullyResolved(t *testing.T) {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	foundChain := false
+	// IMP-13645c4df90a atomic rebuild: egress install is one `nft -f <path>`
+	// transaction now, not a separate `nft add chain` invocation.
+	foundApply := false
 	for _, inv := range runner.Invocations {
-		if inv.Name == "nft" && len(inv.Args) >= 3 && inv.Args[0] == "add" && inv.Args[1] == "chain" {
-			foundChain = true
+		if inv.Name == "nft" && len(inv.Args) >= 1 && inv.Args[0] == "-f" {
+			foundApply = true
 		}
 	}
-	if !foundChain {
-		t.Errorf("expected an egress chain install on a fully-resolved tick, got invocations: %+v", runner.Invocations)
+	if !foundApply {
+		t.Errorf("expected an `nft -f` egress apply on a fully-resolved tick, got invocations: %+v", runner.Invocations)
 	}
 }
 

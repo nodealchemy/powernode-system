@@ -99,6 +99,19 @@ type RecorderRunner struct {
 	Invocations []Invocation
 	StubOutput  map[string][]byte // key: "name arg0 arg1 ..." → stdout to return
 	StubErr     map[string]error  // key: same → error to return
+	// StubErrOnce is StubErr's fail-then-succeed twin: the error fires for
+	// the FIRST call matching the key and is then removed from the map, so
+	// every later call with the SAME key (identical name+args) falls
+	// through to success. Needed wherever a caller retries with the exact
+	// same argv — e.g. security.applyEgressScript's per-process staging
+	// path is stable across a fallback retry within one apply, so a plain
+	// StubErr entry there would fail the retry too, defeating the very
+	// fallback path a test wants to exercise. Checked AFTER StubErr, so a
+	// key present in both always behaves as a permanent failure (StubErr
+	// wins) — no test needs both for the same key today, but a caller that
+	// wants "always fail" from an existing StubErr must not have that
+	// silently downgraded to "fail once" by an unrelated StubErrOnce entry.
+	StubErrOnce map[string]error
 }
 
 func (r *RecorderRunner) key(name string, args []string) string {
@@ -109,9 +122,23 @@ func (r *RecorderRunner) key(name string, args []string) string {
 	return k
 }
 
+// consumeStubErr returns the error (if any) StubErr/StubErrOnce declares for
+// key — StubErr takes precedence and never expires; StubErrOnce, checked
+// second, fires exactly once and deletes itself.
+func (r *RecorderRunner) consumeStubErr(key string) (error, bool) {
+	if err, ok := r.StubErr[key]; ok {
+		return err, true
+	}
+	if err, ok := r.StubErrOnce[key]; ok {
+		delete(r.StubErrOnce, key)
+		return err, true
+	}
+	return nil, false
+}
+
 func (r *RecorderRunner) Run(_ context.Context, name string, args ...string) error {
 	r.Invocations = append(r.Invocations, Invocation{Op: "Run", Name: name, Args: append([]string(nil), args...)})
-	if err, ok := r.StubErr[r.key(name, args)]; ok {
+	if err, ok := r.consumeStubErr(r.key(name, args)); ok {
 		return err
 	}
 	return nil
@@ -119,7 +146,7 @@ func (r *RecorderRunner) Run(_ context.Context, name string, args ...string) err
 
 func (r *RecorderRunner) RunStdin(_ context.Context, stdin, name string, args ...string) error {
 	r.Invocations = append(r.Invocations, Invocation{Op: "RunStdin", Name: name, Args: append([]string(nil), args...), Stdin: stdin})
-	if err, ok := r.StubErr[r.key(name, args)]; ok {
+	if err, ok := r.consumeStubErr(r.key(name, args)); ok {
 		return err
 	}
 	return nil
@@ -127,7 +154,7 @@ func (r *RecorderRunner) RunStdin(_ context.Context, stdin, name string, args ..
 
 func (r *RecorderRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.Invocations = append(r.Invocations, Invocation{Op: "Output", Name: name, Args: append([]string(nil), args...)})
-	if err, ok := r.StubErr[r.key(name, args)]; ok {
+	if err, ok := r.consumeStubErr(r.key(name, args)); ok {
 		return nil, err
 	}
 	if out, ok := r.StubOutput[r.key(name, args)]; ok {

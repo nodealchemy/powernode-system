@@ -21,27 +21,21 @@ import (
 // must contain hostile entries independently of the server.
 //
 // SAFETY: RecorderRunner only — nothing executes, no live nft, no node.
-
-// nftArgvIsSingleToken asserts no recorded nft argv element could smuggle
-// a second command through nft's argv-joining: no whitespace, newline,
-// '#', quote or brace in any element, and ';' only as the standalone
-// separator token the static chain-create command legitimately uses.
-func nftArgvIsSingleToken(t *testing.T, rec *mount.RecorderRunner) {
-	t.Helper()
-	for _, inv := range rec.Invocations {
-		if inv.Name != "nft" {
-			continue
-		}
-		for _, a := range inv.Args {
-			if a == ";" || a == "{" || a == "}" {
-				continue // static chain-definition tokens emitted by the agent itself
-			}
-			if strings.ContainsAny(a, " \t\n\r;#\"'{}") {
-				t.Fatalf("nft argv element %q (in %v) contains command-splitting characters", a, inv.Args)
-			}
-		}
-	}
-}
+//
+// ATOMIC REBUILD (IMP-13645c4df90a, operator-scoped rework): egress apply is
+// now one `nft -f <script>` call (renderEgressScript + applyEgressScript),
+// which changes WHERE the injection defense lives. Previously, safety came
+// from passing each rule as SEPARATE argv elements straight to exec — no
+// element could smuggle a second command because exec never re-joins argv
+// into a shell string. That defense is gone by construction now: every rule
+// is one line of a single text file nft re-parses exactly like it used to
+// re-parse joined argv. The defense that replaces it is upstream of
+// rendering entirely — buildEgressRules/buildEgressExtrasRules already
+// refuse (or skip) any entry containing a disallowed character BEFORE a
+// rule token is ever produced — plus validateEgressScriptGrammar as a
+// whole-script fail-closed backstop. These tests now assert against the
+// rendered SCRIPT TEXT (or its total absence, for a grammar-fatal case)
+// rather than per-invocation argv.
 
 func TestApplyEgress_InjectionPayloadsNeverReachArgv(t *testing.T) {
 	payloads := []string{
@@ -55,24 +49,20 @@ func TestApplyEgress_InjectionPayloadsNeverReachArgv(t *testing.T) {
 		"10.0.0.0/255.0.0.0",   // netmask-form CIDR — contract-refused spelling
 	}
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	err := ApplyEgressAllowlistWithProtected(context.Background(), rec, payloads, nil)
-	nftArgvIsSingleToken(t, rec)
 	// Every payload violates the contract grammar; the refusal must be
 	// LOUD (an error the reconciler surfaces), while default-deny stands.
 	if err == nil {
 		t.Fatalf("all-refused allowlist returned nil error — refusals must be loud")
 	}
-	// None of the raw payloads may appear as (or inside) any argv element.
+	// A grammar-fatal allowlist means renderEgressScript never even produces
+	// a script — so applyEgressScript, and therefore nft, must NEVER be
+	// invoked at all. This is a STRONGER guarantee than "the payload didn't
+	// reach argv": no chain mutation of any kind was attempted.
 	for _, inv := range rec.Invocations {
-		if inv.Name != "nft" {
-			continue
-		}
-		for _, a := range inv.Args {
-			for _, p := range payloads {
-				if strings.Contains(a, p) {
-					t.Fatalf("raw payload %q reached nft argv: %v", p, inv.Args)
-				}
-			}
+		if inv.Name == "nft" {
+			t.Fatalf("a grammar-fatal allowlist must never reach nft; got %+v", inv.Args)
 		}
 	}
 }
@@ -82,15 +72,14 @@ func TestApplyEgress_InjectionPayloadsNeverReachArgv(t *testing.T) {
 // not parse — laundering arbitrary text into `ip daddr <text>`.
 func TestApplyEgress_UnparseablePortIsRefusedNotFolded(t *testing.T) {
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	err := ApplyEgressAllowlistWithProtected(context.Background(), rec, []string{"badport:99999"}, nil)
 	if err == nil {
 		t.Fatal("out-of-range port accepted; must be refused, not folded into the host")
 	}
 	for _, inv := range rec.Invocations {
-		for _, a := range inv.Args {
-			if strings.Contains(a, "badport") {
-				t.Fatalf("folded host operand reached nft argv: %v", inv.Args)
-			}
+		if inv.Name == "nft" {
+			t.Fatalf("a grammar-fatal allowlist must never reach nft; got %+v", inv.Args)
 		}
 	}
 }
@@ -112,6 +101,7 @@ func TestApplyEgress_GrammarAbortsVsDNSResolveSkips(t *testing.T) {
 
 	// A) A grammar-invalid entry aborts before ANY nft call (prior chain intact).
 	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	err := ApplyEgressAllowlistWithProtected(context.Background(), rec,
 		[]string{"good.example.com", "10.0.0.0/255.0.0.0"}, nil)
 	if err == nil {
@@ -127,20 +117,45 @@ func TestApplyEgress_GrammarAbortsVsDNSResolveSkips(t *testing.T) {
 	// base chain are applied, and the returned error names the skip (loud, non-
 	// destructive).
 	rec2 := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
 	err2 := ApplyEgressAllowlistWithProtected(context.Background(), rec2,
 		[]string{"good.example.com", "down.example.com"}, nil)
 	if err2 == nil || !strings.Contains(err2.Error(), "down.example.com") {
 		t.Fatalf("DNS-failed hostname should be reported as skipped; got %v", err2)
 	}
-	if !rulesAccept(rec2, "203.0.113.9") {
+	script2 := readEgressScript(t)
+	if !rulesAccept(script2, "203.0.113.9") {
 		t.Error("resolvable hostname should still be applied despite a sibling DNS failure")
 	}
-	// The unresolved host's name must never reach an nft argv.
-	for _, inv := range rec2.Invocations {
-		for _, a := range inv.Args {
-			if strings.Contains(a, "down.example.com") {
-				t.Fatalf("unresolved hostname leaked into nft argv: %v", inv.Args)
-			}
+	// The unresolved host's name must never reach the rendered script.
+	if strings.Contains(script2, "down.example.com") {
+		t.Fatalf("unresolved hostname leaked into the rendered script:\n%s", script2)
+	}
+}
+
+// The protected-host lockout bug the atomic rebuild fixes: a resolve
+// failure on ANY protected host must abort BEFORE any nft mutation — the
+// pre-fix code returned mid-build, after the table/chain/static rules were
+// already installed via separate nft calls, leaving a drop chain with the
+// agent's own control-plane traffic unreachable until the next successful
+// tick. Under the atomic rebuild this is now structural (renderEgressScript
+// never touches the runner), not merely a lucky call order — pin it directly.
+func TestApplyEgress_ProtectedHostResolveFailureAbortsBeforeAnyNftCall(t *testing.T) {
+	orig := egressResolveHost
+	egressResolveHost = func(h string) ([]net.IP, error) {
+		return nil, fmt.Errorf("NXDOMAIN %s", h)
+	}
+	t.Cleanup(func() { egressResolveHost = orig })
+
+	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
+	err := ApplyEgressAllowlistWithProtected(context.Background(), rec, nil, []string{"platform.example.com"})
+	if err == nil {
+		t.Fatal("a protected host that will not resolve must abort the apply")
+	}
+	for _, inv := range rec.Invocations {
+		if inv.Name == "nft" {
+			t.Fatalf("protected-host resolve failure must precede any nft mutation (the pre-fix lockout bug); saw %v", inv.Args)
 		}
 	}
 }

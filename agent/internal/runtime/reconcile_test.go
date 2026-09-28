@@ -1068,6 +1068,8 @@ func TestReconcilerRunOnce_EgressUnionsAcrossModules_PermissiveSurvives(t *testi
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	scriptPath := filepath.Join(t.TempDir(), "egress.nft")
+	t.Cleanup(security.SetEgressScriptPathForTest(scriptPath))
 
 	client := &stubModulesClient{
 		responses: map[string]string{
@@ -1117,47 +1119,231 @@ func TestReconcilerRunOnce_EgressUnionsAcrossModules_PermissiveSurvives(t *testi
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	// The FINAL egress chain (last "nft add chain ... policy drop" plus
-	// whatever rules follow it) must contain the wildcard — proving the
-	// permissive module's policy is what's actually enforced, not
-	// clobbered by the restrictive sibling.
-	var lastChainAt = -1
-	for i, inv := range runner.Invocations {
-		if inv.Name == "nft" && len(inv.Args) >= 3 && inv.Args[0] == "add" && inv.Args[1] == "chain" {
-			lastChainAt = i
+	// IMP-13645c4df90a atomic rebuild: the whole egress ruleset is now ONE
+	// `nft -f <script>` transaction, so there is exactly one nft invocation
+	// per RunOnce tick — never a per-module "add chain" race, and never
+	// `delete chain`.
+	var nftCalls []mount.Invocation
+	for _, inv := range runner.Invocations {
+		if inv.Name == "nft" {
+			nftCalls = append(nftCalls, inv)
 		}
 	}
-	if lastChainAt < 0 {
-		t.Fatalf("expected at least one `nft add chain` invocation; got %+v", runner.Invocations)
+	if len(nftCalls) != 1 {
+		t.Fatalf("expected exactly one nft invocation for the whole tick (one unioned atomic apply), got %d: %+v", len(nftCalls), nftCalls)
 	}
-	foundWildcard := false
-	for _, inv := range runner.Invocations[lastChainAt:] {
-		if inv.Name != "nft" {
-			continue
-		}
-		for _, a := range inv.Args {
-			if a == "0.0.0.0/0" {
-				foundWildcard = true
-			}
-		}
+	if len(nftCalls[0].Args) < 1 || nftCalls[0].Args[0] != "-f" {
+		t.Fatalf("expected the one nft invocation to be `-f <path>`, got %v", nftCalls[0].Args)
 	}
-	if !foundWildcard {
-		t.Errorf("expected the effective egress chain to allow 0.0.0.0/0 (dev-cell's declared policy must survive claude-tmux's restrictive sibling); got: %+v", runner.Invocations)
+	for _, a := range nftCalls[0].Args {
+		if a == "delete" {
+			t.Fatalf("must never `delete chain`: %v", nftCalls[0].Args)
+		}
 	}
 
-	// And there must be only ONE "add chain ... policy drop" for the
-	// egress table across the whole run — proving this is a single unioned
+	// The rendered script must contain the wildcard exactly once — proving
+	// the permissive module's policy is what's actually enforced (not
+	// clobbered by the restrictive sibling), and that this is one unioned
 	// apply, not two competing per-module chain replacements.
-	chainAdds := 0
+	body, err := os.ReadFile(security.EgressStagingPathForTest())
+	if err != nil {
+		t.Fatalf("read rendered egress script: %v", err)
+	}
+	script := string(body)
+	if !strings.Contains(script, "0.0.0.0/0") {
+		t.Errorf("expected the effective egress chain to allow 0.0.0.0/0 (dev-cell's declared policy must survive claude-tmux's restrictive sibling); script:\n%s", script)
+	}
+	chainAdds := strings.Count(script, "add chain inet powernode_module_egress")
+	if chainAdds != 1 {
+		t.Errorf("expected exactly ONE egress chain statement across both modules attaching together, got %d; script:\n%s", chainAdds, script)
+	}
+}
+
+// TestReconcilerRunOnce_SdwanExtrasSurviveAlongsideModuleEgressAllow —
+// IMP-13645c4df90a. The node-wide default-deny egress chain was dropping the
+// WireGuard handshake outright whenever ANY module declared egress_allow
+// (verified live on VMs 9005/9007). ExtraEgress must apply whenever
+// enforcement is on, alongside — not instead of — the module's own policy.
+func TestReconcilerRunOnce_SdwanExtrasSurviveAlongsideModuleEgressAllow(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	scriptPath := filepath.Join(t.TempDir(), "egress.nft")
+	t.Cleanup(security.SetEgressScriptPathForTest(scriptPath))
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"claude-tmux", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"claude-tmux", "digest":"digm1",
+				         "priority":100, "effective_priority":100,
+				         "config": {"security": {"egress_allow": ["198.51.100.5:443"]}},
+				         "services": [{"name":"claude", "start_command":"/usr/bin/claude", "restart_policy":"always"}]}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+		ExtraEgress: func() security.EgressExtras {
+			return security.EgressExtras{Networks: []security.EgressNetwork{{
+				Interface:  "wg-sdwan-a1b2c3",
+				ListenPort: 51820,
+				AllowedIPs: []string{"fd00:1::/64"},
+			}}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// IMP-13645c4df90a atomic rebuild: exactly one nft invocation for the
+	// whole tick — assert on the rendered script it staged, not per-rule argv.
+	nftCount := 0
 	for _, inv := range runner.Invocations {
-		if inv.Name == "nft" && len(inv.Args) >= 3 && inv.Args[0] == "add" && inv.Args[1] == "chain" {
-			joined := strings.Join(inv.Args, " ")
-			if strings.Contains(joined, "powernode_module_egress") {
-				chainAdds++
-			}
+		if inv.Name == "nft" {
+			nftCount++
 		}
 	}
-	if chainAdds != 1 {
-		t.Errorf("expected exactly ONE egress chain install across both modules attaching together, got %d; invocations: %+v", chainAdds, runner.Invocations)
+	if nftCount != 1 {
+		t.Fatalf("expected exactly one nft invocation for the whole tick, got %d: %+v", nftCount, runner.Invocations)
+	}
+	body, err := os.ReadFile(security.EgressStagingPathForTest())
+	if err != nil {
+		t.Fatalf("read rendered egress script: %v", err)
+	}
+	script := string(body)
+	if !strings.Contains(script, "daddr 198.51.100.5 tcp dport 443 accept") {
+		t.Errorf("expected the module's own egress_allow rule to still be applied; script:\n%s", script)
+	}
+	if !strings.Contains(script, "udp sport 51820 accept") {
+		t.Errorf("expected a udp sport accept rule for the SDWAN network's listen port alongside the module's own policy; script:\n%s", script)
+	}
+	if !strings.Contains(script, `oifname "wg-sdwan-a1b2c3" ip6 daddr { fd00:1::/64, } accept`) {
+		t.Errorf("expected a scoped oifname+daddr-set accept rule for the SDWAN network's AllowedIPs alongside the module's own policy; script:\n%s", script)
+	}
+}
+
+// TestNewReconcilerForCLI_SetsSkipEgress pins the wiring IMP-13645c4df90a
+// review round item 2 depends on: every CLI-built reconciler (update, sync,
+// attach, detach) must carry SkipEgress: true, since only the long-running
+// service has live SDWAN extras to hand ApplyEgressAllowlistWithExtras.
+func TestNewReconcilerForCLI_SetsSkipEgress(t *testing.T) {
+	tmpRoot := t.TempDir()
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	client := &stubModulesClient{responses: map[string]string{
+		"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": []}}`,
+	}}
+
+	r, err := NewReconcilerForCLI(FactoryConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         &stubPuller{cacheDir: layout.ModulesCacheRoot},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    &mount.RecorderRunner{},
+		Layout:         layout,
+		StatePath:      filepath.Join(tmpRoot, "state.json"),
+	})
+	if err != nil {
+		t.Fatalf("NewReconcilerForCLI: %v", err)
+	}
+	if !r.cfg.SkipEgress {
+		t.Error("expected NewReconcilerForCLI to set SkipEgress: true")
+	}
+}
+
+// TestReconcilerRunOnce_SkipEgressLeavesTheChainUntouched — IMP-13645c4df90a
+// review round item 2. A module declares egress_allow (would normally
+// enforce a chain), but SkipEgress is set (as NewReconcilerForCLI always
+// sets it): RunOnce must never call nft at all, must log the skip via
+// OnError, and must still succeed overall (identity/sudoers are unaffected).
+func TestReconcilerRunOnce_SkipEgressLeavesTheChainUntouched(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	t.Cleanup(security.SetEgressScriptPathForTest(filepath.Join(t.TempDir(), "egress.nft")))
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"claude-tmux", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"claude-tmux", "digest":"digm1",
+				         "priority":100, "effective_priority":100,
+				         "config": {"security": {"egress_allow": ["198.51.100.5:443"]}},
+				         "services": [{"name":"claude", "start_command":"/usr/bin/claude", "restart_policy":"always"}]}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	var skips []string
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+		SkipEgress:     true,
+		OnError: func(stage string, err error) {
+			skips = append(skips, stage+": "+err.Error())
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	for _, inv := range runner.Invocations {
+		if inv.Name == "nft" {
+			t.Fatalf("SkipEgress must leave the chain untouched — no nft call was expected, got %+v", inv)
+		}
+	}
+	found := false
+	for _, s := range skips {
+		if strings.HasPrefix(s, "reconciler:egress_skipped:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an OnError(\"reconciler:egress_skipped\", ...) call, got signals: %v", skips)
 	}
 }

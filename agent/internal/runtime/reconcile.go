@@ -122,6 +122,37 @@ type ReconcilerConfig struct {
 	// egress chain never drops the agent's own control-plane traffic
 	// even when a strict module attaches with an empty EgressAllow list.
 	PlatformURL string
+	// ExtraEgress, when set, supplies additional node-wide egress allowances
+	// beyond any module's own declared policy — currently SDWAN's
+	// wg-sdwan-* interfaces and peer dial targets, wired in service.go to
+	// sdwan.Manager.EgressContributions (IMP-13645c4df90a: the default-deny
+	// egress chain was dropping the WireGuard handshake outright). nil is
+	// "no extras" — the pre-fix behavior, and what every non-SDWAN caller
+	// (tests, NewReconcilerForCLI) gets by leaving this field zero. This
+	// package deliberately does not import internal/sdwan for this — see
+	// security.EgressExtras' own doc for why the seam is a func value
+	// instead.
+	ExtraEgress func() security.EgressExtras
+	// SkipEgress, when true, makes RunOnce never touch the node-wide nft
+	// egress chain at all (neither ApplyEgressAllowlistWithExtras nor
+	// RemoveEgressAllowlist) — identity/sudoers still render normally.
+	// IMP-13645c4df90a review round: the long-running SERVICE process is the
+	// only one with live ExtraEgress data (SDWAN), and egress apply is now
+	// an ATOMIC full-chain rebuild (one `nft -f`, replacing the WHOLE
+	// chain) — a one-shot CLI reconciler (`update`/`sync`/`attach`/`detach`,
+	// see NewReconcilerForCLI) calling RunOnce with no ExtraEgress would
+	// rebuild the shared chain WITHOUT the service's SDWAN sport/oifname
+	// rules, silently dropping the WireGuard tunnel until the service's own
+	// next tick repairs it — and the two processes racing to rewrite the
+	// same staged script path is a second hazard on top of that (see
+	// applyEgressScript's own doc on the per-process staging filename this
+	// pairs with). The CLI choosing "skip entirely" rather than "carry
+	// forward the last-known extras" is deliberate: a CLI invocation has no
+	// current SDWAN state to be right about, and a stale/guessed extras set
+	// would be worse than leaving the service's own chain untouched.
+	// NewReconcilerForCLI sets this true; every long-running service
+	// reconciler leaves it false (the zero value).
+	SkipEgress bool
 	// ScratchMinFreeBytes is the free-space floor the hot-reconcile
 	// budget guard keeps on the scratch tmpfs backing the live root's
 	// overlay upperdir (see SyncOptions.MinFreeBytes). 0 means
@@ -1446,44 +1477,62 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		// candidate resolved, so there is no separate "unresolved but
 		// enforcement looked off" case left to guard here — that case IS
 		// mustSkipRender, handled by skipping this whole block.
-		egressPolicies := make([]*security.Policy, 0, len(egressManifestsSlice))
-		for _, m := range egressManifestsSlice {
-			egressPolicies = append(egressPolicies, buildPolicy(m))
-		}
-		egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
-		if egressEnforced {
-			var protectedHosts []string
-			if h := hostFromURL(r.cfg.PlatformURL); h != "" {
-				// The agent's own control-plane URL host must stay reachable
-				// regardless of any module's policy — without this, a
-				// restrictive module attaching would firewall the agent off
-				// from its own parent on the very next tick (dial i/o timeout
-				// after the chain installs).
-				protectedHosts = append(protectedHosts, h)
-			}
-			// Backend-configured hosts (account settings / SiteSetting -- see
-			// Api::V1::System::NodeApi::ModulesController#protected_egress_hosts)
-			// that must ALSO always be reachable regardless of module policy,
-			// e.g. a hub's own Gitea host. Fetched fresh every tick alongside
-			// the module list, so a config change (or that host's IP changing)
-			// takes effect on the next reconcile with no agent restart and no
-			// module rebuild -- the alternative of baking a static IP into a
-			// module manifest was rejected as exactly the kind of real-hostname-
-			// in-tracked-source coupling this project avoids.
-			protectedHosts = append(protectedHosts, assignmentMeta.ProtectedEgressHosts...)
-			if err := security.ApplyEgressAllowlistWithProtected(ctx, r.cfg.MountRunner, egressAllow, protectedHosts); err != nil {
-				r.cfg.OnError("reconciler:egress", err)
-			}
+		//
+		// SkipEgress (see its own doc on ReconcilerConfig) additionally
+		// excludes any CLI-built reconciler — identity/sudoers above still
+		// render normally; only the node-wide nft chain, which the
+		// long-running service exclusively owns, is left untouched here.
+		if r.cfg.SkipEgress {
+			r.cfg.OnError("reconciler:egress_skipped", errors.New(
+				"egress is service-owned; this CLI reconcile pass left the node-wide nft chain untouched"))
 		} else {
-			// No currently-desired module declared an egress policy this
-			// tick (e.g. the one module that did was just detached) — and
-			// (per the mustSkipRender gate above) every candidate resolved,
-			// so this is a genuine "nobody wants enforcement", not an
-			// unresolved view. Best-effort teardown so a stale restrictive
-			// chain never lingers past the module that asked for it. Error
-			// ignored deliberately: "no such chain" is the common, expected
-			// case.
-			_ = security.RemoveEgressAllowlist(ctx, r.cfg.MountRunner)
+			egressPolicies := make([]*security.Policy, 0, len(egressManifestsSlice))
+			for _, m := range egressManifestsSlice {
+				egressPolicies = append(egressPolicies, buildPolicy(m))
+			}
+			egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
+			if egressEnforced {
+				var protectedHosts []string
+				if h := hostFromURL(r.cfg.PlatformURL); h != "" {
+					// The agent's own control-plane URL host must stay reachable
+					// regardless of any module's policy — without this, a
+					// restrictive module attaching would firewall the agent off
+					// from its own parent on the very next tick (dial i/o timeout
+					// after the chain installs).
+					protectedHosts = append(protectedHosts, h)
+				}
+				// Backend-configured hosts (account settings / SiteSetting -- see
+				// Api::V1::System::NodeApi::ModulesController#protected_egress_hosts)
+				// that must ALSO always be reachable regardless of module policy,
+				// e.g. a hub's own Gitea host. Fetched fresh every tick alongside
+				// the module list, so a config change (or that host's IP changing)
+				// takes effect on the next reconcile with no agent restart and no
+				// module rebuild -- the alternative of baking a static IP into a
+				// module manifest was rejected as exactly the kind of real-hostname-
+				// in-tracked-source coupling this project avoids.
+				protectedHosts = append(protectedHosts, assignmentMeta.ProtectedEgressHosts...)
+				// SDWAN's interfaces + peer endpoints (IMP-13645c4df90a) — applies
+				// whenever enforcement is ON (this branch), same as protectedHosts;
+				// the else branch below (enforcement off) removes the whole chain,
+				// so there is no separate "off" case to gate this on.
+				var extras security.EgressExtras
+				if r.cfg.ExtraEgress != nil {
+					extras = r.cfg.ExtraEgress()
+				}
+				if err := security.ApplyEgressAllowlistWithExtras(ctx, r.cfg.MountRunner, egressAllow, protectedHosts, extras); err != nil {
+					r.cfg.OnError("reconciler:egress", err)
+				}
+			} else {
+				// No currently-desired module declared an egress policy this
+				// tick (e.g. the one module that did was just detached) — and
+				// (per the mustSkipRender gate above) every candidate resolved,
+				// so this is a genuine "nobody wants enforcement", not an
+				// unresolved view. Best-effort teardown so a stale restrictive
+				// chain never lingers past the module that asked for it. Error
+				// ignored deliberately: "no such chain" is the common, expected
+				// case.
+				_ = security.RemoveEgressAllowlist(ctx, r.cfg.MountRunner)
+			}
 		}
 	}
 
@@ -4198,7 +4247,11 @@ type FactoryConfig struct {
 // NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI
 // invocations. Differs from NewReconciler only in defaulting policy
 // — CLIs typically want immediate-error-surfacing rather than
-// background-loop graceful-degradation.
+// background-loop graceful-degradation. ALWAYS sets SkipEgress: the
+// long-running service is the only process with live SDWAN extras, and a
+// CLI-triggered `update`/`sync`/`attach`/`detach` rebuilding the shared
+// node-wide nft chain without them would silently drop the WireGuard
+// tunnel until the service's own next tick — see SkipEgress's own doc.
 func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
 	return NewReconciler(ReconcilerConfig{
 		ModulesClient:  cfg.ModulesClient,
@@ -4215,6 +4268,7 @@ func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
 		OnError:        cfg.OnError,
 		PlatformURL:    cfg.PlatformURL,
 		BreadcrumbSink: cfg.BreadcrumbSink,
+		SkipEgress:     true,
 	})
 }
 

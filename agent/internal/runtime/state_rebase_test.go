@@ -17,6 +17,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -209,6 +210,11 @@ func newRebaseHarness(t *testing.T, mods []rebaseModule, o rebaseOpts) *rebaseHa
 	t.Cleanup(SetPendingComposePathForTest(filepath.Join(tmpRoot, "pending-compose.json")))
 	breadcrumbPath := filepath.Join(tmpRoot, "boot-composed.json")
 	t.Cleanup(SetBootBreadcrumbPathForTest(breadcrumbPath))
+	// Some fixtures declare egress (rebaseModule.egress), which can reach
+	// RunOnce's real ApplyEgressAllowlistWithExtras call — same reason
+	// applyIdentity/applySudoers above are faked out: this harness must never
+	// touch the host's real, root-only /run/powernode-agent/egress.nft.
+	t.Cleanup(security.SetEgressScriptPathForTest(filepath.Join(tmpRoot, "egress.nft")))
 
 	// state.json
 	st := &mount.State{LastAttachedManifestHashes: map[string]string{},

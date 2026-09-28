@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
@@ -105,6 +106,21 @@ type Manager struct {
 	// from the map was NOT measured this pass. Guarded by mu.
 	healthyPeers map[string]int
 	lastDesired  *DesiredConfig
+	// lastActualListenPort is the LIVE WireGuard listen port `wg show
+	// <iface> dump` reported on the most recent successful read_actual for
+	// that interface (ReadActualState, wg_applier.go), keyed by interface
+	// name. IMP-13645c4df90a review round item 5: EgressContributions used
+	// to hand out the DESIRED config's listen port unconditionally — if the
+	// interface is missing, down, or the kernel actually bound a different
+	// port than requested, that renders a `udp sport <desired-port> accept`
+	// rule for a port WireGuard is NOT holding, letting any local process
+	// bind it and egress freely through what looks like a scoped SDWAN
+	// allowance. An interface absent from this map (never successfully
+	// read, or read_actual failed this tick) contributes NO sport rule —
+	// EgressContributions treats that exactly like an unset ListenPort
+	// (skip + log), never falls back to the desired value. Guarded by mu,
+	// written alongside lastDesired at the end of Reconcile.
+	lastActualListenPort map[string]int
 	// lastOvnNbState holds the observed result of the most recent NB
 	// plan replay (Phase 3b-2). nil on hosts that aren't the OVN control
 	// host. Snapshot-read by OvnNbStatus for the heartbeat block.
@@ -251,6 +267,11 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// reading is simply absent, which the heartbeat renders as
 	// `healthy_peers: null` (NOT MEASURED) rather than a healthy-looking 0.
 	healthy := make(map[string]int, len(desired.Networks))
+	// Rebuilt from scratch each pass, same reasoning as healthy above — see
+	// lastActualListenPort's own doc: an interface this pass never
+	// successfully read stays ABSENT, not carried forward from a stale
+	// prior tick.
+	actualListenPorts := make(map[string]int, len(desired.Networks))
 	for _, net := range desired.Networks {
 		// Phase N0 forwarding gate: no MC, or invalid MC, means we tear
 		// down any existing interface and skip apply for this tick. The
@@ -338,6 +359,12 @@ func (m *Manager) Reconcile(ctx context.Context) {
 			return err
 		}); err != nil {
 			continue
+		}
+		// See lastActualListenPort's own doc: only a MEASURED, positive port
+		// counts — a zero ListenPort from `wg show` (unset/never applied)
+		// must stay absent from the map, not get recorded as "port 0".
+		if actual != nil && actual.ListenPort > 0 {
+			actualListenPorts[net.Interface.Name] = actual.ListenPort
 		}
 
 		netReports := peerReportsFromActual(net, actual)
@@ -527,6 +554,7 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	m.lastReconcileAt = time.Now()
 	m.healthyPeers = healthy
 	m.lastDesired = desired
+	m.lastActualListenPort = actualListenPorts
 	m.mu.Unlock()
 }
 
@@ -551,6 +579,62 @@ func (m *Manager) FirstOverlayAddress() string {
 		}
 	}
 	return addr
+}
+
+// EgressContributions returns this node's SDWAN egress requirements for the
+// node-wide egress chain to allow regardless of any module's own policy
+// (IMP-13645c4df90a). One security.EgressNetwork per desired SDWAN network:
+// its wg-sdwan-* interface, its own WireGuard listen port (the review
+// round's redesign — a `udp sport <port> accept` rule matches only the
+// kernel's own bound WG socket's outer packets in both directions, unlike a
+// per-peer daddr:port rule, which (a) can't cover a hub reaching a spoke
+// once conntrack expires, since a hub has no fixed endpoint for a spoke, and
+// (b) would let ANY local process send UDP to a platform-controlled
+// IP:port — endpoints are writable by anyone with SDWAN write), and the
+// union of its peers' AllowedIPs (scopes the interface's own tunnel-egress
+// rule to what wg_applier.go's `wg setconf` actually routes onto that
+// device, rather than a blanket oifname accept a pushed 0.0.0.0/0 or ::/0
+// AllowedIPs could turn into unrestricted module egress through).
+//
+// ListenPort is the LIVE port from lastActualListenPort (`wg show <iface>
+// dump`, wg_applier.go's ReadActualState), NEVER the desired config's
+// requested value (review round item 5): if WireGuard isn't actually
+// holding the desired port — the interface is missing, down, or the kernel
+// bound something else — a sport rule for the DESIRED port would scope
+// "accept" to a port nothing is listening on, and ANY local process is free
+// to bind that port itself and egress through what looks like a properly
+// scoped SDWAN allowance. An interface with no measured entry (never
+// successfully read this pass) gets ListenPort 0 here, which
+// buildEgressExtrasRules already treats as "skip and log" — exactly the
+// same non-fatal, reported-not-silent handling an unset desired port gets.
+//
+// Snapshot-style, safe to call concurrently with Reconcile — same pattern as
+// FirstOverlayAddress/HeartbeatStatuses. security.EgressExtras is the seam:
+// this package imports security (a low-level primitive) for its value
+// types; security must not import sdwan back, so a firewall primitive never
+// depends on one specific consumer's domain model.
+func (m *Manager) EgressContributions() security.EgressExtras {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lastDesired == nil {
+		return security.EgressExtras{}
+	}
+
+	var extras security.EgressExtras
+	for _, net := range m.lastDesired.Networks {
+		en := security.EgressNetwork{
+			Interface: net.Interface.Name,
+			// m.lastActualListenPort[name] is 0 for an absent key — the same
+			// "unset" sentinel EgressNetwork.ListenPort already documents.
+			ListenPort: m.lastActualListenPort[net.Interface.Name],
+		}
+		for _, peer := range net.Peers {
+			en.AllowedIPs = append(en.AllowedIPs, peer.AllowedIPs...)
+		}
+		extras.Networks = append(extras.Networks, en)
+	}
+	return extras
 }
 
 // HeartbeatStatuses returns the per-interface status block to embed in

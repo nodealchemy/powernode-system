@@ -415,35 +415,7 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("module fs-verity: %w", err)
 	}
-	reconciler, err := NewReconciler(ReconcilerConfig{
-		ModulesClient:  client,
-		ManifestClient: client,
-		ManifestRoot:   manifest.DefaultRoot,
-		// Mixed into the re-attach stamp so an agent upgrade re-attaches each
-		// module once — see Reconciler.attachStamp.
-		AgentVersion: s.cfg.AgentVersion,
-		Puller: &oci.Puller{
-			Transport: client,
-			// BlobClient(), not `client`: blob bodies are unbounded and must not ride
-			// the 30s whole-request Timeout. It still routes through Client.doWith, so
-			// the 401 self-heal Puller.HTTPClient documents is preserved. See DoStream.
-			HTTPClient:  client.BlobClient(),
-			PlatformURL: client.PlatformURL,
-			Cache:       "/persist/cache/modules",
-		},
-		Verifier:    moduleVerifier,
-		Fsverity:    moduleFsverity,
-		MountRunner: mount.ExecRunner{},
-		Layout:      mount.DefaultLayout(),
-		StatePath:   s.cfg.StatePath,
-		Interval:    60 * time.Second,
-		OnError:     s.cfg.OnError,
-		// PlatformURL flows down to reconciler.attachModule which adds
-		// the host to Policy.ProtectedHosts before applying egress
-		// rules — keeps the agent's own control-plane traffic outside
-		// the default-drop zone of any restrictive module policy.
-		PlatformURL: client.PlatformURL,
-	})
+	reconciler, err := NewReconciler(s.buildReconcilerConfig(client, sdwanMgr, moduleVerifier, moduleFsverity))
 	if err != nil {
 		return fmt.Errorf("build reconciler: %w", err)
 	}
@@ -835,6 +807,51 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		payload.PivotConfinementOmitted = []string{"mandatory_access_control"}
 	}
 	return payload
+}
+
+// buildReconcilerConfig assembles the ReconcilerConfig Run passes to
+// NewReconciler. Split out of Run (same reasoning as bootstrap/buildHeartbeat
+// below) so IMP-13645c4df90a's ExtraEgress wiring has a direct unit-test seam:
+// deleting `ExtraEgress: sdwanMgr.EgressContributions` from a giant inline
+// struct literal buried inside Run is not something a test can catch without
+// standing up the whole service; deleting it from THIS method's return value
+// is.
+func (s *Service) buildReconcilerConfig(client *transport.Client, sdwanMgr *sdwan.Manager, moduleVerifier verify.Verifier, moduleFsverity verify.DigestVerifier) ReconcilerConfig {
+	return ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   manifest.DefaultRoot,
+		// Mixed into the re-attach stamp so an agent upgrade re-attaches each
+		// module once — see Reconciler.attachStamp.
+		AgentVersion: s.cfg.AgentVersion,
+		Puller: &oci.Puller{
+			Transport: client,
+			// BlobClient(), not `client`: blob bodies are unbounded and must not ride
+			// the 30s whole-request Timeout. It still routes through Client.doWith, so
+			// the 401 self-heal Puller.HTTPClient documents is preserved. See DoStream.
+			HTTPClient:  client.BlobClient(),
+			PlatformURL: client.PlatformURL,
+			Cache:       "/persist/cache/modules",
+		},
+		Verifier:    moduleVerifier,
+		Fsverity:    moduleFsverity,
+		MountRunner: mount.ExecRunner{},
+		Layout:      mount.DefaultLayout(),
+		StatePath:   s.cfg.StatePath,
+		Interval:    60 * time.Second,
+		OnError:     s.cfg.OnError,
+		// PlatformURL flows down to reconciler.attachModule which adds
+		// the host to Policy.ProtectedHosts before applying egress
+		// rules — keeps the agent's own control-plane traffic outside
+		// the default-drop zone of any restrictive module policy.
+		PlatformURL: client.PlatformURL,
+		// sdwanMgr is already constructed (before this reconciler), so its
+		// EgressContributions is safe to wire here directly rather than
+		// through a nil check (IMP-13645c4df90a) — see
+		// ReconcilerConfig.ExtraEgress's own doc for why this is a func
+		// value rather than the *Manager itself.
+		ExtraEgress: sdwanMgr.EgressContributions,
+	}
 }
 
 // bootstrap ensures mTLS material exists at PKIDir. On first boot (no
