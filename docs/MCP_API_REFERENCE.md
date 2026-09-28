@@ -101,7 +101,14 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | Action | What it does |
 |---|---|
 | `system_list_tasks` | List Tasks (filter by `node_id`, `instance_id`) — newest first, one page at a time (`limit` / `cursor`, with `count` the uncapped total); there is no status or type filter |
+| `system_get_task` | Fetch one Task (account-scoped): command, status, progress, operable handle, timestamps and `error_message` (full stored failure reason, 16 KB cap, redacted of credential-shaped tokens). `include_events: true` adds its events — see "Task events" below; `wait_seconds` long-polls, see "Waiting instead of polling" |
 | `system_cancel_task` | Cancel a pending or in-flight Task |
+
+##### Task events (`include_events`)
+
+`System::Task` has no result column, so a handler's result rides the task's `events` (`events[].result`). A module build's scrubbed `log_tail` is there on success as well as failure, and until `include_events` nothing on the tool surface served it. `system_get_task` with `include_events: true` adds three keys to the reply: `events` (the newest 20, oldest first, each with its `type`, `message`, `timestamp`, `data` and any `result`), `events_total` and `events_truncated` (true when older events were dropped). Absent or `false` the reply is unchanged; a value that is not `true` or `false` (or those two strings) is refused, naming the parameter. It composes with `wait_seconds`: the events are those of the final snapshot. Account scoping is the same as the plain read, and it needs no permission beyond `system.infra_tasks.read`.
+
+Every string in the events, keys and `log_tail` included, goes through the same `System::ShellOutputSanitizer.redact_text` pass as `error_message`, so a credential-shaped token planted anywhere in an event comes back as `[REDACTED]`. A value is redacted together with what preceded it (its hash key, or the preceding array element such as `--password`), because the patterns key on that context. The payload is bounded: 16 KB per string, 128 KB of strings in all (spent newest-first; a string past the budget is replaced by an `[omitted ...]` marker), and nested values are limited to 6 levels and 50 keys or items each, with a marker where something was dropped. This is the redactor's usual best-effort coverage, not a guarantee for secret shapes it has no pattern for.
 
 #### Instance pools (slice 7)
 

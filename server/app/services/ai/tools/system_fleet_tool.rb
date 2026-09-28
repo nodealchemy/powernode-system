@@ -1774,9 +1774,11 @@ module Ai
             }
           },
           "system_get_task" => {
-            description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, timestamps, and error_message — the full stored failure reason (16 KB cap, vs 300 chars on system_list_tasks), REDACTED of credential-shaped tokens since it carries raw build/shell output. Not-found errors when the id is unknown or belongs to another account.",
+            description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, timestamps, and error_message — the full stored failure reason (16 KB cap, vs 300 chars on system_list_tasks), REDACTED of credential-shaped tokens since it carries raw build/shell output. Pass include_events: true to also get the task's events, which is where a handler's result lives (a module build's scrubbed log_tail is events[].result.log_tail, visible on success as well as failure). Not-found errors when the id is unknown or belongs to another account.",
             parameters: {
               task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" },
+              include_events: { type: "boolean", required: false,
+                                description: "When true, the reply also carries events (the newest #{TASK_EVENTS_LIMIT}, oldest first, each with its type, message, timestamp, data and any result such as log_tail), events_total and events_truncated. Every string in them is REDACTED of credential-shaped tokens exactly as error_message is and capped at 16 KB, with #{TASK_EVENTS_MAX_CHARS / 1024} KB in all (newest events kept whole first); nested values are limited in depth and width. With wait_seconds, the events are those of the final snapshot. Absent or false leaves the reply unchanged; a value that is not true or false is refused." },
               wait_seconds: { type: "integer", required: false,
                               description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied, and wait_degraded: true when the server was at its concurrent-wait limit and answered with one check. Absent or 0 answers at once, unchanged." }
             }
@@ -5737,12 +5739,41 @@ module Ai
         wait = wait_seconds_param(params)
         return wait_seconds_error unless wait
 
-        task = ::System::Task.where(account: @account).find(target_id)
-        return success_result(task: serialize_task(task, full_error: true)) if wait.zero?
+        include_events = include_events_param(params)
+        return include_events_error if include_events == :invalid
 
-        task, timed_out, degraded = wait_until(wait) { [ task.reload.finished?, task ] }
-        success_result({ task: serialize_task(task, full_error: true), timed_out: timed_out, wait_seconds: wait }
-                         .merge(wait_degraded_marker(degraded)))
+        task = ::System::Task.where(account: @account).find(target_id)
+        timed_out = degraded = nil
+        task, timed_out, degraded = wait_until(wait) { [ task.reload.finished?, task ] } unless wait.zero?
+
+        # Built from the FINAL snapshot, so the events of a waited-for task are
+        # the ones written up to its terminal transition.
+        reply = { task: serialize_task(task, full_error: true) }
+        reply.merge!({ timed_out: timed_out, wait_seconds: wait }.merge(wait_degraded_marker(degraded))) unless wait.zero?
+        reply.merge!(task_events_payload(task)) if include_events
+        success_result(reply)
+      end
+
+      # IMP-54c73634c1d7 — include_events. Strictly true/false (or the strings
+      # "true"/"false", which is how an MCP client with a loose schema sends
+      # them); an absent key or empty string is false, and anything else is
+      # :invalid rather than being read as true the way a bare boolean cast
+      # would (a flag that widens what an operator sees must not be triggered
+      # by a typo).
+      def include_events_param(params)
+        raw = params[:include_events]
+        return false if raw.nil? || raw == ""
+        return raw if raw == true || raw == false
+
+        if raw.is_a?(::String)
+          return true if raw.casecmp?("true")
+          return false if raw.casecmp?("false")
+        end
+        :invalid
+      end
+
+      def include_events_error
+        error_result("include_events must be true or false")
       end
 
       # === wait-for (IMP-054397261461) ===
@@ -7418,6 +7449,19 @@ module Ai
       LIST_ERROR_MESSAGE_LIMIT = 300
       GET_ERROR_MESSAGE_LIMIT  = 16_384
 
+      # IMP-54c73634c1d7 — include_events bounds. System::Task has no result
+      # column, so a handler's result (the module build's scrubbed log_tail) rides
+      # a completed event; the events column is unbounded jsonb written from
+      # agent-supplied params, so the read is bounded on every axis: the newest
+      # TASK_EVENTS_LIMIT events, GET_ERROR_MESSAGE_LIMIT per string, a
+      # TASK_EVENTS_MAX_CHARS budget over all strings (spent newest-first), and
+      # depth / width caps on nested values.
+      TASK_EVENTS_LIMIT = 20
+      TASK_EVENTS_MAX_CHARS = 131_072
+      TASK_EVENT_MAX_DEPTH = 6
+      TASK_EVENT_MAX_WIDTH = 50
+      TASK_EVENT_LEAD_CHARS = 200
+
       # `full_error: true` returns the whole (redacted) error_message — the
       # single-task read, where the operator came specifically for the reason.
       # The list surface gets the same redacted text, capped.
@@ -7450,7 +7494,20 @@ module Ai
       def task_error_message(raw, full:)
         return nil if raw.blank?
 
-        limit = full ? GET_ERROR_MESSAGE_LIMIT : LIST_ERROR_MESSAGE_LIMIT
+        redact_bounded(raw, full ? GET_ERROR_MESSAGE_LIMIT : LIST_ERROR_MESSAGE_LIMIT)
+      end
+
+      # The one redact-then-bound routine every stored-output string on this
+      # surface goes through (error_message, and each string of an event).
+      #
+      # `lead` is the text that sat immediately before the value in its source
+      # (a hash key, the preceding argv element). The redactor's patterns are
+      # keyed on what precedes a secret (password=, --password, api_key:), so a
+      # bare value read out of {"api_key" => "…"} or ["--password", "…"] is
+      # invisible to them on its own. The value is redacted WITH its lead and
+      # the lead stripped again; if the redactor altered the lead itself the
+      # value is withheld whole rather than guessed at.
+      def redact_bounded(raw, limit, lead: nil)
         # .scrub — the redaction regexes raise ArgumentError on invalid UTF-8,
         # and this is captured node output, not text the platform authored.
         text = raw.to_s.scrub("")
@@ -7471,10 +7528,84 @@ module Ai
           stripped = sliced.sub(/\S+\z/, "")
           sliced = stripped if stripped.length >= limit
         end
-        redacted = ::System::ShellOutputSanitizer.redact_text(sliced)
+        redacted = ::System::ShellOutputSanitizer.redact_text("#{lead}#{sliced}")
+        if lead
+          return ::System::ShellOutputSanitizer::REDACTED unless redacted.start_with?(lead)
+
+          redacted = redacted[lead.length..]
+        end
         return redacted if redacted.length <= limit
 
         "#{redacted[0, limit]}...[truncated]"
+      end
+
+      # The newest TASK_EVENTS_LIMIT events of `task`, oldest first, redacted,
+      # plus the total and whether older ones were dropped. Newest-first is
+      # also the order the string budget is spent in, so a task with a huge
+      # history still returns its latest events whole.
+      def task_events_payload(task)
+        all = task.events.is_a?(::Array) ? task.events : []
+        budget = { chars: TASK_EVENTS_MAX_CHARS }
+        newest = all.last(TASK_EVENTS_LIMIT).reverse.map { |event| redact_event_value(event, budget: budget) }
+        { events: newest.reverse, events_total: all.size, events_truncated: all.size > TASK_EVENTS_LIMIT }
+      end
+
+      # Walks an event's jsonb value and returns a redacted, bounded copy.
+      # Strings go through redact_bounded; numbers, booleans and nil hold no
+      # credential text and pass through. `key` is the enclosing hash key and
+      # `prev` the preceding string sibling in an array — the lead redact_bounded
+      # needs to see a keyed or flag-shaped secret.
+      def redact_event_value(value, budget:, key: nil, prev: nil, depth: 0)
+        case value
+        when ::Hash
+          return "[max depth exceeded]" if depth >= TASK_EVENT_MAX_DEPTH
+
+          out = value.first(TASK_EVENT_MAX_WIDTH).to_h do |k, v|
+            k = k.to_s
+            # Keys are redacted but outside the string budget: an omitted key
+            # would collapse distinct fields onto one name.
+            [ redact_bounded(k, TASK_EVENT_LEAD_CHARS),
+              redact_event_value(v, budget: budget, key: k, depth: depth + 1) ]
+          end
+          out["...[truncated]"] = "#{value.size - TASK_EVENT_MAX_WIDTH} more keys" if value.size > TASK_EVENT_MAX_WIDTH
+          out
+        when ::Array
+          return "[max depth exceeded]" if depth >= TASK_EVENT_MAX_DEPTH
+
+          items = value.first(TASK_EVENT_MAX_WIDTH)
+          out = items.each_with_index.map do |v, i|
+            sibling = items[i - 1] if i.positive?
+            redact_event_value(v, budget: budget, key: key, prev: sibling.is_a?(::String) ? sibling : nil, depth: depth + 1)
+          end
+          out << "[#{value.size - TASK_EVENT_MAX_WIDTH} more items truncated]" if value.size > TASK_EVENT_MAX_WIDTH
+          out
+        when ::String
+          lead = event_string_lead(prev, key)
+          redact_event_string(value, budget: budget, lead: lead)
+        else
+          value
+        end
+      end
+
+      def event_string_lead(prev, key)
+        return " #{prev.scrub('').last(TASK_EVENT_LEAD_CHARS)} " if prev
+
+        "#{key}: " if key
+      end
+
+      # One event string, redacted and capped at the single-task limit or what
+      # is left of the payload budget, whichever is smaller. Spending is by the
+      # length actually returned.
+      def redact_event_string(text, budget:, lead: nil, limit: GET_ERROR_MESSAGE_LIMIT)
+        limit = [ limit, budget[:chars] ].min
+        # .empty? not .blank?: blank? runs a regexp, which raises on the invalid
+        # UTF-8 that redact_bounded is about to scrub.
+        return text if text.empty?
+        return "[omitted: event payload budget exhausted]" if limit <= 0
+
+        result = redact_bounded(text, limit, lead: lead)
+        budget[:chars] -= result.length
+        result
       end
 
       # Mirrors NodeModuleAssignmentsController#serialize_assignment.
