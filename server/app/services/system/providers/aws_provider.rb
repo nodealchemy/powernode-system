@@ -454,9 +454,13 @@ module System
             available_regions: response.regions.map(&:region_name)
           }
         rescue Aws::EC2::Errors::ServiceError => e
+          # IMP-88ad4adbf97d (review round): reaches MCP via
+          # ProviderConnection#test_connection! -> system_fleet_tool's
+          # payload[:test_result].
+          logger.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
           {
             success: false,
-            error: "AWS connection failed: #{e.message}",
+            error: ::System::CallerFacingMessages::GENERIC,
             error_code: e.code
           }
         end
@@ -503,7 +507,8 @@ module System
         sts_client.get_caller_identity
         true
       rescue StandardError => e
-        @last_authentication_error = e.message
+        logger.error("[#{self.class.name}] authenticate? failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 
@@ -708,7 +713,10 @@ module System
              Aws::EC2::Errors::InsufficientInstanceCapacity
           raise QuotaExceededError, error.message
         else
-          build_error_response(error.message, code: error.code)
+          # IMP-88ad4adbf97d (review round): error.message here is the raw AWS
+          # SDK text (can carry ARNs, resource ids, account/project details) —
+          # already logged above. Never a bare argument into the result hash.
+          build_error_response(::System::CallerFacingMessages::GENERIC, code: error.code)
         end
       end
     end

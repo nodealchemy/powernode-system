@@ -125,7 +125,9 @@ module System
 
         Runtime::Result.ok(data: { device: attached_device })
       else
-        Runtime::Result.err(error: result[:error])
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix (each
+        # adapter's own rescue arms). No-op on every legitimate message.
+        Runtime::Result.err(error: ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "attach #{volume.id}"))
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -159,7 +161,8 @@ module System
         volume.detach!
         Runtime::Result.ok
       else
-        Runtime::Result.err(error: result[:error])
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        Runtime::Result.err(error: ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "detach #{volume.id}"))
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -221,7 +224,9 @@ module System
         # "failed" is not in ProviderVolume::STATUSES — writing it raised
         # RecordInvalid and stranded the row in "creating" (F4-09).
         volume.update!(status: "error")
-        Runtime::Result.err(error: result[:error], data: { volume: volume })
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "provision #{volume.id}")
+        Runtime::Result.err(error: safe_error, data: { volume: volume })
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -258,7 +263,8 @@ module System
         volume.destroy!
         Runtime::Result.ok
       else
-        Runtime::Result.err(error: result[:error])
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        Runtime::Result.err(error: ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "delete #{volume.id}"))
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -296,7 +302,8 @@ module System
           device: result[:device]
         })
       else
-        Runtime::Result.err(error: result[:error])
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        Runtime::Result.err(error: ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "check #{volume.id}"))
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -369,7 +376,11 @@ module System
         # erased: an operator investigating a missing restore point needs to
         # see that the platform tried.
         record.update!(status: "error")
-        Runtime::Result.err(error: result[:error] || "Snapshot failed")
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(
+          result[:error] || "Snapshot failed", context: "snapshot #{volume.id}"
+        )
+        Runtime::Result.err(error: safe_error)
       end
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.error("[VolumeManagementService] Snapshot record invalid: #{e.record.errors.full_messages.join(', ')}")
@@ -463,7 +474,11 @@ module System
       else
         # Back to a state #can_delete? admits, so a retry is possible.
         snapshot.update!(status: "error")
-        Runtime::Result.err(error: result[:error] || "Snapshot delete failed")
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(
+          result[:error] || "Snapshot delete failed", context: "delete_snapshot #{snapshot.id}"
+        )
+        Runtime::Result.err(error: safe_error)
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[VolumeManagementService] Provider error: #{e.message}")
@@ -534,7 +549,13 @@ module System
       Rails.logger.info("[VolumeManagementService] Restoring volume #{volume.name} from snapshot #{snapshot.name} (#{mode})")
 
       result = adapter.restore_volume_snapshot(snapshot.external_id, volume_id: volume.external_id)
-      return Runtime::Result.err(error: result[:error] || "Restore failed") unless result[:success]
+      unless result[:success]
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix.
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(
+          result[:error] || "Restore failed", context: "restore_snapshot #{snapshot.id}"
+        )
+        return Runtime::Result.err(error: safe_error)
+      end
 
       if mode == :in_place
         return with_swap_skipped(restored_in_place(volume: volume, snapshot: snapshot),

@@ -139,7 +139,11 @@ module System
       provider_adapter = begin
         Providers::Registry.for_node(node, region: region)
       rescue Providers::Registry::UnknownProviderError => e
-        return Runtime::Result.err(error: e.message)
+        # IMP-88ad4adbf97d (review round): this rescue catches the CLASS, not
+        # a trusted static message — see the identical comment on
+        # #terminate_instance's equivalent rescue below.
+        Rails.logger.error("[ProvisioningService] #{e.class}: #{e.message}")
+        return Runtime::Result.err(error: "No provider adapter is configured for this region")
       end
 
       # Capability gate (F4-06) — refuse before creating the instance row.
@@ -283,13 +287,23 @@ module System
         # `:failed` was used historically but isn't a valid NodeInstance status;
         # `:error` is the platform-standard terminal-failure state.
         mark_instance_errored(instance)
+        # IMP-88ad4adbf97d (review round): cloud_result[:error] is an adapter
+        # result hash — the same shape InstanceControlService/
+        # VolumeManagementService's defense-in-depth already scrubs. Scrub it
+        # here too (and use the SAME scrubbed value in the FleetEvent payload
+        # below, not just the Result) — inspect_correlation surfaces
+        # FleetEvent payloads, so an unscrubbed one is just as reachable as
+        # the Result itself.
+        safe_cloud_error = ::System::CallerFacingMessages.scrub_adapter_leak(
+          cloud_result[:error] || "Cloud provisioning failed", context: "provision #{instance.id}"
+        )
         emit_provision_event(
           account: node.account, kind: "system.instance_provision_failed", severity: :high,
           instance: instance, node: node,
-          payload: { error: cloud_result[:error] || "Cloud provisioning failed" }
+          payload: { error: safe_cloud_error }
         )
 
-        Runtime::Result.err(error: cloud_result[:error] || "Cloud provisioning failed", data: { instance: instance })
+        Runtime::Result.err(error: safe_cloud_error, data: { instance: instance })
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[ProvisioningService] Provider error: #{e.message}")
@@ -298,22 +312,25 @@ module System
       # the terminal :error state so it's visible as failed (and reapable).
       mark_instance_errored(instance)
       terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
+      # IMP-88ad4adbf97d (review round): static class-based phrase, same as
+      # InstanceControlService/VolumeManagementService — never e.message.
+      safe_error = ::System::CallerFacingMessages.for_provider_error(e)
       emit_provision_event(
         account: node.account, kind: "system.instance_provision_failed", severity: :high,
-        instance: instance, node: node, payload: { error: e.message }
+        instance: instance, node: node, payload: { error: safe_error }
       )
-      Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
+      Runtime::Result.err(error: safe_error, data: { instance: instance }.compact)
     rescue ArgumentError, ProvisioningError, ::System::Autonomy::SelfManagementFence::SelfManagementViolation
       raise
     rescue StandardError => e
-      Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.message}")
+      Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.class}: #{e.message}")
       mark_instance_errored(instance)
       terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
       emit_provision_event(
         account: node.account, kind: "system.instance_provision_failed", severity: :high,
-        instance: instance, node: node, payload: { error: e.message }
+        instance: instance, node: node, payload: { error: ::System::CallerFacingMessages::GENERIC }
       )
-      Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
+      Runtime::Result.err(error: ::System::CallerFacingMessages::GENERIC, data: { instance: instance }.compact)
     end
 
     def self.terminate_instance(instance:)
@@ -346,7 +363,11 @@ module System
       provider_adapter = begin
         Providers::Registry.for_instance(instance)
       rescue Providers::Registry::UnknownProviderError => e
-        return Runtime::Result.err(error: e.message)
+        # IMP-88ad4adbf97d (review round): this rescue catches the CLASS, not
+        # a trusted static message — see InstanceControlService's identical
+        # comment on the same rescue.
+        Rails.logger.error("[ProvisioningService] #{e.class}: #{e.message}")
+        return Runtime::Result.err(error: "No provider adapter is configured for this instance")
       end
 
       Rails.logger.info("[ProvisioningService] Terminating instance #{instance.name}")
@@ -363,9 +384,14 @@ module System
       # so. Not finalized: this proves nothing about whether THIS row's own
       # guest is gone.
       if guest_name_mismatch_result?(result)
+        # IMP-88ad4adbf97d (review round): the DB write below is internal
+        # bookkeeping and keeps the RAW identity text on purpose (same
+        # reasoning as InstanceControlService's mark_provider_guest_lost!
+        # call) — only the Result returned to the caller is scrubbed.
         instance.mark_provider_guest_lost!(reason: result[:error])
         Rails.logger.error("[ProvisioningService] Terminate refused for #{instance.name}: #{result[:error]} — provider id cleared, row marked lost")
-        return Runtime::Result.err(error: result[:error], data: { guest_lost: true })
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "terminate #{instance.id}")
+        return Runtime::Result.err(error: safe_error, data: { guest_lost: true })
       end
 
       # Idempotent terminate (F4-02): a provider-side NotFound means the
@@ -382,7 +408,9 @@ module System
         finalize_termination!(instance)
         Runtime::Result.ok
       else
-        Runtime::Result.err(error: result[:error])
+        # IMP-88ad4adbf97d (review round): defense-in-depth, same as the
+        # guest_name_mismatch branch above.
+        Runtime::Result.err(error: ::System::CallerFacingMessages.scrub_adapter_leak(result[:error], context: "terminate #{instance.id}"))
       end
     rescue Providers::BaseProvider::ResourceNotFoundError => e
       Rails.logger.warn("[ProvisioningService] Terminate: resource already gone (#{e.message}) — finalizing #{instance.name}")
@@ -390,7 +418,7 @@ module System
       Runtime::Result.ok
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[ProvisioningService] Terminate error: #{e.message}")
-      Runtime::Result.err(error: e.message)
+      Runtime::Result.err(error: ::System::CallerFacingMessages.for_provider_error(e))
     rescue ArgumentError
       raise
     end

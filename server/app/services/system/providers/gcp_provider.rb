@@ -683,9 +683,13 @@ module System
             available_zones: zones.map(&:name)
           }
         rescue Google::Cloud::Error => e
+          # IMP-88ad4adbf97d (review round): reaches MCP via
+          # ProviderConnection#test_connection! -> system_fleet_tool's
+          # payload[:test_result].
+          logger.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
           {
             success: false,
-            error: "GCP connection failed: #{e.message}",
+            error: ::System::CallerFacingMessages::GENERIC,
             error_code: e.class.name
           }
         end
@@ -765,17 +769,21 @@ module System
             nil
           end
           message = parsed_body.is_a?(Hash) ? (parsed_body["error_description"] || parsed_body["error"]) : nil
-          @last_authentication_error = message || "HTTP #{response.status}"
+          logger.error("[#{self.class.name}] authenticate? token exchange failed: #{message || "HTTP #{response.status}"}")
+          @last_authentication_error = ::System::CallerFacingMessages::GENERIC
           false
         end
       rescue JSON::ParserError => e
-        @last_authentication_error = "invalid service_account_json: #{e.message}"
+        logger.error("[#{self.class.name}] authenticate? invalid service_account_json: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       rescue ::OpenSSL::PKey::RSAError => e
-        @last_authentication_error = "invalid private_key: #{e.message}"
+        logger.error("[#{self.class.name}] authenticate? invalid private_key: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       rescue StandardError => e
-        @last_authentication_error = e.message
+        logger.error("[#{self.class.name}] authenticate? failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 
@@ -1031,7 +1039,10 @@ module System
           if error.message.include?("quota")
             raise QuotaExceededError, error.message
           else
-            build_error_response(error.message, code: error.class.name)
+            # IMP-88ad4adbf97d (review round): error.message here is the raw
+            # GCP SDK text (can carry project ids, resource paths) — already
+            # logged above. Never a bare argument into the result hash.
+            build_error_response(::System::CallerFacingMessages::GENERIC, code: error.class.name)
           end
         end
       end

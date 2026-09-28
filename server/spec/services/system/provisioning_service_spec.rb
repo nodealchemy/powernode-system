@@ -98,6 +98,61 @@ RSpec.describe System::ProvisioningService do
       expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
     end
 
+    # IMP-88ad4adbf97d (review round) — ProvisioningService had NO
+    # sanitization at all on the ProviderError/StandardError rescue arms or
+    # the create_instance failure branch: e.message and cloud_result[:error]
+    # both reached Runtime::Result AND the FleetEvent payload verbatim.
+    describe "sanitizes provider/adapter errors before they reach the caller (IMP-88ad4adbf97d)" do
+      it "does not forward a raised UnknownProviderError's raw message (Registry.for_node)" do
+        sentinel = "SENTINEL_PROV_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_node)
+          .and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = provision
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+      end
+
+      it "does not forward a raised ProviderError's raw message" do
+        sentinel = "SENTINEL_PROV_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:create_instance)
+          .and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = provision
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+      end
+
+      it "does not forward a raised StandardError's raw message" do
+        sentinel = "SENTINEL_PROV_STANDARD_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:create_instance).and_raise(StandardError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = provision
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).to eq(::System::CallerFacingMessages::GENERIC)
+      end
+
+      it "scrubs a host:port-shaped adapter result hash (defense-in-depth)" do
+        sentinel = "SENTINEL_PROV_ADAPTERLEAK_#{SecureRandom.hex(8)}"
+        leaked = "connection failed: 192.0.2.10:8006 (#{sentinel})"
+        allow(adapter).to receive(:create_instance).and_return(success: false, error: leaked)
+
+        result = provision
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("192.0.2.10:8006")
+        expect(result.error).to eq(::System::CallerFacingMessages::GENERIC)
+      end
+    end
+
     it "refuses a provider 'success' that carries no cloud_instance_id (F1 phantom shape)" do
       # dryrun 20260809a: a row that reaches a live status with no provider
       # identity is a phantom nothing can sync, reap, or terminate. Whatever
@@ -149,7 +204,12 @@ RSpec.describe System::ProvisioningService do
       result = provision
 
       expect(result.success?).to be(false)
-      expect(result.error).to eq("original failure")
+      # IMP-88ad4adbf97d (review round): the StandardError rescue arm now
+      # returns the static GENERIC phrase, never e.message verbatim — "the
+      # original error is not masked" is proven by the log line instead
+      # (Rails.logger.error("... Provisioning failed: ...original failure")),
+      # not by the caller-facing Result, which must never carry raw text.
+      expect(result.error).to eq(::System::CallerFacingMessages::GENERIC)
       expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
     end
   end
@@ -455,7 +515,10 @@ RSpec.describe System::ProvisioningService do
       ev = System::FleetEvent.where(account: account, kind: "system.instance_provision_failed").last
       expect(ev).not_to be_nil
       expect(ev.severity).to eq("high")
-      expect(ev.payload["error"]).to eq("boom")
+      # IMP-88ad4adbf97d (review round): the FleetEvent payload is now
+      # sanitized the same way the Result is — "boom" (the raw exception
+      # message) must never land in a payload inspect_correlation surfaces.
+      expect(ev.payload["error"]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 
@@ -525,6 +588,59 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(instance.reload.status).to eq("starting")
+    end
+
+    # IMP-88ad4adbf97d (review round)
+    describe "sanitizes provider/adapter errors before they reach the caller (IMP-88ad4adbf97d)" do
+      it "scrubs a host:port-shaped adapter result hash on plain failure (defense-in-depth)" do
+        sentinel = "SENTINEL_PROV_TERM_LEAK_#{SecureRandom.hex(8)}"
+        leaked = "connection failed: 192.0.2.10:8006 (#{sentinel})"
+        allow(adapter).to receive(:terminate_instance).and_return(success: false, error: leaked)
+
+        result = terminate
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include("192.0.2.10:8006")
+      end
+
+      it "scrubs the Result on a guest-name-mismatch while keeping the RAW reason in the DB write" do
+        raw_reason = "guest at i-123 is named other-vm — connection came via 192.0.2.10:8006"
+        allow(adapter).to receive(:terminate_instance).and_return(
+          success: false, error_code: System::Providers::BaseProvider::GUEST_NAME_MISMATCH, error: raw_reason
+        )
+
+        result = terminate
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include("192.0.2.10:8006")
+        expect(instance.reload.config.to_h["provider_guest_lost_reason"]).to eq(raw_reason)
+      end
+
+      it "does not forward a raised ProviderError's raw message" do
+        sentinel = "SENTINEL_PROV_TERM_PROVIDER_#{SecureRandom.hex(8)}"
+        allow(adapter).to receive(:terminate_instance).and_raise(
+          System::Providers::BaseProvider::ProviderError, sentinel
+        )
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = terminate
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+      end
+
+      it "does not forward a raised UnknownProviderError's raw message" do
+        sentinel = "SENTINEL_PROV_TERM_UNKNOWN_#{SecureRandom.hex(8)}"
+        allow(System::Providers::Registry).to receive(:for_instance)
+          .and_raise(System::Providers::Registry::UnknownProviderError, sentinel)
+        expect(Rails.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = terminate
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+      end
     end
 
     # IMP-64d9f2cdff63. A name mismatch proves the provider id now names a

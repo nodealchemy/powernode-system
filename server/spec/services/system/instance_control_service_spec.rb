@@ -301,6 +301,66 @@ RSpec.describe System::InstanceControlService do
         expect(result.error).not_to include('UnknownProviderError')
       end
     end
+
+    # IMP-88ad4adbf97d (Route 2b): a provider adapter that RESCUES its own
+    # client error and RETURNS it as {success: false, error: "..."} — never
+    # raising — bypasses every rescue arm above entirely. This is the shape
+    # the operator's own citation traced through proxmox_provider.rb (e.g.
+    # "PVE start failed: #{e.message}", where e.message can carry the PVE
+    # host and port verbatim from a Faraday connection failure). The fix is
+    # primarily at each adapter's own rescue arm (see proxmox_provider.rb /
+    # azure_provider.rb); this spec drives the DEFENSE-IN-DEPTH backstop this
+    # service now also carries, which does not depend on any adapter being
+    # correctly fixed to hold.
+    describe 'scrubs a leaked adapter result hash (IMP-88ad4adbf97d, defense-in-depth)' do
+      it 'replaces a host:port-shaped adapter error with the generic phrase, and logs the raw text' do
+        sentinel = "SENTINEL_ICS_ADAPTERLEAK_#{SecureRandom.hex(8)}"
+        leaked = "PVE start failed: connection refused to pve1.internal:8006 (#{sentinel})"
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_return(success: false, error: leaked)
+        expect(Rails.logger).to receive(:error).with(a_string_including(leaked))
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.success?).to be false
+        expect(result.error).not_to include(sentinel)
+        expect(result.error).not_to include('pve1.internal:8006')
+        expect(result.error).to eq(::System::CallerFacingMessages::GENERIC)
+      end
+
+      # Control: an adapter error with NO host:port shape passes through
+      # unchanged — the backstop must not water down an already-safe,
+      # operator-relevant message (e.g. "guest is locked", already asserted
+      # verbatim elsewhere in this file).
+      it 'leaves a non-leaking adapter error untouched' do
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_return(success: false, error: 'guest is locked')
+
+        result = described_class.execute(instance: instance, action: :terminate)
+
+        expect(result.error).to eq('guest is locked')
+      end
+
+      # mark_provider_guest_lost! is internal DB bookkeeping, not a
+      # caller-facing surface — it must still see the RAW identity text (the
+      # node/kind/vmid + found-name detail an operator needs to diagnose a
+      # recycled vmid), even though the Result returned to the MCP caller is
+      # scrubbed. Regression guard: the scrub must not reach past the
+      # Result boundary into this DB write.
+      it 'does not scrub the reason passed to mark_provider_guest_lost! on a GUEST_NAME_MISMATCH' do
+        raw_reason = 'PVE terminate refused: pve1.internal/qemu/104 is guest other-vm, not expected-vm'
+        allow(adapter).to receive(:terminate_instance)
+          .with('i-terminate-1', expected_name: instance.provider_guest_name)
+          .and_return(success: false, error_code: System::Providers::BaseProvider::GUEST_NAME_MISMATCH,
+                      error: raw_reason)
+
+        described_class.execute(instance: instance, action: :terminate)
+
+        expect(instance.reload.config.to_h["provider_guest_lost_reason"]).to eq(raw_reason)
+      end
+    end
   end
 
   describe '#execute — terminate (physical)' do

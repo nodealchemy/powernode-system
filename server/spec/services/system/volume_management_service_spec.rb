@@ -70,6 +70,28 @@ RSpec.describe System::VolumeManagementService do
       expect(result.data[:volume].reload.status).to eq("error")
     end
 
+    # IMP-88ad4adbf97d (Route 2b), defense-in-depth: an adapter that RETURNS
+    # (never raises) a hash carrying a leaked host:port bypasses every
+    # ProviderError rescue arm below entirely — this is the shape the
+    # primary adapter-boundary fix addresses, and this backstop does not
+    # depend on that fix holding for every adapter.
+    it "scrubs a host:port-shaped adapter error before it reaches the caller" do
+      sentinel = "SENTINEL_VOL_PROVISION_LEAK_#{SecureRandom.hex(8)}"
+      leaked = "connection failed: 192.0.2.10:8006 (#{sentinel})"
+      allow(adapter).to receive(:supports?).with(:volumes).and_return(true)
+      allow(adapter).to receive(:create_volume).and_return({ success: false, error: leaked })
+      expect(Rails.logger).to receive(:error).with(a_string_including(leaked))
+
+      result = described_class.new.provision(account: account, region: region,
+                                             volume_type: volume_type, size_gb: 10)
+
+      expect(result.success?).to be false
+      expect(result.error).not_to include(sentinel)
+      expect(result.error).not_to include("192.0.2.10:8006")
+      expect(result.error).to eq(::System::CallerFacingMessages::GENERIC)
+      expect(result.data[:volume].reload.status).to eq("error")
+    end
+
     # IMP-7e549d7506cf (Route 2 remediation) — #provision's rescue arms used
     # to put e.message straight into Runtime::Result#error, which
     # ai/tools/system_fleet_tool.rb forwards to the model verbatim. Drives

@@ -461,6 +461,53 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:success]).to be false
       expect(r[:error]).to include("Cannot stop")
     end
+
+    # IMP-88ad4adbf97d — driven through the REAL InstanceControlService and a
+    # REAL System::Providers::LocalQemuProvider (per operator direction: not
+    # a stubbed adapter hash). Only the runner — the layer that shells out to
+    # virsh — is a test double, matching local_qemu_provider_spec.rb's own
+    # convention. Proves the full chain (adapter -> InstanceControlService ->
+    # this tool's JSON payload) never carries a leaked host:port, not just
+    # each layer in isolation.
+    describe "control_instance JSON payload carries no leaked host:port (IMP-88ad4adbf97d)" do
+      let(:local_qemu_provider) { create(:system_provider, account: account, provider_type: "local_qemu") }
+      let(:local_qemu_region) { create(:system_provider_region, account: account, provider: local_qemu_provider) }
+      let!(:local_qemu_connection) do
+        create(:system_provider_connection, account: account, provider: local_qemu_provider, status: "connected")
+      end
+      let(:qemu_node) { create(:system_node, account: account, node_template: template) }
+      let(:qemu_instance) do
+        create(:system_node_instance, :running, node: qemu_node, provider_region: local_qemu_region,
+               config: { "cloud_instance_id" => "leaky-domain" })
+      end
+      let(:runner) { System::Providers::LocalQemu::RecorderRunner.new }
+
+      before do
+        System::Providers::LocalQemuProvider.runner = runner
+      end
+
+      after do
+        System::Providers::LocalQemuProvider.reset_runner!
+      end
+
+      it "never leaks the runner's raw virsh stderr through the tool's JSON payload" do
+        sentinel = "SENTINEL_FLEETTOOL_CTRL_#{SecureRandom.hex(8)}"
+        leaked = "unable to connect to libvirt qemu+ssh://root@10.0.0.5:22/system: Connection refused (#{sentinel})"
+        runner.stub(:shutdown_domain!, { ok: false, error: leaked })
+        allow(Rails.logger).to receive(:error)
+
+        r = call("system_stop_instance", instance_id: qemu_instance.id)
+        payload = r.to_json
+
+        # Proves the leak site was actually REACHED — a false pass (the call
+        # failing for some unrelated reason before ever calling the runner)
+        # would look identical without this.
+        expect(runner.invocations.map { |i| i[:method] }).to include(:shutdown_domain!)
+        expect(r[:success]).to be false
+        expect(payload).not_to include(sentinel)
+        expect(payload).not_to include("10.0.0.5:22")
+      end
+    end
   end
 
   describe "GPU discovery (audit P6)" do
@@ -2009,6 +2056,108 @@ RSpec.describe Ai::Tools::SystemFleetTool do
                operation_id: "op-agent-1")
 
       expect(r[:success]).to be true
+    end
+
+    # IMP-88ad4adbf97d — driven through the REAL ProvisioningService and a
+    # REAL System::Providers::LocalQemuProvider (per operator direction: not
+    # a stubbed adapter hash). Only the runner is a test double.
+    describe "provision_instance JSON payload carries no leaked host:port (IMP-88ad4adbf97d)" do
+      let(:local_qemu_provider) { create(:system_provider, account: account, provider_type: "local_qemu") }
+      let(:local_qemu_region) { create(:system_provider_region, account: account, provider: local_qemu_provider) }
+      let!(:local_qemu_connection) do
+        create(:system_provider_connection, account: account, provider: local_qemu_provider, status: "connected")
+      end
+      let(:instance_type) { create(:system_provider_instance_type, account: account) }
+      let(:runner) { System::Providers::LocalQemu::RecorderRunner.new }
+
+      before do
+        System::Providers::LocalQemuProvider.runner = runner
+      end
+
+      after do
+        System::Providers::LocalQemuProvider.reset_runner!
+      end
+
+      it "never leaks the runner's raw virsh stderr through the tool's JSON payload" do
+        sentinel = "SENTINEL_FLEETTOOL_PROV_#{SecureRandom.hex(8)}"
+        leaked = "unable to connect to libvirt qemu+ssh://root@10.0.0.5:22/system: Connection refused (#{sentinel})"
+        runner.stub(:define_domain!, { ok: false, error: leaked })
+        allow(Rails.logger).to receive(:error)
+
+        r = call("system_provision_instance", node_id: node.id,
+                 provider_region_id: local_qemu_region.id,
+                 provider_instance_type_id: instance_type.id)
+        payload = r.to_json
+
+        # Proves the leak site was actually REACHED — see the identical note
+        # on the control_instance oracle above.
+        expect(runner.invocations.map { |i| i[:method] }).to include(:define_domain!)
+        expect(r[:success]).to be false
+        expect(payload).not_to include(sentinel)
+        expect(payload).not_to include("10.0.0.5:22")
+      end
+    end
+  end
+
+  # IMP-88ad4adbf97d (review round) — system_create_provider_connection's
+  # optional immediate test_connection:true path
+  # (payload[:test_result] = connection.test_connection!) is the ONE
+  # confirmed MCP-reachable consumer of every adapter's #test_connection.
+  # Driven through the REAL ProviderConnection model method and a REAL
+  # System::Providers::LocalQemuProvider — only the runner is a test double.
+  describe "system_create_provider_connection test_connection:true payload (IMP-88ad4adbf97d)" do
+    let(:local_qemu_provider) { create(:system_provider, account: account, provider_type: "local_qemu") }
+    let(:runner) { System::Providers::LocalQemu::RecorderRunner.new }
+
+    before do
+      System::Providers::LocalQemuProvider.runner = runner
+    end
+
+    after do
+      System::Providers::LocalQemuProvider.reset_runner!
+    end
+
+    it "never leaks the runner's raw virsh stderr through payload[:test_result]" do
+      sentinel = "SENTINEL_FLEETTOOL_TESTCONN_#{SecureRandom.hex(8)}"
+      leaked = "unable to connect to libvirt qemu+ssh://root@10.0.0.5:22/system: Connection refused (#{sentinel})"
+      runner.stub(:uri_check!, { ok: false, error: leaked })
+      allow(Rails.logger).to receive(:error)
+
+      r = call("system_create_provider_connection",
+               provider_id: local_qemu_provider.id, name: "leaky-conn", test_connection: true)
+      payload = r.to_json
+
+      expect(r[:success]).to be true # the CREATE itself still succeeds
+      expect(r[:data][:test_result][:success]).to be false
+      expect(payload).not_to include(sentinel)
+      expect(payload).not_to include("10.0.0.5:22")
+    end
+
+    # IMP-88ad4adbf97d (review round) — this drives ProviderConnection#
+    # test_connection!'s OWN bare `rescue StandardError` arm directly: the
+    # runner RAISES (rather than returning a failure hash), which no adapter
+    # rescue catches at all (LocalQemuProvider#test_connection has none) —
+    # exactly the shape a network-level error escapes into for AWS (which
+    # only rescues Aws::EC2::Errors::ServiceError) or OpenStack (only
+    # Excon::Error). Also proves the value PERSISTED onto the row
+    # (last_test_message, serialized into payload[:provider_connection] by
+    # ProviderConnectionSerializer) is sanitized too, not just the returned
+    # test_result — the two are independent writes in test_connection!.
+    it "never leaks a raw runner exception through test_connection!'s own StandardError rescue, in EITHER payload key" do
+      sentinel = "SENTINEL_FLEETTOOL_TESTCONN_RAISE_#{SecureRandom.hex(8)}"
+      allow(runner).to receive(:uri_check!).and_raise(
+        StandardError, "connect to host 192.0.2.10 port 8006: Connection refused (#{sentinel})"
+      )
+      allow(Rails.logger).to receive(:error)
+
+      r = call("system_create_provider_connection",
+               provider_id: local_qemu_provider.id, name: "leaky-conn-2", test_connection: true)
+      payload = r.to_json
+
+      expect(r[:data][:test_result][:success]).to be false
+      expect(payload).not_to include(sentinel)
+      expect(payload).not_to include("192.0.2.10:8006")
+      expect(r[:data][:provider_connection][:last_test_message]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 

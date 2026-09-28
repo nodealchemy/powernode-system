@@ -294,6 +294,22 @@ RSpec.describe System::Providers::AwsProvider do
     end
   end
 
+  describe "#test_connection (IMP-88ad4adbf97d)" do
+    it "sanitizes a raw AWS SDK error instead of forwarding it — reaches MCP via ProviderConnection#test_connection!" do
+      sentinel = "SENTINEL_AWS_TESTCONN_#{SecureRandom.hex(8)}"
+      allow(ec2_client).to receive(:describe_regions).and_raise(
+        Aws::EC2::Errors::ServiceError.new(nil, "AccessDenied: #{sentinel}")
+      )
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.test_connection
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+  end
+
   describe "error handling" do
     # Test error handling via list_instances which has proper rescue block
     context "when AWS authentication fails" do
@@ -335,6 +351,28 @@ RSpec.describe System::Providers::AwsProvider do
         expect {
           provider.list_instances
         }.to raise_error(System::Providers::BaseProvider::ResourceNotFoundError)
+      end
+    end
+
+    # IMP-88ad4adbf97d (review round) — handle_aws_error's `else` arm used to
+    # return build_error_response(error.message, code: error.code): a
+    # generic (unmapped) AWS SDK error's raw text — can carry ARNs, resource
+    # ids, account/project details — reached the returned hash directly,
+    # bypassing every raise+for_provider_error path this rescue's other
+    # branches already went through.
+    context "when a generic (unmapped) AWS service error occurs" do
+      it "does not forward the raw SDK error text" do
+        sentinel = "SENTINEL_AWS_GENERIC_#{SecureRandom.hex(8)}"
+        allow(ec2_client).to receive(:describe_instances).and_raise(
+          Aws::EC2::Errors::ServiceError.new(nil, "InternalError: #{sentinel}")
+        )
+        expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = provider.list_instances
+
+        expect(result[:success]).to be false
+        expect(result[:error]).not_to include(sentinel)
+        expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
       end
     end
   end

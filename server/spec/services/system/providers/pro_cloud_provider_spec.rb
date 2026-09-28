@@ -348,10 +348,12 @@ RSpec.describe System::Providers::ProCloudProvider do
     end
 
     it "returns failure when credentials lookup raises" do
+      # IMP-88ad4adbf97d: static class-based phrase, never the raw exception
+      # message — reaches MCP via ProviderConnection#test_connection!.
       allow(credential_relation).to receive(:first).and_return(nil)
       result = provider.test_connection
       expect(result[:success]).to be false
-      expect(result[:error]).to match(/pro_cloud/i)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 

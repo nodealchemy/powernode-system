@@ -250,5 +250,29 @@ RSpec.describe System::Providers::GcpProvider do
         }.to raise_error(System::Providers::BaseProvider::RateLimitError)
       end
     end
+
+    # IMP-88ad4adbf97d (review round) — handle_gcp_error's `else` arm used to
+    # return build_error_response(error.message, code: error.class.name): a
+    # generic (unmapped, non-quota) GCP SDK error's raw text — can carry
+    # project ids, resource paths — reached the returned hash directly.
+    context "when a generic (unmapped) GCP service error occurs" do
+      before do
+        stub_const("Google::Cloud::Error", Class.new(StandardError)) unless defined?(Google::Cloud::Error)
+      end
+
+      it "does not forward the raw SDK error text" do
+        sentinel = "SENTINEL_GCP_GENERIC_#{SecureRandom.hex(8)}"
+        allow(instances_client).to receive(:list).and_raise(
+          Google::Cloud::Error.new("InternalError: #{sentinel}")
+        )
+        expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+        result = provider.list_instances
+
+        expect(result[:success]).to be false
+        expect(result[:error]).not_to include(sentinel)
+        expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+      end
+    end
   end
 end

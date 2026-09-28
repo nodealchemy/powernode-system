@@ -346,4 +346,61 @@ RSpec.describe System::Providers::AzureProvider do
     # when an upstream path short-circuits). Don't fail the example just
     # because a stub went unused.
   end
+
+  # IMP-88ad4adbf97d (Route 2b): create_snapshot's own azure_failure! already
+  # raises a caller-safe ProviderError (arm_error_message can carry ARM's raw
+  # upstream error text). These four thin wrappers used to UNDO that safety
+  # by rescuing it a SECOND time and re-embedding e.message into a fresh
+  # result hash — the only adapter in the tree with this specific double-wrap
+  # shape (every other provider's ProviderError raise reaches
+  # InstanceControlService/VolumeManagementService directly and is already
+  # sanitized there via CallerFacingMessages.for_provider_error).
+  describe "volume snapshot wrappers sanitize a re-caught ProviderError (IMP-88ad4adbf97d)" do
+    let(:sentinel) { "SENTINEL_AZURE_SNAP_#{SecureRandom.hex(8)}" }
+
+    it "#create_volume_snapshot does not forward create_snapshot's raw ProviderError message" do
+      allow(provider).to receive(:create_snapshot).and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.create_volume_snapshot("disk-1", name: "snap-1")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#list_volume_snapshots does not forward list_snapshots's raw ProviderError message" do
+      allow(provider).to receive(:list_snapshots).and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.list_volume_snapshots
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#delete_volume_snapshot does not forward arm_delete's raw ProviderError message" do
+      allow(provider).to receive(:resource_group).and_return("test-rg")
+      allow(provider).to receive(:arm_delete).and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.delete_volume_snapshot("snap-1")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#restore_volume_snapshot does not forward restore_snapshot's raw ProviderError message" do
+      allow(provider).to receive(:restore_snapshot).and_raise(System::Providers::BaseProvider::ProviderError, sentinel)
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.restore_volume_snapshot("snap-1")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+  end
 end

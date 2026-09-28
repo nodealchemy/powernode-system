@@ -153,10 +153,12 @@ module System
 
         true
       rescue Proxmox::Client::AuthError => e
-        @last_authentication_error = "PVE auth failed: #{e.message}"
+        logger.error("[#{self.class.name}] authenticate? auth failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       rescue Proxmox::Client::Error => e
-        @last_authentication_error = "PVE connection failed: #{e.message}"
+        logger.error("[#{self.class.name}] authenticate? connection failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 
@@ -178,7 +180,11 @@ module System
           nodes: nodes.map { |n| { name: n["node"], status: n["status"] } }
         }
       rescue StandardError => e
-        { success: false, error: "PVE test_connection failed: #{e.message}" }
+        # IMP-88ad4adbf97d (review round): reaches MCP via
+        # ProviderConnection#test_connection! -> system_fleet_tool's
+        # payload[:test_result].
+        logger.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
+        { success: false, error: ::System::CallerFacingMessages::GENERIC }
       end
 
       def get_metadata
@@ -272,10 +278,18 @@ module System
       rescue Proxmox::Client::RateLimitError => e
         raise RateLimitError, e.message
       rescue Proxmox::Client::TaskFailedError => e
-        build_error_response("PVE task failed: #{e.message} — log tail: #{e.log_tail.last(3).join(' / ')}",
-                             code: e.exit_status)
+        # IMP-88ad4adbf97d: e.log_tail is a raw PVE task log — can carry
+        # anything the guest's own boot/cloud-init process printed. Logged
+        # only; the caller-facing hash gets the static phrase.
+        logger.error("[#{self.class.name}] PVE task failed: #{e.message} — log tail: #{e.log_tail.last(3).join(' / ')} (exitstatus: #{e.exit_status})")
+        # IMP-88ad4adbf97d (review round): e.exit_status is PVE's own free-form
+        # task exitstatus TEXT, not a fixed enum this codebase defines — it can
+        # carry the same kind of raw upstream detail as e.message. Logged
+        # above; dropped from the result hash rather than forwarded as `code:`.
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE error: #{e.message}")
+        logger.error("[#{self.class.name}] create_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # === Operator ops hold, enforced by PVE itself ===
@@ -303,7 +317,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE lock failed: #{e.message}")
+        logger.error("[#{self.class.name}] apply_ops_hold failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def release_ops_hold!(instance_id)
@@ -315,7 +330,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE unlock failed: #{e.message}")
+        logger.error("[#{self.class.name}] release_ops_hold failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # Reads what PVE reports. This is how a hold is verified — never by
@@ -339,7 +355,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE start failed: #{e.message}")
+        logger.error("[#{self.class.name}] start_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def stop_instance(instance_id, force: false)
@@ -353,7 +370,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE stop failed: #{e.message}")
+        logger.error("[#{self.class.name}] stop_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def reboot_instance(instance_id)
@@ -386,7 +404,8 @@ module System
         force_stop_then_start!(c, node: node, kind: kind, vmid: vmid)
         sync_status(instance_id)
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE reboot failed: #{e.message}")
+        logger.error("[#{self.class.name}] reboot_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # Public entry point for System::InstancePoolService#reload_pending_seeds!
@@ -407,7 +426,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE power_cycle_instance failed: #{e.message}")
+        logger.error("[#{self.class.name}] power_cycle_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # Force PVE to (re)generate + load the cloud-init NoCloud seed onto the
@@ -531,7 +551,8 @@ module System
         cluster_absence_response(c, instance_id: instance_id, node: node, kind: kind, vmid: vmid,
                                     expected_name: expected_name)
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE terminate failed: #{e.message}")
+        logger.error("[#{self.class.name}] terminate_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # The "not on our node" answer for #terminate_instance: gone only when no
@@ -555,7 +576,8 @@ module System
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE get_instance failed: #{e.message}")
+        logger.error("[#{self.class.name}] get_instance failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def list_instances(filters = {})
@@ -576,7 +598,8 @@ module System
           truncated: false
         }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE list_instances failed: #{e.message}")
+        logger.error("[#{self.class.name}] list_instances failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # ----------------------------------------------------------------
@@ -641,7 +664,8 @@ module System
           format: format
         }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE create_volume failed: #{e.message}")
+        logger.error("[#{self.class.name}] create_volume failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def attach_volume(volume_id, instance_id, device: nil)
@@ -654,7 +678,8 @@ module System
         c.put("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config", { target_device => spec })
         { success: true, device: target_device, instance_id: instance_id }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE attach_volume failed: #{e.message}")
+        logger.error("[#{self.class.name}] attach_volume failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def detach_volume(volume_id, force: false)
@@ -680,7 +705,8 @@ module System
       rescue Proxmox::Client::NotFoundError
         { success: true, volume_id: volume_id, message: "already deleted" }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE delete_volume failed: #{e.message}")
+        logger.error("[#{self.class.name}] delete_volume failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def get_volume(volume_id)
@@ -692,7 +718,8 @@ module System
       rescue Proxmox::Client::NotFoundError
         raise ResourceNotFoundError, "Volume #{volume_id} not found"
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE get_volume failed: #{e.message}")
+        logger.error("[#{self.class.name}] get_volume failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # --- BaseProvider volume-snapshot seam (APO-5 / DR-2) ---
@@ -732,7 +759,8 @@ module System
         c.wait_task(node: node, upid: upid)
         { success: true, image_id: "#{node}/#{kind}/#{vmid}@#{snapname}" }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE create_image (snapshot) failed: #{e.message}")
+        logger.error("[#{self.class.name}] create_image (snapshot) failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def get_image(image_id)
@@ -745,7 +773,8 @@ module System
 
         { success: true, image_id: image_id, details: snap }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE get_image failed: #{e.message}")
+        logger.error("[#{self.class.name}] get_image failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def delete_image(image_id)
@@ -758,7 +787,8 @@ module System
       rescue Proxmox::Client::NotFoundError
         { success: true, image_id: image_id, message: "already deleted" }
       rescue Proxmox::Client::Error => e
-        build_error_response("PVE delete_image failed: #{e.message}")
+        logger.error("[#{self.class.name}] delete_image failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # ----------------------------------------------------------------
@@ -2157,9 +2187,11 @@ module System
       rescue Proxmox::Client::NotFoundError
         :absent_here
       rescue Proxmox::Client::Error => e
-        build_error_response(
-          "PVE terminate refused: could not read the identity of #{node}/#{kind}/#{vmid}: #{e.message}"
+        logger.error(
+          "[#{self.class.name}] guest_identity_refusal could not read the identity of " \
+          "#{node}/#{kind}/#{vmid}: #{e.class}: #{e.message}"
         )
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # True only when BOTH names are known and they differ — i.e. the vmid on the

@@ -111,7 +111,19 @@ module System
            adapter_result[:error_code].to_s == Providers::BaseProvider::GUEST_NAME_MISMATCH
           instance.mark_provider_guest_lost!(reason: adapter_result[:error])
         end
-        Runtime::Result.err(error: adapter_result[:error] || "Control action failed", data: adapter_result)
+        # IMP-88ad4adbf97d: defense-in-depth, not the primary fix (that is
+        # each adapter's own rescue arms). Scrubs adapter_result[:error] IF
+        # it structurally leaked a host:port — a no-op on every legitimate
+        # message, adapter- or service-authored.
+        safe_error = ::System::CallerFacingMessages.scrub_adapter_leak(
+          adapter_result[:error] || "Control action failed", context: "#{action} on #{instance.id}"
+        )
+        # IMP-88ad4adbf97d (review round): `data:` must carry the SAME
+        # scrubbed value, not the raw adapter_result — a caller reading
+        # result.data[:error] instead of result.error must see no more than
+        # result.error itself does. Every other adapter_result key is kept
+        # (status/ip fields callers may legitimately inspect).
+        Runtime::Result.err(error: safe_error, data: adapter_result.merge(error: safe_error))
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[InstanceControlService] Provider error: #{e.message}")

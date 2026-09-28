@@ -513,9 +513,13 @@ module System
             available_flavors: flavors.map(&:name)
           }
         rescue Excon::Error => e
+          # IMP-88ad4adbf97d (review round): reaches MCP via
+          # ProviderConnection#test_connection! -> system_fleet_tool's
+          # payload[:test_result].
+          logger.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
           {
             success: false,
-            error: "OpenStack connection failed: #{e.message}",
+            error: ::System::CallerFacingMessages::GENERIC,
             error_code: e.class.name
           }
         end
@@ -582,14 +586,17 @@ module System
         when 200, 201
           true
         when 401, 403
-          @last_authentication_error = parse_keystone_error(response) || "authentication rejected (HTTP #{response.status})"
+          logger.error("[#{self.class.name}] authenticate? rejected: #{parse_keystone_error(response) || "HTTP #{response.status}"}")
+          @last_authentication_error = ::System::CallerFacingMessages::GENERIC
           false
         else
-          @last_authentication_error = parse_keystone_error(response) || "HTTP #{response.status}"
+          logger.error("[#{self.class.name}] authenticate? failed: #{parse_keystone_error(response) || "HTTP #{response.status}"}")
+          @last_authentication_error = ::System::CallerFacingMessages::GENERIC
           false
         end
       rescue StandardError => e
-        @last_authentication_error = e.message
+        logger.error("[#{self.class.name}] authenticate? failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 

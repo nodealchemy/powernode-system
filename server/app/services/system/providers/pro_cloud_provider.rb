@@ -199,7 +199,11 @@ module System
         credentials.fetch(:api_key) { credentials["api_key"] }
         { success: true, message: "pro_cloud credentials present", provider: provider_type }
       rescue StandardError => e
-        { success: false, error: "pro_cloud connection check failed: #{e.message}" }
+        # IMP-88ad4adbf97d (review round): reaches MCP via
+        # ProviderConnection#test_connection! -> system_fleet_tool's
+        # payload[:test_result].
+        logger&.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
+        { success: false, error: ::System::CallerFacingMessages::GENERIC }
       end
 
       def get_metadata

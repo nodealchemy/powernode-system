@@ -98,23 +98,25 @@ module System
         if response.success? && body.is_a?(Hash) && !body["access_token"].to_s.empty?
           true
         else
-          @last_authentication_error =
-            if body.is_a?(Hash)
-              body["error_description"] || body["error"] || "HTTP #{response.status}"
-            else
-              "HTTP #{response.status}"
-            end
+          raw = if body.is_a?(Hash)
+            body["error_description"] || body["error"] || "HTTP #{response.status}"
+          else
+            "HTTP #{response.status}"
+          end
+          logger.error("[#{self.class.name}] authenticate? rejected: #{raw}")
+          @last_authentication_error = ::System::CallerFacingMessages::GENERIC
           false
         end
       rescue StandardError => e
-        @last_authentication_error = e.message
+        logger.error("[#{self.class.name}] authenticate? failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 
       # Test that credentials work and the subscription is reachable.
       def test_connection
         token = fetch_token!
-        return { success: false, error: "Failed to obtain Azure AD token" } unless token
+        return { success: false, error: ::System::CallerFacingMessages::GENERIC } unless token
 
         # Probe the subscription endpoint — minimal read; validates the token
         # AND that the principal has Reader access on the subscription.
@@ -127,10 +129,16 @@ module System
             display_name: response.body["displayName"]
           }
         else
-          { success: false, error: arm_error_message(response) }
+          # IMP-88ad4adbf97d (review round): arm_error_message can carry raw
+          # ARM upstream text — reaches MCP via
+          # ProviderConnection#test_connection! -> system_fleet_tool's
+          # payload[:test_result].
+          logger.error("[#{self.class.name}] test_connection failed: #{arm_error_message(response)}")
+          { success: false, error: ::System::CallerFacingMessages::GENERIC }
         end
       rescue StandardError => e
-        { success: false, error: "Azure test_connection failed: #{e.message}" }
+        logger.error("[#{self.class.name}] test_connection failed: #{e.class}: #{e.message}")
+        { success: false, error: ::System::CallerFacingMessages::GENERIC }
       end
 
       # ===========================================
@@ -631,7 +639,13 @@ module System
       def create_volume_snapshot(volume_id, name:, description: nil)
         create_snapshot(volume_id, { name: name, description: description }.compact)
       rescue ProviderError => e
-        build_error_response("Azure create_volume_snapshot failed: #{e.message}")
+        # IMP-88ad4adbf97d: create_snapshot's own azure_failure! already raises
+        # a caller-safe ProviderError (arm_error_message can carry ARM's raw
+        # upstream text) — this wrapper used to UNDO that by re-embedding
+        # e.message into a fresh hash. Log the raw text, return the static
+        # phrase, same as every other adapter boundary in this family.
+        logger.error("[#{self.class.name}] create_volume_snapshot failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # #list_snapshots returns a BARE ARRAY (and [] on an API failure), which
@@ -642,7 +656,8 @@ module System
         snapshots = snapshots.select { |s| s[:source].to_s.end_with?("/#{volume_id}") } if volume_id.present?
         { success: true, snapshots: snapshots }
       rescue ProviderError => e
-        build_error_response("Azure list_volume_snapshots failed: #{e.message}")
+        logger.error("[#{self.class.name}] list_volume_snapshots failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def delete_volume_snapshot(snapshot_id)
@@ -655,7 +670,8 @@ module System
 
         { success: true, snapshot_id: snapshot_id }
       rescue ProviderError => e
-        build_error_response("Azure delete_volume_snapshot failed: #{e.message}")
+        logger.error("[#{self.class.name}] delete_volume_snapshot failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # Azure restore creates a NEW disk from the snapshot rather than rolling
@@ -670,7 +686,8 @@ module System
       def restore_volume_snapshot(snapshot_id, params = {})
         restore_snapshot(snapshot_id, params)
       rescue ProviderError => e
-        build_error_response("Azure restore_volume_snapshot failed: #{e.message}")
+        logger.error("[#{self.class.name}] restore_volume_snapshot failed: #{e.class}: #{e.message}")
+        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       def create_snapshot(volume_id, params = {})

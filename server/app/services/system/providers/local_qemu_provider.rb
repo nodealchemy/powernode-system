@@ -71,10 +71,19 @@ module System
 
         runner = self.class.runner
         define_result = runner.define_domain!(xml: xml, name: domain_name)
-        return build_error_response("define failed: #{define_result[:error]}") unless define_result[:ok]
+        unless define_result[:ok]
+          # IMP-88ad4adbf97d: define_result[:error] is raw virsh stderr —
+          # can carry image paths, libvirt URIs, and (for a qemu+ssh:// URI)
+          # "connect to host <host> port <port>". Logged only.
+          logger.error("[#{self.class.name}] define_domain failed: #{define_result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
 
         start_result = runner.start_domain!(name: domain_name)
-        return build_error_response("start failed: #{start_result[:error]}") unless start_result[:ok]
+        unless start_result[:ok]
+          logger.error("[#{self.class.name}] start_domain failed: #{start_result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
 
         build_instance_response(
           cloud_id: domain_name,
@@ -115,7 +124,8 @@ module System
           if info[:error].to_s.include?("not found") || info[:error].to_s.include?("Domain not found")
             return build_instance_response(cloud_id: instance_id, status: "terminated")
           end
-          return build_error_response("dominfo failed: #{info[:error]}")
+          logger.error("[#{self.class.name}] dominfo failed: #{info[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
         end
 
         platform_status = LIBVIRT_STATE_TO_STATUS.fetch(info[:state].to_s.downcase.strip, "pending")
@@ -138,7 +148,8 @@ module System
         if result[:ok]
           { success: true, status: "terminated", cloud_instance_id: instance_id, provider_type: provider_type }
         else
-          build_error_response("undefine failed: #{result[:error]}")
+          logger.error("[#{self.class.name}] undefine_domain failed: #{result[:error]}")
+          build_error_response(::System::CallerFacingMessages::GENERIC)
         end
       end
 
@@ -156,28 +167,40 @@ module System
         regenerate_domain_xml!(instance_record) if instance_record
 
         result = runner.start_domain!(name: instance_id)
-        return build_error_response(result[:error]) unless result[:ok]
+        if !result[:ok]
+          logger.error("[#{self.class.name}] start_domain failed: #{result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
         build_instance_response(cloud_id: instance_id, status: "starting")
       end
 
       def stop_instance(instance_id, force: false)
         runner = self.class.runner
         result = force ? runner.destroy_domain!(name: instance_id) : runner.shutdown_domain!(name: instance_id)
-        return build_error_response(result[:error]) unless result[:ok]
+        if !result[:ok]
+          logger.error("[#{self.class.name}] stop_domain failed: #{result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
         build_instance_response(cloud_id: instance_id, status: "stopping")
       end
 
       def reboot_instance(instance_id)
         runner = self.class.runner
         result = runner.reboot_domain!(name: instance_id)
-        return build_error_response(result[:error]) unless result[:ok]
+        if !result[:ok]
+          logger.error("[#{self.class.name}] reboot_domain failed: #{result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
         build_instance_response(cloud_id: instance_id, status: "rebooting")
       end
 
       def get_instance(instance_id, expected_name: nil)
         runner = self.class.runner
         result = runner.dominfo!(name: instance_id)
-        return build_error_response(result[:error]) unless result[:ok]
+        if !result[:ok]
+          logger.error("[#{self.class.name}] dominfo failed: #{result[:error]}")
+          return build_error_response(::System::CallerFacingMessages::GENERIC)
+        end
         build_instance_response(
           cloud_id: instance_id,
           status: normalize_status(result[:state]),
@@ -201,7 +224,11 @@ module System
         if result[:ok]
           { success: true, message: "libvirt reachable: #{result[:uri]}" }
         else
-          { success: false, message: "libvirt unreachable: #{result[:error]}" }
+          # IMP-88ad4adbf97d (review round): result[:error] is raw virsh
+          # stderr — reaches MCP via ProviderConnection#test_connection! ->
+          # system_fleet_tool's payload[:test_result].
+          logger.error("[#{self.class.name}] test_connection failed: #{result[:error]}")
+          { success: false, error: ::System::CallerFacingMessages::GENERIC }
         end
       end
 
@@ -218,11 +245,13 @@ module System
         if result[:ok]
           true
         else
-          @last_authentication_error = result[:error] || "libvirt unreachable"
+          logger.error("[#{self.class.name}] authenticate? failed: #{result[:error]}")
+          @last_authentication_error = ::System::CallerFacingMessages::GENERIC
           false
         end
       rescue StandardError => e
-        @last_authentication_error = e.message
+        logger.error("[#{self.class.name}] authenticate? failed: #{e.class}: #{e.message}")
+        @last_authentication_error = ::System::CallerFacingMessages::GENERIC
         false
       end
 

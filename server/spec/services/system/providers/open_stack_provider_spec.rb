@@ -142,6 +142,22 @@ RSpec.describe System::Providers::OpenStackProvider do
     end
   end
 
+  describe "#test_connection (IMP-88ad4adbf97d)" do
+    it "sanitizes a raw Excon error instead of forwarding it — reaches MCP via ProviderConnection#test_connection!" do
+      sentinel = "SENTINEL_OS_TESTCONN_#{SecureRandom.hex(8)}"
+      flavors_collection = double("Fog::OpenStack::Compute::Flavors")
+      allow(compute_client).to receive(:flavors).and_return(flavors_collection)
+      allow(flavors_collection).to receive(:all).and_raise(Excon::Error.new("connection failed (#{sentinel})"))
+      expect(provider.logger).to receive(:error).with(a_string_including(sentinel))
+
+      result = provider.test_connection
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+  end
+
   describe "error handling" do
     context "when authentication fails" do
       let(:servers_collection) { double("Fog::OpenStack::Compute::Servers") }

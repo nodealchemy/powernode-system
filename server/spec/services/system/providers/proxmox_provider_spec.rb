@@ -160,8 +160,13 @@ RSpec.describe System::Providers::ProxmoxProvider do
       end
 
       it "returns false and records the auth error" do
+        # IMP-88ad4adbf97d: last_authentication_error is now a static,
+        # class-based phrase — never the raw exception message — since it
+        # reaches MCP via ProviderConnection#test_connection! (folded through
+        # CredentialValidationService too).
+        allow(provider.logger).to receive(:error)
         expect(provider.authenticate?).to be false
-        expect(provider.last_authentication_error).to include("PVE auth failed")
+        expect(provider.last_authentication_error).to eq(::System::CallerFacingMessages::GENERIC)
       end
     end
 
@@ -201,12 +206,15 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
 
     it "returns a failure payload on transport errors" do
+      sentinel = "SENTINEL_PVE_TESTCONN_#{SecureRandom.hex(8)}"
       allow(client).to receive(:get)
-        .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
+        .and_raise(System::Providers::Proxmox::Client::Error, "connection refused (#{sentinel})")
+      allow(provider.logger).to receive(:error)
 
       result = provider.test_connection
       expect(result[:success]).to be false
-      expect(result[:error]).to include("connection refused")
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 
@@ -479,10 +487,14 @@ RSpec.describe System::Providers::ProxmoxProvider do
         allow(client).to receive(:get)
           .with("/api2/json/nodes/pve1/qemu/200/status/current")
           .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
+        # IMP-88ad4adbf97d: the raw client message ("connection refused",
+        # which for a real Faraday::ConnectionFailed also carries the PVE
+        # host:port) now reaches only the log — never the returned hash.
+        allow(provider.logger).to receive(:error)
 
         result = provider.power_cycle_instance("pve1/qemu/200")
         expect(result[:success]).to be false
-        expect(result[:error]).to include("connection refused")
+        expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
       end
     end
 
@@ -1332,6 +1344,29 @@ RSpec.describe System::Providers::ProxmoxProvider do
       result = provider.start_instance("pve1/qemu/100")
       expect(result[:success]).to be true
       expect(result[:status]).to eq("running")
+    end
+
+    # IMP-88ad4adbf97d (Route 2b): a generic Proxmox::Client::Error used to
+    # land its raw #message — which for a connection failure names the PVE
+    # host and port verbatim (client.rb's "PVE connection failed:
+    # \#{Faraday message}") — straight into the returned hash's :error, which
+    # InstanceControlService then forwarded to system_fleet_tool's MCP
+    # payload unsanitized. Fixed at this adapter boundary: the returned
+    # phrase is now static, and the raw text (including the host:port a
+    # Faraday::ConnectionFailed message carries) reaches only the log.
+    it "sanitizes a generic Proxmox::Client::Error instead of forwarding its raw message" do
+      sentinel = "SENTINEL_PVE_START_#{SecureRandom.hex(8)}"
+      raw = "PVE connection failed: Failed to open TCP connection to pve1.internal:8006 (#{sentinel})"
+      allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/100/status/start")
+                                       .and_raise(System::Providers::Proxmox::Client::Error, raw)
+      expect(provider.logger).to receive(:error).with(a_string_including(raw))
+
+      result = provider.start_instance("pve1/qemu/100")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).not_to include("pve1.internal:8006")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 

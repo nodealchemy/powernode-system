@@ -91,10 +91,18 @@ RSpec.describe System::Providers::LocalQemuProvider do
     end
 
     it "fails fast when define returns ok=false" do
-      runner.stub(:define_domain!, { ok: false, error: "name conflict" })
+      # IMP-88ad4adbf97d: define_domain!'s :error is raw virsh stderr (can
+      # carry image paths, libvirt URIs, and for a qemu+ssh:// URI "connect
+      # to host <host> port <port>") — logged, never forwarded verbatim.
+      sentinel = "SENTINEL_LQ_DEFINE_#{SecureRandom.hex(8)}"
+      runner.stub(:define_domain!, { ok: false, error: "name conflict (#{sentinel})" })
+      allow(provider.logger).to receive(:error)
+
       result = provider.create_instance(name: "fail-test", instance: instance)
+
       expect(result[:success]).to be false
-      expect(result[:error]).to match(/name conflict/)
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
     end
 
     it "fails fast when instance is nil" do
@@ -226,6 +234,73 @@ RSpec.describe System::Providers::LocalQemuProvider do
       result = provider.test_connection
       expect(result[:success]).to be true
       expect(result[:message]).to match(/libvirt reachable/)
+    end
+
+    # IMP-88ad4adbf97d (review round): reaches MCP via
+    # ProviderConnection#test_connection! -> system_fleet_tool's
+    # payload[:test_result].
+    it "sanitizes a raw virsh stderr on failure instead of forwarding it" do
+      sentinel = "SENTINEL_LQ_TESTCONN_#{SecureRandom.hex(8)}"
+      runner.stub(:uri_check!, { ok: false, error: "unable to connect to qemu+ssh://root@10.0.0.5:22/system (#{sentinel})" })
+      allow(provider.logger).to receive(:error)
+
+      result = provider.test_connection
+
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include(sentinel)
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+  end
+
+  # IMP-88ad4adbf97d (review round) — run_virsh's `{ok: false, error:
+  # stderr.strip}` is raw virsh stderr, and every one of these methods used
+  # to forward it verbatim. For a qemu+ssh:// libvirt URI, a real virsh
+  # connection failure names the host and port directly ("unable to connect
+  # to libvirt qemu+ssh://root@10.0.0.5:22/system: ... Connection refused").
+  describe "sanitizes raw virsh stderr instead of forwarding it (IMP-88ad4adbf97d)" do
+    let(:leaked) { "unable to connect to libvirt qemu+ssh://root@10.0.0.5:22/system: Connection refused" }
+
+    before { allow(provider.logger).to receive(:error) }
+
+    it "#start_instance" do
+      runner.stub(:start_domain!, { ok: false, error: leaked })
+      result = provider.start_instance("d1")
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#stop_instance" do
+      runner.stub(:shutdown_domain!, { ok: false, error: leaked })
+      result = provider.stop_instance("d1")
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#reboot_instance" do
+      runner.stub(:reboot_domain!, { ok: false, error: leaked })
+      result = provider.reboot_instance("d1")
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#get_instance" do
+      runner.stub(:dominfo!, { ok: false, error: leaked })
+      result = provider.get_instance("d1")
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+    end
+
+    it "#terminate_instance" do
+      runner.stub(:undefine_domain!, { ok: false, error: leaked })
+      result = provider.terminate_instance("d1")
+      expect(result[:success]).to be false
+      expect(result[:error]).not_to include("10.0.0.5:22")
+      expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
     end
   end
 
