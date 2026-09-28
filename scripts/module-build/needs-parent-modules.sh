@@ -29,6 +29,16 @@
 #                          likewise in-repo.
 # Both still refuse to skip until their inputs are declared; see
 # should-skip-build.sh's NEEDS_DECLARED_INPUTS.
+#
+# powernode-extension-system IS on this list (it clones the parent for its
+# separate dedicated-module frontend build) AND is ALSO in
+# should-skip-build.sh's NEEDS_DECLARED_INPUTS — being needs-parent does not
+# mean an out-of-tree input is fully covered by the core-ref fold. This
+# module's PRIMARY payload (server/, config/, worker/, extension.json) is THIS
+# repo's own content, not a parent-repo subtree, so --core-ref says nothing
+# about it. Being on both lists at once is intentional, not a contradiction —
+# see should-skip-build.sh's NEEDS_DECLARED_INPUTS comment for the full
+# reasoning (IMP-fad0b3f67255's follow-up).
 
 # Is $1 a module whose build packages parent-repo content?
 # Exit 0 = yes, 1 = no. No output.

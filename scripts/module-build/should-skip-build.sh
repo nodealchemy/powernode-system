@@ -45,36 +45,88 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Modules whose build reads content OUTSIDE modules/<slug>/, so the default
 # input path is INCOMPLETE for them and a skip would compare an incomplete hash:
 #
-#   hub-backend|hub-worker|hub-frontend|extension-system  stage15's needs_parent
-#                                                         list — they package a
-#                                                         parent-repo subtree
-#   powernode-system-base                                 cross-compiles the Go
-#                                                         agent, reading agent/
-#                                                         (incl. agent/go.mod)
-#   module-forge                                          bakes scripts/module-build/*
-#                                                         into its own rootfs
+#   powernode-hub-backend|hub-worker|hub-frontend  stage15's needs_parent list —
+#                                                  their WHOLE payload (server/,
+#                                                  worker/, frontend dist) IS a
+#                                                  packaged subtree of the
+#                                                  parent core repo, fully
+#                                                  covered by folding --core-ref
+#                                                  into the hash (see below) —
+#                                                  no local BUILD_INPUT_PATHS
+#                                                  needed, so these three stay
+#                                                  OFF this list.
+#   powernode-extension-system                     ALSO in needs_parent (it
+#                                                  clones the parent for its
+#                                                  separate dedicated-module
+#                                                  frontend build), but unlike
+#                                                  the three above, its PRIMARY
+#                                                  payload (server/, config/,
+#                                                  worker/, extension.json, plus
+#                                                  the scripts that stage them:
+#                                                  stage15.sh,
+#                                                  stage-extension-system-files.sh)
+#                                                  is THIS repo's own content,
+#                                                  at the repo ROOT — not under
+#                                                  modules/powernode-extension-
+#                                                  system/ and not part of the
+#                                                  parent subtree --core-ref
+#                                                  covers. Folding --core-ref in
+#                                                  (which it still needs, for
+#                                                  the frontend-build half) does
+#                                                  NOTHING to make that payload
+#                                                  visible to the hash. Belongs
+#                                                  on THIS list for that reason
+#                                                  — see IMP-fad0b3f67255's
+#                                                  follow-up: batch 01a0e546
+#                                                  hashed an unchanged
+#                                                  modules/powernode-extension-
+#                                                  system/ tree + an unchanged
+#                                                  core-ref and silently
+#                                                  re-tagged v130's
+#                                                  config/-less digest as v131,
+#                                                  even though the very commit
+#                                                  in that range added config/
+#                                                  staging.
+#   powernode-system-base                          cross-compiles the Go
+#                                                  agent, reading agent/
+#                                                  (incl. agent/go.mod)
+#   module-forge                                   bakes scripts/module-build/*
+#                                                  into its own rootfs
 #
-# ALSO LOAD-BEARING FOR THE CORE PIN (do not lift the four Class-B entries by
-# simply declaring BUILD_INPUT_PATHS): stage15.sh now fetches the batch's
-# expected core commit via $CORE_REF, but that ref is NOT an input to
-# compute-build-inputs-hash.sh. A batch pinned to a NEW core sha with an
-# unchanged module tree would therefore hash identically, skip, and re-tag the
-# previously-built OLD-core digest — the stale-core shape the pin exists to
-# remove, this time arriving as a promote-gate `mismatch` with no obvious
-# cause. Fold CORE_REF into the hash before enabling skips for these modules.
+# ALSO LOAD-BEARING FOR THE CORE PIN (do not lift the hub-backend/-worker/
+# -frontend three by simply declaring BUILD_INPUT_PATHS instead): stage15.sh
+# now fetches the batch's expected core commit via $CORE_REF, but that ref is
+# NOT an input to compute-build-inputs-hash.sh on its own. A batch pinned to a
+# NEW core sha with an unchanged module tree would therefore hash identically,
+# skip, and re-tag the previously-built OLD-core digest — the stale-core shape
+# the pin exists to remove, this time arriving as a promote-gate `mismatch`
+# with no obvious cause. Fold CORE_REF into the hash before enabling skips for
+# these modules (see core_ref_hash_args in needs-parent-modules.sh).
 #
 # These REFUSE to skip unless the caller declares their real inputs via
 # BUILD_INPUT_PATHS. Encoding it here rather than leaving it to an operator
 # allowlist means BUILD_SKIP_UNCHANGED=1 can be turned on globally and still only
 # skip modules it is actually safe for — the unsafe ones opt themselves out.
 # Keep this list in step with stage15.sh's needs_parent arm.
-# Modules whose real inputs live OUTSIDE modules/<slug>/ and are IN THIS REPO,
-# so they are declarable via BUILD_INPUT_PATHS. They refuse to skip until the
-# caller declares them. The four needs-parent modules are NO LONGER listed
-# here: their out-of-tree input is the parent repo, which is now folded into
-# the hash as --core-ref (see needs-parent-modules.sh + the CORE_REF guard
-# below). Listing them here as well would make the core-ref fold unreachable.
-NEEDS_DECLARED_INPUTS="powernode-system-base module-forge"
+#
+# NEEDS_DECLARED_INPUTS and module_needs_parent() are INDEPENDENT checks, not
+# alternatives for the same fact — a module can be (and powernode-extension-
+# system now is) on both lists at once. The first checks whether HASH_ARGS
+# (from --input-path) is non-empty; the second checks whether CORE_REF_ARG is
+# non-empty; core_ref_hash_args() folds --core-ref into the hash purely off
+# module_needs_parent(), with no dependency on whether the module is also in
+# NEEDS_DECLARED_INPUTS. Listing a needs-parent module here does not disable,
+# bypass, or race its core-ref fold — verified by reading the two `if` blocks
+# below, not assumed; see test-should-skip-build-declared-inputs.sh's second
+# scenario, which declares --input-path for powernode-extension-system and
+# confirms it still separately refuses without a --core-ref.
+#
+# hub-backend/-worker/-frontend are NOT listed here: their out-of-tree input
+# IS the parent repo, fully covered by the core-ref fold, so BUILD_INPUT_PATHS
+# would add nothing for them. powernode-extension-system's out-of-tree input
+# is NOT the parent repo (see above) — the core-ref fold does not cover it, so
+# it belongs here too, same as powernode-system-base and module-forge.
+NEEDS_DECLARED_INPUTS="powernode-system-base module-forge powernode-extension-system"
 
 note() { echo "[skip-check] $*" >&2; }
 build() { note "$1 -> BUILD"; exit 1; }
