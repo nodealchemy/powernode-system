@@ -655,7 +655,8 @@ module PowernodeSystem
           ::System::LifecycleAuditable::AUDITED_ACTIONS +
             ::System::InternalCaService::AUDITED_ACTIONS +
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
-            ::System::Governance::GapMaterializer::AUDITED_ACTIONS
+            ::System::Governance::GapMaterializer::AUDITED_ACTIONS +
+            ::System::OutOfBandExecService::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
@@ -707,6 +708,33 @@ module PowernodeSystem
         # it would be a direct DB write or a hub console. That is the gap the
         # SiteSettingTool seam exists to close: a control reachable only through
         # the emergency path is not enabled.
+        # IMP-9ce0ed39c557 — the out-of-band-exec bounded runner's two
+        # operator-tunable bounds. Ordinary (not `protected:`) settings: they
+        # are numeric ceilings, not an authority-over-self arming switch, so
+        # an approval-gated write (site_setting_set) is the right door, not
+        # the human-only one. NEITHER holds a command, an allowlist or any
+        # secret, and both are coerced through SiteSetting.get's
+        # setting_type: "integer" path (String#to_i) before use — a
+        # non-numeric value degrades to 0, which OutOfBandExecService treats
+        # as "unset" and falls back to its own DEFAULT_* constant, so a
+        # corrupted setting cannot be used to inject anything into the shell
+        # command this governs (docs/design/out-of-band-exec.md).
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::OutOfBandExecService::TIMEOUT_SETTING_KEY,
+          setting_type: "integer",
+          description: "Seconds System::OutOfBandExecService waits for an out-of-band SSH " \
+                       "command before killing it. Unset or non-positive falls back to " \
+                       "System::OutOfBandExecService::DEFAULT_TIMEOUT_SECONDS."
+        )
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::OutOfBandExecService::MAX_OUTPUT_SETTING_KEY,
+          setting_type: "integer",
+          description: "Per-stream (stdout/stderr) byte cap System::OutOfBandExecService " \
+                       "applies to an out-of-band SSH command's output. Unset or " \
+                       "non-positive falls back to " \
+                       "System::OutOfBandExecService::DEFAULT_MAX_OUTPUT_BYTES."
+        )
+
         ::Ai::Tools::SiteSettingTool.register_key(
           ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_REPO_SETTING,
           setting_type: "string",
@@ -910,7 +938,7 @@ module PowernodeSystem
         # records names that must stay absent, and the registration spec pins
         # both directions.
         declarations = ::System::Governance::PolicyDeclarations
-        categories = ([ declarations::MANUAL_OPERATION_POLICIES ] +
+        categories = ([ declarations::MANUAL_OPERATION_POLICIES, declarations::OUT_OF_BAND_EXEC_POLICIES ] +
                       declarations::POLICY_SETS.map { |set| set[:policies] })
                      .flat_map(&:keys)
 

@@ -173,6 +173,10 @@ module Ai
         # an already-provisioned warm pool, so nothing here mints capacity and
         # system.instances.create would be the wrong family.
         "system_replace_instance"       => "system.instances.control",
+        # IMP-9ce0ed39c557 — the governed out-of-band exec verb. Same family
+        # as terminate/replace: a control-plane act on an existing instance,
+        # not the creation of one.
+        "system_out_of_band_exec"       => "system.instances.control",
         "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
@@ -648,6 +652,44 @@ module Ai
                      executor_class: "System::Executors::TerminateInstance",
                      gate_context: :terminate_instance_gate_context,
                      on_proceed: :terminate_instance_terminated_result
+
+      # IMP-9ce0ed39c557 — run ONE command on an instance over SSH, from the
+      # control plane, without its agent. destructive: true (arbitrary code
+      # execution is irreversible by MCP's own definition) and denied outright
+      # to every instance principal by Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+      # *system_out_of_band_exec* entry (core) — #out_of_band_exec_gate_context
+      # below ALSO refuses an instance principal directly, independent of that
+      # overlay entry, for the same reason #dr_lane_reap_by_instance_principal!
+      # does not trust the overlay alone.
+      #
+      # Literal category, not System::OutOfBandExecService::ACTION_CATEGORY:
+      # same class-body-evaluation reason as terminate above. Kept in step by
+      # spec/services/ai/tools/system_fleet_out_of_band_exec_spec.rb.
+      #
+      # executor_class is the SAME System::Executors::OutOfBandExec the REST
+      # operator door uses (System::NodeInstanceGating-style gate_or_execute)
+      # — one gated primitive behind both surfaces, not two implementations to
+      # keep in step.
+      # human_only: true (security review finding S1) — an agent can REQUEST
+      # this, but no agent or connector may APPROVE it: BaseTool#execute's
+      # human_only branch forces requires_human_session: true onto the
+      # opened Ai::ApprovalRequest, and every existing decision door already
+      # refuses ANY requires_human_session? request
+      # (Ai::Tools::AgentAutonomyTool#approve_deferred_operation /
+      # #reject_deferred_operation — see #human_session_refusal there). This
+      # is the SAME mechanism create_intervention_policy and friends already
+      # use; nothing new is invented here. It also forces the gate's policy
+      # to require_approval regardless of what the resolved policy says
+      # (Ai::AutonomyGate#evaluate), so an auto_approve/notify_and_proceed
+      # policy row can no longer let this run with no person confirming it.
+      declare_action "system_out_of_band_exec",
+                     mutating: true,
+                     destructive: true,
+                     human_only: true,
+                     action_category: "system.instance.out_of_band_exec",
+                     executor_class: "System::Executors::OutOfBandExec",
+                     gate_context: :out_of_band_exec_gate_context,
+                     on_proceed: :deferred_tool_call_result
 
       # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
       # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
@@ -4631,6 +4673,100 @@ module Ai
         success_result(terminated: true, instance: serialize_instance(instance.reload))
       end
 
+      # IMP-9ce0ed39c557 — resolves the target under the ACCOUNT scope first
+      # (same reasoning as terminate_instance_gate_context above), refuses an
+      # instance principal OUTRIGHT and independently of the core deny
+      # overlay, refuses a target this control plane self-hosts or a blank
+      # command BEFORE parking, and pins the instance's CURRENT SSH IP into
+      # the operation so a target repointed between this park and a later
+      # approval is refused at execution time
+      # (System::OutOfBandExecService#refusal), not silently followed.
+      def out_of_band_exec_gate_context(params)
+        # Defense in depth beyond Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+        # *system_out_of_band_exec* entry — mirrors
+        # #dr_lane_reap_by_instance_principal!'s reasoning and idiom exactly:
+        # the gate context must not depend on the overlay's pattern list
+        # staying intact. An instance principal must never be able to run an
+        # arbitrary command on a fleet node, whatever it has granted itself.
+        if instance_authorized?
+          raise CallerFacingError,
+                "system_out_of_band_exec is refused for an instance principal: an " \
+                "out-of-band command must be requested by an operator or an agent acting " \
+                "on a human's behalf, never by the node it could target. " \
+                "Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS also denies this verb outright " \
+                "for an instance principal."
+        end
+
+        # Review finding C2-4-round-3 — refuse an autonomous caller with no
+        # `user` BEFORE parking, not only at execution time.
+        # System::OutOfBandExecService#execute! already fails closed on this
+        # (C2-4: it resolves the ORIGINAL requester from
+        # Ai::DeferredOperation#requested_by and refuses when it cannot be
+        # resolved), so a request parked here with no user would ALWAYS be
+        # refused later regardless of what an operator decides — every real
+        # MCP session for this action carries one today (Mcp::Principal is
+        # only :user/:instance/:federation, and both non-user kinds are
+        # already refused above via `instance_authorized?`), but a caller
+        # this tool is built for directly, in-process, with `agent:` set and
+        # no `user:` (an autonomous agent acting for no one — a shape no
+        # current call site produces, but nothing this class enforces
+        # depends on that staying true) would otherwise still park a request,
+        # send it to a human's approval queue, and only fail once approved.
+        # Refusing now means WHO asked is knowable before anyone spends a
+        # decision on it — there is no requester for a later approval to be
+        # an approval OF.
+        if user.nil?
+          raise CallerFacingError,
+                "system_out_of_band_exec must be requested by a person's own session (or an " \
+                "agent acting for one) — refusing to park a request with no requesting user to " \
+                "record or re-authorize at execution time."
+        end
+
+        instance =
+          begin
+            account_instances.find(params[:instance_id])
+          rescue ActiveRecord::RecordNotFound
+            # CallerFacingError (IMP-fdaab67b6fc5), a LITERAL message — see
+            # terminate_instance_gate_context above.
+            raise CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].inspect}"
+          end
+
+        command = params[:command].to_s
+        raise CallerFacingError, "command is required" if command.blank?
+
+        # Review finding: parking with a blank ssh_ip_address stores a nil
+        # pinned_ip — OutOfBandExecService's own pin check (an instance
+        # repointed between park and approval must be refused) can never
+        # fire against nil, since a repoint FROM nil TO any real address
+        # would look like "the pin still matches" to an equality check that
+        # was never given anything to compare against. Refuse here, at park
+        # time, instead of silently parking an operation execution can never
+        # safely honor.
+        raise CallerFacingError, "instance has no SSH IP address to pin" if instance.ssh_ip_address.blank?
+
+        # Refuses BEFORE parking exactly what execution time would refuse
+        # anyway (self-node / INV-1) — no pinned_ip argument here, since the
+        # pin this operation will carry does not exist until this park
+        # succeeds below.
+        early_refusal = ::System::OutOfBandExecService.new.refusal(instance: instance, command: command)
+        raise CallerFacingError, early_refusal if early_refusal
+
+        {
+          executor_params: {
+            instance_id: instance.id,
+            command: command,
+            sudo: params.key?(:sudo) ? ::ActiveModel::Type::Boolean.new.cast(params[:sudo]) : true,
+            pinned_ip: instance.ssh_ip_address,
+            call_origin: call_origin
+          },
+          # Review finding R2-1 — see NodeInstanceGating#gate_out_of_band_exec's
+          # identical note: the approver must see WHERE this will run.
+          description: "Run an out-of-band command on '#{instance.name}' (#{instance.ssh_ip_address})",
+          source_type: instance.class.name,
+          source_id: instance.id
+        }
+      end
+
       # === The DR lane's gate contexts (IMP-4e49eb79c5e0) ===
       #
       # Both resolve the target under the ACCOUNT scope first, so a
@@ -7372,13 +7508,26 @@ module Ai
       # pending envelope, the misdeclaration fail-closed and #authorization_error
       # are all the inherited seam, reached through `super` with the resolved
       # category substituted. Nothing else on this tool takes this branch.
-      def run_through_autonomy_gate(declaration, params)
+      # IMP-9ce0ed39c557 — **kwargs added (was a fixed 2-arg signature). Any
+      # OTHER declared action on this tool now reaching `human_only: true`
+      # (system_out_of_band_exec) calls BaseTool#execute's
+      # `run_through_autonomy_gate(declaration, params,
+      # requires_human_session: true)` — a bare 2-positional override here
+      # raised ArgumentError for EVERY action on this tool, not just the
+      # instance-pool-update one this override exists for, since Ruby
+      # dispatches to the subclass override regardless of which action is
+      # routing through it. `**kwargs` forwarded through both `super` calls
+      # keeps the pool-update special case exactly as it was (it is never
+      # itself human_only, so it is always called with no extra kwargs in
+      # practice) while making every unrelated action's own keyword rider
+      # actually reach the base implementation.
+      def run_through_autonomy_gate(declaration, params, **kwargs)
         return super unless routed_action_name(params) == POOL_UPDATE_ACTION
 
         decision = instance_pool_update_gate_decision(params)
         return decision[:result] if decision.key?(:result)
 
-        super(declaration.merge(action_category: decision[:category]), params)
+        super(declaration.merge(action_category: decision[:category]), params, **kwargs)
       end
 
       # {result: <envelope>} to answer the caller here, {category: <string>} to

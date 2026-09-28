@@ -178,6 +178,20 @@ module System
       out
     end
 
+    # IMP-9ce0ed39c557 (S: command-text security finding) — true when `text`
+    # contains anything ANY pattern above would redact, without redacting or
+    # returning it. Used to REFUSE at request time (out-of-band-exec: a
+    # command the approver is shown must never itself carry inline
+    # secret-shaped material), which is a different use case from every
+    # existing caller of .redact/.redact_text — those all sanitize output
+    # ALREADY produced, after the fact; this is a pre-check on caller INPUT,
+    # before anything runs. nil/blank text never matches.
+    def self.secret_shaped?(text)
+      return false if text.blank?
+
+      PATTERNS.any? { |pattern| text.match?(pattern) }
+    end
+
     # Convenience for hashes whose values may contain shell output.
     # Recurses into nested hashes + arrays. Used by Rails.logger calls
     # that already build a payload hash and want one-shot redaction.

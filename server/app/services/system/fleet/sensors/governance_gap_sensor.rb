@@ -228,7 +228,14 @@ module System
 
         def declared_categories
           sets = declarations::POLICY_SETS.flat_map { |set| set[:policies].keys }
-          (sets + declarations::MANUAL_OPERATION_POLICIES.keys).to_set
+          # MANUAL_OPERATION_POLICIES and OUT_OF_BAND_EXEC_POLICIES (IMP-
+          # 9ce0ed39c557) are the two sets PolicyReconciler#declared_sets
+          # reconciles OUTSIDE POLICY_SETS (no owning agent for either, so
+          # neither takes an OPERATOR_TWINS pairing) — both have to be named
+          # here too, or this sensor reads them as unowned despite
+          # PolicyReconciler writing their rows just the same.
+          (sets + declarations::MANUAL_OPERATION_POLICIES.keys +
+            declarations::OUT_OF_BAND_EXEC_POLICIES.keys).to_set
         end
 
         def category_unowned

@@ -3,6 +3,42 @@
 require "rails_helper"
 
 RSpec.describe System::ShellOutputSanitizer do
+  # IMP-9ce0ed39c557 (security review, command-text finding) — the
+  # out-of-band-exec pre-check on CALLER INPUT, before anything runs: a
+  # command that would itself get redacted if it ever appeared in output must
+  # be refused rather than parked and shown to an approver.
+  describe ".secret_shaped?" do
+    it "is false for nil" do
+      expect(described_class.secret_shaped?(nil)).to be false
+    end
+
+    it "is false for an empty string" do
+      expect(described_class.secret_shaped?("")).to be false
+    end
+
+    it "is false for an ordinary command with no secret-shaped content" do
+      expect(described_class.secret_shaped?("systemctl restart nginx")).to be false
+    end
+
+    it "is true for a command carrying a password= assignment" do
+      expect(described_class.secret_shaped?("export PASSWORD=hunter2-secret-pw")).to be true
+    end
+
+    it "is true for a command carrying an AWS access key id" do
+      expect(described_class.secret_shaped?("aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE")).to be true
+    end
+
+    it "is true for a command carrying an Authorization bearer token" do
+      expect(described_class.secret_shaped?("curl -H 'Authorization: Bearer abcdefABCDEF1234567890_-' https://x")).to be true
+    end
+
+    it "does not redact or otherwise mutate the input" do
+      command = "export PASSWORD=hunter2-secret-pw"
+      described_class.secret_shaped?(command)
+      expect(command).to eq("export PASSWORD=hunter2-secret-pw")
+    end
+  end
+
   describe ".redact" do
     it "returns nil for nil input" do
       expect(described_class.redact(nil)).to be_nil

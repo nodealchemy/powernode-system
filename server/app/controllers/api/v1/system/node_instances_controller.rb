@@ -15,7 +15,7 @@ module Api
         before_action :set_node
         before_action :set_instance, only: [
           :show, :update, :destroy, :boot_config,
-          :start, :stop, :reboot, :terminate,
+          :start, :stop, :reboot, :terminate, :out_of_band_exec,
           :associate_public_ip, :disassociate_public_ip
         ]
 
@@ -256,6 +256,29 @@ module Api
         def terminate
           require_permission("system.instances.control")
           gate_or_execute(:terminate)
+        end
+
+        # POST /api/v1/system/nodes/:node_id/node_instances/:id/out_of_band_exec
+        # Run ONE command over SSH, from the control plane, without the
+        # node's own agent (IMP-9ce0ed39c557). Governed by
+        # system.instance.out_of_band_exec (require_approval by default,
+        # NOT a reuse of system.task.ssh_command) — the same gated executor
+        # (System::Executors::OutOfBandExec) the MCP verb
+        # system_out_of_band_exec uses, so one operator-tuned policy row and
+        # one audit trail governs the operation however it is invoked.
+        #
+        # Not routed through #gate_or_execute (NodeInstanceGating): that
+        # helper is hardcoded to LIFECYCLE_EXECUTORS' instance_id-only param
+        # shape and the "system.task.#{event}" category composition, neither
+        # of which fits a caller-supplied command under a differently-named
+        # category. #gate_out_of_band_exec (NodeInstanceGating) is built
+        # directly against Ai::AutonomyGate instead, mirroring
+        # #gate_or_execute's own shape — extracted there (review finding
+        # #10) to keep this action a thin permission-check + delegate, same
+        # as every other action in this controller.
+        def out_of_band_exec
+          require_permission("system.instances.control")
+          gate_out_of_band_exec
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/associate_public_ip

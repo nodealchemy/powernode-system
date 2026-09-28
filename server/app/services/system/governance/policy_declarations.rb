@@ -1270,6 +1270,34 @@ module System
         "system.volume_snapshot_delete" => "require_approval" # destroys a restore point
       }.freeze
 
+      # IMP-9ce0ed39c557 — the governed out-of-band exec door: run ONE
+      # command on a node over SSH, from the control plane, without the
+      # node's own agent. A DEDICATED category, never a reuse of
+      # system.task.ssh_command — that category governs the agent-actuated
+      # `ssh_command` Task, and this is a structurally different primitive
+      # (System::OutOfBandExecService, bounded, audited, never delivered to
+      # the node's agent at all). Reusing it would mean an operator who
+      # auto-approves in-band SSH tasks has unknowingly also auto-approved
+      # this.
+      #
+      # SAME SHAPE as system.task.ssh_command itself, deliberately: ONE row
+      # at scope "global", no agent-scoped twin. system.task.ssh_command has
+      # no owning agent either (PolicyDeclarations.owner_of returns nil for
+      # it — it sits outside POLICY_SETS entirely, in the separate
+      # MANUAL_OPERATION_POLICIES track) precisely because arbitrary code
+      # execution has no natural agent owner the way capacity/storage/
+      # ingress do. scope "global" is agent-binding by design
+      # (Ai::InterventionPolicyService#resolve_without_environment), so this
+      # single row governs both the REST operator door
+      # (System::NodeInstanceGating-style gate_or_execute) and the MCP verb
+      # an agent calls — there is no second row to keep in sync.
+      #
+      # require_approval, matching ssh_command's own default and for the
+      # same reason: arbitrary code execution on a fleet node.
+      OUT_OF_BAND_EXEC_POLICIES = {
+        "system.instance.out_of_band_exec" => "require_approval"
+      }.freeze
+
       # IMP-0467eee9fc57 — the cordon-only (unschedulable) mode for a
       # NodeInstance, gated by Ai::Tools::SystemFleetTool's
       # system_cordon_instance AND system_uncordon_instance under ONE category:

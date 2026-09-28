@@ -67,6 +67,11 @@ Rails.application.routes.draw do
               post :stop
               post :reboot
               post :terminate
+              # IMP-9ce0ed39c557 — run ONE command over SSH, from the
+              # control plane, without the node's own agent. Governed by
+              # system.instance.out_of_band_exec (require_approval by
+              # default). Body: { command: String, sudo?: bool }.
+              post :out_of_band_exec
               post :associate_public_ip
               post :disassociate_public_ip
               # Claim-by-ID generic-image fleet flow: downloads the per-instance
@@ -884,6 +889,11 @@ Rails.application.routes.draw do
           # it, `compilable` includes it, and no agent report retires it, so a
           # non-forced release left the bridge serving forever.
           post "sdwan/host_bridges/reap", to: "host_bridge_reaper#create"
+          # IMP-9ce0ed39c557 — fails Ai::DeferredOperations stuck `executing`
+          # under system.instance.out_of_band_exec past timeout_seconds+
+          # margin. NEVER re-runs the command. Invoked by
+          # OutOfBandExecReaperJob every 5 minutes.
+          post "out_of_band_exec/reap", to: "out_of_band_exec_reaper#create"
 
           # Storage chown completion — the on-node agent POSTs here
           # after finishing a storage.chown task. Transitions the

@@ -409,7 +409,32 @@ module System
         }
       end
 
-      def declared_sets = [ manual_set ] + PolicyDeclarations::POLICY_SETS
+      # IMP-9ce0ed39c557. Same reasoning as #manual_set immediately above:
+      # system.instance.out_of_band_exec has no natural owning agent (the same
+      # reason system.task.ssh_command has none — PolicyDeclarations.owner_of
+      # returns nil for both), so it is declared here rather than as a
+      # POLICY_SETS entry. A bare agent-less POLICY_SETS entry would need an
+      # OPERATOR_TWINS pairing (policy_declarations_ownership_spec enforces
+      # "every agent-less set in POLICY_SETS has a twin" as an exact
+      # match_array, not merely a subset) — inventing an owning agent for
+      # this category just to satisfy that pairing would misrepresent who
+      # actually acts on it. #manual_set is not a template of one; this is a
+      # second member of the same "no owner, not a POLICY_SETS entry" class,
+      # kept separate from MANUAL_OPERATION_POLICIES because that hash's
+      # composition (`"system.task.#{command}"`, System::Task::COMMANDS-
+      # derived) does not fit a category outside the system.task.* namespace.
+      def out_of_band_exec_set
+        {
+          key: "out-of-band-exec-operator",
+          agent_key: nil,
+          scope: "global",
+          priority: 5,
+          conditions: {},
+          policies: PolicyDeclarations::OUT_OF_BAND_EXEC_POLICIES
+        }
+      end
+
+      def declared_sets = [ manual_set, out_of_band_exec_set ] + PolicyDeclarations::POLICY_SETS
 
       # Yields (set, agent, skip_reason). skip_reason is non-nil when the set
       # cannot be reconciled — today only "agent absent". A set is SKIPPED, never

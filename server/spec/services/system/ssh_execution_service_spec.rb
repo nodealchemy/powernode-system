@@ -148,4 +148,184 @@ RSpec.describe System::SshExecutionService do
       expect(result.data[:stdout]).to include("Mock execution")
     end
   end
+
+  # IMP-9ce0ed39c557 — .cleanse/#cleanse's only caller was the unrouted
+  # ssh_cleanse controller action, removed alongside it (dead code with no
+  # remaining door). .sync/#sync is untouched: System::NodeMaintenanceService
+  # calls it for real.
+  describe "cleanse removal" do
+    it "no longer implements .cleanse or #cleanse" do
+      expect(described_class).not_to respond_to(:cleanse)
+      expect(described_class.new).not_to respond_to(:cleanse)
+    end
+
+    it "still implements .sync — a real caller elsewhere keeps it" do
+      expect(described_class).to respond_to(:sync)
+    end
+  end
+
+  # IMP-9ce0ed39c557 — the opt-in bounded runner for out-of-band exec. A
+  # SEPARATE method from #execute (never called by any of its ~40 existing
+  # in-process callers): those stay on Open3.capture3 with no deadline and
+  # no output cap. This delegates the actual timeout/truncation MECHANICS to
+  # System::BoundedCommandRunner (covered for real elsewhere,
+  # bounded_command_runner_spec.rb) and is responsible only for its own
+  # slice: host/key validation (shared with #execute) and the ssh argv,
+  # stubbed here so this file stays about THIS class's contract.
+  describe "#execute_bounded" do
+    def execute_bounded!(**kw)
+      described_class.new.execute_bounded(
+        instance: instance, command: "uptime",
+        timeout_seconds: 45, max_output_bytes: 1024, **kw
+      )
+    end
+
+    let(:bounded_result) do
+      System::BoundedCommandRunner::Result.new(
+        stdout: "ok", stderr: "", exit_code: 0, timed_out: false, truncated: false
+      )
+    end
+
+    before do
+      allow(System::BoundedCommandRunner).to receive(:run).and_return(bounded_result)
+    end
+
+    it "builds the ssh argv with BatchMode and ServerAliveInterval and delegates to BoundedCommandRunner" do
+      execute_bounded!
+
+      expect(System::BoundedCommandRunner).to have_received(:run).with(
+        array_including("ssh", "-o", "BatchMode=yes", a_string_matching(/\AServerAliveInterval=\d+\z/)),
+        timeout_seconds: 45, max_output_bytes: 1024
+      )
+    end
+
+    # IMP-9ce0ed39c557 review finding #3: the remote command must be wrapped
+    # in `timeout -k` so the NODE enforces its own deadline independent of
+    # what happens to the local ssh client (see
+    # #execute_ssh_command_bounded's header comment). `sudo` wraps the
+    # OUTSIDE of that wrapper — `sudo timeout -k 5 N sh -c '<command>'` — so
+    # `timeout` itself runs as root and can signal a root-owned group.
+    it "wraps the command in a remote `timeout -k` + sudo, not a bare sudo prefix" do
+      execute_bounded!
+
+      expect(System::BoundedCommandRunner).to have_received(:run).with(
+        array_including("pnadmin@10.0.0.9", "sudo timeout -k 5 45 sh -c uptime"), anything
+      )
+    end
+
+    it "does not sudo-prefix when sudo: false, but still wraps in timeout -k" do
+      execute_bounded!(sudo: false)
+
+      expect(System::BoundedCommandRunner).to have_received(:run).with(
+        array_including("pnadmin@10.0.0.9", "timeout -k 5 45 sh -c uptime"), anything
+      )
+    end
+
+    it "shell-escapes a command containing shell operators as ONE argument to `sh -c`" do
+      execute_bounded!(command: "echo a && echo b")
+
+      expect(System::BoundedCommandRunner).to have_received(:run).with(
+        array_including("pnadmin@10.0.0.9", "sudo timeout -k 5 45 sh -c echo\\ a\\ \\&\\&\\ echo\\ b"), anything
+      )
+    end
+
+    it "returns success with timed_out/truncated surfaced in data" do
+      result = execute_bounded!
+
+      expect(result.success?).to be true
+      expect(result.data[:timed_out]).to be false
+      expect(result.data[:truncated]).to be false
+      expect(result.data[:stdout]).to eq("ok")
+    end
+
+    it "surfaces a timed-out run as a Result.err carrying timed_out: true" do
+      allow(System::BoundedCommandRunner).to receive(:run).and_return(
+        System::BoundedCommandRunner::Result.new(
+          stdout: "partial", stderr: "", exit_code: nil, timed_out: true, truncated: false
+        )
+      )
+
+      result = execute_bounded!
+
+      expect(result.success?).to be false
+      expect(result.data[:timed_out]).to be true
+      expect(result.error).to match(/timed out/i)
+    end
+
+    it "surfaces truncated output as data even on an otherwise-successful run" do
+      allow(System::BoundedCommandRunner).to receive(:run).and_return(
+        System::BoundedCommandRunner::Result.new(
+          stdout: "x" * 1024, stderr: "", exit_code: 0, timed_out: false, truncated: true
+        )
+      )
+
+      result = execute_bounded!
+
+      expect(result.success?).to be true
+      expect(result.data[:truncated]).to be true
+    end
+
+    it "still validates argv-injection guards before ever calling BoundedCommandRunner" do
+      allow(instance).to receive(:admin_user).and_return("-oProxyCommand=evil")
+
+      result = execute_bounded!
+
+      expect(result.success?).to be false
+      expect(System::BoundedCommandRunner).not_to have_received(:run)
+    end
+
+    it "returns Result.err with no SSH key available, never reaching BoundedCommandRunner" do
+      allow(instance).to receive(:key).and_return(nil)
+      allow(instance).to receive_message_chain(:node, :ssh_key).and_return(nil)
+
+      result = execute_bounded!
+
+      expect(result.success?).to be false
+      expect(System::BoundedCommandRunner).not_to have_received(:run)
+    end
+
+    it "falls back to the same synthetic mock as #execute when SSH is disabled in test env" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("SYSTEM_SSH_ENABLED").and_return("false")
+
+      result = execute_bounded!
+
+      expect(System::BoundedCommandRunner).not_to have_received(:run)
+      expect(result.success?).to be true
+      expect(result.data[:stdout]).to include("Mock execution")
+      expect(result.data[:timed_out]).to be false
+      expect(result.data[:truncated]).to be false
+    end
+
+    # Review finding #4/#9: the previous log-line coverage only stubbed
+    # Rails.logger and asserted nothing about its arguments, so it could not
+    # have failed even with the command text still logged. This captures the
+    # REAL arguments #execute_bounded passes to Rails.logger.info, with a
+    # distinctive command marker that would only appear here if it leaked,
+    # and separately confirms logging still happened at all (so this cannot
+    # pass merely because nothing was ever logged).
+    it "never logs the command text on either log line" do
+      marker = "echo super-secret-marker-9ce0ed"
+      logged = []
+      allow(Rails.logger).to receive(:info) { |msg| logged << msg }
+
+      execute_bounded!(command: marker)
+
+      expect(logged).not_to be_empty
+      expect(logged.join("\n")).to include(instance.id.to_s)
+      expect(logged.join("\n")).not_to include(marker)
+    end
+
+    it "refuses outside the test env when SSH is disabled, same as #execute" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("SYSTEM_SSH_ENABLED").and_return("false")
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+
+      result = execute_bounded!
+
+      expect(result.success?).to be false
+      expect(result.error).to include("SYSTEM_SSH_ENABLED")
+      expect(System::BoundedCommandRunner).not_to have_received(:run)
+    end
+  end
 end

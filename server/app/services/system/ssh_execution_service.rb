@@ -24,8 +24,12 @@ module System
       new.sync(instance: instance)
     end
 
-    def self.cleanse(instance:)
-      new.cleanse(instance: instance)
+    # IMP-9ce0ed39c557 — the opt-in bounded runner for out-of-band exec (see
+    # #execute_bounded below). Same key/host validation as #execute, but
+    # never used by any of that method's ~40 in-process callers.
+    def self.execute_bounded(instance:, command:, sudo: true, timeout_seconds:, max_output_bytes:)
+      new.execute_bounded(instance: instance, command: command, sudo: sudo,
+                          timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes)
     end
 
     # Copy a local file to a remote instance via SCP.
@@ -71,6 +75,73 @@ module System
       Runtime::Result.err(error: e.message, data: { exit_code: -1 })
     end
 
+    # IMP-9ce0ed39c557 — the OPT-IN bounded runner for out-of-band exec.
+    # Every existing caller of #execute (~40 in-process services) is
+    # untouched: this is a separate method with no shared call graph, so
+    # nothing already in production gains a timeout or an output cap it
+    # never asked for. Only System::OutOfBandExecService calls this.
+    #
+    # Shares #execute's host/key resolution and argv-injection guards
+    # (F5-01) — those protect the destination, not the command, and apply
+    # identically here. What differs: the actual ssh invocation is bounded
+    # by System::BoundedCommandRunner (a deadline + a per-stream output cap)
+    # instead of Open3.capture3, and two more OpenSSH options are set:
+    # BatchMode=yes (never prompt — a hung passphrase/host-key prompt would
+    # otherwise sit past the timeout without ssh itself ever giving up) and
+    # ServerAliveInterval (so a black-holed connection is detected and torn
+    # down by ssh's own keepalive rather than relying solely on the outer
+    # deadline to kill it).
+    def execute_bounded(instance:, command:, sudo: true, timeout_seconds:, max_output_bytes:)
+      validate_instance!(instance)
+
+      ssh_ip = instance.ssh_ip_address
+      admin_user = instance.admin_user || "pnadmin"
+      ssh_key = get_ssh_key(instance)
+
+      return Runtime::Result.err(error: "No SSH IP address available", data: { exit_code: -1 }) unless ssh_ip.present?
+      return Runtime::Result.err(error: "No SSH key available", data: { exit_code: -1 }) unless ssh_key.present?
+      if (endpoint_err = endpoint_error(admin_user, ssh_ip))
+        return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
+      end
+
+      # The command text is NEVER logged here (review finding — the previous
+      # version logged a redacted/truncated preview of it, which still
+      # contradicts this class's and the design doc's "never logs the
+      # command" claim for the out-of-band-exec path specifically: that
+      # claim has to hold for every sink, not just the audit rows). What
+      # gets run is under System::OutOfBandExecService's own STARTED/FINISHED
+      # AuditLog rows instead — this line only records that a call happened,
+      # against which instance, under what bounds.
+      Rails.logger.info(
+        "[SshExecutionService] Executing bounded command on instance #{instance.id} " \
+        "(timeout=#{timeout_seconds}s, cap=#{max_output_bytes}B)"
+      )
+
+      # `command` and `sudo` are passed through RAW (not pre-joined into one
+      # string here, unlike #execute) — #execute_ssh_command_bounded builds
+      # the remote `timeout -k` wrapper around `command` FIRST and applies
+      # `sudo` around the whole thing, so the ordering is `sudo timeout -k 5
+      # N sh -c '<command>'`: timeout runs AS ROOT and supervises a root
+      # shell, rather than sudo wrapping an already-bounded (but unrooted)
+      # timeout invocation.
+      raw = execute_ssh_command_bounded(
+        host: ssh_ip, user: admin_user, key: ssh_key, command: command, sudo: sudo,
+        timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes
+      )
+
+      Rails.logger.info(
+        "[SshExecutionService] Bounded command on instance #{instance.id} finished " \
+        "exit_code=#{raw[:exit_code].inspect} timed_out=#{raw[:timed_out]} truncated=#{raw[:truncated]}"
+      )
+
+      build_bounded_result(raw)
+    rescue ArgumentError
+      raise
+    rescue StandardError => e
+      Rails.logger.error("[SshExecutionService] Bounded SSH execution failed: #{ShellOutputSanitizer.redact(e.message)}")
+      Runtime::Result.err(error: e.message, data: { exit_code: -1, timed_out: false, truncated: false })
+    end
+
     def sync(instance:)
       validate_instance!(instance)
 
@@ -78,11 +149,6 @@ module System
       return Runtime::Result.ok(data: { message: "No sync script configured" }) unless platform&.sync_script.present?
 
       execute(instance: instance, command: "ipn sync", sudo: true)
-    end
-
-    def cleanse(instance:)
-      validate_instance!(instance)
-      execute(instance: instance, command: "ipn cleanse", sudo: true)
     end
 
     def scp_file(instance:, local_path:, remote_path:, mode: nil, recursive: false)
@@ -130,6 +196,43 @@ module System
     def build_exec_result(raw)
       data = { stdout: raw[:stdout], stderr: raw[:stderr], exit_code: raw[:exit_code] }
       if raw[:exit_code] == 0
+        Runtime::Result.ok(data: data)
+      else
+        Runtime::Result.err(error: "Command exited with status #{raw[:exit_code]}", data: data)
+      end
+    end
+
+    # `truncated` never affects success/failure on its own — the command may
+    # have completed and exited 0 with more output than the cap allows, and
+    # that is still a successful run whose output was clipped, not a failed
+    # one. `timed_out` always means failure: the caller's exit_code is nil
+    # (the process was killed, not "finished with a code"), so there is no
+    # exit status to report success from.
+    # stdout/stderr are redacted (ShellOutputSanitizer, the same scrubber
+    # every other log line in this class already uses) before they leave
+    # this method — the caller-supplied command can print anything,
+    # including material that looks like a credential, and this is the one
+    # place both bounded streams converge regardless of caller (audit, REST,
+    # MCP all read this same Result).
+    #
+    # NOTE the deviation from that class's own header ("primarily a LOGGING
+    # redactor, not a content rewriter... a caller that hands the sanitized
+    # text back to a machine consumer parsing the original output would
+    # silently corrupt it"): out-of-band exec is explicitly a HUMAN
+    # diagnostic surface, not a machine-parsed API response, and review
+    # direction was to prefer redacted-but-safe content over byte-perfect
+    # fidelity here. A future caller that needs the unredacted bytes for
+    # machine parsing must not reuse this method's output for that purpose.
+    def build_bounded_result(raw)
+      data = {
+        stdout: ShellOutputSanitizer.redact(raw[:stdout].to_s),
+        stderr: ShellOutputSanitizer.redact(raw[:stderr].to_s),
+        exit_code: raw[:exit_code],
+        timed_out: raw[:timed_out], truncated: raw[:truncated]
+      }
+      if raw[:timed_out]
+        Runtime::Result.err(error: "Command timed out", data: data)
+      elsif raw[:exit_code] == 0
         Runtime::Result.ok(data: data)
       else
         Runtime::Result.err(error: "Command exited with status #{raw[:exit_code]}", data: data)
@@ -186,12 +289,83 @@ module System
       end
     end
 
+    # Remote-side deadline (review finding): the LOCAL kill in
+    # BoundedCommandRunner only ever bounds the `ssh` client on THIS host.
+    # Without a pty, sshd sends the remote command no signal at all when the
+    # client disconnects/dies — a plain `ssh host 'sudo <command>'` whose
+    # local ssh is killed leaves that `sudo <command>` running as root on the
+    # node indefinitely. Wrapping the remote command in GNU coreutils
+    # `timeout -k 5 <N>` makes the REMOTE side enforce its own bound,
+    # independent of what happens to the local ssh client: `timeout` starts
+    # the wrapped command in its own process group and kills that whole
+    # group on expiry (`-k 5` gives it 5s after the initial TERM before
+    # escalating to KILL) — this is the AUTHORITATIVE bound; the local
+    # BoundedCommandRunner kill is a second, LOCAL-only layer, not a
+    # substitute for it. `sh -c` + Shellwords.escape wraps the whole command
+    # (which may itself contain shell operators — `&&`, pipes, redirects) as
+    # ONE argument, so `timeout` supervises the entire thing rather than
+    # racing only its first word. `sudo` wraps the outside: `sudo timeout -k
+    # 5 N sh -c '<command>'` runs `timeout` itself as root, which is what
+    # lets it signal a root-owned command's process group.
+    def execute_ssh_command_bounded(host:, user:, key:, command:, sudo:, timeout_seconds:, max_output_bytes:)
+      unless ssh_available?
+        Rails.logger.warn("[SshExecutionService] SSH not available - returning mock bounded response")
+        return mock_ssh_response(command).merge(timed_out: false, truncated: false)
+      end
+
+      require "tempfile"
+      require "shellwords"
+
+      key_file = Tempfile.new([ "ssh_key", ".pem" ])
+      begin
+        key_file.write(key)
+        key_file.close
+        File.chmod(0o600, key_file.path)
+
+        ssh_options = [
+          "-o", "StrictHostKeyChecking=no",
+          "-o", "UserKnownHostsFile=/dev/null",
+          "-o", "PasswordAuthentication=no",
+          "-o", "ConnectTimeout=30",
+          "-o", "BatchMode=yes",
+          "-o", "ServerAliveInterval=10",
+          "-i", key_file.path
+        ]
+
+        bounded_command = "timeout -k 5 #{timeout_seconds.to_i} sh -c #{Shellwords.escape(command)}"
+        remote_command = sudo ? "sudo #{bounded_command}" : bounded_command
+
+        ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", remote_command ]
+
+        result = ::System::BoundedCommandRunner.run(
+          ssh_command, timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes
+        )
+        { stdout: result.stdout, stderr: result.stderr, exit_code: result.exit_code,
+          timed_out: result.timed_out?, truncated: result.truncated? }
+      ensure
+        key_file.unlink
+      end
+    end
+
+    # Public class-level form (review finding S6) — lets a caller check
+    # BEFORE invoking #execute_bounded whether this would take the mock path
+    # at all, rather than discovering it after the fact from the shape of the
+    # response. OutOfBandExecService uses this to refuse outright rather than
+    # audit a mocked run as if it were a real one: unlike #execute's ~40
+    # in-process callers (routine housekeeping, where a test-env mock is a
+    # harmless convenience), out-of-band-exec's entire point is proof a
+    # specific command really ran, so a silent mock success there is actively
+    # misleading, not merely inert.
+    def self.ssh_enabled?
+      ENV["SYSTEM_SSH_ENABLED"] != "false"
+    end
+
     # Returns true when real SSH execution is enabled. Default is on; set
     # SYSTEM_SSH_ENABLED=false to disable. Outside the test environment we
     # treat the disabled state as a misconfiguration rather than silently
     # mocking — see #mock_ssh_response.
     def ssh_available?
-      ENV["SYSTEM_SSH_ENABLED"] != "false"
+      self.class.ssh_enabled?
     end
 
     # In test env (CI/RSpec), returning a synthetic exit_code: 0 lets specs

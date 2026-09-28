@@ -185,6 +185,133 @@ module System
       end
     end
 
+    # IMP-9ce0ed39c557 — the governed out-of-band exec door (REST side of the
+    # same gated primitive the MCP verb system_out_of_band_exec uses; see
+    # Ai::Tools::SystemFleetTool#out_of_band_exec_gate_context, which this
+    # mirrors check-for-check). Extracted from
+    # NodeInstancesController#out_of_band_exec (review finding #10 — that
+    # controller was the largest file in its directory) so the action stays
+    # a thin permission-check + delegate like every other one here.
+    #
+    # Not folded into #gate_or_execute: that helper is hardcoded to
+    # LIFECYCLE_EXECUTORS' instance_id-only param shape and the
+    # "system.task.#{event}" category composition, neither of which fits a
+    # caller-supplied command under a differently-named category.
+    def gate_out_of_band_exec
+      # Security review finding S3 — this door must be a PERSON's own
+      # session, never a machine principal. `current_worker` is set by BOTH
+      # worker-JWT auth and forwarded-mTLS-client-cert auth
+      # (MtlsClientAuthentication#authenticate_worker_via_mtls! sets the
+      # same attribute), so checking its presence alone refuses both shapes
+      # team-lead named. #require_permission alone does not: a worker
+      # carrying system.instances.control would otherwise pass it exactly
+      # like a human admin (Authentication#has_permission? dispatches to
+      # `current_worker.has_permission?` when a worker, not a user, is the
+      # caller) — this feature runs root commands over SSH with no node
+      # agent involved, so a compromised/misissued worker or node
+      # certificate must not be able to even REQUEST it, human_only
+      # approval notwithstanding.
+      if current_worker.present?
+        Rails.logger.warn(
+          "[NodeInstanceGating] refusing out_of_band_exec for a worker/node-cert principal: " \
+          "worker=#{current_worker.id}"
+        )
+        return render_error(
+          "out-of-band exec must be requested from a person's own session, never a worker or " \
+          "node-cert principal", status: :forbidden
+        )
+      end
+
+      command = params[:command].to_s
+      return render_error("command is required", status: :unprocessable_content) if command.blank?
+
+      sudo = params.key?(:sudo) ? ::ActiveModel::Type::Boolean.new.cast(params[:sudo]) : true
+
+      # Review finding #5 — mirrors
+      # SystemFleetTool#out_of_band_exec_gate_context's identical check and
+      # reasoning: a blank ssh_ip_address would gate with a nil pinned_ip,
+      # which OutOfBandExecService's pin-match check at execution time can
+      # never meaningfully compare against.
+      if @instance.ssh_ip_address.blank?
+        return render_error("instance has no SSH IP address to pin", status: :unprocessable_content)
+      end
+
+      # Refuses BEFORE gating exactly what execution time would refuse
+      # anyway (self-node / INV-1) — mirrors
+      # SystemFleetTool#out_of_band_exec_gate_context's own early check.
+      early_refusal = ::System::OutOfBandExecService.new.refusal(instance: @instance, command: command)
+      return render_error(early_refusal, status: :unprocessable_content) if early_refusal
+
+      # IP-pin (IMP-9ce0ed39c557): resolve and freeze the CURRENT SSH IP
+      # into the operation now, so a target repointed between this
+      # request and a later approval is refused at execution time
+      # (System::OutOfBandExecService#refusal), not silently followed.
+      #
+      # call_origin: nil — a REST call is a person acting in their own
+      # session, and Ai::Tools::CallOrigin marks doors a MACHINE calls
+      # through; there is deliberately no human value (see that module's
+      # header). Distinguishing "this ran via REST" from "this ran via
+      # the identical MCP verb" is what leaving it unmarked here does. The
+      # guard above now makes that reading LITERAL, not just documentary: a
+      # machine principal (worker/node-cert) never reaches this line at all.
+      #
+      # requires_human_session: true (security review finding S1) — same
+      # flag BaseTool's human_only branch sets for the MCP verb, passed
+      # directly since this door builds its own Ai::AutonomyGate.evaluate
+      # call rather than going through BaseTool. Forces require_approval
+      # regardless of the resolved policy (Ai::AutonomyGate#evaluate) and
+      # marks the opened Ai::ApprovalRequest so it can only be decided from a
+      # person's own session — never through a tool door, per every other
+      # requires_human_session? consumer (Ai::Tools::AgentAutonomyTool
+      # #approve_deferred_operation / #reject_deferred_operation).
+      gate_result = ::Ai::AutonomyGate.evaluate(
+        action_category: ::System::OutOfBandExecService::ACTION_CATEGORY,
+        executor_class: "System::Executors::OutOfBandExec",
+        params: {
+          instance_id: @instance.id,
+          command: command,
+          sudo: sudo,
+          pinned_ip: @instance.ssh_ip_address,
+          call_origin: nil
+        },
+        account: current_account,
+        requested_by: current_user,
+        source_type: @instance.class.name,
+        source_id: @instance.id,
+        # Review finding R2-1 — the pinned address is named on the card the
+        # approver actually reads, not just stored in executor_params: an
+        # approver must see WHERE this will run, since that's exactly the
+        # value a target repoint (system_update_instance is ungated; REST
+        # update too) could otherwise silently change underneath a decision
+        # made from the instance's NAME alone.
+        description: "Run an out-of-band command on '#{@instance.name}' (#{@instance.ssh_ip_address})",
+        requires_human_session: true
+      )
+
+      # Review finding C2-5 — :proceed is UNREACHABLE here in real operation:
+      # requires_human_session: true (above) makes Ai::AutonomyGate#evaluate
+      # force require_approval regardless of the resolved policy, so this
+      # gate never actually returns :proceed for this category. Mirrors
+      # BaseTool#run_through_autonomy_gate's own identical arm
+      # (base_tool.rb ~1227-1229) rather than rendering a fabricated success
+      # a person never confirmed — if the gate ever DID return :proceed here
+      # (a bug elsewhere), reporting it as a refusal is the safe reading, not
+      # a success nobody approved.
+      case gate_result.decision
+      when :proceed
+        render_error("Action #{::System::OutOfBandExecService::ACTION_CATEGORY} needs a person's " \
+                     "confirmation; refusing.", status: :unprocessable_content)
+      when :pending
+        render_pending_approval(gate_result.deferred_operation,
+                                message: "Approval required to run an out-of-band command on #{@instance.name}")
+      when :blocked
+        render_error(gate_result.error || "Action blocked by policy", status: :unprocessable_content)
+      else
+        render_error("Action #{::System::OutOfBandExecService::ACTION_CATEGORY} returned an unknown " \
+                     "gate decision #{gate_result.decision.inspect}; refusing.", status: :internal_server_error)
+      end
+    end
+
     # REMOVED in campaign 01a0790b increment 1:
     #
     #   #control_or_error              — already had NO callers (all four

@@ -59,34 +59,22 @@ module Api
             render_control_result(control_instance(:terminate), "terminate")
           end
 
-          # POST /api/v1/internal/system/node_instances/:id/ssh_exec
-          def ssh_exec
-            return render_error("Command is required", status: :unprocessable_content) if params[:command].blank?
-
-            result = ::System::SshExecutionService.execute(
-              instance: @instance,
-              command: params[:command],
-              sudo: params[:sudo] != false,
-              operation_id: params[:operation_id]
-            )
-
-            render_success(
-              data: result.slice(:success, :stdout, :stderr, :exit_code, :error)
-            )
-          end
-
-          # POST /api/v1/internal/system/node_instances/:id/ssh_sync
-          def ssh_sync
-            result = ::System::SshExecutionService.sync(instance: @instance)
-            @instance.update(last_synced_at: Time.current) if result[:success]
-            render_success(data: result.slice(:success, :error))
-          end
-
-          # POST /api/v1/internal/system/node_instances/:id/ssh_cleanse
-          def ssh_cleanse
-            result = ::System::SshExecutionService.cleanse(instance: @instance)
-            render_success(data: result.slice(:success, :error))
-          end
+          # ssh_exec/ssh_sync/ssh_cleanse REMOVED (IMP-9ce0ed39c557). Verified
+          # unrouted dead code first: no entry in config/routes.rb, no spec
+          # coverage anywhere in the repo. ssh_exec in particular was an
+          # UNGATED arbitrary-command-execution door — worker-token-only
+          # authentication (this controller's BaseController), no approval
+          # gate, no audit trail, no allowlist. It is not resurrected as the
+          # governed door: that is System::Executors::OutOfBandExec, reached
+          # through Ai::AutonomyGate via the MCP verb system_out_of_band_exec
+          # or the REST operator endpoint POST .../node_instances/:id/out_of_band_exec,
+          # both gated under system.instance.out_of_band_exec (never a reuse
+          # of system.task.ssh_command) and denied outright to every instance
+          # principal by Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS' entry for
+          # it. System::SshExecutionService.sync/#sync is UNTOUCHED — it has
+          # a real caller elsewhere (System::NodeMaintenanceService), unlike
+          # .cleanse/#cleanse (ssh_cleanse's only caller), which is removed
+          # with it — see that file.
 
           # POST /api/v1/internal/system/node_instances/:id/associate_public_ip
           def associate_public_ip

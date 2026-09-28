@@ -1,6 +1,10 @@
 # System extension scheduled jobs.
 #
-# This file deliberately holds ONE recurring job: the hourly reaper.
+# Held ONE recurring job (the hourly task reaper) until IMP-9ce0ed39c557
+# added the out-of-band-exec reaper below — a different closer, for a
+# different stuck-row class (Ai::DeferredOperation, not System::Task), on
+# its own much shorter interval since it is bounding a live
+# timeout_seconds+margin rather than a 24h/48h grace window.
 #
 # It used to say the primary dispatch path was event-driven — System::Task's
 # after_commit enqueuing a SystemExecuteTaskJob on creation. Campaign 01a0790b
@@ -39,6 +43,20 @@
     class: "SystemTaskReaperJob"
     queue: system
     description: "System: fail abandoned running tasks and cancel unrunnable ones"
+
+  # IMP-9ce0ed39c557 — fails Ai::DeferredOperations stuck `executing` under
+  # system.instance.out_of_band_exec past timeout_seconds+margin (default
+  # ~120s+60s). Every 5 minutes, matching the platform's other short-
+  # interval sweeps (see worker/config/sidekiq.yml's */5 and */10 entries) —
+  # a stuck out-of-band command needs to surface in minutes, not hours, since
+  # it means an operator or agent is waiting on an approval that already ran
+  # (or is waiting to know it never will). NEVER re-runs the command; see
+  # OutOfBandExecReaperJob's own header.
+  out_of_band_exec_reaper:
+    cron: "*/5 * * * *"
+    class: "OutOfBandExecReaperJob"
+    queue: system
+    description: "System: fail out-of-band-exec operations stuck executing past timeout"
 
   # Fleet autonomy reconciliation tick (Golden Eclipse M7).
   # Runs every minute. Hits POST /api/v1/system/worker_api/fleet/reconcile
