@@ -814,6 +814,7 @@ case "$MODULE" in
       export BUNDLE_FROZEN=1
       export BUNDLE_GEMFILE=/tmp/fat/opt/powernode/server/Gemfile
       export BUNDLE_APP_CONFIG=/tmp/hub-backend-frozen-check
+      # --- BEGIN hub-backend frozen-equivalence check ---
       ruby -e '
         require "bundler"
 
@@ -835,9 +836,35 @@ case "$MODULE" in
         # above) and only for Rubygems-sourced specs; a PATH source (the
         # extension itself) or the synthetic Metadata source (the "bundler"
         # pseudo-spec) never has -- and never needs -- a vendor/cache entry.
+        #
+        # `definition.locked_gems.specs`, NOT `definition.specs` (review
+        # round R6 -- a real hub-backend build failed here, against the
+        # PREVIOUS shape of this check): `definition.specs` triggers a full
+        # RESOLVE-AND-MATERIALIZE against whatever is actually installed
+        # under the active BUNDLE_PATH -- and BUNDLE_APP_CONFIG above
+        # points this whole block at a scratch, empty install location on
+        # purpose (never rails-writable state), so NOTHING is "installed"
+        # there and materialize fails outright, loudly, for EVERY single
+        # locked gem (`Bundler::GemNotFound: Could not find rails-8.1.3,
+        # ...`) -- not a real lock/cache defect at all, just the wrong
+        # Bundler API for a metadata-only check. Reproduced live in a
+        # from-scratch scratch dir (a real Gemfile.lock, `bundle cache
+        # --all-platforms --no-install` populating vendor/cache for
+        # real, empty BUNDLE_APP_CONFIG, no BUNDLE_PATH): `definition.
+        # specs` fails this exact way even though the lock and cache are
+        # both genuinely fine. `definition.locked_gems` is the parsed
+        # LOCKFILE ITSELF (Bundler::LockfileParser) -- `.specs` on that
+        # is metadata straight from the lockfile text (name/version/
+        # platform/source), never touches installed content, and is
+        # exactly what this check needs. Verified live: passes on the
+        # real, matching lock+cache; fails loud when a single cached
+        # .gem (rake, and separately a platform-specific one, the pg
+        # x86_64-linux variant) is deleted; fails loud (via the
+        # equivalence check above, unaffected by this change) on a
+        # genuinely non-equivalent Gemfile/lock pair.
         vendor_cache_dir = Bundler.app_cache
         missing = []
-        definition.specs.each do |spec|
+        definition.locked_gems.specs.each do |spec|
           next unless spec.source.is_a?(Bundler::Source::Rubygems)
           cached = vendor_cache_dir.join("#{spec.full_name}.gem")
           missing << spec.full_name unless cached.exist?
@@ -848,8 +875,9 @@ case "$MODULE" in
           exit 1
         end
 
-        puts "[hub-backend build] frozen-equivalence OK: #{definition.specs.count} locked specs, every rubygems-sourced gem cached in #{vendor_cache_dir}"
+        puts "[hub-backend build] frozen-equivalence OK: #{definition.locked_gems.specs.count} locked specs, every rubygems-sourced gem cached in #{vendor_cache_dir}"
       '
+      # --- END hub-backend frozen-equivalence check ---
     ) || frozen_check_status=$?
     # Clean up the scratch BUNDLE_APP_CONFIG on EVERY path, success or
     # failure, before deciding whether to abort the build (review round
