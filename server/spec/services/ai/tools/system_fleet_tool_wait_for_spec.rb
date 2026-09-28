@@ -89,13 +89,17 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
       expect(@sleeps).to eq([ 2, 2 ])
     end
 
-    it "treats every terminal status from the model's own definition as done" do
+    # The model has no terminal-status constant, only the `finished` scope, so
+    # that scope (SQL) is the oracle, not the #finished? the tool calls.
+    it "treats every status the model's finished scope holds as done, and no other" do
       stub_sleep
       System::Task::STATUSES.each do |status|
         task.update_columns(status: status)
         r = call("system_get_task", task_id: task.id, wait_seconds: 10)
-        expect(r[:data][:timed_out]).to be(!task.reload.finished?), "status #{status}"
+        finished = System::Task.finished.exists?(id: task.id)
+        expect(r[:data][:timed_out]).to be(!finished), "status #{status}"
       end
+      expect(System::Task::STATUSES.count { |st| System::Task.finished.where_values_hash["status"].include?(st) }).to eq(4)
     end
 
     it "times out with timed_out: true and the current snapshot, never an error" do
@@ -209,11 +213,12 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
                                         package_spec: [], config: {}, oci_digest: digest)
     end
 
-    def rollout_instance(idx, running: old_digest, env: environment)
+    def rollout_instance(idx, running: old_digest, env: environment, heartbeat: Time.current)
       node = create(:system_node, account: account, node_template: template, name: "wait-node-#{idx}")
       node.node_modules << mod
       create(:system_node_instance, :running, node: node).tap do |inst|
-        inst.update!(environment: env, running_module_digests: running ? { mod.id => running } : {})
+        inst.update!(environment: env, running_module_digests: running ? { mod.id => running } : {},
+                     last_heartbeat_at: heartbeat)
       end
     end
 
@@ -248,6 +253,30 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
       expect(@sleeps.size).to eq(2)
     end
 
+    # Inside a request the query cache is on, and #reload clears it, so only the
+    # rollout's own queries depend on uncached: without it the first poll's
+    # SELECTs are replayed for the whole wait and a heartbeat landing elsewhere
+    # is never seen. The write goes straight to the PG connection so it does not
+    # itself clear the cache, as another process's write would not (an AR write,
+    # even inside an uncached block, clears it).
+    it "sees a heartbeat that lands mid-wait even with the query cache on" do
+      rollout_instance(1, running: digest)
+      laggard = rollout_instance(2, running: old_digest)
+      stub_sleep do |tick|
+        if tick == 2
+          conn = ActiveRecord::Base.connection
+          conn.raw_connection.exec(
+            "UPDATE system_node_instances SET running_module_digests = " \
+            "#{conn.quote({ mod.id => digest }.to_json)}::jsonb WHERE id = #{conn.quote(laggard.id)}"
+          )
+        end
+      end
+
+      r = ActiveRecord::Base.cache { wait_for(wait_seconds: 30) }
+
+      expect(r[:data]).to include(converged: true, timed_out: false, converged_count: 2)
+    end
+
     it "times out with timed_out: true and names the nodes still pending, never an error" do
       rollout_instance(1, running: digest)
       laggard = rollout_instance(2, running: old_digest)
@@ -257,8 +286,34 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
 
       expect(r[:success]).to be true
       expect(r[:data]).to include(converged: false, timed_out: true, instance_count: 2, converged_count: 1)
-      expect(r[:data][:pending]).to eq([ { instance_id: laggard.id, name: laggard.name, running_digest: old_digest } ])
+      expect(r[:data][:pending]).to eq([ { instance_id: laggard.id, name: laggard.name, running_digest: old_digest,
+                                           stale: false, last_heartbeat_at: laggard.last_heartbeat_at.iso8601 } ])
       expect(@sleeps.sum).to eq(6)
+    end
+
+    # Mirrors PromotionCriteria.evaluate: a node that reported the digest and
+    # then went silent is a fault, not evidence the rollout landed.
+    it "does not count a node that reports the digest but has gone silent as converged" do
+      rollout_instance(1, running: digest)
+      silent = rollout_instance(2, running: digest,
+                                    heartbeat: (System::NodeInstance::HEARTBEAT_STALE_AFTER + 1.minute).ago)
+      stub_sleep
+
+      r = wait_for(wait_seconds: 4)
+
+      expect(r[:data]).to include(converged: false, timed_out: true, instance_count: 2, converged_count: 1)
+      expect(r[:data][:pending]).to eq([ { instance_id: silent.id, name: silent.name, running_digest: digest,
+                                           stale: true, last_heartbeat_at: silent.last_heartbeat_at.iso8601 } ])
+    end
+
+    it "does not count a node that never heartbeated as converged" do
+      rollout_instance(1, running: digest, heartbeat: nil)
+      stub_sleep
+
+      r = wait_for(wait_seconds: 2)
+
+      expect(r[:data]).to include(converged: false, converged_count: 0)
+      expect(r[:data][:pending].first).to include(stale: true, last_heartbeat_at: nil)
     end
 
     it "is not converged while the environment has no node carrying the module" do
@@ -332,6 +387,153 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
 
       expect(r[:success]).to be false
       expect(r[:error]).to include("permission denied")
+    end
+  end
+
+  describe "wait_seconds parsing" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "parsewait") }
+    let!(:task) do
+      System::Task.create!(account: account, command: "apply_config", status: "running",
+                           operable_type: "System::Node", operable_id: node.id)
+    end
+    let(:batch) do
+      System::ModuleBuildBatch.create_for(account: account, trigger: "manual", base_sha: "b", head_sha: "h",
+                                          plan: [ { module: "mod-x", oci_ref: "abc1234" } ])
+    end
+    let(:environment) { create(:ai_environment, account: account, slug: "parse-wait") }
+    let(:version) do
+      mod = create(:system_node_module, account: account, node_platform: platform_record,
+                                        category: category, variety: "subscription", name: "parse-mod")
+      System::NodeModuleVersion.create!(node_module: mod, version_number: 1, mask: [], file_spec: [],
+                                        package_spec: [], config: {}, oci_digest: "sha256:#{'e' * 64}")
+    end
+
+    def each_verb
+      yield "system_get_task", { task_id: task.id }
+      yield "system_get_module_build_batch", { batch_id: batch.id }
+      yield "system_wait_for", { module_version_id: version.id, environment: environment.slug }
+    end
+
+    it "refuses a non-integer wait_seconds by name instead of raising or reading it as 0" do
+      stub_sleep
+      [ "abc", true, [ 5 ], { "a" => 1 }, "1.5x" ].each do |bad|
+        each_verb do |action, args|
+          r = call(action, **args, wait_seconds: bad)
+          expect(r[:success]).to be(false), "#{action} wait_seconds=#{bad.inspect}"
+          expect(r[:error]).to include("wait_seconds")
+        end
+      end
+      expect(@sleeps).to be_empty
+    end
+
+    it "accepts an integer, an integer string and a whole float, and reads negatives as 0" do
+      stub_sleep
+      expect(call("system_get_task", task_id: task.id, wait_seconds: "3")[:data]).to include(wait_seconds: 3)
+      expect(call("system_get_task", task_id: task.id, wait_seconds: 3.0)[:data]).to include(wait_seconds: 3)
+      expect(call("system_get_task", task_id: task.id, wait_seconds: -5)[:data].keys).to eq([ :task ])
+    end
+  end
+
+  describe "concurrent wait bound" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "boundwait") }
+    let!(:task) do
+      System::Task.create!(account: account, command: "apply_config", status: "running",
+                           operable_type: "System::Node", operable_id: node.id)
+    end
+    let(:batch) do
+      System::ModuleBuildBatch.create_for(account: account, trigger: "manual", base_sha: "b", head_sha: "h",
+                                          plan: [ { module: "mod-x", oci_ref: "abc1234" } ]).tap do |b|
+        b.update_columns(status: "publishing")
+      end
+    end
+    let(:environment) { create(:ai_environment, account: account, slug: "bound-wait") }
+    let(:version) do
+      mod = create(:system_node_module, account: account, node_platform: platform_record,
+                                        category: category, variety: "subscription", name: "bound-mod")
+      System::NodeModuleVersion.create!(node_module: mod, version_number: 1, mask: [], file_spec: [],
+                                        package_spec: [], config: {}, oci_digest: "sha256:#{'f' * 64}")
+    end
+    let(:permits) { described_class::WAIT_PERMITS }
+
+    it "sizes the bound at a quarter of the Puma max threads, minimum 1" do
+      expected = [ ENV.fetch("RAILS_MAX_THREADS", 16).to_i / 4, 1 ].max
+      expect(described_class::WAIT_CONCURRENCY).to eq(expected)
+      expect(permits.available_permits).to eq(expected)
+      expect(described_class.wait_concurrency_for(16)).to eq(4)
+      expect(described_class.wait_concurrency_for(2)).to eq(1)
+      expect(described_class.wait_concurrency_for(0)).to eq(1)
+    end
+
+    context "with every permit taken" do
+      around do |example|
+        held = permits.available_permits
+        permits.drain_permits
+        example.run
+      ensure
+        permits.release(held - permits.available_permits)
+      end
+
+      it "degrades the task wait to one check: success, timed_out and wait_degraded, no sleeping" do
+        stub_sleep
+
+        r = call("system_get_task", task_id: task.id, wait_seconds: 30)
+
+        expect(r[:success]).to be true
+        expect(r[:data]).to include(timed_out: true, wait_degraded: true)
+        expect(r[:data][:task][:status]).to eq("running")
+        expect(@sleeps).to be_empty
+      end
+
+      it "degrades the batch wait and the rollout wait the same way" do
+        stub_sleep
+
+        b = call("system_get_module_build_batch", batch_id: batch.id, wait_seconds: 30)
+        expect(b[:data]).to include(timed_out: true, wait_degraded: true)
+
+        w = call("system_wait_for", module_version_id: version.id, environment: environment.slug)
+        expect(w[:success]).to be true
+        expect(w[:data]).to include(converged: false, timed_out: true, wait_degraded: true)
+        expect(@sleeps).to be_empty
+      end
+
+      it "still answers an already-terminal task normally, with no degrade flag" do
+        task.update_columns(status: "complete")
+
+        r = call("system_get_task", task_id: task.id, wait_seconds: 30)
+
+        expect(r[:data]).to include(timed_out: false)
+        expect(r[:data]).not_to have_key(:wait_degraded)
+      end
+    end
+
+    it "does not flag wait_degraded on a wait that held a permit" do
+      stub_sleep
+      r = call("system_get_task", task_id: task.id, wait_seconds: 4)
+      expect(r[:data]).to include(timed_out: true)
+      expect(r[:data]).not_to have_key(:wait_degraded)
+    end
+
+    it "holds a permit only while waiting and releases it after a timeout, a finish and an exception" do
+      full = permits.available_permits
+      held_during = nil
+
+      stub_sleep { held_during = permits.available_permits }
+      call("system_get_task", task_id: task.id, wait_seconds: 4)
+      expect(held_during).to eq(full - 1)
+      expect(permits.available_permits).to eq(full)
+
+      stub_sleep { |tick| task.update_columns(status: "complete") if tick == 1 }
+      call("system_get_task", task_id: task.id, wait_seconds: 30)
+      expect(permits.available_permits).to eq(full)
+
+      task.update_columns(status: "running")
+      stub_sleep { raise "boom" }
+      begin
+        call("system_get_task", task_id: task.id, wait_seconds: 30)
+      rescue StandardError
+        nil
+      end
+      expect(permits.available_permits).to eq(full)
     end
   end
 

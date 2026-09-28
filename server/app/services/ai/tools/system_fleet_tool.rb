@@ -64,14 +64,29 @@ module Ai
 
       # IMP-054397261461 — the wait-for long-poll (wait_seconds on system_get_task
       # and system_get_module_build_batch; system_wait_for). Polls at the same
-      # 2s beat as Ai::Tools::AgentManagementTool#wait_for_task. The cap sits
-      # under the tightest MCP HTTP timeout in the codebase (the 60s read timeout
-      # in Mcp::SyncExecutionService; the dev-cell MCP proxy allows an hour and
-      # Puma sets none), so a request is answered — timed_out: true plus the
-      # current snapshot — before any hop can drop it. A larger wait_seconds is
-      # clamped, not refused. Each wait holds one Puma thread for its duration.
+      # 2s beat as Ai::Tools::AgentManagementTool#wait_for_task. The cap is a
+      # conservative margin, not a measured limit: nothing in this repo times out
+      # THIS endpoint (Puma sets none; the dev-cell MCP proxy allows an hour),
+      # but the shortest MCP read timeout anywhere is the 60s of
+      # Mcp::SyncExecutionService#execute_legacy_http on the OUTBOUND path (the
+      # platform's streamable client uses 300s), and a hop in front of the
+      # platform is not visible from here. A request is answered — timed_out:
+      # true plus the current snapshot — well inside that. A larger wait_seconds
+      # is clamped, not refused.
       WAIT_POLL_SECONDS = 2
       WAIT_MAX_SECONDS = 45
+
+      # Each wait holds one Puma thread for up to WAIT_MAX_SECONDS, and the verbs
+      # are auto-allowed reads, so callers looping on them could starve the
+      # threads that answer heartbeats and /up. At most a quarter of the Puma
+      # max threads (RAILS_MAX_THREADS, config/puma.rb's default 16) may wait at
+      # once, per process; the rest are degraded to a single check, never blocked.
+      def self.wait_concurrency_for(max_threads)
+        [ max_threads.to_i / 4, 1 ].max
+      end
+
+      WAIT_CONCURRENCY = wait_concurrency_for(ENV.fetch("RAILS_MAX_THREADS", 16))
+      WAIT_PERMITS = ::Concurrent::Semaphore.new(WAIT_CONCURRENCY)
 
       # Per-action permission map. Aligned with the registered
       # `system.<resource>.<action>` catalog — the authoritative home is the
@@ -1763,7 +1778,7 @@ module Ai
             parameters: {
               task_id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" },
               wait_seconds: { type: "integer", required: false,
-                              description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied. Absent or 0 answers at once, unchanged." }
+                              description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied, and wait_degraded: true when the server was at its concurrent-wait limit and answered with one check. Absent or 0 answers at once, unchanged." }
             }
           },
           "system_cancel_task" => {
@@ -2461,12 +2476,12 @@ module Ai
             parameters: {
               batch_id: { type: "string", required: true, description: "System::ModuleBuildBatch id" },
               wait_seconds: { type: "integer", required: false,
-                              description: "Long-poll: when > 0, hold the call until the batch is finished (complete, partial, failed or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current batch. The reply then also carries wait_seconds, the value applied. Absent or 0 answers at once, unchanged." }
+                              description: "Long-poll: when > 0, hold the call until the batch is finished (complete, partial, failed or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current batch. The reply then also carries wait_seconds, the value applied, and wait_degraded: true when the server was at its concurrent-wait limit and answered with one check. Absent or 0 answers at once, unchanged." }
             }
           },
 
           "system_wait_for" => {
-            description: "Block until a module version is rolled out to an environment: every running node in that environment that carries the module reports the version's oci_digest in its heartbeat running_module_digests. Read-only long-poll (never mutates). Converged is false while the environment has no such node. Returns {converged, timed_out, wait_seconds, target_digest, instance_count, converged_count, pending}; pending lists the nodes not yet reporting the digest with the digest each is running. On expiry the reply is still a success with timed_out: true and the current snapshot. wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; 0 checks once. To keep waiting, call again.",
+            description: "Block until a module version is rolled out to an environment: every running node in that environment that carries the module reports the version's oci_digest in its heartbeat running_module_digests. Read-only long-poll (never mutates). Converged is false while the environment has no such node. Returns {converged, timed_out, wait_seconds, target_digest, instance_count, converged_count, pending}; pending lists the nodes not counted as converged with the digest each is running, stale and last_heartbeat_at; a node that reports the digest but has not heartbeated within the stale window is pending with stale: true. On expiry the reply is still a success with timed_out: true and the current snapshot; when the server is already holding its maximum number of concurrent waits it answers with one check and wait_degraded: true instead of waiting. A wait_seconds that is not an integer is refused. wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; 0 checks once. To keep waiting, call again.",
             parameters: {
               module_version_id: { type: "string", required: true, description: "NodeModuleVersion id (account-scoped) whose oci_digest the nodes must report running" },
               environment: { type: "string", required: true, description: "Slug or id of the environment whose nodes are watched" },
@@ -5719,38 +5734,65 @@ module Ai
       # in #call, which renders the standard error_result.
       def get_task(params)
         target_id = params[:task_id].presence
-        task = ::System::Task.where(account: @account).find(target_id)
         wait = wait_seconds_param(params)
+        return wait_seconds_error unless wait
+
+        task = ::System::Task.where(account: @account).find(target_id)
         return success_result(task: serialize_task(task, full_error: true)) if wait.zero?
 
-        task, timed_out = wait_until(wait) { [ task.reload.finished?, task ] }
-        success_result(task: serialize_task(task, full_error: true), timed_out: timed_out, wait_seconds: wait)
+        task, timed_out, degraded = wait_until(wait) { [ task.reload.finished?, task ] }
+        success_result({ task: serialize_task(task, full_error: true), timed_out: timed_out, wait_seconds: wait }
+                         .merge(wait_degraded_marker(degraded)))
       end
 
       # === wait-for (IMP-054397261461) ===
 
-      # The caller's wait_seconds, clamped to 0..WAIT_MAX_SECONDS. `default`
-      # applies only when the key is absent: system_wait_for exists to wait,
-      # while the two getters stay instant unless asked.
+      # The caller's wait_seconds, clamped to 0..WAIT_MAX_SECONDS; nil when the
+      # value is not an integer (a true, an Array, a Hash or "abc" is refused by
+      # name via #wait_seconds_error, never raised on and never read as 0).
+      # `default` applies only when the key is absent: system_wait_for exists to
+      # wait, while the two getters stay instant unless asked.
       def wait_seconds_param(params, default: 0)
         raw = params[:wait_seconds]
-        (raw.nil? || raw == "" ? default : raw.to_i).clamp(0, WAIT_MAX_SECONDS)
+        return default if raw.nil? || raw == ""
+
+        seconds = Integer(raw, exception: false)
+        seconds&.clamp(0, WAIT_MAX_SECONDS)
+      end
+
+      def wait_seconds_error
+        error_result("wait_seconds must be an integer number of seconds (0 to #{WAIT_MAX_SECONDS})")
+      end
+
+      def wait_degraded_marker(degraded)
+        degraded ? { wait_degraded: true } : {}
       end
 
       # Bounded long-poll over the reference wait loop's shape (sleep, re-read,
       # deadline). The block re-reads state and returns [done, snapshot]; the
-      # result is [snapshot, timed_out] — never an error on expiry. Uncached so
-      # the request's query cache cannot replay the first read for the whole wait.
+      # result is [snapshot, timed_out, degraded] — never an error on expiry.
+      # Uncached so the request's query cache cannot replay the first read for
+      # the whole wait. A state that is already done, or a zero wait, needs no
+      # permit; otherwise one of WAIT_PERMITS is taken without blocking, and when
+      # none is free the single check stands as the answer (degraded).
       def wait_until(seconds)
-        deadline = Time.current + seconds
-        loop do
-          done, snapshot = ::ActiveRecord::Base.uncached { yield }
-          return [ snapshot, false ] if done
+        done, snapshot = ::ActiveRecord::Base.uncached { yield }
+        return [ snapshot, false, false ] if done
+        return [ snapshot, true, false ] if seconds <= 0
+        return [ snapshot, true, true ] unless WAIT_PERMITS.try_acquire
 
-          remaining = deadline - Time.current
-          return [ snapshot, true ] if remaining <= 0
+        begin
+          deadline = Time.current + seconds
+          loop do
+            remaining = deadline - Time.current
+            return [ snapshot, true, false ] if remaining <= 0
 
-          sleep [ WAIT_POLL_SECONDS, remaining ].min
+            sleep [ WAIT_POLL_SECONDS, remaining ].min
+            done, snapshot = ::ActiveRecord::Base.uncached { yield }
+            return [ snapshot, false, false ] if done
+          end
+        ensure
+          WAIT_PERMITS.release
         end
       end
 
@@ -5760,6 +5802,9 @@ module Ai
       def wait_for_rollout(params)
         return error_result("module_version_id is required") if params[:module_version_id].blank?
         return error_result("environment is required") if params[:environment].blank?
+
+        wait = wait_seconds_param(params, default: WAIT_MAX_SECONDS)
+        return wait_seconds_error unless wait
 
         version = ::System::NodeModuleVersion.joins(:node_module)
                                              .where(system_node_modules: { account_id: @account.id })
@@ -5772,13 +5817,12 @@ module Ai
         digest = version.oci_digest
         return error_result("Module version '#{version.id}' has no oci_digest, so there is nothing to converge on") if digest.blank?
 
-        wait = wait_seconds_param(params, default: WAIT_MAX_SECONDS)
-        snapshot, timed_out = wait_until(wait) do
+        snapshot, timed_out, degraded = wait_until(wait) do
           state = rollout_state(version, environment, digest)
           [ state[:converged], state ]
         end
 
-        success_result(snapshot.merge(timed_out: timed_out, wait_seconds: wait))
+        success_result(snapshot.merge(timed_out: timed_out, wait_seconds: wait).merge(wait_degraded_marker(degraded)))
       end
 
       def rollout_state(version, environment, digest)
@@ -5787,7 +5831,9 @@ module Ai
                                         .joins(node: :node_modules)
                                         .where(system_node_modules: { id: version.node_module_id }).distinct.to_a
         on_digest = ::System::Fleet::PromotionCriteria.matching_instances(version, digest, environment).pluck(:id)
-        pending = watched.reject { |i| on_digest.include?(i.id) }
+        # Liveness, as PromotionCriteria.evaluate requires: a node that reported
+        # the digest and then went silent is a fault, not evidence it landed.
+        pending = watched.reject { |i| on_digest.include?(i.id) && !i.stale_heartbeat? }
 
         {
           converged: watched.any? && pending.empty?,
@@ -5797,7 +5843,10 @@ module Ai
           target_digest: digest,
           instance_count: watched.size,
           converged_count: watched.size - pending.size,
-          pending: pending.map { |i| { instance_id: i.id, name: i.name, running_digest: (i.running_module_digests || {})[module_key] } }
+          pending: pending.map do |i|
+            { instance_id: i.id, name: i.name, running_digest: (i.running_module_digests || {})[module_key],
+              stale: i.stale_heartbeat?, last_heartbeat_at: i.last_heartbeat_at&.iso8601 }
+          end
         }
       end
 
@@ -9201,14 +9250,17 @@ module Ai
         batch_id = params[:batch_id].to_s
         return error_result("batch_id is required") if batch_id.blank?
 
+        wait = wait_seconds_param(params)
+        return wait_seconds_error unless wait
+
         batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
         return error_result("Module build batch '#{batch_id}' not found") unless batch
 
-        wait = wait_seconds_param(params)
         return success_result(module_build_batch: serialize_module_build_batch_detail(batch)) if wait.zero?
 
-        batch, timed_out = wait_until(wait) { [ batch.reload.finished?, batch ] }
-        success_result(module_build_batch: serialize_module_build_batch_detail(batch), timed_out: timed_out, wait_seconds: wait)
+        batch, timed_out, degraded = wait_until(wait) { [ batch.reload.finished?, batch ] }
+        success_result({ module_build_batch: serialize_module_build_batch_detail(batch), timed_out: timed_out, wait_seconds: wait }
+                         .merge(wait_degraded_marker(degraded)))
       end
 
       # The summary row plus the orchestrator's per-module state joined with
