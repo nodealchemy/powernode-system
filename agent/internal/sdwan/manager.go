@@ -600,7 +600,9 @@ func (m *Manager) FirstOverlayAddress() string {
 // EgressContributions returns this node's SDWAN egress requirements for the
 // node-wide egress chain to allow regardless of any module's own policy
 // (IMP-13645c4df90a). One security.EgressNetwork per desired SDWAN network:
-// its wg-sdwan-* interface, its own WireGuard listen port (the review
+// its wg-sdwan-* interface, the VRF master it's bound to if any
+// (IMP-5bfb0f482cd8 — see EgressNetwork.VrfName's doc for why the egress
+// rule needs this too), its own WireGuard listen port (the review
 // round's redesign — a `udp sport <port> accept` rule matches only the
 // kernel's own bound WG socket's outer packets in both directions, unlike a
 // per-peer daddr:port rule, which (a) can't cover a hub reaching a spoke
@@ -641,6 +643,13 @@ func (m *Manager) EgressContributions() security.EgressExtras {
 	for _, net := range m.lastDesired.Networks {
 		en := security.EgressNetwork{
 			Interface: net.Interface.Name,
+			// IMP-5bfb0f482cd8: from the DESIRED config, same as
+			// Interface itself — not measured/actual, because there's no
+			// "actual VRF binding" readback the way ListenPort has one
+			// via ReadActualState; the platform's own compiled topology
+			// is the source of truth for which VRF an interface belongs
+			// to (InterfaceConf.VrfName, Phase N1a).
+			VrfName: net.Interface.VrfName,
 			// m.lastActualListenPort[name] is 0 for an absent key — the same
 			// "unset" sentinel EgressNetwork.ListenPort already documents.
 			ListenPort: m.lastActualListenPort[net.Interface.Name],

@@ -188,6 +188,97 @@ func TestApplyEgressExtras_HostileInterfaceAndCIDRRejected(t *testing.T) {
 	}
 }
 
+// IMP-5bfb0f482cd8 — a wg-sdwan-* interface bound to a VRF master sends a
+// locally-generated packet through the OUTPUT hook with oif == the VRF
+// MASTER device, not the wg interface itself (see EgressNetwork.VrfName's
+// own doc for the live proof: ping 0/3 with the wg tx counter frozen until
+// a rule naming the VRF master let it through 3/3). These three tests pin
+// the fix: the oifname match names BOTH devices together.
+
+func TestApplyEgressExtras_VrfNameJoinsOifnameSet(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
+	extras := EgressExtras{Networks: []EgressNetwork{{
+		Interface:  "wg-sdwan-a1b2c3",
+		VrfName:    "sdwan-100",
+		ListenPort: 51820,
+		AllowedIPs: []string{"2001:db8:1::/64", "192.0.2.0/24"},
+	}}}
+	if err := ApplyEgressAllowlistWithExtras(context.Background(), rec, nil, nil, extras); err != nil {
+		t.Fatalf("ApplyEgressAllowlistWithExtras: %v", err)
+	}
+	script := readEgressScript(t)
+	assertEgressScriptGrammar(t, script)
+	if !hasRule(script, "oifname", "{", `"wg-sdwan-a1b2c3",`, `"sdwan-100",`, "}", "ip6", "daddr", "{", "2001:db8:1::/64,", "}", "accept") {
+		t.Errorf("missing scoped ip6 rule naming BOTH the iface and its vrf master; script:\n%s", script)
+	}
+	if !hasRule(script, "oifname", "{", `"wg-sdwan-a1b2c3",`, `"sdwan-100",`, "}", "ip", "daddr", "{", "192.0.2.0/24,", "}", "accept") {
+		t.Errorf("missing scoped ip rule naming BOTH the iface and its vrf master; script:\n%s", script)
+	}
+}
+
+// TestApplyEgressExtras_EmptyVrfNameRendersIfaceOnly pins that an empty
+// VrfName (a static-only-routing network with no VRF allocated) renders
+// EXACTLY the pre-IMP-5bfb0f482cd8 single-name oifname form — the fix must
+// not change behavior for a network that was never affected by the bug.
+func TestApplyEgressExtras_EmptyVrfNameRendersIfaceOnly(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
+	extras := EgressExtras{Networks: []EgressNetwork{{
+		Interface:  "wg-sdwan-a1b2c3",
+		ListenPort: 51820,
+		AllowedIPs: []string{"192.0.2.0/24"},
+		// VrfName deliberately left empty.
+	}}}
+	if err := ApplyEgressAllowlistWithExtras(context.Background(), rec, nil, nil, extras); err != nil {
+		t.Fatalf("ApplyEgressAllowlistWithExtras: %v", err)
+	}
+	script := readEgressScript(t)
+	if !hasRule(script, "oifname", `"wg-sdwan-a1b2c3"`, "ip", "daddr", "{", "192.0.2.0/24,", "}", "accept") {
+		t.Errorf("expected the unchanged, single-name oifname form when VrfName is empty; script:\n%s", script)
+	}
+	if strings.Contains(script, "oifname {") {
+		t.Errorf("must not render the set form at all when VrfName is empty; script:\n%s", script)
+	}
+}
+
+// TestApplyEgressExtras_InvalidVrfNameRejectsWholeRule pins that a
+// malicious/invalid VrfName is rejected exactly like an invalid Interface
+// name — the WHOLE tunnel-scope rule is skipped (not silently rendered
+// iface-only), and nothing from it ever reaches the script text.
+func TestApplyEgressExtras_InvalidVrfNameRejectsWholeRule(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	withTempEgressScriptPath(t)
+	extras := EgressExtras{Networks: []EgressNetwork{
+		{Interface: "wg-sdwan-a1b2c3", VrfName: `sdwan-1"; flush ruleset #`, ListenPort: 51820, AllowedIPs: []string{"192.0.2.0/24"}},
+		{Interface: "wg-sdwan-d4e5f6", VrfName: "sdwan-200", ListenPort: 51821, AllowedIPs: []string{"192.0.2.0/24"}},
+	}}
+	err := ApplyEgressAllowlistWithExtras(context.Background(), rec, nil, nil, extras)
+	if err == nil {
+		t.Fatal("an invalid vrf name must be reported, not silently swallowed")
+	}
+	script := readEgressScript(t)
+	assertEgressScriptGrammar(t, script)
+	for _, bad := range []string{"flush ruleset #", `sdwan-1"`} {
+		if strings.Contains(script, bad) {
+			t.Fatalf("the invalid vrf name must never reach the rendered script: %q found in:\n%s", bad, script)
+		}
+	}
+	// The whole tunnel-scope rule for the FIRST network is gone — not
+	// silently downgraded to an iface-only rule.
+	if strings.Contains(script, `"wg-sdwan-a1b2c3"`) {
+		t.Errorf("the first network's tunnel-scope rule must be skipped entirely, got:\n%s", script)
+	}
+	// Its sport rule is unaffected — the vrf name only gates rule 2.
+	if !hasRule(script, "udp", "sport", "51820", "accept") {
+		t.Error("the first network's sport rule must still apply despite its invalid vrf name")
+	}
+	// The second, valid sibling network is unaffected.
+	if !hasRule(script, "oifname", "{", `"wg-sdwan-d4e5f6",`, `"sdwan-200",`, "}", "ip", "daddr", "{", "192.0.2.0/24,", "}", "accept") {
+		t.Errorf("the valid sibling network's rule must still be rendered; script:\n%s", script)
+	}
+}
+
 func TestApplyEgressExtras_DedupesCIDRsAcrossPeers(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	withTempEgressScriptPath(t)

@@ -63,6 +63,65 @@ func TestEgressContributions_ReflectsLastDesired(t *testing.T) {
 	}
 }
 
+// IMP-5bfb0f482cd8: VrfName comes straight from the DESIRED interface
+// config (InterfaceConf.VrfName, Phase N1a) — unlike ListenPort, there is
+// no "measured/actual" VRF binding to prefer, since ReadActualState has no
+// readback for it; the platform's own compiled topology is the source of
+// truth for which VRF an interface belongs to.
+func TestEgressContributions_CarriesVrfNameFromDesiredInterface(t *testing.T) {
+	m := &Manager{
+		lastDesired: &DesiredConfig{
+			Networks: []DesiredNetworkConfig{
+				{
+					NetworkID: "net-a",
+					Interface: InterfaceConf{Name: "wg-sdwan-a1b2c3", VrfName: "sdwan-100", ListenPort: 51820},
+					Peers: []PeerConf{
+						{PeerID: "hub", AllowedIPs: []string{"2001:db8:1::/64"}},
+					},
+				},
+			},
+		},
+		lastActualListenPort: map[string]int{"wg-sdwan-a1b2c3": 51820},
+	}
+
+	extras := m.EgressContributions()
+	if len(extras.Networks) != 1 {
+		t.Fatalf("Networks = %+v, want exactly 1 entry", extras.Networks)
+	}
+	if got := extras.Networks[0].VrfName; got != "sdwan-100" {
+		t.Errorf("VrfName = %q, want sdwan-100", got)
+	}
+}
+
+// A network with no VRF allocated (static-only routing) must carry an
+// empty VrfName, not e.g. a zero-value sentinel that renders as something
+// else — egress.go's tunnelScopeRule treats "" as "no vrf clause", so this
+// is the exact value that keeps that path unchanged.
+func TestEgressContributions_EmptyVrfNameWhenNetworkHasNoVRF(t *testing.T) {
+	m := &Manager{
+		lastDesired: &DesiredConfig{
+			Networks: []DesiredNetworkConfig{
+				{
+					NetworkID: "net-a",
+					Interface: InterfaceConf{Name: "wg-sdwan-a1b2c3", ListenPort: 51820},
+					Peers: []PeerConf{
+						{PeerID: "hub", AllowedIPs: []string{"2001:db8:1::/64"}},
+					},
+				},
+			},
+		},
+		lastActualListenPort: map[string]int{"wg-sdwan-a1b2c3": 51820},
+	}
+
+	extras := m.EgressContributions()
+	if len(extras.Networks) != 1 {
+		t.Fatalf("Networks = %+v, want exactly 1 entry", extras.Networks)
+	}
+	if got := extras.Networks[0].VrfName; got != "" {
+		t.Errorf("VrfName = %q, want empty (no VRF allocated for this network)", got)
+	}
+}
+
 // The bypass item 5 fixes: the DESIRED config asks for 51820, but this pass
 // never measured it (or measured something else) — EgressContributions must
 // hand out the OBSERVED value, never silently fall back to the request.

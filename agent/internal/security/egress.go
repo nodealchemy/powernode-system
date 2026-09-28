@@ -81,17 +81,36 @@ type EgressExtras struct {
 //     platform-controlled IP:port (PeerConf.Endpoint is writable by anyone
 //     with SDWAN write on the account — 169.254.169.254 and an attacker's
 //     own :443 are both syntactically valid entries).
-//  2. `oifname <Interface> {ip|ip6} daddr { <AllowedIPs of this family> }
-//     accept` — matches PLAINTEXT packets a local process routes INTO the
-//     tunnel, scoped to exactly what wg_applier.go's `wg syncconf` actually
-//     installs as this interface's crypto-routes (AllowedIPs). A blanket
-//     `oifname X accept` would let a platform-pushed 0.0.0.0/0 or ::/0
-//     AllowedIPs turn into unrestricted egress for every module on the
-//     node routed through that interface — refused outright (skip + log),
-//     never rendered as a rule.
+//
+//  2. `oifname { <Interface>[, <VrfName>] } {ip|ip6} daddr { <AllowedIPs of
+//     this family> } accept` — matches PLAINTEXT packets a local process
+//     routes INTO the tunnel, scoped to exactly what wg_applier.go's `wg
+//     syncconf` actually installs as this interface's crypto-routes
+//     (AllowedIPs). A blanket `oifname X accept` would let a
+//     platform-pushed 0.0.0.0/0 or ::/0 AllowedIPs turn into unrestricted
+//     egress for every module on the node routed through that interface —
+//     refused outright (skip + log), never rendered as a rule.
+//
+//     VrfName (IMP-5bfb0f482cd8) is in the oifname match too, not just
+//     Interface: a wg-sdwan-* interface bound to a VRF master
+//     (wg_applier.go's `ip link set <iface> master <vrf>`, Phase N1a)
+//     sends a LOCALLY GENERATED packet through the OUTPUT hook with oif
+//     == the VRF MASTER device, not the wg interface itself — the VRF
+//     enslavement changes which device the kernel considers the packet's
+//     output interface before routing ever reaches wg. An oifname match
+//     naming only Interface therefore never fires for such traffic, and
+//     it falls through to this chain's default-deny policy — proven live
+//     (ping 0/3 with the wg tx counter frozen) until a transient rule
+//     naming the VRF master, not the wg iface, let it through 3/3.
 type EgressNetwork struct {
 	// Interface is this network's wg-sdwan-* device name.
 	Interface string
+	// VrfName is the VRF master device Interface is bound to (Phase N1a,
+	// InterfaceConf.VrfName) — empty when the network has no VRF
+	// allocated (static-only routing). See rule 2 above for why this
+	// needs to be in the SAME oifname match as Interface, not a
+	// separate rule scoped to Interface alone.
+	VrfName string
 	// ListenPort is this node's own WireGuard UDP listen port for
 	// Interface. 0 (unset/random) is skipped and logged — see rule 1 above;
 	// without a known port there is nothing safe to match on.
@@ -673,6 +692,27 @@ func validWgSdwanIfaceName(name string) bool {
 	return len(name) <= wgSdwanIfaceMaxLen && wgSdwanIfacePattern.MatchString(name)
 }
 
+// wgSdwanVrfMaxLen is the same IFNAMSIZ budget as wgSdwanIfaceMaxLen — a
+// VRF master device is a real kernel netdev too, verified directly
+// against Sdwan::HostVrfAssignment::VRF_NAME_MAX (host_vrf_assignment.rb),
+// which is also 15.
+const wgSdwanVrfMaxLen = 15
+
+// wgSdwanVrfPattern matches the sdwan-* VRF device-name SHAPE — same
+// alnum-suffix-only reasoning as wgSdwanIfacePattern (nothing an oifname
+// set element could smuggle). The one real producer today
+// (Sdwan::VrfAllocator#allocate!, vrf_allocator.rb) emits "sdwan-" + an
+// integer short_id (1-9999), but this stays alnum-general rather than
+// digit-only for the same robustness-over-precision reasoning as
+// wgSdwanIfacePattern's own doc — a future producer changing the
+// suffix's alphabet without touching this file must not need a matching
+// change here to stay valid.
+var wgSdwanVrfPattern = regexp.MustCompile(`^sdwan-[A-Za-z0-9]+$`)
+
+func validWgSdwanVrfName(name string) bool {
+	return len(name) <= wgSdwanVrfMaxLen && wgSdwanVrfPattern.MatchString(name)
+}
+
 // buildEgressExtrasRules validates an EgressExtras into nft rule fragments
 // (review-round redesign, IMP-13645c4df90a) — but a malformed entry here is
 // SKIPPED and reported, never a hard abort (see ApplyEgressAllowlistWithExtras'
@@ -723,22 +763,32 @@ func buildEgressExtrasRules(extras EgressExtras) (rules [][]string, skipped []st
 			}
 		}
 
-		// Rule 2: oifname <iface> {ip|ip6} daddr { CIDRs } accept — scoped to
-		// this network's peers' actual AllowedIPs. Skip the whole rule (not
-		// just the interface) when the name itself doesn't pass — an invalid
-		// oifname value is exactly the kind of thing that must never reach
-		// argv, regardless of whether any CIDR would have been valid.
+		// Rule 2: oifname { <iface>[, <vrf>] } {ip|ip6} daddr { CIDRs }
+		// accept — scoped to this network's peers' actual AllowedIPs.
+		// Skip the whole rule (not just the offending name) when EITHER
+		// name doesn't pass — an invalid oifname element is exactly the
+		// kind of thing that must never reach argv, regardless of
+		// whether any CIDR would have been valid. IMP-5bfb0f482cd8: the
+		// VRF name gets the identical treatment as the interface name —
+		// same validator shape, same fail-closed skip-the-whole-rule
+		// verdict, not a partial fallback to interface-only.
 		if !validWgSdwanIfaceName(iface) {
 			skipped = append(skipped, fmt.Sprintf("network interface %q: not a valid wg-sdwan-* name, skipped", iface))
 			continue
 		}
 
+		vrf := strings.TrimSpace(en.VrfName)
+		if vrf != "" && !validWgSdwanVrfName(vrf) {
+			skipped = append(skipped, fmt.Sprintf("network interface %q: vrf name %q is not a valid sdwan-* name, skipped", iface, vrf))
+			continue
+		}
+
 		v4, v6 := splitEgressCIDRs(en.AllowedIPs, iface, &skipped)
 		if len(v4) > 0 {
-			rules = append(rules, tunnelScopeRule("ip", iface, v4))
+			rules = append(rules, tunnelScopeRule("ip", iface, vrf, v4))
 		}
 		if len(v6) > 0 {
-			rules = append(rules, tunnelScopeRule("ip6", iface, v6))
+			rules = append(rules, tunnelScopeRule("ip6", iface, vrf, v6))
 		}
 	}
 	return rules, skipped
@@ -856,21 +906,41 @@ func egressCanonicalCIDR(cidr string) (prefix netip.Prefix, ok bool, reason stri
 }
 
 // tunnelScopeRule renders `oifname "<iface>" <family> daddr { c1, c2, ... }
-// accept`. The interface name is double-quoted per the approved plan — it is
-// going into a single script LINE now (rendered by renderEgressScript, not
-// passed as separate argv elements to exec), so quoting is what pins it as
-// one nft token regardless of what nft's own tokenizer would otherwise do
-// with an unquoted bareword; it is safe to quote unconditionally because
-// validWgSdwanIfaceName has already restricted iface to `[A-Za-z0-9-]`
-// (checked by the caller before this is ever invoked), so it can never
-// itself contain a quote to escape out of. A trailing comma is appended to
-// each CIDR (nft tolerates a trailing comma before the closing brace) so the
-// set's comma-separated grammar is satisfied without ever concatenating two
-// values into one token — cidrs are already net.ParseCIDR's own canonical
-// output by the time they reach here (splitEgressCIDRs), never raw platform
-// text.
-func tunnelScopeRule(family, iface string, cidrs []string) []string {
-	rule := []string{"oifname", `"` + iface + `"`, family, "daddr", "{"}
+// accept`, or — when vrf is non-empty — `oifname { "<iface>", "<vrf>" }
+// <family> daddr { c1, c2, ... } accept` (IMP-5bfb0f482cd8: see
+// EgressNetwork.VrfName's doc for why a VRF-enslaved wg interface needs
+// BOTH names in the same oifname match). Both names are double-quoted per
+// the approved plan — this is going into a single script LINE (rendered by
+// renderEgressScript, not passed as separate argv elements to exec), so
+// quoting is what pins each as one nft token regardless of what nft's own
+// tokenizer would otherwise do with an unquoted bareword; it is safe to
+// quote unconditionally because validWgSdwanIfaceName/validWgSdwanVrfName
+// have already restricted both to `[A-Za-z0-9-]` (checked by the caller
+// before this is ever invoked), so neither can itself contain a quote to
+// escape out of.
+//
+// The oifname SET form (`{ "a", "b" }`) is plain nftables syntax — the
+// same right-hand-side-set shorthand `iifname`/`oifname` already accept
+// elsewhere in nft rule grammar — and it passes this package's own
+// egressScriptLineCharset unchanged (that guard already allowlists `{`,
+// `}`, `,`, `"` for the CIDR-set case below), so there's no grammar-guard
+// clash requiring two separate rules instead; the brief's fallback option
+// is not needed here.
+//
+// A trailing comma is appended after each set element — both the oifname
+// set and the CIDR set — because nft tolerates a trailing comma before the
+// closing brace, which satisfies the comma-separated grammar without ever
+// concatenating two values into one token. cidrs are already
+// net.ParseCIDR's own canonical output by the time they reach here
+// (splitEgressCIDRs), never raw platform text.
+func tunnelScopeRule(family, iface, vrf string, cidrs []string) []string {
+	var rule []string
+	if vrf != "" {
+		rule = []string{"oifname", "{", `"` + iface + `",`, `"` + vrf + `",`, "}"}
+	} else {
+		rule = []string{"oifname", `"` + iface + `"`}
+	}
+	rule = append(rule, family, "daddr", "{")
 	for _, c := range cidrs {
 		rule = append(rule, c+",")
 	}
