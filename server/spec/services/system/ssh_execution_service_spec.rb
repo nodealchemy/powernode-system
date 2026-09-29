@@ -358,6 +358,10 @@ RSpec.describe System::SshExecutionService do
       expect(options).not_to include("StrictHostKeyChecking=no")
       expect(options).not_to include("UserKnownHostsFile=/dev/null")
       expect(known_hosts_path(argv)).to be_present
+      # Review round 1 (critic A F5, critic B F1): no ssh_config file can add
+      # a trust source (KnownHostsCommand, VerifyHostKeyDNS, Include).
+      expect(argv.each_cons(2).to_a).to include([ "-F", "/dev/null" ])
+      expect(options).to include("VerifyHostKeyDNS=no")
     end
 
     context "when a host key is recorded" do
@@ -499,6 +503,74 @@ RSpec.describe System::SshExecutionService do
         expect(seen[:content]).to eq("#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n")
         expect(File.exist?(seen[:path])).to be(false)
       end
+    end
+
+    # Review round 1 (critic A F2): a strict-checking failure used to surface
+    # as a bare "exited with status 255". It is what a MITM, or a stale key
+    # after a reimage, looks like, so it gets its own error and event.
+    context "when the host presents a key that does not match the recorded one" do
+      let(:mismatch_stderr) { "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\r\nHost key verification failed.\r\n" }
+      let(:mismatch_status) { instance_double(Process::Status, exitstatus: 255) }
+
+      before { instance.update_columns(ssh_host_keys: SshHostKeyFixtures.document(recorded_entry)) }
+
+      def expect_mismatch(result)
+        expect(result.success?).to be(false)
+        expect(result.error).to match(/host key mismatch/i)
+        expect(result.error).to include(instance.id.to_s)
+        expect(result.error).to include(SshHostKeyFixtures.fingerprint(recorded_entry["key"]))
+        expect(result.data[:host_key_mismatch]).to be(true)
+        event = System::FleetEvent.find_by(kind: described_class::HOST_KEY_MISMATCH_EVENT_KIND,
+                                           node_instance_id: instance.id)
+        expect(event).to be_present
+        expect(event.payload.to_json).not_to include(recorded_entry["key"])
+      end
+
+      it "#execute returns an explicit mismatch error and emits a mismatch event" do
+        allow(Open3).to receive(:capture3).and_return([ "", mismatch_stderr, mismatch_status ])
+
+        expect_mismatch(execute!)
+      end
+
+      it "#scp_file returns an explicit mismatch error" do
+        allow(Open3).to receive(:capture3).and_return([ "", mismatch_stderr, mismatch_status ])
+
+        expect_mismatch(described_class.new.scp_file(instance: instance, local_path: __FILE__, remote_path: "/tmp/x"))
+      end
+
+      it "#execute_bounded returns an explicit mismatch error" do
+        allow(System::BoundedCommandRunner).to receive(:run).and_return(
+          System::BoundedCommandRunner::Result.new(stdout: "", stderr: mismatch_stderr, exit_code: 255,
+                                                    timed_out: false, truncated: false)
+        )
+
+        expect_mismatch(described_class.new.execute_bounded(instance: instance, command: "uptime",
+                                                            timeout_seconds: 45, max_output_bytes: 1024))
+      end
+
+      it "leaves an ordinary exit 255 (no verification failure) as a plain command failure" do
+        allow(Open3).to receive(:capture3).and_return([ "", "ssh: connect to host port 22: Connection refused", mismatch_status ])
+
+        result = execute!
+
+        expect(result.error).to include("status 255")
+        expect(result.data[:host_key_mismatch]).to be_nil
+        expect(System::FleetEvent.where(kind: described_class::HOST_KEY_MISMATCH_EVENT_KIND)).to be_empty
+      end
+    end
+
+    # Review round 1 (critic A F6): the bounded builder must never fall back
+    # to the unverified options, even if a future caller skips the policy.
+    it "the bounded builder raises rather than connect unverified when handed no keys" do
+      allow(System::BoundedCommandRunner).to receive(:run)
+
+      expect do
+        described_class.new.send(:execute_ssh_command_bounded,
+                                 host: "192.0.2.10", user: "pnadmin", key: "PRIVATE-KEY-MATERIAL", command: "uptime",
+                                 sudo: true, timeout_seconds: 45, max_output_bytes: 1024,
+                                 host_keys: [], host_alias: host_alias)
+      end.to raise_error(described_class::SshError, /unverified/i)
+      expect(System::BoundedCommandRunner).not_to have_received(:run)
     end
 
     context "when no host key is recorded" do

@@ -42,6 +42,14 @@ module System
     # signal, not a per-connection log.
     UNVERIFIED_EVENT_WINDOW = 1.hour
 
+    # Review round 1 (critic A F2): a strict-checking refusal is what a MITM,
+    # or a key that went stale after a reimage, looks like. ssh reports it as
+    # exit 255 with this line on stderr. It gets its own error and a
+    # throttled high-severity event instead of a bare "status 255".
+    HOST_KEY_MISMATCH_EVENT_KIND = "system.instance.ssh_host_key_mismatch"
+    HOST_KEY_VERIFICATION_FAILED = "Host key verification failed"
+    MISMATCH_EVENT_WINDOW = 15.minutes
+
     # The pre-verification options, kept ONLY for a legacy caller reaching a
     # node that has not reported a key while REQUIRE_HOST_KEY_SETTING is off.
     UNVERIFIED_HOST_OPTIONS = [
@@ -116,6 +124,8 @@ module System
       raw = execute_ssh_command(host: ssh_ip, user: admin_user, key: ssh_key, command: full_command,
                                 host_keys: host_keys, host_alias: host_key_alias(instance))
 
+      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(host_keys, raw)
+
       build_exec_result(raw)
     rescue ArgumentError
       raise
@@ -189,6 +199,8 @@ module System
         "exit_code=#{raw[:exit_code].inspect} timed_out=#{raw[:timed_out]} truncated=#{raw[:truncated]}"
       )
 
+      return host_key_mismatch_result(instance, host_keys, build_bounded_result(raw)) if host_key_mismatch?(host_keys, raw)
+
       build_bounded_result(raw)
     rescue ArgumentError
       raise
@@ -238,6 +250,8 @@ module System
 
       # Optional chmod after a successful transfer. Done as a separate exec
       # because scp doesn't accept a mode flag uniformly across BSD/OpenSSH.
+      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(host_keys, raw)
+
       if mode && raw[:exit_code] == 0
         execute(instance: instance, command: "chmod #{mode} #{remote_path}", sudo: true)
       end
@@ -354,6 +368,37 @@ module System
       Rails.logger.warn("[SshExecutionService] unverified-host event failed for #{instance.id}: #{e.class}")
     end
 
+    def host_key_mismatch?(host_keys, raw)
+      host_keys.present? && raw[:exit_code] == 255 && raw[:stderr].to_s.include?(HOST_KEY_VERIFICATION_FAILED)
+    end
+
+    # Fingerprints only, never a key blob.
+    def host_key_mismatch_result(instance, host_keys, result)
+      fingerprints = ::System::SshHostKeys.fingerprints(host_keys)
+      message = "SSH host key mismatch for instance #{instance.id}: the host did not present a recorded " \
+                "key (recorded fingerprints: #{fingerprints.join(', ')}). Either the node was reimaged and " \
+                "its agent has not yet reported the new key, or a different host is answering at its address."
+      Rails.logger.warn("[SshExecutionService] #{message}")
+      note_host_key_mismatch(instance, fingerprints)
+      Runtime::Result.err(error: message, data: result.data.merge(host_key_mismatch: true))
+    end
+
+    def note_host_key_mismatch(instance, fingerprints)
+      return unless Rails.cache.write("system:ssh_host_key_mismatch:#{instance.id}", true,
+                                      unless_exist: true, expires_in: MISMATCH_EVENT_WINDOW)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: instance.account,
+        kind: HOST_KEY_MISMATCH_EVENT_KIND,
+        severity: :high,
+        payload: { instance_id: instance.id, recorded_fingerprints: fingerprints },
+        source: "system/ssh_execution_service",
+        node_instance_id: instance.id
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[SshExecutionService] host-key-mismatch event failed for #{instance.id}: #{e.class}")
+    end
+
     def host_key_alias(instance)
       "#{HOST_KEY_ALIAS_PREFIX}#{instance.id}"
     end
@@ -362,10 +407,22 @@ module System
     # writes them to a per-call 0600 known_hosts tempfile, removed in ensure
     # whether the call succeeds or raises. CheckHostIP=no and
     # UpdateHostKeys=no keep ssh from adding its own entries to that file.
-    # With no keys (the legacy, setting-off case only), it yields the old
-    # unverified options.
-    def with_host_verification(host_keys, host_alias)
-      return yield(UNVERIFIED_HOST_OPTIONS.dup) if host_keys.blank?
+    # `-F /dev/null` stops any ssh_config (the service user's or
+    # /etc/ssh/ssh_config and its drop-ins) from adding a trust source this
+    # file does not control: KnownHostsCommand, VerifyHostKeyDNS, Include,
+    # Match exec. Nothing in these node connections depends on a config file:
+    # the user is in the destination, the key is passed with -i, and the port
+    # is the default. VerifyHostKeyDNS=no is set explicitly as well.
+    #
+    # With no keys, it yields the old unverified options ONLY when the caller
+    # passes allow_unverified: true (the legacy, setting-off case). Otherwise
+    # it raises, so a path that must be verified can never degrade silently.
+    def with_host_verification(host_keys, host_alias, allow_unverified:)
+      if host_keys.blank?
+        raise SshError, "refusing an unverified SSH connection on a path that requires host verification" unless allow_unverified
+
+        return yield(UNVERIFIED_HOST_OPTIONS.dup)
+      end
 
       known_hosts = Tempfile.new([ "known_hosts", "" ])
       begin
@@ -373,12 +430,14 @@ module System
         known_hosts.write(::System::SshHostKeys.known_hosts(host_alias, host_keys))
         known_hosts.close
         yield [
+          "-F", "/dev/null",
           "-o", "StrictHostKeyChecking=yes",
           "-o", "UserKnownHostsFile=#{known_hosts.path}",
           "-o", "GlobalKnownHostsFile=/dev/null",
           "-o", "HostKeyAlias=#{host_alias}",
           "-o", "CheckHostIP=no",
-          "-o", "UpdateHostKeys=no"
+          "-o", "UpdateHostKeys=no",
+          "-o", "VerifyHostKeyDNS=no"
         ]
       ensure
         known_hosts.close!
@@ -405,7 +464,7 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        with_host_verification(host_keys, host_alias) do |host_options|
+        with_host_verification(host_keys, host_alias, allow_unverified: true) do |host_options|
           ssh_options = [
             *host_options,
             "-o", "PasswordAuthentication=no",
@@ -457,7 +516,9 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        with_host_verification(host_keys, host_alias) do |host_options|
+        # Never unverified: #execute_bounded's policy already refused a keyless
+        # host, and this raises if a future caller skips that policy.
+        with_host_verification(host_keys, host_alias, allow_unverified: false) do |host_options|
           ssh_options = [
             *host_options,
             "-o", "PasswordAuthentication=no",
@@ -536,7 +597,7 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        with_host_verification(host_keys, host_alias) do |host_options|
+        with_host_verification(host_keys, host_alias, allow_unverified: true) do |host_options|
           scp_options = [
             *host_options,
             "-o", "PasswordAuthentication=no",
