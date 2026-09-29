@@ -802,8 +802,8 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
     # $RAILS_USER is a traefik-group member (the whole point of the setgid
     # grant -- rails can write here without any capability), so rails can
     # plant a symlink to an arbitrary root-owned path. `find` used to list
-    # a symlink ENTRY without excluding it, and the bare `chown` (no `-h`)
-    # follows a symlink ARGUMENT to its referent -- excluding link entries
+    # a symlink ENTRY without excluding it, and the chown used to be bare (no
+    # `-h`, since added) so it followed a symlink ARGUMENT to its referent -- excluding link entries
     # keeps root's retroactive-fix pass from ever chowning through one. The
     # companion chmod pass right after was already safe (`-type d` never
     # matches a symlink's own type) and needed no change.

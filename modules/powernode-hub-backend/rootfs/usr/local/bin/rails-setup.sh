@@ -840,12 +840,12 @@ if getent group traefik >/dev/null 2>&1; then
     # $RAILS_USER is a traefik-group member (that's the whole point of the
     # setgid grant above — rails can write here without any capability),
     # so rails can plant a symlink to an arbitrary root-owned path. `find`
-    # lists a symlink ENTRY without descending into it, but the bare
-    # `chown` below (no `-h`) follows a symlink ARGUMENT to its referent —
-    # excluding link entries here keeps root's retroactive-fix pass from
-    # ever chowning through one. The chmod pass right after is already
-    # safe (`-type d` never matches a symlink's own type), so only this
-    # line needed the exclusion.
+    # lists a symlink ENTRY without descending into it, but the chown here
+    # used to be bare (no `-h`, since added below) and so followed a symlink
+    # ARGUMENT to its referent — excluding link entries keeps root's
+    # retroactive-fix pass from ever chowning through one. The chmod pass
+    # right after is already safe (`-type d` never matches a symlink's own
+    # type), so only the chown line needed the exclusion.
     #
     # IMP-7e08f1514046 sibling: `-h` is the correct chown form regardless of
     # how the entry was selected, but `! -type l` (above) is what actually
