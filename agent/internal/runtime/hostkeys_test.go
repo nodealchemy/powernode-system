@@ -185,6 +185,7 @@ func TestBuildHeartbeat_CarriesSSHHostKeys(t *testing.T) {
 	dir := t.TempDir()
 	line, key := testHostKeyLine(t, "ssh-ed25519", 32)
 	writeFile(t, filepath.Join(dir, "ssh_host_ed25519_key.pub"), line)
+	fakeRoot(t, false, testExt4Magic, nil)
 	svc := testService(t)
 	svc.hostKeyDir = dir
 
@@ -232,5 +233,109 @@ func TestHeartbeater_Send_CarriesSSHHostKeysOnTheWire(t *testing.T) {
 	}
 	if _, present := got["ssh_host_keys"]; present {
 		t.Errorf("no host keys must be omitted from the wire, got %v", got["ssh_host_keys"])
+	}
+}
+
+// Review round 1 (critic A F8): a .pub that is a HARDLINK to the private key
+// beside it passes every regular-file check. It must be refused before it is
+// opened, so its bytes are never read.
+func TestReadHostKeys_RefusesHardlinkToPrivateKeyWithoutOpening(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "ssh_host_ed25519_key")
+	writeFile(t, priv, privateKeyArmor())
+	if err := os.Chmod(priv, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := os.Link(priv, priv+".pub"); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	opened := recordOpens(t)
+
+	keys, errs := ReadHostKeys(dir)
+
+	if len(*opened) != 0 {
+		t.Fatalf("a hardlink to the private key must never be opened, opened %v", *opened)
+	}
+	if len(keys) != 0 || len(errs) != 1 || !strings.Contains(errs[0].Error(), "private key") {
+		t.Fatalf("want one refusal naming the private key, got keys=%+v errs=%v", keys, errs)
+	}
+}
+
+// Review round 1 (critic A F8): host PUBLIC keys are world-readable; a .pub
+// that is not is not what it claims to be (private keys are 0600).
+func TestReadHostKeys_RefusesNonWorldReadablePubWithoutOpening(t *testing.T) {
+	dir := t.TempDir()
+	line, _ := testHostKeyLine(t, "ssh-ed25519", 32)
+	path := filepath.Join(dir, "ssh_host_ed25519_key.pub")
+	writeFile(t, path, line)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	opened := recordOpens(t)
+
+	keys, errs := ReadHostKeys(dir)
+
+	if len(*opened) != 0 {
+		t.Fatalf("a non-world-readable .pub must never be opened, opened %v", *opened)
+	}
+	if len(keys) != 0 || len(errs) != 1 || !strings.Contains(errs[0].Error(), "world-readable") {
+		t.Fatalf("want one world-readable refusal, got keys=%+v errs=%v", keys, errs)
+	}
+}
+
+// fakeRoot points the initramfs probe at a controllable release marker and
+// root filesystem type for the duration of the test.
+func fakeRoot(t *testing.T, initrdRelease bool, fsType int64, fsErr error) {
+	t.Helper()
+	origPath, origType := initrdReleasePath, hostKeyRootFSType
+	marker := filepath.Join(t.TempDir(), "initrd-release")
+	if initrdRelease {
+		writeFile(t, marker, "")
+	}
+	initrdReleasePath = marker
+	hostKeyRootFSType = func(string) (int64, error) { return fsType, fsErr }
+	t.Cleanup(func() { initrdReleasePath, hostKeyRootFSType = origPath, origType })
+}
+
+const testExt4Magic = 0xEF53
+
+// Review round 1 (critic A F1c): the initramfs agent sees EPHEMERAL host keys
+// (generated fresh every boot before switch_root). They must never be
+// recorded, or every pivoting boot would read as a key change.
+func TestBuildHeartbeat_OmitsSSHHostKeysInInitramfs(t *testing.T) {
+	dir := t.TempDir()
+	line, key := testHostKeyLine(t, "ssh-ed25519", 32)
+	writeFile(t, filepath.Join(dir, "ssh_host_ed25519_key.pub"), line)
+
+	cases := []struct {
+		name        string
+		release     bool
+		fsType      int64
+		fsErr       error
+		wantPresent bool
+	}{
+		{"initrd-release marker", true, testExt4Magic, nil, false},
+		{"ramfs root", false, ramfsMagic, nil, false},
+		{"tmpfs root", false, tmpfsMagic, nil, false},
+		{"root probe fails (unknown is not reported)", false, 0, errors.New("statfs"), false},
+		{"pivoted overlay root", false, 0x794c7630, nil, true},
+		{"cloud_init disk root", false, testExt4Magic, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeRoot(t, tc.release, tc.fsType, tc.fsErr)
+			svc := testService(t)
+			svc.hostKeyDir = dir
+
+			payload := svc.buildHeartbeat("boot-1", nil)
+
+			if tc.wantPresent {
+				if len(payload.SSHHostKeys) != 1 || payload.SSHHostKeys[0].Key != key {
+					t.Fatalf("want the host key reported, got %+v", payload.SSHHostKeys)
+				}
+			} else if payload.SSHHostKeys != nil {
+				t.Fatalf("host keys must not be reported here, got %+v", payload.SSHHostKeys)
+			}
+		})
 	}
 }

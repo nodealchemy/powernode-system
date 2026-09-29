@@ -1026,7 +1026,14 @@ func newVerifyEvaluator(cfg Config) *probe.Evaluator {
 // readSSHHostKeys reads the host public keys for the heartbeat and reports
 // each refused file once through OnError. The report carries the path and
 // the reason, never file content.
+//
+// Nothing is reported from the initramfs (review round 1, critic A F1c):
+// its keys are regenerated every boot and would read as a key change on
+// every pivot.
 func (s *Service) readSSHHostKeys() []HostKey {
+	if runningInInitramfs() {
+		return nil
+	}
 	dir := s.hostKeyDir
 	if dir == "" {
 		dir = DefaultSSHHostKeyDir

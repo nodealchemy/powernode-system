@@ -24,9 +24,13 @@ import (
 // PRIVATE KEYS ARE NEVER OPENED. The reader globs only ssh_host_*_key.pub. It
 // refuses anything that is not a regular file: a symlinked .pub could point
 // at the private key beside it, so the open uses O_NOFOLLOW and re-checks the
-// opened descriptor. It caps the bytes read, and it refuses content shaped
-// like a private key. An error never echoes file content, only the path and
-// the reason.
+// opened descriptor. Before opening, it also refuses a .pub that is not
+// world-readable or that is a hardlink to the private key beside it. It caps
+// the bytes read, and it refuses content shaped like a private key. An error
+// never echoes file content, only the path and the reason.
+//
+// Nothing is reported from the initramfs, whose keys are ephemeral (see
+// runningInInitramfs).
 
 // DefaultSSHHostKeyDir is where sshd keeps its host keys.
 const DefaultSSHHostKeyDir = "/etc/ssh"
@@ -53,6 +57,27 @@ var hostKeyTypes = []string{
 	"sk-ecdsa-sha2-nistp256@openssh.com",
 	"ssh-rsa",
 }
+
+// Initramfs detection (review round 1, critic A F1c). The initramfs agent
+// sees EPHEMERAL host keys, generated fresh every boot before switch_root, so
+// it never reports any. systemd marks an initrd with /etc/initrd-release, and
+// an initramfs root is ramfs or tmpfs. Both are package vars so tests can
+// stage either signal.
+var (
+	initrdReleasePath = "/etc/initrd-release"
+	hostKeyRootFSType = func(path string) (int64, error) {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(path, &st); err != nil {
+			return 0, err
+		}
+		return int64(st.Type), nil
+	}
+)
+
+const (
+	ramfsMagic = 0x858458f6
+	tmpfsMagic = 0x01021994
+)
 
 var errPrivateKeyShaped = errors.New("content is shaped like a private key; refusing to read it as a public key")
 
@@ -117,6 +142,16 @@ func readHostKeyFile(path string) (HostKey, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return HostKey{}, errors.New("not a regular file (a symlink is never followed)")
+	}
+	// Review round 1 (critic A F8), both checked BEFORE the open so a
+	// private key's bytes are never read. A host PUBLIC key is
+	// world-readable; a private key is 0600. And a .pub hardlinked to the
+	// private key beside it passes every regular-file check above.
+	if info.Mode().Perm()&0o004 == 0 {
+		return HostKey{}, errors.New("not world-readable, so not a public key file")
+	}
+	if priv, err := os.Lstat(strings.TrimSuffix(path, ".pub")); err == nil && os.SameFile(info, priv) {
+		return HostKey{}, errors.New("is the same file as its private key (hardlink)")
 	}
 	if info.Size() > hostKeyMaxFileBytes {
 		return HostKey{}, fmt.Errorf("file exceeds %d bytes", hostKeyMaxFileBytes)
@@ -188,6 +223,22 @@ func embeddedKeyType(blob []byte) string {
 		return ""
 	}
 	return string(blob[4 : 4+n])
+}
+
+// runningInInitramfs reports whether this agent is running inside the
+// initramfs, before switch_root. An unreadable root probe counts as yes:
+// unknown must not report keys that might be the ephemeral initramfs ones.
+// A pivoted overlay root and a cloud_init disk root (ext4/xfs) both count as
+// no, so both kinds of node report their real host keys.
+func runningInInitramfs() bool {
+	if _, err := os.Lstat(initrdReleasePath); err == nil {
+		return true
+	}
+	t, err := hostKeyRootFSType("/")
+	if err != nil {
+		return true
+	}
+	return t == ramfsMagic || t == tmpfsMagic
 }
 
 func hostKeyTypeRank(keyType string) int {
