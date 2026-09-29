@@ -73,13 +73,28 @@ RSpec.describe System::SshHostKeyWriter do
   end
 
   describe "an unchanged report" do
-    it "writes nothing and audits nothing" do
+    it "writes nothing and audits nothing on the same boot" do
       write!([ ed25519 ])
       before_doc = stored
 
-      expect(write!([ ed25519 ], boot_id: "boot-2")).to eq(:unchanged)
+      expect(write!([ ed25519 ], boot_id: "boot-1")).to eq(:unchanged)
 
       expect(stored).to eq(before_doc)
+      expect(audits.count).to eq(1)
+    end
+
+    # Review round 1, critic A F1: the stored boot_id is "the last boot on
+    # which these keys were confirmed". Without this refresh, a key swapped
+    # INSIDE a later boot compared against the boot the keys were first
+    # recorded on and read as a reboot.
+    it "refreshes only the confirming boot_id on a new boot, without an audit row" do
+      write!([ ed25519 ])
+      keys_before = stored["keys"]
+
+      expect(write!([ ed25519 ], boot_id: "boot-2")).to eq(:unchanged)
+
+      expect(stored["keys"]).to eq(keys_before)
+      expect(stored["boot_id"]).to eq("boot-2")
       expect(audits.count).to eq(1)
     end
   end
@@ -114,13 +129,122 @@ RSpec.describe System::SshHostKeyWriter do
       expect(audits.last.metadata["boot_id_changed"]).to be(false)
     end
 
-    it "emits a high-severity changed event so an operator sees it" do
+    it "emits a MEDIUM changed event for a change across a reboot (what a reimage looks like)" do
       write!([ replacement ], boot_id: "boot-2")
 
       event = System::FleetEvent.find_by!(kind: described_class::CHANGED_EVENT_KIND, node_instance_id: instance.id)
-      expect(event.severity).to eq("high")
+      expect(event.severity).to eq("medium")
+      expect(event.payload["boot_id_changed"]).to be(true)
       expect(event.payload["previous_fingerprints"]).to eq([ SshHostKeyFixtures.fingerprint(ed25519["key"]) ])
       expect(event.payload.to_json).not_to include(replacement["key"])
+    end
+
+    it "emits a HIGH changed event for a change inside one boot" do
+      write!([ replacement ], boot_id: "boot-1")
+
+      event = System::FleetEvent.find_by!(kind: described_class::CHANGED_EVENT_KIND, node_instance_id: instance.id)
+      expect(event.severity).to eq("high")
+      expect(event.payload["boot_id_changed"]).to be(false)
+    end
+
+    # Review round 1, critic A F1 (b): the regression the stale comparison
+    # produced. Recorded on boot-1, confirmed unchanged on boot-2, then swapped
+    # on boot-2 with no reboot: that is an in-boot change, not a reimage.
+    it "classifies a swap after an unchanged reboot as in-boot (boot_id_changed false, high)" do
+      expect(write!([ ed25519 ], boot_id: "boot-2")).to eq(:unchanged)
+
+      expect(write!([ replacement ], boot_id: "boot-2")).to eq(:changed)
+
+      expect(audits.last.metadata["boot_id_changed"]).to be(false)
+      event = System::FleetEvent.where(kind: described_class::CHANGED_EVENT_KIND, node_instance_id: instance.id).sole
+      expect(event.severity).to eq("high")
+    end
+  end
+
+  # Review round 1, critic A F7 / critic B F5: a transiently unreadable .pub
+  # makes a heartbeat report a strict SUBSET of the recorded keys. Replacing
+  # on that alone flapped the set (and the alarm) every other tick.
+  describe "a narrowed report (strict subset of the recorded keys)" do
+    before { write!([ ed25519, rsa ]) }
+
+    it "does not replace the recorded set within the same boot, and audits nothing" do
+      expect(write!([ ed25519 ], boot_id: "boot-1")).to eq(:unchanged)
+
+      expect(stored["keys"].map { |e| e["type"] }).to eq(%w[ssh-ed25519 ssh-rsa])
+      expect(audits.count).to eq(1)
+      expect(System::FleetEvent.where(kind: described_class::CHANGED_EVENT_KIND)).to be_empty
+    end
+
+    it "narrows the recorded set across a boot change, audited as a change" do
+      expect(write!([ ed25519 ], boot_id: "boot-2")).to eq(:changed)
+
+      expect(stored["keys"].map { |e| e["type"] }).to eq(%w[ssh-ed25519])
+      expect(audits.last.action).to eq(described_class::CHANGED_ACTION)
+    end
+
+    it "still treats a report that ADDS a key within the boot as a change" do
+      extra = SshHostKeyFixtures.entry("ecdsa-sha2-nistp256")
+
+      expect(write!([ ed25519, extra ], boot_id: "boot-1")).to eq(:changed)
+    end
+  end
+
+  # Review round 1, critic A F3: the node API resolves a legacy shared-CN
+  # certificate to the newest sibling instance. Host keys are a trust anchor,
+  # so they are ingested only when the identity is bound to THIS instance.
+  describe "instance binding" do
+    it "ignores the report when the instance carries a shared (non-instance) mTLS subject" do
+      instance.update_columns(mtls_subject: "legacy-shared-hostname")
+      allow(Rails.logger).to receive(:warn).and_call_original
+
+      expect(write!([ ed25519 ])).to be_nil
+
+      expect(stored).to be_nil
+      expect(audits).to be_empty
+      expect(Rails.logger).to have_received(:warn).with(/not instance-bound/)
+    end
+
+    it "ingests when the mTLS subject is the instance id" do
+      instance.update_columns(mtls_subject: instance.id.to_s)
+
+      expect(write!([ ed25519 ])).to eq(:recorded)
+    end
+  end
+
+  # Review round 1, critic A F4: a retried heartbeat can overlap its original;
+  # the read-compare-write runs under a row lock.
+  describe "row locking" do
+    it "reads, compares and writes under the instance row lock" do
+      allow(instance).to receive(:with_lock).and_call_original
+
+      write!([ ed25519 ])
+
+      expect(instance).to have_received(:with_lock)
+    end
+  end
+
+  # Review round 1, critic B F3: the operator recovery for a stale recorded
+  # key (docs/design/ssh-host-key-verification.md). Audited; no key material.
+  describe ".clear!" do
+    let(:operator) { create(:user, account: account) }
+
+    before { write!([ ed25519 ]) }
+
+    it "clears the recorded keys and audits the previous fingerprints, the actor and the reason" do
+      expect(described_class.clear!(instance: instance, actor: operator, reason: "reprovisioned")).to be(true)
+
+      expect(stored).to be_nil
+      row = ::AuditLog.find_by!(action: described_class::CLEARED_ACTION, resource_id: instance.id.to_s)
+      expect(row.user_id).to eq(operator.id)
+      expect(row.metadata["previous_fingerprints"]).to eq([ SshHostKeyFixtures.fingerprint(ed25519["key"]) ])
+      expect(row.metadata["reason"]).to eq("reprovisioned")
+      expect(row.metadata.to_json).not_to include(ed25519["key"])
+    end
+
+    it "refuses without a reason" do
+      expect { described_class.clear!(instance: instance, actor: operator, reason: " ") }
+        .to raise_error(ArgumentError)
+      expect(stored).to be_present
     end
   end
 

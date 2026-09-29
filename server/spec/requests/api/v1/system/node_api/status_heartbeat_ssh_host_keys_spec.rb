@@ -67,6 +67,17 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat — SSH host keys", t
     expect(instance.reload.ssh_host_keys).to be_nil
   end
 
+  # Review round 1 (critic A F3): a legacy shared-hostname CN is resolved to
+  # the newest sibling, so its report is not bound to this instance.
+  it "does not record keys for an instance whose mTLS subject is not instance-bound" do
+    instance.update_columns(mtls_subject: "legacy-shared-hostname")
+
+    post_heartbeat(ssh_host_keys: [ SshHostKeyFixtures.entry ])
+
+    expect(response).to have_http_status(:ok)
+    expect(instance.reload.ssh_host_keys).to be_nil
+  end
+
   it "acknowledges the heartbeat even when the ingest itself fails" do
     allow(System::SshHostKeyWriter).to receive(:write!).and_raise(StandardError, "boom")
 

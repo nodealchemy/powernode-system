@@ -112,12 +112,14 @@ module Api
             # IMP-190834701b0a — the node's SSH host PUBLIC keys, the trust
             # anchor SshExecutionService verifies every connection against.
             # First recording and every change are audited (fingerprints
-            # only). Wrapped so a bad report cannot bounce telemetry.
+            # only). boot_id is the value record_heartbeat! just persisted
+            # (capped), so the writer compares like with like. Wrapped so a
+            # bad report cannot bounce telemetry.
             begin
               ::System::SshHostKeyWriter.write!(
                 instance: current_instance,
                 payload:  hb[::System::SshHostKeyWriter::WIRE_KEY],
-                boot_id:  hb["boot_id"].presence
+                boot_id:  current_instance.boot_id
               )
             rescue StandardError => e
               Rails.logger.warn("[StatusController] SSH host key ingest failed for #{current_instance.id}: #{e.class}")
