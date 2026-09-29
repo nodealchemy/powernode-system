@@ -75,7 +75,16 @@ module System
     # nil when the restart would proceed; else the refusal text, authored for
     # the caller. Read-only.
     def refusal(instance:, unit:, reason:)
-      reason_refusal(reason) || unit_refusal(instance, unit.to_s.strip) || instance_refusal(instance)
+      reason_refusal(reason) || target_refusal(instance: instance, unit: unit)
+    end
+
+    # The unit and instance half of #refusal, without the reason: the seam
+    # System::UnitDropinService (IMP-9951cbf20bb0) calls, so a runtime drop-in
+    # and a restart refuse exactly the same targets — composed managed units
+    # only, never the agent's, the node-scoped INV-1 fence, and a running,
+    # reporting agent. `act` names the operation in the message. Read-only.
+    def target_refusal(instance:, unit:, act: "restart")
+      unit_refusal(instance, unit.to_s.strip, act) || instance_refusal(instance, act)
     end
 
     # Re-checks, then creates the task and its audit row in ONE transaction: a
@@ -112,24 +121,24 @@ module System
       "reason must be at most #{REASON_MAX_LENGTH} characters" if text.length > REASON_MAX_LENGTH
     end
 
-    def unit_refusal(instance, unit)
+    def unit_refusal(instance, unit, act)
       return "unit is required" if unit.blank?
-      return agent_unit_refusal if unit.downcase.start_with?(AGENT_UNIT_PREFIX)
+      return agent_unit_refusal(act) if unit.downcase.start_with?(AGENT_UNIT_PREFIX)
 
       unless unit.downcase.start_with?(MANAGED_PREFIX)
         return "unit #{unit.inspect} is outside the managed #{MANAGED_PREFIX}* namespace; " \
-               "only a unit a module composed on this instance may be restarted"
+               "only a unit a module composed on this instance may be the target of a #{act}"
       end
       return "unit #{unit.inspect} is not a well-formed managed unit name (powernode-<module-id>-<service>.service)" unless unit.match?(MANAGED_UNIT_SHAPE)
 
       composed = self.class.composed_units(instance).find { |c| c.unit == unit }
       return "unit #{unit.inspect} is not composed on this instance (list its modules' services to find the unit name)" if composed.nil?
 
-      fence_refusal(instance, composed)
+      fence_refusal(instance, composed, act)
     end
 
-    def agent_unit_refusal
-      "the node agent's own unit is never restarted through this verb: an agent restart kills the " \
+    def agent_unit_refusal(act)
+      "the node agent's own unit is never the target of a #{act} through this verb: it acts on the " \
         "process that would report it, and stays out-of-band"
     end
 
@@ -139,16 +148,16 @@ module System
     # CLOSED for the services the control plane runs on (CONTROL_PLANE_SERVICE),
     # unlike the fence's inert default for other consumers; the rest of a
     # deployment's units are unaffected by the setting being unset.
-    def fence_refusal(instance, composed)
+    def fence_refusal(instance, composed, act)
       if self_managed_target?(instance)
-        return "refusing to restart #{composed.unit} on instance #{instance.id} — it is this control plane's " \
+        return "refusing a #{act} of #{composed.unit} on instance #{instance.id} — it is this control plane's " \
                "own hosting node (INV-1: no self-management). Management authority must come from the " \
                "consensus group, never the node itself."
       end
       return nil unless composed.service.match?(CONTROL_PLANE_SERVICE)
       return nil if self_hosting_node_id.present?
 
-      "refusing to restart #{composed.unit} — this deployment has not configured " \
+      "refusing a #{act} of #{composed.unit} — this deployment has not configured " \
         "#{::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY}, so it cannot verify the " \
         "instance is not the control plane's own hosting node (fail closed for the services the control plane runs on)"
     end
@@ -158,9 +167,9 @@ module System
     # asked). on_node_dispatch_refusal is the status arm plus the silence
     # verdict (never reported / went silent), the check the reconcile producers
     # use.
-    def instance_refusal(instance)
+    def instance_refusal(instance, act)
       unless ::System::NodeInstance::HEARTBEAT_EXPECTED_STATUSES.include?(instance.status)
-        return "instance is #{instance.status}: a unit restart needs a running agent"
+        return "instance is #{instance.status}: a unit #{act} needs a running agent"
       end
 
       instance.on_node_dispatch_refusal
