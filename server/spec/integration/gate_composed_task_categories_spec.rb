@@ -164,7 +164,11 @@ module GateComposedTaskCategories
     # dormant producer left to restore a caller to.
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 321,
+      # MOVED 321 -> 338 at 45188994 (IMP-52762a704a3d added the
+      # probe.node_inspect verb above it; stale from then) and 338 -> 348 at
+      # 2c862e24 (IMP-9951cbf20bb0 added unit.dropin's). RE-AUDITED — still
+      # the MANUAL_OPERATION_POLICIES derivation, unchanged in shape.
+      line: 348,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -188,7 +192,10 @@ module GateComposedTaskCategories
       # MOVED 614 -> 621 at the merge of campaign 01a0790b into develop.
       # RE-AUDITED — still the literal category on the MCP
       # system_terminate_instance arm, unchanged in shape.
-      line: 630,
+      # MOVED 630 -> 695 in nine steps, stale since a49b6e72 (IMP-80a353489ba4,
+      # 630 -> 637); the last was 611f2b5d (IMP-9951cbf20bb0, 692 -> 695).
+      # RE-AUDITED — same literal, same arm.
+      line: 695,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —
@@ -200,6 +207,24 @@ module GateComposedTaskCategories
       domain: "Literal category on the MCP system_terminate_instance arm — the " \
               "shape the literal backstop scan exists to keep discoverable.",
       commands: -> { %w[terminate] }
+    },
+    {
+      file: "app/services/ai/tools/system_fleet_tool.rb",
+      # ADDED unenumerated at 0b3b3884 (IMP-88e82d59b7f2, the governed
+      # system_restart_unit verb); the literal backstop has reported it since.
+      line: 1116,
+      source: 'action_category: "system.task.restart"',
+      # NOT ExecuteTask. The generic replay executor re-invokes the verb, whose
+      # arm (#restart_unit -> System::UnitRestartService#restart!) inserts ONE
+      # System::Task with command "restart" and a declared unit scope. So the
+      # site is on an insert path, just not ExecuteTask's; the insertability
+      # example below selects ExecuteTask sites only, and UnitRestartService's
+      # own spec asserts the row it creates.
+      executor: "Ai::Executors::DeferredToolCall",
+      domain: "Literal category on the MCP system_restart_unit arm — the SAME " \
+              "category TasksController#create composes for a restart, so one " \
+              "operator-tuned row governs a unit restart through either door.",
+      commands: -> { %w[restart] }
     }
   ].freeze
 

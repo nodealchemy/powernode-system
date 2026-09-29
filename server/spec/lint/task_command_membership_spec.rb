@@ -175,7 +175,9 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # #command_insertable?, which calls .new + .valid? and never persists.
       # 249 -> 253 when the tasks_controller entry's value set gained its
       # unit.dropin exclusion (IMP-9951cbf20bb0); RE-AUDITED, unchanged.
-      "integration/gate_composed_task_categories_spec.rb" => [ 253 ]
+      # 253 -> 278 when the pins above it were annotated and the
+      # system_restart_unit site was enumerated; RE-AUDITED, unchanged.
+      "integration/gate_composed_task_categories_spec.rb" => [ 278 ]
     }
   end
 
