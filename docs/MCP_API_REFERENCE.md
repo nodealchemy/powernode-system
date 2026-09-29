@@ -269,6 +269,20 @@ A collector takes only its own arguments; another collector's argument is refuse
 
 **Waiting.** `wait_seconds` defaults to the cap (45s) since the caller wants the answer; on expiry the reply is a success with `timed_out: true` and the `task_id`, and `system_get_task` (`wait_seconds`, `include_events`) reads the same task later. `0` returns the `task_id` at once. A collector whose tool fails on the node is a completed result with `ok: false` and the reason; an argument the agent refuses (a unit that does not exist) is an error carrying the reason and the `task_id`.
 
+#### Governed unit restart
+
+`system_restart_unit` (`instance_id`, `unit`, `reason`) restarts ONE systemd unit that a module composed on an instance, through the node's own agent (an agent `restart` task, unit-scoped), with no root shell. It is **approval-gated** on `system.task.restart`, the same category `POST /api/v1/system/tasks` reads and which ships `require_approval`: the reply is `pending: true` with an `approval_request_id` and nothing is queued until an operator approves; when the approval lands the generic replay executor re-invokes the verb as the original principal, which creates exactly one task. It is **not** `restart_after_update`, which creates the same task shape but never meets the gate.
+
+| Check | Rule |
+|---|---|
+| `reason` | Required, non-blank, at most 500 characters; recorded on the task and in the audit log (`system.instance.restart_unit`, with the unit, task id and requester) |
+| `unit` | The full name, `powernode-<module-id>-<service>.service`, and it must be one of the services of the modules attached to that instance's node (`System::UnitRestartService.composed_units`, the same union the node API serves the agent). An unknown unit, or one composed on another instance, is refused |
+| Namespace | Anything outside `powernode-*` is refused; the node agent's own unit and its variants (`powernode-agent*`) are refused with the message that agent restarts stay out-of-band |
+| Self-hosting node | The `rails*` and `postgres*` services of the node named by `self_hosting_node_id` are refused (INV-1). The fence is fail-closed for these units: with the setting unset they are refused too, naming the setting. Other units on that node (sidekiq, traefik) are not affected. There is no relaxation switch; use the out-of-band path |
+| Instance | Must be `running` or `starting`, with a live agent |
+
+Every check runs at request time (before anything is parked) and again on the approved replay, since the unit may have stopped being composed, or the node become the control plane's host, while the request was parked; the replay then completes with the refusal and creates no task. The agent's `taskguard` validators (`powernode-` prefix, an installed unit file) remain the second layer. Requires `system.instances.control`. Declared `mutating` and `destructive` (the class of `system_reboot_instance` and `system_stop_instance`) and denied outright to every instance principal by `Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS` (`*system_restart_unit*`); the gate context and the verb refuse an instance principal independently of that overlay.
+
 #### CI worker provisioning
 
 | Action | What it does | Audience |

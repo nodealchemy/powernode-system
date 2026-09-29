@@ -215,6 +215,9 @@ module Ai
         # as terminate/replace: a control-plane act on an existing instance,
         # not the creation of one.
         "system_out_of_band_exec"       => "system.instances.control",
+        # IMP-88e82d59b7f2 — restart ONE composed unit on a node; a control-plane
+        # act on an existing instance, the same family as its lifecycle siblings.
+        "system_restart_unit"           => "system.instances.control",
         "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
@@ -1086,6 +1089,33 @@ module Ai
                      executor_class: "System::Ai::Skills::ReplaceInstanceExecutor",
                      gate_context: :replace_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
+      # IMP-88e82d59b7f2 — restart ONE systemd unit the node's modules composed,
+      # without root shell access. Gated on system.task.restart, the SAME
+      # category TasksController#create reads (seeded require_approval), so one
+      # operator-tuned row governs a unit restart whichever door asks; NOT
+      # System::RestartAfterUpdate, which creates the same task shape but never
+      # meets the gate. The generic replay executor re-invokes THIS action as the
+      # original principal, so #restart_unit stays the single author of the task
+      # and its request-time checks (System::UnitRestartService#refusal) run
+      # again on the approved replay — the unit may have stopped being composed,
+      # or the node become the control plane's host, while the request was parked.
+      #
+      # destructive: true although a restart destroys nothing. It is the same
+      # class as system_reboot_instance and system_stop_instance, both declared
+      # destructive and on the deny overlay: a disruptive lifecycle act on a
+      # running node that an instance principal must never be able to aim at a
+      # peer. The overlay entry (core, *system_restart_unit*) is required
+      # regardless, and destructive_declaration_matches_deny_overlay_spec holds
+      # the two classifications in set equality, so the flag follows the entry.
+      declare_action "system_restart_unit",
+                     mutating: true,
+                     destructive: true,
+                     action_category: "system.task.restart",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :restart_unit_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "task_id, instance_id, unit and status of the queued restart task",
+                     refuses: "the reason is blank or too long, the unit is not composed on the instance, is the agent's own or outside powernode-*, is the control plane's own rails or postgres, or the instance is not running"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
@@ -1570,6 +1600,19 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to run the command on (account-scoped; must have an SSH IP address)" },
               command: { type: "string", required: true, description: "The single command to run" },
               sudo: { type: "boolean", required: false, default: true, description: "Run the command under sudo (default true)" }
+            }
+          },
+          # IMP-88e82d59b7f2 — see the declare_action for the gate and the replay.
+          "system_restart_unit" => {
+            description: "Restart ONE systemd unit that a module composed on an instance (powernode-<module-id>-<service>.service), through the node's own agent, with no shell access. The unit must be one of the services of the modules attached to that instance's node; anything else is refused, as is the node agent's own unit (agent restarts stay out-of-band), any unit outside the powernode-* namespace, and the rails and postgres units of the node that hosts this control plane. The instance must be running. reason is required (1 to 500 characters) and is recorded in the audit log. " \
+                         "APPROVAL-GATED (system.task.restart): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and NOTHING is restarted until an operator " \
+                         "approves — do not report a restart on that response. The checks run again when the approval lands; " \
+                         "a unit that stopped being composed in the meantime is refused then. Refused for an instance principal.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose unit to restart (account-scoped; must be running)" },
+              unit: { type: "string", required: true, description: "The FULL unit name with its .service suffix, as composed on that instance: powernode-<module-id>-<service>.service" },
+              reason: { type: "string", required: true, description: "Why the unit is being restarted, 1 to #{::System::UnitRestartService::REASON_MAX_LENGTH} characters; recorded in the audit log" }
             }
           },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
@@ -2817,6 +2860,11 @@ module Ai
         # would otherwise have run a replace, or a terminate, with no policy
         # evaluation at all.
         when "system_replace_instance"         then gate_routed_only("system_replace_instance")
+        # Gate-routed (IMP-88e82d59b7f2): the arm runs only as the replay of an
+        # approved (or auto-approved) operation, which is what Ai::AutonomyGate
+        # hands DeferredToolCall on :proceed too. A bare #call would otherwise
+        # restart a unit with no policy evaluation at all.
+        when "system_restart_unit"             then approved_replay? ? restart_unit(params) : gate_routed_only("system_restart_unit")
         when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
@@ -4886,6 +4934,60 @@ module Ai
           source_type: instance.class.name,
           source_id: instance.id
         }
+      end
+
+      # === Approval-gated unit restart (IMP-88e82d59b7f2) ===
+
+      # Built BEFORE anything is parked, so a request that could only ever be
+      # refused (an unknown instance, a unit not composed there, the agent's
+      # unit, a blank reason) keeps its inline error instead of becoming an
+      # approval an operator must dispose of. #restart_unit re-runs the same
+      # check on replay.
+      def restart_unit_gate_context(params)
+        restart_unit_refuse_instance_principal!
+        instance = restart_unit_instance(params)
+        message = ::System::UnitRestartService.new.refusal(
+          instance: instance, unit: params[:unit], reason: params[:reason]
+        )
+        raise CallerFacingError, message if message
+
+        deferred_tool_call_context(params).merge(
+          description: "Restart unit #{params[:unit].to_s.strip} on '#{instance.name}': #{params[:reason].to_s.strip.truncate(200)}",
+          source_type: "System::NodeInstance",
+          source_id: instance.id
+        )
+      end
+
+      # The single author of the restart task, reached on :proceed and on the
+      # approved replay. Refusals return the error envelope and create nothing.
+      def restart_unit(params)
+        restart_unit_refuse_instance_principal!
+        instance = restart_unit_instance(params)
+        task = ::System::UnitRestartService.new.restart!(
+          instance: instance, unit: params[:unit], reason: params[:reason],
+          initiated_by: user, agent_id: agent&.id,
+          deferred_operation_id: @replaying_operation&.id, call_origin: call_origin
+        )
+        success_result(task_id: task.id, instance_id: instance.id, unit: task.options["unit"], status: task.status)
+      rescue ::System::UnitRestartService::Refused, CallerFacingError => e
+        error_result(e.message)
+      end
+
+      # Defense in depth beyond Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+      # *system_restart_unit* entry, for the reason
+      # #out_of_band_exec_gate_context gives: this must not depend on the
+      # overlay's pattern list staying intact.
+      def restart_unit_refuse_instance_principal!
+        return unless instance_authorized?
+
+        raise CallerFacingError,
+              "system_restart_unit is refused for an instance principal: a unit restart must be " \
+              "requested by an operator or an agent acting for one, never by a node it could target"
+      end
+
+      def restart_unit_instance(params)
+        account_instances.find_by(id: params[:instance_id].to_s) ||
+          raise(CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].to_s.inspect}")
       end
 
       # === The DR lane's gate contexts (IMP-4e49eb79c5e0) ===

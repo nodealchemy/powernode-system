@@ -656,7 +656,8 @@ module PowernodeSystem
             ::System::InternalCaService::AUDITED_ACTIONS +
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
             ::System::Governance::GapMaterializer::AUDITED_ACTIONS +
-            ::System::OutOfBandExecService::AUDITED_ACTIONS
+            ::System::OutOfBandExecService::AUDITED_ACTIONS +
+            ::System::UnitRestartService::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"

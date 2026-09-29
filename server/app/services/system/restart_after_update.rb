@@ -199,6 +199,36 @@ module System
         version&.config.is_a?(Hash) ? version.config[ARMED_KEY] : nil
       end
 
+      # Modules actually mounted on this instance's node. There are TWO
+      # pathways, and this must honour both — the same union
+      # NodeApi::ModulesController#node_modules serves to the agent:
+      #
+      #   1. an enabled NodeModuleAssignment row (operator-attached bases), and
+      #   2. dependant children (config/instance variety) created by
+      #      NodeModuleAssignment#create_dependant!, which set node_id +
+      #      parent_module_id and create NO assignment row at all.
+      #
+      # That controller carries an explicit comment that honouring only path 1
+      # was a bug which made dependant children "silently absent". Repeating it
+      # here would mean a declaration naming a dependant child resolves to
+      # nothing and restarts nothing — reproducing the exact inert-deploy
+      # failure this feature exists to remove.
+      def attached_modules(node)
+        assigned_ids = ::System::NodeModuleAssignment
+                       .where(node_id: node.id, enabled: true)
+                       .pluck(:node_module_id)
+
+        dependant_ids = ::System::NodeModule
+                        .where(node_id: node.id, enabled: true)
+                        .where.not(parent_module_id: nil)
+                        .pluck(:id)
+
+        ::System::NodeModule
+          .where(id: (assigned_ids + dependant_ids).uniq)
+          .includes(:current_version)
+          .to_a
+      end
+
       # Called from the heartbeat — the exact moment the platform learns what
       # an instance has actually materialized. Never raises into the heartbeat
       # path (same contract as BootImage::UpgradeReconciler).
@@ -325,34 +355,8 @@ module System
       planned.sum { |unit, entry| enqueue_restart!(unit, entry) ? 1 : 0 }
     end
 
-    # Modules actually mounted on this instance's node. There are TWO
-    # pathways, and this must honour both — the same union
-    # NodeApi::ModulesController#node_modules serves to the agent:
-    #
-    #   1. an enabled NodeModuleAssignment row (operator-attached bases), and
-    #   2. dependant children (config/instance variety) created by
-    #      NodeModuleAssignment#create_dependant!, which set node_id +
-    #      parent_module_id and create NO assignment row at all.
-    #
-    # That controller carries an explicit comment that honouring only path 1
-    # was a bug which made dependant children "silently absent". Repeating it
-    # here would mean a declaration naming a dependant child resolves to
-    # nothing and restarts nothing — reproducing the exact inert-deploy
-    # failure this feature exists to remove.
     def attached_modules(node)
-      assigned_ids = ::System::NodeModuleAssignment
-                     .where(node_id: node.id, enabled: true)
-                     .pluck(:node_module_id)
-
-      dependant_ids = ::System::NodeModule
-                      .where(node_id: node.id, enabled: true)
-                      .where.not(parent_module_id: nil)
-                      .pluck(:id)
-
-      ::System::NodeModule
-        .where(id: (assigned_ids + dependant_ids).uniq)
-        .includes(:current_version)
-        .to_a
+      self.class.attached_modules(node)
     end
 
     def enqueue_restart!(unit, entry)
