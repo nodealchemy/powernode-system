@@ -423,7 +423,10 @@ module Ai
             parameters: { peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to detach" } }
           },
           "system_sdwan_rotate_peer_key" => {
-            description: "Rotate ONE SDWAN peer's WireGuard keypair IN PLACE — for a suspected key compromise. The peer id, " \
+            description: "Rotate ONE SDWAN peer's WireGuard keypair IN PLACE — the remedy for a LEAKED KEY (the private half " \
+                         "turned up in a backup, a log, a transcript or a copied config), not a compromised node: the new " \
+                         "private key is delivered to the peer's node on its next pull, so if the node itself is suspect, " \
+                         "detach the peer (system_sdwan_detach_peer) and revoke or reprovision the instance instead. The peer id, " \
                          "overlay address, network and endpoints stay unchanged (detach + re-attach would change the id " \
                          "and address). The active key is revoked and a new X25519 pair is generated server-side and " \
                          "stored in Vault; the membership credential is re-issued to name the new key. No private key " \
@@ -437,7 +440,7 @@ module Ai
                          "still carries the old key and stops working until that device is re-issued.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose key to rotate" },
-              reason: { type: "string", required: true, description: "Why the key is being rotated (for example a suspected compromise); recorded on the audit row, at most 500 characters" }
+              reason: { type: "string", required: true, description: "Why the key is being rotated (for example a suspected key leak); recorded on the audit row, at most 500 characters" }
             }
           },
           "system_sdwan_get_topology" => {

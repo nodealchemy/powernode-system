@@ -7,8 +7,15 @@ module Sdwan
   # Reached by system_sdwan_rotate_peer_key (SdwanTool) on its :proceed branch
   # and on the approved DeferredToolCall replay, under sdwan.peer_key_rotate.
   # Before it, Sdwan::KeyDistributor.rotate! had no operator or MCP caller:
-  # rotating a compromised key meant detach + re-attach (a new peer id, a new
+  # rotating a leaked key meant detach + re-attach (a new peer id, a new
   # overlay address, the tunnel down) or a console runner.
+  #
+  # WHAT IT REMEDIES: a LEAKED KEY — the private half turned up in a backup, a
+  # log, a transcript or a copied config. NOT a compromised NODE: the new
+  # private key is generated here and served to that node on its next pull
+  # (below), so an attacker holding the node receives it within one heartbeat.
+  # A suspect node is detached (system_sdwan_detach_peer) and its instance
+  # revoked or reprovisioned instead.
   #
   # IN PLACE: the peer row is never rewritten. Its id, overlay address, network
   # and endpoints stay as they were; only its Sdwan::PeerKey rows change (the
@@ -38,7 +45,21 @@ module Sdwan
   # without a re-issue here the next pull would hand out a signed envelope
   # naming the REVOKED key. It is re-issued after the rotation commits,
   # best-effort: a signer failure must not undo a rotation made because a key
-  # is compromised (the signer emits its own sdwan.credential_refresh_failed).
+  # leaked (the signer emits its own sdwan.credential_refresh_failed). A
+  # second rotation of the same peer can commit between this rotation's commit
+  # and its re-issue, and the two re-issues can land in either order — so the
+  # credential just issued is CHECKED against the key active now, and re-issued
+  # once if it names a superseded one. Not done under the peer lock: the
+  # signer's failure event is written inside its own rescue, and a lock's
+  # transaction would roll that record back with the failure.
+  #
+  # VAULT IS NOT TRANSACTIONAL. KeyDistributor writes the new private half to
+  # Vault inside the transaction; if a later step (the audit row) raises, the
+  # PeerKey rows roll back and the secret would stay at a path no row points
+  # at. The rescue around the transaction purges it, best-effort, and re-raises
+  # the original failure. The transaction is requires_new so the rollback is a
+  # real savepoint even inside a caller's transaction — purging a secret whose
+  # row a caller then commits would strand a live key without its private half.
   #
   # A refusal is a MESSAGE (nil means "would proceed"), like
   # System::UnitRestartService#refusal, so the gate context can ask without
@@ -85,18 +106,23 @@ module Sdwan
       raise Refused, message if message
 
       previous = nil
-      new_key = ::ActiveRecord::Base.transaction do
-        peer.lock!
-        previous = peer.active_key
-        key = ::Sdwan::KeyDistributor.rotate!(peer: peer, reason: REVOCATION_REASON)
-        write_audit!(peer: peer, previous: previous, new_key: key, reason: reason, initiated_by: initiated_by,
-                     agent_id: agent_id, deferred_operation_id: deferred_operation_id, call_origin: call_origin)
-        key
-      end
+      stored_key_id = nil
+      new_key =
+        begin
+          ::ActiveRecord::Base.transaction(requires_new: true) do
+            peer.lock!
+            previous = peer.active_key
+            key = ::Sdwan::KeyDistributor.rotate!(peer: peer, reason: REVOCATION_REASON)
+            stored_key_id = key.id
+            write_audit!(peer: peer, previous: previous, new_key: key, reason: reason, initiated_by: initiated_by,
+                         agent_id: agent_id, deferred_operation_id: deferred_operation_id, call_origin: call_origin)
+            key
+          end
+        rescue StandardError
+          purge_orphaned_secret(peer, stored_key_id) if stored_key_id
+          raise
+        end
 
-      # KeyDistributor inserts the new row without going through peer.keys, so
-      # a collection loaded before the rotation still answers the OLD key.
-      peer.keys.reset
       reissued = reissue_membership_credential(peer)
       emit_event(peer: peer, previous: previous, new_key: new_key, reissued: reissued)
 
@@ -110,6 +136,10 @@ module Sdwan
         account: peer.account,
         user: initiated_by,
         action: AUDIT_ACTION,
+        # A destructive credential operation: surface it in the security and
+        # risk views rather than at the model's "low" default.
+        severity: "high",
+        risk_level: "high",
         resource_type: "Sdwan::Peer",
         resource_id: peer.id.to_s,
         source: "system",
@@ -127,8 +157,11 @@ module Sdwan
       )
     end
 
+    # Issue, then verify against the key active NOW and issue once more if a
+    # concurrent rotation superseded ours in between (see the header).
     def reissue_membership_credential(peer)
-      ::Sdwan::MembershipCredentialSigner.issue!(peer: peer)
+      credential = issue_for_current_key(peer)
+      issue_for_current_key(peer) unless names_active_key?(credential, peer)
       true
     rescue StandardError => e
       # The class only: a signer failure message can carry Vault detail, and
@@ -138,6 +171,32 @@ module Sdwan
         "membership credential (#{e.class}); the next compile keeps serving the previous one until its refresh window"
       )
       false
+    end
+
+    # The reset drops a keys collection loaded before the rotation, which would
+    # still answer the OLD key (KeyDistributor inserts without going through
+    # peer.keys).
+    def issue_for_current_key(peer)
+      peer.keys.reset
+      ::Sdwan::MembershipCredentialSigner.issue!(peer: peer)
+    end
+
+    def names_active_key?(credential, peer)
+      active = ::Sdwan::PeerKey.active.where(sdwan_peer_id: peer.id).pick(:public_key)
+      JSON.parse(credential.envelope_json)["wg_pubkey"] == active
+    end
+
+    # The class only in the log: a Vault failure message is not ours to repeat.
+    # Never raises — the caller re-raises the failure that brought it here.
+    def purge_orphaned_secret(peer, key_id)
+      ::Security::VaultCredentialProvider.new(account_id: peer.account_id)
+                                         .purge_credential!(credential_type: ::Sdwan::PeerKey.vault_credential_type,
+                                                            credential_id: key_id)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[Sdwan::PeerKeyRotationService] rotation of peer #{peer.id} rolled back; could not purge the " \
+        "orphaned Vault credential for key #{key_id} (#{e.class})"
+      )
     end
 
     # After commit, and never allowed to turn a completed rotation into a

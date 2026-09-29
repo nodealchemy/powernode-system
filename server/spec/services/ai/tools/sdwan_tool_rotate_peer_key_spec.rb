@@ -45,7 +45,7 @@ RSpec.describe Ai::Tools::SdwanTool, "system_sdwan_rotate_peer_key" do
   end
 
   def rotate!(t = tool, **rest)
-    t.execute(params: { action: "system_sdwan_rotate_peer_key", peer_id: peer.id, reason: "suspected key compromise" }.merge(rest))
+    t.execute(params: { action: "system_sdwan_rotate_peer_key", peer_id: peer.id, reason: "suspected key leak" }.merge(rest))
   end
 
   def parked
@@ -117,6 +117,20 @@ RSpec.describe Ai::Tools::SdwanTool, "system_sdwan_rotate_peer_key" do
       expect(description).to match(/next .*(reconcile|pull)/i)
       expect(description).to match(/user.device/i)
     end
+
+    # Critic M1: the new private key is served to the peer's node on its next
+    # pull, so rotation remedies a LEAKED key, never a compromised NODE — the
+    # description must not invite the operator to "remediate" a breached host
+    # by handing it a fresh key.
+    it "scopes itself to a leaked key and sends a compromised node to detach + revoke instead" do
+      definition = described_class.action_definitions.fetch("system_sdwan_rotate_peer_key")
+
+      expect(definition[:description]).to match(/leaked key/i)
+      expect(definition[:description]).to match(/not a compromised node/i)
+      expect(definition[:description]).to include("system_sdwan_detach_peer")
+      expect(definition[:description]).not_to match(/suspected key compromise/i)
+      expect(definition[:parameters][:reason][:description]).to match(/suspected key leak/i)
+    end
   end
 
   describe "the seeded require_approval tier" do
@@ -172,8 +186,11 @@ RSpec.describe Ai::Tools::SdwanTool, "system_sdwan_rotate_peer_key" do
       audit = AuditLog.find_by!(action: Sdwan::PeerKeyRotationService::AUDIT_ACTION, resource_id: peer.id.to_s)
       expect(audit.user_id).to eq(user.id)
       expect(audit.resource_type).to eq("Sdwan::Peer")
+      # Critic L1: a destructive credential operation, not the model's "low" default.
+      expect(audit.severity).to eq("high")
+      expect(audit.risk_level).to eq("high")
       expect(audit.metadata).to include(
-        "reason" => "suspected key compromise",
+        "reason" => "suspected key leak",
         "network_id" => network.id,
         "previous_public_key_fingerprint" => original_key.public_key_fingerprint,
         "new_public_key_fingerprint" => new_key.public_key_fingerprint
@@ -209,45 +226,90 @@ RSpec.describe Ai::Tools::SdwanTool, "system_sdwan_rotate_peer_key" do
 
   # Operator direction 4: NO private-key material in anything the verb returns,
   # writes or emits — searched on each WHOLE payload's to_json, not on the keys
-  # we happen to expect.
+  # we happen to expect, in base64 (the stored form) AND hex (critic L6).
   describe "key material" do
-    it "appears in no tool result, audit row, approval request, deferred operation, event or log line" do
-      log = StringIO.new
-      side_logger = ActiveSupport::Logger.new(log)
-      Rails.logger.broadcast_to(side_logger)
+    let(:log) { StringIO.new }
+    let(:side_logger) { ActiveSupport::Logger.new(log) }
 
+    before { Rails.logger.broadcast_to(side_logger) }
+    after  { Rails.logger.stop_broadcasting_to(side_logger) }
+
+    def encodings(secret)
+      [ secret, Base64.strict_decode64(secret).unpack1("H*") ]
+    end
+
+    def expect_no_key_material(payloads, secrets)
+      secrets.each { |secret| expect(secret).to be_present }
+      forms = secrets.flat_map { |secret| encodings(secret) }
+
+      payloads.merge("log" => log.string).each do |label, payload|
+        text = payload.is_a?(String) ? payload : payload.to_json
+        forms.each do |form|
+          expect(text.include?(form)).to be(false), "#{label} carries private-key material"
+        end
+      end
+    end
+
+    def stored_surfaces
+      {
+        "audit rows" => AuditLog.where(account_id: account.id).map(&:attributes),
+        "fleet events" => System::FleetEvent.where(account_id: account.id).map(&:attributes),
+        "membership credentials" => Sdwan::MembershipCredential.where(sdwan_peer_id: peer.id).map(&:attributes)
+      }
+    end
+
+    def private_of(key_id)
+      Sdwan::PeerKey.find(key_id).private_key
+    end
+
+    it "appears in no tool result, audit row, approval request, deferred operation, credential, event or log line" do
       old_private = original_key.private_key
       pending_response = rotate!
       deferred = parked_after(pending_response)
       approve_and_replay!(deferred)
       new_key = peer.reload.active_key
-      new_private = Sdwan::PeerKey.find(new_key.id).private_key
 
-      expect(old_private).to be_present
-      expect(new_private).to be_present
-
-      payloads = {
-        "pending tool result" => pending_response,
-        "replayed tool result" => deferred.result,
-        "deferred operation" => deferred.reload.attributes,
-        "approval request" => deferred.approval_request.reload.attributes,
-        "audit rows" => AuditLog.where(account_id: account.id).map(&:attributes),
-        "fleet events" => System::FleetEvent.where(account_id: account.id).map(&:attributes)
-      }
-
-      payloads.each do |label, payload|
-        json = payload.to_json
-        [ old_private, new_private ].each do |secret|
-          expect(json.include?(secret)).to be(false), "#{label} carries private-key material"
-        end
-      end
-      expect(log.string.include?(old_private)).to be(false), "a log line carries the old private key"
-      expect(log.string.include?(new_private)).to be(false), "a log line carries the new private key"
+      expect_no_key_material(
+        stored_surfaces.merge(
+          "pending tool result" => pending_response,
+          "replayed tool result" => deferred.result,
+          "deferred operation" => deferred.reload.attributes,
+          "approval request" => deferred.approval_request.reload.attributes
+        ),
+        [ old_private, private_of(new_key.id) ]
+      )
 
       # And what it DOES carry is the public identity: fingerprints.
       expect(deferred.result.to_json).to include(new_key.public_key_fingerprint)
-    ensure
-      Rails.logger.stop_broadcasting_to(side_logger) if side_logger
+    end
+
+    it "appears in no part of the auto_approve inline response the caller receives" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+      old_private = original_key.private_key
+
+      response = rotate!
+
+      expect(response[:data]).to include(rotated: true)
+      expect_no_key_material(stored_surfaces.merge("inline tool result" => response),
+                             [ old_private, private_of(peer.reload.active_key.id) ])
+    end
+
+    it "appears nowhere when the membership-credential re-issue fails after the rotation" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+      allow_any_instance_of(Sdwan::MembershipCredentialSigner).to receive(:signing_key_material!)
+        .and_raise(Sdwan::MembershipCredentialSigner::MissingKeyError, "constellation signing key unavailable")
+      old_private = original_key.private_key
+
+      response = rotate!
+
+      expect(response[:data]).to include(rotated: true, membership_credential_reissued: false)
+      expect(System::FleetEvent.where(account_id: account.id, kind: "sdwan.credential_refresh_failed")).to exist
+      expect_no_key_material(stored_surfaces.merge("inline tool result" => response),
+                             [ old_private, private_of(peer.reload.active_key.id) ])
     end
   end
 

@@ -87,6 +87,26 @@ RSpec.describe RetireSdwanKeyRotateAutonomyPolicy do
       expect(output).to include("Retired 1 system.sdwan_key_rotate autonomy policy row(s)")
     end
 
+    # Critic L5. An inert `block` still recorded an operator's intent — "never
+    # rotate keys without me" — and the category that now gates key rotation
+    # resolves require_approval, which is looser. Say so loudly, not in a line
+    # that reads like every other row.
+    it "WARNS for a retired row the operator had set to block, naming the category to re-apply it on" do
+      policy("system.sdwan_key_rotate", verb: "block")
+
+      output = run_up
+
+      expect(output).to include("WARNING")
+      expect(output).to include('policy="block"')
+      expect(output).to include("re-apply block on sdwan.peer_key_rotate if still intended")
+    end
+
+    it "does not warn for a retired row at a non-block verb" do
+      policy("system.sdwan_key_rotate", verb: "auto_approve")
+
+      expect(run_up).not_to include("WARNING")
+    end
+
     it "is a no-op on a second run" do
       policy("system.sdwan_key_rotate")
       run_up

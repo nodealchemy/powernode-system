@@ -74,10 +74,20 @@ class RetireSdwanKeyRotateAutonomyPolicy < ActiveRecord::Migration[8.1]
     # STATE THE COUNT, and the verb, before the delete: this is the only record
     # of what an install had tuned on the category being withdrawn.
     doomed.order(:account_id, :id).each do |row|
-      say "retiring #{row.action_category} (account_id=#{row.account_id.inspect} " \
-          "scope=#{row.scope.inspect} agent_id=#{row.ai_agent_id.inspect} policy=#{row.policy.inspect} " \
-          "active=#{row.is_active.inspect}) — no producer; a governed key rotation gates on " \
-          "#{GOVERNED_CATEGORY}, whose rows the governance reconcile creates at its declared verb"
+      line = "retiring #{row.action_category} (account_id=#{row.account_id.inspect} " \
+             "scope=#{row.scope.inspect} agent_id=#{row.ai_agent_id.inspect} policy=#{row.policy.inspect} " \
+             "active=#{row.is_active.inspect}) — no producer; a governed key rotation gates on " \
+             "#{GOVERNED_CATEGORY}, whose rows the governance reconcile creates at its declared verb"
+
+      # An inert `block` still recorded intent ("never rotate keys without
+      # me"), and GOVERNED_CATEGORY resolves require_approval — looser. The one
+      # row whose loss can change what an operator expects, so it is shouted.
+      if row.policy.to_s == "block"
+        say "WARNING: #{line}. The retired row was set to block: re-apply block on #{GOVERNED_CATEGORY} " \
+            "if still intended"
+      else
+        say line
+      end
     end
 
     doomed.delete_all
