@@ -188,6 +188,13 @@ type HeartbeatPayload struct {
 	// Empty/omitted means every attached, N4-eligible unit's running
 	// capabilities currently match what its manifest declares.
 	RuntimeConfinementStaleUnits []string `json:"runtime_confinement_stale_units,omitempty"`
+	// SSHHostKeys are this host's SSH host PUBLIC keys, read from
+	// /etc/ssh/ssh_host_*_key.pub (IMP-190834701b0a; see hostkeys.go). The
+	// platform verifies every SSH connection it makes to this node against
+	// them. nil (omitted) means NOT MEASURED: no valid .pub file was found.
+	// It never means "this host has no keys", and it is never sent as an
+	// empty list.
+	SSHHostKeys []HostKey `json:"ssh_host_keys,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

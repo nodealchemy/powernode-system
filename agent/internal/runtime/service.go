@@ -114,6 +114,14 @@ type Service struct {
 	// Run() reaches the point below where it is set, and nil in any test that
 	// builds a Service without calling Run — buildHeartbeat guards for that.
 	reconciler *Reconciler
+	// hostKeyDir is where buildHeartbeat reads the SSH host public keys
+	// (IMP-190834701b0a). Empty means DefaultSSHHostKeyDir; tests point it at
+	// a fixture dir.
+	hostKeyDir string
+	// hostKeyErrSeen de-duplicates refused-host-key-file reports so a bad
+	// .pub file is reported once, not every heartbeat. It is touched only
+	// from the heartbeat goroutine.
+	hostKeyErrSeen map[string]bool
 }
 
 func New(cfg Config) *Service {
@@ -697,6 +705,10 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		// Baked-in disk-image git_sha, read once at construction.
 		BootedImageGitSHA: s.bootedImageGitSHA,
 	}
+	// IMP-190834701b0a: SSH host PUBLIC keys, re-read each tick (a few small
+	// files) so a key sshd generates after the agent starts, or a rekey, is
+	// reported without an agent restart. Only *.pub is ever opened.
+	payload.SSHHostKeys = s.readSSHHostKeys()
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
 		payload.SdwanOvnState = sdwanMgr.OvnNbStatus()
@@ -1009,4 +1021,25 @@ func newVerifyEvaluator(cfg Config) *probe.Evaluator {
 		e.StatePath = cfg.StatePath
 	}
 	return e
+}
+
+// readSSHHostKeys reads the host public keys for the heartbeat and reports
+// each refused file once through OnError. The report carries the path and
+// the reason, never file content.
+func (s *Service) readSSHHostKeys() []HostKey {
+	dir := s.hostKeyDir
+	if dir == "" {
+		dir = DefaultSSHHostKeyDir
+	}
+	keys, errs := ReadHostKeys(dir)
+	for _, err := range errs {
+		if s.hostKeyErrSeen == nil {
+			s.hostKeyErrSeen = map[string]bool{}
+		}
+		if msg := err.Error(); !s.hostKeyErrSeen[msg] {
+			s.hostKeyErrSeen[msg] = true
+			s.cfg.OnError("ssh_host_keys", err)
+		}
+	}
+	return keys
 }
