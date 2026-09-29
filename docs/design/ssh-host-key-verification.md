@@ -181,7 +181,9 @@ on its own; see the recovery below.
 If a node's recorded key is stale and its agent cannot report the new one,
 every path fails with a host key mismatch, including out-of-band exec, which
 is the tool for diagnosing exactly that agent. The recovery is an
-operator-only, audited clear, run from a console on the control plane:
+operator-only, audited clear, run from a console on the control plane. The
+actor must be the `User` doing it (anything else is refused), and the audit
+row names them:
 
 ```ruby
 System::SshHostKeyWriter.clear!(

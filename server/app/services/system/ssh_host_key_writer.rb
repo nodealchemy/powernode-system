@@ -88,11 +88,13 @@ module System
       # the previous fingerprints, the actor and the reason. After this,
       # legacy callers connect unverified while system.ssh.require_host_key is
       # off (refused when on), and out-of-band exec is refused until the
-      # node's next heartbeat records a key. See
-      # docs/design/ssh-host-key-verification.md.
+      # node's next heartbeat records a key. `actor` must be the User doing
+      # it. See docs/design/ssh-host-key-verification.md.
       def clear!(instance:, actor:, reason:)
         raise ArgumentError, "a reason is required to clear a recorded SSH host key" if reason.to_s.strip.empty?
-        raise ArgumentError, "an actor is required to clear a recorded SSH host key" if actor.nil?
+        # Recovery is a human act: only a User may clear, and the audit row
+        # names them.
+        raise ArgumentError, "only a User may clear a recorded SSH host key" unless actor.is_a?(::User)
 
         details = nil
         instance.with_lock do
@@ -100,12 +102,11 @@ module System
           instance.update_columns(ssh_host_keys: nil)
           details = {
             previous_fingerprints: ::System::SshHostKeys.fingerprints(previous),
-            reason: reason.to_s.strip,
-            actor: actor_descriptor(actor)
+            reason: reason.to_s.strip
           }
           ::AuditLog.create!(
             account: instance.account,
-            user: actor.is_a?(::User) ? actor : nil,
+            user: actor,
             action: CLEARED_ACTION,
             resource_type: "System::NodeInstance",
             resource_id: instance.id.to_s,
@@ -118,12 +119,6 @@ module System
       end
 
       private
-
-      # Names the actor on the audit row even when it is not a User (an agent,
-      # a service), so the row never names nobody.
-      def actor_descriptor(actor)
-        { "type" => actor.class.name.to_s, "id" => (actor.respond_to?(:id) ? actor.id.to_s : nil) }.compact
-      end
 
       def instance_bound?(instance)
         subject = instance.respond_to?(:mtls_subject) ? instance.mtls_subject : nil

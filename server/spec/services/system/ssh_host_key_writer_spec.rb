@@ -241,22 +241,27 @@ RSpec.describe System::SshHostKeyWriter do
       expect(row.metadata.to_json).not_to include(ed25519["key"])
     end
 
-    # Review round 2 (critic A): a non-User actor (an agent, a service) must
-    # still be named on the row, never nobody.
-    it "records a non-User actor's class and id in the audit metadata" do
-      stub_const("SpecServiceActor", Struct.new(:id))
-      agent_actor = SpecServiceActor.new("actor-123")
-
-      described_class.clear!(instance: instance, actor: agent_actor, reason: "reprovisioned")
+    # Review round 2: recovery is a human act. The audit row names the User
+    # who cleared the key; anything else is refused before the key is touched.
+    it "names the clearing User on the audit row" do
+      described_class.clear!(instance: instance, actor: operator, reason: "reprovisioned")
 
       row = ::AuditLog.find_by!(action: described_class::CLEARED_ACTION, resource_id: instance.id.to_s)
-      expect(row.user_id).to be_nil
-      expect(row.metadata["actor"]).to eq("type" => "SpecServiceActor", "id" => "actor-123")
+      expect(row.user).to eq(operator)
     end
 
-    it "refuses without an actor" do
+    it "refuses a non-User actor and leaves the recorded key in place" do
+      stub_const("SpecServiceActor", Struct.new(:id))
+
+      expect { described_class.clear!(instance: instance, actor: SpecServiceActor.new("actor-123"), reason: "reprovisioned") }
+        .to raise_error(ArgumentError, /User/)
+      expect(stored).to be_present
+      expect(::AuditLog.where(action: described_class::CLEARED_ACTION)).to be_empty
+    end
+
+    it "refuses a nil actor" do
       expect { described_class.clear!(instance: instance, actor: nil, reason: "reprovisioned") }
-        .to raise_error(ArgumentError, /actor/)
+        .to raise_error(ArgumentError, /User/)
       expect(stored).to be_present
     end
 
