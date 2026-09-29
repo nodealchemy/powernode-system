@@ -3,13 +3,13 @@
 require "rails_helper"
 
 # E2 (campaign 01a08c9b) gave declare_action a `destructive:` flag, which the
-# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped (41 with system_out_of_band_exec, 42 with system_restart_unit, 43 with system_apply_unit_dropin)
+# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped (41 with system_out_of_band_exec, 42 with system_restart_unit, 43 with system_apply_unit_dropin, 44 with system_sdwan_rotate_peer_key)
 # verbs are those Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS already refuses to
 # an instance principal. Until each declares the flag, the catalog's
 # classification rests on the deny-overlay floor alone.
 #
 # EQUALITY, not inclusion. The set of destructive verbs across these six tool
-# classes must be exactly the 43 below. A verb dropped from the list and a
+# classes must be exactly the 44 below. A verb dropped from the list and a
 # destroy-shaped verb added without the flag both red this file, so the
 # declaration cannot drift from the overlay silently in either direction.
 RSpec.describe "system extension destructive declarations" do
@@ -17,7 +17,8 @@ RSpec.describe "system extension destructive declarations" do
   # irreversible and so destroy-shaped (IMP-9ce0ed39c557); it is the 41st and system_restart_unit
   # (IMP-88e82d59b7f2, a disruptive lifecycle act like reboot and stop) the 42nd.
   # system_apply_unit_dropin (IMP-9951cbf20bb0) rewrites how a unit runs as
-  # root on a node, the 43rd.
+  # root on a node, the 43rd. system_sdwan_rotate_peer_key (IMP-2e7816b5ee95)
+  # revokes the key a live tunnel is using, the 44th.
   DESTRUCTIVE_VERBS = {
     Ai::Tools::SystemFleetTool => %w[
       system_terminate_instance system_delete_cve system_delete_instance_pool system_delete_module
@@ -36,6 +37,7 @@ RSpec.describe "system extension destructive declarations" do
       system_sdwan_delete_port_mapping system_sdwan_delete_route_policy
       system_sdwan_delete_virtual_ip system_sdwan_revoke_access_grant
       system_sdwan_revoke_federation_peer system_sdwan_revoke_user_device
+      system_sdwan_rotate_peer_key
     ],
     Ai::Tools::SystemAcmeTool => %w[system_acme_revoke_certificate],
     Ai::Tools::SystemArchitectureCatalogTool => %w[system_delete_architecture],
@@ -47,9 +49,10 @@ RSpec.describe "system extension destructive declarations" do
     klass.declared_actions.select { |_name, decl| decl[:destructive] }.keys
   end
 
-  it "pins exactly the 43 destroy-shaped verbs" do
-    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(43)
-    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(43)
+  # 44 since IMP-2e7816b5ee95 added system_sdwan_rotate_peer_key.
+  it "pins exactly the 44 destroy-shaped verbs" do
+    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(44)
+    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(44)
   end
 
   DESTRUCTIVE_VERBS.each do |klass, verbs|

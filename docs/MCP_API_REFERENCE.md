@@ -564,6 +564,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_get_peer` | Fetch a Peer + its current handshake state |
 | `system_sdwan_attach_peer` | Add a NodeInstance as a Peer; allocates `/128` |
 | `system_sdwan_detach_peer` | Remove a Peer from a Network |
+| `system_sdwan_rotate_peer_key` | Rotate a Peer's WireGuard key in place (same peer id and overlay address); approval-gated under `sdwan.peer_key_rotate`, returns public-key fingerprints only, denied to instance principals |
 | `system_sdwan_get_topology` | Network-wide reachability + handshake summary |
 
 #### Firewall rules

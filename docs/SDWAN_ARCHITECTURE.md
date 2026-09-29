@@ -417,7 +417,7 @@ The compiler is reachable from AI agents and Claude Code via the
 
 | Group | Representative actions | Touches |
 |---|---|---|
-| **Network / peer CRUD** | `system_sdwan_create_network`, `system_sdwan_update_network_routing_mode`, `system_sdwan_attach_peer`, `system_sdwan_detach_peer`, `system_sdwan_update_peer_lan_subnets` | `Network`, `Peer` intent rows |
+| **Network / peer CRUD** | `system_sdwan_create_network`, `system_sdwan_update_network_routing_mode`, `system_sdwan_attach_peer`, `system_sdwan_detach_peer`, `system_sdwan_rotate_peer_key`, `system_sdwan_update_peer_lan_subnets` | `Network`, `Peer` intent rows |
 | **Routing intent** | `system_sdwan_create_route_policy`, `system_sdwan_get_account_bgp`, `system_sdwan_update_account_as_number`, `system_sdwan_list_subnet_advertisements` | `RoutePolicy`, `AccountBgp`, `SubnetAdvertisement` |
 | **Firewall / NAT / VIP** | `system_sdwan_create_firewall_rule`, `system_sdwan_create_port_mapping`, `system_sdwan_create_virtual_ip`, `system_sdwan_failover_virtual_ip` | `FirewallRule`, `PortMapping`, `VirtualIp` |
 | **OVN overlay** | `system_sdwan_create_ovn_deployment`, `system_sdwan_create_ovn_logical_switch`, `system_sdwan_create_ovn_acl` | `OvnDeployment`, `OvnLogicalSwitch`, `OvnAcl` |

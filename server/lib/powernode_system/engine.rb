@@ -659,7 +659,8 @@ module PowernodeSystem
             ::System::OutOfBandExecService::AUDITED_ACTIONS +
             ::System::SshHostKeyWriter::AUDITED_ACTIONS +
             ::System::UnitRestartService::AUDITED_ACTIONS +
-            ::System::UnitDropinService::AUDITED_ACTIONS
+            ::System::UnitDropinService::AUDITED_ACTIONS +
+            ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"

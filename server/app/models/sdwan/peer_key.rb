@@ -29,10 +29,10 @@ module Sdwan
     # was built for. Rotation runs on an autonomous lane with no approval
     # gate: SdwanDriftSensor's system.sdwan_peer_drift routes to
     # SdwanPeerRemediateExecutor under action_category
-    # "system.sdwan_peer_remediate", seeded notify_and_proceed. (The
-    # auto_approve "system.sdwan_key_rotate" category is seeded but has NO
-    # producer since IMP-df40782d3f4d — it is kept for a future key-TTL lane,
-    # which is exactly the caller this touch has to be correct for in advance.)
+    # "system.sdwan_peer_remediate", seeded notify_and_proceed. It also runs
+    # on the governed operator verb system_sdwan_rotate_peer_key
+    # (Sdwan::PeerKeyRotationService, sdwan.peer_key_rotate — IMP-2e7816b5ee95),
+    # which replaced the producer-less "system.sdwan_key_rotate" placeholder.
     #
     # Sdwan::KeyDistributor.rotate! writes ONLY PeerKey rows (a revoke on the
     # old, an insert of the new); without this the peer row never moves, and
@@ -44,12 +44,13 @@ module Sdwan
     # does `peer.update_columns(..., updated_at: Time.current)` for its own
     # reconcile reasons and would mask the gap.
     #
-    # That executor is today's only live rotate! caller, so the gap is
-    # currently LATENT rather than firing — but it is masked by COINCIDENCE,
-    # not by design: that update_columns exists to force the agent's next
-    # reconcile, says so, and would be a correct thing to drop. Any other
-    # caller — the seeded key-TTL lane, an operator/MCP rotation, a backfill —
-    # reopens it. The stamp belongs on the producer, which is here.
+    # That executor's update_columns masks the gap only by COINCIDENCE, not
+    # by design: it exists to force the agent's next reconcile, says so, and
+    # would be a correct thing to drop. Any other caller reopens it — and the
+    # operator verb above IS such a caller: Sdwan::PeerKeyRotationService
+    # writes no peer column, so this touch is the only thing that moves the
+    # stamp for an operator rotation. The stamp belongs on the producer, which
+    # is here.
     #
     # WHY THIS IS NOT A NEW FALSE-STALENESS SOURCE. The touch fires on every
     # PeerKey write, not just rotation, but neither other writer moves the
@@ -87,6 +88,17 @@ module Sdwan
       return if revoked?
 
       update!(revoked_at: Time.current, revocation_reason: reason.to_s.presence)
+    end
+
+    # SSH-style fingerprint of the raw 32-byte public key
+    # ("SHA256:<unpadded base64>"). Derived from the PUBLIC half only, so it is
+    # safe to return, audit and put on an approval card; it names a key without
+    # reprinting it (IMP-2e7816b5ee95). nil for a value that is not base64.
+    def public_key_fingerprint
+      raw = ::Base64.strict_decode64(public_key.to_s)
+      "SHA256:#{::Base64.strict_encode64(::Digest::SHA256.digest(raw)).delete('=')}"
+    rescue ArgumentError
+      nil
     end
 
     # Convenience accessor — VaultCredential#vault_credentials returns the

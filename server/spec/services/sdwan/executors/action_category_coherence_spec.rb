@@ -279,9 +279,23 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
                        "composition_only above"
   end
 
+  # A gate-routed MCP verb (declare_action with the generic replay executor,
+  # IMP-2e7816b5ee95's system_sdwan_rotate_peer_key) names
+  # Ai::Executors::DeferredToolCall, which replays ANY tool and so owns no
+  # category. Its site must still read a constant, never a literal: the
+  # ACTION_CATEGORY of the service the verb calls, which is the one place a
+  # future second door onto the same act would read too.
+  # A `let`, not a constant, for the reason given at the top of this block.
+  let(:generic_replay_executor) { "Ai::Executors::DeferredToolCall" }
+
+  def reads_owner_constant?(site)
+    site[:executor_class] == generic_replay_executor &&
+      site[:category_source].match?(/\A(?:::[A-Z]\w*)+::ACTION_CATEGORY\z/)
+  end
+
   it "passes each gate site its executor's declared ACTION_CATEGORY, never a literal" do
     offenders = all_gate_sites.reject do |site|
-      site[:category_source] == "::#{site[:executor_class]}::ACTION_CATEGORY"
+      site[:category_source] == "::#{site[:executor_class]}::ACTION_CATEGORY" || reads_owner_constant?(site)
     end
 
     expect(offenders).to be_empty,

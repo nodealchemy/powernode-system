@@ -98,6 +98,8 @@ module Ai
         "system_sdwan_attach_peer"     => "system.sdwan.peers.manage",
         "system_sdwan_update_peer"     => "system.sdwan.peers.manage",
         "system_sdwan_detach_peer"     => "system.sdwan.peers.manage",
+        # IMP-2e7816b5ee95 — governed in-place key rotation (see declare_action).
+        "system_sdwan_rotate_peer_key" => "system.sdwan.peers.manage",
         "system_sdwan_get_topology"    => "system.sdwan.peers.read",
         # Slice 2: firewall
         "system_sdwan_list_firewall_rules"  => "system.sdwan.firewall.read",
@@ -273,6 +275,31 @@ module Ai
       declare_action "system_sdwan_revoke_access_grant", mutating: true, destructive: true, gated_in_call: true
       declare_action "system_sdwan_revoke_federation_peer", mutating: true, destructive: true, gated_in_call: true
       declare_action "system_sdwan_revoke_user_device", mutating: true, destructive: true, gated_in_call: true
+      # IMP-2e7816b5ee95 — rotate ONE peer's WireGuard key in place. GATE-ROUTED,
+      # unlike the gated_in_call arms around it: there is no Sdwan::Executors
+      # class for it, because the replay is the generic DeferredToolCall, which
+      # re-invokes THIS action as the original principal, so #rotate_peer_key
+      # stays the single caller of Sdwan::PeerKeyRotationService and its checks
+      # run again on the approved replay (the peer may have been detached while
+      # the request was parked). The shape of system_restart_unit.
+      #
+      # destructive: true — it revokes the key a live tunnel is using, and on a
+      # hub it strands every user-device config already issued. Denied to every
+      # instance principal by core's Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS
+      # (*system_sdwan_rotate_peer_key*), and by the gate context and arm
+      # themselves as defence in depth.
+      declare_action "system_sdwan_rotate_peer_key",
+                     mutating: true,
+                     destructive: true,
+                     action_category: ::Sdwan::PeerKeyRotationService::ACTION_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :rotate_peer_key_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "rotated: true, the peer id and overlay address (unchanged), the previous and new " \
+                              "public-key fingerprints and key ids, and whether the membership credential was re-issued; " \
+                              "never any private key",
+                     refuses: "the reason is blank or longer than 500 characters, the peer is not in this account, " \
+                              "or the caller is an instance principal"
       declare_action "system_sdwan_set_data_residency", mutating: true, gated_in_call: true
       declare_action "system_sdwan_set_peer_tags", mutating: true, gated_in_call: true
       declare_action "system_sdwan_update_account_as_number", mutating: true, returns: "account_bgp and allocated (false when an AS already existed)"
@@ -394,6 +421,24 @@ module Ai
           "system_sdwan_detach_peer" => {
             description: "Detach a peer from its network: revokes its key and removes its membership. Approval-gated (sdwan.peer_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to detach" } }
+          },
+          "system_sdwan_rotate_peer_key" => {
+            description: "Rotate ONE SDWAN peer's WireGuard keypair IN PLACE — for a suspected key compromise. The peer id, " \
+                         "overlay address, network and endpoints stay unchanged (detach + re-attach would change the id " \
+                         "and address). The active key is revoked and a new X25519 pair is generated server-side and " \
+                         "stored in Vault; the membership credential is re-issued to name the new key. No private key " \
+                         "is ever returned, only public-key fingerprints. Approval-gated (sdwan.peer_key_rotate, " \
+                         "require_approval by default) — under require_approval this returns pending: true with a " \
+                         "deferred_operation_id and nothing rotates until an operator approves. CONVERGENCE: the tunnel " \
+                         "goes down and must re-handshake. The peer's agent picks up its new private key on its next " \
+                         "SDWAN reconcile (every heartbeat tick) and every other peer in the network picks up the new " \
+                         "public key on its own next pull; handshakes between them fail until both ends have pulled. " \
+                         "If the peer is publicly reachable (a hub), every user-device config already issued against it " \
+                         "still carries the old key and stops working until that device is re-issued.",
+            parameters: {
+              peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose key to rotate" },
+              reason: { type: "string", required: true, description: "Why the key is being rotated (for example a suspected compromise); recorded on the audit row, at most 500 characters" }
+            }
           },
           "system_sdwan_get_topology" => {
             description: "Return the compiled per-peer view for an SDWAN network — what each peer would receive on its next config pull",
@@ -1049,6 +1094,11 @@ module Ai
         when "system_sdwan_attach_peer"    then attach_peer(params)
         when "system_sdwan_update_peer"    then update_peer(params)
         when "system_sdwan_detach_peer"    then detach_peer(params)
+        # Gate-routed (IMP-2e7816b5ee95): the arm runs only as the replay of an
+        # approved (or auto-approved) operation, which is what Ai::AutonomyGate
+        # hands DeferredToolCall on :proceed too. A bare #call would otherwise
+        # rotate a key with no policy evaluation at all.
+        when "system_sdwan_rotate_peer_key" then approved_replay? ? rotate_peer_key(params) : gate_routed_only("system_sdwan_rotate_peer_key")
         when "system_sdwan_get_topology"   then get_topology(params)
         # Slice 2 firewall actions
         when "system_sdwan_list_firewall_rules"  then list_firewall_rules(params)
@@ -1181,6 +1231,18 @@ module Ai
         return true unless @user.respond_to?(:has_permission?)
 
         @user.has_permission?(required_perm_for(action))
+      end
+
+      # Hoists the per-action permission check so a GATE-ROUTED action — which
+      # never reaches #call — is authorized exactly as an ungated one is
+      # (BaseTool#execute consults this before the gate). Same seam as
+      # SystemFleetTool#authorization_error; before system_sdwan_rotate_peer_key
+      # this tool had no gate-routed action, so the default nil was harmless.
+      def authorization_error(params)
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result("permission denied: #{required_perm_for(action)} required")
       end
 
       # === Approval gate seam ===
@@ -1496,6 +1558,81 @@ module Ai
         ) do |_result|
           { detached: true, id: peer.id }
         end
+      end
+
+      # === Approval-gated in-place key rotation (IMP-2e7816b5ee95) ===
+
+      # Built BEFORE anything is parked, so a request that could only ever be
+      # refused (an unknown or foreign peer, a blank reason) keeps its inline
+      # error instead of becoming an approval an operator must dispose of.
+      # #rotate_peer_key re-runs the same checks on replay.
+      def rotate_peer_key_gate_context(params)
+        rotate_peer_key_refuse_instance_principal!
+        peer = rotate_peer_key_peer(params)
+        message = ::Sdwan::PeerKeyRotationService.new.refusal(reason: params[:reason])
+        raise CallerFacingError, message if message
+
+        deferred_tool_call_context(params).merge(
+          # No caller param VALUE: the free-text reason is an injection surface
+          # on the card the approver reads, and reaches the approver through
+          # request_data (params, filtered) instead.
+          description: "Rotate the WireGuard key of SDWAN peer #{peer.operator_label}",
+          source_type: "Sdwan::Peer",
+          source_id: peer.id
+        )
+      end
+
+      # The single caller of Sdwan::PeerKeyRotationService, reached on :proceed
+      # and on the approved replay. Refusals return the error envelope and
+      # rotate nothing.
+      def rotate_peer_key(params)
+        rotate_peer_key_refuse_instance_principal!
+        peer = rotate_peer_key_peer(params)
+        result = ::Sdwan::PeerKeyRotationService.new.rotate!(
+          peer: peer, reason: params[:reason], initiated_by: @user, agent_id: @agent&.id,
+          deferred_operation_id: @replaying_operation&.id, call_origin: call_origin
+        )
+        success_result(
+          rotated: true,
+          peer_id: peer.id,
+          network_id: peer.sdwan_network_id,
+          assigned_address: peer.assigned_address,
+          previous_key_id: result.previous_key&.id,
+          previous_public_key_fingerprint: result.previous_key&.public_key_fingerprint,
+          new_key_id: result.new_key.id,
+          new_public_key_fingerprint: result.new_key.public_key_fingerprint,
+          membership_credential_reissued: result.membership_credential_reissued
+        )
+      rescue ::Sdwan::PeerKeyRotationService::Refused, CallerFacingError => e
+        error_result(e.message)
+      end
+
+      # Defense in depth beyond Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+      # *system_sdwan_rotate_peer_key* entry: this must not depend on the
+      # overlay's pattern list staying intact. A node must never be able to
+      # rotate a peer's key out from under its tunnel.
+      def rotate_peer_key_refuse_instance_principal!
+        return unless instance_authorized?
+
+        raise CallerFacingError,
+              "system_sdwan_rotate_peer_key is refused for an instance principal: a key rotation must be " \
+              "requested by an operator or an agent acting for one, never by a node it could target"
+      end
+
+      # A LITERAL message, never a scoped .find's RecordNotFound#message, which
+      # carries the relation's SQL predicate.
+      def rotate_peer_key_peer(params)
+        account_peers.find_by(id: params[:peer_id].to_s) ||
+          raise(CallerFacingError, "Couldn't find Sdwan::Peer with 'id'=#{params[:peer_id].to_s.inspect}")
+      end
+
+      # Tripwire, not a reachable MCP path: #execute gates this action before
+      # #call is consulted. Same wording as SystemFleetTool#gate_routed_only.
+      def gate_routed_only(action)
+        error_result(
+          "#{action} is approval-gated and must be invoked via " \
+          "Ai::Tools::BaseTool#execute, not #call"
+        )
       end
 
       def get_topology(params)
