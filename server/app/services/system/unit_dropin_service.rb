@@ -100,6 +100,8 @@ module System
     # and boot-image blob caches (/persist/cache), the persistent /etc overlay
     # (identity.cfg, module-signing.conf), the lint-discovery workdirs, the
     # ingress certificate and router store, and the dev toolchain it executes.
+    # An ANCESTOR of one is refused too: /persist/var/lib would expose
+    # /persist/var/lib/powernode as surely as naming it.
     TRUST_PATHS = %w[
       /persist/var/lib/powernode /persist/cache /persist/etc /persist/lint-discovery
       /persist/powernode-traefik /persist/dev
@@ -256,10 +258,11 @@ module System
       end
 
       # ReadWritePaths entries are rendered with systemd's "-" (ignore a missing
-      # path): an absent path is otherwise fatal to unit start, and a
-      # RootDirectory= (chroot) unit resolves the path inside its root, so one
-      # approved drop-in naming a path that is not there would stop the unit
-      # from starting at all. A caller-supplied "-" or "+" is still refused.
+      # path): an absent path is otherwise fatal to unit start, so one approved
+      # drop-in naming a path that is not there yet would stop the unit from
+      # starting at all. Without "+" the path is the HOST's, also for a
+      # RootDirectory= unit, which is what both sides check. A caller-supplied
+      # "-" or "+" is still refused.
       def lines_for(key, value)
         return [ "#{key}=#{value.split(' ').map { |path| "-#{path}" }.join(' ')}\n" ] if key == "ReadWritePaths"
         return [ "#{key}=\n" ] + (value.empty? ? [] : [ "#{key}=#{value}\n" ]) if CAPABILITY_DIRECTIVES.include?(key)
@@ -360,7 +363,7 @@ module System
           path.match?(PATH_SHAPE) &&
             path.split("/").none? { |segment| %w[. ..].include?(segment) } &&
             READ_WRITE_ROOTS.any? { |root| path.start_with?("#{root}/") } &&
-            TRUST_PATHS.none? { |trust| path == trust || path.start_with?("#{trust}/") }
+            TRUST_PATHS.none? { |trust| path == trust || path.start_with?("#{trust}/") || trust.start_with?("#{path}/") }
         end
       end
 
@@ -372,8 +375,8 @@ module System
         when "LimitNOFILE" then "N or SOFT:HARD (positive, SOFT <= HARD) or infinity"
         when *CAPABILITY_DIRECTIVES then "space-separated CAP_* names from the known list, each once (empty means none)"
         when "ReadWritePaths"
-          "space-separated absolute, clean paths strictly beneath #{READ_WRITE_ROOTS.join(' or ')}, never at or " \
-            "beneath the agent's own #{TRUST_PATHS.join(', ')}"
+          "space-separated absolute, clean paths strictly beneath #{READ_WRITE_ROOTS.join(' or ')}, never at, " \
+            "beneath or above the agent's own #{TRUST_PATHS.join(', ')}"
         end
       end
     end

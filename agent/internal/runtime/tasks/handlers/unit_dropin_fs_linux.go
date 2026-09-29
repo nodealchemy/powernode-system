@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -160,4 +161,13 @@ func removeDropin(root, unit, file string) (bool, error) {
 	}
 	_ = unix.Fsync(dirfd)
 	return true, nil
+}
+
+// fileOwnerUID is the owning uid from an Lstat result. An inode this cannot
+// read an owner from counts as not root's.
+func fileOwnerUID(_ string, fi os.FileInfo) uint32 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return st.Uid
+	}
+	return ^uint32(0)
 }

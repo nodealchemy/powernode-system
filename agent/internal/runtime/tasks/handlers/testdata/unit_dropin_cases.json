@@ -1335,6 +1335,33 @@
      "value": "/persist/a +/etc"
     }
    ]
+  },
+  {
+   "why": "ancestor of a trust path: /persist/var",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var"
+    }
+   ]
+  },
+  {
+   "why": "ancestor of a trust path: /persist/var/lib",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib"
+    }
+   ]
+  },
+  {
+   "why": "ancestor of a trust path as a second entry",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib/app /persist/var/lib"
+    }
+   ]
   }
  ],
  "render": [

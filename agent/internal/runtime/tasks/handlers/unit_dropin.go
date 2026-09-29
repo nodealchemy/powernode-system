@@ -223,7 +223,7 @@ func parseUnitDropinOptions(task *tasks.Task) (unitDropinRequest, error) {
 	if err != nil {
 		return req, err
 	}
-	if err := dropinResolvedPathsRefusal(pairs); err != nil {
+	if err := dropinNodePathsRefusal(pairs); err != nil {
 		return req, err
 	}
 	resolved, known, err := renderedUnitCapabilities(unit)
@@ -237,36 +237,79 @@ func parseUnitDropinOptions(task *tasks.Task) (unitDropinRequest, error) {
 	return req, nil
 }
 
-// dropinResolvedPathsRefusal judges each ReadWritePaths entry by where it
-// RESOLVES on this node, not only by its string (dropinPathsOK already did
-// that): the longest existing prefix is run through EvalSymlinks
-// (taskguard.ResolveExistingPrefix) and the remainder re-attached, and the
-// result must still be strictly beneath /persist and outside every trust path.
-// A symlink under /persist into /persist/var/lib/powernode, or out of /persist,
-// is refused. A path that does not exist at all passes (the rendered '-' lets
-// the unit start without it); an absent leaf under an existing symlinked parent
-// is judged by where that parent points.
-//
-// TOCTOU, stated rather than hidden: systemd resolves the path again at unit
-// start, which is later. A link created or retargeted between this check and
-// that start is not seen here. The control plane cannot see the node at all,
-// so this check exists only on the agent.
-func dropinResolvedPathsRefusal(pairs []dropinPair) error {
-	root := filepath.Clean(dropinFSRoot)
+// dropinOwner reports the uid owning a path's inode. A seam so a test, which
+// cannot create root-owned files, can say who owns what.
+var dropinOwner = fileOwnerUID
+
+// SetDropinOwnerForTest replaces the owner lookup, returning a restore func.
+func SetDropinOwnerForTest(fn func(path string, fi os.FileInfo) uint32) (restore func()) {
+	prev := dropinOwner
+	dropinOwner = fn
+	return func() { dropinOwner = prev }
+}
+
+// dropinNodePathsRefusal judges each ReadWritePaths entry on this node, on top
+// of the string rules dropinPathsOK already applied.
+func dropinNodePathsRefusal(pairs []dropinPair) error {
 	for _, p := range pairs {
 		if p.Key != "ReadWritePaths" {
 			continue
 		}
 		for _, path := range strings.Split(p.Value, " ") {
-			real := taskguard.ResolveExistingPrefix(filepath.Join(root, path))
-			rel, err := filepath.Rel(root, real)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-				return taskguard.Refused("ReadWritePaths", "resolves outside the node's filesystem root", path)
-			}
-			if !dropinPathsOK("/" + rel) {
-				return taskguard.Refused("ReadWritePaths", "resolves (through a symlink) to /"+rel+", outside /persist or into agent trust material", path)
+			if err := dropinNodePathRefusal(path); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+// dropinNodePathRefusal walks path from / with Lstat, one component at a time,
+// and refuses at the first symlink: the path systemd will make writable must
+// be exactly the one that was checked, and resolving a link instead would have
+// to guess where a dangling or looping one will point. A path that does not
+// exist yet is allowed (the rendered '-' lets the unit start without it), but
+// only when its nearest existing ancestor is a directory owned by root and not
+// writable by group or others; otherwise whoever can create the missing name
+// later decides what it is.
+//
+// Point-in-time, stated rather than hidden: systemd resolves the path again at
+// unit start, which is later, so a change between the two is not seen here.
+// The control plane cannot see the node, so this check exists only here.
+func dropinNodePathRefusal(path string) error {
+	root := filepath.Clean(dropinFSRoot)
+	cur := root
+	var nearest os.FileInfo
+	nearestPath := root
+	for _, part := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return taskguard.Refused("ReadWritePaths", "cannot be inspected on this node: "+err.Error(), path)
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return taskguard.Refused("ReadWritePaths", "has a symlink component ("+strings.TrimPrefix(cur, root)+"); symlinked paths are refused", path)
+		}
+		nearest, nearestPath = fi, cur
+	}
+	if nearestPath == filepath.Join(root, path) {
+		return nil // the whole path exists, with no symlink in it
+	}
+	if nearest == nil {
+		var err error
+		if nearest, err = os.Lstat(root); err != nil {
+			return taskguard.Refused("ReadWritePaths", "cannot be inspected on this node: "+err.Error(), path)
+		}
+	}
+	if !nearest.IsDir() {
+		return taskguard.Refused("ReadWritePaths", "has a non-directory component", path)
+	}
+	if dropinOwner(nearestPath, nearest) != 0 || nearest.Mode().Perm()&0o022 != 0 {
+		return taskguard.Refused("ReadWritePaths", "does not exist yet and its nearest existing ancestor ("+
+			strings.TrimPrefix(nearestPath, root)+") is not a root-owned directory writable only by root", path)
 	}
 	return nil
 }
@@ -275,7 +318,9 @@ func dropinResolvedPathsRefusal(pairs []dropinPair) error {
 // into the unit's capabilities.conf (security.RenderCapabilityDropInBody:
 // CapabilityBoundingSet= reset, then the list). known is false when there is
 // no such file — a privileged unit, or one never confined — so the set cannot
-// be resolved and only an empty list will pass.
+// be resolved and only an empty list will pass. It is capabilities.conf ONLY:
+// a later module drop-in in the same directory that narrowed further is not
+// read, and an operator list that is a subset of this file would undo it.
 func renderedUnitCapabilities(unit string) (set []string, known bool, err error) {
 	path := filepath.Join(security.SystemdDropInRoot(), unit+".d", "capabilities.conf")
 	body, err := os.ReadFile(path)
@@ -473,8 +518,10 @@ func dropinPathsOK(value string) bool {
 		if !beneath {
 			return false
 		}
+		// At, beneath, or ABOVE a trust path: /persist/var/lib exposes
+		// /persist/var/lib/powernode as surely as naming it.
 		for _, trust := range dropinTrustPaths {
-			if p == trust || strings.HasPrefix(p, trust+"/") {
+			if p == trust || strings.HasPrefix(p, trust+"/") || strings.HasPrefix(trust, p+"/") {
 				return false
 			}
 		}
@@ -493,7 +540,8 @@ func renderDropin(name string, pairs []dropinPair) string {
 		switch {
 		case p.Key == "ReadWritePaths":
 			// systemd's "-" on every entry: a missing path is otherwise fatal
-			// to unit start, and a chroot unit resolves it inside its root.
+			// to unit start. Without "+" the path is the host's, also for a
+			// RootDirectory= unit, which is what dropinNodePathRefusal checks.
 			// A caller-supplied "-" or "+" is refused by dropinPathsOK.
 			paths := strings.Split(p.Value, " ")
 			for i, path := range paths {

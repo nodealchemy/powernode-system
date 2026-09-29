@@ -597,20 +597,32 @@ func TestUnitDropinIsRegistered(t *testing.T) {
 	}
 }
 
-// Item 10: a ReadWritePaths entry is judged where it RESOLVES on the node, not
-// only as a string: a symlink under /persist into the agent's trust material,
-// or out of /persist, is refused. A path that does not exist yet passes (the
-// rendered '-' lets the unit start without it); an absent leaf under an
-// existing symlinked parent is judged by where that parent resolves.
-func TestUnitDropinRefusesAReadWritePathThatResolvesIntoTrustMaterial(t *testing.T) {
+// A ReadWritePaths entry is judged on the node as well as by its string: no
+// component of it may be a symlink (dangling, looping, in the middle or at the
+// leaf), and a path that does not exist yet passes only when its nearest
+// existing ancestor is owned by root and writable by nobody else, because
+// whoever can create the name later decides what it points at.
+func TestUnitDropinReadWritePathsOnTheNode(t *testing.T) {
 	sb := newDropinSandbox(t)
 	fsRoot := filepath.Join(filepath.Dir(sb.root), "fsroot")
-	for _, d := range []string{"persist/var/lib/powernode/pki", "persist/var/lib/app", "etc"} {
+	for _, d := range []string{"persist/var/lib/powernode/pki", "persist/var/lib/app", "persist/shared", "persist/userdir", "etc"} {
 		if err := os.MkdirAll(filepath.Join(fsRoot, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if err := os.Chmod(filepath.Join(fsRoot, "persist/shared"), 0o777); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(SetDropinFSRootForTest(fsRoot))
+	// The sandbox is owned by whoever runs the test; stand root in for it,
+	// except for the one directory this test marks as a user's.
+	userDir := filepath.Join(fsRoot, "persist/userdir")
+	t.Cleanup(SetDropinOwnerForTest(func(path string, _ os.FileInfo) uint32 {
+		if path == userDir {
+			return 1000
+		}
+		return 0
+	}))
 	link := func(name, target string) {
 		t.Helper()
 		if err := os.Symlink(target, filepath.Join(fsRoot, "persist", name)); err != nil {
@@ -620,16 +632,27 @@ func TestUnitDropinRefusesAReadWritePathThatResolvesIntoTrustMaterial(t *testing
 	link("innocent", filepath.Join(fsRoot, "persist/var/lib/powernode/pki")) // absolute, into trust
 	link("relative", "var/lib/powernode")                                    // relative, into trust
 	link("escape", filepath.Join(fsRoot, "etc"))                             // out of /persist
-	link("fine", filepath.Join(fsRoot, "persist/var/lib/app"))               // stays in bounds
+	link("fine", filepath.Join(fsRoot, "persist/var/lib/app"))               // in bounds, still a link
+	link("dangle", "var/lib/powernode/not-yet")                              // dangling, into trust
+	link("loop", "loop")                                                     // a loop
+	if err := os.Symlink(filepath.Join(fsRoot, "persist/var/lib/powernode"), filepath.Join(fsRoot, "persist/var/lib/app/mid")); err != nil {
+		t.Fatal(err) // a link in the middle of a longer path
+	}
 
 	paths := func(value string) map[string]any { return applyOptions("rw", directive("ReadWritePaths", value)) }
 
-	for _, value := range []string{"/persist/innocent", "/persist/relative", "/persist/escape", "/persist/relative/pki/new-dir", "/persist/var/lib/app /persist/innocent"} {
+	for _, value := range []string{
+		"/persist/innocent", "/persist/relative", "/persist/escape", "/persist/fine",
+		"/persist/dangle", "/persist/loop", "/persist/var/lib/app/mid/pki",
+		"/persist/relative/pki/new-dir", "/persist/var/lib/app /persist/innocent",
+		"/persist/shared/new-dir",  // absent under a world-writable ancestor
+		"/persist/userdir/new-dir", // absent under a non-root-owned ancestor
+	} {
 		if _, err := sb.run(paths(value)); !errors.Is(err, taskguard.ErrRefused) {
 			t.Errorf("ReadWritePaths=%s accepted (err=%v)", value, err)
 		}
 	}
-	for _, value := range []string{"/persist/fine", "/persist/var/lib/app", "/persist/not-yet/created"} {
+	for _, value := range []string{"/persist/var/lib/app", "/persist/not-yet/created", "/persist/var/lib/app/new-dir"} {
 		if _, err := sb.run(paths(value)); err != nil {
 			t.Errorf("ReadWritePaths=%s refused: %v", value, err)
 		}
