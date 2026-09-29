@@ -751,7 +751,11 @@ module PowernodeSystem
                        "legacy callers connect unverified to such a node and log a warning plus " \
                        "a fleet event. A node WITH a recorded key is always verified strictly, " \
                        "and out-of-band exec always refuses without one, whatever this says.",
-          protected: true
+          protected: true,
+          # An instance may ASK for a change (it parks for a person to decide).
+          # Passed only when the running core knows the option, so an extension
+          # promoted ahead of its core still boots.
+          **(::Ai::Tools::SiteSettingTool.method(:register_key).parameters.any? { |_, name| name == :machine_parkable } ? { machine_parkable: true } : {})
         )
 
         ::Ai::Tools::SiteSettingTool.register_key(
