@@ -271,7 +271,10 @@ func dropinNodePathsRefusal(pairs []dropinPair) error {
 // exist yet is allowed (the rendered '-' lets the unit start without it), but
 // only when its nearest existing ancestor is a directory owned by root and not
 // writable by group or others; otherwise whoever can create the missing name
-// later decides what it is.
+// later decides what it is. An EXISTING entry must be a directory (a regular
+// file, possibly a hard link, would hand out that inode) whose parent meets the
+// same rule, or a non-root user who can write the parent could replace it with
+// a link after this check.
 //
 // Point-in-time, stated rather than hidden: systemd resolves the path again at
 // unit start, which is later, so a change between the two is not seen here.
@@ -279,8 +282,8 @@ func dropinNodePathsRefusal(pairs []dropinPair) error {
 func dropinNodePathRefusal(path string) error {
 	root := filepath.Clean(dropinFSRoot)
 	cur := root
-	var nearest os.FileInfo
-	nearestPath := root
+	var nearest, parent os.FileInfo
+	nearestPath, parentPath := root, root
 	for _, part := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
 		cur = filepath.Join(cur, part)
 		fi, err := os.Lstat(cur)
@@ -293,10 +296,25 @@ func dropinNodePathRefusal(path string) error {
 		if fi.Mode()&fs.ModeSymlink != 0 {
 			return taskguard.Refused("ReadWritePaths", "has a symlink component ("+strings.TrimPrefix(cur, root)+"); symlinked paths are refused", path)
 		}
+		parent, parentPath = nearest, nearestPath
 		nearest, nearestPath = fi, cur
 	}
 	if nearestPath == filepath.Join(root, path) {
-		return nil // the whole path exists, with no symlink in it
+		// The whole path exists, with no symlink in it.
+		if !nearest.IsDir() {
+			return taskguard.Refused("ReadWritePaths", "exists and is not a directory", path)
+		}
+		if parent == nil {
+			var err error
+			if parent, err = os.Lstat(root); err != nil {
+				return taskguard.Refused("ReadWritePaths", "cannot be inspected on this node: "+err.Error(), path)
+			}
+		}
+		if dropinOwner(parentPath, parent) != 0 || parent.Mode().Perm()&0o022 != 0 {
+			return taskguard.Refused("ReadWritePaths", "exists under a parent ("+strings.TrimPrefix(parentPath, root)+
+				") that is not a root-owned directory writable only by root", path)
+		}
+		return nil
 	}
 	if nearest == nil {
 		var err error

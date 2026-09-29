@@ -658,3 +658,41 @@ func TestUnitDropinReadWritePathsOnTheNode(t *testing.T) {
 		}
 	}
 }
+
+// An EXISTING ReadWritePaths entry must be a directory whose parent is owned
+// by root and writable by nobody else: otherwise a non-root user who can write
+// the parent can swap the entry for a link after the check, and a regular file
+// (a hard link, possibly) would make that file's inode writable.
+func TestUnitDropinExistingReadWritePathNeedsARootOwnedParent(t *testing.T) {
+	sb := newDropinSandbox(t)
+	fsRoot := filepath.Join(filepath.Dir(sb.root), "fsroot")
+	for _, d := range []string{"persist/rootdir/data", "persist/open/data", "persist/userdir/data"} {
+		if err := os.MkdirAll(filepath.Join(fsRoot, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(fsRoot, "persist/open"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fsRoot, "persist/rootdir/file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(SetDropinFSRootForTest(fsRoot))
+	userDir := filepath.Join(fsRoot, "persist/userdir")
+	t.Cleanup(SetDropinOwnerForTest(func(path string, _ os.FileInfo) uint32 {
+		if path == userDir {
+			return 1000
+		}
+		return 0
+	}))
+	paths := func(value string) map[string]any { return applyOptions("rw", directive("ReadWritePaths", value)) }
+
+	for _, value := range []string{"/persist/open/data", "/persist/userdir/data", "/persist/rootdir/file"} {
+		if _, err := sb.run(paths(value)); !errors.Is(err, taskguard.ErrRefused) {
+			t.Errorf("ReadWritePaths=%s accepted (err=%v)", value, err)
+		}
+	}
+	if _, err := sb.run(paths("/persist/rootdir/data")); err != nil {
+		t.Errorf("an existing dir under a root-owned 0755 parent was refused: %v", err)
+	}
+}
