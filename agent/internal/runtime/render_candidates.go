@@ -132,7 +132,11 @@ func (r *Reconciler) resolveRenderCandidates(freshManifests map[string]*manifest
 		}
 
 		resolved := false
-		if cached, cerr := manifest.LoadFromDisk(r.cfg.ManifestRoot, id); cerr == nil && cached != nil {
+		// A fallback with no digest is a half-published view (an unpublished or
+		// non-erofs assignment), never a manifest a render may stand on — even
+		// for a candidate with no expected digest to compare against
+		// (IMP-1023e79cc82d).
+		if cached, cerr := manifest.LoadFromDisk(r.cfg.ManifestRoot, id); cerr == nil && cached != nil && cached.Digest != "" {
 			if !hasExpected || cached.Digest == expectedDigest {
 				mergedManifests[id] = cached
 				staleFallback = append(staleFallback, id)
@@ -140,7 +144,7 @@ func (r *Reconciler) resolveRenderCandidates(freshManifests map[string]*manifest
 			}
 		}
 		if !resolved {
-			if bm, ok := breadcrumbManifests[id]; ok && (!hasExpected || bm.Digest == expectedDigest) {
+			if bm, ok := breadcrumbManifests[id]; ok && bm.Digest != "" && (!hasExpected || bm.Digest == expectedDigest) {
 				mergedManifests[id] = bm
 				breadcrumbFallback = append(breadcrumbFallback, id)
 				resolved = true

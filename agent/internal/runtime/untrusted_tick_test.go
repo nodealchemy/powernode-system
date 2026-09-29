@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
@@ -261,5 +262,46 @@ func TestRunOnce_RenderSkippedTickDoesNotRunTheConfinementRecheck(t *testing.T) 
 	}
 	if k := st.ConfinementReconfirmed["m1"]; k == keyBootA {
 		t.Error("the next trusted tick must run the confinement recheck and mark m1 reconfirmed against boot-b")
+	}
+}
+
+// A NEVER-attached module whose assignment arrives digestless must be omitted
+// from the identity render like any unpublished module: its manifest is a
+// half-published view, and its cached copy (written on this very tick) must not
+// be rendered into /etc/passwd as if it were a real attached module. It must
+// also not raise the stale-manifest signal, which names modules that WERE
+// resolvable from an earlier cache.
+func TestRunOnce_DigestlessNeverAttachedModuleIsNotRendered(t *testing.T) {
+	r, client, _, _, _, _, _ := upgradeTestReconciler(t)
+	var rendered *etcidentity.Set
+	origApply := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error { rendered = set; return nil }
+	t.Cleanup(func() { applyIdentity = origApply })
+	var signals []string
+	r.cfg.OnError = func(stage string, err error) { signals = append(signals, stage) }
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m9", "name":"ghost", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m9"] = `{"success": true,"data": {"id":"m9","name":"ghost","priority":100,"effective_priority":100,"digest":"",
+		"users": [{"name":"ghostuser","uid":6009,"primary_gid":6009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
+		"groups": [{"name":"ghostuser","gid":6009}], "services": []}}`
+
+	for tick := 2; tick <= 3; tick++ {
+		rendered, signals = nil, nil
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("pass %d: %v", tick, err)
+		}
+		if rendered != nil && hasUser(rendered, "ghostuser") {
+			t.Errorf("tick %d: a never-attached digestless module's user was rendered into the identity set", tick)
+		}
+		for _, sig := range signals {
+			if sig == "reconciler:identity_render_stale_manifest" {
+				t.Errorf("tick %d: a digestless module must not raise identity_render_stale_manifest", tick)
+			}
+		}
 	}
 }

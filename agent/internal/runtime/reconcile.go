@@ -729,10 +729,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// manifest.LoadOrFetch call errored THIS tick (a transient failure — e.g.
 	// the platform 502ing mid-restart, IMP-2dfbd7f62441 / the 2026-09-22
 	// ops-hub outage) — as opposed to a module that is simply not assigned at
-	// all, which never reaches this loop. Also set for the no-digest case
-	// just below: that manifest loaded, but the platform did not say which
-	// build the module is, so its absence from `desired` is equally not a
-	// removal (IMP-1023e79cc82d).
+	// all, which never reaches this loop. Deliberately NOT set for the
+	// no-digest case just below: that manifest loaded, but it is a half-
+	// published view, so it must not feed the render's cache fallback (a
+	// never-attached digestless module would render its users). That case is
+	// tracked in noDigest instead, which feeds ONLY the detach deferral.
 	//
 	// Consumed in two places below: filterUnverifiedDetaches (defers this
 	// module's detach rather than reading the fetch failure as a real
@@ -745,6 +746,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// about it at all), and resolving it needs the SAME cache/breadcrumb
 	// fallback treatment a retained module gets.
 	manifestFetchFailed := map[string]bool{}
+	// noDigest records every assigned, data-bearing module whose manifest
+	// loaded with no digest (IMP-1023e79cc82d). Its absence from `desired` is
+	// not a removal, so its detach is deferred exactly like a fetch failure's,
+	// but nothing else reads it.
+	noDigest := map[string]bool{}
 	for _, mod := range desiredModules {
 		if !mod.HasDataFile {
 			continue // config-variety + skill modules have no blob to mount
@@ -776,17 +782,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// mid composefs-format migration, or a publish that wrote the
 			// wrong key) is has_data_file=true with digest=="" here.
 			//
-			// It is therefore recorded as manifestFetchFailed: the platform
-			// did not say which build this module is, so its absence from
-			// `desired` must never be read as an unassignment. Without this,
-			// mount.Reconcile saw it as absent from desired and present in
-			// current, and on a node that is not self-hosted (where
-			// filterUnsafeDetaches does not apply) the module — with its
-			// declared users — was detached this tick (IMP-1023e79cc82d).
-			// filterUnverifiedDetaches now defers that detach, and the render
-			// resolves the module from its cache/breadcrumb like any other
-			// untrusted tick.
-			manifestFetchFailed[mod.ID] = true
+			// It is therefore recorded in noDigest: the platform did not say
+			// which build this module is, so its absence from `desired` must
+			// never be read as an unassignment. Without this, mount.Reconcile
+			// saw it as absent from desired and present in current, and on a
+			// node that is not self-hosted (where filterUnsafeDetaches does not
+			// apply) the module — with its declared users — was detached this
+			// tick (IMP-1023e79cc82d). filterUnverifiedDetaches defers that
+			// detach. It is NOT put in manifestFetchFailed: that set feeds the
+			// render's cache fallback, which would render a never-attached
+			// module's users from the digestless cache written this tick.
+			noDigest[mod.ID] = true
 			r.noteUnconverged("reconciler:no_digest", mod.ID, fmt.Errorf("module %s has no digest (not published)", mod.ID))
 			continue
 		}
@@ -1157,7 +1163,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// (and unconditionally, not just on a self-hosted node): a fetch failure
 	// means "we don't know", never "removed", so it must never be read as a
 	// removal on ANY node, self-hosted or not.
-	toDetach = r.filterUnverifiedDetaches(toDetach, manifestFetchFailed)
+	detachDeferred := make(map[string]bool, len(manifestFetchFailed)+len(noDigest))
+	for id := range manifestFetchFailed {
+		detachDeferred[id] = true
+	}
+	for id := range noDigest {
+		detachDeferred[id] = true
+	}
+	toDetach = r.filterUnverifiedDetaches(toDetach, detachDeferred)
 	toDetach = r.filterEmptyAssignmentDetaches(toDetach, len(desiredModules))
 
 	// Refuse detaches that would take down this node's own control plane
