@@ -22,9 +22,9 @@ func TestHostnameApplyNeverResolvesOutsideTheSandbox(t *testing.T) {
 	t.Cleanup(func() { assignedHostnamePath = orig })
 	persistAssignedHostname("ops-hub-guard-probe")
 
-	writeguard.Reset()
-	err := (&Service{}).applyHostnameFromFwCfg()
-	if v := writeguard.Reset(); len(v) > 0 {
+	var err error
+	v := writeguard.Capture(func() { err = (&Service{}).applyHostnameFromFwCfg() })
+	if len(v) > 0 {
 		t.Fatalf("hostname apply resolved outside the test sandbox (err=%v): %s", err, strings.Join(v, "; "))
 	}
 	if err != nil {
@@ -41,26 +41,28 @@ func TestHostnameApplyNeverResolvesOutsideTheSandbox(t *testing.T) {
 // render would land under the working directory. The guard must refuse those,
 // and accept a real sandboxed sysroot — both arms.
 func TestUnionIdentityPathsGuard(t *testing.T) {
-	t.Cleanup(func() { writeguard.Reset() })
-	writeguard.Reset()
 	p := unionIdentityPaths("")
-	for _, path := range []string{p.Lock, p.Passwd, p.Group, p.Shadow, p.Gshadow} {
-		if err := writeguard.Check(path); err == nil {
-			t.Errorf("empty sysroot: %q was not refused", path)
+	rec := writeguard.Capture(func() {
+		for _, path := range []string{p.Lock, p.Passwd, p.Group, p.Shadow, p.Gshadow} {
+			if err := writeguard.Check(path); err == nil {
+				t.Errorf("empty sysroot: %q was not refused", path)
+			}
 		}
-	}
-	if len(writeguard.Reset()) != 5 {
+	})
+	if len(rec) != 5 {
 		t.Error("empty sysroot: expected 5 recorded violations")
 	}
 
 	p = unionIdentityPaths(t.TempDir())
-	for _, path := range []string{p.Lock, p.Passwd, p.Group, p.Shadow, p.Gshadow} {
-		if err := writeguard.Check(path); err != nil {
-			t.Errorf("sandboxed sysroot: %q refused: %v", path, err)
+	rec = writeguard.Capture(func() {
+		for _, path := range []string{p.Lock, p.Passwd, p.Group, p.Shadow, p.Gshadow} {
+			if err := writeguard.Check(path); err != nil {
+				t.Errorf("sandboxed sysroot: %q refused: %v", path, err)
+			}
 		}
-	}
-	if v := writeguard.Reset(); len(v) != 0 {
-		t.Errorf("sandboxed sysroot recorded violations: %v", v)
+	})
+	if len(rec) != 0 {
+		t.Errorf("sandboxed sysroot recorded violations: %v", rec)
 	}
 }
 
@@ -69,11 +71,12 @@ func TestUnionIdentityPathsGuard(t *testing.T) {
 // removal is the destructive half: as root a test binary would delete a real
 // node's operator access.
 func TestBreakGlassSeamStaysInTheSandbox(t *testing.T) {
-	writeguard.Reset()
-	if err := applyBreakGlass(false); err != nil {
+	var err error
+	v := writeguard.Capture(func() { err = applyBreakGlass(false) })
+	if err != nil {
 		t.Fatalf("applyBreakGlass(false): %v", err)
 	}
-	if v := writeguard.Reset(); len(v) != 0 {
+	if len(v) != 0 {
 		t.Fatalf("break-glass resolved outside the sandbox: %v", v)
 	}
 }

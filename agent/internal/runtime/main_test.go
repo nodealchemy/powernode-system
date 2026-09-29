@@ -13,6 +13,10 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
+// hostnameTestRoot is the sandbox root the live-root hostname writers are
+// redirected to; tests read the result back from it.
+var hostnameTestRoot string
+
 // TestMain sandboxes every /persist-backed path in this package BEFORE any test
 // runs, so touching production state is impossible by default rather than
 // avoided by convention.
@@ -30,10 +34,6 @@ import (
 // it did not expect" instead of "a future test deletes live boot state". Tests
 // that need their own paths still override them locally; this is the floor, not
 // a replacement for the per-test seams.
-// hostnameTestRoot is the sandbox root the live-root hostname writers are
-// redirected to; tests read the result back from it.
-var hostnameTestRoot string
-
 func TestMain(m *testing.M) {
 	sandbox, err := os.MkdirTemp("", "powernode-runtime-test-*")
 	if err != nil {
