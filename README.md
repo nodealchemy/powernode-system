@@ -61,14 +61,14 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **40 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **42 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   external workload pressure (cross-extension stigmergic coordination), instance
   state drift, GitOps drift, package repository drift, project SLO breaches,
   disk-image publication failure streaks, SDWAN health (peer reachability, BGP
   session, VIP reachability, drift, credential expiry), and storage assignment
   drift
-- **66 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+- **67 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
   package + module authoring, architecture catalog, federation, and platform
@@ -106,8 +106,8 @@ This extension contributes:
   the operator API, the on-node API and the worker API
 - A React/TypeScript frontend: page components, reusable components, custom
   hooks and API client services
-- Worker jobs (11 scheduled): `system_task_reaper`, `system_fleet_reconcile`,
-  `system_cve_feed`, `system_cve_responder_reconcile`,
+- Worker jobs (12 scheduled): `system_task_reaper`, `out_of_band_exec_reaper`,
+  `system_fleet_reconcile`, `system_cve_feed`, `system_cve_responder_reconcile`,
   `system_fleet_event_retention`, `sdwan_flow_sample_retention`,
   `system_gitops_sync`, `system_cloud_sync`,
   `system_fulfillment_request_reconcile`, `system_package_repository_sync`,
