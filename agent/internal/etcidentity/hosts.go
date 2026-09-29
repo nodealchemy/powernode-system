@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // renderHosts renders a minimal, standard-shape /etc/hosts for a node whose
@@ -60,6 +61,10 @@ func ApplyHosts(root, name string) (changed bool, err error) {
 	path := "/etc/hosts"
 	if root != "" {
 		path = filepath.Join(root, "etc", "hosts")
+	}
+
+	if err := writeguard.Check(path); err != nil {
+		return false, err
 	}
 
 	want := renderHosts(name)

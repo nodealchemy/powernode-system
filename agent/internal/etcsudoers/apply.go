@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // SudoersDir is the standard location for drop-in sudoers files on
@@ -33,6 +34,9 @@ func Apply(grants []Grant) error {
 
 // ApplyAt is Apply with overridable directory + clock — for tests.
 func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
+	if err := writeguard.Check(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}

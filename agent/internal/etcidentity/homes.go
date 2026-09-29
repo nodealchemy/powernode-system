@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // Home-directory ownership reconcile.
@@ -92,6 +94,9 @@ func ReconcileHomeOwnership(set *Set, root string, onWarn func(stage string, err
 // missing. Never changes ownership (the parent stays root:root). Refuses
 // symlinks.
 func EnsureTraversableDir(path string) error {
+	if err := writeguard.Check(path); err != nil {
+		return err
+	}
 	fi, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -116,6 +121,9 @@ func EnsureTraversableDir(path string) error {
 // its top-level ownership only (never recursive). Refuses to follow a
 // symlink (swap-attack guard). Idempotent.
 func EnsureOwnedDir(dir string, uid, gid int, mode os.FileMode) error {
+	if err := writeguard.Check(dir); err != nil {
+		return err
+	}
 	fi, err := os.Lstat(dir)
 	switch {
 	case os.IsNotExist(err):

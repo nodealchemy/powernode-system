@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // OperatorBreakGlassFilename is the basename of the drop-in that
@@ -53,6 +54,9 @@ func ApplyOperatorBreakGlass(enabled bool) error {
 // overridable directory — for tests.
 func ApplyOperatorBreakGlassAt(enabled bool, dir string) error {
 	path := filepath.Join(dir, OperatorBreakGlassFilename)
+	if err := writeguard.Check(path); err != nil {
+		return err
+	}
 
 	if !enabled {
 		// Revocation path: remove the file if present, else no-op. We

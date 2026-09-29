@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // HostNameMax is the kernel's HOST_NAME_MAX. sethostname(2) rejects a name
@@ -51,6 +52,10 @@ func ApplyHostname(root, name string, applyLive bool) (changed bool, err error) 
 		path = filepath.Join(root, "etc", "hostname")
 	}
 
+	if err := writeguard.Check(path); err != nil {
+		return false, err
+	}
+
 	// Write the file only when it actually differs — AtomicWrite is cheap but
 	// a no-op write still fsyncs + renames, and skipping it keeps reconcile
 	// ticks quiet (mirrors etcidentity.Apply's byte-stable rationale).
@@ -74,7 +79,7 @@ func ApplyHostname(root, name string, applyLive bool) (changed bool, err error) 
 	if root != "" {
 		dropinDir = filepath.Join(root, "etc", "systemd", "network", "10-dhcp.network.d")
 	}
-	if os.MkdirAll(dropinDir, 0o755) == nil {
+	if writeguard.Check(dropinDir) == nil && os.MkdirAll(dropinDir, 0o755) == nil {
 		dropin := []byte("[DHCPv4]\nHostname=" + name + "\n[DHCPv6]\nHostname=" + name + "\n")
 		dropinPath := filepath.Join(dropinDir, "50-powernode-hostname.conf")
 		if cur, rerr := os.ReadFile(dropinPath); rerr != nil || !bytes.Equal(cur, dropin) {
@@ -86,6 +91,9 @@ func ApplyHostname(root, name string, applyLive bool) (changed bool, err error) 
 
 	if applyLive {
 		if cur, _ := os.Hostname(); cur != name {
+			if gerr := writeguard.CheckHost("sethostname"); gerr != nil {
+				return changed, gerr
+			}
 			if serr := syscall.Sethostname([]byte(name)); serr != nil {
 				return changed, fmt.Errorf("sethostname %q: %w", name, serr)
 			}

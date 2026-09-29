@@ -1,0 +1,46 @@
+package etcidentity
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
+)
+
+// Every default-target entry point must be refused by the guard BEFORE any I/O:
+// the verdict is on the resolved path, so these are safe (and meaningful) run
+// unprivileged, and would be equally safe as root. The sandboxed arm of each
+// is already covered by the package's own tests, which all pass a tempdir.
+func TestDefaultTargetsAreRefusedUnderTheGuard(t *testing.T) {
+	t.Cleanup(func() { writeguard.Reset() })
+	writeguard.Reset()
+
+	calls := map[string]func() error{
+		"Apply":         func() error { return Apply(&Set{}) },
+		"ApplyHostname": func() error { _, err := ApplyHostname("", "guard-probe", false); return err },
+		"ApplyHostname live": func() error {
+			// A sandboxed root whose file write succeeds, so the ONLY thing
+			// left to refuse is the host-global sethostname(2).
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ApplyHostname(root, "guard-probe-live", true)
+			return err
+		},
+		"ApplyHosts":           func() error { _, err := ApplyHosts("", "guard-probe"); return err },
+		"EnsureTraversableDir": func() error { return EnsureTraversableDir("/home") },
+		"EnsureOwnedDir":       func() error { return EnsureOwnedDir("/home/guard-probe", 0, 0, 0o700) },
+	}
+	for name, call := range calls {
+		if err := call(); err == nil {
+			t.Errorf("%s: default/out-of-sandbox target was not refused", name)
+		}
+	}
+	// One violation per call, and the live case must have been refused by the
+	// guard itself, not by an unrelated failure: nothing here writes the host.
+	if got := len(writeguard.Reset()); got != len(calls) {
+		t.Errorf("recorded %d violations, want %d", got, len(calls))
+	}
+}

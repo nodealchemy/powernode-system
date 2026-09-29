@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // PwdLockPath is the file glibc's lckpwdf() uses for advisory locking
@@ -66,6 +67,11 @@ func ApplyAt(set *Set, paths Paths) error {
 	lockPath := paths.Lock
 	if lockPath == "" {
 		lockPath = PwdLockPath
+	}
+	for _, target := range []string{lockPath, paths.Passwd, paths.Group, paths.Shadow, paths.Gshadow} {
+		if err := writeguard.Check(target); err != nil {
+			return err
+		}
 	}
 	unlock, err := acquireLock(lockPath, LockTimeout)
 	if err != nil {
