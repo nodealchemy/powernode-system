@@ -502,12 +502,14 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 
 	client := &stubModulesClient{
 		responses: map[string]string{
-			// A NON-empty list that omits m1 → m1 is unassigned and should be
-			// detached. (An entirely empty list is not read as an unassignment
-			// — see TestRunOnce_EmptyAssignmentListRetainsEveryAttachedModule.)
+			// A list that still names a data module (m2) but omits m1 → m1 is
+			// unassigned and should be detached. (A list with no data module at
+			// all is not read as an unassignment — see
+			// TestRunOnce_EmptyAssignmentListRetainsEveryAttachedModule.)
 			"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": [
-				{"id":"cfg", "name":"cfg", "priority":100, "effective_priority":100, "has_data_file":false}
+				{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}
 			]}}`,
+			"/api/v1/system/node_api/modules/m2": `{"success": true, "data": {"id":"m2","name":"other","digest":"def456","priority":100,"effective_priority":100}}`,
 		},
 	}
 	runner := &mount.RecorderRunner{}
@@ -537,10 +539,12 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 		t.Errorf("expected `systemctl stop powernode-m1-nginx.service`, got: %v", runner.Invocations)
 	}
 
-	// State updated to no attached modules.
+	// State no longer carries the unassigned m1 (m2 may or may not have attached).
 	state, _ := mount.LoadState(statePath)
-	if len(state.AttachedModules) != 0 {
-		t.Errorf("expected empty attached modules, got %+v", state.AttachedModules)
+	for _, m := range state.AttachedModules {
+		if m.ID == "m1" {
+			t.Errorf("expected m1 to be detached, got %+v", state.AttachedModules)
+		}
 	}
 }
 

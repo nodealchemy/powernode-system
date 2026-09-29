@@ -305,3 +305,28 @@ func TestRunOnce_DigestlessNeverAttachedModuleIsNotRendered(t *testing.T) {
 		}
 	}
 }
+
+// A list that names only config/skill modules (no data file) is as empty as far
+// as attached data modules go: nothing in it says which of them to keep, and it
+// must not detach them all either.
+func TestRunOnce_ConfigOnlyAssignmentListRetainsEveryAttachedDataModule(t *testing.T) {
+	r, client, runner, _, statePath, _, _ := upgradeTestReconciler(t)
+	appUnit := lifecycle.UnitName("m1", "app")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (attach m1): %v", err)
+	}
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true, "data": {"modules": [
+		{"id":"cfg", "name":"cfg", "priority":100, "effective_priority":100, "has_data_file":false}]}}`
+	pre := len(runner.Invocations)
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (config-only list): %v", err)
+	}
+	if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+		t.Errorf("a list with no data modules must not detach the attached data module: digest = %q ok=%v", digest, ok)
+	}
+	if hasSystemctlOp(runner.Invocations[pre:], "stop", appUnit) {
+		t.Errorf("a list with no data modules must not stop %s: %v", appUnit, runner.Invocations[pre:])
+	}
+}

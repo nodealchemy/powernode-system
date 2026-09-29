@@ -1171,7 +1171,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		detachDeferred[id] = true
 	}
 	toDetach = r.filterUnverifiedDetaches(toDetach, detachDeferred)
-	toDetach = r.filterEmptyAssignmentDetaches(toDetach, len(desiredModules))
+	toDetach = r.filterEmptyAssignmentDetaches(toDetach, desiredModules)
 
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the

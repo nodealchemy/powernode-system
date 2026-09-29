@@ -292,8 +292,9 @@ func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, 
 }
 
 // filterEmptyAssignmentDetaches refuses a detach set when the platform's
-// assignment list came back EMPTY (success:true, no modules) while modules
-// are attached. Applied unconditionally, like filterUnverifiedDetaches.
+// assignment list names NO data-bearing module (success:true, an empty list or
+// one of only config/skill modules) while modules are attached. Applied
+// unconditionally, like filterUnverifiedDetaches.
 //
 // The list is the agent's only statement of desired state and carries no
 // marker separating "the operator unassigned everything" from a degraded
@@ -305,19 +306,26 @@ func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, 
 // undo per module; detaching them on a degraded answer is an outage. The
 // ambiguity is resolved toward keeping, and made visible.
 //
-// Only an empty list trips this. A non-empty list that omits a module is a
-// removal the operator (or the server's own resolution check) is asserting.
-func (r *Reconciler) filterEmptyAssignmentDetaches(toDetach mount.ModuleStack, assignedCount int) mount.ModuleStack {
-	if assignedCount > 0 || len(toDetach) == 0 {
+// Only data-bearing assignments count (HasDataFile): every attached module is
+// one, so a list carrying none of them says nothing about which to keep. A list
+// that names at least one data module and omits another is a removal the
+// operator (or the server's own resolution check) is asserting.
+func (r *Reconciler) filterEmptyAssignmentDetaches(toDetach mount.ModuleStack, assigned []AssignedModule) mount.ModuleStack {
+	if len(toDetach) == 0 {
 		return toDetach
+	}
+	for _, a := range assigned {
+		if a.HasDataFile {
+			return toDetach
+		}
 	}
 	ids := make([]string, 0, len(toDetach))
 	for _, mod := range toDetach {
 		ids = append(ids, mod.ID)
 	}
 	r.noteUnconverged("reconciler:detach_deferred_empty_assignment", "", fmt.Errorf(
-		"the platform returned an EMPTY module assignment list while %d module(s) [%s] are attached; refusing to read that as \"unassign everything\" and deferring their detach — detach a module deliberately with `powernode-agent detach`",
-		len(ids), strings.Join(ids, ", ")))
+		"the platform returned an assignment list with no data-bearing module (%d assigned) while %d module(s) [%s] are attached; refusing to read that as \"unassign everything\" and deferring their detach — detach a module deliberately with `powernode-agent detach`",
+		len(assigned), len(ids), strings.Join(ids, ", ")))
 	return nil
 }
 
