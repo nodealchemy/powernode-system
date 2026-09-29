@@ -843,7 +843,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	for _, mod := range desiredModules {
 		assignedIDs[mod.ID] = true
 	}
-	r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
+
+	// Not on a tick whose assignment names no data-bearing module while modules
+	// are attached: that list is untrusted (filterEmptyAssignmentDetaches
+	// refuses to detach on it), and the rebase would read it as "nothing is
+	// assigned" and drop entries on it (IMP-1023e79cc82d).
+	if len(current.AttachedModules) > 0 && !assignsDataModule(desiredModules) {
+		r.cfg.OnError("reconciler:state_rebase_skipped_empty_assignment", errors.New(
+			"the assignment list names no data-bearing module while modules are attached; not rebasing state against it"))
+	} else {
+		r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
+	}
 
 	// Round Z (Z2, widened Z5): compute THIS tick's own positive-proof
 	// signal for restartPermitted (selfhost.go) — after the rebase has

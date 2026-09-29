@@ -1414,3 +1414,22 @@ func newRebaseHarnessWithGroups(t *testing.T, survivor, dead rebaseModule, keeps
 	patch(dead, []string{"pgdev"})
 	return h
 }
+
+// An assignment list that names no data-bearing module is untrusted (see
+// filterEmptyAssignmentDetaches), so the rebase must not run on it either: it
+// would read `assigned` as the empty set and drop entries on an answer the
+// agent refuses to detach on (IMP-1023e79cc82d).
+func TestStateRebase_EmptyAssignmentTickDoesNotRebase(t *testing.T) {
+	mods := []rebaseModule{
+		{id: "m-base", digest: "sha256:ba5e", composed: true, inState: true},
+		{id: "dead-one", digest: "sha256:dead3", inState: true, services: true},
+	}
+	h := newRebaseHarness(t, mods, rebaseOpts{selfHosted: true, enforce: true})
+	st := h.run(t)
+	if !hasEntry(st, "dead-one") {
+		t.Errorf("an empty-assignment tick must not rebase state: dead-one was dropped, state %v", attachedIDs(st))
+	}
+	if got := h.signalsFor(stageStateRebased); len(got) != 0 {
+		t.Errorf("an empty-assignment tick must not rebase state, got %v", got)
+	}
+}

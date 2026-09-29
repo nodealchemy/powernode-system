@@ -291,6 +291,18 @@ func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, 
 	return safe
 }
 
+// assignsDataModule reports whether the assignment list names at least one
+// data-bearing module. A list that names none is untrusted while modules are
+// attached — see filterEmptyAssignmentDetaches.
+func assignsDataModule(assigned []AssignedModule) bool {
+	for _, a := range assigned {
+		if a.HasDataFile {
+			return true
+		}
+	}
+	return false
+}
+
 // filterEmptyAssignmentDetaches refuses a detach set when the platform's
 // assignment list names NO data-bearing module (success:true, an empty list or
 // one of only config/skill modules) while modules are attached. Applied
@@ -311,13 +323,8 @@ func (r *Reconciler) filterUnsafeDetaches(toDetach, toAttach mount.ModuleStack, 
 // that names at least one data module and omits another is a removal the
 // operator (or the server's own resolution check) is asserting.
 func (r *Reconciler) filterEmptyAssignmentDetaches(toDetach mount.ModuleStack, assigned []AssignedModule) mount.ModuleStack {
-	if len(toDetach) == 0 {
+	if len(toDetach) == 0 || assignsDataModule(assigned) {
 		return toDetach
-	}
-	for _, a := range assigned {
-		if a.HasDataFile {
-			return toDetach
-		}
 	}
 	ids := make([]string, 0, len(toDetach))
 	for _, mod := range toDetach {
