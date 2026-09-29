@@ -442,6 +442,15 @@ func renderDropin(name string, pairs []dropinPair) string {
 	b.WriteString("[Service]\n")
 	for _, p := range pairs {
 		switch {
+		case p.Key == "ReadWritePaths":
+			// systemd's "-" on every entry: a missing path is otherwise fatal
+			// to unit start, and a chroot unit resolves it inside its root.
+			// A caller-supplied "-" or "+" is refused by dropinPathsOK.
+			paths := strings.Split(p.Value, " ")
+			for i, path := range paths {
+				paths[i] = "-" + path
+			}
+			b.WriteString("ReadWritePaths=" + strings.Join(paths, " ") + "\n")
 		case dropinCapabilityKeys[p.Key]:
 			b.WriteString(p.Key + "=\n")
 			if p.Value != "" {

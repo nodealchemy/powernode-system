@@ -255,7 +255,13 @@ module System
           "[Service]\n"
       end
 
+      # ReadWritePaths entries are rendered with systemd's "-" (ignore a missing
+      # path): an absent path is otherwise fatal to unit start, and a
+      # RootDirectory= (chroot) unit resolves the path inside its root, so one
+      # approved drop-in naming a path that is not there would stop the unit
+      # from starting at all. A caller-supplied "-" or "+" is still refused.
       def lines_for(key, value)
+        return [ "#{key}=#{value.split(' ').map { |path| "-#{path}" }.join(' ')}\n" ] if key == "ReadWritePaths"
         return [ "#{key}=\n" ] + (value.empty? ? [] : [ "#{key}=#{value}\n" ]) if CAPABILITY_DIRECTIVES.include?(key)
 
         [ "#{key}=#{value}\n" ]

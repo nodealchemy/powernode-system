@@ -1649,7 +1649,7 @@ module Ai
           },
           # IMP-9951cbf20bb0 — see the declare_action for the gate and the replay.
           "system_apply_unit_dropin" => {
-            description: "Write, or with revert: true remove, ONE runtime systemd drop-in for a unit a module composed on an instance: /run/systemd/system/<unit>.d/zz-operator-<name>.conf, through the node's own agent, followed by systemctl daemon-reload. /run is tmpfs, so a reboot reverts it; a revert removes only zz-operator-<name>.conf. It does NOT restart the unit: to make the change live, restart it afterwards with system_restart_unit (separately governed). " \
+            description: "Write, or with revert: true remove, ONE runtime systemd drop-in for a unit a module composed on an instance: /run/systemd/system/<unit>.d/zz-operator-<name>.conf, through the node's own agent, followed by systemctl daemon-reload. /run is tmpfs, so a reboot reverts it; a revert removes only zz-operator-<name>.conf. It does NOT restart the unit, but resource limits take effect IMMEDIATELY: systemd re-applies MemoryMax, CPUQuota and TasksMax to the RUNNING unit on daemon-reload (a MemoryMax below its current memory use bites at once). Other directives take effect only at the next restart, which is system_restart_unit (separately governed). " \
                          "The unit checks are system_restart_unit's: a composed powernode-* unit on that instance, never the agent's own, never any unit on the node hosting this control plane (while that node is unconfigured, its critical services), and a running instance with a reporting agent. " \
                          "directives is a list of {key, value}; only these keys are accepted, each with a strict grammar, and each can only limit the unit: MemoryMax, CPUQuota, TasksMax, LimitNOFILE, AmbientCapabilities and CapabilityBoundingSet (space-separated CAP_* names that must be a SUBSET of the unit's own capability set, so they only narrow it; the unit's set is REPLACED, and an empty value means none, always accepted), ReadWritePaths (absolute clean paths strictly beneath /persist, never the agent's own state, caches, /persist/etc or ingress store). Everything else is refused, including Environment= (env tuning needs manifest-declared tunables), Exec*, User, Group, DynamicUser, NoNewPrivileges, EnvironmentFile and any directive that names a file, as is any control character, backslash, bracket, double quote or %-specifier in a key or value. " \
                          "HUMAN-ONLY and APPROVAL-GATED (system.instance.unit_dropin): this returns {pending: true, requires_human_session: true} with an approval_request_id and NOTHING is written until a person approves in their own session; do not report a change on that response. The checks run again when the approval lands. Audited with the rendered file. Refused for an instance principal.",
@@ -5088,7 +5088,10 @@ module Ai
         success_result(task_id: task.id, instance_id: instance.id, unit: task.options["unit"], name: task.options["name"],
                        path: ::System::UnitDropinService.dropin_path(task.options["unit"], task.options["name"]),
                        revert: task.options["revert"], status: task.status,
-                       note: "The unit is NOT restarted; use system_restart_unit to make the change live.")
+                       note: "The unit is NOT restarted, but resource limits take effect immediately on daemon-reload; " \
+                             "other directives at the next restart. systemd re-applies MemoryMax, CPUQuota and TasksMax " \
+                             "to the RUNNING unit; capabilities, ReadWritePaths and LimitNOFILE wait for a restart " \
+                             "(system_restart_unit).")
       rescue ::System::UnitDropinService::Refused, CallerFacingError => e
         error_result(e.message)
       end

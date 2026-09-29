@@ -115,6 +115,27 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_apply_unit_dropin" do
   end
 
   describe "the gate" do
+    # The approver sees the directives: the Autonomy approval queue renders
+    # request_data (frontend ApprovalQueuePanel's "Request Data" block) and
+    # get_approval_request returns it, both through Ai::SensitiveParams.filter,
+    # which must leave every directive key and value readable.
+    it "puts every directive, unmasked, in the request_data an approver reads" do
+      dirs = [ { "key" => "MemoryMax", "value" => "512M" }, { "key" => "ReadWritePaths", "value" => "/persist/var/lib/app" } ]
+      deferred = parked_after(apply!(directives: dirs))
+
+      shown = Ai::SensitiveParams.filter(deferred.approval_request.request_data)
+      expect(shown.dig("params", "tool_params", "directives")).to eq(dirs)
+    end
+
+    it "tells the caller which directives take effect now and which at the next restart" do
+      deferred = parked_after(apply!)
+      approve_in_own_session!(deferred)
+
+      expect(deferred.result.to_s).to include("resource limits take effect immediately on daemon-reload")
+      definition = described_class.action_definitions.fetch("system_apply_unit_dropin")
+      expect(definition[:description]).to include("MemoryMax, CPUQuota and TasksMax", "RUNNING")
+    end
+
     it "parks a human-only approval and creates no task" do
       deferred = parked_after(apply!)
 
