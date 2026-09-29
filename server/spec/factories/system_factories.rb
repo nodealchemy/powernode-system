@@ -224,6 +224,13 @@ FactoryBot.define do
       mac_address { "00:11:22:33:44:55" }
       private_netboot { true }
     end
+
+    # IMP-190834701b0a — the agent has reported an SSH host public key, so
+    # System::SshExecutionService can verify the host (and out-of-band exec
+    # will connect at all). Built at runtime; see SshHostKeyFixtures.
+    trait :with_ssh_host_key do
+      ssh_host_keys { SshHostKeyFixtures.document(SshHostKeyFixtures.entry) }
+    end
   end
 
   # System::NodeInstancePeer — central peer registry row for a node-instance

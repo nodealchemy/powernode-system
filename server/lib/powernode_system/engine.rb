@@ -657,6 +657,7 @@ module PowernodeSystem
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
             ::System::Governance::GapMaterializer::AUDITED_ACTIONS +
             ::System::OutOfBandExecService::AUDITED_ACTIONS +
+            ::System::SshHostKeyWriter::AUDITED_ACTIONS +
             ::System::UnitRestartService::AUDITED_ACTIONS +
             ::System::UnitDropinService::AUDITED_ACTIONS
         )

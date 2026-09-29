@@ -109,6 +109,20 @@ module Api
             caps = hb["node_capabilities"]
             current_instance.record_capabilities!(caps) if caps.present?
 
+            # IMP-190834701b0a — the node's SSH host PUBLIC keys, the trust
+            # anchor SshExecutionService verifies every connection against.
+            # First recording and every change are audited (fingerprints
+            # only). Wrapped so a bad report cannot bounce telemetry.
+            begin
+              ::System::SshHostKeyWriter.write!(
+                instance: current_instance,
+                payload:  hb[::System::SshHostKeyWriter::WIRE_KEY],
+                boot_id:  hb["boot_id"].presence
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] SSH host key ingest failed for #{current_instance.id}: #{e.class}")
+            end
+
             # IMP-57e9a90598ee — first-heartbeat network-profile
             # classification. record_heartbeat! above just persisted the
             # agent-observed architecture, which is the last fact
