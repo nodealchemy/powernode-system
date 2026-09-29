@@ -164,3 +164,17 @@ func TestLiveUnionLowerDirs_HandlesEscapedMountPoint(t *testing.T) {
 		t.Errorf("got %v, want [/a /b]", got)
 	}
 }
+
+// A mounted overlay whose lowerdir list yields nothing must NOT answer "dir
+// is not in the union" (IMP-1023e79cc82d). A live root always has lower
+// layers, so an empty parse means the entry could not be read; PathInLiveUnion's
+// callers fail toward "in use" only when they see an error.
+func TestPathInLiveUnion_EmptyLowersIsAnError(t *testing.T) {
+	withMountInfo(t, "27 1 0:33 / / rw,relatime shared:1 - overlay overlay rw,upperdir=/u,workdir=/w\n")
+
+	in, err := PathInLiveUnion("/", "/run/powernode/modules/sha256_bbb")
+
+	if err == nil {
+		t.Fatalf("PathInLiveUnion over an overlay with no readable lower layers = %v, nil; want an error", in)
+	}
+}

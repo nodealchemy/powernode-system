@@ -213,6 +213,13 @@ func PathInLiveUnion(mountPoint, dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// A live union always has lower layers (the kernel refuses an overlay
+	// without one), so an empty set means the entry could not be read, not
+	// that dir is unreferenced. LiveUnionLowerDirs reports the empty set as a
+	// value; this caller must not turn it into "not in the union".
+	if len(lowers) == 0 {
+		return false, fmt.Errorf("overlay at %s has no readable lower layers; cannot prove %s is unreferenced", filepath.Clean(mountPoint), filepath.Clean(dir))
+	}
 	target := filepath.Clean(dir)
 	for _, l := range lowers {
 		if l == target {

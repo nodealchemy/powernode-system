@@ -807,9 +807,10 @@ func writeFile(t *testing.T, p, body string) {
 // from this package).
 func forcePivotNative(t *testing.T) {
 	t.Helper()
-	orig := pivotAwareRootMode
+	orig, origChecked := pivotAwareRootMode, pivotAwareRootModeChecked
 	pivotAwareRootMode = func() lifecycle.RootMode { return lifecycle.RootModeNative }
-	t.Cleanup(func() { pivotAwareRootMode = orig })
+	pivotAwareRootModeChecked = func() (lifecycle.RootMode, error) { return lifecycle.RootModeNative, nil }
+	t.Cleanup(func() { pivotAwareRootMode, pivotAwareRootModeChecked = orig, origChecked })
 }
 
 // TestReconcilerHotReconcileSkipsFirstTickOnPivotNode covers the

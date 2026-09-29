@@ -3704,11 +3704,18 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 // at SysRoot on every stack change, so a superseded layer is genuinely
 // unreferenced by the time we get here and unmounting reclaims it.
 //
-// Fails CLOSED. If the mount table cannot be read, or the union cannot be
-// parsed, the answer is "would strip" — see the asymmetry argument at the
-// call site.
+// Fails CLOSED. If the root mode cannot be determined, the mount table cannot
+// be read, or the union cannot be parsed, the answer is "would strip" — see
+// the asymmetry argument at the call site.
 func (r *Reconciler) unmountWouldStripLiveRoot(mod mount.Module) (bool, string) {
-	if pivotAwareRootMode() != lifecycle.RootModeNative {
+	// The error-reporting probe, not pivotAwareRootMode: that one reads a
+	// failed statfs("/") as chroot, which would skip the live-union check and
+	// unmount unguarded (IMP-1023e79cc82d).
+	mode, err := pivotAwareRootModeChecked()
+	if err != nil {
+		return true, fmt.Sprintf("cannot determine root mode (%v); refusing to risk stripping the running root", err)
+	}
+	if mode != lifecycle.RootModeNative {
 		return false, ""
 	}
 	liveRoot := filepath.Join(r.cfg.Layout.Root, "/")

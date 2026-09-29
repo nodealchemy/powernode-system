@@ -610,9 +610,7 @@ func TestUpgradeModule_CommitReplacesUnitsUnmountsOldErofsAndRemovesDropInDir(t 
 	// PathInLiveUnion's own unreadable-probe fence — which is what a fake
 	// test root (this sandbox may itself read as native) would otherwise
 	// hit, masking the very call this test exists to observe.
-	origMode := pivotAwareRootMode
-	pivotAwareRootMode = func() lifecycle.RootMode { return lifecycle.RootModeChroot }
-	t.Cleanup(func() { pivotAwareRootMode = origMode })
+	pinDetachMode(t, lifecycle.RootModeChroot)
 
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture(
 		"d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,9 +61,10 @@ func umountWasCalled(run *mount.RecorderRunner) bool {
 
 func pinDetachMode(t *testing.T, m lifecycle.RootMode) {
 	t.Helper()
-	orig := pivotAwareRootMode
+	orig, origChecked := pivotAwareRootMode, pivotAwareRootModeChecked
 	pivotAwareRootMode = func() lifecycle.RootMode { return m }
-	t.Cleanup(func() { pivotAwareRootMode = orig })
+	pivotAwareRootModeChecked = func() (lifecycle.RootMode, error) { return m, nil }
+	t.Cleanup(func() { pivotAwareRootMode, pivotAwareRootModeChecked = orig, origChecked })
 }
 
 // THE REGRESSION. On a pivot node the live union's lowerdir is frozen at
@@ -175,5 +177,53 @@ func TestDetachModule_RemovesAttachedSnapshotStore(t *testing.T) {
 	}
 	if _, err := manifest.LoadAttachedSnapshot(manifestRoot, mod.ID, mod.Digest); err == nil {
 		t.Error("O7 REGRESSION: expected a genuine removal to delete the module's ENTIRE attached-snapshot store")
+	}
+}
+
+// FAIL CLOSED on an unknowable root mode (IMP-1023e79cc82d). The unmount guard
+// used the swallow-to-chroot probe, so a failed statfs("/") read as chroot,
+// skipped the live-union check and unmounted a layer the running root may
+// still reference. Both probes are pinned so the test is decided by the
+// guard's own choice of probe, not by a helper that pinned only one.
+func TestDetachModule_UnknowableRootModeKeepsTheMount(t *testing.T) {
+	pinDetachMode(t, lifecycle.RootModeChroot)
+	pinRootModeChecked(t, lifecycle.RootModeChroot, errors.New("statfs /: input/output error"))
+	r, run, signals := detachGuardFixture(t, liveUnionInfo)
+
+	if err := r.detachModule(context.Background(), &mount.State{},
+		mount.Module{ID: "runtime-go", Digest: "sha256:live"},
+		map[string]*manifest.Manifest{}); err != nil {
+		t.Fatalf("detachModule: %v", err)
+	}
+	if umountWasCalled(run) {
+		t.Fatal("unmounted a layer while the root mode was unknowable — an unresolved probe must fail closed, not read as chroot")
+	}
+	found := false
+	for _, s := range *signals {
+		if strings.Contains(s, "unmount_skipped") && strings.Contains(s, "cannot determine root mode") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the fail-closed reason must be surfaced, got %v", *signals)
+	}
+}
+
+// A mounted overlay whose lowerdir list yields nothing is not "the path is
+// not in the union": a live root always has lowers, so an empty set means the
+// entry could not be read. The guard must refuse the unmount.
+func TestDetachModule_UnparseableUnionLowersKeepTheMount(t *testing.T) {
+	pinDetachMode(t, lifecycle.RootModeNative)
+	pinRootModeChecked(t, lifecycle.RootModeNative, nil)
+	r, run, _ := detachGuardFixture(t,
+		"27 1 0:24 / / rw,relatime shared:1 - overlay overlay rw,upperdir=/run/powernode/scratch/upper,workdir=/run/powernode/scratch/work\n")
+
+	if err := r.detachModule(context.Background(), &mount.State{},
+		mount.Module{ID: "gone", Digest: "sha256:unreferenced"},
+		map[string]*manifest.Manifest{}); err != nil {
+		t.Fatalf("detachModule: %v", err)
+	}
+	if umountWasCalled(run) {
+		t.Fatal("unmounted against a union whose lower layers could not be read — 'not in the union' was inferred from an empty parse")
 	}
 }
