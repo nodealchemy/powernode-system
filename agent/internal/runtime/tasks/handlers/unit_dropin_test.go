@@ -596,3 +596,42 @@ func TestUnitDropinIsRegistered(t *testing.T) {
 		t.Fatal("unit.dropin is not registered by RegisterDefaults")
 	}
 }
+
+// Item 10: a ReadWritePaths entry is judged where it RESOLVES on the node, not
+// only as a string: a symlink under /persist into the agent's trust material,
+// or out of /persist, is refused. A path that does not exist yet passes (the
+// rendered '-' lets the unit start without it); an absent leaf under an
+// existing symlinked parent is judged by where that parent resolves.
+func TestUnitDropinRefusesAReadWritePathThatResolvesIntoTrustMaterial(t *testing.T) {
+	sb := newDropinSandbox(t)
+	fsRoot := filepath.Join(filepath.Dir(sb.root), "fsroot")
+	for _, d := range []string{"persist/var/lib/powernode/pki", "persist/var/lib/app", "etc"} {
+		if err := os.MkdirAll(filepath.Join(fsRoot, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(SetDropinFSRootForTest(fsRoot))
+	link := func(name, target string) {
+		t.Helper()
+		if err := os.Symlink(target, filepath.Join(fsRoot, "persist", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link("innocent", filepath.Join(fsRoot, "persist/var/lib/powernode/pki")) // absolute, into trust
+	link("relative", "var/lib/powernode")                                    // relative, into trust
+	link("escape", filepath.Join(fsRoot, "etc"))                             // out of /persist
+	link("fine", filepath.Join(fsRoot, "persist/var/lib/app"))               // stays in bounds
+
+	paths := func(value string) map[string]any { return applyOptions("rw", directive("ReadWritePaths", value)) }
+
+	for _, value := range []string{"/persist/innocent", "/persist/relative", "/persist/escape", "/persist/relative/pki/new-dir", "/persist/var/lib/app /persist/innocent"} {
+		if _, err := sb.run(paths(value)); !errors.Is(err, taskguard.ErrRefused) {
+			t.Errorf("ReadWritePaths=%s accepted (err=%v)", value, err)
+		}
+	}
+	for _, value := range []string{"/persist/fine", "/persist/var/lib/app", "/persist/not-yet/created"} {
+		if _, err := sb.run(paths(value)); err != nil {
+			t.Errorf("ReadWritePaths=%s refused: %v", value, err)
+		}
+	}
+}

@@ -313,6 +313,11 @@ func checkRoots(field, candidate, reported string) error {
 	return nil
 }
 
+// ResolveExistingPrefix is resolveExistingPrefix for callers outside this
+// package that judge a path by where it lands on the node (the unit.dropin
+// handler's ReadWritePaths check).
+func ResolveExistingPrefix(p string) string { return resolveExistingPrefix(p) }
+
 // resolveExistingPrefix walks up until it finds a component that exists, runs
 // EvalSymlinks on it, and re-attaches the remainder. A path with no existing
 // ancestor resolves to itself.

@@ -89,6 +89,18 @@ func SetDropinRootForTest(dir string) (restore func()) {
 	return func() { dropinRoot = prev }
 }
 
+// dropinFSRoot stands in for "/" when ReadWritePaths entries are resolved on
+// the node. A var so a test resolves inside a sandbox, never the host.
+var dropinFSRoot = "/"
+
+// SetDropinFSRootForTest points path resolution at a sandbox root, returning a
+// restore func.
+func SetDropinFSRootForTest(dir string) (restore func()) {
+	prev := dropinFSRoot
+	dropinFSRoot = dir
+	return func() { dropinFSRoot = prev }
+}
+
 // dropinFault, when set, is consulted at each stage of the write ("write",
 // "fsync", "rename") and its error aborts the write there. Nil in production.
 var dropinFault func(stage string) error
@@ -211,6 +223,9 @@ func parseUnitDropinOptions(task *tasks.Task) (unitDropinRequest, error) {
 	if err != nil {
 		return req, err
 	}
+	if err := dropinResolvedPathsRefusal(pairs); err != nil {
+		return req, err
+	}
 	resolved, known, err := renderedUnitCapabilities(unit)
 	if err != nil {
 		return req, err
@@ -220,6 +235,40 @@ func parseUnitDropinOptions(task *tasks.Task) (unitDropinRequest, error) {
 	}
 	req.Directives = pairs
 	return req, nil
+}
+
+// dropinResolvedPathsRefusal judges each ReadWritePaths entry by where it
+// RESOLVES on this node, not only by its string (dropinPathsOK already did
+// that): the longest existing prefix is run through EvalSymlinks
+// (taskguard.ResolveExistingPrefix) and the remainder re-attached, and the
+// result must still be strictly beneath /persist and outside every trust path.
+// A symlink under /persist into /persist/var/lib/powernode, or out of /persist,
+// is refused. A path that does not exist at all passes (the rendered '-' lets
+// the unit start without it); an absent leaf under an existing symlinked parent
+// is judged by where that parent points.
+//
+// TOCTOU, stated rather than hidden: systemd resolves the path again at unit
+// start, which is later. A link created or retargeted between this check and
+// that start is not seen here. The control plane cannot see the node at all,
+// so this check exists only on the agent.
+func dropinResolvedPathsRefusal(pairs []dropinPair) error {
+	root := filepath.Clean(dropinFSRoot)
+	for _, p := range pairs {
+		if p.Key != "ReadWritePaths" {
+			continue
+		}
+		for _, path := range strings.Split(p.Value, " ") {
+			real := taskguard.ResolveExistingPrefix(filepath.Join(root, path))
+			rel, err := filepath.Rel(root, real)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+				return taskguard.Refused("ReadWritePaths", "resolves outside the node's filesystem root", path)
+			}
+			if !dropinPathsOK("/" + rel) {
+				return taskguard.Refused("ReadWritePaths", "resolves (through a symlink) to /"+rel+", outside /persist or into agent trust material", path)
+			}
+		}
+	}
+	return nil
 }
 
 // renderedUnitCapabilities reads back the capability set this agent rendered

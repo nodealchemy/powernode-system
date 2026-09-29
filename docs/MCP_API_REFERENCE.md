@@ -304,7 +304,9 @@ The file is rendered from the validated pairs under a single `[Service]` header.
 
 **What the approver sees.** The Autonomy approval queue (`ApprovalQueuePanel`, the expanded row's "Request Data" block) and `get_approval_request` both show the request's `request_data` through `Ai::SensitiveParams`, which carries the call's parameters, every directive key and value included; none of them is secret-shaped now that `Environment=` is refused. The approval description names the unit, the instance and the drop-in name.
 
-**Caveats.** `ReadWritePaths` is checked as a string: a symlink somewhere beneath an allowed `/persist` path is not resolved. A staged next-boot composition (`pending-compose.json` on a pivot node) is not consulted: the drop-in lives in `/run`, so the next boot removes it whether or not that boot composes a staged set, and the verb neither refuses nor warns while one is staged.
+**Symlinks under `ReadWritePaths`.** The server checks each path as a string only: it cannot see the node. The agent additionally resolves every entry where it exists on the node (the longest existing prefix through `EvalSymlinks`, the remainder re-attached) and refuses one that lands outside `/persist` or at or beneath a trust path, such as `/persist/app` linked to `/persist/var/lib/powernode`. A path that does not exist yet passes, since the rendered `-` lets the unit start without it; an absent leaf under an existing symlinked parent is judged by where that parent points.
+
+**Caveats.** The symlink check is point-in-time: systemd resolves each path again when the unit starts, so a link created or retargeted between the apply and that start is not seen. A staged next-boot composition (`pending-compose.json` on a pivot node) is not consulted: the drop-in lives in `/run`, so the next boot removes it whether or not that boot composes a staged set, and the verb neither refuses nor warns while one is staged.
 
 #### CI worker provisioning
 
