@@ -51,7 +51,7 @@ module Ai
       declare_action "system_acme_create_dns_credential", mutating: true
       declare_action "system_acme_get_certificate", mutating: false,
                      returns: "certificate: id, common_name, sans, status, issuer, expiry fields, days_until_expiry " \
-                              "and last_renewal_error",
+                              "and last_renewal_error_present (whether a renewal error is recorded; the text is never returned)",
                      refuses: "no certificate with that id exists in this account"
       declare_action "system_acme_renew_certificate", mutating: true
       declare_action "system_acme_revoke_certificate", mutating: true, destructive: true
