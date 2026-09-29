@@ -2180,7 +2180,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
       let(:call_log) { File.join(shim_dir, "calls.log") }
 
       before do
-        FileUtils.mkdir_p([durable_root, cert_dir, durable_dynamic_dir])
+        FileUtils.mkdir_p([ durable_root, cert_dir, durable_dynamic_dir ])
         %w[chown chmod].each do |cmd|
           shim = File.join(shim_dir, cmd)
           File.write(shim, <<~SH)
@@ -2192,7 +2192,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         end
       end
 
-      after { [scratch, shim_dir].each { |d| FileUtils.remove_entry(d) if File.exist?(d) } }
+      after { [ scratch, shim_dir ].each { |d| FileUtils.remove_entry(d) if File.exist?(d) } }
 
       def run_sweep
         snippet = <<~BASH

@@ -131,7 +131,7 @@ RSpec.describe "traefik-restore-dynamic.sh: symlink- and hardlink-safe persisted
     end
 
     after do
-      [persist_dir, base_dir, shim_dir].each do |d|
+      [ persist_dir, base_dir, shim_dir ].each do |d|
         FileUtils.remove_entry(d) if File.exist?(d) || File.symlink?(d)
       end
     end
