@@ -264,6 +264,25 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_apply_unit_dropin" do
     end
   end
 
+  # F5: the call arm runs only on a PERSON's own-session approved replay, not
+  # on any approved replay — defence in depth beneath BaseTool#execute's
+  # human_only branch, for a caller that reaches #call directly.
+  describe "an approved replay no person confirmed, reaching #call directly" do
+    it "is gate-routed only and creates nothing" do
+      deferred = parked_after(apply!)
+      deferred.approval_request.update_columns(status: "approved", completed_at: Time.current)
+      deferred.update_columns(status: "executing")
+      t = tool
+      t.replaying_operation = deferred.reload
+
+      result = t.send(:call, { action: "system_apply_unit_dropin", instance_id: instance.id, unit: unit,
+                               name: "zero-caps", directives: directives })
+
+      expect(result[:success]).to be(false)
+      expect(dropin_tasks).to be_empty
+    end
+  end
+
   describe "a bare #call (no approved replay)" do
     it "is gate-routed only and creates nothing" do
       result = tool.send(:call, { action: "system_apply_unit_dropin", instance_id: instance.id, unit: unit,

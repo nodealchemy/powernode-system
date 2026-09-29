@@ -2913,8 +2913,11 @@ module Ai
         # restart a unit with no policy evaluation at all.
         when "system_restart_unit"             then approved_replay? ? restart_unit(params) : gate_routed_only("system_restart_unit")
         # Gate-routed (IMP-9951cbf20bb0) and human-only: BaseTool#execute reaches
-        # #call for it only on a person's own-session approved replay.
-        when "system_apply_unit_dropin"        then approved_replay? ? apply_unit_dropin(params) : gate_routed_only("system_apply_unit_dropin")
+        # #call for it only on a person's own-session approved replay, and the
+        # arm asks the same question itself (human_confirmed_replay?, not merely
+        # approved_replay?) so a caller reaching #call directly cannot run it on
+        # an approval no person made.
+        when "system_apply_unit_dropin"        then human_confirmed_replay? ? apply_unit_dropin(params) : gate_routed_only("system_apply_unit_dropin")
         when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
