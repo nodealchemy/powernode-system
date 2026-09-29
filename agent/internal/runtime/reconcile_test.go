@@ -502,8 +502,12 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 
 	client := &stubModulesClient{
 		responses: map[string]string{
-			// Empty modules list → m1 should be detached.
-			"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": []}}`,
+			// A NON-empty list that omits m1 → m1 is unassigned and should be
+			// detached. (An entirely empty list is not read as an unassignment
+			// — see TestRunOnce_EmptyAssignmentListRetainsEveryAttachedModule.)
+			"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": [
+				{"id":"cfg", "name":"cfg", "priority":100, "effective_priority":100, "has_data_file":false}
+			]}}`,
 		},
 	}
 	runner := &mount.RecorderRunner{}

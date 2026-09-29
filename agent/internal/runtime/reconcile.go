@@ -1158,6 +1158,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// means "we don't know", never "removed", so it must never be read as a
 	// removal on ANY node, self-hosted or not.
 	toDetach = r.filterUnverifiedDetaches(toDetach, manifestFetchFailed)
+	toDetach = r.filterEmptyAssignmentDetaches(toDetach, len(desiredModules))
 
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the
