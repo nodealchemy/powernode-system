@@ -27,6 +27,9 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //     019f6084 inc-E)
 //   - probe_node_inspect: probe.node_inspect (read-only node inspection —
 //     seven fixed collectors, no free-form command or path; IMP-52762a704a3d)
+//   - unit_dropin: unit.dropin (write or revert ONE runtime drop-in,
+//     /run/systemd/system/<unit>.d/zz-operator-<name>.conf, from a fixed
+//     directive allow-list, then daemon-reload; IMP-9951cbf20bb0)
 func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterLifecycle(r, deps)
 	RegisterConfig(r, deps)
@@ -39,4 +42,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterPackageBuild(r, deps)
 	RegisterProbeModuleSmoke(r, deps)
 	RegisterProbeNodeInspect(r, deps)
+	RegisterUnitDropin(r, deps)
 }
