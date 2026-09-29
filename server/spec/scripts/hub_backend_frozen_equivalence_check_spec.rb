@@ -108,7 +108,7 @@ RSpec.describe "stage15.sh hub-backend frozen-equivalence check (IMP-094d900f909
     RUBY
     probe_out, probe_err, probe_status = Open3.capture3({ "PATH" => clean_path }, "ruby", "-e", probe, unsetenv_others: true)
     skip "could not resolve rake/matrix from the clean system gem path: #{probe_err}" unless probe_status.success?
-    gems = probe_out.lines.map { |l| l.split(" ") }.to_h { |name, version, path| [name, { version: version, path: path }] }
+    gems = probe_out.lines.map { |l| l.split(" ") }.to_h { |name, version, path| [ name, { version: version, path: path } ] }
 
     gemfile_path = File.join(dir, "Gemfile")
     FileUtils.mkdir_p(File.join(dir, "vendor/cache"))

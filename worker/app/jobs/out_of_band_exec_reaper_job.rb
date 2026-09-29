@@ -14,13 +14,13 @@
 # completed is a correctness and safety hazard this design refuses to take
 # on. The server-side service only fails the row and records that it did.
 class OutOfBandExecReaperJob < BaseJob
-  sidekiq_options queue: 'system', retry: 3
+  sidekiq_options queue: "system", retry: 3
 
   def execute
-    logger.info '[OutOfBandExecReaperJob] starting stuck-executing sweep'
+    logger.info "[OutOfBandExecReaperJob] starting stuck-executing sweep"
 
     response = BackendApiClient.new.post(
-      '/api/v1/system/worker_api/out_of_band_exec/reap',
+      "/api/v1/system/worker_api/out_of_band_exec/reap",
       {}
     )
 
@@ -37,6 +37,6 @@ class OutOfBandExecReaperJob < BaseJob
 
   def extract(response, key)
     return nil unless response.is_a?(Hash)
-    response.dig(:data, key) || response.dig('data', key.to_s)
+    response.dig(:data, key) || response.dig("data", key.to_s)
   end
 end
