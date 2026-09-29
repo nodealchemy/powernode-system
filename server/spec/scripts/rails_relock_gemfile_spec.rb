@@ -389,14 +389,14 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
 
       multi_extension_lock = <<~LOCK
         PATH
-          remote: ../extensions/marketing/server
+          remote: ../extensions/alpha/server
           specs:
-            powernode_marketing (0.1.0)
+            powernode_alpha (0.1.0)
 
         PATH
-          remote: ../extensions/supply-chain/server
+          remote: ../extensions/beta/server
           specs:
-            powernode_supply_chain (0.1.0)
+            powernode_beta (0.1.0)
 
         PATH
           remote: ../extensions/system/server
@@ -410,7 +410,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
       out, err, status = run_against.call(multi_extension_lock)
       expect(status.success?).to be(true), "aborted on a real multi-extension lock: #{err}"
       expect(out.split("\n")).to contain_exactly(
-        "../extensions/marketing/server", "../extensions/supply-chain/server", "../extensions/system/server"
+        "../extensions/alpha/server", "../extensions/beta/server", "../extensions/system/server"
       )
 
       no_extension_lock = "GEM\n  remote: https://rubygems.org/\n"

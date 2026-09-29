@@ -51,7 +51,7 @@ require "rails_helper"
 #      module-only test while one caller still takes its own local path.
 RSpec.describe System::Autonomy::RoutedLaneGuard do
   # The scan is deliberately bounded to THIS extension. extensions/private/*
-  # carries its own gate_action! (Trading::OverseerAutonomyService) with a
+  # carries its own gate_action! (<Other>::OverseerAutonomyService) with a
   # different arity and its own DecisionEngine-less lifecycle; reaching across
   # the extension boundary here would both couple two self-contained extensions
   # and fail in any clone that has no private extensions at all.
