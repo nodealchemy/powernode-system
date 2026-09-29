@@ -241,6 +241,25 @@ RSpec.describe System::SshHostKeyWriter do
       expect(row.metadata.to_json).not_to include(ed25519["key"])
     end
 
+    # Review round 2 (critic A): a non-User actor (an agent, a service) must
+    # still be named on the row, never nobody.
+    it "records a non-User actor's class and id in the audit metadata" do
+      stub_const("SpecServiceActor", Struct.new(:id))
+      agent_actor = SpecServiceActor.new("actor-123")
+
+      described_class.clear!(instance: instance, actor: agent_actor, reason: "reprovisioned")
+
+      row = ::AuditLog.find_by!(action: described_class::CLEARED_ACTION, resource_id: instance.id.to_s)
+      expect(row.user_id).to be_nil
+      expect(row.metadata["actor"]).to eq("type" => "SpecServiceActor", "id" => "actor-123")
+    end
+
+    it "refuses without an actor" do
+      expect { described_class.clear!(instance: instance, actor: nil, reason: "reprovisioned") }
+        .to raise_error(ArgumentError, /actor/)
+      expect(stored).to be_present
+    end
+
     it "refuses without a reason" do
       expect { described_class.clear!(instance: instance, actor: operator, reason: " ") }
         .to raise_error(ArgumentError)

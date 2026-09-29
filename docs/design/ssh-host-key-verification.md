@@ -203,6 +203,11 @@ the operator and the reason; never a key) and a medium
 
 Check the node's key out of band (console or guest agent: `ssh-keygen -lf
 /etc/ssh/ssh_host_ed25519_key.pub`) before trusting whatever it reports next.
+
+**Retiring a compromised key.** Removing a key from the node is not enough on
+its own: a strict subset reported inside the same boot does not narrow the
+recorded set, so a key removed mid-boot stays trusted until the next reboot.
+Run `clear!` as well, so the platform stops trusting it immediately.
 A human-only verb for this is a follow-up.
 
 ## Migration order

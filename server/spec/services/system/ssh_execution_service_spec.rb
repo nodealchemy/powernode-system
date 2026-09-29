@@ -509,7 +509,11 @@ RSpec.describe System::SshExecutionService do
     # as a bare "exited with status 255". It is what a MITM, or a stale key
     # after a reimage, looks like, so it gets its own error and event.
     context "when the host presents a key that does not match the recorded one" do
-      let(:mismatch_stderr) { "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\r\nHost key verification failed.\r\n" }
+      let(:mismatch_stderr) do
+        "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\r\n" \
+          "Host key for #{host_alias} has changed and you have requested strict checking.\r\n" \
+          "Host key verification failed.\r\n"
+      end
       let(:mismatch_status) { instance_double(Process::Status, exitstatus: 255) }
 
       before { instance.update_columns(ssh_host_keys: SshHostKeyFixtures.document(recorded_entry)) }
@@ -546,6 +550,21 @@ RSpec.describe System::SshExecutionService do
 
         expect_mismatch(described_class.new.execute_bounded(instance: instance, command: "uptime",
                                                             timeout_seconds: 45, max_output_bytes: 1024))
+      end
+
+      # Review round 2 (critic A): a command on the node that runs its OWN ssh
+      # can print the same failure text and exit 255. Without this instance's
+      # alias in stderr it is not about this host.
+      it "raises no mismatch for the same failure text without this instance's alias" do
+        foreign = "Host key for 192.0.2.77 has changed and you have requested strict checking.\r\n" \
+                  "Host key verification failed.\r\n"
+        allow(Open3).to receive(:capture3).and_return([ "", foreign, mismatch_status ])
+
+        result = execute!
+
+        expect(result.error).to include("status 255")
+        expect(result.data[:host_key_mismatch]).to be_nil
+        expect(System::FleetEvent.where(kind: described_class::HOST_KEY_MISMATCH_EVENT_KIND)).to be_empty
       end
 
       it "leaves an ordinary exit 255 (no verification failure) as a plain command failure" do

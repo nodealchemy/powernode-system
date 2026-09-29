@@ -124,7 +124,7 @@ module System
       raw = execute_ssh_command(host: ssh_ip, user: admin_user, key: ssh_key, command: full_command,
                                 host_keys: host_keys, host_alias: host_key_alias(instance))
 
-      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(host_keys, raw)
+      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(instance, host_keys, raw)
 
       build_exec_result(raw)
     rescue ArgumentError
@@ -199,7 +199,7 @@ module System
         "exit_code=#{raw[:exit_code].inspect} timed_out=#{raw[:timed_out]} truncated=#{raw[:truncated]}"
       )
 
-      return host_key_mismatch_result(instance, host_keys, build_bounded_result(raw)) if host_key_mismatch?(host_keys, raw)
+      return host_key_mismatch_result(instance, host_keys, build_bounded_result(raw)) if host_key_mismatch?(instance, host_keys, raw)
 
       build_bounded_result(raw)
     rescue ArgumentError
@@ -250,7 +250,7 @@ module System
 
       # Optional chmod after a successful transfer. Done as a separate exec
       # because scp doesn't accept a mode flag uniformly across BSD/OpenSSH.
-      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(host_keys, raw)
+      return host_key_mismatch_result(instance, host_keys, build_exec_result(raw)) if host_key_mismatch?(instance, host_keys, raw)
 
       if mode && raw[:exit_code] == 0
         execute(instance: instance, command: "chmod #{mode} #{remote_path}", sudo: true)
@@ -368,8 +368,14 @@ module System
       Rails.logger.warn("[SshExecutionService] unverified-host event failed for #{instance.id}: #{e.class}")
     end
 
-    def host_key_mismatch?(host_keys, raw)
-      host_keys.present? && raw[:exit_code] == 255 && raw[:stderr].to_s.include?(HOST_KEY_VERIFICATION_FAILED)
+    # Also requires this instance's HostKeyAlias in stderr (ssh names the
+    # alias in its strict-checking message). A command on the node that runs
+    # its OWN ssh can print the same failure text and exit 255; that is not
+    # about this host and must not raise a mismatch about it.
+    def host_key_mismatch?(instance, host_keys, raw)
+      stderr = raw[:stderr].to_s
+      host_keys.present? && raw[:exit_code] == 255 &&
+        stderr.include?(HOST_KEY_VERIFICATION_FAILED) && stderr.include?(host_key_alias(instance))
     end
 
     # Fingerprints only, never a key blob.

@@ -92,12 +92,17 @@ module System
       # docs/design/ssh-host-key-verification.md.
       def clear!(instance:, actor:, reason:)
         raise ArgumentError, "a reason is required to clear a recorded SSH host key" if reason.to_s.strip.empty?
+        raise ArgumentError, "an actor is required to clear a recorded SSH host key" if actor.nil?
 
         details = nil
         instance.with_lock do
           previous = ::System::SshHostKeys.recorded_for(instance)
           instance.update_columns(ssh_host_keys: nil)
-          details = { previous_fingerprints: ::System::SshHostKeys.fingerprints(previous), reason: reason.to_s.strip }
+          details = {
+            previous_fingerprints: ::System::SshHostKeys.fingerprints(previous),
+            reason: reason.to_s.strip,
+            actor: actor_descriptor(actor)
+          }
           ::AuditLog.create!(
             account: instance.account,
             user: actor.is_a?(::User) ? actor : nil,
@@ -113,6 +118,12 @@ module System
       end
 
       private
+
+      # Names the actor on the audit row even when it is not a User (an agent,
+      # a service), so the row never names nobody.
+      def actor_descriptor(actor)
+        { "type" => actor.class.name.to_s, "id" => (actor.respond_to?(:id) ? actor.id.to_s : nil) }.compact
+      end
 
       def instance_bound?(instance)
         subject = instance.respond_to?(:mtls_subject) ? instance.mtls_subject : nil
