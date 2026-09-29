@@ -87,7 +87,7 @@ func TestReconfirmConfinement_N4Gate_SkipsPendingDigestModule(t *testing.T) {
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
 
-	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests)
+	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests, false)
 
 	if key := current.ConfinementReconfirmed["m1"]; key != "" {
 		t.Errorf("N4 REGRESSION: expected m1 (PendingDigest set) to be skipped by the recheck, got ConfinementReconfirmed[m1]=%q", key)
@@ -118,7 +118,7 @@ func TestReconfirmConfinement_N4Gate_SkipsDigestMismatchModule(t *testing.T) {
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
 
-	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests)
+	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests, false)
 
 	if key := current.ConfinementReconfirmed["m1"]; key != "" {
 		t.Errorf("N4 REGRESSION: expected m1 (digest mismatch) to be skipped by the recheck, got ConfinementReconfirmed[m1]=%q", key)
@@ -151,7 +151,7 @@ func TestReconfirmConfinement_N5_PerModuleIndependence(t *testing.T) {
 	var onErrors []string
 	r.cfg.OnError = func(stage string, err error) { onErrors = append(onErrors, stage+": "+err.Error()) }
 
-	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests)
+	r.reconfirmConfinementIfNeeded(context.Background(), current, manifests, false)
 
 	if key := current.ConfinementReconfirmed["m1"]; key == "" {
 		t.Error("N5 REGRESSION: expected m1's own recheck to succeed and be marked reconfirmed independently of m2's failure")

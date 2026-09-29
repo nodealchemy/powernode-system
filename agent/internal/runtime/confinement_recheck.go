@@ -131,7 +131,16 @@ func (r *Reconciler) confinementRecheckKey() (key string, ok bool) {
 // (writeDropInFile's own skip-if-identical), not a correctness concern —
 // kept simple deliberately rather than tracking "already handled this
 // tick" as a second set to reason about.
-func (r *Reconciler) reconfirmConfinementIfNeeded(ctx context.Context, current *mount.State, manifests map[string]*manifest.Manifest) {
+//
+// renderSkipped is RunOnce's mustSkipRender for this tick. The recheck ends in
+// attachModuleServices, which starts units, so on a tick that rendered no
+// users/sudoers/egress it stands down like the attach and reattach loops do
+// and leaves ConfinementReconfirmed unset: the next trusted tick retries
+// (IMP-1023e79cc82d).
+func (r *Reconciler) reconfirmConfinementIfNeeded(ctx context.Context, current *mount.State, manifests map[string]*manifest.Manifest, renderSkipped bool) {
+	if renderSkipped {
+		return
+	}
 	key, ok := r.confinementRecheckKey()
 	if !ok {
 		return

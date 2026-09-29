@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -175,4 +176,90 @@ func attachStampOf(t *testing.T, statePath, moduleID string) string {
 		t.Fatalf("LoadState: %v", err)
 	}
 	return st.LastAttachedManifestHashes[moduleID]
+}
+
+// The once-per-boot-composition confinement recheck is a third caller that
+// reaches attachModuleServices: on a pivot node's first tick of a new
+// composition it re-applies drop-ins and starts units. On a render-skipped
+// tick that starts units against users that were never rendered, so it must
+// stand down and leave ConfinementReconfirmed unset for the next trusted tick.
+func TestRunOnce_RenderSkippedTickDoesNotRunTheConfinementRecheck(t *testing.T) {
+	r, client, runner, _, statePath, manifestRoot, _ := upgradeTestReconciler(t)
+	origMode, origChecked, origBoot := pivotAwareRootMode, pivotAwareRootModeChecked, currentBootID
+	pivotAwareRootMode = func() lifecycle.RootMode { return lifecycle.RootModeNative }
+	pivotAwareRootModeChecked = func() (lifecycle.RootMode, error) { return lifecycle.RootModeNative, nil }
+	boot := "boot-a"
+	currentBootID = func() string { return boot }
+	t.Cleanup(func() {
+		pivotAwareRootMode, pivotAwareRootModeChecked, currentBootID = origMode, origChecked, origBoot
+	})
+	bc := filepath.Join(t.TempDir(), "boot-composed.json")
+	t.Cleanup(SetBootBreadcrumbPathForTest(bc))
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := WriteBreadcrumb(bc, &BootComposedBreadcrumb{BootID: "boot-a", ComposedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	m1WorkerUnit := lifecycle.UnitName("m1", "old-worker")
+	m2Body := `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
+		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
+		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
+		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m2"] = m2Body
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	st1, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBootA := st1.ConfinementReconfirmed["m1"]
+	if keyBootA == "" {
+		t.Fatal("precondition: pass 1 must have reconfirmed m1 against boot-a's composition")
+	}
+
+	// A new boot composition, m2 unresolvable (render skipped), and m1's
+	// manifest gained a service.
+	boot = "boot-b"
+	if err := WriteBreadcrumb(bc, &BootComposedBreadcrumb{BootID: "boot-b", ComposedAt: at.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	client.statuses = map[string]int{"/api/v1/system/node_api/modules/m2": 404}
+	delete(client.responses, "/api/v1/system/node_api/modules/m2")
+	if err := os.RemoveAll(filepath.Join(manifestRoot, "m2")); err != nil {
+		t.Fatal(err)
+	}
+	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixture("d1", []string{"CAP_CHOWN"}, upgradeAppService+","+upgradeWorkerService)
+	backdateManifestCache(t, manifestRoot, "m1")
+	pre := len(runner.Invocations)
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (render skipped): %v", err)
+	}
+	skipped := runner.Invocations[pre:]
+	if hasSystemctlOp(skipped, "start", m1WorkerUnit) || hasSystemctlOp(skipped, "restart", m1WorkerUnit) {
+		t.Errorf("the confinement recheck started %s on a render-skipped tick: %v", m1WorkerUnit, skipped)
+	}
+	st, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := st.ConfinementReconfirmed["m1"]; k != keyBootA {
+		t.Errorf("a render-skipped tick must leave ConfinementReconfirmed[m1] at boot-a's key %q so the next trusted tick retries, got %q", keyBootA, k)
+	}
+
+	// Trusted tick: the recheck runs and marks the module.
+	delete(client.statuses, "/api/v1/system/node_api/modules/m2")
+	client.responses["/api/v1/system/node_api/modules/m2"] = m2Body
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 3 (trusted): %v", err)
+	}
+	st, err = mount.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := st.ConfinementReconfirmed["m1"]; k == keyBootA {
+		t.Error("the next trusted tick must run the confinement recheck and mark m1 reconfirmed against boot-b")
+	}
 }

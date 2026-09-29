@@ -2140,7 +2140,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// reverification — see confinement_recheck.go's own doc. Runs after both
 	// attach loops and every upgrade have settled for this tick, over
 	// current.AttachedModules' own final state.
-	r.reconfirmConfinementIfNeeded(ctx, current, manifests)
+	r.reconfirmConfinementIfNeeded(ctx, current, manifests, mustSkipRender)
 
 	// Round Y (IMP-caef5c00d63f): the stateless confinement-staleness pass —
 	// see confinement_probe.go's own doc. Runs after the recheck above (so a
