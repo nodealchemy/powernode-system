@@ -1595,6 +1595,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	unmaterialized := map[string]bool{}
 	attachStack := mount.ModuleStack(toAttach).SortByPriority()
 	for _, mod := range attachStack {
+		// A render-skipped tick (mustSkipRender above) rendered no users,
+		// sudoers or egress this tick, so a unit started now would run against
+		// identities that were never rendered (217/USER), and the stamp below
+		// would tell the next tick the attach was done. Leave the module
+		// pending: it is not recorded as attached, so the next trusted tick
+		// attaches it (IMP-1023e79cc82d).
+		if mustSkipRender {
+			r.noteUnconverged("reconciler:attach_deferred_render_skipped", mod.ID, fmt.Errorf("module %s: attach deferred, this tick's identity render was skipped", mod.ID))
+			continue
+		}
 		mf, ok := manifests[mod.ID]
 		if !ok {
 			r.noteUnconverged("reconciler:missing_manifest", mod.ID, fmt.Errorf("module %s: manifest not loaded", mod.ID))
@@ -1708,6 +1718,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			if len(pendingUndo) > 0 {
 				r.retryPendingUndoUnits(ctx, current, mod.ID, pendingUndo)
 			}
+		}
+		// Same rule as the attach loop: no reattach and no stamp on a
+		// render-skipped tick (IMP-1023e79cc82d). Placed after the pending-undo
+		// retry above, which restarts units that already exist against users
+		// that already rendered.
+		if mustSkipRender {
+			r.noteUnconverged("reconciler:reattach_deferred_render_skipped", mod.ID, fmt.Errorf("module %s: reattach deferred, this tick's identity render was skipped", mod.ID))
+			continue
 		}
 		mf, ok := manifests[mod.ID]
 		if !ok {
