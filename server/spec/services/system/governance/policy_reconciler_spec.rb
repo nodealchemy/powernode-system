@@ -314,7 +314,7 @@ RSpec.describe System::Governance::PolicyReconciler do
     # command added with a loose verb reds this example, while a command added
     # without a verb (the require_approval fail-safe) leaves it green and is
     # caught by system_task_category_vocabulary_spec instead.
-    let(:auto_approved) { %w[start stop reboot sync_modules probe.module_smoke] }
+    let(:auto_approved) { %w[start stop reboot sync_modules probe.module_smoke probe.node_inspect] }
     let(:notified) { %w[apply_config a2a_call storage.smb_user.apply ci.module_build ci.package_build] }
 
     it "declares one row per command and per gated non-command" do

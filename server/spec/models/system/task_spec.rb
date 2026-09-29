@@ -129,7 +129,15 @@ RSpec.describe System::Task, type: :model do
           # radius — see the RESTART_SCOPES block below. Since campaign
           # 01a0790b increment 2 the only legal scope is "unit", which the
           # model additionally requires to name its systemd unit.
-          options = cmd == 'restart' ? { 'scope' => 'unit', 'unit' => 'powernode-example.service' } : {}
+          #
+          # probe.node_inspect (IMP-52762a704a3d) likewise must name a collector:
+          # it is a root read on the node, so a row with no options is refused.
+          options =
+            case cmd
+            when 'restart' then { 'scope' => 'unit', 'unit' => 'powernode-example.service' }
+            when 'probe.node_inspect' then { 'collector' => 'routes' }
+            else {}
+            end
           task = build(:system_task, account: account, operable: node, command: cmd, options: options)
           expect(task).to be_valid, "#{cmd} is listed but rejected: #{task.errors.full_messages.join('; ')}"
         end

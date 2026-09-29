@@ -18,7 +18,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	restore := SetAttemptMarkerPathForTest(filepath.Join(sandbox, "boot-image-upgrade.attempted"))
+	// probe.node_inspect reads /proc and the filesystem directly. Its tests point
+	// both at their own sandbox; this default means one that forgets to can only
+	// ever see an empty directory, never the live host.
+	restoreInspect := SetInspectRootsForTest(filepath.Join(sandbox, "inspect-fs"), filepath.Join(sandbox, "inspect-proc"))
 	code := m.Run()
+	restoreInspect()
 	restore()
 	_ = os.RemoveAll(sandbox)
 	os.Exit(code)

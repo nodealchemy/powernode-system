@@ -85,6 +85,7 @@ module System
       ci.package_build
       ci.lint_discovery
       probe.module_smoke
+      probe.node_inspect
     ].freeze
 
     # `restart` is the one command whose NAME does not say what it does, and its
@@ -336,6 +337,11 @@ module System
     # rows minted before the declaration existed cannot carry one, and some are
     # in flight. See #restart_scope_declared.
     validate :restart_scope_declared, if: :restart_scope_validatable?
+    # probe.node_inspect runs as root on the node and its options are free-form
+    # JSONB any holder of system.infra_tasks.create can write, so the row is
+    # refused here too, not only in the MCP verb. CHANGE-guarded like the two
+    # above: an existing row must stay saveable through its status transitions.
+    validate :node_inspect_options_valid, if: :node_inspect_options_validatable?
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 
@@ -542,6 +548,18 @@ module System
     # new row: on create the command goes nil -> value, which reads as changed.
     def restart_scope_validatable?
       command == "restart" && (will_save_change_to_command? || will_save_change_to_options?)
+    end
+
+    def node_inspect_options_validatable?
+      command == ::System::NodeInspection::COMMAND && (will_save_change_to_command? || will_save_change_to_options?)
+    end
+
+    # Refuses a probe.node_inspect row whose options the agent would refuse
+    # (System::NodeInspection is the shared rule set).
+    def node_inspect_options_valid
+      ::System::NodeInspection.validate!(options)
+    rescue ::System::NodeInspection::Invalid => e
+      errors.add(:options, "refused for #{::System::NodeInspection::COMMAND}: #{e.message}")
     end
 
     # Refuses a restart that does not say which actuator it means. The two

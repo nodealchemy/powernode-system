@@ -25,6 +25,8 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //     checks — systemd unit active, health endpoint, ldd closure — the
 //     agent side of System::ModuleSmokeProbe's dispatch/poll; campaign
 //     019f6084 inc-E)
+//   - probe_node_inspect: probe.node_inspect (read-only node inspection —
+//     seven fixed collectors, no free-form command or path; IMP-52762a704a3d)
 func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterLifecycle(r, deps)
 	RegisterConfig(r, deps)
@@ -36,4 +38,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterModuleBuild(r, deps)
 	RegisterPackageBuild(r, deps)
 	RegisterProbeModuleSmoke(r, deps)
+	RegisterProbeNodeInspect(r, deps)
 }

@@ -243,6 +243,30 @@ Three read-only long-polls replace polling the database. `system_get_task` and `
 
 `wait_seconds` is clamped to the server cap (`SystemFleetTool::WAIT_MAX_SECONDS`, 45s) and polls every 2s; a value that is not an integer is refused, naming the parameter. The cap is a conservative margin, not a measured limit: nothing in this repo times out the endpoint, but the shortest MCP read timeout in code is the 60s of the platform's outbound legacy HTTP client (its streamable client uses 300s), and a hop in front of the platform is not visible from here. An expired wait is a success carrying `timed_out: true` and the current snapshot, never an error; call again to keep waiting. Each wait holds one Puma thread, so at most a quarter of `RAILS_MAX_THREADS` (`WAIT_CONCURRENCY`, 4 by default) may wait at once per process; past that a call that is not already done is answered with a single check, `timed_out: true` and `wait_degraded: true`. Absent or `0`, the two getters answer at once with their old reply. `system_wait_for` defaults to the cap, and `0` checks once; a node that reports the digest but has gone silent (no heartbeat within `NodeInstance::HEARTBEAT_STALE_AFTER`) is listed as pending with `stale: true`, not counted converged. All three need only their read permission (`system.infra_tasks.read`, `system.module_builds.read`, `system.modules.read`); an instance principal reaches them by an MCP tool grant naming them (`system_grant_instance_mcp_tools`), since none is destroy-shaped.
 
+#### Read-only node inspection
+
+`system_inspect_node` diagnoses one node through its own on-node agent, with no shell. It is the routine sibling of `system_out_of_band_exec` (human-only, approval-gated, ssh) and shares no code path with it. It queues a `probe.node_inspect` task running one of seven **fixed** collectors and long-polls for the result.
+
+| `collector` | Runs (exact argv) | Arguments |
+|---|---|---|
+| `wg_status` | `wg show <interface>` (never `dump`, never `all`; private and preshared key lines are dropped) | `interface` |
+| `routes` | `ip vrf show`; `ip -4 route show table all`; `ip -6 route show table all`; `ip -4 rule show`; `ip -6 rule show` | none |
+| `nft` | `nft list ruleset` or `nft list chains` | `scope` (`ruleset` default, `chains`) |
+| `journal` | `journalctl -u <unit> -n <lines> --no-pager -o short-iso` | `unit`, `lines` (1-500, default 100) |
+| `unit` | `systemctl --no-pager cat <unit>` (unit file and drop-ins) | `unit` |
+| `caps` | `systemctl show -p MainPID --value <unit>`, then the `Cap*` and `NoNewPrivs` lines of that PID's `/proc` status, decoded to names | `unit` |
+| `file_stat` | no command: type, size, mode, owner, mtime and sha256 of a file, **never its contents** | `path` |
+
+A collector takes only its own arguments; another collector's argument is refused, not ignored. `unit` is a full systemd unit name with its type suffix and must exist on the node (`systemctl show -p LoadState`); `interface` is at most 15 characters of letters, digits, `-`, `_` and `.` and the words `all` and `interfaces` are refused. Every argument is validated by `System::NodeInspection` before a task row exists, by `System::Task` on any row minted another way, and again by the agent (`taskguard`), which is authoritative; a spec keeps the server and Go lists identical.
+
+**`file_stat` path policy.** An allow-list of trees (`/etc`, `/usr`, `/boot`, `/persist/var/lib/powernode`, `/persist/cache/modules`, `/var/lib/powernode`, `/run/powernode`), an absolute canonical path (no `..`, `.`, doubled slashes or spaces), and a deny of secret locations inside it: `shadow`, `pki`, `private`, `secrets`, `credentials`, `.ssh`, `wireguard`, key/token/password-named files and `*.key`, `*.p12`, `*.env`. An allow-list rather than a deny-list because a deny-list is open by default; the sha256 of a low-entropy secret is an offline oracle for it, so secret locations are refused even though no contents are read. `/proc` (so `/proc/<pid>/environ`), `/sys`, `/dev`, `/root`, `/home`, `/tmp` and `/persist/volumes` are outside the allow-list. The path is symlink-resolved on the node and the resolved path is judged by the same rule and must stay under the node root, so a link cannot lead out.
+
+**Bounds and scrubbing.** Journal lines are capped by the argument and again on the returned text; every collector's output is capped at 64 KiB (journal keeps its newest lines); on the node all text passes through `scrubSecrets`, and the stored result is redacted again through `System::StoredOutputRedactor` on this surface.
+
+**Who may inspect what.** A user principal needs `system.infra_tasks.create` and may inspect any instance of its account. An instance principal may inspect **only itself**: `instance_id` may be omitted, and naming any other instance is refused on the server, before a task exists, keyed on the principal (not the verb) and recorded as a `system.mcp_node_inspect_refused` fleet event; a restricted principal with no node identity is refused. The governance row `system.task.probe.node_inspect` is `auto_approve`, and nothing is parked. The instance must be running.
+
+**Waiting.** `wait_seconds` defaults to the cap (45s) since the caller wants the answer; on expiry the reply is a success with `timed_out: true` and the `task_id`, and `system_get_task` (`wait_seconds`, `include_events`) reads the same task later. `0` returns the `task_id` at once. A collector whose tool fails on the node is a completed result with `ok: false` and the reason; an argument the agent refuses (a unit that does not exist) is an error carrying the reason and the `task_id`.
+
 #### CI worker provisioning
 
 | Action | What it does | Audience |

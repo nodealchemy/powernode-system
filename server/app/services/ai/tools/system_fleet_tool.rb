@@ -156,6 +156,9 @@ module Ai
         "system_get_task"               => "system.infra_tasks.read",
         # IMP-054397261461 — a read of the module (its version and the nodes running it).
         "system_wait_for"               => "system.modules.read",
+        # IMP-52762a704a3d — queues a probe.node_inspect task, so it takes the same
+        # grant as creating a task (TasksController#create).
+        "system_inspect_node"           => "system.infra_tasks.create",
 
         # Mutate
         "system_create_node"            => "system.nodes.create",
@@ -934,6 +937,7 @@ module Ai
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
       declare_action "system_inspect_correlation", mutating: false, returns: "correlation_id, events in emission order, count and duration_seconds", refuses: "correlation_id is blank"
+      declare_action "system_inspect_node", mutating: false, returns: "task_id, instance_id, collector, status, finished and, once the agent has answered, result: the collector's redacted output (timed_out and wait_seconds when it waited)", refuses: "the collector or an argument is outside the fixed allow-list, the instance is not in this account, an instance principal names any instance but its own, or the instance is not running"
       declare_action "system_instance_hold", mutating: true, destructive: true
       declare_action "system_instance_hold_status", mutating: false, returns: "the recorded hold (held, expired, reason, held_by, held_at, expires_at), provider_enforced, provider_state, a summary and drift"
       declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message"
@@ -1173,7 +1177,13 @@ module Ai
             instance_id: { type: "string", required: false },
             module_id: { type: "string", required: false },
             module_version_id: { type: "string", required: false },
-            wait_seconds: { type: "integer", required: false, description: "Long-poll seconds (system_get_task, system_get_module_build_batch, system_wait_for); clamped to the server cap" },
+            wait_seconds: { type: "integer", required: false, description: "Long-poll seconds (system_get_task, system_get_module_build_batch, system_wait_for, system_inspect_node); clamped to the server cap" },
+            collector: { type: "string", required: false, description: "Inspection collector (system_inspect_node)" },
+            interface: { type: "string", required: false, description: "Network interface name (system_inspect_node wg_status)" },
+            unit: { type: "string", required: false, description: "Full systemd unit name (system_inspect_node journal, unit and caps)" },
+            lines: { type: "integer", required: false, description: "Journal line count (system_inspect_node journal)" },
+            scope: { type: "string", required: false, description: "nft listing scope (system_inspect_node nft)" },
+            path: { type: "string", required: false, description: "Absolute path to stat (system_inspect_node file_stat)" },
             module_name: { type: "string", required: false, description: "Module slug as CI publishes it (system_module_publish_target)" },
             gitea_repo: { type: "string", required: false, description: "OCI repo full name; defaults to powernode/<module_name> (system_module_publish_target)" },
             environment: { type: "string", required: false, description: "Environment slug or id (a plane of the fleet)" },
@@ -2492,6 +2502,25 @@ module Ai
             }
           },
 
+          # IMP-52762a704a3d — read-only node inspection, the routine sibling of
+          # system_out_of_band_exec (which stays human-only and approval-gated).
+          "system_inspect_node" => {
+            description: "Read-only inspection of ONE node, through its own on-node agent, with no shell access. Queues a probe.node_inspect task running one of seven FIXED collectors and long-polls for the result: wg_status (`wg show <interface>` only, key material stripped), routes (ip vrf show, ip route and ip rule for IPv4 and IPv6, all tables including VRFs), nft (nft list ruleset or nft list chains), journal (journalctl for a unit, newest lines, capped at #{::System::NodeInspection::JOURNAL_MAX_LINES}), unit (systemctl cat: the unit file and its drop-ins), caps (the Cap* sets of the unit's main PID, decoded to names) and file_stat (a file's type, size, mode, owner, mtime and sha256, NEVER its contents). There is no free-form command, flag or path: every argument is validated here and again on the node, the unit must exist on the node, file_stat is limited to an allow-list of trees (#{::System::NodeInspection::ALLOWED_PATH_PREFIXES.join(', ')}) with secret locations (shadow files, private keys, pki, credentials, tokens) refused even inside them, a symlink is never followed out of that allow-list, and every collector's output is bounded and scrubbed of secrets on the node and redacted again here. SELF-ONLY for an instance principal: it may inspect only the node it authenticated as (instance_id may be omitted, meaning itself) and any other instance is refused; a user principal may inspect any instance of its account. Requires system.infra_tasks.create; auto_approve, never parked. WAITING: wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; the reply carries the collector's result once the agent has answered. 0 returns the task_id at once; on expiry the reply is still a success with timed_out: true and the task_id, and system_get_task (wait_seconds, include_events) reads it later. A collector whose tool fails on the node (nft not installed) is a completed result with ok: false and the reason. Refused by the agent (a unit that does not exist) is an error carrying the reason and the task_id. The instance must be running.",
+            parameters: {
+              instance_id: { type: "string", required: false, description: "System::NodeInstance id to inspect (account-scoped). Required for a user principal; an instance principal may omit it (meaning itself) and may pass only its own id." },
+              collector: { type: "string", required: true, enum: ::System::NodeInspection::COLLECTORS.keys,
+                           description: "Which collector to run. Each takes only its own arguments; an argument another collector owns is refused." },
+              interface: { type: "string", required: false, description: "wg_status: the network interface name, up to 15 characters of letters, digits, '-', '_' and '.', not beginning with '-' or '.'. The words all and interfaces are refused." },
+              unit: { type: "string", required: false, description: "journal, unit, caps: a FULL systemd unit name with its type suffix (sshd.service, persist-volumes-pg:main.mount). Shorthand, globs and paths are refused, and the unit must exist on the node." },
+              lines: { type: "integer", required: false, description: "journal: how many of the newest lines, 1 to #{::System::NodeInspection::JOURNAL_MAX_LINES}, default #{::System::NodeInspection::JOURNAL_DEFAULT_LINES}." },
+              scope: { type: "string", required: false, enum: ::System::NodeInspection::NFT_SCOPES,
+                       description: "nft: what to list, default #{::System::NodeInspection::NFT_DEFAULT_SCOPE}." },
+              path: { type: "string", required: false, description: "file_stat: an absolute, canonical path (no '..', '.', doubled slashes or spaces) under the allow-list. Returns stat, sha256 and mtime only." },
+              wait_seconds: { type: "integer", required: false,
+                              description: "Seconds to wait for the agent's answer, clamped to the server cap of #{WAIT_MAX_SECONDS}; defaults to the cap; 0 queues the task and returns its id without waiting." }
+            }
+          },
+
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
             description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository. " \
@@ -2787,6 +2816,7 @@ module Ai
         when "system_list_tasks"               then list_tasks(params)
         when "system_get_task"                 then get_task(params)
         when "system_wait_for"                 then wait_for_rollout(params)
+        when "system_inspect_node"             then inspect_node(params)
         when "system_cancel_task"              then cancel_task(params)
         when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
@@ -5825,6 +5855,126 @@ module Ai
         ensure
           WAIT_PERMITS.release
         end
+      end
+
+      # === node inspection (IMP-52762a704a3d) ===
+
+      # The stored result is served through System::StoredOutputRedactor exactly
+      # as system_get_task's events are, but with a per-string ceiling above the
+      # agent's per-collector output cap (64 KiB), so a bounded collector result
+      # is not cut a second time here.
+      INSPECT_RESULT_STRING_LIMIT = 72_000
+      INSPECT_RESULT_MAX_CHARS = 200_000
+      INSPECT_RESULT_MAX_NODES = 2_000
+
+      # Queues one probe.node_inspect task on ONE instance and long-polls for the
+      # agent's answer. The wait is the default because the caller wants the
+      # answer, and it degrades gracefully: on expiry (or a busy server) the reply
+      # is a SUCCESS carrying the task_id and timed_out: true, and system_get_task
+      # reads the same task later. Not a fire-and-forget, so a session does not
+      # have to poll the ops-hub database for a diagnostic it just asked for.
+      def inspect_node(params)
+        wait = wait_seconds_param(params, default: WAIT_MAX_SECONDS)
+        return wait_seconds_error unless wait
+
+        instance = inspect_node_target(params)
+        options = ::System::NodeInspection.options_from(params)
+        # The status arm only: a node whose agent is merely silent may be coming
+        # back, and the task waits for it. A node with no agent process at all
+        # (stopped, terminated) would never pull it.
+        refusal = instance.offline_dispatch_refusal
+        raise CallerFacingError, refusal if refusal
+
+        task = ::System::Task.create!(
+          account: @account, operable: instance,
+          command: "probe.node_inspect", status: "pending",
+          initiated_by: @user, options: options
+        )
+        timed_out = degraded = nil
+        task, timed_out, degraded = wait_until(wait) { [ task.reload.finished?, task ] } unless wait.zero?
+
+        if %w[failed aborted cancelled].include?(task.status)
+          return error_result("node inspection #{task.status}: #{serialize_task(task, full_error: true)[:error_message]}")
+                 .merge(task_id: task.id, status: task.status)
+        end
+
+        reply = { task_id: task.id, instance_id: instance.id, collector: options["collector"],
+                  status: task.status, finished: task.finished? }
+        reply.merge!({ timed_out: timed_out, wait_seconds: wait }.merge(wait_degraded_marker(degraded))) unless wait.zero?
+        reply[:result] = inspect_node_result(task) if task.status == "complete"
+        success_result(reply)
+      end
+
+      # THE SELF-ONLY RULE, keyed on the PRINCIPAL and not on the verb name. An
+      # instance principal (instance_authorized?: an mTLS node cert with no user,
+      # marked by the MCP layer) resolves to the node identity it authenticated
+      # as and to nothing else: naming any other instance is refused, and so is a
+      # restricted principal with no node identity at all (a federation partner,
+      # which instance_authorized? also covers, can prove no ownership). A user
+      # principal is account-scoped, the same as every other verb here.
+      #
+      # Enforced on the server, before a task row exists. The agent cannot enforce
+      # it: a task is delivered to the instance it is addressed to and the agent
+      # runs whatever collector it is handed on itself.
+      def inspect_node_target(params)
+        requested = params[:instance_id].to_s.strip
+        if instance_authorized?
+          own = node_instance
+          if own.nil?
+            raise CallerFacingError,
+                  "system_inspect_node is refused: this principal carries no node identity, so it has no node of its own to inspect"
+          end
+
+          if requested.present? && !own.id.to_s.casecmp?(requested)
+            inspect_node_refusal(requested)
+            raise CallerFacingError, "system_inspect_node is refused: an instance principal may inspect only its OWN node"
+          end
+
+          return account_instances.find_by(id: own.id) ||
+                 raise(CallerFacingError, "system_inspect_node is refused: this principal's own node is not in this account")
+        end
+
+        raise CallerFacingError, "instance_id is required" if requested.blank?
+
+        account_instances.find(requested)
+      end
+
+      # LOUD, never raise: a refused cross-instance inspection is exactly the
+      # attempt an operator needs to be able to QUERY afterwards. Same
+      # "can't-block-but-can't-hide" shape as #grant_refusal.
+      def inspect_node_refusal(requested)
+        Rails.logger.warn(
+          "[SystemFleetTool] Refused cross-instance node inspection: " \
+          "caller_instance=#{node_instance&.id.inspect} target_instance=#{requested.inspect}"
+        )
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: @account,
+          kind: "system.mcp_node_inspect_refused",
+          severity: :high,
+          source: "system_fleet_tool",
+          node_instance_id: node_instance&.id,
+          payload: {
+            "action" => "system_inspect_node",
+            "reason" => "an instance principal may inspect only its own node",
+            "caller_instance_id" => node_instance&.id,
+            "target_instance_id" => requested
+          }
+        )
+      end
+
+      # The handler's result rides the task's `completed` event (System::Task has
+      # no result column). Redacted and bounded like get_task's events.
+      def inspect_node_result(task)
+        completed = Array(task.events).reverse.find do |e|
+          e.is_a?(Hash) && e["type"] == "completed" && e["result"].is_a?(Hash)
+        end
+        return nil unless completed
+
+        out = ::System::StoredOutputRedactor.events(
+          [ { "result" => completed["result"] } ], limit: 1, string_limit: INSPECT_RESULT_STRING_LIMIT,
+                                                   max_chars: INSPECT_RESULT_MAX_CHARS, max_nodes: INSPECT_RESULT_MAX_NODES
+        )
+        out[:events].first.is_a?(Hash) ? out[:events].first["result"] : nil
       end
 
       # Done when the nodes in `environment` report the version's digest running

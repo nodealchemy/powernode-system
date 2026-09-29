@@ -245,7 +245,24 @@ module System
         # three checks cannot be extended by payload. A caller who can issue
         # this can read status codes and linker output — not change node state.
         # If a fourth check is ever added, re-derive this verb before shipping it.
-        "probe.module_smoke" => "auto_approve"
+        "probe.module_smoke" => "auto_approve",
+
+        # probe.node_inspect (IMP-52762a704a3d) — READ-ONLY node inspection: one
+        # of seven FIXED collectors (wg show <if>, routes and VRFs, nft, a
+        # unit's journal and unit file, a main PID's capabilities, a file's
+        # stat). auto_approve for the same reason probe.module_smoke is, and
+        # stricter: there is no free-form command, flag or URL — every argument
+        # is validated on the agent (taskguard) and on the server
+        # (System::NodeInspection), file_stat returns stat, sha256 and mtime and
+        # never contents, journal lines and every collector's output are capped,
+        # wg is only ever `wg show <interface>` with key material stripped, and
+        # everything passes through scrubSecrets before it leaves the node. An
+        # instance principal may inspect ONLY ITSELF; that rule lives in the MCP
+        # verb (system_inspect_node), keyed on the principal, not on this row.
+        # The routine sibling of system_out_of_band_exec, which stays
+        # human-only and approval-gated and shares no code path with this. If an
+        # eighth collector is ever added, re-derive this verb before shipping it.
+        "probe.node_inspect" => "auto_approve"
       }.freeze
 
       # Fail-safe for a command added to System::Task::COMMANDS without a verb
