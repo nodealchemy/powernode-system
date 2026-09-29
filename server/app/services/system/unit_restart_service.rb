@@ -42,11 +42,14 @@ module System
     # instance name may hold. No path separator, whitespace or control character.
     MANAGED_UNIT_SHAPE = /\Apowernode-[A-Za-z0-9_.:@-]+\.service\z/
 
-    # Services whose restart takes the control plane down when they run on the
-    # self-hosting node: the API and the database it reads. Matched by service
-    # NAME prefix, so rails-setup and postgres-replica are covered too — this
-    # errs toward refusing, and the list is the place to narrow it.
-    CONTROL_PLANE_SERVICE = /\A(rails|postgres)/i
+    # Services the control plane RUNS ON, judged only when the fence cannot say
+    # whether the target is its own hosting node (self_hosting_node_id unset):
+    # then a restart of any of them is refused rather than guessed at. Matched
+    # on the SERVICE name a shipped manifest declares (not the module name):
+    # rails and postgres by prefix, so rails-setup is covered; the rest exactly,
+    # so pg-replica (the postgres-replica module's service) is listed by its own
+    # name, which the postgres prefix does not reach.
+    CONTROL_PLANE_SERVICE = /\A(?:(?:rails|postgres)|(?:pg-replica|redis|vault|traefik|restore-dynamic|sidekiq|worker-web|caddy)\z)/i
 
     class << self
       # The units the agent generated for this instance: the services of every
@@ -130,34 +133,37 @@ module System
         "process that would report it, and stays out-of-band"
     end
 
-    # INV-1, for the units that ARE the control plane. Unconfigured fails
-    # CLOSED here (unlike the fence's inert default for other consumers): "we
-    # cannot tell whether this is our own node" must not restart rails or
-    # postgres. Every other unit is unaffected by the fence being unset.
+    # INV-1 is NODE-scoped: on the node hosting this control plane EVERY unit
+    # is refused, because restarting any service there is management of
+    # oneself. When the fence cannot tell (self_hosting_node_id unset) it fails
+    # CLOSED for the services the control plane runs on (CONTROL_PLANE_SERVICE),
+    # unlike the fence's inert default for other consumers; the rest of a
+    # deployment's units are unaffected by the setting being unset.
     def fence_refusal(instance, composed)
-      return nil unless composed.service.match?(CONTROL_PLANE_SERVICE)
-
       if self_managed_target?(instance)
         return "refusing to restart #{composed.unit} on instance #{instance.id} — it is this control plane's " \
                "own hosting node (INV-1: no self-management). Management authority must come from the " \
                "consensus group, never the node itself."
       end
+      return nil unless composed.service.match?(CONTROL_PLANE_SERVICE)
       return nil if self_hosting_node_id.present?
 
       "refusing to restart #{composed.unit} — this deployment has not configured " \
         "#{::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY}, so it cannot verify the " \
-        "instance is not the control plane's own hosting node (fail closed for rails and postgres units)"
+        "instance is not the control plane's own hosting node (fail closed for the services the control plane runs on)"
     end
 
-    # A task addressed to a node whose agent is not reporting would run whenever
-    # the box next boots, long after the question was asked. Same pair
-    # system_inspect_node applies.
+    # A task addressed to a node whose agent is not reporting would wait
+    # indefinitely (or run at the next boot, long after the question was
+    # asked). on_node_dispatch_refusal is the status arm plus the silence
+    # verdict (never reported / went silent), the check the reconcile producers
+    # use.
     def instance_refusal(instance)
       unless ::System::NodeInstance::HEARTBEAT_EXPECTED_STATUSES.include?(instance.status)
         return "instance is #{instance.status}: a unit restart needs a running agent"
       end
 
-      instance.offline_dispatch_refusal
+      instance.on_node_dispatch_refusal
     end
 
     def write_audit!(instance:, unit:, reason:, task:, initiated_by:, agent_id:, deferred_operation_id:, call_origin:)

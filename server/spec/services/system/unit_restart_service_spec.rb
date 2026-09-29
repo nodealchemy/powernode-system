@@ -13,7 +13,7 @@ require "rails_helper"
 RSpec.describe System::UnitRestartService do
   let(:account)   { create(:account) }
   let(:node)      { create(:system_node, account: account) }
-  let(:instance)  { create(:system_node_instance, :running, node: node, account: account) }
+  let(:instance)  { create(:system_node_instance, :running, node: node, account: account, last_heartbeat_at: Time.current) }
   let(:user)      { create(:user, account: account) }
   let(:fence_key) { System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY }
   # A decoy self-hosting node: the fence is CONFIGURED and points elsewhere.
@@ -45,6 +45,16 @@ RSpec.describe System::UnitRestartService do
       expect(composed.map(&:unit)).not_to include(*foreign)
     end
 
+    it "resolves a dependant child (parent_module_id, no assignment row), the second pathway attached_modules honours" do
+      parent = create(:system_node_module, account: account)
+      child = create(:system_node_module, account: account, node: node, parent_module: parent, enabled: true)
+      create(:system_module_service, node_module: child, name: "sidekiq")
+      expect(System::NodeModuleAssignment.where(node_module_id: child.id)).to be_empty
+
+      expect(described_class.composed_units(instance).map(&:unit))
+        .to eq([ System::RestartAfterUpdate.unit_name(child.id, "sidekiq") ])
+    end
+
     it "omits a module whose assignment is disabled, and is empty for an instance with no node" do
       mod = create(:system_node_module, account: account)
       create(:system_module_service, node_module: mod, name: "sidekiq")
@@ -59,10 +69,11 @@ RSpec.describe System::UnitRestartService do
   describe "#refusal" do
     subject(:service) { described_class.new }
 
-    let!(:units) { compose!(instance, "sidekiq", "rails", "postgres") }
+    let!(:units) { compose!(instance, "sidekiq", "rails", "postgres", "node-exporter") }
     let(:sidekiq) { units[0] }
     let(:rails)   { units[1] }
     let(:postgres) { units[2] }
+    let(:node_exporter) { units[3] }
 
     def refusal(unit, reason: "post-deploy bounce")
       service.refusal(instance: instance, unit: unit, reason: reason)
@@ -98,7 +109,7 @@ RSpec.describe System::UnitRestartService do
 
     it "refuses a malformed name that only looks managed" do
       [ "powernode-x.service; reboot", "powernode-../etc.service", "powernode-x", "powernode-a b.service", "powernode-x.timer" ].each do |unit|
-        expect(refusal(unit)).to be_present, "expected #{unit.inspect} refused"
+        expect(refusal(unit)).to match(/not a well-formed managed unit name/), "expected #{unit.inspect} refused as malformed"
       end
     end
 
@@ -114,23 +125,31 @@ RSpec.describe System::UnitRestartService do
     context "when the control plane's own hosting node is the target (INV-1)" do
       before { ::SiteSetting.set(fence_key, node.id, setting_type: "string") }
 
-      it "refuses the rails and postgres units" do
-        expect(refusal(rails)).to match(/INV-1|self-management/i)
-        expect(refusal(postgres)).to match(/INV-1|self-management/i)
-      end
-
-      it "still permits a unit that is not the control plane itself" do
-        expect(refusal(sidekiq)).to be_nil
+      # INV-1 is node-scoped, not service-scoped: the node is refused whole.
+      it "refuses EVERY composed unit, critical or not" do
+        [ rails, postgres, sidekiq, node_exporter ].each do |unit|
+          expect(refusal(unit)).to match(/INV-1|self-management/i), "expected #{unit} refused"
+        end
       end
     end
 
     context "when the fence is unconfigured" do
       before { ::SiteSetting.where(key: fence_key).delete_all }
 
-      it "fails closed for rails and postgres, naming the setting, and permits the rest" do
-        expect(refusal(rails)).to match(/self_hosting_node_id/)
-        expect(refusal(postgres)).to match(/self_hosting_node_id/)
-        expect(refusal(sidekiq)).to be_nil
+      # Unset means "cannot tell whether this is the control plane's node", so
+      # the services the control plane runs on are refused. Names are the
+      # shipped manifests' SERVICE names, not their module names.
+      it "fails closed for every critical service, naming the setting" do
+        names = %w[rails rails-setup postgres pg-replica redis vault traefik restore-dynamic sidekiq worker-web caddy]
+        units = compose!(instance, *names)
+
+        units.each do |unit|
+          expect(refusal(unit)).to match(/self_hosting_node_id/), "expected #{unit} refused"
+        end
+      end
+
+      it "permits a service that is not one the control plane runs on" do
+        expect(refusal(node_exporter)).to be_nil
       end
     end
 
@@ -138,9 +157,25 @@ RSpec.describe System::UnitRestartService do
       expect(refusal(rails)).to be_nil
     end
 
-    it "refuses an instance that is not running, and one with a silent agent" do
+    it "refuses an instance that is not running" do
       instance.update_columns(status: "stopped")
       expect(refusal(sidekiq)).to match(/stopped/)
+    end
+
+    it "refuses a running instance whose agent went silent or never reported, and permits it once it reports" do
+      instance.update_columns(last_heartbeat_at: 1.hour.ago)
+      expect(refusal(sidekiq)).to match(/went silent/)
+
+      instance.update_columns(last_heartbeat_at: nil)
+      expect(refusal(sidekiq)).to match(/never reported/)
+
+      instance.update_columns(last_heartbeat_at: Time.current)
+      expect(refusal(sidekiq)).to be_nil
+    end
+
+    it "refuses an instance whose status no agent will pull a task under" do
+      instance.update_columns(status: "error")
+      expect(refusal(sidekiq)).to be_present
     end
   end
 

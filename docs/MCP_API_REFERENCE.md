@@ -275,11 +275,11 @@ A collector takes only its own arguments; another collector's argument is refuse
 
 | Check | Rule |
 |---|---|
-| `reason` | Required, non-blank, at most 500 characters; recorded on the task and in the audit log (`system.instance.restart_unit`, with the unit, task id and requester) |
+| `reason` | Required, non-blank, at most 500 characters; recorded on the task and in the audit log (`system.instance.restart_unit`, with the unit, task id and requester); it reaches the approver through the request's filtered params, never the approval description |
 | `unit` | The full name, `powernode-<module-id>-<service>.service`, and it must be one of the services of the modules attached to that instance's node (`System::UnitRestartService.composed_units`, the same union the node API serves the agent). An unknown unit, or one composed on another instance, is refused |
 | Namespace | Anything outside `powernode-*` is refused; the node agent's own unit and its variants (`powernode-agent*`) are refused with the message that agent restarts stay out-of-band |
-| Self-hosting node | The `rails*` and `postgres*` services of the node named by `self_hosting_node_id` are refused (INV-1). The fence is fail-closed for these units: with the setting unset they are refused too, naming the setting. Other units on that node (sidekiq, traefik) are not affected. There is no relaxation switch; use the out-of-band path |
-| Instance | Must be `running` or `starting`, with a live agent |
+| Self-hosting node | On the node named by `self_hosting_node_id` **every** unit is refused (INV-1 is node-scoped). With the setting unset the fence cannot tell, so it fails closed for the services the control plane runs on (`rails*`, `postgres*`, `pg-replica`, `redis`, `vault`, `traefik`, `restore-dynamic`, `sidekiq`, `worker-web`, `caddy`, by the shipped manifests' service names), naming the setting; other units are not affected. There is no relaxation switch; use the out-of-band path |
+| Instance | Must be `running` or `starting`, and its agent must be reporting (never-reported and went-silent instances are refused) |
 
 Every check runs at request time (before anything is parked) and again on the approved replay, since the unit may have stopped being composed, or the node become the control plane's host, while the request was parked; the replay then completes with the refusal and creates no task. The agent's `taskguard` validators (`powernode-` prefix, an installed unit file) remain the second layer. Requires `system.instances.control`. Declared `mutating` and `destructive` (the class of `system_reboot_instance` and `system_stop_instance`) and denied outright to every instance principal by `Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS` (`*system_restart_unit*`); the gate context and the verb refuse an instance principal independently of that overlay.
 

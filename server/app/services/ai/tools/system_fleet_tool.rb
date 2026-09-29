@@ -4952,7 +4952,11 @@ module Ai
         raise CallerFacingError, message if message
 
         deferred_tool_call_context(params).merge(
-          description: "Restart unit #{params[:unit].to_s.strip} on '#{instance.name}': #{params[:reason].to_s.strip.truncate(200)}",
+          # No caller param VALUE beyond the unit: the free-text reason is an
+          # injection surface on the card the approver reads, and reaches the
+          # approver through request_data (params, filtered) instead — see
+          # BaseTool#deferred_tool_call_description.
+          description: "Restart unit #{params[:unit].to_s.strip} on '#{instance.name}'",
           source_type: "System::NodeInstance",
           source_id: instance.id
         )
