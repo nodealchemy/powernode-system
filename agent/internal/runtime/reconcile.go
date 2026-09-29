@@ -729,10 +729,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// manifest.LoadOrFetch call errored THIS tick (a transient failure — e.g.
 	// the platform 502ing mid-restart, IMP-2dfbd7f62441 / the 2026-09-22
 	// ops-hub outage) — as opposed to a module that is simply not assigned at
-	// all, which never reaches this loop. Deliberately NOT set for the
-	// no-digest case just below: that manifest DID load, it is just an
-	// honestly-observed "not published yet" state, not a degraded view of
-	// this tick.
+	// all, which never reaches this loop. Also set for the no-digest case
+	// just below: that manifest loaded, but the platform did not say which
+	// build the module is, so its absence from `desired` is equally not a
+	// removal (IMP-1023e79cc82d).
 	//
 	// Consumed in two places below: filterUnverifiedDetaches (defers this
 	// module's detach rather than reading the fetch failure as a real
@@ -767,31 +767,26 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.cfg.OnError("reconciler:manifest_cache_write_failed", fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 		if m.Digest == "" {
-			// REVIEWED 2026-09-23 (IMP-2dfbd7f62441 review, MINOR item): this is
-			// reachable for a genuinely LIVE assignment, not only a module that
-			// was "never published". NodeModuleVersion#artifact (server/app/
-			// models/system/node_module_version.rb) picks specifically the
-			// "erofs" key out of #artifacts; NodeModuleNodeApiSerializer's
-			// `has_data_file` (the gate that puts a module into this loop at
-			// all) instead checks `#artifacts.present?` — ANY published format.
-			// So a module published only in a non-erofs format (e.g. mid
-			// composefs-format migration, or a publish that wrote the wrong
-			// key) is has_data_file=true with digest=="" here, indistinguishable
-			// from "not published" by this check alone. Both cases are handled
-			// identically below (skip this module's desired-set entry, note
-			// unconverged) — but that is NOT safe on every node. This module
-			// is deliberately NOT added to manifestFetchFailed (the fetch DID
-			// succeed; this is an honest live answer, not a transient error),
-			// so on a NON-self-hosted node it is simply absent from `desired`
-			// with no failure-guard protecting it: mount.Reconcile reads that
-			// as a real unassignment, filterUnverifiedDetaches does not apply
-			// (it is keyed on manifestFetchFailed), and the module — with its
-			// declared users — IS detached this tick on any node that is not
-			// self-hosted (filterUnsafeDetaches's "unknown manifest" guard
-			// only fires there). Filed as a follow-up rather than fixed here:
-			// this task's scope was the transient-failure and partial-view
-			// cases, and this one is a live, honest signal instead of an
-			// ambiguous one — but it is a real gap, not a benign one.
+			// A live assignment can arrive with no digest, not only a module
+			// that was "never published": NodeModuleVersion#artifact picks
+			// specifically the "erofs" key out of #artifacts, while the
+			// serializer's `has_data_file` (the gate that puts a module into
+			// this loop at all) checks `#artifacts.present?` — ANY published
+			// format. So a module published only in a non-erofs format (e.g.
+			// mid composefs-format migration, or a publish that wrote the
+			// wrong key) is has_data_file=true with digest=="" here.
+			//
+			// It is therefore recorded as manifestFetchFailed: the platform
+			// did not say which build this module is, so its absence from
+			// `desired` must never be read as an unassignment. Without this,
+			// mount.Reconcile saw it as absent from desired and present in
+			// current, and on a node that is not self-hosted (where
+			// filterUnsafeDetaches does not apply) the module — with its
+			// declared users — was detached this tick (IMP-1023e79cc82d).
+			// filterUnverifiedDetaches now defers that detach, and the render
+			// resolves the module from its cache/breadcrumb like any other
+			// untrusted tick.
+			manifestFetchFailed[mod.ID] = true
 			r.noteUnconverged("reconciler:no_digest", mod.ID, fmt.Errorf("module %s has no digest (not published)", mod.ID))
 			continue
 		}
